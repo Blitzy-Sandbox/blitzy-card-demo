@@ -461,14 +461,21 @@ import org.springframework.stereotype.Repository;
  * <p>Two related facts complete the picture:
  *
  * <ul>
- *   <li><b>The final flush is driven by end of data, not by the source's {@code ELSE}.</b> When the loop
- *       detects end of file the account update must run one last time, or the last account's interest is
- *       silently lost. The source appears to do this at {@code app/cbl/CBACT04C.cbl:L219-L220}
+ *   <li><b>There is no final flush, and none may be added.</b> The source <em>appears</em> to update the
+ *       account one last time at end of data, at {@code app/cbl/CBACT04C.cbl:L219-L220}
  *       ({@code ELSE PERFORM 1050-UPDATE-ACCOUNT}), but that branch is <b>unreachable as written</b>: the
  *       {@code ELSE} belongs to {@code IF END-OF-FILE = 'N'} at {@code :L189}, while the enclosing
- *       {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already exited by the time the
- *       condition could be false. The Java flush must still happen; it is triggered by the end-of-data
- *       condition, not by translating that dead {@code ELSE}.</li>
+ *       {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} is a test-before loop that has already
+ *       exited by the time the condition could be false, so control never re-enters the body to reach it.
+ *       <b>The consequence is that the last account of every run is never updated</b> - its accumulated
+ *       interest is never added to {@code ACCT-CURR-BAL} and its two cycle counters are never reset - and
+ *       that is the behaviour of the system of record, reproduced exactly.
+ *       <p>An earlier revision of this item instructed the Java implementation to perform the flush anyway,
+ *       triggered by the end-of-data condition rather than by translating the dead {@code ELSE}. <b>That
+ *       instruction is withdrawn</b>, because it contradicts both the parity mandate and the troubleshooting
+ *       entry further down this document, and following it would silently add interest the frozen system
+ *       never posts. {@code InterestCalculationProcessor.updateAccountAtEndOfFile()} retains the branch as a
+ *       marked, unreachable no-op so the paragraph map stays provable, and calls it from nowhere.</p></li>
  *   <li><b>Paging over this table inside the interest job is stable.</b> The job never mutates the table
  *       it browses: its only write verbs are {@code REWRITE FD-ACCTFILE-REC} at
  *       {@code app/cbl/CBACT04C.cbl:L356} and {@code WRITE FD-TRANFILE-REC} at {@code :L500}, both

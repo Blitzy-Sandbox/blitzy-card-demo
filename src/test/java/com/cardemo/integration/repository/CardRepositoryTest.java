@@ -60,6 +60,8 @@ import com.cardemo.repository.CardRepository;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
@@ -151,39 +153,41 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  * this file proves that it does. The fixture shape is asserted only as a fixture shape, and every assertion
  * message that touches it says so.
  *
- * <p><strong>The two hazards this file exists to guard, classified.</strong> Both are High severity, because
+ * <p><strong>The two hazards this file exists to guard.</strong> Both matter, because
  * either one silently produces a system that looks correct and is not:
  *
  * <ul>
- *   <li><strong>High - misreading key uniqueness.</strong> Taking {@code UNIQUE} on
+ *   <li><strong>misreading key uniqueness.</strong> Taking {@code UNIQUE} on
  *       {@code app/catlg/LISTCAT.txt:284} for key uniqueness yields a unique index on
  *       {@code card(card_acct_id)}, a single-valued finder and an {@code Optional} return type. Nothing fails
  *       against the seeded data, because the seed happens to hold one card per account; the defect surfaces
- *       only when a real account holds a second card, at which point the write is refused. Remediation: read
+ *       only when a real account holds a second card, at which point the write is refused. Read
  *       {@code NONUNIQKEY} on :285 as the governing attribute, keep the index non-unique, keep the finder
  *       returning a {@code Page}, and assert multiplicity positively as
  *       {@code theAccountFinderIsMultiValued} does.</li>
- *   <li><strong>High - "correcting" the preserved misspelling.</strong> Renaming
+ *   <li><strong>"correcting" the preserved misspelling.</strong> Renaming
  *       {@code card_expiraion_date} to the correct spelling makes the entity and the Flyway schema disagree,
  *       and because {@code ddl-auto} is {@code validate} in every profile the whole tier fails to start.
- *       Remediation: preserve {@code app/cpy/CVACT02Y.cpy:L9} verbatim in both the column and the property,
- *       and keep {@code theMisspelledColumnIsTheRealOne} in place to catch a future rename.</li>
+ *       Preserve {@code app/cpy/CVACT02Y.cpy:L9} verbatim in both the column and the property, and keep
+ *       {@code theMisspelledColumnIsTheRealOne} in place to catch a future rename.</li>
  * </ul>
  *
- * <p><strong>Recorded corrections to the plan this file was written from</strong>, each evidence-based and
- * classified per Clause F:
+ * <p><strong>Four facts this file establishes from the migration and the corpus</strong>, each measured here
+ * rather than transcribed:
  *
  * <ul>
- *   <li><strong>Medium.</strong> {@code card_cvv_cd} is <em>not</em> modelled. The plan described a seventh
- *       mapped property {@code cvvCode} over a {@code CHAR(3)} column and asked for a round-trip assertion
- *       on the seeded value. No such column or property exists: {@code V1__create_schema.sql} states
- *       "{@code card_cvv_cd} IS NOT DECLARED. Card verification data is not retained after authorisation",
- *       {@link Card} documents {@code CARD-CVV-CD (:L7) 9(03) NOT MODELLED} and exposes a five-argument
- *       constructor, and {@code V3__seed_data.sql} loads no value for it. Asserting the plan as written
- *       would not compile. This file therefore asserts something strictly stronger - the column's
- *       <em>absence</em>, and the absence of any constraint over it - and still proves, from the frozen
- *       fixture, that the three unpersisted bytes remain in the record and that eight of the fifty carry a
- *       leading zero that a numeric mapping would have destroyed.</li>
+ *   <li><strong>High, RESOLVED.</strong> {@code card_cvv_cd} <em>is</em> modelled, and an earlier revision of
+ *       this file asserted the opposite. The plan described a seventh mapped property {@code cvvCode} over a
+ *       {@code CHAR(3)} column with a round-trip assertion on the seeded value, and that is what the system
+ *       now has: {@code V1__create_schema.sql} declares {@code card_cvv_cd CHAR(3) NOT NULL},
+ *       {@code V3__seed_data.sql} loads bytes 28-30 of all fifty fixture rows, and {@link Card} maps a
+ *       private field for it behind a six-argument constructor. The earlier omission was a field-contract
+ *       break rather than a hardening measure - {@code app/cpy/CVACT02Y.cpy:L7} declares the field inside the
+ *       authoritative 150-byte record - and asserting its absence institutionalised the break. What is
+ *       withheld is the read path, not the storage: the entity publishes no accessor that returns the value,
+ *       only {@code matchesVerificationValue(String)}, so this file proves the round trip through that
+ *       comparison and additionally proves the leading zero survived the load on exactly eight of the fifty
+ *       rows, which is what a numeric mapping would have destroyed.</li>
  *   <li><strong>Medium.</strong> The three index names in the plan are not the names in the migration. The
  *       real ones are {@code idx_card_acct_id}, {@code idx_card_cross_reference_acct_id} and
  *       {@code idx_transaction_proc_ts}. The index assertions below are written against the table and the
@@ -286,7 +290,7 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  *       through a property rather than importing a second bill of materials, and use only the prefixed
  *       coordinates. Overriding without renaming resolves artefacts that do not exist; renaming without
  *       overriding resolves the wrong version. Both halves live in the root {@code pom.xml}, which this
- *       file must not edit - report a Blocker with that two-part remediation instead.</li>
+ *       file must not edit - report it with that two-part fix instead.</li>
  *   <li><strong>The build fails on an unused import or a stray warning.</strong> Compilation runs with
  *       {@code -Xlint:all} and {@code -Werror} at release 25. One unused import is a build failure, not a
  *       warning.</li>
@@ -332,6 +336,19 @@ class CardRepositoryTest extends AbstractRepositoryIntegrationTest {
     /** The repository under test, the eleven-interface tier's replacement for the {@code CARDDAT} file. */
     @Autowired
     private CardRepository cardRepository;
+
+    /**
+     * The number of rows {@code V3__seed_data.sql} loads into {@code card} from
+     * {@code app/data/ASCII/carddata.txt}, which is 7,550 bytes of 150-byte records.
+     */
+    private static final long SEEDED_ROW_COUNT = 50L;
+
+    /**
+     * A synthetic three-character verification value whose leading zero is the point of it: that is the shape
+     * eight of the fifty fixture rows carry and the shape a numeric column would corrupt. It is not a value
+     * taken from the fixture, so no seeded datum reaches an assertion message or a failed statement's text.
+     */
+    private static final String SYNTHETIC_VERIFICATION_VALUE = "007";
 
     /**
      * Used only for catalogue metadata queries and for the one insert that has to bypass the entity.
@@ -512,7 +529,8 @@ class CardRepositoryTest extends AbstractRepositoryIntegrationTest {
      * @return a transient {@link Card} whose every column satisfies the schema
      */
     private Card newCard(String cardNumber, long accountId) {
-        return new Card(cardNumber, accountId, "CARDDEMO SYNTHETIC HOLDER", "2027-01-31", "Y");
+        return new Card(cardNumber, accountId, SYNTHETIC_VERIFICATION_VALUE,
+                "CARDDEMO SYNTHETIC HOLDER", "2027-01-31", "Y");
     }
 
     /**
@@ -937,7 +955,7 @@ class CardRepositoryTest extends AbstractRepositoryIntegrationTest {
      * card-verification column.
      */
     @Nested
-    @DisplayName("The column contract - the preserved misspelling and the unmodelled card-verification field")
+    @DisplayName("The column contract - the preserved misspelling and the confined card-verification field")
     class ColumnContract {
 
         @Test
@@ -997,23 +1015,73 @@ class CardRepositoryTest extends AbstractRepositoryIntegrationTest {
         }
 
         @Test
-        @DisplayName("card_cvv_cd is not declared, so no card-verification value is ever retained")
-        void theCardVerificationColumnDoesNotExist() {
-            Long verification = jdbcTemplate.queryForObject(
-                    "SELECT count(*) FROM information_schema.columns "
+        @DisplayName("card_cvv_cd is CHAR(3) NOT NULL and every seeded row round-trips its three bytes")
+        void theCardVerificationColumnIsFixedWidthAndPopulated() {
+            Map<String, Object> declared = jdbcTemplate.queryForMap(
+                    "SELECT data_type, character_maximum_length, is_nullable "
+                            + "FROM information_schema.columns "
                             + "WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
-                    Long.class, "card", "card_cvv_cd");
+                    "card", "card_cvv_cd");
 
-            assertThat(verification)
-                    .as("CARD-CVV-CD PIC 9(03) at app/cpy/CVACT02Y.cpy:L7 is a LABELLED DEVIATION: "
-                            + "V1__create_schema.sql declares no column for it and V3__seed_data.sql loads "
-                            + "no value, because card verification data must not be retained after "
-                            + "authorisation. Nothing observable in the source depends on it - it appears in "
-                            + "none of the seventeen BMS symbolic maps, the redefinition pairs at "
-                            + "app/cbl/COCRDSLC.cbl:76-77 and app/cbl/COCRDLIC.cbl:102-103 are never "
-                            + "referenced, and CCUP-NEW-CVV-CD in app/cbl/COCRDUPC.cbl is initialised and "
-                            + "read but never assigned")
-                    .isZero();
+            assertThat(declared.get("data_type"))
+                    .as("CARD-CVV-CD PIC 9(03) at app/cpy/CVACT02Y.cpy:L7 sits inside the authoritative "
+                            + "150-byte record, so the column exists. It is CHARACTER, not numeric: 8 of the "
+                            + "50 fixture rows lead with a zero and a numeric column would store them one "
+                            + "digit short, which no assertion elsewhere would catch")
+                    .isEqualTo("character");
+            assertThat(declared.get("character_maximum_length"))
+                    .as("exactly three characters, per the picture clause")
+                    .isEqualTo(Integer.valueOf(3));
+            assertThat(declared.get("is_nullable"))
+                    .as("every column on this table is NOT NULL, this one included")
+                    .isEqualTo("NO");
+
+            Long populated = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM card WHERE card_cvv_cd ~ ?", Long.class, "^[0-9]{3}$");
+            assertThat(populated)
+                    .as("V3__seed_data.sql loads bytes 28-30 of all fifty rows of "
+                            + "app/data/ASCII/carddata.txt, and PIC 9(03) means all three characters are "
+                            + "digits in every row. The values themselves are never selected into an "
+                            + "assertion message: the shape is asserted, not the datum")
+                    .isEqualTo(SEEDED_ROW_COUNT);
+
+            Long leadingZero = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM card WHERE card_cvv_cd LIKE ?", Long.class, "0%");
+            assertThat(leadingZero)
+                    .as("and the leading zeros survived the load, which is the round trip the CHAR(3) "
+                            + "declaration exists to guarantee - eight rows, exactly as the fixture has")
+                    .isEqualTo(8L);
+        }
+
+        @Test
+        @DisplayName("the entity persists the verification value without publishing any read path for it")
+        void theVerificationValueIsWrittenAndComparedButNeverReadBack() {
+            persistSyntheticCard(syntheticCardNumber(), seededAccountId());
+
+            Card reloaded = cardRepository.findById(syntheticCardNumber()).orElseThrow();
+
+            assertThat(reloaded.matchesVerificationValue(SYNTHETIC_VERIFICATION_VALUE))
+                    .as("the three characters survive the write and the read unchanged, leading zero "
+                            + "included. This is asserted through the boolean comparison because the entity "
+                            + "publishes no accessor that returns the value - the round trip is provable "
+                            + "without the value ever being surrendered")
+                    .isTrue();
+            assertThat(reloaded.matchesVerificationValue("7"))
+                    .as("and the numerically equal shorter form does not match, which is what proves the "
+                            + "column stored characters rather than a parsed number")
+                    .isFalse();
+
+            assertThat(Card.class.getMethods())
+                    .as("no bean-style accessor names the field, so no serializer, reflective mapper or "
+                            + "response body can obtain it from a loaded entity")
+                    .noneMatch(method -> {
+                        String lower = method.getName().toLowerCase(Locale.ROOT);
+                        return lower.equals("getcvvcode") || lower.equals("setcvvcode");
+                    });
+            assertThat(reloaded.toString().toLowerCase(Locale.ROOT))
+                    .as("and the diagnostic rendering does not name or contain it")
+                    .doesNotContain("cvv")
+                    .doesNotContain(SYNTHETIC_VERIFICATION_VALUE);
         }
 
         @Test
@@ -1038,16 +1106,15 @@ class CardRepositoryTest extends AbstractRepositoryIntegrationTest {
             }
 
             assertThat(leadingZeroValues)
-                    .as("columns 28-30 of app/data/ASCII/carddata.txt still carry the three unpersisted "
-                            + "CARD-CVV-CD bytes, and eight of the fifty begin with a zero. Had the field "
-                            + "been persisted it would have needed CHAR(3) and a Java String: a numeric "
-                            + "mapping would have destroyed the leading zero. The record is still 150 bytes "
-                            + "wide; it is three of those bytes that are not stored")
+                    .as("columns 28-30 of app/data/ASCII/carddata.txt carry the three CARD-CVV-CD bytes and "
+                            + "eight of the fifty begin with a zero, which is why the column is CHAR(3) over "
+                            + "a Java String: a numeric mapping would have destroyed the leading zero on "
+                            + "those eight rows and nothing would have reported it")
                     .isEqualTo(8);
         }
 
         @Test
-        @DisplayName("the table declares exactly the six modelled columns, every one NOT NULL")
+        @DisplayName("the table declares exactly the seven modelled columns, every one NOT NULL")
         void theColumnSetIsExactlyTheModelledSet() {
             List<String> columns = jdbcTemplate.queryForList(
                     "SELECT column_name FROM information_schema.columns "
@@ -1056,10 +1123,10 @@ class CardRepositoryTest extends AbstractRepositoryIntegrationTest {
                     String.class, "card");
 
             assertThat(columns)
-                    .as("88 modelled bytes as 16 + 11 + 50 + 10 + 1, plus the version counter. The three "
-                            + "unmodelled CARD-CVV-CD bytes and FILLER X(59) at app/cpy/CVACT02Y.cpy:L11 "
-                            + "make the frozen record up to 150")
-                    .containsExactly("card_num", "card_acct_id", "card_embossed_name",
+                    .as("91 modelled bytes as 16 + 11 + 3 + 50 + 10 + 1, plus the version counter. Only "
+                            + "FILLER X(59) at app/cpy/CVACT02Y.cpy:L11 is unmodelled, and it is what makes "
+                            + "the frozen record up to 150")
+                    .containsExactly("card_num", "card_acct_id", "card_cvv_cd", "card_embossed_name",
                             "card_expiraion_date", "card_active_status", "version");
 
             Long nullable = jdbcTemplate.queryForObject(
@@ -1243,7 +1310,7 @@ class CardRepositoryTest extends AbstractRepositoryIntegrationTest {
                     .as("the entity refuses an over-wide value before any statement is sent, naming the "
                             + "originating COBOL field, so a caller learns which fixed-width contract it "
                             + "broke")
-                    .isThrownBy(() -> new Card(tooWide, accountId, embossedName, expiraionDate, "Y"))
+                    .isThrownBy(() -> new Card(tooWide, accountId, "007", embossedName, expiraionDate, "Y"))
                     .withMessageContaining("CARD-NUM")
                     .withMessageContaining("16");
 

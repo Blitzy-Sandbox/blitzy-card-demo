@@ -59,6 +59,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import jakarta.persistence.LockModeType;
 import jakarta.persistence.OptimisticLockException;
 
 import java.lang.annotation.Annotation;
@@ -90,6 +91,7 @@ import org.mockito.quality.Strictness;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.dao.QueryTimeoutException;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.cardemo.exception.CardDemoException;
@@ -202,70 +204,64 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       asserted. The identical shape recurs at {@code app/cbl/COUSR00C.cbl}:601.</li>
  *   </ul>
  *
- * <p>Neither is an oversight and neither is optimised away: behavioural parity is the contract, both are
- * observable, and each is owed an entry in the planned {@code DECISION_LOG.md}.
+ * <p>Neither is an oversight and neither is optimised away: behavioural parity is the contract and both are
+ * observable, so each is preserved with the locator that proves it.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
  *   <li><strong>PF3 stops saving.</strong> Someone "fixed" the quirk. The system of record writes on that
- *       key; a target that does not silently discards the user's edits. Remedy: restore the
- *       {@code UPDATE-USER-INFO} performed at {@code :112}, and leave the surprise visible. Severity:
- *       <strong>High</strong>.</li>
+ *       key; a target that does not silently discards the user's edits. Restore the
+ *       {@code UPDATE-USER-INFO} performed at {@code :112} and leave the surprise visible.</li>
  *   <li><strong>The credential is compared with {@code equals}.</strong> The stored value is a salted
  *       digest, so equality can never hold and every submission would be counted as a change and re-hashed.
- *       Remedy: {@code matches}. Severity: <strong>High</strong>.</li>
- *   <li><strong>A password appears in a response.</strong> Someone reproduced {@code :169}. Remedy: remove
- *       it; the response record must declare no such component. Severity: <strong>Blocker</strong>.</li>
+ *       Use {@code matches}.</li>
+ *   <li><strong>A password appears in a response.</strong> Someone reproduced {@code :169}. Remove
+ *       it; the response record must declare no such component.</li>
  *   <li><strong>An unchanged submission writes anyway.</strong> The four change tests were collapsed or the
  *       modified flag was set unconditionally, so {@code :238-243} never runs and
- *       {@code Please modify to update ...} is never seen. Remedy: restore the four tests. Severity:
- *       <strong>Medium</strong>.</li>
+ *       {@code Please modify to update ...} is never seen. Restore the four tests.</li>
  *   <li><strong>Trailing spaces count as a change.</strong> The source compared fixed-width fields, so
- *       {@code "AJITH"} and {@code "AJITH               "} are the same value. Remedy: pad both sides to the
- *       declared width before comparing. Severity: <strong>Medium</strong>.</li>
+ *       {@code "AJITH"} and {@code "AJITH               "} are the same value. Pad both sides to the
+ *       declared width before comparing.</li>
  *   <li><strong>Two outcomes become indistinguishable.</strong> Four literals and three colours are
- *       observable state. Remedy: keep the arms distinct. Severity: <strong>Medium</strong>.</li>
+ *       observable state. Keep the arms distinct.</li>
  *   <li><strong>A non-administrator reaches the screen.</strong> This bean performs no authorisation and
  *       cannot: it reads no role, takes no principal and carries only {@code @Service}. A user able to
- *       change a user class could raise its own account to administrator. Remedy: the {@code /api/admin/**}
+ *       change a user class could raise its own account to administrator. The {@code /api/admin/**}
  *       rule belongs to the filter chain, and {@code src/test/java/com/cardemo/unit/config/SecurityConfigTest.java}
- *       owns it; what this suite asserts is that nothing here can weaken it. Severity:
- *       <strong>Blocker</strong>.</li>
+ *       owns it; what this suite asserts is that nothing here can weaken it.</li>
  *   <li><strong>A snapshot comparison is made mandatory.</strong> The comparison at {@code :219-233} reads
  *       the record as freshly re-read at {@code :217}, not a request-carried snapshot, so a caller that
- *       supplies none must still be able to write. Remedy: keep the snapshot optional. Severity:
- *       <strong>High</strong>.</li>
+ *       supplies none must still be able to write. Keep the snapshot optional.</li>
  *   <li><strong>A validation rule the source lacks is added.</strong> Upper-casing, a credential policy, a
  *       length floor or a user-class membership test at the input gate all reject input the system of record
- *       accepts. Remedy: emptiness only, exactly as {@code :146} and {@code :179-213} test it. Severity:
- *       <strong>High</strong>.</li>
+ *       accepts. Emptiness only, exactly as {@code :146} and {@code :179-213} test it.</li>
  *   <li><strong>A duplicate-record outcome appears on the write path.</strong> The rewrite at
  *       {@code :360-366} carries no {@code RIDFLD} and therefore has no duplicate-key arm to translate.
- *       Remedy: delete the invented branch. Severity: <strong>Medium</strong>.</li>
+ *       Delete the invented branch.</li>
  *   <li><strong>The unrecognised-key message is re-declared locally.</strong> It is the one message here
  *       that is shared corpus-wide - {@code CCDA-MSG-INVALID-KEY} of {@code app/cpy/CSMSG01Y.cpy} - and this
- *       suite reads it off the production declaration rather than transcribing it. Severity:
- *       <strong>Medium</strong>.</li>
+ *       suite reads it off the production declaration rather than transcribing it.</li>
  *   <li><strong>The five guards are shared with the add screen.</strong> The literals are identical and the
  *       precedence is not: this program leads with the identifier, {@code app/cbl/COUSR01C.cbl} leads with
- *       the first name. Sharing an implementation silently changes which message wins. Remedy: keep the two
+ *       the first name. Sharing an implementation silently changes which message wins. Keep the two
  *       chains apart, as {@code src/test/java/com/cardemo/unit/service/UserAddServiceTest.java} keeps its
- *       own. Severity: <strong>Medium</strong>.</li>
+ *       own.</li>
  *   <li><strong>A message literal is re-spaced.</strong> Three messages carry a space before their ellipsis
- *       and three do not; the ellipsis is always exactly three periods. Severity: <strong>Low</strong>.</li>
+ *       and three do not; the ellipsis is always exactly three periods.</li>
  *   <li><strong>The no-change refusal is recoloured.</strong> {@code :241} marks it {@code DFHRED}, so a
  *       submission that changed nothing is reported as an error rather than as a benign outcome. It looks
- *       wrong and is the contract. Severity: <strong>Low</strong>.</li>
+ *       wrong and is the contract.</li>
  *   <li><strong>A retained no-op is deleted.</strong> The {@code CONTINUE} at {@code :154} and at
  *       {@code :212} terminate nothing, and the one at {@code :335} is why every successful read emits the
- *       save hint at all. Severity: <strong>Low</strong>.</li>
+ *       save hint at all.</li>
  *   <li><strong>The vestigial block is treated as live.</strong> Of {@code :51-58} only
  *       {@code CDEMO-CU02-USR-SELECTED} is read; the page number, next-page flag and first-and-last keys are
- *       a list screen's block cloned onto a single-record screen. Severity: <strong>Low</strong>.</li>
+ *       a list screen's block cloned onto a single-record screen.</li>
  *   <li><strong>The dataset literal is trimmed of its padding.</strong> {@code :39} declares
  *       {@code 'USRSEC  '} with two trailing spaces; the bean holds it unpadded because it is used as an
- *       identity on a typed failure and never as a fixed-width field. Severity: <strong>Low</strong>.</li>
+ *       identity on a typed failure and never as a fixed-width field.</li>
  *   </ul>
  *
  * <h2>What is settled here, and what is not</h2>
@@ -317,9 +313,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       decision for the controller and not for a test to invent.</li>
  *   </ul>
  *
- * <p>Every deliberately preserved oddity above is owed an entry in the planned {@code DECISION_LOG.md} and a
- * row in the planned {@code TRACEABILITY_MATRIX.md}; the citations in this file are what those entries will
- * be written from. Three contracts this path touches are deliberately <em>not</em> re-asserted here, because
+ * <p>Every deliberately preserved oddity above carries the locator that proves it, which is what keeps the
+ * explanation next to the code it governs. Three contracts this path touches are deliberately <em>not</em>
+ * re-asserted here, because
  * duplicating them would let the two copies drift:
  * {@code src/test/java/com/cardemo/unit/model/UserUpdateRequestTest.java} owns the map area's twelve-field
  * shape and its declared widths, {@code src/test/java/com/cardemo/unit/model/UserSecurityTest.java} owns the
@@ -681,7 +677,7 @@ class UserUpdateServiceTest {
      * Arranges the read to find the row as stored.
      */
     private void arrangeStoredRow() {
-        when(this.userSecurityRepository.findById(USER_ID)).thenReturn(Optional.of(storedUser()));
+        when(this.userSecurityRepository.findByIdForUpdate(USER_ID)).thenReturn(Optional.of(storedUser()));
     }
 
     /**
@@ -1026,7 +1022,7 @@ class UserUpdateServiceTest {
             final UserUpdateScreen viaPf12 =
                     service.submitScreen(AttentionIdentifier.PF12, unchangedRequest(), null);
 
-            verify(userSecurityRepository).findById(USER_ID);
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             assertThat(viaPf3.navigationTarget()).isEqualTo(viaPf12.navigationTarget());
             assertThat(viaPf3.errorMessage())
                     .as("PF3 ran the whole update path and found nothing changed")
@@ -1083,7 +1079,7 @@ class UserUpdateServiceTest {
                     service.submitScreen(AttentionIdentifier.ENTER, request(USER_ID, null, null, null, null),
                             null);
 
-            verify(userSecurityRepository).findById(USER_ID);
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             verify(userSecurityRepository, never()).saveAndFlush(any(UserSecurity.class));
             assertThat(screen.errorMessage()).isEqualTo(SAVE_HINT_MESSAGE);
             assertThat(screen.messageColour()).isEqualTo(COLOUR_NEUTRAL);
@@ -1219,7 +1215,7 @@ class UserUpdateServiceTest {
 
             final UserUpdateScreen screen = service.openScreen(USER_ID);
 
-            verify(userSecurityRepository).findById(USER_ID);
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             assertThat(screen.userId()).isEqualTo(USER_ID);
             assertThat(screen.firstName()).isEqualTo(STORED_FIRST_NAME);
             assertThat(screen.errorMessage()).isEqualTo(SAVE_HINT_MESSAGE);
@@ -1242,7 +1238,7 @@ class UserUpdateServiceTest {
 
             final UserUpdateScreen screen = service.lookupUser(USER_ID);
 
-            verify(userSecurityRepository).findById(USER_ID);
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             assertThat(screen.errorMessage()).isEqualTo(SAVE_HINT_MESSAGE);
             assertThat(screen.messageColour()).isEqualTo(COLOUR_NEUTRAL);
         }
@@ -1448,15 +1444,45 @@ class UserUpdateServiceTest {
     // =====================================================================================================
 
     /**
-     * The source held the record locked for the whole conversation with {@code EXEC CICS READ ... UPDATE}. A
-     * stateless target cannot, so a caller-supplied snapshot is compared at business level and the provider's
-     * own optimistic failure is caught at store level. Both report the same outcome; the cause distinguishes
-     * them.
+     * The source held the record locked from its read to its rewrite with {@code EXEC CICS READ ... UPDATE}
+     * against a file {@code app/csd/CARDDEMO.CSD:L88-L89} defines {@code UPDATEMODEL(LOCKING)}. Three layers
+     * reproduce that here: the read takes the same exclusive hold through
+     * {@code UserSecurityRepository#findByIdForUpdate}, a caller-supplied snapshot is compared at business level
+     * over the wider window the terminal conversation used to cover, and the provider's own stale-state failure
+     * is caught behind both. The two conflict routes report the same outcome; the cause distinguishes them.
      */
     @Nested
-    @DisplayName("7. Concurrency - a business-level snapshot and a store-level version, both reporting one "
-            + "outcome")
+    @DisplayName("7. Concurrency - a pessimistic write read, a business-level snapshot and the provider's "
+            + "stale-state guard")
     class ConcurrencyGuard {
+
+        @Test
+        @DisplayName("the read holds the row for update, which is the EXEC CICS READ ... UPDATE of :322-328")
+        void theReadHoldsTheRowForUpdate() throws NoSuchMethodException {
+            // Finding, MEDIUM severity, resolved. The read used the unlocked findById and the rewrite followed
+            // it with nothing in between, so two administrators could each read the same row and the second
+            // write would silently discard the first - a lost role change, name change or password digest.
+            final Method lockingFinder =
+                    UserSecurityRepository.class.getDeclaredMethod("findByIdForUpdate", String.class);
+
+            assertThat(lockingFinder.getAnnotation(Lock.class))
+                    .as("the lock must be declared on the finder itself; a @Transactional method acquires "
+                            + "nothing on its own, and the source's guarantee came from the UPDATE option at "
+                            + ":328 rather than from the unit of work")
+                    .isNotNull();
+            assertThat(lockingFinder.getAnnotation(Lock.class).value())
+                    .as("PESSIMISTIC_WRITE is what READ ... UPDATE under UPDATEMODEL(LOCKING) corresponds "
+                            + "to; a read lock would admit a second reader and reintroduce the interleaving")
+                    .isEqualTo(LockModeType.PESSIMISTIC_WRITE);
+
+            arrangeStoredRow();
+            arrangeCredentialMatches();
+
+            service.updateUser(unchangedRequest(), matchingSnapshot());
+
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
+            verify(userSecurityRepository, never()).findById(USER_ID);
+        }
 
         @Test
         @DisplayName("a first name that changed under the caller is refused before any write")
@@ -1808,7 +1834,7 @@ class UserUpdateServiceTest {
         @DisplayName("the confirmation stops at the first space, DELIMITED BY SPACE at :373")
         void theConfirmationStopsAtTheFirstSpace() {
             final String paddedId = "USER1   ";
-            when(userSecurityRepository.findById(paddedId))
+            when(userSecurityRepository.findByIdForUpdate(paddedId))
                     .thenReturn(Optional.of(new UserSecurity(paddedId, STORED_FIRST_NAME, STORED_LAST_NAME,
                             storedDigest(), UserType.USER)));
             when(passwordEncoder.matches(PRESENTED_CREDENTIAL, storedDigest())).thenReturn(true);
@@ -1850,7 +1876,7 @@ class UserUpdateServiceTest {
         @DisplayName("the write goes through the loaded record, so the identifier and version are preserved")
         void theWriteGoesThroughTheLoadedRecord() {
             final UserSecurity loaded = storedUser();
-            when(userSecurityRepository.findById(USER_ID)).thenReturn(Optional.of(loaded));
+            when(userSecurityRepository.findByIdForUpdate(USER_ID)).thenReturn(Optional.of(loaded));
             arrangeCredentialMatches();
             when(userSecurityRepository.saveAndFlush(any(UserSecurity.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
@@ -1878,7 +1904,7 @@ class UserUpdateServiceTest {
         @Test
         @DisplayName("a missing row on the read reports User ID NOT found and names the key")
         void aMissingRowOnTheReadIsReported() {
-            when(userSecurityRepository.findById(USER_ID)).thenReturn(Optional.empty());
+            when(userSecurityRepository.findByIdForUpdate(USER_ID)).thenReturn(Optional.empty());
 
             assertThatExceptionOfType(RecordNotFoundException.class)
                     .isThrownBy(() -> service.updateUser(unchangedRequest(), null))
@@ -1892,7 +1918,7 @@ class UserUpdateServiceTest {
         @Test
         @DisplayName("a missing row on the ENTER path reports the same literal")
         void aMissingRowOnTheEnterPathIsReported() {
-            when(userSecurityRepository.findById(USER_ID)).thenReturn(Optional.empty());
+            when(userSecurityRepository.findByIdForUpdate(USER_ID)).thenReturn(Optional.empty());
 
             assertThatExceptionOfType(RecordNotFoundException.class)
                     .isThrownBy(() -> service.lookupUser(USER_ID))
@@ -1903,7 +1929,7 @@ class UserUpdateServiceTest {
         @DisplayName("an unreadable store reports Unable to lookup User and preserves the cause")
         void anUnreadableStoreIsReported() {
             final QueryTimeoutException timedOut = new QueryTimeoutException("timed out");
-            when(userSecurityRepository.findById(USER_ID)).thenThrow(timedOut);
+            when(userSecurityRepository.findByIdForUpdate(USER_ID)).thenThrow(timedOut);
 
             assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.updateUser(unchangedRequest(), null))
@@ -1986,7 +2012,7 @@ class UserUpdateServiceTest {
             final UserUpdateService withSilentMapper = new UserUpdateService(userSecurityRepository,
                     passwordEncoder, silent, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
             final QueryTimeoutException timedOut = new QueryTimeoutException("timed out");
-            when(userSecurityRepository.findById(USER_ID)).thenThrow(timedOut);
+            when(userSecurityRepository.findByIdForUpdate(USER_ID)).thenThrow(timedOut);
 
             assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> withSilentMapper.lookupUser(USER_ID))
@@ -2249,7 +2275,7 @@ class UserUpdateServiceTest {
             final FileStatusMapper watched = org.mockito.Mockito.spy(new FileStatusMapper());
             final UserUpdateService watchedService = new UserUpdateService(userSecurityRepository,
                     passwordEncoder, watched, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
-            when(userSecurityRepository.findById(USER_ID))
+            when(userSecurityRepository.findByIdForUpdate(USER_ID))
                     .thenThrow(new QueryTimeoutException("timed out"));
 
             assertThatExceptionOfType(CardDemoException.class)
@@ -2570,7 +2596,7 @@ class UserUpdateServiceTest {
         @Test
         @DisplayName("a seven-character identifier is accepted, the field being bounded only from above")
         void aShorterIdentifierIsAccepted() {
-            when(userSecurityRepository.findById(SHORT_USER_ID))
+            when(userSecurityRepository.findByIdForUpdate(SHORT_USER_ID))
                     .thenReturn(Optional.of(new UserSecurity(SHORT_USER_ID, STORED_FIRST_NAME,
                             STORED_LAST_NAME, storedDigest(), UserType.USER)));
 
@@ -2665,7 +2691,7 @@ class UserUpdateServiceTest {
 
             service.lookupUser(USER_ID);
 
-            verify(userSecurityRepository, times(1)).findById(USER_ID);
+            verify(userSecurityRepository, times(1)).findByIdForUpdate(USER_ID);
             verifyNoMoreInteractions(userSecurityRepository);
         }
 
@@ -2680,7 +2706,7 @@ class UserUpdateServiceTest {
                     STORED_USER_TYPE), null);
 
             final InOrder sequence = inOrder(userSecurityRepository);
-            sequence.verify(userSecurityRepository).findById(USER_ID);
+            sequence.verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             sequence.verify(userSecurityRepository).saveAndFlush(any(UserSecurity.class));
             sequence.verifyNoMoreInteractions();
         }
@@ -2688,13 +2714,13 @@ class UserUpdateServiceTest {
         @Test
         @DisplayName("a hostile identifier crosses as a bound parameter, verbatim and unescaped")
         void aHostileIdentifierCrossesAsABoundParameter() {
-            when(userSecurityRepository.findById(HOSTILE_USER_ID)).thenReturn(Optional.empty());
+            when(userSecurityRepository.findByIdForUpdate(HOSTILE_USER_ID)).thenReturn(Optional.empty());
 
             assertThatExceptionOfType(RecordNotFoundException.class)
                     .isThrownBy(() -> service.lookupUser(HOSTILE_USER_ID));
 
             final ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-            verify(userSecurityRepository).findById(key.capture());
+            verify(userSecurityRepository).findByIdForUpdate(key.capture());
             assertThat(key.getValue())
                     .as("the key reaches a derived finder as one bound argument, so relational "
                             + "metacharacters are data and the outcome is an ordinary not-found")

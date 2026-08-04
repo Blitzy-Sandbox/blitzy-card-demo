@@ -3,7 +3,7 @@
  * Program     : ControllerProblemDetailContractTest
  * Application : CardDemo
  * Type        : JUnit 5 unit test
- * Function    : Pins the failure surface of all six REST controllers - which HTTP
+ * Function    : Pins the failure surface of all eight REST controllers - which HTTP
  *               status each typed exception becomes - and the two MenuController
  *               request-mapped methods, including their 401 and 403 refusals.
  * Source      : app/csd/CARDDEMO.CSD (the transaction-to-program map whose screen

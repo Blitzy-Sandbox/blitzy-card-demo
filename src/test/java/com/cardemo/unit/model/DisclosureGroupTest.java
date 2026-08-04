@@ -87,7 +87,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       to the 50 bytes the copybook header comment at {@code :L2} states. {@code app/catlg/LISTCAT.txt:L896}
  *       corroborates it independently with {@code KEYLEN 16} and {@code AVGLRECL 50}. Citing {@code :L896}
  *       precisely matters: two other clusters in the same catalogue also report {@code KEYLEN 16}.</li>
- *   <li><strong>The blank-padded group id, which is a Blocker.</strong>
+ *   <li><strong>The blank-padded group id, which matters.</strong>
  *       {@code app/cbl/CBACT04C.cbl:L415-L440} accepts file status {@code '00'} <em>or</em> {@code '23'} on the
  *       first read and then, at {@code :L437}, executes {@code MOVE 'DEFAULT' TO FD-DIS-ACCT-GROUP-ID} and
  *       retries. The retry at {@code :L443-L458} accepts only {@code '00'} and otherwise abends at
@@ -147,27 +147,27 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><strong>Blocker - the compile fails on this file rather than a test failing.</strong> The build runs
+ *   <li><strong>the compile fails on this file rather than a test failing.</strong> The build runs
  *       {@code -Xlint:all} with {@code -Werror} and {@code failOnWarning} at release 25, and that reaches test
  *       compilation. An unused import, a raw type or a deprecation is a build failure, not a warning.</li>
- *   <li><strong>Blocker - a group id assertion fails.</strong> The column type moved off blank-padded
- *       {@code CHAR(10)}. Remediation: restore it in both the entity's identifier class and
+ *   <li><strong>a group id assertion fails.</strong> The column type moved off blank-padded
+ *       {@code CHAR(10)}. Instead: restore it in both the entity's identifier class and
  *       {@code V1__create_schema.sql} in the same change; {@code VARCHAR(10)} breaks the {@code DEFAULT}
  *       fallback described above.</li>
- *   <li><strong>Blocker - a fixture assertion fails on a record count or a byte count.</strong> The fixture
+ *   <li><strong>a fixture assertion fails on a record count or a byte count.</strong> The fixture
  *       under {@code src/test/resources} has drifted from the frozen copy under {@code app/data/ASCII}. The
  *       frozen copy wins. Note the resource names: the daily transaction fixture is {@code dailytran.txt} and
  *       never {@code dalytran.txt}, which does not exist even though the mainframe DD name is
  *       {@code DALYTRAN}.</li>
- *   <li><strong>High - a precision assertion fails.</strong> The rate was widened. It is {@code NUMERIC(6,2)};
+ *   <li><strong>a precision assertion fails.</strong> The rate was widened. It is {@code NUMERIC(6,2)};
  *       {@code NUMERIC(11,2)} and {@code NUMERIC(12,2)} belong to other entities and are the two likeliest
  *       wrong answers.</li>
- *   <li><strong>High - a zero rate is rejected.</strong> A positivity constraint was added. Measured against
+ *   <li><strong>a zero rate is rejected.</strong> A positivity constraint was added. Measured against
  *       the seed fixture, {@code jakarta.validation.constraints.Positive} on the rate would reject 30 of the
  *       51 seeded rows. An earlier statement of this requirement put the figure at 24, which counts only the
  *       default and zero-APR blocks and omits the six zero-rate rows of the first block; the measured figure
  *       governs and this class asserts it.</li>
- *   <li><strong>Medium - a rate read back does not equal the rate written.</strong> Almost always a
+ *   <li><strong>a rate read back does not equal the rate written.</strong> Almost always a
  *       scale-sensitive comparison. Compare with {@code compareTo}; {@code BigDecimal.equals} also compares
  *       scale, so {@code 15.0} and {@code 15.00} are unequal to it.</li>
  *   </ul>
@@ -540,7 +540,7 @@ final class DisclosureGroupTest {
         @DisplayName("declares NO @Version: this is not one of the four optimistically locked entities")
         void declaresNoVersionAttribute() {
             assertThat(annotationNames(DisclosureGroup.class))
-                    .as("Severity High if added: DISCGRP is read-mostly reference data with no update path")
+                    .as(" DISCGRP is read-mostly reference data with no update path")
                     .doesNotContain(Version.class.getName());
 
             for (final Field field : DisclosureGroup.class.getDeclaredFields()) {
@@ -585,7 +585,7 @@ final class DisclosureGroupTest {
     }
 
     @Nested
-    @DisplayName("Blocker: blank-padded CHAR(10) is what makes the DEFAULT fallback resolve")
+    @DisplayName("blank-padded CHAR(10) is what makes the DEFAULT fallback resolve")
     class ColumnContractAndDefaultFallback {
 
         @Test
@@ -599,7 +599,7 @@ final class DisclosureGroupTest {
                     .isEqualTo(GROUP_ID_WIDTH);
             assertThat(column.nullable()).isFalse();
             assertThat(column.columnDefinition().toLowerCase(Locale.ROOT))
-                    .as("Severity Blocker: bpchar is PostgreSQL's blank-padded CHAR; VARCHAR would keep "
+                    .as(" bpchar is PostgreSQL's blank-padded CHAR; VARCHAR would keep "
                             + "'DEFAULT' and 'DEFAULT   ' apart and the fallback read at CBACT04C.cbl:L444 "
                             + "would find nothing, abending the job at :L458")
                     .isEqualTo("bpchar(" + GROUP_ID_WIDTH + ")")
@@ -725,7 +725,7 @@ final class DisclosureGroupTest {
                             + "layout. MOVE order is immaterial because all three are set before the READ at "
                             + ":L416; the layout at CVTRA02Y.cpy:L6-L8 is what fixes the component order. "
                             + "Interchanging the type and category values yields a different key, which is "
-                            + "why a reordering is silent rather than loud. Severity High.")
+                            + "why a reordering is silent rather than loud.")
                     .isNotEqualTo(new DisclosureGroupId(FIRST_BLOCK_GROUP, "01", 7));
         }
     }
@@ -744,7 +744,7 @@ final class DisclosureGroupTest {
                     .as("the source field is fixed width and always carries a value")
                     .isFalse();
             assertThat(column.precision())
-                    .as("Severity High if widened: NUMERIC(11,2) and NUMERIC(12,2) are OTHER entities' tiers")
+                    .as(" NUMERIC(11,2) and NUMERIC(12,2) are OTHER entities' tiers")
                     .isEqualTo(RATE_PRECISION);
             assertThat(column.scale())
                     .as("the V99 of DIS-INT-RATE at CVTRA02Y.cpy:L9")
@@ -844,7 +844,7 @@ final class DisclosureGroupTest {
             }
 
             assertThat(validation)
-                    .as("Severity High: @Positive, @Min(1) or a magnitude normalisation would reject every "
+                    .as(" @Positive, @Min(1) or a magnitude normalisation would reject every "
                             + "zero-rate seed row and change which accounts accrue interest")
                     .isEmpty();
             assertThat(countZeroRateRows(discgrp()))
@@ -892,7 +892,7 @@ final class DisclosureGroupTest {
             for (final String name : staticFields) {
                 final Field field = declaredField(DisclosureGroup.class, name);
                 assertThat(Modifier.isFinal(field.getModifiers()))
-                        .as("Severity High: a non-final static field is exactly where a memoised 'last rate' "
+                        .as(" a non-final static field is exactly where a memoised 'last rate' "
                                 + "would live, and CBACT04C leaves the previous record in place on an "
                                 + "invalid key, so a cache here would apply one group's rate to another")
                         .isTrue();
@@ -930,7 +930,7 @@ final class DisclosureGroupTest {
             final DisclosureGroup unpopulated = noArgument.newInstance();
 
             assertThat(unpopulated.getInterestRate())
-                    .as("Severity High: a default of zero would be indistinguishable from one of the 30 "
+                    .as(" a default of zero would be indistinguishable from one of the 30 "
                             + "legitimate zero rates in the seed fixture")
                     .isNull();
             assertThat(unpopulated.getId())
@@ -1130,7 +1130,7 @@ final class DisclosureGroupTest {
             }
 
             assertThat(defaultPairs)
-                    .as("Severity Medium if a test prunes the block: the retry at CBACT04C.cbl:L444 accepts "
+                    .as(" the retry at CBACT04C.cbl:L444 accepts "
                             + "only file status '00', so a missing default row abends at :L458")
                     .containsExactlyElementsOf(DEFAULT_BLOCK_PAIRS)
                     .doesNotHaveDuplicates()
@@ -1202,7 +1202,7 @@ final class DisclosureGroupTest {
     }
 
     @Nested
-    @DisplayName("Blocker: overpunch decoding is position aware, driven only by the picture clause")
+    @DisplayName("overpunch decoding is position aware, driven only by the picture clause")
     class OverpunchDecoding {
 
         @Test
@@ -1269,7 +1269,7 @@ final class DisclosureGroupTest {
             assertThat(FixtureLoader.decodeZonedDecimal("000000000A", RATE_SCALE))
                     .as("at the sign position A carries +1, which is exactly why applying the overpunch "
                             + "table globally would corrupt the group id A000000000 into a signed number. "
-                            + "Severity Blocker if the substitution is global rather than position aware.")
+                            + "")
                     .isEqualByComparingTo(new BigDecimal("0.01"));
             assertThat(FixtureLoader.decodeZonedDecimal("00150" + POSITIVE_ZERO_OVERPUNCH, RATE_SCALE))
                     .as("the same table applied at the picture-derived offset is correct")
@@ -1338,7 +1338,7 @@ final class DisclosureGroupTest {
             }
 
             assertThat(uncovered)
-                    .as("Severity Blocker if a 010005 DEFAULT row is added: that is fabrication. "
+                    .as("adding a 010005 DEFAULT row would fabricate data. "
                             + "app/cbl/CBACT04C.cbl:L482-L483 moves '01' to TRAN-TYPE-CD and '05' to "
                             + "TRAN-CAT-CD when WRITING the generated interest transaction, so this pair is "
                             + "an output classification and never an input rate lookup. The 17-versus-18 "

@@ -15,8 +15,8 @@
  *               COCRDUP, app/cpy-bms/COCRDUP.CPY:54-120 (17 input
  *               fields, including EXPDAYI which COCRDSL lacks)
  *               @ 7756d89
- * Source      : app/cpy/CVACT02Y.cpy:L18 (CARD-NUM PIC X(16)),
- *               :L20 (CARD-CVV-CD PIC X(03) - never emitted)
+ * Source      : app/cpy/CVACT02Y.cpy:L5 (CARD-NUM PIC X(16)),
+ *               :L7 (CARD-CVV-CD PIC 9(03) - never emitted)
  *               @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -56,7 +56,7 @@ import java.util.Objects;
  *   <li><b>The full card number.</b> {@link #maskedCardNumber} carries the {@link ApiMasking} rendering and
  *       nothing else. There is no component, accessor or serialised property anywhere on this type from
  *       which the full sixteen digits can be recovered.</li>
- *   <li><b>The card verification value.</b> {@code CARD-CVV-CD} at {@code app/cpy/CVACT02Y.cpy:L20} is
+ *   <li><b>The card verification value.</b> {@code CARD-CVV-CD} at {@code app/cpy/CVACT02Y.cpy:L7} is
  *       authentication data. No symbolic map declares it and {@code app/cbl/COCRDUPC.cbl:L1108-L1112} sends
  *       the old embossed name, status and expiry components back to the screen without it, so the source
  *       never displayed it and neither does this. It travels only inside {@link #snapshotToken}, sealed.</li>

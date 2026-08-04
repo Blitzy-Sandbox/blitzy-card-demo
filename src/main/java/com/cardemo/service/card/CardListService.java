@@ -81,8 +81,11 @@ import com.cardemo.repository.CardRepository;
  * <ul>
  *   <li>{@code ./mvnw -B -ntp clean compile} - compiles this file under the zero-warning gate.</li>
  *   <li>{@code ./mvnw -B -ntp test} - runs the unit tier.</li>
- *   <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} - the full gate. Note the
- *       skip property is hyphenated.</li>
+ *   <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} - fast local verification, which
+ *       runs the compiler, doclint, test and coverage checks but <strong>does not</strong> satisfy the
+ *       zero-warning build gate, because the skip suppresses the vulnerability scan and a skipped scan is
+ *       never evidence that the scan passes. Note the skip property is hyphenated.</li>
+ *   <li>{@code ./mvnw -B -ntp clean verify} - the full gate, online and with nothing skipped.</li>
  *   </ul>
  * <p>Where a host toolchain is absent, the pinned container
  * {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -B -ntp -q -e verify}

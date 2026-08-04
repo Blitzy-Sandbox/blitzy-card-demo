@@ -162,6 +162,120 @@ final class CorrelationPropagationTest {
                 .getOrDefault(CorrelationIdFilter.CORRELATION_ID_HEADER, List.of());
     }
 
+    /**
+     * Reads the W3C trace-context header from a request.
+     *
+     * @param request the request to inspect
+     * @return the header values, empty when the header is absent
+     */
+    private static List<String> traceParentHeader(final SdkHttpRequest request) {
+        return request.headers()
+                .getOrDefault(CorrelationIdFilter.TRACE_PARENT_HEADER, List.of());
+    }
+
+    /**
+     * Interoperable trace context, finding M-07.
+     *
+     * <p>The correlation header names an identifier only this repository knows how to read, so on its own it
+     * correlated <em>logs</em> across the process boundary without establishing trace <em>parentage</em>
+     * anywhere: a downstream receiving it starts a fresh, unparented trace. These tests pin the standard header
+     * that every OpenTelemetry and Micrometer Tracing consumer extracts unprompted.
+     */
+    @Nested
+    @DisplayName("W3C trace context reaches the wire alongside the correlation identifier")
+    final class TraceContextIsPropagated {
+
+        /** Sole constructor, invoked by the test framework. This group holds no state. */
+        TraceContextIsPropagated() {
+            // Intentionally empty.
+        }
+
+        @Test
+        @DisplayName("the trace identity in the diagnostic context becomes a traceparent header")
+        void traceIdentityBecomesATraceParentHeader() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_ID, "4bf92f3577b34da6a3ce929d0e0e4736");
+            MDC.put(CorrelationIdFilter.MDC_KEY_SPAN_ID, "00f067aa0ba902b7");
+
+            assertThat(traceParentHeader(intercept(outboundRequest("s3.localhost.localstack.cloud", "/b/k"))))
+                    .as("version 00, the trace identifier, the span identifier as the parent field and the "
+                            + "sampled flag - the specification's own example values, composed by the one "
+                            + "owner of the rule")
+                    .containsExactly("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+        }
+
+        @Test
+        @DisplayName("a 64-bit trace identifier is left-padded to the 128-bit field the standard requires")
+        void compactTraceIdentifierIsPadded() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_ID, "a3ce929d0e0e4736");
+            MDC.put(CorrelationIdFilter.MDC_KEY_SPAN_ID, "00f067aa0ba902b7");
+
+            assertThat(traceParentHeader(intercept(outboundRequest("sqs.localhost.localstack.cloud", "/q"))))
+                    .as("some tracing bridges report a 64-bit trace identifier; the specification's own "
+                            + "conversion is a zero left-pad, not a rejection")
+                    .containsExactly("00-0000000000000000a3ce929d0e0e4736-00f067aa0ba902b7-01");
+        }
+
+        @Test
+        @DisplayName("the two headers are independent: either may travel without the other")
+        void theTwoHeadersAreIndependent() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_CORRELATION_ID, CORRELATION_ID);
+
+            final SdkHttpRequest correlationOnly =
+                    intercept(outboundRequest("sns.localhost.localstack.cloud", "/t"));
+
+            assertThat(correlationHeader(correlationOnly)).containsExactly(CORRELATION_ID);
+            assertThat(traceParentHeader(correlationOnly))
+                    .as("tracing may not be configured at all, and that must not suppress the correlation "
+                            + "identifier")
+                    .isEmpty();
+
+            MDC.clear();
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_ID, "4bf92f3577b34da6a3ce929d0e0e4736");
+            MDC.put(CorrelationIdFilter.MDC_KEY_SPAN_ID, "00f067aa0ba902b7");
+
+            final SdkHttpRequest traceOnly = intercept(outboundRequest("s3.localhost.localstack.cloud", "/b"));
+
+            assertThat(traceParentHeader(traceOnly)).hasSize(1);
+            assertThat(correlationHeader(traceOnly))
+                    .as("batch work never passes through the servlet filter, so it carries trace context and "
+                            + "no correlation identifier - which must still propagate")
+                    .isEmpty();
+        }
+
+        @ParameterizedTest(name = "no header for trace=[{0}]")
+        @ValueSource(strings = {
+            "not-hex",
+            "4BF92F3577B34DA6A3CE929D0E0E4736",
+            "00000000000000000000000000000000",
+            "4bf92f3577b34da",
+            "4bf92f3577b34da6a3ce929d0e0e47361",
+        })
+        @DisplayName("an unusable trace identifier produces no header rather than a malformed one")
+        void anUnusableTraceIdentifierProducesNoHeader(final String hostile) {
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_ID, hostile);
+            MDC.put(CorrelationIdFilter.MDC_KEY_SPAN_ID, "00f067aa0ba902b7");
+
+            assertThat(traceParentHeader(intercept(outboundRequest("s3.localhost.localstack.cloud", "/b"))))
+                    .as("a malformed traceparent is worse than an absent one: a consumer that accepts it "
+                            + "records parentage onto a trace that does not exist. [%s] must be dropped, "
+                            + "never repaired - uppercase included, since the field is defined lowercase; an "
+                            + "all-zero field is invalid by definition; and a width that is neither 16 nor 32 "
+                            + "cannot be padded to either", hostile)
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("an absent span identifier produces no header, a trace alone being unusable")
+        void anAbsentSpanIdentifierProducesNoHeader() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_ID, "4bf92f3577b34da6a3ce929d0e0e4736");
+
+            assertThat(traceParentHeader(intercept(outboundRequest("s3.localhost.localstack.cloud", "/b"))))
+                    .as("the parent field is not optional in the standard, so a trace identifier with no "
+                            + "span to parent onto carries nothing")
+                    .isEmpty();
+        }
+    }
+
     /** The identifier reaches the wire. */
     @Nested
     @DisplayName("a well-formed identifier reaches the wire")

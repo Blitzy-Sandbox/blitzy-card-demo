@@ -126,14 +126,17 @@
 #     ./mvnw -B -ntp clean verify
 #
 # Container image: `docker compose up --build` is the documented one-shot
-# form, but note that the committed docker-compose.yml provisions the five
-# SUBSTRATE services only and declares no application service, so
-# `--build` has nothing of this application to build. Build the image
-# directly with `docker build -t carddemo:local .` and run it with
-# SPRING_PROFILES_ACTIVE=local plus --network on the Compose network; in
-# that case override POSTGRES_HOST to `postgres` and AWS_ENDPOINT_URL to
+# form and it works as documented. The committed docker-compose.yml declares
+# an `app` service alongside the five substrate services, building from this
+# repository root against the committed Dockerfile and pinning
+# SPRING_PROFILES_ACTIVE=local, so `--build` builds this application. An
+# earlier revision of this paragraph recorded the file as provisioning
+# substrate services only, with nothing of this application to build; that
+# was true when written and is withdrawn. Building by hand with
+# `docker build -t carddemo:local .` remains available, and in that case
+# override POSTGRES_HOST to `postgres` and AWS_ENDPOINT_URL to
 # `http://carddemo-localstack:4566`, because `localhost` inside a container
-# is the container itself. Recorded as a LOW discrepancy below.
+# is the container itself - the `app` service already sets both.
 #
 # Parallel clones must export CLONE_INDEX before `docker compose up`, or
 # two clones will contend for host ports 5432, 4566, 4318, 9090 and 3000.
@@ -339,15 +342,15 @@
 #     The code is correct and this file follows the code. Out of scope: that
 #     file is root-owned and its behaviour is right. Remediation belongs
 #     there - correct the comment block to match lines 529-533.
-#   * LOW - `docker compose up --build` builds no application image. The
-#     committed docker-compose.yml declares the five substrate services only
-#     and no application service, so there is no build context for this
-#     application and no service that would set SPRING_PROFILES_ACTIVE.
-#     Nothing in this file depends on such a service existing. Remediation:
-#     run the application on the host as shown above, or add an application
-#     service to docker-compose.yml - in which case override POSTGRES_HOST
-#     to `postgres` and AWS_ENDPOINT_URL to `http://carddemo-localstack:4566`
-#     for the in-network case.
+#   * WITHDRAWN 4 August 2026 - `docker compose up --build` builds no
+#     application image. This was recorded as a LOW discrepancy on the ground
+#     that docker-compose.yml declared the five substrate services only. It
+#     now declares an `app` service that builds from this repository root and
+#     sets SPRING_PROFILES_ACTIVE=local, POSTGRES_HOST=postgres and
+#     AWS_ENDPOINT_URL=http://carddemo-localstack:4566 for the in-network
+#     case, which is exactly the remediation the entry asked for. Nothing in
+#     this file ever depended on that service existing, so no property here
+#     changes with it.
 #   * RESOLVED - two composed variables can still supersede keys this file
 #     sets, but the template no longer ships them. SPRING_DATASOURCE_URL,
 #     _USERNAME and _PASSWORD bind spring.datasource.url, .username and
@@ -764,8 +767,10 @@ logging:
 #   object versions.
 #   SQS: exactly one queue, logical carddemo-report-jobs resolved to
 #   physical carddemo-report-jobs.fifo, attributes FifoQueue=true and
-#   ContentBasedDeduplication=true. The full URL is withheld here,
-#   matching the convention localstack-init/init-aws.sh already follows.
+#   ContentBasedDeduplication=false - the latter is what finding H-08
+#   requires provisioning to establish, and init-aws.sh converges an
+#   existing queue onto it. The full URL is withheld here, matching the
+#   convention localstack-init/init-aws.sh already follows.
 #   SNS: exactly one topic, carddemo-notifications, 0 subscriptions.
 #
 # ---- No-live-AWS proof, the safety property ----------------------
@@ -842,9 +847,11 @@ logging:
 #   4318 rather than a Jaeger-native protocol, which is precisely what
 #   validates the endpoint value above.
 #   Prometheus reports its own scrape target UP and both application
-#   targets DOWN with connection refused and DNS no-such-host. That is
-#   the correct state while no application process is listening, not a
-#   configuration fault, and neither target is configured by this file.
+#   targets DOWN with connection refused and DNS no-such-host. That was
+#   measured with no application process listening, which is the correct
+#   state for that condition rather than a configuration fault; with the
+#   `app` service up the container target resolves and reports UP. Neither
+#   target is configured by this file.
 #   Grafana carries two file-provisioned datasources, Prometheus
 #   (default) and Jaeger, both readOnly, plus one dashboard. All of it
 #   is owned by observability/ and docker-compose.yml, not by this file.

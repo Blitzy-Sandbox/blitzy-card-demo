@@ -93,6 +93,11 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.awssdk.http.SdkHttpRequest;
 import software.amazon.awssdk.services.s3.model.ListBucketsRequest;
+import software.amazon.awssdk.services.sns.model.PublishRequest;
+import software.amazon.awssdk.services.sns.model.SubscribeRequest;
+import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
+import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
+import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 
 /**
  * Proves that the correlation identifier - the Java replacement for the CICS per-request thread of identity -
@@ -113,8 +118,8 @@ import software.amazon.awssdk.services.s3.model.ListBucketsRequest;
  * {@code PROGRAM(COCRDSEC)}, having no source anywhere in the repository.
  *
  * <p>Everything asserted here is therefore <strong>new capability</strong> mandated by Rule 1 Clause A's
- * observability requirement, never behaviour preserved for parity: the entire telemetry surface of 19,254 lines
- * of COBOL is 322 {@code DISPLAY} statements, and a search of {@code app/} for any metrics, tracing, health or
+ * observability requirement, never behaviour preserved for parity: the entire telemetry surface of the COBOL
+ * corpus is {@code DISPLAY} to SYSOUT, and a search of {@code app/} for any metrics, tracing, health or
  * actuator vocabulary returns nothing. The one legacy emission this class does protect is the rendering of
  * {@code 9910-DISPLAY-IO-STATUS} at {@code app/cbl/CBTRN02C.cbl:714-727}: both branches, at {@code :721} and
  * {@code :725}, execute {@code DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04}, and {@code IO-STATUS-04} is
@@ -123,29 +128,29 @@ import software.amazon.awssdk.services.s3.model.ListBucketsRequest;
  * status {@code '23'} renders {@code FILE STATUS IS: NNNN0023}. The stray {@code NNNN} is a preserved legacy
  * quirk; this class asserts that the logging pipeline emits it verbatim and unmasked.
  *
- * <p><strong>{@code EIBTRNID}: Not available. Severity Medium.</strong> The construct this filter replaces
+ * <p><strong>{@code EIBTRNID}: Not available.</strong> The construct this filter replaces
  * cannot be cited, and no locator for it is invented here. A census across the whole repository returns zero
  * occurrences of {@code EIBTRNID}; the complete exec-interface-block census in {@code app/cbl} is
  * {@code EIBCALEN} forty-nine times and {@code EIBAID} sixteen times, with no {@code EIBDATE},
  * {@code EIBTIME} or {@code EIBTRNID} anywhere. <em>What is needed:</em> the CICS-supplied exec-interface-block
- * copybook, which the transaction monitor provides and which is not part of this repository. <em>Remediation:</em>
- * cite the five real anchors named above instead, which is what this class and its banner do.
+ * copybook, which the transaction monitor provides and which is not part of this repository. This class and its
+ * banner therefore cite the five real anchors named above instead.
  *
  * <p>Two further mandatory disclosures, recorded here because this class is in the evidence path for both:
  *
  * <ul>
- *   <li><strong>The end-to-end parity baseline is Not available. Severity Medium.</strong> An exhaustive search
+ *   <li><strong>The end-to-end parity baseline is Not available.</strong> An exhaustive search
  *       for {@code expected}, {@code baseline}, {@code golden}, {@code .out}, {@code sysout},
  *       {@code DALYREJS}, {@code TRANREPT}, {@code STMTFILE} and {@code HTMLFILE} artefacts returns dataset
  *       <em>definition</em> job control only and zero captured data. <em>What is needed:</em> a captured
  *       {@code DALYREJS} 430-byte reject dataset plus the resulting {@code TRANSACT}, {@code ACCTDATA} and
- *       {@code TCATBALF} images from a real {@code POSTTRAN} run at a known input state. <em>Remediation:</em>
- *       create no baseline file and fabricate no expected bytes - a baseline produced by running this Java
- *       implementation would be circular and is forbidden. This class asserts no parity baseline.</li>
- *   <li><strong>File status {@code '35'}, file unavailable, is Not available. Severity Medium.</strong> The
+ *       {@code TCATBALF} images from a real {@code POSTTRAN} run at a known input state. No baseline file is
+ *       created and no expected bytes are fabricated - a baseline produced by running this Java implementation
+ *       would be circular - so this class asserts no parity baseline.</li>
+ *   <li><strong>File status {@code '35'}, file unavailable, is Not available.</strong> The
  *       census across {@code app/cbl} finds the literal {@code '35'} zero times and
- *       {@code DFHRESP(NOTOPEN)} zero times. <em>What is needed:</em> a source occurrence to translate.
- *       <em>Remediation:</em> invent no test for it; nothing here asserts that path.</li>
+ *       {@code DFHRESP(NOTOPEN)} zero times. <em>What is needed:</em> a source occurrence to translate; until
+ *       there is one, nothing here asserts that path.</li>
  * </ul>
  *
  * <h2>2. How to run, build and test</h2>
@@ -192,32 +197,28 @@ import software.amazon.awssdk.services.s3.model.ListBucketsRequest;
  * <ul>
  *   <li><strong>No Docker socket.</strong> Container startup fails in the harness with an explicit message.
  *       Start a daemon; there is no in-memory substitute.</li>
- *   <li><strong>Testcontainers coordinate trap. Severity Blocker.</strong> At 2.0.3 the module artefacts were
+ *   <li><strong>The Testcontainers coordinate trap.</strong> At 2.0.3 the module artefacts were
  *       renamed, so the bare {@code postgresql}, {@code localstack} and {@code junit-jupiter} identifiers under
- *       {@code org.testcontainers} do not exist. <em>Remediation, both halves required:</em> override the
+ *       {@code org.testcontainers} do not exist. <em>Both halves of the remedy are required:</em> override the
  *       managed version through a property rather than importing a second bill of materials, and use only the
  *       prefixed coordinates {@code testcontainers}, {@code testcontainers-postgresql},
  *       {@code testcontainers-localstack} and {@code testcontainers-junit-jupiter}. The root
  *       {@code pom.xml} already does both and is not this file's to edit.</li>
  *   <li><strong>An unused import, a raw type or a redundant cast fails the build,</strong> because compilation
  *       runs with {@code -Xlint:all -Werror} and {@code failOnWarning}.</li>
- *   <li><strong>A diagnostic-context key spelling drift. Severity High.</strong> The JSON field empties with no
+ *   <li><strong>A diagnostic-context key spelling drift.</strong> The JSON field empties with no
  *       error and no output. The assertions here pin all four spellings against the published constants.</li>
  *   <li><strong>A doubly-registered filter</strong> emits two response header values, because a bean
  *       implementing the servlet filter interface auto-registers into the chain and a security configuration
  *       may add it again. The base class is the once-per-request filter and the header is set rather than
  *       added; both are asserted.</li>
- *   <li><strong>A missing {@code finally}. Severity Blocker.</strong> A pooled thread then leaks one request's
+ *   <li><strong>A missing {@code finally}.</strong> A pooled thread then leaks one request's
  *       identifier into the next request's log records. Asserted directly, and again as an absence of bleed
  *       between two requests carrying different identifiers.</li>
- *   <li><strong>A context that will not start for want of a signing key. Severity High</strong> against
- *       {@code src/main/resources/application-test.yml}, which is owned elsewhere: the harness registers a
- *       non-secret test value dynamically, so this tier starts. Report it, never patch it here.</li>
- *   <li><strong>Four verified prior-run open defects, all Severity High and all closed root-side:</strong> a
- *       hardcoded signing key, an absent production profile, an absent continuous-integration workflow and an
- *       unexecuted vulnerability scan. <strong>Severity Low, out of scope:</strong> the inaccurate service type
- *       in {@code catalog-info.yaml} and the {@code //OEPNFIL} job-name typo at
- *       {@code app/jcl/OPENFIL.jcl:L1}.</li>
+ *   <li><strong>A context that will not start for want of a signing key.</strong> The cause is
+ *       {@code src/main/resources/application-test.yml}, which is owned elsewhere and supplies no test value:
+ *       the harness registers a non-secret one dynamically, so this tier starts. Report it, never patch it
+ *       here.</li>
  * </ul>
  *
  * <p>One concern per class, as Rule 1 Clause A requires: correlation-identifier lifecycle and outbound
@@ -410,6 +411,24 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
 
     /** The payload of the outbound object-store probe, small and fixed. */
     private static final String OBJECT_PROBE_PAYLOAD = "correlation-propagation-probe";
+
+    /**
+     * The payload published to the notification topic and asserted on the far side of a real subscription.
+     *
+     * <p>Distinct from {@link #OBJECT_PROBE_PAYLOAD} so that a delivery assertion cannot pass on the other
+     * probe's content, which would be possible if both wrote the same bytes into the same emulator.
+     */
+    private static final String NOTIFICATION_PROBE_PAYLOAD = "carddemo-notification-delivery-probe";
+
+    /**
+     * Seconds to long-poll the subscribed sink for the published notification.
+     *
+     * <p>Long polling rather than an immediate receive: delivery through a topic to a queue is asynchronous,
+     * so a zero-wait receive would be racing it. Polling makes the test sensitive to whether the message
+     * arrives rather than to how quickly, and the wait is bounded so a message that never arrives fails
+     * rather than hangs.
+     */
+    private static final int NOTIFICATION_POLL_SECONDS = 20;
 
     // =================================================================================================
     // Collaborators. Injected, never constructed: com.cardemo.config.AwsConfig owns the cloud clients and
@@ -841,7 +860,7 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
             assertThat(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)
                     .as("logback-spring.xml reads %s literally through a pattern provider whose default yields "
                             + "an empty string, so a rename empties the JSON field with no error and no "
-                            + "output rather than failing. Severity High", MDC_KEY_CORRELATION_ID)
+                            + "output rather than failing", MDC_KEY_CORRELATION_ID)
                     .isEqualTo(MDC_KEY_CORRELATION_ID);
             assertThat(CorrelationIdFilter.MDC_KEY_TRACE_ID).isEqualTo(MDC_KEY_TRACE_ID);
             assertThat(CorrelationIdFilter.MDC_KEY_SPAN_ID).isEqualTo(MDC_KEY_SPAN_ID);
@@ -1377,15 +1396,110 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
             return sqsAsyncClient().serviceClientConfiguration().overrideConfiguration().executionInterceptors();
         }
 
+        /**
+         * Reads the interceptors the injected notification client carries.
+         *
+         * <p>Added with the finding below. The notification client is configured by the same customiser as
+         * the other two, but "configured by the same code" is not the same claim as "carries the
+         * interceptor", and only the second one is what a correlated notification depends on.
+         *
+         * @return the registered interceptors
+         */
+        private List<ExecutionInterceptor> notificationInterceptors() {
+            return snsClient().serviceClientConfiguration().overrideConfiguration().executionInterceptors();
+        }
+
         @Test
-        @DisplayName("the correlation interceptor is registered on both the object-store and the queue client")
-        void theInterceptorIsRegisteredOnBothClients() {
+        @DisplayName("the correlation interceptor is registered on all three clients, notification included")
+        void theInterceptorIsRegisteredOnAllThreeClients() {
             assertThat(correlationInterceptorOf(objectStoreInterceptors(), "object-store client"))
                     .as("registration is what makes propagation happen on a real call; the behaviour asserted "
                             + "below would be unreachable without it")
                     .isNotNull();
             assertThat(correlationInterceptorOf(queueInterceptors(), "queue client"))
                     .isNotNull();
+
+            // FINDING, SEVERITY MEDIUM - raised against this file and remediated here. This suite asserted
+            // propagation onto the object-store and queue clients and said nothing at all about the
+            // notification client, which is the third client the same customiser configures and the one
+            // that carries operator notification. An unregistered interceptor there would have left every
+            // notification uncorrelated - the single hardest kind of message to trace back to its cause,
+            // because a notification is precisely what somebody reads when something has gone wrong - and
+            // no test in the tier would have failed.
+            assertThat(correlationInterceptorOf(notificationInterceptors(), "notification client"))
+                    .as("operator notification is the one outbound path whose whole purpose is to be read "
+                            + "by a human during an incident, so it is the path where a missing correlation "
+                            + "identifier costs the most")
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("a real notification reaches a genuinely subscribed sink, carrying its payload intact")
+        void aRealNotificationReachesASubscribedSink() {
+            // A publish that resolves a message identifier proves only that the topic accepted it. A topic
+            // with no subscription accepts and discards, and the call still succeeds - so acceptance is not
+            // delivery. This subscribes a real queue and reads the message back out of it, which is the
+            // only assertion that distinguishes the two.
+            final String topicArn = createNotificationTopic(scopedResourceName("notify"));
+            final String queueUrl = createStandardQueue(scopedResourceName("notify-sink"));
+            try {
+                final String queueArn = await(sqsAsyncClient().getQueueAttributes(
+                                GetQueueAttributesRequest.builder()
+                                        .queueUrl(queueUrl)
+                                        .attributeNames(QueueAttributeName.QUEUE_ARN)
+                                        .build()),
+                        "read the sink queue's ARN")
+                        .attributes()
+                        .get(QueueAttributeName.QUEUE_ARN);
+
+                snsClient().subscribe(SubscribeRequest.builder()
+                        .topicArn(topicArn)
+                        .protocol("sqs")
+                        .endpoint(queueArn)
+                        // Raw delivery, so the body is the published payload rather than the service's own
+                        // JSON envelope. The assertion below is about the payload, and an envelope would
+                        // make it pass on a substring of metadata instead.
+                        .attributes(Map.of("RawMessageDelivery", "true"))
+                        .returnSubscriptionArn(true)
+                        .build());
+
+                final String previous = CorrelationIdFilter.propagate(OUTBOUND_ID);
+                try {
+                    snsClient().publish(PublishRequest.builder()
+                            .topicArn(topicArn)
+                            .subject("carddemo-notification-probe")
+                            .message(NOTIFICATION_PROBE_PAYLOAD)
+                            .build());
+                } finally {
+                    CorrelationIdFilter.propagate(previous);
+                }
+
+                final List<software.amazon.awssdk.services.sqs.model.Message> delivered =
+                        await(sqsAsyncClient().receiveMessage(
+                                ReceiveMessageRequest.builder()
+                                        .queueUrl(queueUrl)
+                                        .maxNumberOfMessages(1)
+                                        // Long poll, so delivery is awaited rather than raced. A zero-wait
+                                        // receive would make this test flaky on timing rather than
+                                        // sensitive to the property it is asserting.
+                                        .waitTimeSeconds(NOTIFICATION_POLL_SECONDS)
+                                        .build()),
+                        "receive the notification from the subscribed sink")
+                        .messages();
+
+                assertThat(delivered)
+                        .as("exactly one notification must arrive. Zero would mean the publish was accepted "
+                                + "and dropped, which is what an unsubscribed topic does and what a "
+                                + "publish-only assertion cannot tell apart from success")
+                        .hasSize(1);
+                assertThat(delivered.get(0).body())
+                        .as("and the payload must arrive unaltered, because a notification that is delivered "
+                                + "but rewritten is not the notification that was sent")
+                        .isEqualTo(NOTIFICATION_PROBE_PAYLOAD);
+            } finally {
+                deleteQueue(queueUrl);
+                deleteNotificationTopic(topicArn);
+            }
         }
 
         @Test
@@ -1499,11 +1613,22 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
                         .isPresent();
                 assertThat(headerValueOf(delivered.orElseThrow(), CORRELATION_ID_HEADER))
                         .isEqualTo(OUTBOUND_ID);
+                // Finding M-07, severity Medium. The bespoke X-Trace-Id and X-Span-Id pair asserted here named
+                // the identifiers without establishing parentage: nothing outside this repository knows to read
+                // them, so a consumer started a fresh unparented trace and the submission-to-batch hop was
+                // exactly the one that could not be reconstructed. W3C trace context is what every
+                // OpenTelemetry and Micrometer Tracing consumer extracts unprompted.
                 assertThat(delivered.orElseThrow().getHeaders())
-                        .as("the publish also carries its own trace and span identifiers, so a consumer can "
-                                + "parent onto the publish hop rather than onto the request span containing it")
-                        .containsKey("X-Trace-Id")
-                        .containsKey("X-Span-Id");
+                        .as("the publish also carries interoperable W3C trace context, so a consumer parents "
+                                + "onto the publish hop rather than onto the request span containing it")
+                        .containsKey(CorrelationIdFilter.TRACE_PARENT_HEADER)
+                        .doesNotContainKey("X-Trace-Id")
+                        .doesNotContainKey("X-Span-Id");
+                assertThat(String.valueOf(
+                        delivered.orElseThrow().getHeaders().get(CorrelationIdFilter.TRACE_PARENT_HEADER)))
+                        .as("version 00, a 32-character trace identifier, a 16-character parent identifier and "
+                                + "the sampled flag, lowercase hexadecimal throughout")
+                        .matches("00-[0-9a-f]{32}-[0-9a-f]{16}-01");
 
                 assertThat(correlationIdsOf(captured))
                         .as("the production records emitted around the publish carry the same identifier, and "
@@ -1543,7 +1668,7 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
             assertThat(encoded)
                     .as("the field is what makes a log record joinable to a request, a span and an object key. "
                             + "A key-spelling drift on either side empties it with no error and no output, "
-                            + "which is why the spellings are pinned as well as the value. Severity High")
+                            + "which is why the spellings are pinned as well as the value")
                     .containsPattern("\"" + MDC_KEY_CORRELATION_ID + "\"\\s*:\\s*\""
                             + Pattern.quote(SUPPLIED_ID) + "\"");
         }
@@ -1598,8 +1723,7 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
                             + "IO-STATUS-04, and the literal already carries the placeholder text, so status "
                             + "'23' renders with the stray NNNN in front of the four digits. The stray text is "
                             + "a preserved legacy quirk and is never fixed: reformatting, wrapping, truncating "
-                            + "or masking it would change output a parity comparison is measured against. "
-                            + "Severity Blocker")
+                            + "or masking it would change output a parity comparison is measured against")
                     .contains(PARITY_FILE_STATUS_LINE)
                     .doesNotContain(REDACTION)
                     .doesNotContain(REDACTION_SSN);
@@ -1655,4 +1779,3 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
         }
     }
 }
-

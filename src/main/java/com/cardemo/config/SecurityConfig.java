@@ -41,6 +41,16 @@ package com.cardemo.config;
 import com.cardemo.security.JwtAuthenticationFilter;
 import com.cardemo.security.JwtTokenProvider;
 import jakarta.servlet.DispatcherType;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ReadListener;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletInputStream;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequestWrapper;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Locale;
@@ -49,7 +59,12 @@ import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.authentication.ProviderManager;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -57,17 +72,22 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.web.BearerTokenAuthenticationEntryPoint;
 import org.springframework.security.oauth2.server.resource.web.access.BearerTokenAccessDeniedHandler;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
 import org.springframework.security.web.header.HeaderWriterFilter;
 import org.springframework.security.web.savedrequest.NullRequestCache;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
  * The application's single security policy: a stateless bearer-token filter chain, deny-by-default
@@ -131,7 +151,15 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *       pinned.</li>
  *   <li><strong>No actuator exposure list.</strong> Which management endpoints exist is owned by
  *       {@code src/main/resources/application.yml}; this class only decides who may reach the ones that do.
- *       The two decisions are related but distinct, and restating the list here would let the pair drift.</li>
+ *       The two decisions are related but distinct, and restating the list here would let the pair drift.
+ *       Exposure is not access: all three exposed endpoints exist, and exactly one of them - the metrics
+ *       scrape - requires a credential.</li>
+ *   <li><strong>No second {@code UserDetailsService} bean.</strong> The metrics scrape principal is built
+ *       inline inside {@code metricsScrapeFilterChain} and confined to that chain's own authentication
+ *       manager, so it cannot authenticate against any business rule. Publishing it as a bean would collide
+ *       with {@code CardDemoUserDetailsService} under
+ *       {@code spring.main.allow-bean-definition-overriding=false}, or silently widen Boot's default
+ *       authentication manager.</li>
  *   <li><strong>No cross-origin configuration.</strong> No {@code CorsConfigurationSource} bean exists in
  *       the application, so no CORS filter is added to the chain. A wildcard origin on a bearer API is the
  *       unsafe default Clause A forbids, and no requirement asks for a browser origin to be trusted.</li>
@@ -446,8 +474,9 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  * <p>To verify the policy by hand once the application is up: a sign-on {@code POST} succeeds without a
  * token; the same call to any other path returns 401 with a {@code WWW-Authenticate: Bearer} challenge; a
  * standard user's token on an administration path returns 403 rather than 401, because the caller is
- * authenticated but not entitled; and {@code /actuator/health}, {@code /actuator/info} and
- * {@code /actuator/prometheus} answer anonymously.
+ * authenticated but not entitled; {@code /actuator/health} and {@code /actuator/info} answer anonymously;
+ * and {@code /actuator/prometheus} answers 401 anonymously but 200 when the scrape credential is presented
+ * as HTTP Basic, which {@code curl -u "$METRICS_SCRAPE_USERNAME:$METRICS_SCRAPE_PASSWORD"} demonstrates.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -540,23 +569,30 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *   <dt>High - claim-name and authority drift</dt>
  *   <dd>Closed by reusing {@code JwtTokenProvider}'s published constants instead of re-spelling them, since
  *       the failure mode is a silent authorisation denial.</dd>
- *   <dt>High - the two unauthored controllers this policy already names</dt>
- *   <dd>{@code com.cardemo.controller.AuthController} and {@code com.cardemo.controller.AdminController} are
- *       <strong>{@code Not available}</strong> at this commit: no such file exists in the tree, so their base
- *       paths could not be read from code the way the other six were. The rules for
- *       {@value #PATH_SIGN_ON} and {@value #PATH_ADMIN} are therefore asserted contracts rather than
- *       verified facts. They are not guesses: the administration base path is fixed by the migration plan,
- *       and the sign-on route is the one the repository's own test asserts - {@code POST /api/auth/signon} at
- *       {@code src/test/java/com/cardemo/unit/config/SecurityConfigTest.java} - on the namespace convention
+ *   <dt>Closed - the two controllers this policy names are now authored</dt>
+ *   <dd>{@code com.cardemo.controller.AuthController} and {@code com.cardemo.controller.AdminController} both
+ *       exist as of 4 August 2026, so the rules for {@value #PATH_SIGN_ON} and {@value #PATH_ADMIN} are
+ *       verified against real base paths rather than asserted ahead of them. <strong>An earlier revision of
+ *       this entry recorded both as {@code Not available}, with those two rules as asserted contracts.</strong>
+ *       That was true when written and is withdrawn here. The evidence it relied on still holds and is now
+ *       corroborated by the classes themselves: the sign-on route {@code POST /api/auth/signon} asserted at
+ *       {@code src/test/java/com/cardemo/unit/config/SecurityConfigTest.java}, on the namespace convention
  *       the tree states of itself in
- *       {@code src/main/java/com/cardemo/controller/BillingController.java:309}, which names
- *       {@code /api/menu} for the menu transactions and {@code /api/auth} for sign-on alongside its own
- *       {@code /api/billing}. <em>What is needed:</em> those two files, mounted at those two base paths. If
- *       either lands elsewhere, the symptom is unmistakable - sign-on returns 401, or the administration
- *       surface is reachable by a standard user - and the remediation is to make the two agree, by
- *       preference by moving the controller onto the convention the other six already follow. The other six
- *       controllers' twelve endpoints were read directly from their mappings, and twelve plus one plus four
- *       is exactly the seventeen the resource definitions declare.</dd>
+ *       {@code src/main/java/com/cardemo/controller/BillingController.java:309}, so no rule needed moving.
+ *       The endpoint arithmetic is now read end to end from the mappings rather than partly assumed: the
+ *       eight controllers publish two, four, one, one, three, two, one and three routes, which is exactly the
+ *       seventeen the resource definitions declare - eighteen transactions less {@code CDV1}, whose
+ *       {@code COCRDSEC} has no source in this repository. Both rules are exercised against the assembled
+ *       filter chain by {@code src/test/java/com/cardemo/unit/config/SecurityConfigTest.java}, which drives
+ *       the exact sign-on route anonymously and the administration routes as an anonymous caller, a standard
+ *       user and an administrator in turn. The two base paths those rules match are pinned from the other
+ *       side as well, by {@code src/test/java/com/cardemo/unit/controller/AuthControllerTest.java} and
+ *       {@code src/test/java/com/cardemo/unit/controller/AdminControllerTest.java}: each asserts its
+ *       controller's class-level mapping and route set, and each asserts that its controller carries no
+ *       authorisation annotation of its own and reads no principal, so neither can acquire a second
+ *       enforcement point that disagrees with this one. The residual failure mode is unchanged and still
+ *       unmistakable if a base path is ever moved without moving its rule - sign-on returns 401, or the
+ *       administration surface becomes reachable by a standard user.</dd>
  *   <dt>Medium - {@code EIBTRNID} has no citable locator</dt>
  *   <dd>The CICS transaction identifier usually described as the legacy per-request thread of identity is
  *       <strong>{@code Not available}</strong> in this corpus: it is supplied by the monitor, not declared in
@@ -812,8 +848,51 @@ public class SecurityConfig {
     /** Build and environment information, which this application publishes as an empty document. */
     private static final String PATH_INFO = "/actuator/info";
 
-    /** Metrics scrape target, requested every fifteen seconds by the monitoring stack. */
+    /**
+     * Metrics scrape target, requested every fifteen seconds by the monitoring stack.
+     *
+     * <p><strong>This path is the one management path that is NOT anonymous.</strong> It is governed by
+     * {@link #metricsScrapeFilterChain(HttpSecurity)}, a separate chain declared ahead of the business
+     * chain, and it requires HTTP Basic credentials carrying {@value #SCRAPE_AUTHORITY}. The three health
+     * and info paths above remain anonymous because a container orchestrator and a load balancer both
+     * probe them without a credential; the scrape body, by contrast, renders business series - transaction
+     * volumes, reject counts by reject code and authentication attempt counts - and is therefore a
+     * disclosure surface rather than a liveness signal.
+     */
     private static final String PATH_PROMETHEUS = "/actuator/prometheus";
+
+    // =============================================================================================
+    // Metrics scrape credential. Bound like every other secret in this class: from configuration, with
+    // no committed default and no literal anywhere in the repository.
+    // =============================================================================================
+
+    /**
+     * Property naming the principal a metrics scraper presents.
+     *
+     * <p>Bound with an empty default deliberately. An absent user name does not abort startup, because
+     * metrics collection is not a precondition for serving traffic the way a signing key is; instead the
+     * scrape chain <strong>fails closed</strong> - see {@link #scrapePrincipal}.
+     */
+    private static final String KEY_SCRAPE_USERNAME = "carddemo.observability.metrics.scrape.username";
+
+    /**
+     * Property naming the credential a metrics scraper presents.
+     *
+     * <p>Bound with an empty default for the same reason as {@link #KEY_SCRAPE_USERNAME}, and never
+     * retained in plaintext: the raw value is BCrypt-encoded at construction and the encoded form is what
+     * the in-memory principal holds, so no heap dump and no log line can echo it.
+     */
+    private static final String KEY_SCRAPE_PASSWORD = "carddemo.observability.metrics.scrape.password";
+
+    /**
+     * The single authority a metrics scraper carries.
+     *
+     * <p>Deliberately <em>not</em> one of {@code JwtTokenProvider}'s two business authorities. A scraper
+     * is not an administrator and not a user; giving it a private authority means that even if the scrape
+     * chain were ever widened by mistake, the credential still authorises nothing a business rule accepts,
+     * because every business rule names an administrator or user authority explicitly.
+     */
+    private static final String SCRAPE_AUTHORITY = "SCRAPE";
 
     // =============================================================================================
     // Bound state. Three immutable values, all supplied by constructor injection. There is no field
@@ -837,6 +916,22 @@ public class SecurityConfig {
     private final int bcryptStrength;
 
     /**
+     * The metrics scrape principal, or {@code null} when no credential is configured.
+     *
+     * <p><strong>Absence means fail closed, not fail open.</strong> When either the user name or the
+     * credential is blank this field is {@code null}, the scrape chain's authentication manager holds zero
+     * principals, and every scrape attempt - credentialled or not - is answered {@code 401}. That is the
+     * deliberate direction: a deployment that forgets to configure the scraper loses its metrics, which is
+     * visible in the monitoring stack within one scrape interval, instead of publishing business series to
+     * anyone who can reach the port, which is invisible until someone reads them. Rule 1 Clause D,
+     * principle of least privilege.
+     *
+     * <p>The stored credential is a BCrypt hash produced at construction from the configured value. The
+     * raw value is never retained in a field.
+     */
+    private final UserDetails scrapePrincipal;
+
+    /**
      * Binds and validates the three security properties, failing startup rather than deferring a
      * misconfiguration to first use.
      *
@@ -852,6 +947,11 @@ public class SecurityConfig {
      * @param issuer         the issuer claim, bound from {@value #KEY_ISSUER}; must be non-blank
      * @param bcryptStrength the BCrypt cost, bound from {@value #KEY_BCRYPT_STRENGTH}; must equal
      *                       {@value #REQUIRED_BCRYPT_STRENGTH}
+     * @param scrapeUsername the metrics scrape principal, bound from {@value #KEY_SCRAPE_USERNAME} with an
+     *                       empty default; blank is permitted and means the scrape chain fails closed
+     * @param scrapePassword the metrics scrape credential, bound from {@value #KEY_SCRAPE_PASSWORD} with an
+     *                       empty default; blank is permitted and means the scrape chain fails closed. The
+     *                       value is BCrypt-encoded here and never retained in plaintext
      * @throws IllegalStateException if the signing key is absent, empty, whitespace only or too short; if
      *                               the issuer is absent or blank; or if the BCrypt cost is anything other
      *                               than the required value - in every case aborting startup, and in no case
@@ -860,10 +960,103 @@ public class SecurityConfig {
     public SecurityConfig(
             @Value("${" + KEY_SIGNING_KEY + "}") final String signingKey,
             @Value("${" + KEY_ISSUER + "}") final String issuer,
-            @Value("${" + KEY_BCRYPT_STRENGTH + "}") final int bcryptStrength) {
+            @Value("${" + KEY_BCRYPT_STRENGTH + "}") final int bcryptStrength,
+            @Value("${" + KEY_SCRAPE_USERNAME + ":}") final String scrapeUsername,
+            @Value("${" + KEY_SCRAPE_PASSWORD + ":}") final String scrapePassword) {
         this.verificationKey = verificationKeyFrom(signingKey);
         this.issuer = validatedIssuer(issuer);
         this.bcryptStrength = validatedBcryptStrength(bcryptStrength);
+        this.scrapePrincipal = scrapePrincipalFrom(scrapeUsername, scrapePassword, this.bcryptStrength);
+    }
+
+    /**
+     * Builds the metrics scrape principal, or returns {@code null} when no credential is configured.
+     *
+     * <p>Both halves must be present. A user name without a credential, or a credential without a user
+     * name, is a half-applied configuration and is treated exactly as absence is - closed - rather than
+     * being completed with a guess.
+     *
+     * <p>The credential is encoded here rather than stored raw, using the same cost the business password
+     * encoder uses, so that the two credential stores are indistinguishable in strength. Encoding once at
+     * construction rather than per request also keeps the fifteen-second scrape interval off the BCrypt
+     * cost curve for anything but the single verification the provider performs.
+     *
+     * @param username the configured user name, possibly blank; must not be {@code null}
+     * @param password the configured credential, possibly blank; must not be {@code null}
+     * @param strength the BCrypt cost, already validated
+     * @return the principal, or {@code null} when either half is blank
+     */
+    private static UserDetails scrapePrincipalFrom(
+            final String username, final String password, final int strength) {
+        if (username.isBlank() || password.isBlank()) {
+            return null;
+        }
+        return User.withUsername(username.strip())
+                .password(new BCryptPasswordEncoder(strength).encode(password))
+                .authorities(new SimpleGrantedAuthority(SCRAPE_AUTHORITY))
+                .build();
+    }
+
+    /**
+     * Declares the metrics scrape chain: HTTP Basic over exactly one path, isolated from business identity.
+     *
+     * <p><strong>Why a second chain rather than one more rule on the business chain.</strong> The business
+     * chain authenticates bearer tokens. Adding HTTP Basic to it would make Basic credentials acceptable
+     * everywhere that chain matches, so a scrape credential would become a second way to reach business
+     * endpoints - the opposite of least privilege. A separate chain with its own
+     * {@link org.springframework.security.authentication.AuthenticationManager} confines the scrape
+     * credential to the scrape path: the business chain has no knowledge of it, and this chain has no
+     * knowledge of the token decoder or of {@code CardDemoUserDetailsService}.
+     *
+     * <p><strong>Why the principal store is built inline and not published as a bean.</strong>
+     * {@code CardDemoUserDetailsService} is already the application's one
+     * {@code UserDetailsService} bean. Publishing a second would either collide by type - the base profile
+     * sets {@code spring.main.allow-bean-definition-overriding} to {@code false}, making that a startup
+     * failure - or, worse, be picked up by Boot's default authentication manager and let the scrape
+     * credential authenticate against business rules.
+     *
+     * <p><strong>Ordered ahead of the business chain.</strong> The business chain declares no security
+     * matcher and therefore matches every request; only declaration order decides which chain serves the
+     * scrape path. This one is {@code @Order(1)}, the business chain {@code @Order(2)}.
+     *
+     * <p>Session policy, forgery state, logout and request cache mirror the business chain for the same
+     * reasons documented there: a scrape is a stateless {@code GET} and must never mint a session.
+     *
+     * @param http the builder Spring Security supplies for this chain
+     * @return the chain governing {@value #PATH_PROMETHEUS}, never {@code null}
+     * @throws Exception if the builder cannot assemble the chain, which is a configuration defect and
+     *                   therefore correctly fatal at startup
+     */
+    @Bean
+    @Order(1)
+    public SecurityFilterChain metricsScrapeFilterChain(final HttpSecurity http) throws Exception {
+        final PathPatternRequestMatcher.Builder path = PathPatternRequestMatcher.withDefaults();
+
+        // Zero principals when nothing is configured. InMemoryUserDetailsManager then reports every user
+        // name as unknown, the provider translates that to a bad-credentials failure, and the entry point
+        // answers 401 - which is the fail-closed outcome documented on the scrapePrincipal field.
+        final InMemoryUserDetailsManager principals = scrapePrincipal == null
+                ? new InMemoryUserDetailsManager()
+                : new InMemoryUserDetailsManager(scrapePrincipal);
+
+        final DaoAuthenticationProvider provider = new DaoAuthenticationProvider(principals);
+        provider.setPasswordEncoder(new BCryptPasswordEncoder(bcryptStrength));
+
+        return http
+                .securityMatcher(path.matcher(PATH_PROMETHEUS))
+                .csrf(AbstractHttpConfigurer::disable)
+                .logout(AbstractHttpConfigurer::disable)
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .requestCache(cache -> cache.requestCache(new NullRequestCache()))
+                .authenticationManager(new ProviderManager(provider))
+                .httpBasic(Customizer.withDefaults())
+                // GET only. A scrape never writes, and leaving other methods to the deny-all below keeps
+                // the reachable surface equal to the documented surface.
+                .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers(path.matcher(HttpMethod.GET, PATH_PROMETHEUS))
+                                .hasAuthority(SCRAPE_AUTHORITY)
+                        .anyRequest().denyAll())
+                .build();
     }
 
     /**
@@ -968,6 +1161,7 @@ public class SecurityConfig {
      *                   wrapped, because Spring's own report names the offending configurer
      */
     @Bean
+    @Order(2)
     public SecurityFilterChain securityFilterChain(
             final HttpSecurity http,
             final JwtAuthenticationFilter jwtAuthenticationFilter) throws Exception {
@@ -999,6 +1193,11 @@ public class SecurityConfig {
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(new BearerTokenAuthenticationEntryPoint())
                         .accessDeniedHandler(new BearerTokenAccessDeniedHandler()))
+
+                // The request-body bound, placed AFTER the header writer so a refusal still carries the
+                // security headers, and BEFORE the security context and the bearer filter so it applies to
+                // an anonymous request. See RequestBodyLimitFilter for why the position is the whole point.
+                .addFilterAfter(new RequestBodyLimitFilter(), HeaderWriterFilter.class)
                 .addFilterAfter(jwtAuthenticationFilter, SecurityContextHolderFilter.class)
                 .authorizeHttpRequests(authorize -> authorize
 
@@ -1006,16 +1205,21 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
 
                         // Operational surface. Anonymous by necessity, read-only by method, and limited to
-                        // exactly the endpoints application.yml exposes plus the two health group paths its
-                        // group definitions create. The container health check and the metrics scrape both
-                        // arrive without a credential, so a rule requiring one would report a permanently
-                        // unhealthy container and a permanently absent metrics target.
+                        // the liveness and readiness signals plus build identity. The container health
+                        // check arrives without a credential - the image's HEALTHCHECK requests
+                        // /actuator/health/readiness - so a rule requiring one would report a permanently
+                        // unhealthy container.
+                        //
+                        // PATH_PROMETHEUS IS DELIBERATELY ABSENT FROM THIS LIST. The scrape body renders
+                        // business series, so it is governed by metricsScrapeFilterChain, which requires
+                        // HTTP Basic credentials carrying the SCRAPE authority. It is not merely omitted
+                        // here: that chain declares a security matcher for the path and is ordered ahead of
+                        // this one, so this chain never sees a scrape request at all.
                         .requestMatchers(
                                 path.matcher(HttpMethod.GET, PATH_HEALTH),
                                 path.matcher(HttpMethod.GET, PATH_HEALTH_LIVENESS),
                                 path.matcher(HttpMethod.GET, PATH_HEALTH_READINESS),
-                                path.matcher(HttpMethod.GET, PATH_INFO),
-                                path.matcher(HttpMethod.GET, PATH_PROMETHEUS)).permitAll()
+                                path.matcher(HttpMethod.GET, PATH_INFO)).permitAll()
 
                         // CC00 - app/csd/CARDDEMO.CSD:L378 - app/cbl/COSGN00C.cbl. The only unauthenticated
                         // business operation, because it is the operation that establishes identity. Bounded
@@ -1287,5 +1491,210 @@ public class SecurityConfig {
                     REQUIRED_BCRYPT_STRENGTH));
         }
         return strength;
+    }
+
+    /**
+     * Bounds the number of request-body bytes any caller may make this application read.
+     *
+     * <p><strong>Finding, severity High - remediated by this filter.</strong> Exactly one business endpoint is
+     * anonymous, the sign-on route, and it accepts a JSON body. That body was deserialized into a
+     * {@code SignOnRequest} before any {@code @Size} constraint ran, because Bean Validation runs on an
+     * already-constructed object: Jackson allocates first and is validated second. So an unauthenticated
+     * caller could make the application read and materialise an arbitrarily large document, and the field
+     * contract that bounds the sign-on fields to a few dozen characters each never entered into it.
+     *
+     * <p><strong>Why no property could have fixed this.</strong> The obvious remedy,
+     * {@code server.tomcat.max-http-form-post-size}, does not apply: that setting bounds Tomcat's own parsing
+     * of {@code application/x-www-form-urlencoded} parameters, and a JSON body is never parsed by that code
+     * path - it is read by a message converter straight from the input stream. {@code max-swallow-size} is not
+     * a request bound either; it caps how much of an <em>abandoned</em> body Tomcat will discard. Both are set
+     * in {@code application.yml} for their own reasons and neither closes this gap, which is precisely why an
+     * explicit filter is required rather than a configuration line.
+     *
+     * <p><strong>Both shapes are bounded, and the second is the one that matters.</strong> A request that
+     * declares {@code Content-Length} is refused on the declaration alone, before a byte is read. A chunked
+     * request declares no length at all - which is the shape an attacker would choose - so for those the body
+     * is wrapped and the bound is enforced as it is consumed, meaning the read fails at the limit instead of
+     * continuing to allocate. Checking only {@code Content-Length} would leave the more dangerous case open.
+     *
+     * <p><strong>Position in the chain is load-bearing.</strong> Registered after
+     * {@link org.springframework.security.web.header.HeaderWriterFilter} so a refusal still carries
+     * {@code X-Content-Type-Options} and {@code X-Frame-Options}, and before
+     * {@link SecurityContextHolderFilter} and the bearer filter so it governs anonymous requests - the only
+     * ones that can reach the sign-on route. Moving it after authentication would exempt exactly the caller it
+     * exists to bound.
+     *
+     * <p>The response is {@code 413 Payload Too Large} with an empty body, consistent with the
+     * {@code server.error} settings that emit no message, no binding detail and no exception class. Nothing
+     * about the rejected request is logged at request scope beyond its declared length, so an oversized body
+     * cannot be used to write attacker-chosen text into the log.
+     */
+    private static final class RequestBodyLimitFilter extends OncePerRequestFilter {
+
+        /**
+         * The greatest number of body bytes this application will read from one request, namely 16384.
+         *
+         * <p>Derived from the field contracts rather than chosen for roundness. The largest request type in
+         * this application is {@code AccountUpdateRequest}, which carries both the new values and the
+         * pre-image snapshot the change-detection comparison of {@code app/cbl/COACTUPC.cbl:L669-L756}
+         * requires: 118 length-constrained fields totalling 1,567 characters of field data. Adding the JSON
+         * punctuation and its property names at their actual lengths puts a fully populated instance at
+         * roughly 3.9 KB, so this bound leaves better than four times headroom over the largest legitimate
+         * body while remaining four orders of magnitude below what an unbounded read permits.
+         */
+        private static final long MAX_BODY_BYTES = 16L * 1024L;
+
+        /**
+         * Creates the filter.
+         *
+         * <p>Stated explicitly rather than left implicit: the build's Javadoc gate treats an undocumented
+         * default constructor as a warning and escalates every warning to a failure, and a filter registered
+         * on the security chain is exactly the kind of type whose construction a reader should not have to
+         * infer. It holds no state, so there is nothing to inject and nothing to configure - the bound is a
+         * compile-time constant derived from the field contracts, not a property.
+         */
+        private RequestBodyLimitFilter() {
+            super();
+        }
+
+        @Override
+        protected void doFilterInternal(
+                final HttpServletRequest request,
+                final HttpServletResponse response,
+                final FilterChain filterChain) throws ServletException, IOException {
+
+            if (request.getContentLengthLong() > MAX_BODY_BYTES) {
+                response.setStatus(HttpStatus.PAYLOAD_TOO_LARGE.value());
+                return;
+            }
+            filterChain.doFilter(new BoundedBodyRequest(request, MAX_BODY_BYTES), response);
+        }
+    }
+
+    /**
+     * Wraps a request so its body cannot yield more than a fixed number of bytes.
+     *
+     * <p>This is what bounds a chunked request, where {@code Content-Length} is absent and a declaration check
+     * therefore has nothing to inspect. The stream counts what it hands out and fails once the bound is
+     * exceeded, so the refusal happens during the read rather than after an allocation has already succeeded.
+     *
+     * <p>The failure is an {@link IOException} rather than a custom exception because that is what a servlet
+     * input stream is permitted to throw, and what every reader up the stack - including Jackson - already
+     * handles. Spring maps it to a 4xx without a body, matching the {@code server.error} disclosure settings.
+     */
+    private static final class BoundedBodyRequest extends HttpServletRequestWrapper {
+
+        /** The bound, in bytes, applied to this request's body. */
+        private final long maxBodyBytes;
+
+        /**
+         * Wraps one request.
+         *
+         * @param request the request whose body is to be bounded
+         * @param maxBodyBytes the greatest number of bytes the body may yield
+         */
+        private BoundedBodyRequest(final HttpServletRequest request, final long maxBodyBytes) {
+            super(request);
+            this.maxBodyBytes = maxBodyBytes;
+        }
+
+        @Override
+        public ServletInputStream getInputStream() throws IOException {
+            return new BoundedServletInputStream(super.getInputStream(), this.maxBodyBytes);
+        }
+
+        @Override
+        public BufferedReader getReader() throws IOException {
+            return new BufferedReader(new InputStreamReader(getInputStream(), StandardCharsets.UTF_8));
+        }
+    }
+
+    /**
+     * A servlet input stream that refuses to yield more than a fixed number of bytes.
+     *
+     * <p>Both {@code read} overloads are overridden. Overriding only the single-byte form would leave the bulk
+     * form unbounded, and the bulk form is the one every buffered reader actually calls - so a partial
+     * override would look correct and bound nothing.
+     */
+    private static final class BoundedServletInputStream extends ServletInputStream {
+
+        /** The stream being bounded. */
+        private final ServletInputStream delegate;
+
+        /** The greatest number of bytes this stream may yield in total. */
+        private final long maxBodyBytes;
+
+        /** How many bytes have been yielded so far. */
+        private long consumed;
+
+        /**
+         * Wraps one stream.
+         *
+         * @param delegate the stream to bound
+         * @param maxBodyBytes the greatest number of bytes it may yield
+         */
+        private BoundedServletInputStream(final ServletInputStream delegate, final long maxBodyBytes) {
+            this.delegate = delegate;
+            this.maxBodyBytes = maxBodyBytes;
+        }
+
+        @Override
+        public int read() throws IOException {
+            final int value = this.delegate.read();
+            if (value != -1) {
+                countOrRefuse(1);
+            }
+            return value;
+        }
+
+        @Override
+        public int read(final byte[] buffer, final int offset, final int length) throws IOException {
+            final int count = this.delegate.read(buffer, offset, length);
+            if (count > 0) {
+                countOrRefuse(count);
+            }
+            return count;
+        }
+
+        /**
+         * Records bytes yielded and refuses once the bound is passed.
+         *
+         * @param count how many bytes were just yielded
+         * @throws IOException when the total exceeds the bound
+         */
+        private void countOrRefuse(final int count) throws IOException {
+            this.consumed += count;
+            if (this.consumed > this.maxBodyBytes) {
+                throw new IOException(String.format(
+                        Locale.ROOT,
+                        "Request body exceeds the %d byte limit this application accepts.",
+                        this.maxBodyBytes));
+            }
+        }
+
+        @Override
+        public boolean isFinished() {
+            return this.delegate.isFinished();
+        }
+
+        @Override
+        public boolean isReady() {
+            return this.delegate.isReady();
+        }
+
+        @Override
+        public void setReadListener(final ReadListener readListener) {
+            this.delegate.setReadListener(readListener);
+        }
+
+        @Override
+        public int available() throws IOException {
+            return this.delegate.available();
+        }
+
+        @Override
+        public void close() throws IOException {
+            this.delegate.close();
+        }
     }
 }

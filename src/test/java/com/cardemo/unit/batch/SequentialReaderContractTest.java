@@ -61,7 +61,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -188,7 +187,7 @@ class SequentialReaderContractTest {
     private static Card card(final int n) {
         // CARD-CVV-CD is not a constructor parameter: app/cpy/CVACT02Y.cpy declares it but the entity
         // does not persist it, so there is no component here to supply.
-        return new Card(cardNumber(n), Long.valueOf(n), "FNAMEAA6 LNAME6", "2025-01-01", "Y");
+        return new Card(cardNumber(n), Long.valueOf(n), "007", "FNAMEAA6 LNAME6", "2025-01-01", "Y");
     }
 
     private static CardCrossReference crossReference(final int n) {

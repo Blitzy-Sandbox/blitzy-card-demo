@@ -47,9 +47,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -77,6 +79,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -91,6 +94,8 @@ import org.mockito.quality.Strictness;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.data.domain.SliceImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -472,6 +477,44 @@ class UserListServiceTest {
     }
 
     /**
+     * Stubs the two keyset finders H-08 added, over the same ordered store the page finder serves.
+     *
+     * <p>Installed with {@code lenient()} because a given path uses one direction or neither: a start-of-file
+     * browse anchors on no key at all and uses only the page finder, a forward page walk uses only the
+     * ascending finder, and a backward one only the descending finder. Strict stubs would otherwise report the
+     * unused direction as an unnecessary stubbing on every test that pages in a single direction.
+     *
+     * <p>The semantics reproduced are the derived-query semantics exactly: inclusive of the anchor, ordered by
+     * the single key, ascending in one and descending in the other, and truncated to the requested size with a
+     * has-next flag when rows remain.
+     *
+     * @param rows the ordered store to serve, ascending by user identifier
+     */
+    private void stubKeysetStore(List<UserSecurity> rows) {
+        lenient().when(this.repository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                anyString(), any(Pageable.class))).thenAnswer(invocation -> {
+                    String anchor = invocation.getArgument(0, String.class);
+                    Pageable pageable = invocation.getArgument(1, Pageable.class);
+                    List<UserSecurity> matched = rows.stream()
+                            .filter(row -> row.getSecUsrId().compareTo(anchor) >= 0)
+                            .toList();
+                    int to = Math.min(pageable.getPageSize(), matched.size());
+                    return new SliceImpl<>(matched.subList(0, to), pageable, to < matched.size());
+                });
+        lenient().when(this.repository.findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(
+                anyString(), any(Pageable.class))).thenAnswer(invocation -> {
+                    String anchor = invocation.getArgument(0, String.class);
+                    Pageable pageable = invocation.getArgument(1, Pageable.class);
+                    List<UserSecurity> matched = new ArrayList<>(rows.stream()
+                            .filter(row -> row.getSecUsrId().compareTo(anchor) <= 0)
+                            .toList());
+                    Collections.reverse(matched);
+                    int to = Math.min(pageable.getPageSize(), matched.size());
+                    return new SliceImpl<>(matched.subList(0, to), pageable, to < matched.size());
+                });
+    }
+
+    /**
      * Stubs the one finder the repository declares so that it slices whatever store is supplied by whatever
      * {@link Pageable} the service presents.
      *
@@ -483,6 +526,7 @@ class UserListServiceTest {
      * @param rows the ordered store to slice
      */
     private void stubStore(List<UserSecurity> rows) {
+        stubKeysetStore(rows);
         when(this.repository.findAllByOrderBySecUsrIdAsc(any(Pageable.class))).thenAnswer(invocation -> {
             Pageable pageable = invocation.getArgument(0, Pageable.class);
             int from = Math.min((int) pageable.getOffset(), rows.size());
@@ -499,6 +543,7 @@ class UserListServiceTest {
      * @param rows the ordered store to slice
      */
     private void stubStoreRejectingWindowsPastTheEnd(List<UserSecurity> rows) {
+        stubKeysetStore(rows);
         when(this.repository.findAllByOrderBySecUsrIdAsc(any(Pageable.class))).thenAnswer(invocation -> {
             Pageable pageable = invocation.getArgument(0, Pageable.class);
             if (pageable.getOffset() > rows.size()) {
@@ -526,6 +571,13 @@ class UserListServiceTest {
      */
     private void stubStoreFailingFromWindow(
             List<UserSecurity> rows, int fromPageNumber, RuntimeException failure) {
+        // H-08: a keyed browse reads through the keyset finders, so a helper that failed only the page finder
+        // would leave the READNEXT and READPREV failure arms unreachable. Both directions fail here for the
+        // same reason the page finder does: the store is broken, not one query shape.
+        lenient().when(this.repository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                anyString(), any(Pageable.class))).thenThrow(failure);
+        lenient().when(this.repository.findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(
+                anyString(), any(Pageable.class))).thenThrow(failure);
         when(this.repository.findAllByOrderBySecUsrIdAsc(any(Pageable.class))).thenAnswer(invocation -> {
             Pageable pageable = invocation.getArgument(0, Pageable.class);
             if (pageable.getPageNumber() >= fromPageNumber) {
@@ -1180,9 +1232,12 @@ class UserListServiceTest {
             service.submitScreen(AttentionIdentifier.PF7,
                     request(3, true, "USR00021", "USR00030", null, pageWithSelection(0, " ")));
 
-            // :352-:360 counts WS-IDX down from ten, so the windows arrive newest first: the skip read at
-            // ordinal twenty, the fill walking back through window one, then the look-ahead in window zero.
-            assertThat(capturedWindows()).extracting(Pageable::getPageNumber).containsExactly(2, 1, 0);
+            // H-08: the browse is positioned on the echoed first key, so what this asserts is that the
+            // backward walk reads DESCENDING FROM THAT KEY and never through a page index. :352-:360 counts
+            // WS-IDX down from ten, which is a READPREV loop, and the descending finder is its translation.
+            verify(repository, atLeastOnce()).findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(
+                    eq("USR00021"), any(Pageable.class));
+            verify(repository, never()).findAllByOrderBySecUsrIdAsc(any(Pageable.class));
         }
 
         @Test
@@ -1312,8 +1367,14 @@ class UserListServiceTest {
             UserListScreen screen = service.submitScreen(AttentionIdentifier.PF8,
                     request(99_999_999, true, "USR00001", "USR00010", null, pageWithSelection(0, " ")));
 
-            assertThat(screen.screen().pageNumber()).hasSize(PAGE_NUMBER_DIGITS).isEqualTo("99999999");
-            assertThat(screen.legacyPageNumber()).isEqualTo(99_999_999);
+            // H-08 exposed the faithful outcome here, which the previous ordinal-based positioning hid by
+            // failing to position at all: CDEMO-CU00-PAGE-NUM is PIC 9(08) at app/cbl/COUSR00C.cbl:70 and
+            // :309-:310 is COMPUTE CDEMO-CU00-PAGE-NUM = CDEMO-CU00-PAGE-NUM + 1 with NO ON SIZE ERROR, so
+            // incrementing the ceiling truncates into the destination picture and wraps to zero. It does not
+            // saturate, and it does not fail. The counter stays eight digits either way, which is what this
+            // test is for; the value it wraps to is the source's, not a convenience.
+            assertThat(screen.screen().pageNumber()).hasSize(PAGE_NUMBER_DIGITS).isEqualTo("00000000");
+            assertThat(screen.legacyPageNumber()).isZero();
         }
 
         @Test
@@ -2459,10 +2520,28 @@ class UserListServiceTest {
                 finderNames.add(method.getName());
             }
 
-            // The ordering is encoded in the derived query name, which is why the Pageable can stay unsorted
-            // and the result still be reproducible. Without it, page boundaries would move between runs.
-            assertThat(finderNames).containsExactly("findAllByOrderBySecUsrIdAsc");
-            assertThat(finderNames).allSatisfy(name -> assertThat(name).contains("OrderBySecUsrIdAsc"));
+            // The ordering is encoded in every browse finder's name, which is why the Pageable can stay
+            // unsorted and the result still be reproducible. Without it, page boundaries would move between
+            // runs. The descending finder is the backward browse of PF7 and orders on the same single key, so
+            // the total order is one order read in two directions and not two different orders.
+            // In any order: getDeclaredMethods makes no ordering guarantee, and the contract here is which
+            // finders exist, not what order the JVM happens to report them in.
+            assertThat(finderNames)
+                    .as("the interface declares exactly four methods and no more: three browses over the one "
+                            + "key - the start-of-file page read this service opens with and the two keyset "
+                            + "finders it positions with - and the pessimistic read the update and delete "
+                            + "paths use to reproduce EXEC CICS READ ... UPDATE. A fifth would be an access "
+                            + "path nobody asked for")
+                    .containsExactlyInAnyOrder("findAllByOrderBySecUsrIdAsc",
+                            "findByIdForUpdate",
+                            "findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc",
+                            "findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc");
+            assertThat(finderNames)
+                    .as("every browse this service reads through carries its order in its own name")
+                    .filteredOn(name -> !"findByIdForUpdate".equals(name))
+                    .allSatisfy(name -> assertThat(name)
+                            .matches(candidate -> candidate.endsWith("OrderBySecUsrIdAsc")
+                                    || candidate.endsWith("OrderBySecUsrIdDesc")));
         }
 
         @Test
@@ -2487,11 +2566,21 @@ class UserListServiceTest {
             String hostileKey = "'; DROP";
             when(repository.existsById(hostileKey)).thenReturn(false);
 
-            // The repository declares one derived finder and carries no @Query anywhere, so there is no query
-            // string for a key to be spliced into. The key travels as an argument and nothing else.
+            // The key travels as an argument and nothing else. This service's own finder is derived, so it has
+            // no query text at all; the interface's one JPQL finder - the pessimistic read the update and delete
+            // paths use - is authored rather than assembled and binds its argument by name, which is the
+            // property that matters. A native query, or a query text containing a concatenation operator or a
+            // format placeholder, is what would open a splicing path.
             for (Method method : UserSecurityRepository.class.getDeclaredMethods()) {
                 for (java.lang.annotation.Annotation annotation : method.getAnnotations()) {
-                    assertThat(annotation.annotationType().getSimpleName()).isNotEqualTo("Query");
+                    assertThat(annotation.annotationType().getSimpleName()).isNotEqualTo("NativeQuery");
+                }
+                final Query query = method.getAnnotation(Query.class);
+                if (query != null) {
+                    assertThat(query.value()).doesNotContain("+").doesNotContain("%s").contains(":");
+                    assertThat(method.getParameters())
+                            .allSatisfy(parameter -> assertThat(parameter.isAnnotationPresent(Param.class))
+                                    .isTrue());
                 }
             }
             assertThatExceptionOfType(RecordNotFoundException.class)

@@ -341,10 +341,17 @@ COPY localstack-init/ localstack-init/
 # nor corpus. Placed immediately before src/ so they sit above the
 # longest layer and below the dependency layer: editing one re-runs the
 # build and the tests, which is correct, and never re-resolves the
-# dependency graph. .env.example is a template of NAMES - its
-# credential-bearing entries are deliberately empty - and it is confined
-# to this stage, so no template and no compose file reaches the runtime
-# image.
+# dependency graph. .env.example is a template, and the distinction its
+# entries draw matters more than a blanket claim: the two that MUST stay
+# empty are empty and carry no default anywhere - JWT_SIGNING_KEY, which
+# fails fast when unset, and NVD_API_KEY - while the local-only demo
+# values needed to bring the compose topology up are present and are
+# meant to be, namely POSTGRES_PASSWORD, the two LocalStack AWS keys and
+# GRAFANA_ADMIN_PASSWORD. None of them reaches a live account: the AWS
+# pair addresses the emulator only. An earlier revision of this comment
+# said every credential-bearing entry was empty, which was not true of
+# those four and is corrected here. The file is confined to this stage,
+# so no template and no compose file reaches the runtime image.
 COPY .env.example docker-compose.yml ./
 COPY .github/ .github/
 

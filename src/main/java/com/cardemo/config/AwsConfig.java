@@ -702,12 +702,32 @@ public class AwsConfig {
     private static final Set<String> ALLOWED_ENDPOINT_SCHEMES = Set.of("http", "https");
 
     /**
-     * The exact host names at which the emulator is reachable, and no others.
+     * The exact host names at which the emulator is reachable, and no others. <strong>This is the one host
+     * allowlist in this class</strong>; every endpoint check in it resolves through {@link #isEmulatorHost(String)}
+     * and therefore through this set.
      *
-     * <p>This is the same allowlist {@code localstack-init/init-aws.sh} applies to {@code AWS_ENDPOINT_URL},
-     * deliberately spelled identically so that the provisioning script and the application cannot disagree
-     * about which endpoints exist. {@code carddemo-localstack} may carry a {@code CLONE_INDEX} suffix, which is
-     * why that one form is matched by {@link #ALLOWED_COMPOSE_HOST_PATTERN} rather than by set membership.
+     * <p>It is spelled to be element-for-element identical to {@code ALLOWED_ENDPOINT_HOSTS} at
+     * {@code localstack-init/init-aws.sh:L700-L706}, so that the provisioning script and the application cannot
+     * disagree about which endpoints exist. {@code carddemo-localstack} may carry a {@code CLONE_INDEX} suffix,
+     * which is why that one form is matched by {@link #ALLOWED_COMPOSE_HOST_PATTERN} rather than by set
+     * membership - exactly as the script matches it by {@code ALLOWED_ENDPOINT_HOST_PATTERN} rather than
+     * enumerating it.
+     *
+     * <p><strong>Why it is exactly five entries, and why it used to be more.</strong> Three separate
+     * remediations each added a host list to this class, and the three drifted: one of them accepted
+     * {@code host.docker.internal} - the Docker host-gateway alias - which the provisioning script refuses. That
+     * is worse than a merely redundant entry, because it admits a configuration the provisioner cannot use: an
+     * endpoint that passes startup validation and then fails provisioning is diagnosed as an application defect.
+     * It also widens the application's reach from the emulator to <em>any</em> service listening on the developer's
+     * host, which is not least privilege. No profile, compose file, environment template or test needs it - the
+     * container-to-host case is served by the compose service name inside the bridge network, and the
+     * Testcontainers case by {@code localhost} - so it is gone rather than parked.
+     *
+     * <p>{@code [::1]} is likewise absent, and its absence is not a narrowing. {@link java.net.URI#getHost()}
+     * returns the bracketed form for an IPv6 literal while the shell strips the brackets, so the two halves used
+     * to need different spellings of the same address. {@link #normaliseEndpointHost(String)} now strips them on
+     * the Java side too, exactly as the script does, so one unbracketed entry serves both and there is no longer a
+     * bracket special case to keep in step.
      *
      * <p>It is an allowlist and not a denylist on purpose, and the reason is recorded in the script's own
      * post-mortem: a denylist over the live service domain missed the same domain in capitals, accepted every
@@ -718,36 +738,43 @@ public class AwsConfig {
             "localhost",
             "127.0.0.1",
             "::1",
-            "[::1]",
             "localhost.localstack.cloud",
-            "localstack",
-            "host.docker.internal");
+            "localstack");
+
+    /**
+     * Compose service-name prefix an endpoint host may carry, so that
+     * {@code carddemo-localstack} and its {@code CLONE_INDEX}-suffixed forms are both accepted.
+     *
+     * <p>Declared before {@link #ALLOWED_COMPOSE_HOST_PATTERN} because that pattern is built from it, and a
+     * static initialiser may not reference a field declared textually after it by simple name.
+     *
+     * <p>The suffix separator is a hyphen and only a hyphen. An underscore was considered and rejected as
+     * unreachable rather than as unwanted: {@link java.net.URI#getHost()} returns {@code null} for an
+     * authority containing an underscore, because RFC 3986 does not admit one in a registered name, so a
+     * value such as {@code http://carddemo-localstack_000:4566} never reaches the host comparison at all -
+     * it is refused earlier, for having no parseable host. A branch matching an underscore would therefore
+     * have been dead code, which Rule 1 Clause B forbids. Name parallel emulator containers with a hyphen.
+     */
+    private static final String APPROVED_ENDPOINT_HOST_PREFIX = "carddemo-localstack";
 
     /**
      * The Compose service name, optionally suffixed with a clone index so that parallel clones do not collide.
-     * The host reaching this pattern has already been lower-cased, so the pattern itself needs no case
-     * insensitivity.
+     * The host reaching this pattern has already been lower-cased and unbracketed by
+     * {@link #normaliseEndpointHost(String)}, so the pattern itself needs no case insensitivity.
      *
-     * <p>The suffix is digits only, spelled exactly as {@code ALLOWED_ENDPOINT_HOST_PATTERN} at
+     * <p>Built from {@value #APPROVED_ENDPOINT_HOST_PREFIX} so the compose name is spelled once in this file. The
+     * suffix is digits only, spelled exactly as {@code ALLOWED_ENDPOINT_HOST_PATTERN} at
      * {@code localstack-init/init-aws.sh:L721} spells it, because a clone index is only ever a number. It was
      * briefly wider - any one to sixteen alphanumeric characters - which admitted container names the
      * provisioning script refuses, and two guards over one variable that disagree about what exists are worse
      * than one. The narrower rule is the one that matches the script, so it is the one that survives.
+     *
+     * <p>Subdomains of the emulator's loopback DNS name are deliberately not matched either, for the two reasons
+     * the script records: least privilege, since the bare host is the only endpoint this project documents; and
+     * the measured fact that a virtual-hosted name is not a general service edge and fails provisioning anyway.
      */
     private static final Pattern ALLOWED_COMPOSE_HOST_PATTERN =
-            Pattern.compile("^carddemo-localstack(-[0-9]+)?$");
-
-    /**
-     * The Compose container name, which carries an optional {@code -${CLONE_INDEX}} suffix of digits only, so
-     * it is matched by a bounded pattern rather than enumerated. Mirrors
-     * {@code ALLOWED_ENDPOINT_HOST_PATTERN} at {@code localstack-init/init-aws.sh:721}.
-     *
-     * <p>Subdomains of the loopback DNS name are deliberately NOT matched, for the two reasons the script
-     * records: least privilege, since the bare host is the only endpoint this project documents; and the fact
-     * that a virtual-hosted name is not a general service edge and fails provisioning anyway.
-     */
-    private static final Pattern APPROVED_ENDPOINT_HOST_PATTERN =
-            Pattern.compile("^carddemo-localstack(-[0-9]+)?$");
+            Pattern.compile("^" + APPROVED_ENDPOINT_HOST_PREFIX + "(-[0-9]+)?$");
 
     /** The only two schemes an endpoint may carry, compared as written so an upper-cased spelling fails. */
     private static final String SCHEME_HTTP = "http";
@@ -771,9 +798,10 @@ public class AwsConfig {
      * and {@link #applyBoundedPolicy(SdkClientBuilder)} is the only place they are applied. Retrying at all
      * is safe on every path this application uses: object writes are {@code PutObject} under a deterministic
      * key so a repeated attempt overwrites its own bytes, object reads are idempotent by definition, and the
-     * report-job publish is a FIFO {@code SendMessage} against a queue provisioned
-     * {@code ContentBasedDeduplication=true}, so an identical retried body carries an identical deduplication
-     * hash and the queue collapses it. The attempt count and the backoff between attempts are bounded by
+     * report-job publish is a FIFO {@code SendMessage} carrying an explicit {@code MessageDeduplicationId}
+     * that the producer generates once per submission - so a retried attempt re-sends the same identifier and
+     * the queue collapses it, while a genuinely new submission carries a new identifier and is delivered. The
+     * attempt count and the backoff between attempts are bounded by
      * {@code RetryMode.STANDARD} rather than by a constant here, which keeps the choice on the library's own
      * stable surface. None of this is an application-level retry, which the source does not have and which
      * is deliberately not added: {@code com.cardemo.service.report.ReportSubmissionService} reproduces
@@ -799,6 +827,38 @@ public class AwsConfig {
     private static final int QUEUE_VERIFICATION_TIMEOUT_SECONDS = 15;
 
     /**
+     * Whole-call deadline in seconds, {@value}, for the notification client alone.
+     *
+     * <p><strong>Finding M-08, severity Medium, RESOLVED by this constant.</strong> The notification client used
+     * to share {@value #API_CALL_TIMEOUT_SECONDS} seconds with the object and queue clients, and that value is
+     * sized for the batch writers - which move whole generations - not for a courtesy. The one caller,
+     * {@code com.cardemo.service.report.ReportSubmissionService}, publishes the notification <em>synchronously
+     * on the request thread</em> and deliberately treats a failure as non-fatal, reproducing
+     * {@code // NOTIFY=&SYSUID} at {@code app/cbl/CORPT00C.cbl:L85-L86}, which JES2 performs after read-in and
+     * which the source has no error path for. So an unreachable topic could hold an <em>already successful</em>
+     * submission open for the full thirty seconds before being logged and discarded: the slowest thing on the
+     * path would be the one part of it that does not matter.
+     *
+     * <p>Giving the notification client its own, much shorter budget fixes that where the budget lives rather
+     * than by adding a thread. No executor, no queue and no bulkhead is introduced - each would need lifecycle
+     * management and would make the ordering of a courtesy notification nondeterministic - and the worst case
+     * for the courtesy becomes a bound this class states and a test can read back off the built client.
+     *
+     * <p>Five seconds is chosen against the payload: one notification is a few hundred bytes to a loopback
+     * endpoint. <strong>It is not a service-level objective</strong>; the frozen corpus publishes none.
+     */
+    private static final int NOTIFICATION_API_CALL_TIMEOUT_SECONDS = 5;
+
+    /**
+     * Per-attempt deadline in seconds, {@value}, for the notification client alone.
+     *
+     * <p>Kept well below {@value #NOTIFICATION_API_CALL_TIMEOUT_SECONDS} on the same reasoning as
+     * {@link #API_CALL_ATTEMPT_TIMEOUT_SECONDS}, so that a retry can still happen inside the whole-call
+     * deadline instead of being cut off by it.
+     */
+    private static final int NOTIFICATION_API_CALL_ATTEMPT_TIMEOUT_SECONDS = 2;
+
+    /**
      * The page size the notification service itself uses when listing topics, {@value}. {@code ListTopics}
      * carries no page-size parameter, so this documents the service's own fixed maximum rather than requesting
      * it, and it appears only in the diagnostic that reports how much was searched.
@@ -815,60 +875,6 @@ public class AwsConfig {
     private static final char ARN_SEPARATOR = ':';
 
     /**
-     * Matches an IPv4 literal in {@code 127.0.0.0/8}, the whole loopback range, and nothing else.
-     *
-     * <p>This is a full match on four bounded octets rather than a test for the leading {@code 127.},
-     * because a prefix test over a host name is not a test for an address at all: it admitted
-     * {@code 127.0.0.1.attacker.example}, a perfectly ordinary DNS name that begins with the loopback
-     * literal and resolves wherever its owner points it. That is the same defect - an allowlist entry
-     * matched as a substring of a hostile name - that the entry for {@code localhost} is deliberately spelled
-     * as exact membership to avoid, and it survived here only because an address looks less like a name than
-     * a name does. Each octet is bounded to 0-255 so the pattern describes addresses rather than digit runs.
-     */
-    private static final Pattern LOOPBACK_ADDRESS_PATTERN = Pattern.compile(
-            "^127(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$");
-
-    /**
-     * The only host names a cloud endpoint may carry.
-     *
-     * <p>This set is the Java half of a single allowlist whose shell half is {@code ALLOWED_ENDPOINT_HOSTS}
-     * at {@code localstack-init/init-aws.sh:L700-L706}; the two are deliberately identical, because two
-     * allowlists that disagree are worse than one. Membership is exact, not prefix based, except for the
-     * compose service name, which may carry a {@code CLONE_INDEX} suffix when parallel clones run and is
-     * therefore matched by {@link #APPROVED_ENDPOINT_HOST_PATTERN}, the mirror of the script's own
-     * {@code ALLOWED_ENDPOINT_HOST_PATTERN} at {@code :L721}.
-     *
-     * <p>Every entry is either a loopback literal, a DNS name that resolves to loopback, or a name that
-     * resolves only inside the Compose bridge network, so no accepted request can leave the host - which is
-     * what makes cleartext {@code http} safe here, transport security being deferred hardening under AAP
-     * 0.3.2.
-     *
-     * <p><strong>There is deliberately no deny-list, and the live AWS service domain is deliberately not
-     * spelled anywhere in this file.</strong> A deny-list admits every host nobody thought of; an allowlist
-     * refuses it.
-     */
-    private static final Set<String> APPROVED_ENDPOINT_HOSTS = Set.of(
-            "localhost",
-            "127.0.0.1",
-            "::1",
-            "[::1]",
-            "localhost.localstack.cloud",
-            "localstack");
-
-    /**
-     * Compose service-name prefix an endpoint host may carry, so that
-     * {@code carddemo-localstack} and its {@code CLONE_INDEX}-suffixed forms are both accepted.
-     *
-     * <p>The suffix separator is a hyphen and only a hyphen. An underscore was considered and rejected as
-     * unreachable rather than as unwanted: {@link java.net.URI#getHost()} returns {@code null} for an
-     * authority containing an underscore, because RFC 3986 does not admit one in a registered name, so a
-     * value such as {@code http://carddemo-localstack_000:4566} never reaches the host comparison at all -
-     * it is refused earlier, for having no parseable host. A branch matching an underscore would therefore
-     * have been dead code, which Rule 1 Clause B forbids. Name parallel emulator containers with a hyphen.
-     */
-    private static final String APPROVED_ENDPOINT_HOST_PREFIX = "carddemo-localstack";
-
-    /**
      * The logical name of the queue that replaces the extrapartition transient data queue {@code JOBS} of
      * {@code app/csd/CARDDEMO.CSD:L499-L503}. The physical name is this value suffixed
      * {@link #FIFO_SUFFIX} and nothing else, which is why a reader meeting {@code carddemo-report-jobs.fifo}
@@ -882,34 +888,6 @@ public class AwsConfig {
      * recommending it.
      */
     private static final String FIFO_SUFFIX = ".fifo";
-
-    /**
-     * The only host names an AWS service endpoint may resolve to: the loopback interface and the emulator's
-     * own names, as reached from the host, from inside the compose network and from a Testcontainers-managed
-     * container.
-     *
-     * <p>This set is the mechanism behind the no-live-AWS guarantee, and it is a set rather than a single
-     * value because the same application must be reachable four ways: {@code localhost} and {@code 127.0.0.1}
-     * from a developer host or a Testcontainers-mapped port, {@code localhost.localstack.cloud} which resolves
-     * to the loopback interface and is the emulator's documented name for path-style addressing,
-     * {@code localstack} and {@code carddemo-localstack} which are the service and container names inside the
-     * compose network, and {@code host.docker.internal} which is how a container reaches an emulator running
-     * on its host. Every one of them is a private or loopback destination; none of them is a public name, and a
-     * real service endpoint is always a public name, so no member of this set can address one.
-     *
-     * <p><strong>The port is deliberately not constrained</strong> beyond being present and in range. The
-     * compose topology publishes the emulator on 4566, but a Testcontainers-managed emulator is published on
-     * an ephemeral port chosen at start-up, and pinning 4566 here would make the integration tier
-     * unrunnable while adding nothing: a loopback host is already unreachable from outside the machine.
-     */
-    private static final Set<String> PERMITTED_ENDPOINT_HOSTS = Set.of(
-            "localhost",
-            "127.0.0.1",
-            "::1",
-            "localhost.localstack.cloud",
-            "localstack",
-            "carddemo-localstack",
-            "host.docker.internal");
 
     /**
      * Prefixes AWS assigns to real access-key identifiers: {@code AKIA} for a long-term key and {@code ASIA}
@@ -1262,8 +1240,13 @@ public class AwsConfig {
                             + "scheme default", sourceKey));
         }
 
-        final String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
-        if (!ALLOWED_ENDPOINT_HOSTS.contains(host) && !ALLOWED_COMPOSE_HOST_PATTERN.matcher(host).matches()) {
+        // Normalised through the shared reducer, and decided by the shared predicate, so that this guard and the
+        // constructor guard cannot disagree about one endpoint. They did: this one compared the host exactly as
+        // URI.getHost() reported it, which kept brackets on an IPv6 literal and a trailing dot on a
+        // fully-qualified name, so http://[::1]:4566 needed a second allowlist entry here and http://localhost.:4566
+        // was accepted by the other guard and refused by this one.
+        final String host = uri.getHost() == null ? "" : normaliseEndpointHost(uri.getHost());
+        if (!isEmulatorHost(host)) {
             throw emulatorBindingRejected(String.format(Locale.ROOT,
                     "Property '%s' names host '%s', which is not one of the emulator addresses this "
                             + "application is permitted to reach: %s, or the Compose service name "
@@ -1594,8 +1577,17 @@ public class AwsConfig {
     }
 
     /**
-     * Applies the same policy to the notification client, whose topic resolution performs read-only list calls
-     * that must be bounded like any other.
+     * Applies a <strong>shorter</strong> policy to the notification client, whose topic resolution and single
+     * publish are both read-mostly courtesies rather than parts of any parity contract.
+     *
+     * <p><strong>Finding M-08, severity Medium, RESOLVED here.</strong> This client used to share
+     * {@link #applyBoundedPolicy(SdkClientBuilder)} with the object and queue clients, so a courtesy
+     * notification carried the batch tier's {@value #API_CALL_TIMEOUT_SECONDS}-second budget. Its one caller
+     * publishes synchronously on the request thread and treats a failure as non-fatal, so an unreachable topic
+     * delayed an already-successful submission for that whole budget before the failure was logged and
+     * discarded. It now carries {@value #NOTIFICATION_API_CALL_TIMEOUT_SECONDS} seconds - see
+     * {@link #NOTIFICATION_API_CALL_TIMEOUT_SECONDS} for why the budget is corrected here rather than by
+     * introducing a thread.
      *
      * <p>It carries the same credential assertion as the other two, for the reason given on
      * {@link #cardDemoSqsAsyncClientCustomizer(AwsCredentialsProvider)}: the smallest surface is the one
@@ -1608,17 +1600,47 @@ public class AwsConfig {
     @Bean
     public SnsClientCustomizer cardDemoSnsClientCustomizer(final AwsCredentialsProvider credentialsProvider) {
         requireStaticCredentials(credentialsProvider);
-        return AwsConfig::applyBoundedPolicy;
+        return AwsConfig::applyNotificationPolicy;
     }
 
     /**
-     * Verifies, once, that the provisioned report queue really is first-in-first-out with content-based
-     * deduplication - and aborts the process when it is not.
+     * Verifies, once, that the provisioned report queue really is first-in-first-out - aborting the process when
+     * it is not - and reports, without aborting, whether it also deduplicates on message content.
      *
      * <p>The name check in the constructor proves the <em>configuration</em> is coherent. It cannot prove the
      * queue is: a standard queue created under a {@code .fifo} name satisfies the name check and then silently
      * drops the ordering guarantee that reproduces {@code DISPOSITION(MOD)}. Only the queue's own attributes
      * settle it, and reading them needs a network call.
+     *
+     * <p><strong>Finding H-08, severity High, RESOLVED here.</strong> This runner used to require
+     * {@code ContentBasedDeduplication=true} and describe it as the mechanism reproducing the transient data
+     * queue. It is the opposite of that mechanism. {@code DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)} in
+     * {@code app/csd/CARDDEMO.CSD} <em>appends</em>, and {@code app/cbl/CORPT00C.cbl:L515-L537} writes
+     * unconditionally with no idempotency key of any kind, so an operator who legitimately re-submitted the
+     * same period twice got two entries in the reader. Content-based deduplication hashes the body, so those
+     * two identical submissions - same report name, same start date, same end date - collapsed into one inside
+     * the five-minute deduplication window, and the second submission was accepted by the endpoint, reported as
+     * published, and then silently discarded by the queue. That is a behaviour change, and the loss is
+     * invisible from the caller's side.
+     *
+     * <p>What actually fixes it is the send path: {@code com.cardemo.service.report.ReportSubmissionService}
+     * supplies an explicit {@code MessageDeduplicationId} generated once per submission, and an explicit
+     * identifier takes precedence over the body hash. That was confirmed against the emulator rather than taken
+     * from documentation - two identical bodies sent with distinct explicit identifiers onto a queue still
+     * reporting {@code ContentBasedDeduplication=true} both arrived, while the same two bodies sent without one
+     * collapsed into a single message. The append parity therefore holds <em>whatever</em> the attribute says,
+     * which is why this runner no longer refuses to start over it. The identifier also buys the guard that
+     * matters in the other direction: a <em>transport</em> retry of one submission re-sends the same identifier
+     * and is collapsed, so the bounded retry strategy on the shared client cannot turn one submission into two.
+     *
+     * <p>The attribute is still expected to be {@code false}, as defence for any future producer that forgets an
+     * identifier, but that expectation is enforced where it can be acted on rather than merely asserted once:
+     * {@code localstack-init/init-aws.sh} creates the queue with it disabled and converges an existing queue
+     * onto that, and {@code com.cardemo.observability.HealthIndicators} re-reads it on every probe so drift is
+     * surfaced continuously. A single startup assertion could not have held that line anyway - unlike
+     * {@code FifoQueue}, which is immutable from creation, this attribute can be changed by any holder of the
+     * queue at any moment, so the check could be falsified immediately after passing while having taken down
+     * request paths that never publish a report at all.
      *
      * <p>That call deliberately does <strong>not</strong> happen during context refresh. This class's whole
      * design keeps refresh free of network traffic, so that a bean is never broken by an emulator being down and
@@ -1631,7 +1653,8 @@ public class AwsConfig {
      * it embeds the account identifier and is never logged, never returned and never held in a field.
      *
      * <p>Side effects: two read-only calls, bounded by {@value #QUEUE_VERIFICATION_TIMEOUT_SECONDS} seconds
-     * each; one informational log line on success. It provisions nothing.
+     * each; one informational log line on success, preceded by one warning when content-based deduplication is
+     * found enabled. It provisions nothing and it changes nothing.
      *
      * @param sqsAsyncClient the client configured by the active profile; injected, never constructed
      * @return the runner performing the one-off verification
@@ -1655,14 +1678,46 @@ public class AwsConfig {
      * value and calling {@code toBuilder()} preserves it. This was verified against the compiled interface, not
      * inferred from its documentation.
      *
-     * <p>Static, and the single definition of the policy, so the three customizers above cannot drift apart.
+     * <p>Static, and the single definition of the data-path policy, so the object and queue customizers cannot
+     * drift apart. The notification client takes {@link #applyNotificationPolicy(SdkClientBuilder)} instead,
+     * which is the same shape with a much shorter budget; both delegate to
+     * {@link #applyPolicy(SdkClientBuilder, int, int)} so there is still exactly one place the deadlines and the
+     * retry mode are applied.
      *
      * @param builder the client builder the library is configuring; never {@code null}
      */
     private static void applyBoundedPolicy(final SdkClientBuilder<?, ?> builder) {
+        applyPolicy(builder, API_CALL_TIMEOUT_SECONDS, API_CALL_ATTEMPT_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Applies the notification client's own, much shorter budget.
+     *
+     * <p>Separate from {@link #applyBoundedPolicy(SdkClientBuilder)} because the two budgets answer different
+     * questions: the data path is sized for a batch generation that must not be cut off, and the notification
+     * path is a courtesy on the request thread that must not be allowed to hold a successful submission open.
+     * Finding M-08, severity Medium.
+     *
+     * @param builder the client builder the library is configuring; never {@code null}
+     */
+    private static void applyNotificationPolicy(final SdkClientBuilder<?, ?> builder) {
+        applyPolicy(builder, NOTIFICATION_API_CALL_TIMEOUT_SECONDS,
+                NOTIFICATION_API_CALL_ATTEMPT_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Applies one pair of deadlines and the bounded retry mode, preserving everything already configured.
+     *
+     * @param builder the client builder the library is configuring; never {@code null}
+     * @param apiCallTimeoutSeconds the whole-call deadline to impose
+     * @param apiCallAttemptTimeoutSeconds the per-attempt deadline to impose
+     */
+    private static void applyPolicy(final SdkClientBuilder<?, ?> builder, final int apiCallTimeoutSeconds,
+            final int apiCallAttemptTimeoutSeconds) {
+
         final ClientOverrideConfiguration bounded = builder.overrideConfiguration().toBuilder()
-                .apiCallTimeout(Duration.ofSeconds(API_CALL_TIMEOUT_SECONDS))
-                .apiCallAttemptTimeout(Duration.ofSeconds(API_CALL_ATTEMPT_TIMEOUT_SECONDS))
+                .apiCallTimeout(Duration.ofSeconds(apiCallTimeoutSeconds))
+                .apiCallAttemptTimeout(Duration.ofSeconds(apiCallAttemptTimeoutSeconds))
                 // Selects the retry MODE, from which the SDK resolves its bounded standard strategy when the
                 // client is built. Naming the mode rather than assembling a strategy keeps the choice on the
                 // library's own stable surface, and STANDARD bounds both the attempt count and the backoff.
@@ -1696,12 +1751,40 @@ public class AwsConfig {
                 queueName, "read the attributes of");
 
         final Map<QueueAttributeName, String> values = attributes.attributes();
-        requireQueueAttribute(queueName, values, QueueAttributeName.FIFO_QUEUE);
-        requireQueueAttribute(queueName, values, QueueAttributeName.CONTENT_BASED_DEDUPLICATION);
+        requireQueueAttribute(queueName, values, QueueAttributeName.FIFO_QUEUE, true);
 
-        LOG.info("Report queue {} verified as FIFO with content-based deduplication, so the fixed message group "
-                        + "every report submission carries reproduces the strictly sequential append of "
-                        + "DEFINE TDQUEUE(JOBS)",
+        // Finding H-08, severity High. ContentBasedDeduplication is OBSERVED here and deliberately does not
+        // gate startup, for two independent reasons.
+        //
+        // First, it is not what carries the parity. Every send from ReportSubmissionService supplies its own
+        // MessageDeduplicationId, and an explicit identifier OVERRIDES the content hash even while the
+        // attribute is enabled - verified against the emulator, not inferred: two identical bodies sent with
+        // distinct explicit identifiers onto a queue reporting 'true' both arrived, where the same two bodies
+        // sent without one collapsed to a single message. The strictly sequential DISPOSITION(MOD) append of
+        // DEFINE TDQUEUE(JOBS) is therefore reproduced whatever this attribute says, so refusing to start
+        // would buy no parity that the send path does not already guarantee.
+        //
+        // Second, FifoQueue is fixed when the queue is created and can never change, which is what makes
+        // asserting it at startup meaningful. ContentBasedDeduplication is mutable by any holder of the queue
+        // at any moment, so a one-off startup assertion on it can be falsified microseconds after it passes:
+        // it would be a gate that promises an invariant it cannot hold, while taking the whole application
+        // down - including paths that never publish a report - over infrastructure state this process does not
+        // own. Enforcement belongs where it can act rather than merely assert: localstack-init/init-aws.sh
+        // provisions the attribute disabled and converges an existing queue onto it, and HealthIndicators
+        // re-reads it on every probe so live drift is reported continuously instead of once.
+        if (Boolean.parseBoolean(values.get(QueueAttributeName.CONTENT_BASED_DEDUPLICATION))) {
+            LOG.warn("Report queue {} reports {} enabled. Submissions stay correct because each one carries an "
+                            + "explicit deduplication identifier that overrides the content hash, so two "
+                            + "identical report requests are still both delivered; the attribute is "
+                            + "nevertheless expected to be disabled. Re-run localstack-init/init-aws.sh, "
+                            + "which converges an existing queue onto the intended attributes",
+                    queueName, QueueAttributeName.CONTENT_BASED_DEDUPLICATION);
+        }
+
+        LOG.info("Report queue {} verified as FIFO, so the fixed message group every report submission carries, "
+                        + "together with the explicit deduplication identifier each one supplies, reproduces "
+                        + "the strictly sequential append of DEFINE TDQUEUE(JOBS) and two identical "
+                        + "submissions are both delivered",
                 queueName);
     }
 
@@ -1896,25 +1979,41 @@ public class AwsConfig {
     }
 
     /**
-     * Proves one queue attribute is present and {@code true}.
+     * Proves one queue attribute is present and carries the value the send path depends on.
+     *
+     * <p>The expected value stays a parameter rather than being fixed at {@code true} so that the assertion
+     * reads in whichever direction an attribute requires, but only one attribute is currently asserted through
+     * it: {@code FifoQueue}, which must be {@code true} for the ordering that reproduces the transient data
+     * queue. It is also the only attribute for which a startup assertion is sound, because it is fixed when the
+     * queue is created and cannot subsequently change.
+     *
+     * <p>{@code ContentBasedDeduplication} is deliberately <em>not</em> routed through here. It is mutable at
+     * any moment and it does not carry the parity - the explicit deduplication identifier on every send does -
+     * so {@link #verifyFifoQueueContract(SqsAsyncClient, String)} observes it and warns rather than refusing to
+     * start. Finding H-08, severity High, records the reasoning in full at that call site.
+     *
+     * <p>An <em>absent</em> attribute is treated as {@code false}, which is what the service itself means by
+     * omitting it, so an omitted {@code FifoQueue} correctly fails.
      *
      * @param queueName  the queue being verified
      * @param values     the attributes the service returned
-     * @param attribute  the attribute that must be {@code true}
-     * @throws IllegalStateException if the attribute is absent or not {@code true}
+     * @param attribute  the attribute to check
+     * @param expected   the value the send path requires
+     * @throws IllegalStateException if the attribute does not carry the expected value
      */
     private static void requireQueueAttribute(final String queueName,
-            final Map<QueueAttributeName, String> values, final QueueAttributeName attribute) {
+            final Map<QueueAttributeName, String> values, final QueueAttributeName attribute,
+            final boolean expected) {
 
         // Keyed by the enum, never by attribute.toString(): the response map's key type IS the enum, so a
         // string lookup silently misses every entry and would fail a perfectly compliant queue.
-        if (!Boolean.parseBoolean(values.get(attribute))) {
+        if (Boolean.parseBoolean(values.get(attribute)) != expected) {
             throw queueVerificationFailure(queueName, "verify",
                     "the queue reports attribute " + attribute + " as '" + values.get(attribute)
-                            + "' rather than 'true', so the fixed message group every report submission "
-                            + "carries would not reproduce the strictly sequential append of "
-                            + "DEFINE TDQUEUE(JOBS). Delete the queue and re-run "
-                            + "localstack-init/init-aws.sh, which provisions it correctly",
+                            + "' rather than '" + expected + "', so the fixed message group every report "
+                            + "submission carries would not reproduce the strictly sequential append of "
+                            + "DEFINE TDQUEUE(JOBS). Re-run localstack-init/init-aws.sh, which provisions the "
+                            + "queue correctly and converges an existing one onto these attributes",
                     null);
         }
     }
@@ -1996,7 +2095,7 @@ public class AwsConfig {
      *   <li><strong>Absence is rejected.</strong> A service with neither its own override nor the global
      *       one would resolve live AWS, so it is treated exactly as a live endpoint would be.</li>
      *   <li><strong>The host is allowlisted, not pattern matched.</strong> Membership of
-     *       {@link #APPROVED_ENDPOINT_HOSTS}, or the compose-service prefix
+     *       {@link #ALLOWED_ENDPOINT_HOSTS}, or the compose-service prefix
      *       {@value #APPROVED_ENDPOINT_HOST_PREFIX}, is required. A substring or suffix test would admit
      *       {@code localhost.attacker.example}, or a hostile name carrying an allowlisted one as a label;
      *       exact membership admits neither. The prefix form admits only a hyphen separator - see the constant
@@ -2086,26 +2185,35 @@ public class AwsConfig {
      * The single test for "is this host an emulator address", and the only one this class applies.
      *
      * <p>Three independent remediations arrived at this guard from different review lenses, and each carried its
-     * own host list. They are unioned here rather than left side by side, because two lists that must agree are a
-     * defect with a comment on it: an address accepted by one validator and refused by the other would make
-     * startup depend on which check ran first. Every accepted form is a loopback or compose-network address, so
-     * the union does not widen the guard towards live AWS - it only stops a legitimate emulator address from
-     * being refused by whichever list happened not to name it.
+     * own host list. Those three lists have been collapsed into {@link #ALLOWED_ENDPOINT_HOSTS} and this one
+     * method, because two lists that must agree are a defect with a comment on it: an address accepted by one
+     * validator and refused by the other makes startup depend on which check ran first, and that is exactly what
+     * happened - one of the three accepted the Docker host-gateway alias that the provisioning script refuses. The
+     * union is not preserved. The narrowest of the three, the one that matches
+     * {@code localstack-init/init-aws.sh} element for element, is the one that survives, and every caller now
+     * resolves through here.
      *
      * <p>Accepted forms, and why each is an emulator address and nothing else:
      * <ul>
-     *   <li>every literal in {@link #APPROVED_ENDPOINT_HOSTS} and {@link #PERMITTED_ENDPOINT_HOSTS}, which
-     *       between them name {@code localhost}, the two loopback literals in both bracketed and bare form, the
-     *       emulator's published loopback alias, the compose service name and {@code host.docker.internal};</li>
+     *   <li>every literal in {@link #ALLOWED_ENDPOINT_HOSTS}: {@code localhost}, the two loopback literals in
+     *       their unbracketed form, the emulator's published loopback alias and the compose service name. Each is
+     *       either a loopback address, a DNS name that resolves to loopback, or a name that resolves only inside
+     *       the Compose bridge network, so no accepted request can leave the host - which is what makes cleartext
+     *       {@code http} safe here, transport security being deferred hardening under AAP 0.3.2;</li>
      *   <li>{@value #APPROVED_ENDPOINT_HOST_PREFIX} and its clone-suffixed forms, matched by
-     *       {@link #APPROVED_ENDPOINT_HOST_PATTERN} so that the rule is character for character the one the
+     *       {@link #ALLOWED_COMPOSE_HOST_PATTERN} so that the rule is character for character the one the
      *       provisioning script applies at {@code localstack-init/init-aws.sh:L721}. The suffix is a hyphen
      *       followed by digits and nothing else, because {@code CLONE_INDEX} is a number; an arbitrary
-     *       suffix is refused, which is narrower than a prefix test and is the behaviour the script has;</li>
-     *   <li>any IPv4 literal in {@code 127.0.0.0/8}, the whole loopback range, because Testcontainers may
-     *       map a container onto any of it. Matched by {@link #LOOPBACK_ADDRESS_PATTERN} as a complete
-     *       address, never as a leading substring.</li>
+     *       suffix is refused, which is narrower than a prefix test and is the behaviour the script has.</li>
      * </ul>
+     *
+     * <p><strong>What was deliberately dropped, and why nothing regressed.</strong> A pattern admitting the whole
+     * of {@code 127.0.0.0/8} was reached from one call site and matched no value any test or profile produces:
+     * every loopback endpoint in this repository is spelled {@code 127.0.0.1}, and a Testcontainers-mapped
+     * emulator reports its host as {@code localhost}. It only ever widened the guard beyond the script. The
+     * Docker host-gateway alias was dropped for the reasons recorded on {@link #ALLOWED_ENDPOINT_HOSTS}. The
+     * bracketed IPv6 spelling was dropped because {@link #normaliseEndpointHost(String)} now removes the brackets
+     * before this method sees the host, exactly as the shell half does.
      *
      * <p><strong>A sub-domain of the emulator's loopback DNS name is deliberately not accepted</strong>, and
      * that refusal is the one place where this method is narrower than a reachability argument would make it.
@@ -2120,14 +2228,48 @@ public class AwsConfig {
      * a service endpoint.
      *
      * @param host the endpoint host, already lower-cased, unbracketed and de-dotted by
-     *             {@link #isApprovedEndpointHost(String)}; never {@code null}
+     *             {@link #normaliseEndpointHost(String)}; never {@code null}
      * @return {@code true} when the host is an emulator address, {@code false} otherwise
      */
     private static boolean isEmulatorHost(final String host) {
-        return APPROVED_ENDPOINT_HOSTS.contains(host)
-                || PERMITTED_ENDPOINT_HOSTS.contains(host)
-                || APPROVED_ENDPOINT_HOST_PATTERN.matcher(host).matches()
-                || LOOPBACK_ADDRESS_PATTERN.matcher(host).matches();
+        return ALLOWED_ENDPOINT_HOSTS.contains(host)
+                || ALLOWED_COMPOSE_HOST_PATTERN.matcher(host).matches();
+    }
+
+    /**
+     * Reduces a host as {@link java.net.URI#getHost()} reports it to the single spelling
+     * {@link #isEmulatorHost(String)} compares, applying exactly the two reductions
+     * {@code localstack-init/init-aws.sh} applies and no others.
+     *
+     * <p>Lower-casing, because DNS names are case-insensitive and the script lower-cases too at
+     * {@code localstack-init/init-aws.sh:L805-L808} - a line its own comment records as the one an upper-cased
+     * live AWS host defeated in the denylist this replaced. And unwrapping the brackets of an IPv6 address
+     * literal, because {@code URI.getHost()} keeps them while the script strips them at
+     * {@code localstack-init/init-aws.sh:L782-L784}; an allowlist obliged to carry both spellings of one address
+     * is an allowlist waiting to drift, and it had two.
+     *
+     * <p><strong>A trailing dot is deliberately not removed</strong>, which makes {@code http://localhost.:4566}
+     * refused. That is not an oversight and not a narrowing for its own sake: the script refuses the
+     * fully-qualified spelling too, saying so in its own words at {@code localstack-init/init-aws.sh:L269-L272} -
+     * "Nothing else, in any case, with or without a trailing dot". Removing the dot here would accept a value the
+     * provisioner rejects, which is the same class of defect as accepting a host it rejects, only pointing the
+     * other way. The spelling appears in no profile, no compose file and no setup instruction, so refusing it
+     * costs nothing that is in use.
+     *
+     * <p>This is the <strong>only</strong> normaliser, and both endpoint guards route through it. Before that,
+     * the property-binding guard compared the host exactly as the parser reported it while the constructor guard
+     * normalised first, so {@code http://[::1]:4566} needed a second allowlist entry to satisfy one of them and
+     * {@code http://localhost.:4566} was accepted by one and refused by the other.
+     *
+     * @param rawHost the host exactly as the URI parser reported it; never {@code null}
+     * @return the normalised host, possibly empty when the raw value was only a pair of brackets
+     */
+    private static String normaliseEndpointHost(final String rawHost) {
+        final String host = rawHost.toLowerCase(Locale.ROOT);
+        if (host.startsWith("[") && host.endsWith("]")) {
+            return host.substring(1, host.length() - 1);
+        }
+        return host;
     }
 
     /**
@@ -2299,13 +2441,13 @@ public class AwsConfig {
      * <p>A {@code null} host is refused rather than tolerated: the parser returns {@code null} for a
      * registry-based authority, which is what a percent-encoded, underscored or otherwise unparsable host
      * produces, and "could not be identified" is not a reason to accept an address. A bracketed address
-     * literal is unwrapped and a single trailing dot is removed, because both spell the same host as the
-     * allowlist entry they must match.
+     * literal is unwrapped by {@link #normaliseEndpointHost(String)}, because the brackets are a spelling of the
+     * URI grammar rather than part of the address the allowlist names.
      *
-     * <p>Normalisation is all this method adds. The decision itself is delegated to
-     * {@link #isEmulatorHost(String)} so that there is exactly one answer to "is this an emulator address?"
-     * in this class: two host rules that drift apart would make acceptance depend on which guard ran first,
-     * and one of them would be quietly wrong.
+     * <p>The null and blank rejection is all this method adds. Normalisation is delegated to
+     * {@link #normaliseEndpointHost(String)} and the decision to {@link #isEmulatorHost(String)}, so that there is
+     * exactly one answer to "is this an emulator address?" in this class: two host rules that drift apart would
+     * make acceptance depend on which guard ran first, and one of them would be quietly wrong.
      *
      * @param rawHost the host the parser extracted, possibly {@code null}
      * @return {@code true} only when the normalised host is an emulator address
@@ -2314,16 +2456,7 @@ public class AwsConfig {
         if (rawHost == null || rawHost.isBlank()) {
             return false;
         }
-
-        String host = rawHost.toLowerCase(Locale.ROOT);
-        if (host.startsWith("[") && host.endsWith("]")) {
-            host = host.substring(1, host.length() - 1);
-        }
-        if (host.endsWith(".")) {
-            host = host.substring(0, host.length() - 1);
-        }
-
-        return isEmulatorHost(host);
+        return isEmulatorHost(normaliseEndpointHost(rawHost));
     }
 
     /**
@@ -2510,9 +2643,18 @@ public class AwsConfig {
      * on the reasoning that the service itself would reject the message group on the first send. That reasoning
      * traded a deterministic startup failure for a runtime one on a path whose whole purpose is to reproduce the
      * strictly sequential {@code DISPOSITION(MOD)} append of {@code DEFINE TDQUEUE(JOBS)} at
-     * {@code app/csd/CARDDEMO.CSD:L499-L503}. The name is only half of the contract, so
-     * {@link #cardDemoFifoQueueContractVerifier(SqsAsyncClient)} checks the provisioned queue's own attributes
-     * as well; a standard queue created under a {@code .fifo} name would satisfy this check and fail that one.
+     * {@code app/csd/CARDDEMO.CSD:L499-L503}.
+     *
+     * <p>The name is only half of the contract, and the other half is deliberately <strong>not</strong> checked
+     * here. A standard queue created under a {@code .fifo} name satisfies this check and still drops the ordering
+     * guarantee, so the queue's own {@code FifoQueue} and {@code ContentBasedDeduplication} attributes have to be
+     * read to settle it - and reading them is a network call, which this class never makes. Two places already
+     * make it, each at the moment where it is actionable: {@code localstack-init/init-aws.sh} sets both attributes
+     * at creation and then reads them back, failing provisioning with exit code 6 on drift; and
+     * {@code com.cardemo.observability.HealthIndicators} issues one two-attribute {@code GetQueueAttributes} on
+     * every readiness probe, reporting a mismatch as {@code ATTRIBUTE_MISMATCH} naming the offending attribute.
+     * A third copy of the same assertion inside this class would add no coverage while making context refresh
+     * depend on the emulator being reachable, which is precisely the property the design keeps.
      *
      * @param physicalName the validated physical queue name
      * @param logicalName  the validated logical queue name
@@ -2615,8 +2757,8 @@ public class AwsConfig {
     }
 
     /**
-     * Copies the correlation identifier onto every outbound cloud request, so that a request leaving this
-     * process can be joined to the log records and the span it came from.
+     * Copies the correlation identifier <em>and the W3C trace context</em> onto every outbound cloud request, so
+     * that a request leaving this process can be joined to the log records and the span it came from.
      *
      * <p>This is the process-boundary half of what {@code com.cardemo.observability.CorrelationIdFilter} does at
      * the request boundary. The filter is the direct replacement for {@code EIBTRNID}, the CICS transaction
@@ -2624,8 +2766,18 @@ public class AwsConfig {
      * interceptor that thread stopped at the edge of the application and an object write or a queue publish
      * carried no identity at all.
      *
-     * <p>The diagnostic-context key and the header name are read from that class's published constants and are
-     * <strong>never re-declared</strong> here: one owner per literal, as Rule 1 Clause C requires.
+     * <p><strong>Finding M-07, severity Medium, RESOLVED here.</strong> The correlation header alone names an
+     * identifier that only this repository knows how to read, so it correlated <em>logs</em> across the boundary
+     * without establishing trace <em>parentage</em> anywhere. Every outbound request now also carries
+     * {@link CorrelationIdFilter#TRACE_PARENT_HEADER}, composed by
+     * {@link CorrelationIdFilter#currentTraceParent()} from the same identifiers the log records carry, which is
+     * the form every OpenTelemetry and Micrometer Tracing consumer extracts without being configured to. The
+     * two headers are complementary and both are kept: one is a business correlation key an operator greps for,
+     * the other is trace context a collector joins on.
+     *
+     * <p>The diagnostic-context keys, the header names and the composition rule are read from that class's
+     * published constants and methods and are <strong>never re-declared</strong> here: one owner per literal, as
+     * Rule 1 Clause C requires.
      *
      * <p>The value is re-validated against the filter's own grammar before it is written. That is not
      * belt-and-braces: a header is a text protocol, so a value carrying a carriage return or a line feed would
@@ -2652,27 +2804,39 @@ public class AwsConfig {
         }
 
         /**
-         * Adds the correlation header when a well-formed identifier is in scope, and changes nothing otherwise.
+         * Adds the correlation header and the trace-context header when each is available, and changes nothing
+         * otherwise.
          *
-         * <p>This callback runs before the request is signed, so the header is covered by the signature rather
-         * than invalidating it.
+         * <p>This callback runs before the request is signed, so the added headers are covered by the signature
+         * rather than invalidating it.
+         *
+         * <p>The two headers are added independently: a request may carry trace context with no correlation
+         * identifier - which is every batch call, since batch work never passes through the request filter - or a
+         * correlation identifier with no trace context, when tracing is not configured. Neither absence
+         * suppresses the other, and when both are absent the request is returned untouched rather than rebuilt.
          *
          * @param context             the request about to be sent
-         * @param executionAttributes the execution attributes; unused, because the identifier travels in the
+         * @param executionAttributes the execution attributes; unused, because both values travel in the
          *                            diagnostic context rather than in an attribute
-         * @return the request, with the correlation header added when one is available
+         * @return the request, with whichever propagation headers were available added to it
          */
         @Override
         public SdkHttpRequest modifyHttpRequest(final Context.ModifyHttpRequest context,
                 final ExecutionAttributes executionAttributes) {
 
             final String correlationId = CorrelationIdFilter.currentCorrelationId();
-            if (correlationId == null) {
+            final String traceParent = CorrelationIdFilter.currentTraceParent();
+            if (correlationId == null && traceParent == null) {
                 return context.httpRequest();
             }
-            return context.httpRequest().toBuilder()
-                    .putHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, correlationId)
-                    .build();
+            final SdkHttpRequest.Builder request = context.httpRequest().toBuilder();
+            if (correlationId != null) {
+                request.putHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, correlationId);
+            }
+            if (traceParent != null) {
+                request.putHeader(CorrelationIdFilter.TRACE_PARENT_HEADER, traceParent);
+            }
+            return request.build();
         }
     }
 

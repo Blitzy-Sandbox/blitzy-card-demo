@@ -101,7 +101,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       at offset zero, and the 14-byte {@code FILLER} left entirely unmapped - no property, no column, no
  *       reserved width.</li>
  *   <li><strong>The JavaBean property name.</strong> The account property is {@code accountId}, reachable as
- *       {@code getAccountId()} and {@code setAccountId(Long)} - see severity <strong>Blocker</strong>
+ *       {@code getAccountId()} and {@code setAccountId(Long)} - see the invariant
  *       below.</li>
  *   <li><strong>Fixture-anchored decoding.</strong> All 50 records of {@code app/data/ASCII/cardxref.txt} are
  *       decoded at their PIC-derived columns and round-tripped through the entity, so the field contract is
@@ -193,47 +193,44 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       a mapping defect asserted here.</dd>
  * </dl>
  *
- * <h2>5. Findings, by severity</h2>
+ * <h2>5. Contract invariants</h2>
  *
  * <dl>
- *   <dt><strong>Blocker</strong> - renaming the account property</dt>
+ *   <dt>renaming the account property</dt>
  *   <dd>{@code com.cardemo.repository.CardCrossReferenceRepository} declares the derived finder
  *       {@code findByAccountId}, which replaces alternate index {@code CARDXREF.VSAM.AIX}. Spring Data
  *       resolves it against the JavaBean property name, so {@code acctId} or {@code xrefAcctId} would make it
  *       unresolvable and would fail context startup rather than fail a test.
- *       <em>Remediation:</em> keep the field {@code accountId} with {@code getAccountId()} and
+ *       Instead: keep the field {@code accountId} with {@code getAccountId()} and
  *       {@code setAccountId(Long)}; asserted by {@link PropertyNaming}.</dd>
- *   <dt><strong>High</strong> - introducing a unique constraint on the account identifier</dt>
+ *   <dt>introducing a unique constraint on the account identifier</dt>
  *   <dd>{@code app/catlg/LISTCAT.txt:L488} declares the alternate index {@code NONUNIQKEY}, so one account
  *       may legitimately be reached by several card numbers. A unique constraint or unique index on
  *       {@code xref_acct_id} would reject data the legacy system accepts.
- *       <em>Remediation:</em> keep every {@code unique} attribute false and the index non-unique; asserted by
+ *       Instead: keep every {@code unique} attribute false and the index non-unique; asserted by
  *       {@link AlternateIndexGeometry}.</dd>
- *   <dt><strong>High</strong> - the expected customer identifier of fixture row 1</dt>
- *   <dd>The specification for this file states that row 1 of {@code app/data/ASCII/cardxref.txt} decodes to a
- *       customer identifier of 5. <strong>Measurement disagrees and the source governs.</strong> The row is
- *       {@code 050002445376574000000005000000000050}; {@code XREF-CUST-ID} is {@code PIC 9(09)} at
- *       {@code app/cpy/CVACT03Y.cpy:L6} and therefore occupies one-based bytes 17-25, which read
- *       {@code 000000050} and decode to <strong>50</strong>, not 5. The value 5 is what reading only eight of
- *       the nine digits yields. Asserting 5 would encode a false fact about the system of record.
- *       <em>Remediation:</em> row 1 is asserted as {@code cardNumber "0500024453765740"},
- *       {@code customerId 50}, {@code accountId 50}; see {@link FixtureRoundTrip}. The other two values in
- *       that specification are correct as given.</dd>
- *   <dt><strong>Medium</strong> - the omitted alternate-key offset</dt>
- *   <dd>{@code app/catlg/LISTCAT.txt:L486} reports {@code AXRKP 25}, an offset the architecture plan does not
- *       record at all. {@code AXRKP} is zero-based, so 25 resolves to one-based byte 26 - the first byte of
+ *   <dt>the expected customer identifier of fixture row 1</dt>
+ *   <dd>{@code XREF-CUST-ID} is {@code PIC 9(09)} at {@code app/cpy/CVACT03Y.cpy:L6}, so it occupies
+ *       one-based bytes 17-25 of the {@code <16-char-card><9-char-customer><11-char-account>} record.
+ *       Decoding eight of those nine digits instead of all nine yields a different identifier, so the
+ *       declared width is the whole of the contract. Instead: each expected identifier is taken from its
+ *       field at the declared offset and width, and {@link FixtureRoundTrip} asserts it against the fixture
+ *       read off the classpath rather than against a value transcribed into prose.</dd>
+ *   <dt>reading the alternate-key offset as one-based</dt>
+ *   <dd>{@code app/catlg/LISTCAT.txt:L486} reports {@code AXRKP 25}.
+ *       {@code AXRKP} is zero-based, so 25 resolves to one-based byte 26 - the first byte of
  *       {@code XREF-ACCT-ID}, since {@code 16 + 9 = 25} bytes precede it. Read as one-based it would land
  *       inside {@code XREF-CUST-ID} and the alternate key would be attributed to the wrong field.
- *       <em>Remediation:</em> the zero-based reading is asserted arithmetically by
+ *       Instead: the zero-based reading is asserted arithmetically by
  *       {@link AlternateIndexGeometry}.</dd>
- *   <dt><strong>Medium</strong> - re-sorting or shuffling the fixture</dt>
+ *   <dt>re-sorting or shuffling the fixture</dt>
  *   <dd>{@code cardxref.txt} is already strictly ascending by card number, and
  *       {@code app/cbl/CBSTM03A.CBL:L419} depends on it: the scan in {@code 4000-TRNXFILE-GET} exits early on
  *       {@code OR (WS-CARD-NUM (CR-JMP) > XREF-CARD-NUM)}, which finds a present record only while the table
  *       ascends. A test that sorted or shuffled the loaded records would destroy the evidence for that
- *       precondition. <em>Remediation:</em> the records are consumed in file order and the ordering is
+ *       precondition. Instead: the records are consumed in file order and the ordering is
  *       asserted rather than imposed; see {@link FixtureRoundTrip}.</dd>
- *   <dt><strong>Low</strong> - a blank card number is accepted by the entity</dt>
+ *   <dt>a blank card number is accepted by the entity</dt>
  *   <dd>The width guard is a maximum, so an empty or all-blank card number passes it; only {@code null} and
  *       over-width values are rejected. This is deliberate rather than defective - a {@code PIC X(16)} item
  *       is blank-padded, and structural validation of an inbound payload belongs to the request DTOs and to
@@ -342,10 +339,10 @@ class CardCrossReferenceTest {
     /** The card number of row 1, which is the leading 16 characters of {@link #FIRST_FIXTURE_RECORD}. */
     private static final String FIRST_FIXTURE_CARD_NUMBER = "0500024453765740";
 
-    /** The customer identifier of row 1: bytes 17-25 are {@code 000000050}, so 50 - not 5. */
+    /** The customer identifier of row 1: the nine digits at bytes 17-25 decode to 50. */
     private static final long FIRST_FIXTURE_CUSTOMER_ID = 50L;
 
-    /** The account identifier of row 1: bytes 26-36 are {@code 00000000050}. */
+    /** The account identifier of row 1: the eleven digits at bytes 26-36 decode to 50. */
     private static final long FIRST_FIXTURE_ACCOUNT_ID = 50L;
 
     /**
@@ -881,7 +878,7 @@ class CardCrossReferenceTest {
         }
 
         @Test
-        @DisplayName("row 1 decodes to card 0500024453765740, customer 50 and account 50")
+        @DisplayName("row 1 decodes to the fixture card number, customer 50 and account 50")
         void rowOneDecodesExactly() {
             final CardCrossReference first = decodeRecord(crossReferenceFixture().recordAt(0));
             assertThat(first.getCardNumber())
@@ -889,10 +886,8 @@ class CardCrossReferenceTest {
                     .isEqualTo(FIRST_FIXTURE_CARD_NUMBER);
             assertThat(first.getCustomerId())
                     .as("XREF-CUST-ID is PIC 9(09) at app/cpy/CVACT03Y.cpy:L6 and therefore occupies "
-                            + "one-based bytes 17-25, which read 000000050. The value is 50, not 5: 5 is "
-                            + "what reading only eight of the nine digits yields, and the specification for "
-                            + "this file states 5. The source governs - see the High-severity finding in the "
-                            + "class documentation")
+                            + "one-based bytes 17-25; decoding all nine of those digits is what yields this "
+                            + "identifier, and decoding only eight of them yields a different one")
                     .isEqualTo(FIRST_FIXTURE_CUSTOMER_ID);
             assertThat(first.getAccountId())
                     .as("XREF-ACCT-ID is PIC 9(11) at :L7 and occupies one-based bytes 26-36, reading "
@@ -993,8 +988,7 @@ class CardCrossReferenceTest {
             assertThat(ALTERNATE_KEY_AXRKP + 1)
                     .as("converted to the one-based columns a copybook is read in, the alternate key "
                             + "therefore begins at column 26 - the first byte of XREF-ACCT-ID. The "
-                            + "architecture plan omits this offset entirely, which is the Medium-severity "
-                            + "finding recorded in the class documentation")
+                            + "zero-based reading is the one the class documentation explains")
                     .isEqualTo(ACCOUNT_ID_COLUMN);
         }
 
@@ -1047,8 +1041,8 @@ class CardCrossReferenceTest {
             final Table table = CardCrossReference.class.getAnnotation(Table.class);
             assertThat(table.uniqueConstraints())
                     .as("the only uniqueness this table has is its primary key on xref_card_num; a unique "
-                            + "constraint naming xref_acct_id would be the High-severity defect recorded in "
-                            + "the class documentation")
+                            + "constraint naming xref_acct_id would reject one account holding several "
+                            + "cards, which the catalogued NONUNIQKEY alternate index permits")
                     .isEmpty();
             assertThat(table.indexes())
                     .as("the index replacing the alternate index is created by the migration rather than "
@@ -1338,7 +1332,7 @@ class CardCrossReferenceTest {
         @DisplayName("an empty or all-blank card number is accepted, which is documented rather than desired")
         void anEmptyOrBlankCardNumberIsAccepted() {
             assertThat(new CardCrossReference("", Long.valueOf(1L), Long.valueOf(2L)).getCardNumber())
-                    .as("the Low-severity finding recorded in the class documentation. Only null and "
+                    .as("only null and "
                             + "over-width values are rejected, so a blank key passes the entity and is "
                             + "caught instead by the request DTOs and by the database. Asserted as observed "
                             + "behaviour so that a future change to it cannot pass unnoticed")
@@ -1570,9 +1564,9 @@ class CardCrossReferenceTest {
         @DisplayName("the entity itself lives in the entity package, under the com.cardemo root")
         void theEntityLivesInTheEntityPackage() {
             assertThat(CardCrossReference.class.getName())
-                    .as("the package root is com.cardemo throughout - never com.carddemo, which is the "
-                            + "spelling an earlier revision of the plan used and which would leave every "
-                            + "import in the tree unresolvable")
+                    .as("the package root is com.cardemo throughout - never com.carddemo, a "
+                            + "near-miss spelling that would leave every import in the tree "
+                            + "unresolvable")
                     .isEqualTo("com.cardemo.model.entity.CardCrossReference");
         }
 

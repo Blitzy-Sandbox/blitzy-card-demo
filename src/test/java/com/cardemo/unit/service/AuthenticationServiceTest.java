@@ -149,11 +149,10 @@ import com.cardemo.service.auth.AuthenticationService;
  *       digest computed from the upper-case credential verifies a credential presented in lower case, and a
  *       digest computed from the lower-case credential does not. Folding only the identifier - the obvious
  *       mistake - silently refuses every user who types a password in lower case while the legacy system
- *       admits them, and it is a <b>High</b>-severity parity break that this group is built to catch.</li>
+ *       admits them, which is the parity break this group is built to catch.</li>
  *   <li><strong>BCrypt verification.</strong> The plaintext {@code IF SEC-USR-PWD = WS-USER-PWD} at
- *       {@code :223} becomes one BCrypt verification at strength 10 - a mechanism substitution tracked for
- *       the planned DECISION_LOG.md. Performed exactly once, because the algorithm is deliberately
- *       expensive.</li>
+ *       {@code :223} becomes one BCrypt verification at strength 10, performed exactly once because the
+ *       algorithm is deliberately expensive.</li>
  *   <li><strong>The subject and role claims.</strong> {@code :226-227} moved the folded identifier into
  *       {@code CDEMO-USER-ID} and the record's class byte into {@code CDEMO-USER-TYPE}; those two survive as
  *       the token's subject and role claim. A <em>real</em> {@link JwtTokenProvider} mints the token and a
@@ -228,26 +227,24 @@ import com.cardemo.service.auth.AuthenticationService;
  *       raised level leaks into whatever class Surefire runs next.</li>
  *   </ul>
  *
- * <h2>Findings recorded against the source</h2>
+ * <h2>Observations about the frozen source</h2>
  *
- * <p>Observations about the frozen corpus that this suite pins but deliberately does not repair, each with
- * its locator, its severity and what a remedy would cost. Nothing here is a defect in the Java tree.
+ * <p>Properties of the frozen corpus that this suite pins but deliberately does not repair, each with its
+ * locator and what a change would cost. Nothing here is a defect in the Java tree.
  *
  * <ul>
  *   <li><strong>The response-code arm is a bare numeric literal.</strong>
  *       {@code app/cbl/COSGN00C.cbl}:247 reads {@code WHEN 13} rather than
  *       {@code WHEN DFHRESP(NOTFND)}, even though the same program uses the symbolic form elsewhere, so the
  *       arm's meaning is carried by an unexplained constant. It is faithfully translated as the
- *       record-absent condition and the literal is pinned in {@link #MESSAGE_USER_NOT_FOUND}. Remedy would
- *       be to substitute the symbolic form in the COBOL, which {@code app/**} being frozen forbids and which
- *       would change nothing observable. Severity: <strong>Low</strong>.</li>
+ *       record-absent condition and the literal is pinned in {@link #MESSAGE_USER_NOT_FOUND}. Substituting
+ *       the symbolic form in the COBOL would change nothing observable and is forbidden in any case, because
+ *       {@code app/**} is frozen.</li>
  *   <li><strong>The two credential arms are folded into one outcome, by design.</strong> The source shows
  *       distinct literals at {@code :242-243} and {@code :249}; the target renders one for both. This is the
- *       single labelled deviation from parity on this path and it removes a <strong>High</strong>-severity
- *       user-enumeration disclosure that a 3270 in a machine room did not have to worry about. Group 7 pins
- *       both literals and asserts that they differ in the source, so the deviation is recorded in code
- *       rather than hidden. Severity of the deviation itself: <strong>Low</strong>; severity of the
- *       disclosure it removes: <strong>High</strong>.</li>
+ *       single deliberate deviation from parity on this path, and it removes a user-enumeration disclosure
+ *       that a 3270 in a machine room did not have to worry about. Group 7 pins both literals and asserts
+ *       that they differ in the source, so the deviation is stated in code rather than hidden.</li>
  *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
@@ -256,57 +253,51 @@ import com.cardemo.service.auth.AuthenticationService;
  *   <li><strong>A lower-case password stops verifying.</strong> Someone removed the password fold at
  *       {@code :135-136} while keeping the identifier fold at {@code :132-134}. The digests written by
  *       {@code V3__seed_data.sql} were computed from the folded literal, so every seeded user is locked out.
- *       Remedy: restore the second fold. Severity: <strong>High</strong>.</li>
+ *       Restore the second fold.</li>
  *   <li><strong>A request missing both fields reports the password.</strong> The two guards were reordered or
- *       collapsed into one report of both. Remedy: restore identifier-then-password, first match wins.
- *       Severity: <strong>High</strong>.</li>
+ *       collapsed into one report of both. Restore identifier-then-password, first match wins.</li>
  *   <li><strong>The identifier is folded twice, trimmed or padded.</strong> This service hands the operands
  *       to the delegate exactly as received; the delegate owns the single fold. Padding to the
  *       {@code PIC X(08)} width of {@code app/cpy/CSUSR01Y.cpy}:18 would append spaces absent from the
- *       hashed value and fail every verification. Remedy: hand them on untouched. Severity:
- *       <strong>High</strong>.</li>
+ *       hashed value and fail every verification. Hand them on untouched.</li>
  *   <li><strong>A non-credential outcome is collapsed into a credential one.</strong> The arms of
  *       {@code READ-USER-SEC-FILE} that are not credential refusals - an unreadable store, a record with no
  *       user class byte - keep their own exception types and their own literals, because each has a distinct
  *       remedy and none is reachable by guessing an identifier. Collapsing those loses information the
- *       legacy screen displayed. Remedy: keep that part of the ladder. Severity: <strong>Medium</strong>.
+ *       legacy screen displayed, so that part of the ladder is kept intact.
  *       <p>The two CREDENTIAL arms are the deliberate exception: an unknown identifier and a wrong password
  *       are folded into one type, one literal and one marked field, with the same BCrypt work performed on
  *       both. The source displays two different literals, and reproducing that on an unauthenticated
- *       endpoint turns sign-on into an identifier oracle - so this is a labelled deviation from parity, not
- *       a collapse of the ladder. {@code CredentialRefusalContractTest} runs the two cases against each
- *       other rather than against fixed expectations, which is what catches them drifting apart.
- *       Severity of the disclosure it removes: <strong>High</strong>.</li>
+ *       endpoint turns sign-on into an identifier oracle - so this is a deliberate deviation from parity,
+ *       not a collapse of the ladder. {@code CredentialRefusalContractTest} runs the two cases against each
+ *       other rather than against fixed expectations, which is what catches them drifting apart.</li>
  *   <li><strong>The counter fires twice, or not at all.</strong> The increment lives in a {@code finally}
  *       block, so it must fire exactly once per call on every path including the unrecoverable one. A
- *       counter incremented inside a {@code try} would miss the failure paths. Remedy: keep the
- *       {@code finally}. Severity: <strong>Medium</strong>.</li>
+ *       counter incremented inside a {@code try} would miss the failure paths. Keep the
+ *       {@code finally}.</li>
  *   <li><strong>A credential reaches a log line or a message.</strong> Every message here is one of five
- *       source literals and every field reference is a field <em>name</em>. Remedy: never place a value.
- *       Severity: <strong>Blocker</strong>.</li>
+ *       source literals and every field reference is a field <em>name</em>. Never place a value.</li>
  *   <li><strong>Sign-on succeeds locally and fails on another machine.</strong> A case fold reached
  *       {@code toUpperCase()} or {@code toLowerCase()} without an explicit locale, so the outcome now depends
  *       on the platform default. Under a Turkish default the dotted {@code i} folds to {@code U+0130} and
- *       both the record key and the credential operand move. Remedy: every fold names
- *       {@link Locale#ROOT}, never {@code Locale.getDefault()}. Severity: <strong>High</strong>.</li>
+ *       both the record key and the credential operand move. Every fold names
+ *       {@link Locale#ROOT}, never {@code Locale.getDefault()}.</li>
  *   <li><strong>A secret-hygiene sweep reports a hit on this file.</strong> Every one of the ten users
  *       seeded at {@code app/jcl/DUSRSECJ.jcl}:35-44 carries the same plaintext, and the audit for Rule 1
  *       Clause D is a case-sensitive search for that upper-case token. No identifier here spells the
  *       credential field that way - the BMS spelling {@code PASSWD} of {@code PASSWDI} and {@code PASSWDL}
  *       is used instead - so a hit means the token has been reintroduced, by a renamed constant or by a
- *       restated literal. Remedy: restore the {@code PASSWD} spelling and remove the literal; the fixtures
- *       carry BCrypt digests computed at run time and never a plaintext seed value. Severity:
- *       <strong>High</strong>.</li>
+ *       restated literal. Restore the {@code PASSWD} spelling and remove the literal; the fixtures
+ *       carry BCrypt digests computed at run time and never a plaintext seed value.</li>
  *   <li><strong>A test asserts a COMMAREA page field.</strong> There is none to assert:
  *       {@code app/cpy/COCOM01Y.cpy} declares {@code CDEMO-PGM-CONTEXT} at {@code :29} as its only context
  *       item and carries no page number and no next-page flag, so pagination state belongs to the paged
- *       transactions and not to sign-on. Remedy: delete the assertion. Severity:
- *       <strong>Medium</strong>.</li>
+ *       transactions and not to sign-on. Delete the assertion.</li>
  *   <li><strong>The build fails on an unused import.</strong> {@code -Xlint:all -Werror} reaches test
  *       compilation, so a single unreferenced import is fatal rather than advisory.</li>
  *   <li><strong>Mockito reports a {@code PotentialStubbingProblem}.</strong> Strict stubs are deliberate: a
  *       lookup made under an unexpected key fails loudly instead of quietly returning an empty result. It
- *       usually means a fold changed. Remedy: fix the fold, not the stub. The unknown-key paths leave the
+ *       usually means a fold changed, so fix the fold rather than the stub. The unknown-key paths leave the
  *       finder unstubbed on purpose, so that an absent row is genuinely absent.</li>
  *   </ul>
  */
@@ -803,8 +794,8 @@ class AuthenticationServiceTest {
     // =====================================================================================================
 
     /**
-     * One private method per source paragraph, which is the evidence the scope-coverage gate reads and
-     * against which TRACEABILITY_MATRIX.md is proved. {@code app/cbl/COSGN00C.cbl} declares exactly six
+     * One private method per source paragraph, which is what makes paragraph-level correspondence provable
+     * by inspection. {@code app/cbl/COSGN00C.cbl} declares exactly six
      * paragraph labels - {@code MAIN-PARA} at :73, {@code PROCESS-ENTER-KEY} at :108,
      * {@code SEND-SIGNON-SCREEN} at :145, {@code SEND-PLAIN-TEXT} at :162,
      * {@code POPULATE-HEADER-INFO} at :177 and {@code READ-USER-SEC-FILE} at :209.
@@ -1147,7 +1138,7 @@ class AuthenticationServiceTest {
      * <p>The stored digest is computed from the <em>upper-case</em> credential, exactly as
      * {@code V3__seed_data.sql} computes it from the seed literal. A credential presented in lower case can
      * therefore verify only if {@code :135-136} is present. Folding the identifier alone leaves the
-     * identifier lookup working and every lower-case credential refused - a silent, High-severity parity
+     * identifier lookup working and every lower-case credential refused - a silent parity
      * break that no test on the identifier alone would catch.
      */
     @Nested
@@ -1259,7 +1250,7 @@ class AuthenticationServiceTest {
             // string itself - $<version>$<cost>$<salt+digest> - so this asserts the strength that was
             // actually applied, not merely the strength the encoder was configured with. V3__seed_data.sql
             // writes cost 10 and CardDemoUserDetailsService verifies against it; a digest at any other cost
-            // fails every seeded sign-on, which is the High-severity mismatch this assertion catches.
+            // fails every seeded sign-on, which is the mismatch this assertion catches.
             assertThat(STORED_DIGEST.split("\\$")[BCRYPT_COST_FIELD_INDEX])
                     .as("app/jcl/DUSRSECJ.jcl:35-44 seeds ten users whose digests must all carry cost %d",
                             CONTRACTUAL_STRENGTH)

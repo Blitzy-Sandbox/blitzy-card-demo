@@ -101,68 +101,60 @@ import org.junit.jupiter.api.Test;
  * that the literal agrees with itself; an assertion that parses {@code app/cpy/CVTRA03Y.cpy} fails the moment
  * the mapping and the system of record diverge, which is the only failure worth catching here.
  *
- * <h2>Findings this class encodes, by severity</h2>
+ * <h2>Invariants this class pins, and what would break each one</h2>
  *
  * <table border="1">
- *   <caption>Severity register</caption>
- *   <tr><th>Severity</th><th>Finding</th><th>Remediation</th></tr>
+ *   <caption>Contract invariants</caption>
+ *   <tr><th>A plausible change</th><th>Why it breaks, and what the contract is</th></tr>
  *   <tr>
- *     <td>Blocker</td>
- *     <td>Applying a global zoned-decimal overpunch substitution to {@code trantype.txt}. Every one of the
- *         seven descriptions <em>begins</em> with a letter in the overpunch alphabet - {@code Purchase} and
- *         {@code Payment} with {@code P}, {@code Credit} with {@code C}, {@code Authorization} and
- *         {@code Adjustment} with {@code A}, {@code Refund} and {@code Reversal} with {@code R} - so a
- *         blanket replacement would rewrite all seven into digits and signs.</td>
- *     <td>Decode position aware, driven by the {@code PIC} clause alone. This layout declares
- *         {@code X(02)}, {@code X(50)} and {@code X(08)}: three character fields and not one
- *         {@code S9(n)V99}, so no decode belongs anywhere near it.</td>
+ *     <td>Applying a global zoned-decimal overpunch substitution to {@code trantype.txt}.</td>
+ *     <td>Every one of the seven descriptions <em>begins</em> with a letter in the overpunch alphabet -
+ *         {@code Purchase} and {@code Payment} with {@code P}, {@code Credit} with {@code C},
+ *         {@code Authorization} and {@code Adjustment} with {@code A}, {@code Refund} and {@code Reversal}
+ *         with {@code R} - so a blanket replacement would rewrite all seven into digits and signs. Decode
+ *         position aware, driven by the {@code PIC} clause alone: this layout declares {@code X(02)},
+ *         {@code X(50)} and {@code X(08)} - three character fields and not one {@code S9(n)V99} - so no
+ *         decode belongs anywhere near it.</td>
  *   </tr>
  *   <tr>
- *     <td>High</td>
  *     <td>Modelling the seven type codes as a Java enum.</td>
  *     <td>Keep the JPA {@code @Entity}. The codes are reference data seeded by the migration and extensible
  *         without a recompile, which is why they are a table.</td>
  *   </tr>
  *   <tr>
- *     <td>High</td>
  *     <td>Adding an optimistic locking version column.</td>
  *     <td>Leave it off. Only {@code Account}, {@code Card}, {@code Customer} and {@code Transaction} carry
  *         one; this row is written once by the seed migration.</td>
  *   </tr>
  *   <tr>
- *     <td>High</td>
  *     <td>A fixed-width writer that space-pads the trailing {@code FILLER X(08)}.</td>
  *     <td>Pad it with {@code '0'}. The eight bytes at columns 53-60 of every row of {@code trantype.txt} are
  *         {@code 00000000}, so space padding loses byte-exact reproduction.</td>
  *   </tr>
  *   <tr>
- *     <td>High</td>
- *     <td>Delimiting a {@code LISTCAT} entry by the carriage control character in column one. The
- *         {@code TRANTYPE} cluster entry opens at {@code app/catlg/LISTCAT.txt:L3742} but its
+ *     <td>Delimiting a {@code LISTCAT} entry by the carriage control character in column one.</td>
+ *     <td>The {@code TRANTYPE} cluster entry opens at {@code app/catlg/LISTCAT.txt:L3742} but its
  *         {@code ASSOCIATIONS} block is only at {@code :L3766-L3768}, and the listing utility prints a page
  *         header at {@code :L3757}, its subtitle at {@code :L3758} and a continuation line at {@code :L3759}
  *         in between - carrying {@code 1}, {@code -} and {@code 0} in column one. A parser that split on
  *         those characters stops at the page break and then reports this cluster as having <em>no</em>
- *         associations, which is a wrong answer rather than a failure and would silently confirm whatever
- *         the caller was hoping to prove.</td>
- *     <td>Terminate an entry on the next line that parses as an entry header, or on the closing census, and
- *         skip page furniture. This class does exactly that, and asserts the straddle so the hazard stays
- *         visible.</td>
+ *         associations, which is a wrong answer rather than a failure and would silently confirm whatever the
+ *         caller was hoping to prove. Terminate an entry on the next line that parses as an entry header, or
+ *         on the closing census, and skip page furniture; this class does exactly that, and asserts the
+ *         straddle so the hazard stays visible.</td>
  *   </tr>
  *   <tr>
- *     <td>Medium</td>
  *     <td>Harmonising the key column to {@code tran_type_cd} to match the sibling copybooks.</td>
  *     <td>Name it {@code tran_type}. {@code app/cpy/CVTRA03Y.cpy:L5} is the sole declaration in the corpus
  *         that omits the {@code -CD} suffix, and the copybook is authoritative. The wrong name aborts
  *         startup, because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every profile.</td>
  *   </tr>
  *   <tr>
- *     <td>Low</td>
- *     <td>Presuming an online path for this table. {@code app/csd/CARDDEMO.CSD} names exactly eight CICS
- *         files and this is not one of them, so it is batch only, as are {@code TCATBALF}, {@code DISCGRP}
- *         and {@code TRANCATG}.</td>
- *     <td>Give it no authorisation rule of its own and no REST endpoint, and exercise it through the batch
- *         tier rather than the online surface.</td>
+ *     <td>Presuming an online path for this table.</td>
+ *     <td>{@code app/csd/CARDDEMO.CSD} names exactly eight CICS files and this is not one of them, so it is
+ *         batch only, as are {@code TCATBALF}, {@code DISCGRP} and {@code TRANCATG}. Give it no
+ *         authorisation rule of its own and no REST endpoint, and exercise it through the batch tier rather
+ *         than the online surface.</td>
  *   </tr>
  * </table>
  *
@@ -170,11 +162,10 @@ import org.junit.jupiter.api.Test;
  *
  * <p><b>Data definition language: {@code Not available}.</b> No claim is made about
  * {@code src/main/resources/db/migration/V1__create_schema.sql} - not the column types it emits, not the
- * primary key it declares, not the ten foreign keys, and not the absence of an index. That file has no
- * planned children in this run, so its content is not established evidence from where this class stands, and
- * inventing a claim about it would be worse than omitting one. What would be needed to assert it: the
- * migration's authoritative text, plus a schema validation of the mapping against a live PostgreSQL 16
- * instance. Both belong to the integration tier, which is where they are exercised. This class asserts the
+ * primary key it declares, not the ten foreign keys, and not the absence of an index. Verifying the physical
+ * schema needs a schema validation of the mapping against a live PostgreSQL 16 instance, which belongs to the
+ * integration tier and is exercised there; inventing a claim from this tier would be worse than omitting
+ * one. This class asserts the
  * mapping against the copybook and the catalogue, which are frozen and readable, and stops there.
  *
  * <h2>How to build, run and test</h2>
@@ -459,7 +450,7 @@ class TransactionTypeTest {
         }
 
         @Test
-        @DisplayName("Medium: TRAN-TYPE is the only two-character type code in app/cpy that omits the -CD "
+        @DisplayName("TRAN-TYPE is the only two-character type code in app/cpy that omits the -CD "
                 + "suffix, so the column is tran_type and never tran_type_cd")
         void theBareTypeNameIsUniqueAcrossTheWholeCopybookDirectory() {
             final List<String> bare = new ArrayList<>();
@@ -500,8 +491,8 @@ class TransactionTypeTest {
                             "CVTRA07Y.cpy:20 TRAN-REPORT-TYPE-CD");
             assertThat(bare)
                     .as("exactly one declaration omits the suffix, and it is the primary key of this "
-                            + "entity; remediation if the column is ever harmonised: name it %s, because the "
-                            + "copybook and not the sibling naming habit is authoritative", KEY_COLUMN)
+                            + "entity, so the column is named %s: the copybook and not the sibling "
+                            + "naming habit is authoritative", KEY_COLUMN)
                     .containsExactly("CVTRA03Y.cpy:5 TRAN-TYPE");
         }
 
@@ -742,7 +733,7 @@ class TransactionTypeTest {
         }
 
         @Test
-        @DisplayName("High: no version column, because this is reference data written once by the seed "
+        @DisplayName("no version column, because this is reference data written once by the seed "
                 + "migration")
         void noOptimisticLockingVersionIsDeclared() {
             assertThat(declaredAnnotationNames())
@@ -802,7 +793,7 @@ class TransactionTypeTest {
     }
 
     @Nested
-    @DisplayName("5. High: it is a table, not a Java enum")
+    @DisplayName("5. It is a table, not a Java enum")
     class TheTypeIsATableNotAnEnum {
 
         @Test
@@ -1028,7 +1019,7 @@ class TransactionTypeTest {
         }
 
         @Test
-        @DisplayName("High: the trailing FILLER is zero filled, so a fixed-width writer that space pads "
+        @DisplayName("the trailing FILLER is zero filled, so a fixed-width writer that space pads "
                 + "cannot reproduce the fixture byte for byte")
         void theFillerIsZeroFilledAndNotSpaceFilled() {
             final FixtureLoader.FixtureData data = FixtureLoader.load(FixtureLoader.Fixture.TRANSACTION_TYPE);
@@ -1049,7 +1040,7 @@ class TransactionTypeTest {
         }
 
         @Test
-        @DisplayName("Blocker: every one of the seven descriptions begins with a letter in the overpunch "
+        @DisplayName("every one of the seven descriptions begins with a letter in the overpunch "
                 + "alphabet, so a global sign substitution would corrupt all seven")
         void aGlobalOverpunchSubstitutionWouldCorruptEveryDescription() {
             final List<String> wouldBeRewritten = new ArrayList<>();
@@ -1061,14 +1052,15 @@ class TransactionTypeTest {
 
             assertThat(wouldBeRewritten)
                     .as("P carries -7, C carries +3, A carries +1 and R carries -9, so a decoder applied "
-                            + "without regard to position would turn each of these words into a number; "
-                            + "remediation: slice at the PIC-derived offset and decode only S9(n)V99 fields")
+                            + "without regard to position would turn each of these words into a number, "
+                            + "so a decoder must slice at the PIC-derived offset and decode only S9(n)V99 "
+                            + "fields")
                     .containsExactlyElementsOf(SEEDED_TYPES.stream().map(SeededType::description).toList())
                     .hasSize(SEEDED_ROW_COUNT);
         }
 
         @Test
-        @DisplayName("Blocker guard: a decoder cannot diagnose itself, because on this layout it fails on "
+        @DisplayName("a decoder cannot diagnose itself, because on this layout it fails on "
                 + "the description and succeeds meaninglessly on the code and the filler")
         void onlyThePictureClauseCanDecideWhereADecodeBelongs() {
             final FixtureLoader.FixtureData data = FixtureLoader.load(FixtureLoader.Fixture.TRANSACTION_TYPE);

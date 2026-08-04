@@ -67,7 +67,7 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 
 /**
  * Proves that the object-store substrate the CardDemo migration stands on is actually there and actually
- * shaped the way the plan says: three logical buckets rather than seven, object versioning on the one bucket
+ * shaped the way the migration specifies: three logical buckets rather than seven, versioning on the bucket
  * that inherits generation semantics, and no reachable address anywhere in the tier except the emulator
  * container's own.
  *
@@ -98,9 +98,9 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  * {@code :3937-3951}, alongside {@code CLUSTER 10}, {@code AIX 3}, {@code PATH 3}, {@code DATA 13},
  * {@code INDEX 13}, {@code NONVSAM 160} and {@code TOTAL 209}, and the listing carries exactly seven
  * {@code GDG BASE} entries, at L684 DALYREJS, L1098 SYSTRAN, L1202 TCATBALF.BKUP, L1527 TRANREPT, L1631
- * TRANSACT.BKUP, L2919 TRANSACT.COMBINED and L3021 TRANSACT.DALY. <strong>An earlier revision of the plan
- * said six. Seven is right, and the consequence of six would not have been cosmetic: a missing base is a
- * missing output prefix, so one batch stream would have written into another's namespace.</strong>
+ * TRANSACT.BKUP, L2919 TRANSACT.COMBINED and L3021 TRANSACT.DALY. <strong>The count is load bearing rather
+ * than cosmetic: a missing base is a missing output prefix, so one batch stream would write into another's
+ * namespace.</strong>
  *
  * <p><strong>Why seven bases need only one bucket.</strong> A bucket is not the unit of separation here - a
  * key prefix is. {@code src/main/resources/application.yml} declares seven
@@ -136,12 +136,15 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  * </dl>
  *
  * <p>Record geometry itself is deliberately <em>not</em> asserted here, and neither is generation-key
- * ordering: both belong to the planned {@code S3GenerationKeyIntegrationTest}. That is phrased as an
- * obligation rather than as a fact on purpose, so the sentence stays true whether or not the file has been
- * authored yet. Byte-exact 430-byte reject geometry is in any case already covered in this package by
- * {@code S3AndSqsEmulatorIntegrationTest}, which exists and passes. This class stops at bucket existence,
- * bucket roles, the versioning mechanism, the seven-base accounting and the proof that no live address is
- * reachable. One concern per class, as Rule 1 Clause A asks.
+ * ordering: both belong to {@code S3GenerationKeyIntegrationTest}, which owns them. Byte-exact 430-byte
+ * reject geometry driven through the production writer lives there too, in its
+ * {@code ProductionWriterGenerationKeys} nest, alongside the generation semantics those assertions depend
+ * on. It previously lived in a seventh test in this package that reached the emulator through the batch
+ * tier's harness and so started a second container set for assertions this tier already owned; that file was
+ * retired and its unique assertions migrated, which is why this paragraph now names one owner rather than
+ * two. This class stops at bucket existence, bucket roles, the versioning mechanism, the seven-base
+ * accounting and the proof that no live address is reachable. One concern per class, as Rule 1 Clause A
+ * asks.
  *
  * <h2>2. How to build, run and test</h2>
  *
@@ -159,20 +162,17 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  * output. That is the worst failure mode available in this build, so the path
  * {@code src/test/java/com/cardemo/integration/aws/S3BucketProvisioningIntegrationTest.java} must not be
  * renamed or relocated and no sub-package may be introduced beneath it. After a build, confirm the Failsafe
- * report names this class; Surefire naming it instead, or neither naming it, is a
- * <strong>Blocker</strong>.
+ * report names this class; Surefire naming it instead, or neither naming it, means the class has been
+ * mis-located and must be moved back.
  *
  * <p><strong>A reachable Docker socket is a prerequisite, not a convenience.</strong>
  * {@code AbstractAwsIntegrationTest} starts a PostgreSQL 16 container and a LocalStack container eagerly and
  * rethrows a startup failure rather than skipping, because a green build must never be obtainable by having
  * no daemon. There is no in-memory substitute: an in-memory object store has no bucket-versioning semantics
  * to assert, which is the entire subject of this class. Where no daemon or socket is available the correct
- * report is that the gate is <em>blocked</em>, never an untested pass. The environment this was written and
- * run against supplies Docker Engine 29.7.0 with the socket present, and host {@code java} 25.0.3,
- * {@code javac} 25.0.3 and Maven 3.9.11 are all on the path, so Maven runs directly. An earlier note in the
- * plan claiming Docker was unavailable, and a later one claiming the host toolchain was absent so Maven had
- * to run inside a container, are both <strong>stale and withdrawn</strong>; severity <strong>Low</strong>,
- * because each cost a wrong instruction rather than a wrong artefact.
+ * report is that the gate is <em>blocked</em>, never an untested pass. The prerequisites are a reachable
+ * Docker daemon and socket plus JDK 25 and Maven 3.9.11 on the path, which is what lets {@code ./mvnw} run
+ * directly on the host.
  *
  * <h2>3. Key configuration and defaults</h2>
  *
@@ -208,19 +208,18 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  * {@code LIMIT(10)} with <em>no</em> {@code SCRATCH} for the very same base. Both were read verbatim. A
  * single object-store lifecycle value has to be chosen, so it is resolved <strong>to 10</strong> - the
  * larger, so nothing the legacy system would have kept is discarded - and the resolution is carried in
- * configuration as {@code carddemo.aws.s3.gdg-retention-generations}, which this class asserts. Severity
- * <strong>Medium</strong>. Remediation: none outstanding; the value is chosen, recorded and now tested.
+ * configuration as {@code carddemo.aws.s3.gdg-retention-generations}, which this class asserts.
  * <strong>No S3 lifecycle rule is asserted to be configured</strong>, because retention became documentation
  * rather than enforcement; what is asserted is the versioning mechanism that replaces relative generation
  * references.
  *
  * <p><strong>Every other legacy inconsistency is logged and never fixed</strong>, because repairing one would
- * change the behaviour the parity comparison is measured against. Four were re-read at this checkout and
- * confirmed: the genuinely corrupted {@code STMTFILE} DD continuation at {@code app/jcl/CREASTMT.JCL:90},
+ * change the behaviour the parity comparison is measured against. Four are recorded with their locators:
+ * the genuinely corrupted {@code STMTFILE} DD continuation at {@code app/jcl/CREASTMT.JCL:90},
  * which carries fragments of two other lines; the 80-versus-100 record-length disagreement for
  * {@code HTMLFILE} between the pre-delete step at {@code app/jcl/CREASTMT.JCL:69} and the execution step at
  * {@code :94}; the job-name typo {@code //OEPNFIL} at {@code app/jcl/OPENFIL.jcl:1}, where
- * {@code app/jcl/CLOSEFIL.jcl:1} is spelled correctly - severity <strong>Low</strong>; and
+ * {@code app/jcl/CLOSEFIL.jcl:1} is spelled correctly; and
  * {@code app/proc/TRANREPT.prc:21}, whose {@code EXEC PROC=REPROC} names an internal procedure while the
  * member itself resolves as {@code TRANREPT}. <strong>No corrected value is asserted for any of them.</strong>
  * Separately, {@code app/jcl/DEFCUST.jcl:35-38} defines {@code AWS.CUSTDATA.CLUSTER} with
@@ -233,7 +232,7 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  *   <dt>{@code Could not find a valid Docker environment}</dt>
  *   <dd>No reachable container runtime or socket. Start one; do not skip, and do not report a pass.</dd>
  *   <dt>A dependency under {@code org.testcontainers} fails to resolve</dt>
- *   <dd>The <strong>Testcontainers 2.0.3 coordinate trap</strong>, severity <strong>Blocker</strong>. Only
+ *   <dd>The <strong>Testcontainers 2.0.3 coordinate trap</strong>. Only
  *       the prefixed module coordinates exist at 2.0.3 - {@code testcontainers},
  *       {@code testcontainers-postgresql}, {@code testcontainers-localstack} and
  *       {@code testcontainers-junit-jupiter}. The bare {@code postgresql}, {@code localstack} and
@@ -243,16 +242,15 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  *       silently select 1.x. The remedy is two-part and <em>both</em> parts are required: override the
  *       managed version through the {@code testcontainers.version} property rather than importing a second
  *       bill of materials, and use only prefixed coordinates. Overriding without renaming resolves artefacts
- *       that do not exist; renaming without overriding resolves the wrong version. The root build already
- *       does both, verified at this checkout, so this is a standing hazard rather than an open defect - and
- *       the build file is owned elsewhere, so the remediation for a regression is to restore those two
- *       settings there, never to add a dependency from this tier.</dd>
+ *       that do not exist; renaming without overriding resolves the wrong version. The root build does
+ *       both, so this is a standing hazard rather than an open defect - and because the build file is owned
+ *       elsewhere, a regression there is repaired by restoring those two settings, never by adding a
+ *       dependency from this tier.</dd>
  *   <dt>The build fails on a warning that looks harmless</dt>
  *   <dd>{@code maven-compiler-plugin} 3.14.1 runs at release 25 with {@code -Xlint:all}, {@code -Werror} and
  *       {@code failOnWarning}, so one unused import, raw type, unchecked cast or deprecation fails the build.
- *       That is deliberate and must not be relaxed. Coverage is gated by JaCoCo 0.8.12 at 80% of lines with
- *       no exclusions; a prior record citing 0.8.14 is <strong>Medium</strong> drift and the pinned 0.8.12
- *       governs.</dd>
+ *       That is deliberate and must not be relaxed. Coverage is gated by the pinned JaCoCo 0.8.12 at 80% of
+ *       lines with no exclusions.</dd>
  *   <dt>A bucket will not delete, reporting that it is not empty</dt>
  *   <dd>Measured, not theorised: deleting a versioned bucket that still holds versions is refused with
  *       {@code BucketNotEmpty} and HTTP 409. Emptying the <em>visible</em> objects is not enough, because a
@@ -261,22 +259,22 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  *       instead of removing anything. {@code deleteBucketAndAllVersions} handles it, and
  *       {@link VersionedBucketDeletion} asserts that it does.</dd>
  *   <dt>Context startup aborts with {@code Could not resolve placeholder} naming the token signing key</dt>
- *   <dd>Severity <strong>High</strong>, and the defect is not in this file.
+ *   <dd>The cause is not in this file.
  *       {@code src/main/resources/application.yml} maps the signing key to an environment variable with no
  *       default, so that no deployment can boot with a key an attacker already knows;
  *       {@code src/main/resources/application-test.yml}, which is owned elsewhere, supplies no test value, so
- *       the refresh aborts before any test runs. Remediation, for the owner of that file: supply a
- *       recognisably non-production test value in the {@code test} profile. Until it does, the harness
+ *       the refresh aborts before any test runs. The fix belongs with the owner of that file: a
+ *       recognisably non-production test value in the {@code test} profile. Until it lands, the harness
  *       registers one itself. <strong>It is reported here and never patched from here</strong>, and no real
  *       key is written anywhere.</dd>
  *   <dt>A listing fails with {@code Could not parse XML response}</dt>
  *   <dd>Measured while writing {@link UntrustedObjectKeys}, and worth knowing before it is mistaken for a
  *       defect in this code. An object key containing a raw C0 control character stores successfully, but the
  *       emulator then emits that byte unescaped into the XML of a subsequent listing and the parser rejects
- *       the document - which would also break the version-listing cleanup and leak the bucket. Severity
- *       <strong>Medium</strong>, and it is an emulator limitation rather than a fault in the code under test.
- *       Remediation, applied here: verify a control-character key with a head request, which carries no XML
- *       body, and remove it by key before any listing runs.</dd>
+ *       the document - which would also break the version-listing cleanup and leak the bucket. That is an
+ *       emulator limitation rather than a fault in the code under test, and it is handled here by verifying a
+ *       control-character key with a head request, which carries no XML body, and removing it by key before
+ *       any listing runs.</dd>
  *   <dt>A test passes alone and fails in a suite</dt>
  *   <dd>Almost always a shared resource name. Every bucket here is derived from
  *       {@code scopedResourceName}, which is unique per concrete class and identical on every run, and is
@@ -303,9 +301,8 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  * and aborts the context refresh unless its scheme is http or https, it carries no user information, and its
  * host is on an allow-list of loopback and compose-local names. Because that guard is a bean factory
  * post-processor it runs before any bean exists, so a misconfiguration fails startup instead of escaping.
- * <strong>The plan's claim that base and {@code prod} carry no override is inaccurate: severity
- * Medium.</strong> Remediation: correct the plan text; no code change, and this class asserts the runtime
- * truth instead - that the injected client's resolved endpoint is the container's own.
+ * What this class asserts is the runtime truth rather than any restatement of it: that the injected client's
+ * resolved endpoint is the container's own.
  *
  * <p>Three named risky patterns are <strong>absent by inspection</strong>. There is no
  * <strong>eval or exec</strong> - no {@code Runtime.exec}, no {@code ProcessBuilder}, no script engine and no
@@ -651,13 +648,11 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
          * and its neighbouring key field safe. An annotation argument must be a compile-time constant and
          * this class is permitted no {@code static} field to share one, so the text necessarily appears
          * twice; resolving the key field and comparing it with the injected value turns that from a drift
-         * risk into a checked invariant. It also catches the genuine hazard of an invented spelling: the plan
-         * names the environment variables behind two of these keys as {@code CARDDEMO_S3_INPUT_BUCKET} and
-         * {@code CARDDEMO_S3_OUTPUT_BUCKET}, whereas the repository uses
-         * {@code CARDDEMO_S3_BATCH_INPUT_BUCKET} and {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}. Severity
-         * <strong>Medium</strong>; the keys asserted here are the ones
-         * {@code com.cardemo.config.AwsConfig} binds, which is what governs. Remediation: correct the plan
-         * text; no code change.
+         * risk into a checked invariant. It also catches the genuine hazard of an invented spelling: the
+         * environment variables behind two of these keys are {@code CARDDEMO_S3_BATCH_INPUT_BUCKET} and
+         * {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET} - the {@code BATCH} segment is part of the name, and a
+         * shortened spelling binds nothing. The keys asserted here are the ones
+         * {@code com.cardemo.config.AwsConfig} binds.
          */
         @Test
         @DisplayName("every property key resolves to the value the harness exposes")
@@ -977,12 +972,12 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
      * The accounting: exactly seven generation bases, each with its own prefix, and the retention conflict
      * resolved to a single value.
      *
-     * <p>Counting is the point of this group. An earlier revision of the plan recorded six bases, and six is
-     * wrong in a way that no compiler and no ordinary test would notice: the seventh is defined in a member of
-     * its own, so a reader who opens only {@code app/jcl/DEFGDGB.jcl} undercounts, and the consequence is a
-     * missing output prefix rather than an error. The count is therefore asserted against the catalogue's own
-     * total, and the resolved retention value is asserted alongside it, because both are corrections carried
-     * by this migration rather than properties inherited from it.
+     * <p>Counting is the point of this group, because an undercount is invisible to the compiler and to an
+     * ordinary test: the seventh base is defined in a member of its own, so a reader who opens only
+     * {@code app/jcl/DEFGDGB.jcl} undercounts, and the consequence is a missing output prefix rather than an
+     * error. The count is therefore asserted against the catalogue's own total, and the resolved retention
+     * value is asserted alongside it, because both are decisions this migration makes rather than properties
+     * it inherits.
      */
     @Nested
     @DisplayName("seven generation bases, and the resolved TRANREPT retention conflict")
@@ -1095,8 +1090,7 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
          * {@code app/jcl/REPTFILE.jcl:25-28} declares {@code LIMIT(10)} with no {@code SCRATCH} for that same
          * base. This is <strong>the only legacy inconsistency the migration actually resolves</strong> rather
          * than logs, and only because a single object-store lifecycle value has to be chosen; ten is taken as
-         * the larger, so nothing the legacy system would have kept is discarded. Severity
-         * <strong>Medium</strong>.
+         * the larger, so nothing the legacy system would have kept is discarded.
          *
          * <p>What is <em>not</em> asserted is equally deliberate: no S3 lifecycle rule is asserted to be
          * configured. Retention became documented intent rather than enforcement, so asserting an enforced
@@ -1111,7 +1105,7 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
                             + "declares LIMIT(5) with SCRATCH for AWS.M2.CARDDEMO.TRANREPT while "
                             + "app/jcl/REPTFILE.jcl:25-28 declares LIMIT(10) with no SCRATCH for the SAME "
                             + "base. A single lifecycle value has to be chosen, so the larger is taken and "
-                            + "nothing the legacy system would have kept is discarded. Severity Medium. This "
+                            + "nothing the legacy system would have kept is discarded. This "
                             + "is the ONLY legacy inconsistency resolved rather than logged: the corrupted "
                             + "STMTFILE continuation at app/jcl/CREASTMT.JCL:90, the 80-versus-100 HTMLFILE "
                             + "mismatch between :69 and :94, the //OEPNFIL job-name typo at "
@@ -1147,7 +1141,7 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
          * actually do. An <em>absent</em> override is the dangerous case and is asserted against explicitly:
          * with no override the SDK falls through to regional endpoint discovery and addresses a real account,
          * which is why the guarantee cannot be phrased as "no endpoint is configured". A live endpoint on any
-         * code path in this tier would be a <strong>Blocker</strong>.
+         * code path in this tier is forbidden outright.
          */
         @Test
         @DisplayName("the injected client's resolved endpoint is the container's own")
@@ -1161,7 +1155,7 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
                             + "when the container starts, so a literal would be forbidden and wrong at once. "
                             + "An ABSENT override is the dangerous case, not the safe one - with no override "
                             + "the SDK falls through to regional endpoint discovery and addresses a real "
-                            + "account. A live endpoint reaching a code path here is a Blocker.")
+                            + "account. A live endpoint reaching a code path here is forbidden.")
                     .contains(expected);
 
             assertThat(environment.getProperty("spring.cloud.aws.s3.endpoint"))
@@ -1263,9 +1257,9 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
          * measured rather than guessed: such a key stores successfully, but the emulator then emits the raw
          * control byte unescaped into the XML of any subsequent listing and the parser rejects the document.
          * That would also break the version-listing teardown and leak the bucket, so the object is removed by
-         * key - which needs no listing either - before this method returns. Severity <strong>Medium</strong>,
-         * and it is a limitation of the emulator rather than a fault in the code under test. Remediation is
-         * what is done here: head to verify, delete by key, never list while such a key is present.
+         * key - which needs no listing either - before this method returns. That is a limitation of the
+         * emulator rather than a fault in the code under test, and the discipline it imposes is the one
+         * followed here: head to verify, delete by key, never list while such a key is present.
          *
          * <p>The bucket is left empty, so the harness's version-aware teardown removes it cleanly and the
          * class still passes when run twice in succession.
@@ -1289,8 +1283,8 @@ class S3BucketProvisioningIntegrationTest extends AbstractAwsIntegrationTest {
                             + "deliberately NOT used: measured against the running emulator, the raw control "
                             + "byte is emitted unescaped into the XML of a subsequent listing and the parser "
                             + "rejects the document - which would break the version-aware teardown too and "
-                            + "leak this bucket. Severity Medium, and it is an emulator limitation rather "
-                            + "than a fault in the code under test.")
+                            + "leak this bucket. That is an emulator limitation rather than a fault in the "
+                            + "code under test.")
                     .isEqualTo((long) "CONTROL-CHARACTER-PROBE".length());
 
             // Removed by key, which needs no listing, so that the harness teardown can list this bucket's

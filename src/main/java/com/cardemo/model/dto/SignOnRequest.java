@@ -266,13 +266,20 @@ public record SignOnRequest(
     /**
      * Returns a diagnostic rendering that deliberately omits the credential.
      *
-     * @return a rendering of this request that contains no credential material
+     * <p>Every field below is passed through {@link ApiMasking#forDiagnostics(String)}. All of them are
+     * declared {@code String} and all arrive from a JSON request body, so a caller controls their bytes; a CR
+     * or LF concatenated straight in here would forge log records. The escaping also makes this rendering safe
+     * on an instance that failed validation, which is the usual reason something renders one - {@code @Size}
+     * runs after Jackson has already constructed the record.
+     *
+     * @return a rendering of this request that contains no credential material and no character that could
+     *     terminate a log record
      */
     @Override
     public String toString() {
-        return "SignOnRequest[userId=" + userId
-                + ", transactionName=" + transactionName
-                + ", programName=" + programName + "]";
+        return "SignOnRequest[userId=" + ApiMasking.forDiagnostics(userId)
+                + ", transactionName=" + ApiMasking.forDiagnostics(transactionName)
+                + ", programName=" + ApiMasking.forDiagnostics(programName) + "]";
     }
 
     /**

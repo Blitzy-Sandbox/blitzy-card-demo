@@ -28,7 +28,7 @@
  *               app/cbl/CBTRN03C.cbl:L198-L199  (TRAN-AMT, page total)
  *               app/cbl/CBACT04C.cbl:L193       (TRAN-CAT-BAL-RECORD)
  *               app/cpy/CVACT01Y.cpy            (300-byte layout)
- *               app/cpy/CVTRA01Y.cpy:L15        (TRAN-CAT-BAL)
+ *               app/cpy/CVTRA01Y.cpy:L9         (TRAN-CAT-BAL)
  *                                                        @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -50,8 +50,6 @@
 package com.cardemo.unit.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 

@@ -54,9 +54,11 @@ import com.cardemo.service.card.CardDetailService;
 import com.cardemo.service.card.CardListService;
 import com.cardemo.service.card.CardUpdateService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Base64;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -68,7 +70,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -121,8 +122,8 @@ import org.springframework.http.ResponseEntity;
 @DisplayName("CardController - the wire contract for CCLI, CCDL and CCUP")
 class CardControllerTest {
 
-    /** A signing key of the length the sealer requires. A test literal, not a deployment secret. */
-    private static final String TEST_SIGNING_KEY = "carddemo-unit-test-signing-key-0123456789";
+    /** A signing key of the length the sealer requires, generated per run so nothing is committed. */
+    private static final String TEST_SIGNING_KEY = ephemeralSigningKey();
 
     /** Token lifetime, long enough that no test can age one out by accident. */
     private static final long TOKEN_LIFETIME_SECONDS = 900L;
@@ -752,4 +753,26 @@ class CardControllerTest {
                     .hasMessageContaining("snapshotTokenService");
         }
     }
+
+    /**
+     * Generates a single-use signing key for this suite.
+     *
+     * <p>Rule 1 Clause D forbids secrets in code, in configuration and <em>in tests</em>, with no carve-out
+     * for material that happens to be synthetic: a literal key in a committed file is still committed key
+     * material, indexable and copyable into a deployment, and it teaches the pattern the clause exists to
+     * stop. Generating it removes the class of problem instead of declaring one instance of it harmless. The
+     * value exists only in memory for the lifetime of this class, so there is nothing to leak or rotate, and
+     * no assertion anywhere depends on its content - only on its being long enough and internally consistent.
+     *
+     * <p>Thirty-two bytes of entropy is the HS256 minimum the sealer enforces; URL-safe unpadded encoding
+     * widens that to forty-three characters, so the length guard passes with room to spare.
+     *
+     * @return a freshly generated key, never {@code null}, never logged and never persisted
+     */
+    private static String ephemeralSigningKey() {
+        final byte[] keyMaterial = new byte[32];
+        new SecureRandom().nextBytes(keyMaterial);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
+    }
+
 }

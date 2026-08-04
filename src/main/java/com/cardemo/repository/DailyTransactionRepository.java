@@ -340,11 +340,15 @@ import org.springframework.stereotype.Repository;
  *
  * <p>Two things follow, and the second is a standing constraint on other packages:</p>
  * <ul>
- *   <li>the only legitimate consumers are in {@code com.cardemo.batch} -
- *       {@code TransactionPostingProcessor} and
- *       {@code com.cardemo.batch.readers.DailyTransactionReader}, both of which are authored,
- *       plus {@code DailyTransactionPostingJob}, which is <strong>planned</strong> and not yet
- *       authored;</li>
+ *   <li>the only legitimate consumers are in {@code com.cardemo.batch}, and all of them are
+ *       <strong>authored</strong>: {@code com.cardemo.batch.processors.TransactionPostingProcessor},
+ *       {@code com.cardemo.batch.readers.DailyTransactionReader}, and
+ *       {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which reaches this interface twice -
+ *       once through that reader, on both its steps, and once directly, as the bounded {@code OPEN} probe
+ *       of the read-only pre-flight derived from {@code app/cbl/CBTRN01C.cbl}. <b>Finding, severity Low,
+ *       remediated:</b> that job was described here as planned and not yet authored, which had ceased to be
+ *       true; it is exercised end to end by
+ *       {@code src/test/java/com/cardemo/integration/batch/DailyTransactionPostingJobTest.java};</li>
  *   <li><strong>no controller operation, no REST endpoint and no administrative management
  *       surface may be created for this staging table</strong>, nor for {@code TCATBALF},
  *       {@code DISCGRP}, {@code TRANCATG} or {@code TRANTYPE}. The online surface is exactly
@@ -603,19 +607,22 @@ public interface DailyTransactionRepository extends JpaRepository<DailyTransacti
      * from a size alone, remains the expected usage.</p>
      *
      * <p><strong>Named call sites.</strong> The production caller is
-     * {@code com.cardemo.batch.readers.DailyTransactionReader}, which is authored and advances
-     * this method's page index from its own {@code read()} until a slice reports that no further
-     * rows follow. What that reader feeds is not yet in place, which is a statement about
-     * sequencing rather than about this method:
-     * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob} is <strong>planned</strong>,
-     * as is the read-only pre-flight step of that same job derived from
-     * {@code app/cbl/CBTRN01C.cbl}, which iterates the staged
-     * input to report on it without writing anything. On the test side,
+     * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which is authored, and which uses this
+     * method as the bounded {@code OPEN} probe of its read-only pre-flight step - the step derived from
+     * {@code app/cbl/CBTRN01C.cbl}, which iterates the staged input to report on it without writing
+     * anything. A probe is the one caller for which a page request is the right shape: there is no cursor
+     * to seek from, and one row is all that is wanted. The sequential <em>scan</em> is not a caller and no
+     * longer should be -
+     * {@code com.cardemo.batch.readers.DailyTransactionReader} reads through
+     * {@link #findByIngestSequenceGreaterThanOrderByIngestSequenceAsc(long, Pageable)} instead, because a
+     * page index makes the provider render {@code OFFSET} and a whole-relation scan then costs a quadratic
+     * number of row visits. On the test side,
      * {@code src/test/java/com/cardemo/integration/repository} holds the Testcontainers base and
-     * two concrete subclasses that already drive this method through an explicit page request and
-     * so exercise its ascending order. What no test yet asserts is the
-     * acceptance of a repeated {@code dalytran_id}, or the round-trip of a negative amount, a
-     * blank processing stamp and an {@code OPERATOR} origin value. Those remain owed.</p>
+     * concrete subclasses that drive this method through an explicit page request and so exercise its
+     * ascending order, its behaviour past the end of the data, the acceptance of a repeated
+     * {@code dalytran_id} and the round-trip of a negative amount and a blank processing stamp;
+     * {@code src/test/java/com/cardemo/integration/batch/DailyTransactionPostingJobTest.java} exercises the
+     * pre-flight probe itself against a real relation.</p>
      *
      * <p><strong>Side effects.</strong> None. The call is read-only: it inserts, updates and
      * deletes nothing, mutates no argument, holds no state between calls and writes no log
@@ -639,4 +646,66 @@ public interface DailyTransactionRepository extends JpaRepository<DailyTransacti
      *         further rows follow; empty when the position is past the end, never null
      */
     Slice<DailyTransaction> findAllByOrderByIngestSequenceAsc(Pageable pageable);
+
+    /**
+     * Reads the staged rows that follow one ingestion ordinal, ascending, bounded by the pageable's size.
+     *
+     * <p><strong>What it does.</strong> Returns the next chunk of {@code daily_transaction} strictly after
+     * {@code ingestSequence}, ordered ascending by {@code ingest_seq}. This is the keyset - or seek - form of
+     * {@link #findAllByOrderByIngestSequenceAsc(Pageable)}: the caller says <em>where it got to</em> rather
+     * than <em>how far in</em>, so the position is a value in the data instead of a count of rows skipped.
+     * Pass {@code 0L} to start from the beginning, because {@code ingest_seq} is one-based - the column is the
+     * record's own position in the flat file, so no staged row can carry the ordinal zero.</p>
+     *
+     * <p><strong>Finding, severity Medium - remediated by adding this method.</strong> The reader positioned
+     * itself with {@code PageRequest.of(pageIndex, size)}, which the provider renders as {@code OFFSET}. Two
+     * consequences followed. The store must walk and discard every skipped row on each refill, so reading a
+     * relation of <em>n</em> rows in pages of <em>p</em> costs a quadratic number of row visits rather than a
+     * linear one. And a restart positioned by {@code ordinal / pageSize} is exact only while the relation is
+     * unchanged between the two runs: a row inserted or deleted below the cursor shifts every offset after it,
+     * so a resumed run could silently re-emit or silently skip rows. Seeking by the key removes both: the
+     * index is entered once per refill at the point the caller left off, and a resumed run lands on the row
+     * after the last one it actually emitted whatever else has changed. The reader's own remediation note
+     * named this method by name; it is added here rather than there because a finder belongs to the
+     * repository.</p>
+     *
+     * <p><strong>Why the ordinal and not {@code DALYTRAN-ID}.</strong> The same reason the sibling method
+     * gives. The staged input is keyless - {@code app/cbl/CBTRN02C.cbl:L29-L32} declares it
+     * {@code ORGANIZATION IS SEQUENTIAL} - and a staged {@code dalytran_id} may legitimately repeat, so it is
+     * neither total nor unique and cannot carry a seek. The ingestion ordinal is the primary key and is the
+     * file's own record position, so ordering by it is both faithful to the flat file and total, which is what
+     * makes chunk boundaries stable and guarantees that no row is skipped or repeated across them.</p>
+     *
+     * <p><strong>Named call sites.</strong> {@code com.cardemo.batch.readers.DailyTransactionReader}, on its
+     * repository path, for both the reachability probe it issues in place of a whole-relation {@code count()}
+     * and every subsequent refill, and for restoring its restart cursor. Its consumers are the two authored
+     * steps of {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}: the read-only pre-flight derived
+     * from {@code app/cbl/CBTRN01C.cbl}, which iterates the staged input to report on it and writes nothing,
+     * and the posting step derived from {@code app/cbl/CBTRN02C.cbl:L202-L219}. Both are exercised end to end
+     * by {@code src/test/java/com/cardemo/integration/batch/DailyTransactionPostingJobTest.java}.</p>
+     *
+     * <p><strong>Side effects.</strong> None. Read-only: inserts, updates and deletes nothing, mutates no
+     * argument, holds no state between calls and writes no log record.</p>
+     *
+     * <p><strong>Failure modes.</strong> An empty staging table, or an ordinal at or beyond the highest
+     * staged one, yields an empty slice reporting no further content. That is the end-of-data signal and not
+     * an error - the counterpart of file status {@code '10'}, which at {@code app/cbl/CBTRN02C.cbl:L345-L369}
+     * sets the end-of-file flag and terminates the loop rather than failing. A negative ordinal is accepted
+     * and behaves as {@code 0L} would, since no row can match it either; it is not rejected here, because the
+     * one caller derives the value from a checkpoint it wrote itself and guards it there. The return value is
+     * never null. A connectivity or schema fault propagates as the persistence provider's unchecked exception
+     * with its root cause intact; it is neither caught nor wrapped here, and is translated once in
+     * {@code com.cardemo.service.shared.FileStatusMapper}.</p>
+     *
+     * @param ingestSequence the ingestion ordinal already consumed; rows strictly greater than it are
+     *                       returned. {@code 0L} starts from the beginning, the column being one-based
+     * @param pageable the chunk size to read; expected to be unsorted and built from a size alone, since the
+     *                 ascending ingestion-ordinal ordering is already fixed by this method and any additional
+     *                 sort acts only as a tie-breaker after it. Its page index is immaterial to a keyset read
+     *                 and callers pass page zero
+     * @return the next chunk ordered ascending by {@code ingest_seq}, reporting whether further rows follow;
+     *         empty when nothing follows the given ordinal, never null
+     */
+    Slice<DailyTransaction> findByIngestSequenceGreaterThanOrderByIngestSequenceAsc(
+            long ingestSequence, Pageable pageable);
 }

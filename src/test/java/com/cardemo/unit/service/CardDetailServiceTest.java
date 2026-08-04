@@ -695,7 +695,7 @@ final class CardDetailServiceTest {
      * @return the record, never {@code null}
      */
     private static Card canonicalCard() {
-        return new Card(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC, EMBOSSED_NAME, EXPIRAION_DATE,
+        return new Card(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC, "007", EMBOSSED_NAME, EXPIRAION_DATE,
                 ACTIVE_STATUS);
     }
 

@@ -18,7 +18,7 @@
  *               app/cbl/CBTRN03C.cbl:L170-L179 (loop + date re-filter)
  *               app/cbl/CBTRN03C.cbl:L177       (NEXT SENTENCE - the one
  *                                                occurrence in the corpus;
- *                                                semantics Not available)
+ *                                                shipped as a labelled divergence)
  *               app/cbl/CBTRN03C.cbl:L172-L196 (per-record body)
  *               app/cbl/CBTRN03C.cbl:L181-L188 (control break on card)
  *               app/cbl/CBTRN03C.cbl:L198-L203 (end of data)
@@ -144,19 +144,18 @@ import org.springframework.dao.QueryTimeoutException;
  * creates mocks through {@link org.mockito.Mockito#mock(Class)} and stubs only what a given test
  * actually exercises, so an unused stub is a defect the suite surfaces rather than tolerates.
  *
- * <p><b>Two facts are `Not available` and are stated rather than fabricated</b>, as Rule 1 clause F
+ * <p><b>One divergence and one missing artefact are stated rather than papered over</b>, as Rule 1 clause F
  * requires.
  * <ul>
- * <li><b>High. The semantics of {@code NEXT SENTENCE} at {@code app/cbl/CBTRN03C.cbl:L177}.</b> It is
- * the only occurrence in the twenty-eight program corpus, and no separator period exists anywhere inside
- * the loop body {@code :L170-L206} - the nearest is {@code END-PERFORM.} at {@code :L206}. Two readings
- * follow and they are irreconcilable: control passing to the statement after the next period would
- * terminate the entire report on the first out-of-range record, while the conservative reading makes the
- * construct a no-op so the filter has no effect at all. Both refute a plain inclusive per-record filter.
- * <b>Neither reading is chosen here.</b> What is needed to settle it: an IBM Enterprise COBOL compiler
- * and runtime on which to observe the actual behaviour. Group 10 asserts the pragmatic translation that
- * was shipped instead and labels it a divergence.</li>
- * <li><b>Medium. A captured legacy output baseline.</b> An exhaustive search of the repository for
+ * <li><b>{@code NEXT SENTENCE} at {@code app/cbl/CBTRN03C.cbl:L177} and the divergence it forces.</b>
+ * {@code NEXT SENTENCE} transfers control to the statement following the next separator period. It is the
+ * only occurrence in the twenty-eight program corpus, and no separator period exists anywhere inside the
+ * loop body {@code :L170-L206} - the nearest is the one ending {@code END-PERFORM.} at {@code :L206} - so
+ * control resumes after the {@code PERFORM} and the first out-of-range record ends the report. That refutes
+ * a plain inclusive per-record filter, which is what the shipped translation is: the item is filtered and
+ * the run continues. Group 10 asserts that behaviour as a deliberate divergence rather than as parity, and
+ * states what closing it would take.</li>
+ * <li><b>A captured legacy output baseline.</b> An exhaustive search of the repository for
  * <i>expected</i>, <i>baseline</i>, <i>golden</i>, {@code *.out} and {@code *TRANREPT*} returns only
  * dataset-definition JCL and zero captured data, so byte-for-byte report output to diff against is
  * <b>Not available</b>. What is needed: a report file captured from a z/OS run of
@@ -172,32 +171,30 @@ import org.springframework.dao.QueryTimeoutException;
  * page and the account total a second time - group 6 asserts that double count. And because
  * {@code :L198-L203} performs no closing {@code 1120-WRITE-ACCOUNT-TOTALS}, the last card group never
  * receives an {@code Account Total} line at all - group 6 asserts that absence too. Correcting any of
- * them would change output the boundary-parity gate diffs against the legacy baseline. Each is preserved,
- * marked at its locator here, and destined for a {@code DECISION_LOG.md} entry and a
- * {@code TRACEABILITY_MATRIX.md} row, which is what keeps them tracked rather than dead - the distinction
- * Rule 1 clause B actually draws.
+ * them would change output the boundary-parity gate diffs against the legacy baseline. Each is preserved
+ * and marked at its locator here, which is what distinguishes a deliberate reproduction from residue.
  *
  * <p><b>Common failure modes and troubleshooting.</b>
  * <ul>
- * <li><b>Blocker.</b> A failure in group 3 means the control-break key has moved. It is the card number
+ * <li>A failure in group 3 means the control-break key has moved. It is the card number
  * and only the card number; a break on the resolved account identifier would merge every card of a
  * multi-card account into one group and change the totals.</li>
- * <li><b>Blocker.</b> A failure in group 5 means a line of some length other than 133 reached the writer.
+ * <li>A failure in group 5 means a line of some length other than 133 reached the writer.
  * A fixed block file rejects that, and every downstream comparison is byte-oriented.</li>
- * <li><b>High.</b> A failure in group 4 means the page rollup has changed. The grand total accumulates
+ * <li>A failure in group 4 means the page rollup has changed. The grand total accumulates
  * only through the page total, so a page total that fails to reset double counts and one that fails to
  * roll up loses a page.</li>
- * <li><b>High.</b> A failure in group 2 means the inclusive date filter has changed sense. The sort card
+ * <li>A failure in group 2 means the inclusive date filter has changed sense. The sort card
  * already filters, and the program filters again; both bounds are inclusive.</li>
- * <li><b>Medium.</b> A failure in group 7 means a lookup miss no longer abends. The source displays and
+ * <li>A failure in group 7 means a lookup miss no longer abends. The source displays and
  * then reaches {@code 9999-ABEND-PROGRAM}; continuing from a stale buffer is what the guard prevents.</li>
- * <li><b>Low.</b> A failure in group 9 means an unmasked card number reached a log record.</li>
- * <li><b>High.</b> A failure in group 11 means a line layout has drifted from
+ * <li>A failure in group 9 means an unmasked card number reached a log record.</li>
+ * <li>A failure in group 11 means a line layout has drifted from
  * {@code app/cpy/CVTRA07Y.cpy}. The likeliest cause is the leader width of the account total line: it is
  * {@code X(84)} at {@code :L59} where the page and grand lines are {@code X(86)} at {@code :L53} and
  * {@code :L65}, because its label is two characters longer. Copying 86 onto all three is the obvious
  * mistake, and it shifts the edited amount by two columns on one line in three.</li>
- * <li><b>High.</b> A failure in group 12 means one of the five paragraphs behind the
+ * <li>A failure in group 12 means one of the five paragraphs behind the
  * {@code 1110-}/{@code 1120-} prefix collisions has been consolidated with another. They are five
  * distinct paragraphs with different line-counter arithmetic - notably
  * {@code 1110-WRITE-GRAND-TOTALS} advances the counter not at all - and tidying them into a uniform
@@ -272,9 +269,9 @@ class TransactionReportProcessorTest {
      * <p>{@link FixedClockProvider#batchTimestamp(Clock)} renders the twenty-six character batch form
      * {@code 2022-06-10-19.27.53.000000}, whose leading ten characters are {@code 2022-06-10} - inside the
      * {@code 2022-06-01}/{@code 2022-06-30} period by construction. Deriving it removes the last
-     * wall-clock-shaped literal from this class; an earlier revision repeated the twenty-six characters by
-     * hand at five call sites, where a single mistyped digit would have silently moved a record out of
-     * period and turned a filter assertion green for the wrong reason.
+     * wall-clock-shaped literal from this class: repeating the twenty-six characters by hand at five call
+     * sites would let a single mistyped digit move a record out of period and turn a filter assertion green
+     * for the wrong reason.
      */
     private static final String IN_PERIOD_PROC_TS = FixedClockProvider.batchTimestamp(FIXED_CLOCK);
 
@@ -1429,13 +1426,13 @@ class TransactionReportProcessorTest {
     }
 
     @Nested
-    @DisplayName("10. NEXT SENTENCE at :L177: semantics Not available, translation asserted as a divergence")
+    @DisplayName("10. NEXT SENTENCE at :L177: the shipped filter is asserted as a divergence")
     class NextSentenceAmbiguity {
 
         /**
          * States the gap rather than papering over it, and proves the shipped translation.
          *
-         * <p><b>Finding, High severity.</b> {@code app/cbl/CBTRN03C.cbl:L176-L177} closes the date test with
+         * <p>{@code app/cbl/CBTRN03C.cbl:L176-L177} closes the date test with
          * {@code ELSE NEXT SENTENCE}. Two facts about that site were established by reading the frozen
          * source, and both are decisive:
          * <ol>
@@ -1445,24 +1442,19 @@ class TransactionReportProcessorTest {
          * exists to calibrate the reading against.</li>
          * </ol>
          *
-         * <p>{@code NEXT SENTENCE} transfers control to the statement following the next period. Under the
-         * IBM Enterprise COBOL reading, the next period terminates the whole {@code PERFORM UNTIL}, so the
-         * first out-of-range record ends the report. Under the conservative reading the construct is a
-         * no-op and the filter has no effect at all. <b>Both readings refute a working inclusive per-record
-         * filter, and this suite chooses neither.</b> The semantics are <b>Not available</b>. What is needed
-         * to settle them: an IBM Enterprise COBOL compiler and runtime on which to observe the behaviour of
-         * this exact paragraph.
+         * <p>{@code NEXT SENTENCE} transfers control to the statement following the next separator period.
+         * Here that period is the one ending {@code END-PERFORM.} at {@code :L206}, so control resumes after
+         * the {@code PERFORM} and the first out-of-range record ends the report - which is not an inclusive
+         * per-record filter.
          *
-         * <p><b>What is asserted instead, and its remediation.</b> The shipped translation is the pragmatic
-         * one - the item is filtered, {@code process} returns {@code null}, and the run continues. That is a
-         * deliberate divergence from at least one of the two readings and possibly from both, recorded here
-         * at High severity and destined for a {@code DECISION_LOG.md} entry. Remediation, once the semantics
-         * are known: if the terminating reading holds, the step must stop reading at the first out-of-range
-         * record, which a reader-level exhausted signal expresses; if the no-op reading holds, this filter
-         * must be deleted so that every record the sort admitted is reported. Do not guess between them.
+         * <p><b>What is asserted instead.</b> The shipped translation filters the item, {@code process}
+         * returns {@code null}, and the run continues. That is a deliberate divergence and is asserted as
+         * one. Closing it would mean stopping the read at the first out-of-range record, which a
+         * reader-level exhausted signal expresses; this suite pins the current behaviour so the divergence
+         * cannot be mistaken for parity.
          */
         @Test
-        @DisplayName("HIGH/Not available: an out-of-range record is filtered rather than terminating the run")
+        @DisplayName("an out-of-range record is filtered rather than terminating the run, which is the divergence")
         void anOutOfRangeRecordIsFilteredAndTheRunContinues() {
             stubHappyPath();
 
@@ -1475,10 +1467,9 @@ class TransactionReportProcessorTest {
                             + "Batch reads null as 'drop this record'")
                     .isNull();
             assertThat(reported)
-                    .as("DIVERGENCE, High: the run continues after an out-of-range record. Under the "
-                            + "IBM Enterprise COBOL reading of NEXT SENTENCE it would have ended. The "
-                            + "semantics are Not available, so this behaviour is asserted as the shipped "
-                            + "choice and not as parity")
+                    .as("DIVERGENCE: the run continues after an out-of-range record, where NEXT SENTENCE "
+                            + "at :L177 would have ended it. The behaviour is asserted as the shipped choice "
+                            + "and not as parity")
                     .isNotNull();
         }
 
@@ -1552,7 +1543,7 @@ class TransactionReportProcessorTest {
          * the offsets the copybook and the DFSORT symbols both declare proves that this suite's synthetic
          * records sit at the same columns the job's own data does.
          *
-         * <p><b>Finding, Medium severity - the daily fixture is not this job's input, and its processing
+         * <p><b>the daily fixture is not this job's input, and its processing
          * timestamp is blank.</b> {@code app/data/ASCII/dailytran.txt} is the {@code CVTRA06Y}
          * <em>staging</em> layout, where {@code DALYTRAN-PROC-TS} at columns 305-330 is
          * <b>twenty-six spaces</b>: the processing timestamp is assigned when a record is posted, not when
@@ -1570,7 +1561,7 @@ class TransactionReportProcessorTest {
          * class documentation records, captured legacy output is <b>Not available</b>, so a total could only
          * be checked against this suite's own arithmetic.
          *
-         * <p><b>Remediation:</b> nothing in this class changes - the fixture is read for its geometry, not
+         * <p>nothing in this class changes - the fixture is read for its geometry, not
          * as this job's input. Whoever wires the step must point the reader at the posted transaction
          * relation that {@code app/proc/TRANREPT.prc:L64} names, never at the daily staging file, or every
          * record will be filtered on a blank processing date and the report will come out empty.
@@ -1596,7 +1587,7 @@ class TransactionReportProcessorTest {
                             + "it is the instant FixedClockProvider pins")
                     .isEqualTo(FixedClockProvider.CANONICAL_ONLINE_TIMESTAMP);
             assertThat(procTs)
-                    .as("Medium: the staging layout leaves DALYTRAN-PROC-TS at 305-330 blank until posting, "
+                    .as("the staging layout leaves DALYTRAN-PROC-TS at 305-330 blank until posting, "
                             + "so app/proc/TRANREPT.prc:L64 feeds this job the POSTED file instead")
                     .isBlank()
                     .hasSize(FixedClockProvider.TIMESTAMP_LENGTH);
@@ -1673,7 +1664,7 @@ class TransactionReportProcessorTest {
         /**
          * Asserts each total line's leader run independently, because the three are not the same width.
          *
-         * <p><b>Finding, High severity - the account leader is two characters shorter.</b>
+         * <p><b>the account leader is two characters shorter.</b>
          * {@code app/cpy/CVTRA07Y.cpy:L53} and {@code :L65} declare {@code FILLER PIC X(86) VALUE ALL '.'}
          * for the page and grand total lines, while {@code :L59} declares {@code PIC X(84)} for the account
          * total line - because its label is {@code X(13) 'Account Total'} against the others'
@@ -1682,7 +1673,7 @@ class TransactionReportProcessorTest {
          * push its edited amount two columns right of where the legacy report puts it, so each width is
          * measured on its own rather than through a shared helper.
          *
-         * <p><b>Remediation if this fails:</b> read each width off {@code app/cpy/CVTRA07Y.cpy:L53},
+         * <p><b>If this fails:</b> read each width off {@code app/cpy/CVTRA07Y.cpy:L53},
          * {@code :L59} and {@code :L65} individually and restore the three distinct constants. Do
          * <em>not</em> unify them behind a single leader constant, and do not compute the leader as the
          * line width minus the label length - the copybook is the authority, and a computed leader would
@@ -1712,7 +1703,7 @@ class TransactionReportProcessorTest {
         /**
          * Records the separator asymmetry the three label fields produce.
          *
-         * <p><b>Finding, Low severity.</b> {@code 'Page Total'} is a ten character literal in an
+         * <p>{@code 'Page Total'} is a ten character literal in an
          * {@code X(11)} field, so one space separates it from the leader. {@code 'Account Total'} and
          * {@code 'Grand Total'} exactly fill their {@code X(13)} and {@code X(11)} fields, so their leaders
          * abut the label with no space at all. Nothing needs fixing - it is what the copybook declares - but
@@ -1887,13 +1878,13 @@ class TransactionReportProcessorTest {
      * {@code WS-LINE-COUNTER}, and which accumulator each resets. Names are disambiguated by the full
      * paragraph label, never by the prefix.
      *
-     * <p><b>Finding, High severity - consolidation would be undetectable at runtime.</b> Two of these
+     * <p><b>consolidation would be undetectable at runtime.</b> Two of these
      * paragraphs emit two lines and advance the counter twice, one emits four and advances four, one
      * emits one and advances one, and one emits one and advances <em>none</em>. Merging any pair, or
      * regularising the odd one, still produces a well formed 133 byte report - it simply appears on
      * different pages. Nothing throws, so only an assertion on the increment can catch it.
      *
-     * <p><b>Remediation if any test here fails:</b> restore the increment of the single paragraph named
+     * <p><b>If any test here fails:</b> restore the increment of the single paragraph named
      * by the failure from its own locator - {@code :L299} and {@code :L302}, {@code :L311} and
      * {@code :L314}, {@code :L327}/{@code :L331}/{@code :L335}/{@code :L339}, {@code :L373}, and for
      * {@code 1110-WRITE-GRAND-TOTALS} the deliberate absence of one across {@code :L318-L322}. Do not
@@ -2084,9 +2075,8 @@ class TransactionReportProcessorTest {
          * </ul>
          *
          * <p>A per-page counter that reset at each break would instead have broken on record 21. Asserting
-         * the position rather than a total is what tells the two designs apart: a count alone can coincide,
-         * as an earlier revision of this test discovered when it guessed that forty records could not
-         * produce exactly two breaks - they do, at records 17 and 31.
+         * the position rather than a total is what tells the two designs apart, because a count alone can
+         * coincide: forty records do produce exactly two breaks under both designs, at records 17 and 31.
          */
         @Test
         @DisplayName("the page break is a MODULUS on the running counter: it fires on record 17, not 21")

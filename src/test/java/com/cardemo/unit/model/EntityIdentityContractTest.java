@@ -465,7 +465,7 @@ class EntityIdentityContractTest {
     }
 
     private static Card card(final String cardNumber, final long accountId) {
-        return new Card(cardNumber, accountId, "FNAMEAA6 LNAME6", "2025-01-01", "Y");
+        return new Card(cardNumber, accountId, "007", "FNAMEAA6 LNAME6", "2025-01-01", "Y");
     }
 
     private static Customer customer(final long customerId, final String firstName) {

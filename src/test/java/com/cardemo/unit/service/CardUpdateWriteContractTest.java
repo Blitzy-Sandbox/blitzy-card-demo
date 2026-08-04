@@ -60,10 +60,12 @@ import jakarta.persistence.LockModeType;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -125,6 +127,12 @@ final class CardUpdateWriteContractTest {
      */
     private static final String VERIFICATION_VALUE_TOKEN = "cvv";
 
+    /**
+     * The three characters the stored row holds in {@code CARD-CVV-CD PIC 9(03)}. Synthetic, and chosen with
+     * a leading zero because that is the shape a numeric column would corrupt.
+     */
+    private static final String STORED_VERIFICATION_VALUE = "007";
+
     /** The store collaborator, mocked because this tier reaches no database. */
     @Mock
     private CardRepository cardRepository;
@@ -149,7 +157,8 @@ final class CardUpdateWriteContractTest {
      * @return the entity
      */
     private static Card storedCard() {
-        return new Card(CARD_NUMBER, ACCOUNT_ID_NUMERIC, STORED_NAME, STORED_EXPIRY, STORED_STATUS);
+        return new Card(CARD_NUMBER, ACCOUNT_ID_NUMERIC, STORED_VERIFICATION_VALUE, STORED_NAME,
+                STORED_EXPIRY, STORED_STATUS);
     }
 
     /**
@@ -209,12 +218,12 @@ final class CardUpdateWriteContractTest {
     }
 
     @Nested
-    @DisplayName("F13 - no card verification value is retained, accepted, sealed or written")
-    class NoVerificationValueIsRetained {
+    @DisplayName("F13 - the verification value is stored, never accepted or sealed, and never overwritten")
+    class VerificationValueIsStoredButNeverAccepted {
 
         @Test
-        @DisplayName("the schema declares no verification column, so there is nothing to store")
-        void theSchemaDeclaresNoVerificationColumn() throws IOException {
+        @DisplayName("the schema declares the verification column once, on the card table, as CHAR(3)")
+        void theSchemaDeclaresTheVerificationColumnOnceOnTheCardTable() throws IOException {
             final String schema;
             try (InputStream migration = CardUpdateWriteContractTest.class.getClassLoader()
                     .getResourceAsStream("db/migration/V1__create_schema.sql")) {
@@ -222,38 +231,51 @@ final class CardUpdateWriteContractTest {
                 schema = new String(migration.readAllBytes(), StandardCharsets.UTF_8);
             }
 
-            // COMMENTS ARE STRIPPED BEFORE THE SEARCH, and that is not a weakening. The migration documents
-            // the absence at length - "card_cvv_cd IS NOT DECLARED. Card verification data is not retained
-            // after authorisation" - so a search over the raw text finds the name inside the very prose that
-            // says it does not exist, and reports the retraction as the defect. What must be absent is a
-            // DECLARATION, so the assertion is made against the DDL alone.
-            final String declarations = schema.lines()
+            // COMMENTS ARE STRIPPED BEFORE THE SEARCH. The migration documents this column's confinement at
+            // length, so a search over the raw text would count the prose as well as the declaration. What is
+            // being counted is DECLARATIONS, so the assertion is made against the DDL alone.
+            final List<String> declarations = schema.lines()
                     .map(line -> line.replaceFirst("--.*$", ""))
-                    .reduce(new StringBuilder(), StringBuilder::append, StringBuilder::append)
-                    .toString()
-                    .toLowerCase(Locale.ROOT);
+                    .filter(line -> line.toLowerCase(Locale.ROOT).contains(VERIFICATION_VALUE_TOKEN))
+                    .toList();
 
-            // The whole file is searched rather than the card table alone: a verification column anywhere,
-            // under any table, would be the same retention problem.
+            // The whole file is searched rather than the card table alone: the field belongs to CARDDATA, so a
+            // verification column under any other table would be an invented one.
             assertThat(declarations)
-                    .as("V1 must declare no card_cvv_cd column in any table")
-                    .doesNotContain("card_cvv_cd")
-                    .doesNotContain(VERIFICATION_VALUE_TOKEN);
+                    .as("app/cpy/CVACT02Y.cpy:L7 declares CARD-CVV-CD PIC 9(03) inside the authoritative "
+                            + "150-byte record, so exactly one column declaration names it and it is on the "
+                            + "card table. CHAR(3) rather than numeric because 8 of the 50 fixture rows lead "
+                            + "with a zero")
+                    .singleElement()
+                    .satisfies(line -> {
+                        assertThat(line.toLowerCase(Locale.ROOT)).contains("card_cvv_cd");
+                        assertThat(line).contains("CHAR(3)");
+                        assertThat(line).contains("NOT NULL");
+                    });
 
-            // And the absence must be DOCUMENTED, not merely true. An undocumented omission reads as an
-            // oversight and invites a later contributor to "complete" the layout by adding the column back.
+            // And the confinement must be DOCUMENTED, not merely implemented. An undocumented column of this
+            // kind reads as an oversight and invites a later contributor to project it into a DTO.
             assertThat(schema.toLowerCase(Locale.ROOT))
-                    .as("the migration must explain why the column is absent")
-                    .contains("card_cvv_cd is not declared");
+                    .as("the migration must explain that the read path, not the column, is what is withheld")
+                    .contains("card_cvv_cd is declared, and the read path is withheld");
         }
 
         @Test
-        @DisplayName("the entity declares no verification field and no accessor for one")
-        void theEntityDeclaresNoVerificationField() {
+        @DisplayName("the entity persists the value privately and declares no accessor that returns it")
+        void theEntityPersistsTheValueWithoutAnAccessor() {
             assertThat(Card.class.getDeclaredFields())
-                    .noneMatch(field -> namesVerificationValue(field.getName()));
+                    .as("exactly one instance field carries it")
+                    .filteredOn(field -> namesVerificationValue(field.getName())
+                            && !Modifier.isStatic(field.getModifiers()))
+                    .singleElement()
+                    .satisfies(field -> {
+                        assertThat(field.getType()).isEqualTo(String.class);
+                        assertThat(Modifier.isPrivate(field.getModifiers())).isTrue();
+                    });
             assertThat(Card.class.getMethods())
-                    .noneMatch(method -> namesVerificationValue(method.getName()));
+                    .as("and every method that names it answers a boolean question rather than returning it")
+                    .filteredOn(method -> namesVerificationValue(method.getName()))
+                    .allSatisfy(method -> assertThat(method.getReturnType()).isEqualTo(boolean.class));
         }
 
         @Test
@@ -271,21 +293,27 @@ final class CardUpdateWriteContractTest {
         }
 
         @Test
-        @DisplayName("a successful update still writes, and the two MOVEs of :1464-1465 have no counterpart")
-        void aSuccessfulUpdateWritesWithoutAnyVerificationValue() {
+        @DisplayName("a successful update writes, and the two MOVEs of :1464-1465 cannot blank the value")
+        void aSuccessfulUpdatePreservesTheStoredVerificationValue() {
             when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
 
             confirmSave(changedNameRequest(agreeingSnapshot()));
 
-            // The legacy rewrite destroyed the stored verification value on every successful update. Nothing
-            // here can: the entity the writer hands to save carries no such property at all, which the
-            // structural assertions above prove, so the rewrite proceeds and the value simply does not exist.
+            // The legacy rewrite destroyed the stored verification value on every successful update, because
+            // :1464-1465 moved the never-assigned CCUP-NEW-CVV-CD onto the record. Nothing here can: the
+            // service mutates the loaded row and there is no setter for the field, so the stored three
+            // characters travel through the write untouched.
             final Card written = capturePersisted();
             assertThat(written.getEmbossedName()).startsWith(SUBMITTED_NAME);
+            assertThat(written.matchesVerificationValue(STORED_VERIFICATION_VALUE))
+                    .as("the stored value survives the rewrite, which is the labelled improvement on the "
+                            + "legacy blanking defect")
+                    .isTrue();
             assertThat(written.toString())
-                    .as("no rendering may name a verification value either")
-                    .doesNotContainIgnoringCase(VERIFICATION_VALUE_TOKEN);
+                    .as("and no rendering may name or contain a verification value")
+                    .doesNotContainIgnoringCase(VERIFICATION_VALUE_TOKEN)
+                    .doesNotContain(STORED_VERIFICATION_VALUE);
         }
 
         @Test

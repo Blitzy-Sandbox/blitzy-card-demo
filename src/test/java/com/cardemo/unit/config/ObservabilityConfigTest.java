@@ -7,7 +7,7 @@
  *               and carries the deployment zone rather than UTC, which is
  *               what reproduces the local-time semantics of the COBOL
  *               FUNCTION CURRENT-DATE intrinsic.
- * Source      : app/cbl/CSUTLDTC.cbl:L343 and app/cbl/CBSTM03A.CBL:L286
+ * Source      : app/cpy/CSUTLDPY.cpy:L343 and app/cbl/CBTRN02C.cbl:L693
  *               (FUNCTION CURRENT-DATE) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -103,7 +103,7 @@ class ObservabilityConfigTest {
 
         assertThat(clock).isNotNull();
         assertThat(clock.getZone())
-                .as("FUNCTION CURRENT-DATE returns local time (app/cbl/CSUTLDTC.cbl:L343), so the zone is "
+                .as("FUNCTION CURRENT-DATE returns local time (app/cpy/CSUTLDPY.cpy:L343), so the zone is "
                         + "the deployment's and never hard-wired to UTC")
                 .isEqualTo(ZoneId.systemDefault());
         assertThat(clock).isEqualTo(Clock.systemDefaultZone());

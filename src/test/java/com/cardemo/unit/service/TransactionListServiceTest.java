@@ -134,8 +134,8 @@ import org.springframework.data.domain.SliceImpl;
  * hazard the two include sets create is worth naming precisely, because it is silent: a class whose
  * simple name ends in neither {@code Test} nor {@code Tests} matches no include of either plugin and
  * is collected by neither, so it never runs while the build stays green, both plugins report success
- * and JaCoCo records the code it would have covered as uncovered. Severity <strong>Blocker</strong>;
- * remediation is to keep the {@code ...Test} suffix and stay inside {@code unit/}. The compiler is
+ * and JaCoCo records the code it would have covered as uncovered, so the class keeps its
+ * {@code ...Test} suffix and stays inside {@code unit/}. The compiler is
  * configured with {@code -Xlint:all} and {@code failOnWarning}, so one raw type or one deprecated call fails
  * the build - an unused import does not, because {@code javac} 25 publishes no {@code unused} lint key - and
  * JaCoCo 0.8.12 enforces an 80% line floor at {@code verify} with no exclusions.
@@ -162,32 +162,31 @@ import org.springframework.data.domain.SliceImpl;
  *       {@code failOnWarning}. A single unused import does not, because {@code javac} 25 publishes no
  *       {@code unused} lint key, so it is caught at review instead.</li>
  *   <li>Replacing the eleventh look-ahead read with a {@code count(*)} query changes the number of
- *       round trips and the observable end-of-file behaviour. Severity <strong>High</strong>.</li>
+ *       round trips and the observable end-of-file behaviour.</li>
  *   <li>Unifying this sentinel family with the card list's. {@code COTRN00C} uses an {@code 'N'}
  *       defaulted {@code X(01)} flag with condition names {@code NEXT-PAGE-YES}/{@code NEXT-PAGE-NO},
- *       whereas {@code COCRDLIC} uses a {@code 0}/{@code 9} pair and a 27-byte composite cursor.
- *       Severity <strong>Medium</strong>.</li>
+ *       whereas {@code COCRDLIC} uses a {@code 0}/{@code 9} pair and a 27-byte composite cursor.</li>
  *   <li>Asserting a page-number field on {@code app/cpy/COCOM01Y.cpy}, which declares none: that
  *       copybook is 47 lines and ends at {@code CDEMO-LAST-MAP} and {@code CDEMO-LAST-MAPSET}. The
- *       pagination fields are this program's own extension at {@code :L61-L71}. Severity
- *       <strong>Medium</strong>.</li>
+ *       pagination fields are this program's own extension at {@code :L61-L71}.</li>
  *   <li>Widening the {@code +99999999.99} mask instead of asserting that it truncates the ninth
- *       integer digit of an {@code S9(09)V99} amount. Severity <strong>Medium</strong>.</li>
+ *       integer digit of an {@code S9(09)V99} amount.</li>
  *   <li>Reformatting the {@code PIC X(26)} timestamps, or converting them to a temporal type. They
- *       are text and are sliced as text. Severity <strong>Medium</strong>.</li>
+ *       are text and are sliced as text.</li>
  *   <li>An unordered paged query, which makes page contents non-reproducible and breaks the keyset
- *       cursor. Severity <strong>High</strong>.</li>
+ *       cursor.</li>
  *   <li>Logging or echoing a full card number, which the transaction record carries at offsets
- *       263-278. Severity <strong>High</strong>.</li>
+ *       263-278.</li>
  *   </ul>
  *
- * <h2>Low-severity findings preserved rather than refactored away</h2>
+ * <h2>Legacy oddities preserved rather than refactored away</h2>
  *
  * <ul>
  *   <li>The page size is a bare literal in four source places rather than a named constant:
  *       {@code :L290}, {@code :L297}, {@code :L344} and {@code :L349}. Unlike {@code COCRDLIC}, which
  *       declares {@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7}, this program names nothing.
- *       Remediation, deliberately not applied to the frozen corpus: declare one constant.</li>
+ *       Declaring one constant would be the tidier form and is deliberately not applied, because
+ *       {@code app/} is frozen.</li>
  *   <li>The forward fill loop is written {@code >= 11} at {@code :L297} while the slot-initialisation
  *       loops are written {@code > 10} at {@code :L290} and {@code :L344}. The inconsistency is
  *       preserved and is proved here to leave the row count unchanged.</li>
@@ -203,13 +202,12 @@ import org.springframework.data.domain.SliceImpl;
  * <h2>The documented conflict, and why parity governs</h2>
  *
  * <p>The prohibition on dead code collides with the mandate to preserve control flow one-for-one. Parity governs, and
- * the prohibition is satisfied on its own terms: what it forbids is an artefact <em>without an owner or tracking
- * reference</em>, and each retained item carries an entry in the planned {@code DECISION_LOG.md}, a
- * {@code TRACEABILITY_MATRIX.md} row, the source locator cited above and an explicit intentional-no-op marker on the
- * test that pins it. This file's instances are the eleventh look-ahead read whose record is discarded, the second and
- * unused page counter at {@code :L54}, and the identical {@code Unable to lookup transaction...} literal at three
- * separate sites, none of them consolidated. Deleting any of them would break the paragraph map the scope-coverage
- * gate is proved against.
+ * the prohibition is satisfied on its own terms: what it forbids is an artefact carried without explanation, and each
+ * retained item here carries the source locator cited above, an explicit intentional-no-op marker and a test that
+ * pins it. This file's instances are the eleventh look-ahead read whose record is discarded, the second and unused
+ * page counter at {@code :L54}, and the identical {@code Unable to lookup transaction...} literal at three separate
+ * sites, none of them consolidated. Deleting any of them would break the paragraph-level correspondence with the
+ * source.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)

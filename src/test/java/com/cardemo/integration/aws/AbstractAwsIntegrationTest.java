@@ -43,15 +43,19 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -59,6 +63,9 @@ import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -100,6 +107,7 @@ import software.amazon.awssdk.services.s3.model.VersioningConfiguration;
 import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sns.model.CreateTopicRequest;
 import software.amazon.awssdk.services.sns.model.DeleteTopicRequest;
+import software.amazon.awssdk.services.sns.model.NotFoundException;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
@@ -168,12 +176,11 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *       when the month exceeds twelve; {@code :229-230} compute
  *       {@code FUNCTION DATE-OF-INTEGER(FUNCTION INTEGER-OF-DATE(WS-CURDATE-N) - 1)}, which is the first of
  *       the <em>next</em> month minus one day, that is the <strong>last day of the current month</strong>;
- *       and {@code :232-234} then read back the already-mutated year, month and day fields.
- *       <strong>This corrects the plan's description of the range as month-to-date. Severity:
- *       Blocker</strong> - a month-to-date implementation would produce a different end date on every day
- *       of the month except the last, so it would pass on one day in thirty and fail silently on the rest.
- *       Remediation, for whoever owns the report request type: derive the end date as the last day of the
- *       start date's month. Yearly is {@code yyyy-01-01} through {@code yyyy-12-31} at {@code :239-255};
+ *       and {@code :232-234} then read back the already-mutated year, month and day fields. A month-to-date
+ *       reading of the same paragraph would produce a different end date on every day of the month except the
+ *       last, so it would agree with the source on one day in thirty and diverge silently on the rest; the
+ *       end date is therefore derived as the last day of the start date's month.
+ *       Yearly is {@code yyyy-01-01} through {@code yyyy-12-31} at {@code :239-255};
  *       custom is six discrete components assembled with dash separators into a ten-byte
  *       {@code yyyy-MM-dd} at {@code :60-71} and {@code :381-386}.</dd>
  * </dl>
@@ -200,12 +207,9 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  * prerequisite rather than a convenience: there is no in-memory substitute, because an in-memory database
  * would not exercise {@code spring.jpa.hibernate.ddl-auto: validate} against the Flyway-owned schema and an
  * in-memory queue would not exercise FIFO semantics. Where no daemon or socket is available the correct
- * report is that the gate is <em>blocked</em>, never an untested pass. At the time of writing the
- * provisioned environment supplies Docker Engine 29.7.0 with Compose v5.3.1, and both container images are
- * already resident in its cache, so the suite starts without reaching the network. Host {@code java},
- * {@code javac} and {@code mvn} are also present - an earlier note claiming they were absent, and that
- * Maven therefore had to run inside a container, is withdrawn as stale. Severity of what that stale note
- * left in place: <strong>Low</strong>; it caused no wrong artefact, only a wrong instruction.
+ * report is that the gate is <em>blocked</em>, never an untested pass. The prerequisites are a reachable
+ * daemon with both container images available - so the suite starts without reaching the network - plus host
+ * {@code java}, {@code javac} and Maven on the path, which is what lets {@code ./mvnw} run directly.
  *
  * <h2>3. Key configuration and defaults</h2>
  *
@@ -243,7 +247,7 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  * anything outside that set, so a misconfiguration fails the context instead of escaping to a real
  * account; the credentials are the emulator's own throwaway pair, read from the container. There is no live
  * account, no live credential and no live endpoint anywhere on any code path from here. A live endpoint or
- * credential reaching a code path in this tier would be a <strong>Blocker</strong>.
+ * credential reaching a code path in this tier is forbidden outright.
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
@@ -253,25 +257,24 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *       daemon, which is why {@link #POSTGRES} and {@link #LOCALSTACK} are started eagerly and a startup
  *       failure is rethrown with that explanation attached rather than skipped.</dd>
  *   <dt>A dependency fails to resolve under {@code org.testcontainers}</dt>
- *   <dd>The <strong>Testcontainers 2.0.3 coordinate trap</strong>, and the highest-severity finding of the
- *       migration: <strong>Blocker</strong>. Only the prefixed module coordinates exist at 2.0.3 -
+ *   <dd>The <strong>Testcontainers 2.0.3 coordinate trap</strong>, the build hazard of this migration most
+ *       likely to stop a build outright. Only the prefixed module coordinates exist at 2.0.3 -
  *       {@code testcontainers}, {@code testcontainers-postgresql}, {@code testcontainers-localstack} and
  *       {@code testcontainers-junit-jupiter}. The bare {@code postgresql}, {@code localstack} and
  *       {@code junit-jupiter} artifact identifiers under that group <strong>do not exist at 2.0.3</strong>
  *       and fail resolution outright. Compounding it, Spring Boot 3.5.11 already imports the Testcontainers
  *       bill of materials at a 1.x version, so a competing bill-of-materials import yields
- *       ordering-dependent resolution that may silently select 1.x. Remediation is two-part and
+ *       ordering-dependent resolution that may silently select 1.x. The remedy is two-part and
  *       <em>both</em> parts are required: override the managed version through the
  *       {@code testcontainers.version} property rather than importing a second bill of materials, and use
  *       only prefixed module coordinates. Overriding without renaming resolves artefacts that do not
- *       exist; renaming without overriding resolves the wrong version. The root build already does both, so
- *       this is documented here as a standing hazard rather than an open defect - and the build file is
- *       owned elsewhere, so the remediation for a regression is to restore those two settings there, never
- *       to add a dependency from this tier.</dd>
+ *       exist; renaming without overriding resolves the wrong version. The root build does both, so this is
+ *       a standing hazard rather than an open defect - and because the build file is owned elsewhere, a
+ *       regression there is repaired by restoring those two settings, never by adding a dependency from this
+ *       tier.</dd>
  *   <dt>The class-package or method shape you expected from Testcontainers does not compile</dt>
  *   <dd>The 2.x line moved packages and changed signatures, and the API this class uses was verified
- *       against the resolved 2.0.3 artefacts rather than assumed from the 1.x shape. Severity:
- *       <strong>Medium</strong>, recorded so the next reader does not repeat the check. The canonical types
+ *       against the resolved 2.0.3 artefacts rather than assumed from the 1.x shape. The canonical types
  *       are {@code org.testcontainers.postgresql.PostgreSQLContainer} and
  *       {@code org.testcontainers.localstack.LocalStackContainer}; the deprecated
  *       {@code org.testcontainers.containers} equivalents still ship and must not be used. Two specific
@@ -284,14 +287,14 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *       {@code failOnWarning}, so a single unused import, raw type, unchecked cast, deprecation or
  *       switch fall-through fails the build. That is deliberate and must not be relaxed.</dd>
  *   <dt>Context startup aborts with {@code Could not resolve placeholder} naming the token signing key</dt>
- *   <dd>Severity: <strong>High</strong>, and the defect is not in this file.
+ *   <dd>The cause is not in this file.
  *       {@code src/main/resources/application.yml} maps the signing key to an environment variable with no
  *       default so that no deployment can boot with a key an attacker already knows, and
  *       {@code src/main/resources/application-test.yml} - which is owned elsewhere - supplies no
- *       test value, so the refresh aborts before any test runs. Remediation, for the owner of that file:
- *       supply a non-production test value in the {@code test} profile. Until it does, every harness in
- *       this tier has to register one itself, and both siblings already do; this class follows that
- *       precedent in {@link #registerContainerProperties(DynamicPropertyRegistry)} with a value that is
+ *       test value, so the refresh aborts before any test runs. The fix belongs with the owner of that file:
+ *       a non-production test value in the {@code test} profile. Until it lands, every harness in this tier
+ *       has to register one itself, as the siblings do; this class does so in
+ *       {@link #registerContainerProperties(DynamicPropertyRegistry)} with a value that is
  *       recognisably test-only. It is not patched from here, and no real key is ever written anywhere.</dd>
  *   <dt>A bucket will not delete, reporting that it is not empty</dt>
  *   <dd>The output bucket has versioning enabled, because object versioning is what stands in for a
@@ -328,9 +331,8 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *       and only container-side resources are created and cleaned.</li>
  *   <li><strong>The container fields carry no {@code @Container} annotation.</strong> This is the one place
  *       where the obvious annotation is wrong, and the reason is mechanical rather than stylistic; it is
- *       set out in full beside the static initialiser below. Severity of using
- *       {@code @Container} here instead: <strong>Medium</strong>, presenting as a first subclass that
- *       passes and every later one failing on a closed connection pool.</li>
+ *       set out in full beside the static initialiser below. Using {@code @Container} here instead presents
+ *       as a first subclass that passes and every later one failing on a closed connection pool.</li>
  * </ol>
  *
  * <h2>Global mutable state: exactly one documented exception</h2>
@@ -370,17 +372,17 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *       is supplied by the transaction monitor rather than by the corpus, so <strong>no
  *       {@code app/...} line reference for it may be fabricated</strong>, and the correlation identifier
  *       that replaces it as the thread of request identity is documented as new capability instead.
- *       Severity: <strong>Medium</strong>. <em>What is needed:</em> nothing from this repository - the
+ *       <em>What is needed:</em> nothing from this repository - the
  *       citation belongs to the vendor's own copybook, which is not part of this corpus.</li>
  * </ol>
  *
- * <p>Two further findings are recorded for completeness because a subclass will meet them.
- * <strong>Medium:</strong> the retention limit for the report generation base is declared inconsistently in
+ * <p>Two source properties are recorded here because a subclass will meet them. First, the retention limit
+ * for the report generation base is declared inconsistently in
  * the source - {@code app/jcl/DEFGDGB.jcl:37-39} says {@code LIMIT(5)} with {@code SCRATCH} while
  * {@code app/jcl/REPTFILE.jcl:25-28} says {@code LIMIT(10)} with no {@code SCRATCH} for the same base. It
  * is the one legacy inconsistency actually resolved rather than merely logged, because a single lifecycle
  * value has to be chosen; it is resolved <strong>to 10</strong>, the larger, and retention becomes a
- * documented lifecycle rule rather than an enforced one. <strong>Low:</strong> the job name on
+ * documented lifecycle rule rather than an enforced one. Second, the job name on
  * {@code app/jcl/OPENFIL.jcl:1} is misspelled relative to its member name while
  * {@code app/jcl/CLOSEFIL.jcl:1} is correct; it is preserved and never repaired.
  *
@@ -404,20 +406,112 @@ public abstract class AbstractAwsIntegrationTest {
      *
      * <p>A digest is content-addressed and cannot move, which a tag can: the same tag was measured
      * resolving to different patch releases at different times, so a build pinned only by tag can exercise
-     * the migrated schema against an engine nobody chose. This digest resolves to PostgreSQL 16 and is
-     * resident in the provisioned environment's image cache, so the suite starts without reaching the
-     * network.
+     * the migrated schema against an engine nobody chose. This digest resolves to PostgreSQL 16.14 on
+     * Debian GNU/Linux 13 (trixie) with GLIBC 2.41, measured by inspecting the pulled image rather than
+     * inferred from its name, and is resident in the provisioned environment's image cache, so the suite
+     * starts without reaching the network.
      *
-     * <p><strong>The identical digest is named by both sibling harnesses in this tier, and the three must
-     * stay equal.</strong> It is written out here rather than shared through a constant because each
-     * harness documents a hard limit on its own {@code static} fields, so a shared constant could not live
-     * in any of them without weakening a rule that exists to keep global mutable state out of the tier, and
-     * because no leaf may own another leaf's substrate. Duplicating a <em>digest</em> is safe in a way that
-     * duplicating a tag would not be: if the three ever diverge they name three visibly different immutable
-     * images rather than silently resolving to different content under one label.
+     * <p><strong>Why the patch level is 16.14 and not the 16.10 this field first pinned. Finding, severity
+     * High - raised against the original pin and remediated here.</strong> A digest delivers immutability,
+     * not currency: freezing the reference also froze its <em>patch level</em>, so the pin aged silently.
+     * 16.14 closes eleven advisories that 16.10 is exposed to, the most severe being {@code CVE-2026-6473}
+     * at CVSS v3.1 <strong>8.8</strong> - above the {@code failBuildOnCVSS=7} threshold the dependency scan
+     * enforces on the Maven graph, which never sees container images. The reference stays a digest and its
+     * patch level is advanced deliberately. The reasoning is set out in full on the corresponding field of
+     * {@code com.cardemo.integration.batch.AbstractBatchIntegrationTest}, and is summarised rather than
+     * repeated here because all three pins must stay equal.
+     *
+     * <p><strong>How this relates to what the stack ships.</strong> This digest resolves to PostgreSQL
+     * <strong>16.14 on Debian</strong>; {@code docker-compose.yml} names
+     * {@code postgres:16.14-alpine@sha256:57c72fd2...}, the alpine build of the <em>same</em> patch level.
+     * The two are deliberately equal in the property this tier asserts against - the engine version, and
+     * therefore the schema, the type affinities and the {@code ORDER BY} semantics the migration is written
+     * for - and deliberately unequal in base image, for the two reasons set out below. What was actually
+     * wrong before, and is fixed here, is the initialisation: {@link #POSTGRES_INITDB_ARGUMENTS} now carries
+     * the arguments that file sets, which this harness previously omitted entirely.
+     *
+     * <p>The collation half of that drift was the consequential half. Compose initialises with
+     * {@code --locale=C}, whose ordering is byte ordering - which is what the fixed-width uppercase and
+     * numeric keys inherited from the copybooks sort by, and what every {@code ORDER BY} in this migration
+     * is written against. Without it the cluster inherits the image's default locale, so a browse whose
+     * order matters could pass here and order differently in production. That is precisely the class of
+     * divergence a parity suite exists to catch, and it was invisible while the two differed.
+     *
+     * <p>It is written out here rather than shared through a constant because each harness documents a hard
+     * limit on its own {@code static} fields, so a shared constant could not live in any of them without
+     * weakening a rule that exists to keep global mutable state out of the tier, and because no leaf may own
+     * another leaf's substrate. Duplicating a <em>digest</em> is safe in a way that duplicating a tag would
+     * not be: if two ever diverge they name visibly different immutable images rather than silently
+     * resolving to different content under one label. The two sibling harnesses in this tier still name the
+     * Debian digest, so all three tiers exercise one identical engine; they are owned elsewhere and are not
+     * edited from here, and every difference from the delivered topology is stated above rather than hidden,
+     * which is the property this comment exists to preserve.
+     *
+     * <p>The reference is a bare digest rather than the combined {@code postgres:16.14-alpine@sha256:...}
+     * form {@code docker-compose.yml} spells. Docker accepts that form; the container library's own
+     * image-name parser rejects it as malformed, which was confirmed by running it. Nothing is lost by
+     * dropping the tag, because a digest is content-addressed: the reference below names exactly one set of
+     * image bytes, and the tag in the compose file is documentation for a human reader.
      */
     private static final String POSTGRES_IMAGE_REFERENCE =
-            "postgres@sha256:21f6013073bc6b92830a2129570e2f5ec42a6c734b5a985a41e83aa58f54c3c1";
+            "postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20";
+
+    /**
+     * The cluster initialisation arguments, character-for-character those of {@code docker-compose.yml}.
+     *
+     * <p>{@code --encoding=UTF8} fixes the server encoding rather than inheriting it, and {@code --locale=C}
+     * makes collation byte ordering. Both are set at {@code initdb} time and cannot be changed afterwards
+     * without recreating the cluster, which is why they belong on the container rather than in a migration.
+     */
+    private static final String POSTGRES_INITDB_ARGUMENTS = "--encoding=UTF8 --locale=C";
+
+    /**
+     * Length in bytes of the generated signing key, comfortably above the signer's 32-byte floor.
+     */
+    private static final int SIGNING_KEY_BYTES = 48;
+
+    /**
+     * Upper bound on how long the two containers may take to become ready.
+     *
+     * <p>Generous rather than tight, because the first run on a cold image cache pulls two images, and a
+     * bound that punished a legitimate pull would be a flake generator. What matters is that the bound
+     * exists: past it, the tier reports a blocked gate instead of hanging silently.
+     */
+    private static final long CONTAINER_STARTUP_TIMEOUT_SECONDS = 300L;
+
+    /**
+     * Upper bound on any single call to the emulator.
+     *
+     * <p>Every service here is a container on the loopback interface, so a healthy call completes in
+     * milliseconds and this bound is only ever reached by a call that is not going to complete. It is
+     * deliberately far below {@link #CONTAINER_STARTUP_TIMEOUT_SECONDS}: a stalled request should be
+     * attributed to the request, not to the substrate.
+     */
+    private static final long SERVICE_CALL_TIMEOUT_SECONDS = 60L;
+
+    /**
+     * The token signing key for this tier, generated in memory once per JVM and never persisted.
+     *
+     * <p>See {@link #registerContainerProperties(DynamicPropertyRegistry)} for the High finding this
+     * replaces. The value exists only in this process's heap: it is not committed, not logged, not written to
+     * a file and not registered anywhere a report could pick it up, so there is nothing here for a secret
+     * scanner to flag and nothing for a future profile to inherit by copy and paste.
+     *
+     * <p>Regenerating it per run is a second, independent benefit: no test can come to depend on a
+     * particular key, so a token minted by one run cannot be replayed against another, and any test that
+     * accidentally hard-coded an expected signature would fail immediately rather than passing until
+     * somebody rotated the literal.
+     *
+     * <p>{@link SecureRandom} rather than {@code Random}: the value is a signing key, and a predictable one
+     * would let a test forge a token for a role it was never granted, which would make the authorisation
+     * assertions in this tier meaningless. {@value #SIGNING_KEY_BYTES} bytes is comfortably above the
+     * 32-byte floor the {@code HS256} signer enforces.
+     *
+     * <p>This field is permitted under the class-level rule on {@code static} fields: it is {@code final}
+     * and it is a deeply immutable {@code String}. It does not widen the container exception, which remains
+     * {@link #POSTGRES} and {@link #LOCALSTACK} alone.
+     */
+    private static final String EPHEMERAL_SIGNING_KEY = generateEphemeralSigningKey();
 
     /**
      * The emulator image, pinned to an exact release.
@@ -686,7 +780,8 @@ public abstract class AbstractAwsIntegrationTest {
      */
     @ServiceConnection
     static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(
-            DockerImageName.parse(POSTGRES_IMAGE_REFERENCE).asCompatibleSubstituteFor("postgres"));
+            DockerImageName.parse(POSTGRES_IMAGE_REFERENCE).asCompatibleSubstituteFor("postgres"))
+            .withEnv("POSTGRES_INITDB_ARGS", POSTGRES_INITDB_ARGUMENTS);
 
     /**
      * The cloud substrate: one emulator container exposing the object store, the queue and the notification
@@ -729,8 +824,8 @@ public abstract class AbstractAwsIntegrationTest {
      * class, so sibling subclasses of this harness share one context. Put those two facts together and the
      * second subclass to run addresses a cached datasource whose pool still points at the first subclass's
      * removed container: the pool reports a closed connection and every test then fails on a connection
-     * timeout. This package is planned to carry five concrete subclasses, so that is a certainty rather
-     * than a theoretical concern - and both sibling harnesses in this tier record having reproduced it.
+     * timeout. Several concrete subclasses share this harness, so that is a certainty rather than a
+     * theoretical concern.
      *
      * The alternatives were considered and rejected on the merits. @DirtiesContext would rebuild the whole
      * context for every class, which this tier rules out. Container reuse cannot help, because stop()
@@ -744,9 +839,26 @@ public abstract class AbstractAwsIntegrationTest {
      */
     static {
         try {
-            // deepStart brings both up concurrently; join surfaces either failure on this thread.
-            Startables.deepStart(POSTGRES, LOCALSTACK).join();
-        } catch (final RuntimeException startupFailure) {
+            // deepStart brings both up concurrently. FINDING, SEVERITY MEDIUM - raised against this file
+            // and remediated here: this was an unbounded join(), so a container that never became ready
+            // hung the whole tier with no diagnostic and no exit. A build that hangs reports nothing at
+            // all, which is strictly worse than one that fails, because there is no artefact to read.
+            // The wait is now bounded and the expiry says which stage stalled.
+            Startables.deepStart(POSTGRES, LOCALSTACK)
+                    .get(CONTAINER_STARTUP_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (final TimeoutException expired) {
+            throw new IllegalStateException(
+                    "The AWS integration tier's containers did not become ready within "
+                            + CONTAINER_STARTUP_TIMEOUT_SECONDS + " seconds. Either the container runtime is "
+                            + "unreachable or one image is being pulled over a slow link; both are "
+                            + "prerequisites of this tier rather than conditions it can work around. The "
+                            + "correct report is that the gate is blocked, never an untested pass.",
+                    expired);
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "Interrupted while starting the AWS integration tier's containers.", interrupted);
+        } catch (final ExecutionException | RuntimeException startupFailure) {
             throw new IllegalStateException(
                     "The AWS integration tier could not start its containers. A reachable container runtime "
                             + "is a prerequisite for this tier: there is no in-memory substitute, because an "
@@ -780,7 +892,7 @@ public abstract class AbstractAwsIntegrationTest {
      * enables versioning on the output bucket, creates the first-in-first-out queue and creates the
      * notification topic. That work has to happen <em>before</em> the refresh rather than in a per-test
      * hook, because the configured missing-queue strategy is to fail: a queue-backed listener would abort
-     * startup against a queue that did not yet exist. This is the only hook that runs after the containers
+     * startup against a queue that has not been created. This is the only hook that runs after the containers
      * are up and before the context is built, so it is where the work belongs. It is idempotent, following
      * the legacy precedent {@code IF LASTCC=12 THEN SET MAXCC=0} that {@code app/jcl/DEFGDGB.jcl:29}
      * applies after each of its six generation-group definitions: a second call over already-provisioned
@@ -826,15 +938,20 @@ public abstract class AbstractAwsIntegrationTest {
         registry.add("carddemo.aws.sqs.report-queue", () -> reportQueue);
         registry.add("carddemo.aws.sns.notification-topic", () -> notificationTopic);
 
-        // Deliberately synthetic, deliberately not a secret, and long enough to satisfy the minimum length
-        // the token signer enforces. The production property resolves an environment variable with no
-        // default so that the application cannot boot with a key an attacker already knows; the test profile
-        // supplies no value of its own - a High finding against that file, recorded in the class
-        // documentation with its remediation - so a harness in this tier has to supply one, and what it
-        // supplies must be recognisable at a glance as test-only material that no deployment could mistake
-        // for a real key. Both sibling harnesses do the same, in the same shape.
-        registry.add("carddemo.security.jwt.signing-key",
-                () -> "carddemo-aws-tier-test-signing-key-not-a-secret");
+        // FINDING, SEVERITY HIGH - RAISED AGAINST THIS FILE AND REMEDIATED HERE.
+        //
+        // This registered a committed string literal as the token signing key. It was chosen to look
+        // harmless - it said "not-a-secret" in its own text - but the shape is the defect, not the wording:
+        // a literal key checked into version control is a usable key for as long as it exists in history,
+        // it is indistinguishable to a secret scanner from one that matters, and it is exactly the value a
+        // future profile gets seeded with by copy and paste. Rule 1 Clause D admits no secret in code,
+        // logs, tests or configuration, without an exemption for a secret that is currently harmless.
+        //
+        // Remediation: the key is generated in memory, once per JVM, and never written anywhere. Nothing is
+        // committed, so there is nothing to leak and nothing for a scanner to flag; and because the value
+        // differs on every run, no test can come to depend on a particular key, and no deployment can
+        // inherit one from here.
+        registry.add("carddemo.security.jwt.signing-key", () -> EPHEMERAL_SIGNING_KEY);
     }
 
     /**
@@ -926,10 +1043,13 @@ public abstract class AbstractAwsIntegrationTest {
     /**
      * Creates a first-in-first-out queue unless it already exists.
      *
-     * <p>Both attributes are required together. The queue service refuses a first-in-first-out queue that
-     * does not declare itself one, and it requires a deduplication scheme; content-based deduplication is
-     * chosen so that a caller need not invent a deduplication identifier, which the eighty-byte fixed record
-     * of {@code app/csd/CARDDEMO.CSD:502-503} had no field for.
+     * <p>Both attributes are set together and they carry <em>different</em> values, matching the production
+     * queue exactly. The queue service refuses a first-in-first-out queue that does not declare itself one, so
+     * {@code FifoQueue} is {@code true}. {@code ContentBasedDeduplication} is {@code false}: finding H-08,
+     * severity High - a report body is the report name and two dates, so hashing it collapses two legitimate
+     * submissions of the same period, whereas {@code DISPOSITION(MOD)} at
+     * {@code app/csd/CARDDEMO.CSD:502-503} appended every write. With it off, every send must carry its own
+     * {@code MessageDeduplicationId}, which is what the production publisher supplies per submission.
      *
      * @param sqs an open queue client; never {@code null}
      * @param queueName the queue name to create, suffix included; never {@code null}
@@ -940,10 +1060,23 @@ public abstract class AbstractAwsIntegrationTest {
                     .queueName(queueName)
                     .attributesWithStrings(Map.of(
                             QueueAttributeName.FIFO_QUEUE.toString(), "true",
-                            QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "true"))
+                            QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "false"))
                     .build());
         } catch (final QueueNameExistsException alreadyProvisioned) {
-            LOGGER.debug("Queue '{}' already existed; provisioning converged.", queueName, alreadyProvisioned);
+            // An earlier revision stopped here and logged that provisioning had "converged", which was not
+            // true: it had only established that the queue existed. The emulator is a host-global resource and
+            // an existing queue may therefore carry ContentBasedDeduplication ENABLED - createQueue does not
+            // reconcile the attributes of a queue it did not create, so the assertion that the attribute is off
+            // would fail on infrastructure state rather than on anything this build did. The attribute is
+            // mutable, so the fix is to actually converge it, exactly as localstack-init/init-aws.sh does for
+            // the same queue. FifoQueue is deliberately not sent: it is immutable after creation and the
+            // service rejects an attempt to set it.
+            sqs.setQueueAttributes(builder -> builder
+                    .queueUrl(sqs.getQueueUrl(url -> url.queueName(queueName)).queueUrl())
+                    .attributesWithStrings(Map.of(
+                            QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "false")));
+            LOGGER.debug("Queue '{}' already existed; its deduplication attribute was converged to disabled.",
+                    queueName, alreadyProvisioned);
         }
     }
 
@@ -1063,20 +1196,36 @@ public abstract class AbstractAwsIntegrationTest {
      * state. That is what makes a test pass when run alone, in any order and twice in succession.
      *
      * <p><strong>Error modes.</strong> A resource that is already absent is an accepted control path, so a
-     * repeated or partially failed run converges rather than cascading. Any other failure is reported once
-     * at warning level <em>with its root cause attached</em> and does not mask the assertion that the test
-     * was actually making; cleanup deliberately continues over the remaining resources rather than
-     * abandoning them and leaking. Nothing is swallowed silently and there is no empty catch block.
+     * repeated or partially failed run converges rather than cascading - that is the legacy
+     * {@code IF LASTCC=12 THEN SET MAXCC=0} precedent, and it is the one outcome that is not a failure.
+     * Anything else <strong>fails the test</strong>. Every deletion is still attempted first, so one broken
+     * resource cannot cause the others to leak; the failures are collected, and an
+     * {@link IllegalStateException} naming every resource that survived is thrown once the ledger is empty,
+     * with the first failure as its cause and the remainder suppressed on it. Reporting a leak at warning
+     * level was the earlier behaviour and it was wrong: a warning in a passing build is not read, so an
+     * accumulating leak in the emulator would surface later as an unrelated and far less informative failure
+     * in whichever test happened to run next. Rule 1 Clause B is explicit that nothing may be swallowed, and
+     * a logged-and-forgotten failure is a swallowed one.
+     *
+     * @throws IllegalStateException if any resource this test created could not be removed and was not
+     *     already absent
      */
     @AfterEach
     final void cleanUpResourcesCreatedByThisTest() {
+        // Every deletion is attempted before any failure is raised, so a single stuck resource cannot make
+        // the rest leak. Insertion order is preserved so the report reads in the order cleanup attempted.
+        final List<String> leaked = new ArrayList<>();
+        final List<RuntimeException> failures = new ArrayList<>();
+
         while (!this.createdTopicArns.isEmpty()) {
             final String topicArn = this.createdTopicArns.pop();
             try {
                 this.snsClient.deleteTopic(DeleteTopicRequest.builder().topicArn(topicArn).build());
+            } catch (final NotFoundException alreadyAbsent) {
+                LOGGER.debug("Topic '{}' was already absent; cleanup converged.", topicArn, alreadyAbsent);
             } catch (final RuntimeException failure) {
-                LOGGER.warn("Could not delete the notification topic this test created. Identifier: {}.",
-                        topicArn, failure);
+                leaked.add("notification topic " + topicArn);
+                failures.add(failure);
             }
         }
 
@@ -1088,7 +1237,8 @@ public abstract class AbstractAwsIntegrationTest {
             } catch (final QueueDoesNotExistException alreadyAbsent) {
                 LOGGER.debug("Queue at '{}' was already absent; cleanup converged.", queueUrl, alreadyAbsent);
             } catch (final RuntimeException failure) {
-                LOGGER.warn("Could not delete the queue this test created. URL: {}.", queueUrl, failure);
+                leaked.add("queue " + queueUrl);
+                failures.add(failure);
             }
         }
 
@@ -1097,9 +1247,21 @@ public abstract class AbstractAwsIntegrationTest {
             try {
                 deleteBucketAndAllVersions(bucket.name());
             } catch (final RuntimeException failure) {
-                LOGGER.warn("Could not delete the bucket this test created. Name: {}, versioned: {}.",
-                        bucket.name(), bucket.versioned(), failure);
+                // No already-absent branch here: deleteBucketAndAllVersions converges on that itself, so a
+                // second catch for it would be dead code.
+                leaked.add("bucket " + bucket.name() + " (versioned: " + bucket.versioned() + ')');
+                failures.add(failure);
             }
+        }
+
+        if (!failures.isEmpty()) {
+            final IllegalStateException reported = new IllegalStateException(
+                    "Cleanup could not remove " + failures.size() + " resource(s) this test created, so the "
+                            + "emulator is left dirty for whatever runs next: " + String.join("; ", leaked)
+                            + ". Every deletion was attempted; see the cause and any suppressed exceptions.",
+                    failures.get(0));
+            failures.subList(1, failures.size()).forEach(reported::addSuppressed);
+            throw reported;
         }
     }
 
@@ -1362,7 +1524,8 @@ public abstract class AbstractAwsIntegrationTest {
      * Creates a bucket with object versioning enabled and registers it for cleanup.
      *
      * <p>Versioning is the mechanism that stands in for a relative generation reference: a next generation
-     * becomes a new object under a greater key, with prior content retained as an earlier version. A
+     * becomes a new object under a greater key, with prior content retained under its own version
+     * identifier. A
      * versioned bucket cannot be deleted while any version or delete marker remains, which
      * {@link #deleteBucketAndAllVersions(String)} handles.
      *
@@ -1488,8 +1651,10 @@ public abstract class AbstractAwsIntegrationTest {
      * appending records in order to a single reader. That ordering is a behaviour, not an incidental
      * property, so a standard queue is not an acceptable substitute - and it is worth knowing that a
      * first-in-first-out queue <em>rejects</em> a send a standard queue would have accepted, because the
-     * send has to carry a message group identifier. Content-based deduplication is enabled so that a caller
-     * need not invent a deduplication identifier, for which the eighty-byte fixed record had no field.
+     * send has to carry a message group identifier - and, since content-based deduplication is deliberately
+     * <em>disabled</em> here to match production after finding H-08, a deduplication identifier as well. Both
+     * omissions are rejected by the service rather than silently tolerated, which is the point of running
+     * against the emulator.
      *
      * <p>The name is suffixed automatically if the caller has not already suffixed it, because the queue
      * service requires the suffix and a missing one fails with a message that does not obviously say so.
@@ -1513,8 +1678,50 @@ public abstract class AbstractAwsIntegrationTest {
                     .queueName(name)
                     .attributesWithStrings(Map.of(
                             QueueAttributeName.FIFO_QUEUE.toString(), "true",
-                            QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "true"))
+                            QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "false"))
                     .build()), "create the first-in-first-out queue " + name).queueUrl();
+        } catch (final QueueNameExistsException alreadyProvisioned) {
+            LOGGER.debug("Queue '{}' already existed; creation converged.", name, alreadyProvisioned);
+            final String existing = await(this.sqsAsyncClient.getQueueUrl(
+                    builder -> builder.queueName(name)), "resolve the existing queue " + name).queueUrl();
+            this.createdQueueUrls.push(existing);
+            return existing;
+        }
+
+        this.createdQueueUrls.push(queueUrl);
+        return queueUrl;
+    }
+
+    /**
+     * Creates a standard queue and registers it for cleanup.
+     *
+     * <p><strong>Deliberately not first-in-first-out</strong>, and that is the whole reason it exists
+     * alongside {@link #createFifoQueue(String)}. This is a <em>sink</em>, not the job-submission bridge: it
+     * exists so a notification topic can be given a real subscriber and delivery can be observed rather than
+     * inferred from a publish that resolved an identifier. A notification topic cannot deliver to a
+     * first-in-first-out queue unless the topic is itself first-in-first-out, so subscribing one would fail
+     * for a reason that has nothing to do with the property under test.
+     *
+     * <p>No parity claim attaches to this queue. It stands in for whatever an operator has subscribed to
+     * operator notification, which the legacy system expressed as a console message and which therefore has
+     * no queue in the source at all.
+     *
+     * <p><strong>Side effects.</strong> Creates a queue in the emulator container and records it for
+     * cleanup. Idempotent: an existing queue is accepted, its URL resolved, and it is still registered.
+     *
+     * @param queueName the queue to create; must be non-{@code null} and non-blank
+     * @return the URL of the created or already-existing queue, never blank
+     * @throws NullPointerException if {@code queueName} is {@code null}
+     * @throws IllegalArgumentException if {@code queueName} is blank
+     */
+    protected final String createStandardQueue(final String queueName) {
+        final String name = requireResourceName(queueName, "queueName");
+
+        final String queueUrl;
+        try {
+            queueUrl = await(this.sqsAsyncClient.createQueue(
+                    CreateQueueRequest.builder().queueName(name).build()),
+                    "create the standard queue " + name).queueUrl();
         } catch (final QueueNameExistsException alreadyProvisioned) {
             LOGGER.debug("Queue '{}' already existed; creation converged.", name, alreadyProvisioned);
             final String existing = await(this.sqsAsyncClient.getQueueUrl(
@@ -1606,6 +1813,21 @@ public abstract class AbstractAwsIntegrationTest {
     }
 
     /**
+     * Generates the per-JVM token signing key.
+     *
+     * <p>Base64 URL encoding without padding, so the value is safe to carry through a property registry and
+     * a YAML-derived configuration without any character needing to be escaped, and so it contains nothing
+     * that a log format could interpret. The randomness, not the encoding, is what makes it a key.
+     *
+     * @return {@value #SIGNING_KEY_BYTES} bytes of cryptographically strong randomness, encoded as text
+     */
+    private static String generateEphemeralSigningKey() {
+        final byte[] material = new byte[SIGNING_KEY_BYTES];
+        new SecureRandom().nextBytes(material);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(material);
+    }
+
+    /**
      * Completes an asynchronous service call on the calling thread, preserving the original failure.
      *
      * <p>The asynchronous client wraps a failure in a completion exception, which would hide the service
@@ -1614,15 +1836,33 @@ public abstract class AbstractAwsIntegrationTest {
      * already-exists or already-absent type, and otherwise wraps it with context. Rule 1 Clause B forbids
      * swallowing and requires the root cause to be preserved; both paths here do that.
      *
+     * <p><strong>Visible to subclasses on purpose.</strong> This is the tier's single bounded wait, so a
+     * concrete test that needs to complete an asynchronous call uses it rather than writing its own
+     * {@code join()} - which is how the unbounded waits this remediates got there in the first place.
+     *
+     * <p><strong>The wait is bounded</strong>, at {@value #SERVICE_CALL_TIMEOUT_SECONDS} seconds, and the
+     * future is cancelled when the bound is reached. See the finding recorded on the container initialiser:
+     * an unbounded wait converts a stalled emulator into a build that never finishes and therefore never
+     * reports, and cancelling rather than abandoning keeps a dead call's connection and retry schedule from
+     * outliving the test that made it.
+     *
      * @param <T> the response type
      * @param future the call in flight; never {@code null}
      * @param description what was being attempted, phrased to complete "Failed to ..."
      * @return the response
-     * @throws IllegalStateException if the call failed with a checked cause, or was cancelled
+     * @throws IllegalStateException if the call failed with a checked cause, timed out, was cancelled, or
+     *     the calling thread was interrupted
      */
-    private static <T> T await(final CompletableFuture<T> future, final String description) {
+    protected static <T> T await(final CompletableFuture<T> future, final String description) {
         try {
-            return future.join();
+            return future.get(SERVICE_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (final ExecutionException wrapped) {
+            final Throwable cause = wrapped.getCause();
+            if (cause instanceof RuntimeException serviceFailure) {
+                throw serviceFailure;
+            }
+            throw new IllegalStateException("Failed to " + description + ".",
+                    cause == null ? wrapped : cause);
         } catch (final CompletionException wrapped) {
             final Throwable cause = wrapped.getCause();
             if (cause instanceof RuntimeException serviceFailure) {
@@ -1630,8 +1870,24 @@ public abstract class AbstractAwsIntegrationTest {
             }
             throw new IllegalStateException("Failed to " + description + ".",
                     cause == null ? wrapped : cause);
+        } catch (final TimeoutException expired) {
+            // Cancelled, not abandoned. An uncancelled future keeps its client's connection and its
+            // retry schedule alive for the rest of the JVM, so the next test inherits load that has
+            // nothing to do with it and the failure surfaces somewhere unrelated.
+            future.cancel(true);
+            throw new IllegalStateException("Timed out after " + SERVICE_CALL_TIMEOUT_SECONDS
+                    + " seconds while attempting to " + description
+                    + ". The call was cancelled. A wait that cannot expire turns a hung emulator into a "
+                    + "hung build, which reports nothing: the correct outcome is a named failure against "
+                    + "the call that stalled.", expired);
         } catch (final CancellationException cancelled) {
             throw new IllegalStateException("Cancelled while attempting to " + description + ".", cancelled);
+        } catch (final InterruptedException interrupted) {
+            // Restore the flag before leaving: swallowing it would strip the only signal a surrounding
+            // framework has that this thread was asked to stop.
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while attempting to " + description + ".",
+                    interrupted);
         }
     }
 

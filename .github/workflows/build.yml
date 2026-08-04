@@ -51,6 +51,49 @@ env:
   MAVEN_VERSION: "3.9.11"
   MAVEN_OPTS: "-Xmx2048m -XX:MaxMetaspaceSize=512m"
 
+# ============================================================================
+# SUPPLY CHAIN: WHY EVERY `uses:` CARRIES A COMMIT SHA
+#
+# Finding, severity High - raised against the previous revision of this file
+# and remediated throughout it. Every action was referenced by a MOVING tag:
+# `actions/checkout@v4`, `actions/setup-java@v4`, `actions/cache@v4`,
+# `actions/upload-artifact@v4` and a third-party `stCarolas/setup-maven@v5`.
+#
+# A major-version tag on a GitHub Action is not a version. It is a branch the
+# publisher re-points at will, so `@v4` means "whatever v4 is when the job
+# starts", and that code runs with this workflow's token and full access to the
+# checkout. The same argument that makes every Maven coordinate in pom.xml an
+# exact version, and every container image in docker-compose.yml a digest,
+# applies with more force here, because an action executes rather than merely
+# being linked. Pinning by tag also defeats the stated purpose of this file: a
+# harness advertised as deterministic and repeatable cannot be either while a
+# third party can change what it runs between two builds of the same commit.
+#
+# So each reference below names an immutable commit SHA, with the human-readable
+# release in a trailing comment. The comment is what a reader and a dependency
+# bot use; the SHA is what executes. Both are needed - a bare SHA is unreviewable
+# and a bare tag is unpinned.
+#
+# THE MAVEN INSTALL WAS REMOVED RATHER THAN PINNED. `stCarolas/setup-maven` ran
+# in both build jobs to install Apache Maven ${MAVEN_VERSION}. It was an
+# unpinned third-party action in the critical path, and it was redundant: this
+# repository ships a Maven wrapper whose
+# .mvn/wrapper/maven-wrapper.properties names the exact distribution URL for
+# 3.9.11 together with its distributionSha256Sum, so `./mvnw` verifies the
+# checksum of what it downloads before running it. That is a stronger guarantee
+# than installing the same version from a marketplace action, and it is the same
+# tool a developer runs locally and the Dockerfile build stage runs at
+# `RUN ./mvnw -B -ntp test-compile`. Deleting the step therefore removed a
+# dependency and closed a divergence at once, and every `mvn` invocation became
+# `./mvnw`. The `Report toolchain` step asserts the wrapper really did resolve
+# ${MAVEN_VERSION}, so the guarantee the removal relies on is checked rather
+# than assumed.
+#
+# src/test/java/com/cardemo/unit/infrastructure/BuildProvenanceTest.java holds
+# these properties mechanically, so an unpinned action or a reintroduced host
+# `mvn` fails the build instead of depending on a reviewer noticing.
+# ============================================================================
+
 jobs:
 
   # --------------------------------------------------------------------------
@@ -62,7 +105,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out with full history
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -89,27 +132,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up JDK ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Pin Apache Maven ${{ env.MAVEN_VERSION }}
-        uses: stCarolas/setup-maven@v5
-        with:
-          maven-version: ${{ env.MAVEN_VERSION }}
-
-      - name: Report toolchain
+      - name: Report toolchain and assert the wrapper resolved the pinned Maven
         run: |
+          set -euo pipefail
           java -version
-          mvn -version
+          ./mvnw -version
+          resolved="$(./mvnw -version 2>/dev/null | awk '/^Apache Maven /{print $3; exit}')"
+          if [ "${resolved}" != "${MAVEN_VERSION}" ]; then
+            echo "::error::the wrapper resolved Apache Maven ${resolved}, not the pinned" \
+                 "${MAVEN_VERSION}. .mvn/wrapper/maven-wrapper.properties is the single" \
+                 "source of that version and carries the distribution checksum; fix it" \
+                 "there rather than installing a Maven beside it."
+            exit 1
+          fi
+          echo "Apache Maven ${resolved} resolved by the checksum-verified wrapper."
 
       - name: Verify (compile, unit + integration + e2e, JaCoCo >= 80% line)
-        run: mvn -B -ntp -Ddependency-check.skip=true clean verify
+        run: ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
 
       # ----------------------------------------------------------------------
       # Test-collection audit. Surefire 3.5.4 writes one report per top level
@@ -191,7 +239,7 @@ jobs:
 
       - name: Upload surefire and failsafe reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-reports
           path: |
@@ -201,7 +249,7 @@ jobs:
 
       - name: Upload JaCoCo coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: jacoco-report
           path: target/site/jacoco/**
@@ -209,7 +257,7 @@ jobs:
 
       - name: Upload executable JAR
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: carddemo-jar
           path: target/carddemo-*.jar
@@ -226,22 +274,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up JDK ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Pin Apache Maven ${{ env.MAVEN_VERSION }}
-        uses: stCarolas/setup-maven@v5
-        with:
-          maven-version: ${{ env.MAVEN_VERSION }}
-
       - name: Cache the NVD data directory
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.m2/repository/org/owasp/dependency-check-data
           key: nvd-${{ runner.os }}-${{ github.run_id }}
@@ -261,12 +304,222 @@ jobs:
       - name: Run the vulnerability scan
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-        run: mvn -B -ntp org.owasp:dependency-check-maven:12.1.0:check
+        run: ./mvnw -B -ntp org.owasp:dependency-check-maven:12.1.0:check
 
       - name: Upload the dependency-check reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dependency-check-reports
           path: target/dependency-check/**
+          if-no-files-found: ignore
+
+  # --------------------------------------------------------------------------
+  # Container image and SBOM scan.
+  #
+  # Finding, severity Medium - remediated by this job. Every scanner this
+  # project ran looked at the MAVEN GRAPH: dependency-check above reads
+  # pom.xml's resolved dependencies and fails at CVSS >= 7. Nothing looked at
+  # the artifact that actually ships. That gap is not theoretical - it is
+  # exactly how the outdated PostgreSQL, Prometheus and Grafana images in
+  # docker-compose.yml survived a green build until a human read the tags, and
+  # one of those, CVE-2026-6473 at CVSS 8.8, was well above the threshold the
+  # Maven scan already enforced. A gate that covers the dependencies but not
+  # the runtime image reports a standard it does not hold the delivery to.
+  #
+  # WHAT IS SCANNED. The image built from this repository's Dockerfile, which
+  # covers both layers of that artifact in one pass: the operating-system
+  # packages of the eclipse-temurin runtime base, and the Java archives inside
+  # the fat JAR. A CycloneDX SBOM is emitted alongside the findings so the
+  # delivered contents are recorded as evidence, not just the verdict.
+  #
+  # WHY THE SCANNER IS A DIGEST-PINNED IMAGE RATHER THAN AN ACTION. A
+  # third-party action would be one more mutable reference in the critical
+  # path - precisely what the SHA pinning in this file exists to remove - and
+  # it would add a supply-chain dependency to fix a supply-chain gap. The
+  # official scanner image, pinned by digest, is self-verifying and needs no
+  # marketplace trust. `aquasec/trivy:0.73.0` is stated beside the digest so a
+  # reader knows the version, while the digest is what resolves.
+  #
+  # WHY THE SCANNER IS PINNED BUT ITS DATABASE IS NOT. These are different
+  # properties and only one of them should be frozen - the same distinction
+  # the PostgreSQL pin in the integration harnesses documents. The scanner
+  # BINARY is pinned so the analysis is reproducible: the same image yields the
+  # same parsing, the same matching rules and the same severity arithmetic on
+  # every run. The vulnerability DATABASE is deliberately fresh, because a
+  # frozen advisory set cannot report an advisory published after it was
+  # frozen, and a vulnerability gate whose data cannot move is a gate that
+  # silently stops working. What is pinned about the data is its ORIGIN: both
+  # database repositories are named explicitly below rather than left to the
+  # tool's defaults, so the content is current while its source is fixed.
+  #
+  # THRESHOLD. HIGH and CRITICAL fail the job, matching the CVSS >= 7 boundary
+  # the Maven scan enforces so the two gates cannot disagree about what
+  # "serious" means. --ignore-unfixed is explicitly FALSE: an advisory with no
+  # upstream fix is still a disclosed exposure in the delivered image, and
+  # hiding it would let the base image drift out of support while the job stayed
+  # green. The findings are printed before the job fails, so the log names what
+  # broke rather than only that something did.
+  # --------------------------------------------------------------------------
+  image-scan:
+    name: Container image and SBOM scan (fail on HIGH or CRITICAL)
+    runs-on: ubuntu-latest
+    env:
+      # Pinned by digest; the tag is documentation. Verified to report
+      # "Version: 0.73.0" when run.
+      TRIVY_IMAGE: >-
+        aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+      # Stated rather than inherited from the tool's defaults, so the origin of
+      # the advisory data is fixed even though its content is current.
+      TRIVY_DB: mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
+      TRIVY_JAVA_DB: mirror.gcr.io/aquasec/trivy-java-db:1,ghcr.io/aquasecurity/trivy-java-db:1
+      IMAGE_TAG: carddemo:scan-${{ github.sha }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build the runtime image from the committed Dockerfile
+        run: |
+          set -euo pipefail
+          # No --pull: both stages of the Dockerfile are already digest-pinned,
+          # so there is no mutable tag for a pull to re-resolve.
+          docker build --file Dockerfile --tag "${IMAGE_TAG}" .
+
+      - name: Record the image provenance that was scanned
+        run: |
+          set -euo pipefail
+          docker image inspect "${IMAGE_TAG}" \
+            --format 'scanned image id: {{.Id}}{{"\n"}}created: {{.Created}}'
+
+      - name: Cache the scanner database
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/trivy
+          # The run id keeps each run writing its own entry while restore-keys
+          # still seed it from the most recent one, so a run reuses yesterday's
+          # database as a starting point and then refreshes it rather than
+          # downloading it whole. The data stays current; only the transfer is
+          # saved.
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
+      - name: Generate a CycloneDX SBOM of the delivered image
+        run: |
+          set -euo pipefail
+          mkdir -p target/image-scan "${HOME}/.cache/trivy"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock:ro \
+            -v "${HOME}/.cache/trivy:/root/.cache/trivy" \
+            -v "${PWD}/target/image-scan:/out" \
+            "${TRIVY_IMAGE}" \
+              image \
+              --db-repository "${TRIVY_DB}" \
+              --java-db-repository "${TRIVY_JAVA_DB}" \
+              --format cyclonedx \
+              --output /out/carddemo-image-sbom.cdx.json \
+              "${IMAGE_TAG}"
+
+      - name: Scan the image and fail on HIGH or CRITICAL
+        run: |
+          set -euo pipefail
+          status=0
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock:ro \
+            -v "${HOME}/.cache/trivy:/root/.cache/trivy" \
+            -v "${PWD}/target/image-scan:/out" \
+            "${TRIVY_IMAGE}" \
+              image \
+              --db-repository "${TRIVY_DB}" \
+              --java-db-repository "${TRIVY_JAVA_DB}" \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed=false \
+              --exit-code 1 \
+              --format table \
+              --output /out/image-vulnerabilities.txt \
+              "${IMAGE_TAG}" || status=$?
+          # The report is written by a root process in the container, so it is
+          # made readable before it is printed and uploaded.
+          sudo chown -R "$(id -u):$(id -g)" target/image-scan
+          cat target/image-scan/image-vulnerabilities.txt
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::the delivered container image carries HIGH or CRITICAL" \
+                 "vulnerabilities, listed above. Raise the pinned base image in" \
+                 "Dockerfile, or the affected dependency in pom.xml, to a fixed" \
+                 "release. Suppressing a finding here is not available by design:" \
+                 "this gate exists because the Maven scan cannot see the image."
+          fi
+          exit "${status}"
+
+      # ----------------------------------------------------------------------
+      # The development topology's third-party images, REPORTED and not enforced.
+      #
+      # The split between this step and the blocking one above is deliberate and
+      # is grounded in a measurement rather than a preference. The images in
+      # docker-compose.yml are development substrate: PostgreSQL, LocalStack,
+      # Jaeger, Prometheus and Grafana are what a developer runs beside the
+      # application, and none of them is part of the delivered artifact. Holding
+      # them to a blocking gate sounds stricter and is worse, because their
+      # contents are not this project's to fix.
+      #
+      # Concretely: `postgres:16.14-alpine` - the current patch level, pinned in
+      # this repository specifically to close eleven advisories including one at
+      # CVSS 8.8 - scans clean on its Alpine packages and still reports 15
+      # HIGH/CRITICAL findings, all of them Go standard-library advisories in the
+      # `gosu` helper binary the official image bundles. There is no PostgreSQL
+      # 16 tag without them; clearing them needs an upstream rebuild against a
+      # newer Go toolchain. A blocking gate here would therefore have exactly one
+      # available remedy - suppress the findings - and a suppression list that
+      # grows for reasons unrelated to this codebase is how a gate stops being
+      # read at all.
+      #
+      # But the drift these images represent is real: outdated PostgreSQL,
+      # Prometheus and Grafana pins survived every previous green build because
+      # nothing looked at them. Reporting without failing is what closes that
+      # specific gap - the tags stay under continuous observation and land in the
+      # uploaded artifact, while the build's pass/fail keeps meaning something
+      # about what this project ships and can act on.
+      #
+      # The image list is read out of docker-compose.yml so the topology stays the
+      # single source of truth and a service added there is scanned without this
+      # file being touched.
+      # ----------------------------------------------------------------------
+      - name: Report on the development topology images (informational)
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p target/image-scan
+          report=target/image-scan/topology-images.txt
+          : > "${report}"
+          mapfile -t images < <(grep -oE '[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' \
+            docker-compose.yml | sort -u)
+          if [ "${#images[@]}" -eq 0 ]; then
+            echo "::error::no digest-pinned image was found in docker-compose.yml, so this step" \
+                 "would have reported nothing while appearing to pass. Every service image in that" \
+                 "file is pinned by digest; if that changed, fix the pin rather than this step."
+            exit 1
+          fi
+          for image in "${images[@]}"; do
+            echo "=== ${image}" >> "${report}"
+            docker run --rm \
+              -v "${HOME}/.cache/trivy:/root/.cache/trivy" \
+              "${TRIVY_IMAGE}" \
+                image \
+                --db-repository "${TRIVY_DB}" \
+                --java-db-repository "${TRIVY_JAVA_DB}" \
+                --scanners vuln \
+                --severity HIGH,CRITICAL \
+                --exit-code 0 \
+                --format table \
+                "${image}" >> "${report}" 2>/dev/null
+          done
+          sudo chown -R "$(id -u):$(id -g)" target/image-scan
+          cat "${report}"
+
+      - name: Upload the image scan and SBOM
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-scan-reports
+          path: target/image-scan/**
           if-no-files-found: ignore

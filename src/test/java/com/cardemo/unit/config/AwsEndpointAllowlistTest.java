@@ -408,20 +408,20 @@ class AwsEndpointAllowlistTest {
         }
 
         @Test
-        @DisplayName("the stale invariant-by-absence claim is retracted rather than merely deleted")
-        void theStaleInvariantClaimIsRetracted() throws IOException {
+        @DisplayName("the profile records that an ABSENT override is the live-routing defect")
+        void theProfileRecordsWhyAnAbsentOverrideIsTheDefect() throws IOException {
             final String text = profile();
-            // The old wording survives only as a quotation inside its own retraction, which is the honest
-            // record: a reader who searches for the claim finds the correction rather than nothing.
-            assertThat(text).contains("CORRECTED, AND NO LONGER AN INVARIANT OF THIS KIND");
-            final int quoted = text.indexOf("NO ENDPOINT OVERRIDE OF ANY KIND");
-            final int retraction = text.indexOf("CORRECTED, AND NO LONGER AN INVARIANT OF THIS KIND");
-            assertThat(quoted)
-                    .as("the claim may appear only after its retraction begins")
-                    .isGreaterThan(retraction);
-            assertThat(text.indexOf("NO ENDPOINT OVERRIDE OF ANY KIND", quoted + 1))
-                    .as("the claim must not appear a second time, unretracted")
-                    .isEqualTo(-1);
+            // The hazard is counter-intuitive: leaving the endpoint unset looks conservative but is the one
+            // setting that reaches live AWS, because the SDK's standard resolution supplies the real
+            // regional endpoint. The profile must therefore state the positive invariant - the overrides are
+            // mandatory and the file fails closed - rather than leave a reader to infer it.
+            assertThat(text)
+                    .as("the profile must say that an absent override is not a neutral setting")
+                    .contains("An absent endpoint override is therefore NOT a neutral setting here")
+                    .contains("FAILS CLOSED");
+            assertThat(text)
+                    .as("the profile must name the code-side allowlist that enforces the boundary")
+                    .contains("AwsConfig.requireEmulatorEndpoints");
         }
 
         @Test

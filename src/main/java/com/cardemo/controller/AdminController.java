@@ -29,6 +29,7 @@ package com.cardemo.controller;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -44,7 +45,6 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -225,59 +225,64 @@ import com.cardemo.service.admin.UserUpdateService;
  * client as the failure kind on a 400. Nothing here trims, pads, case-folds or defaults a value on its way
  * to a service.</p>
  *
- * <h2>Findings and deviations, with severities</h2>
+ * <h2>Deviations from the source, and preserved quirks</h2>
  *
- * <p>Every finding this class carries is classified and tracked; each is also owed an entry in the planned
- * {@code DECISION_LOG.md} under the name given at the end of its item, and each preserved quirk is owed a
- * citation in the planned {@code TRACEABILITY_MATRIX.md}. Nothing in this list is a silent substitution,
- * and nothing in it is a defect left unstated.</p>
+ * <p>Each item below is a deliberate difference from the system of record, or a source behaviour preserved
+ * because parity is the contract. Nothing here is a silent substitution.</p>
  *
  * <ul>
- *   <li><strong>Blocker - the presented credential cannot travel inside the add request body, because that
- *       body type publishes no read path to it.</strong> {@code UserCreateRequest} carries all twelve
- *       fields of {@code app/cpy-bms/COUSR01.CPY} but exposes an accessor for only eleven: the credential
- *       is write-only by deliberate design, with no accessor of any visibility, and its own regression
- *       suite asserts in both directions that no method whatsoever names it. {@code UserAddService}
- *       documents the consequence as a labelled mechanism note and takes the credential as an explicit
- *       separate argument. Remediation, applied: {@link #addUser} accepts the credential on the dedicated
- *       request header {@value #PRESENTED_PASSWORD_HEADER} and hands it straight to the service, so the
- *       write-only design is honoured rather than weakened and no accessor is invented on a dependency.
- *       Decision log entry: <em>credential transported beside the add body</em>.</li>
+ *   <li><strong>The presented credential used to travel beside the add request body on a bespoke
+ *       {@code X-Presented-Password} header, and now travels inside the body alone.</strong> The header
+ *       existed because {@code UserCreateRequest} published no read path to its own write-only credential
+ *       member, so the body member was bound and then ignored. That traded one exposure for two worse ones:
+ *       generic ingress, proxy and APM redaction recognises the standard authorization, cookie and
+ *       body-password channels but not a project-invented header name, so the credential travelled through
+ *       the channel least likely to be scrubbed; and the audited value - the body - could differ from the
+ *       value actually hashed, because the two arrived independently. The header, its constant and its
+ *       binding are removed outright, and {@code UserCreateRequest} publishes exactly one narrowly-scoped
+ *       read path, {@code mapPassword(Function)}, which hands the value to a reader this class supplies
+ *       rather than returning it - so it is neither a JavaBean getter nor a zero-argument method, and is
+ *       therefore invisible to serializers, reflective bean mappers, {@code toString} generators and
+ *       property-walking loggers alike. {@link #addUser} relays that single body value to the service, so the
+ *       value hashed is by construction the value bound. Decision log entry: <em>credential transported
+ *       inside the add body</em>.</li>
  *   <li><strong>High - both PF3 and PF5 perform the same update paragraph, and splitting them would
  *       invent an eighteenth operation.</strong> {@code app/cbl/COUSR02C.cbl:L112} and {@code :L122} both
  *       {@code PERFORM UPDATE-USER-INFO}; the arms differ only in what happens afterwards, and what happens
  *       afterwards is navigation, which has no Java counterpart because routing is URL-based under
  *       transformation rule 7. Remediation, applied: the two arms collapse into the single operation
  *       {@link #updateUser}. Decision log entry: <em>PF3 and PF5 collapse to one update</em>.</li>
- *   <li><strong>Medium - the update carries no as-displayed snapshot, so the business-level concurrency
- *       layer is not engaged on this resource.</strong> The source needed none: it held the row locked from
- *       the read through the rewrite, because {@code app/csd/CARDDEMO.CSD} defines {@code FILE(USRSEC)}
- *       with {@code UPDATEMODEL(LOCKING)}, and a stateless surface cannot hold a lock across requests.
- *       {@code UserUpdateRequest} declares no snapshot component and {@code UserSecurity} carries no
- *       version column, so neither layer of the two-layer design is available here. Remediation, applied:
- *       the snapshot argument is passed as absent, which the service documents as reproducing the source's
- *       own submission exactly; the residual lost-update exposure is disclosed rather than hidden, and
- *       closing it would need a sealed as-displayed snapshot on a conditional-request header, as the
- *       account and card update surfaces use. Decision log entry: <em>user update without a snapshot</em>.</li>
+ *   <li><strong>Medium, resolved - the update and the delete had no concurrency control of any kind, and
+ *       now hold the row exactly as the source did.</strong> Both routes were a read followed by a write with
+ *       nothing between them, so two administrators could each read the same {@code user_security} row and the
+ *       second write would silently discard the first, losing a role change, a name change or a password
+ *       digest. Remediation, applied: both services read through
+ *       {@code com.cardemo.repository.UserSecurityRepository#findByIdForUpdate(String)}, a pessimistic write
+ *       read that is the direct analogue of the {@code EXEC CICS READ ... UPDATE} both source programs issue -
+ *       {@code app/cbl/COUSR02C.cbl:L322-L328} before its rewrite at {@code :L360}, and
+ *       {@code app/cbl/COUSR03C.cbl:L269-L275} before its delete at {@code :L307} - against a file
+ *       {@code app/csd/CARDDEMO.CSD:L88-L89} defines with {@code UPDATEMODEL(LOCKING)}. A version column was
+ *       the alternative and is not available: {@code user_security} has exactly five columns under
+ *       {@code ddl-auto: validate}, the migration set is fixed at three members, and a repository integration
+ *       test asserts the table has no version column. What remains unengaged is the <em>business-level</em>
+ *       snapshot layer, and only because no per-user read transaction exists to issue a sealed snapshot from;
+ *       that is stated on {@link #NO_CLIENT_SNAPSHOT}. Decision log entry: <em>user update and delete hold the
+ *       row for update</em>.</li>
  *   <li><strong>Medium - deleting a user is not guarded against deleting yourself, and adding a guard is
  *       forbidden.</strong> {@code app/cbl/COUSR03C.cbl} never compares the target identifier against the
  *       signed-on one; the proof is that {@code CDEMO-USER-ID} occurs zero times in all 359 of its lines.
- *       Remediation, applied: nothing. Parity is the contract, the absence is preserved, and no comparison
- *       against the token subject and no {@code 403} for a self-delete appears anywhere below. Decision log
- *       entry: <em>no self-delete guard</em>.</li>
- *   <li><strong>Low - a delete that fails for any reason other than "not found" reports
+ *       Parity is the contract, so the absence is preserved and no comparison against the token subject and
+ *       no {@code 403} for a self-delete appears anywhere below.</li>
+ *   <li><strong>A delete that fails for any reason other than "not found" reports
  *       {@code 'Unable to Update User...'}, naming the wrong verb.</strong> The literal is at
- *       {@code app/cbl/COUSR03C.cbl:L332}, on the {@code WHEN OTHER} arm reached at {@code :L329}.
- *       Remediation, applied: none - it is relayed byte for byte, because the parity comparison is made on
- *       text and correcting the verb would change output the gate measures. Decision log entry:
- *       <em>delete failure names the update verb</em>.</li>
- *   <li><strong>Low - a duplicate identifier on the add operation reports
- *       {@code 'User ID already exist...'}, which is not grammatical.</strong> The literal is at
- *       {@code app/cbl/COUSR01C.cbl:L263}, reached from both {@code WHEN DFHRESP(DUPKEY)} at {@code :L260}
- *       and {@code WHEN DFHRESP(DUPREC)} at {@code :L261}. Remediation, applied: none - "exist" is relayed
- *       exactly as written and is not corrected to "exists". Decision log entry:
- *       <em>duplicate message relayed verbatim</em>.</li>
- *   <li><strong>Low - three screen behaviours have no counterpart and are omitted rather than
+ *       {@code app/cbl/COUSR03C.cbl:L332}, on the {@code WHEN OTHER} arm reached at {@code :L329}. It is
+ *       relayed byte for byte, because the parity comparison is made on text and correcting the verb would
+ *       change output the gate measures.</li>
+ *   <li><strong>A duplicate identifier on the add operation reports {@code 'User ID already exist...'},
+ *       which is not grammatical.</strong> The literal is at {@code app/cbl/COUSR01C.cbl:L263}, reached from
+ *       both {@code WHEN DFHRESP(DUPKEY)} at {@code :L260} and {@code WHEN DFHRESP(DUPREC)} at
+ *       {@code :L261}. "exist" is relayed exactly as written and is not corrected to "exists".</li>
+ *   <li><strong>Three screen behaviours have no counterpart and are omitted rather than
  *       approximated.</strong> {@code WHEN DFHPF4 PERFORM CLEAR-CURRENT-SCREEN} at
  *       {@code app/cbl/COUSR02C.cbl:L120} and at {@code app/cbl/COUSR03C.cbl:L119} blanks a terminal map,
  *       which a stateless client does by discarding its own form; cursor repositioning, the
@@ -286,8 +291,7 @@ import com.cardemo.service.admin.UserUpdateService;
  *       field at fault, which the failure-kind and field-name members of a 400 carry instead; and row
  *       selection, {@code USER-SEL PIC X(01)} at {@code app/cbl/COUSR00C.cbl:L58}, becomes the caller
  *       naming an identifier on a subsequent call. <strong>No endpoint is added for any of the three</strong>,
- *       because each would be an eighteenth operation with no CSD transaction behind it. Decision log entry:
- *       <em>screen behaviours with no counterpart</em>.</li>
+ *       because each would be an eighteenth operation with no CSD transaction behind it.</li>
  *   </ul>
  *
  * <h2>State and thread safety</h2>
@@ -340,20 +344,6 @@ public class AdminController {
      */
     static final String USER_PATH = "/{userId}";
 
-    /**
-     * The request header carrying the presented plaintext credential on the add operation.
-     *
-     * <p><strong>Why the credential is not read from the body.</strong>
-     * {@code app/cpy-bms/COUSR01.CPY:78} declares {@code PASSWDI PIC X(8)} and
-     * {@code com.cardemo.model.dto.UserCreateRequest} declares a matching write-only member for it - but it
-     * publishes <em>no accessor of any visibility</em> for that member, deliberately, so that no caller, no
-     * serializer and no reflective bean mapper can read it back out, and its regression suite asserts that
-     * no method on the type so much as names it. {@code UserAddService} therefore takes the credential as an
-     * explicit separate argument, and this header is how it reaches this class. It is never logged, never
-     * echoed, never placed in an exception message and never returned; masking rules for credential-shaped
-     * values live in {@code logback-spring.xml}.</p>
-     */
-    static final String PRESENTED_PASSWORD_HEADER = "X-Presented-Password";
 
     /** CSD transaction identifier for the user list, {@code app/csd/CARDDEMO.CSD:L449}. */
     private static final String USER_LIST_TRANSACTION_ID = "CU00";
@@ -433,6 +423,27 @@ public class AdminController {
     /** The path-variable and field name of the eight-character user identifier acted upon. */
     private static final String USER_ID_PATH_VARIABLE = "userId";
 
+    /**
+     * The absent business-level snapshot handed to the update service, named rather than written as a bare
+     * {@code null} so that the reason it is absent is readable at the call site.
+     *
+     * <p>{@code app/cbl/COUSR02C.cbl} submitted no snapshot: it read the row with
+     * {@code EXEC CICS READ ... UPDATE} at {@code :L322-L328} under {@code UPDATEMODEL(LOCKING)} and rewrote it
+     * at {@code :L360}, so an exclusive record hold - not a comparison - was what stopped a second task
+     * interleaving. The service reproduces that hold with a pessimistic write read inside its own transaction,
+     * which is the store-level guard this operation relies on.
+     *
+     * <p>The business-level comparison layer remains available on the service and stays unused from here for a
+     * structural reason worth stating rather than leaving to be inferred: a caller can only state what it was
+     * last shown if some operation showed it, and {@code app/csd/CARDDEMO.CSD} defines no per-user read
+     * transaction to be that operation - {@code CU00} lists, {@code CU01} adds, {@code CU02} updates and
+     * {@code CU03} deletes. The account and card updates do carry a sealed as-displayed snapshot because their
+     * own CSD transactions {@code CAVW} and {@code CCDL} issue one. Adding an eighteenth route here to close
+     * that gap would exceed the declared endpoint set, so the gap is covered by the lock and disclosed
+     * instead.
+     */
+    private static final UserUpdateService.UserSnapshot NO_CLIENT_SNAPSHOT = null;
+
     /** The first of the two tokens a boolean-valued parameter accepts, and one of only two. */
     private static final String TRUE_TOKEN = "true";
 
@@ -506,6 +517,42 @@ public class AdminController {
      */
     private static final String IO_PROBLEM_DETAIL =
             "The security data store reported an input-output failure. The request was not completed.";
+
+    /**
+     * The exact user-administration captions of the frozen source that may be returned to a caller verbatim.
+     *
+     * <p><strong>Finding H-02, severity High, RESOLVED.</strong> The user-administration services raise their
+     * typed failures carrying the source's own caption as the message - {@code UserUpdateService} and
+     * {@code UserDeleteService} both do - and the handlers below used to discard every message in favour of a
+     * fixed generic detail. The reasoning was sound as far as it went: these exception types are also composed
+     * by {@code FileStatusMapper}, whose messages name the operation, the logical file and the
+     * {@code COBOL FILE STATUS}, none of which a caller may see. But applying the rule by <em>type</em> threw
+     * away the literal parity the migration is measured on, including the deliberately preserved wrong verb of
+     * {@code app/cbl/COUSR02C.cbl:L386} and {@code app/cbl/COUSR03C.cbl:L332}, where a <em>delete</em> path
+     * reports {@code 'Unable to Update User...'}.
+     *
+     * <p><strong>Why an exact-match allow-list rather than a filter.</strong> A filter that stripped keys or
+     * dataset names from an arbitrary message would have to be right about every message any of five files
+     * might ever compose. Membership of this set cannot leak: every element is a fixed literal transcribed
+     * from the frozen source, none interpolates a value, and a message that is not character-for-character one
+     * of them is replaced by the fixed detail. Adding a caption here is therefore a deliberate, reviewable act
+     * rather than a consequence of how some other file happened to phrase an error.
+     *
+     * <p>The three captions are, with their source locations:</p>
+     *
+     * <ul>
+     *   <li>{@code 'User ID NOT found...'} - {@code app/cbl/COUSR02C.cbl:L342} and {@code :L379},
+     *       {@code app/cbl/COUSR03C.cbl:L289} and {@code :L325}.</li>
+     *   <li>{@code 'Unable to lookup User...'} - the {@code WHEN OTHER} arm of the lookup on both programs.</li>
+     *   <li>{@code 'Unable to Update User...'} - {@code app/cbl/COUSR02C.cbl:L386} and
+     *       {@code app/cbl/COUSR03C.cbl:L332}. The verb is wrong on the delete path in the source and is
+     *       preserved, not corrected.</li>
+     * </ul>
+     */
+    private static final Set<String> RETURNABLE_SOURCE_CAPTIONS = Set.of(
+            "User ID NOT found...",
+            "Unable to lookup User...",
+            "Unable to Update User...");
 
     /**
      * The fixed detail returned for every 500. It names no cause, which is the same posture as
@@ -757,7 +804,7 @@ public class AdminController {
      * {@code app/cpy-bms/COUSR00.CPY:72} it was received into, have no Java counterpart: selecting a row in
      * order to reach the update or delete screen becomes the caller naming that identifier on
      * {@link #updateUser} or {@link #deleteUser}. The echoed rows this operation accepts therefore carry no
-     * selector, and none is read. Severity: Low.
+     * selector, and none is read.
      *
      * @param actionToken the navigation intent as typed, matched exactly against the three declared tokens;
      * null defaults to {@link UserListAction#SUBMIT}, which is what a bare request means.
@@ -832,23 +879,25 @@ public class AdminController {
      * bound at the widths that map declares - {@code FNAMEI PIC X(20)} at {@code :60},
      * {@code LNAMEI PIC X(20)} at {@code :66}, {@code USERIDI PIC X(8)} at {@code :72},
      * {@code PASSWDI PIC X(8)} at {@code :78}, {@code USRTYPEI PIC X(1)} at {@code :84} and the six
-     * recurring header fields plus {@code ERRMSGI PIC X(78)} at {@code :90} - plus the presented credential
-     * on the {@value #PRESENTED_PASSWORD_HEADER} header. Nothing is widened, narrowed, renamed or re-ordered,
-     * and the body type refuses any property outside the twelve rather than dropping it, so a misspelled
-     * member is a {@code 400} and never a user created without the field the caller thought it sent.
+     * recurring header fields plus {@code ERRMSGI PIC X(78)} at {@code :90}. The presented credential is one
+     * of those twelve body members and arrives nowhere else. Nothing is widened, narrowed, renamed or
+     * re-ordered, and the body type refuses any property outside the twelve rather than dropping it, so a
+     * misspelled member is a {@code 400} and never a user created without the field the caller thought it
+     * sent.
      *
-     * <p><strong>Labelled mechanism substitution: the credential travels beside the body, not inside
-     * it.</strong> {@code UserCreateRequest} declares the credential as a write-only member and publishes no
-     * accessor of any visibility for it, deliberately, so that no caller, serializer or reflective bean
-     * mapper can read it back out - a design its own regression suite asserts in both directions.
-     * {@code UserAddService} consequently takes the credential as an explicit separate argument, and this
-     * header is how it reaches this class: it is read once, handed straight to the service, and never logged,
-     * echoed, returned or placed in an exception message. The body member remains part of the declared field
-     * contract for the same reason the outbound message member does - the map declares it - and is therefore
-     * bound but unreadable; a caller that supplies only the body member and omits the header receives the
-     * source's own empty-password rejection from {@code app/cbl/COUSR01C.cbl:L136-L141}. Severity: Medium.
-     * Remediation, should the write-only design ever be revisited: publish a read path on the body type and
-     * relay the member instead of the header.
+     * <p><strong>The credential travels inside the body, on no other channel.</strong> This operation
+     * declares no {@code @RequestHeader}, no {@code @RequestParam} and no additional parameter of any kind:
+     * the body is the whole input. {@code UserCreateRequest} keeps the credential write-only for JSON and
+     * publishes exactly one read path to it, {@code mapPassword(Function)}, which requires a reader as its
+     * argument and therefore cannot be discovered by a serializer, a reflective bean mapper or any
+     * property-walking renderer - all of which look for zero-argument methods. This class supplies that
+     * reader and hands the value straight to the service, which hashes it immediately; the credential never
+     * becomes a value this class holds, and it is never assigned to a field, logged, echoed, returned or
+     * placed in an exception message. Credential-shaped masking rules in {@code logback-spring.xml} are a
+     * backstop rather than the control. A request that omits the member, or supplies it blank, receives the
+     * source's own empty-password rejection from {@code app/cbl/COUSR01C.cbl:L136-L141}. A request that
+     * supplies the credential on a header instead is not served the credential it thought it sent: no header
+     * is bound, and a regression test asserts that none ever will be.
      *
      * <p><strong>Validation order is preserved in the service, not here.</strong> The five checks run first
      * name, last name, user identifier, password, user type - {@code app/cbl/COUSR01C.cbl:L118},
@@ -897,14 +946,13 @@ public class AdminController {
      * discards its own form - and {@code MOVE -1 TO USERIDL} at {@code :L264} parked the cursor on the field
      * at fault, which the field name on a {@code 400} carries instead. Neither becomes an endpoint. Note also
      * that {@code WHEN DFHPF3} at {@code :L93-L95} exits <em>without</em> saving in this program, unlike the
-     * sibling update program, so no arm of this operation writes on an exit. Severity: Low.
+     * sibling update program, so no arm of this operation writes on an exit.
      *
      * @param request the twelve declared fields of the add screen, validated at the map's widths before this
-     * method is entered; must not be null, and every member is treated as untrusted.
-     * @param presentedPassword the presented plaintext credential, {@code PASSWDI PIC X(8)}, taken from the
-     * {@value #PRESENTED_PASSWORD_HEADER} header rather than from the body because the body type publishes no
-     * read path to its credential member. May be null, empty or blank, each of which takes the source's own
-     * empty-password arm; never logged, never echoed and never returned.
+     * method is entered; must not be null, and every member is treated as untrusted. Its
+     * {@code PASSWDI PIC X(8)} member is the presented plaintext credential and is the only channel by which
+     * one is accepted; it may be null, empty or blank, each of which takes the source's own empty-password
+     * arm, and it is never logged, echoed or returned.
      * @return {@code 201 Created} with the assembled screen carrying the source's added message; never null
      * @throws ValidationException if a field is empty, over-wide, or carries a user type outside the two the
      * source admits
@@ -913,11 +961,12 @@ public class AdminController {
      */
     @PostMapping
     public ResponseEntity<UserAddService.UserAddScreen> addUser(
-            @Valid @RequestBody final UserCreateRequest request,
-            @RequestHeader(name = PRESENTED_PASSWORD_HEADER, required = false)
-            final String presentedPassword) {
+            @Valid @RequestBody final UserCreateRequest request) {
 
-        return ResponseEntity.status(HttpStatus.CREATED).body(applyUserAdd(request, presentedPassword));
+        // The credential is read from the body it was bound and validated in, through the one-way reader the
+        // payload publishes for exactly this purpose, so it never becomes a value this method holds.
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(request.mapPassword(presented -> applyUserAdd(request, presented)));
     }
 
     /**
@@ -942,7 +991,8 @@ public class AdminController {
      * as anomalous by four independent facts: this program's own on-screen hint at {@code :L336} names PF5,
      * {@code WHEN DFHPF12} at {@code :L124-L126} leaves without saving, and the sibling delete, list and add
      * programs all use PF3 conventionally. The quirk is preserved by the service, which maps both call sites;
-     * this operation is the one REST surface both reach. Severity: High if split.
+     * this operation is the one REST surface both reach. Splitting them would invent an eighteenth
+     * operation with no CSD transaction behind it.
      *
      * <p><strong>Inputs.</strong> The identifier as a path variable, and the twelve fields of
      * {@code app/cpy-bms/COUSR02.CPY} as a request body whose credential member is write-only. The
@@ -983,17 +1033,27 @@ public class AdminController {
      *
      * <p><strong>Configuration and defaults.</strong> BCrypt at strength 10 is applied by the service, as on
      * the add operation, and this class reads no property. <strong>No optimistic-locking metadata is
-     * referenced here, because {@code UserSecurity} declares no version column.</strong>
+     * referenced here, because {@code UserSecurity} declares no version column</strong> - the concurrency
+     * guarantee is a pessimistic write read instead, which is what the source itself used.
      *
-     * <p><strong>Labelled deviation: no as-displayed snapshot travels.</strong> The source needed none - it
-     * held the row locked from the read through the rewrite, because {@code app/csd/CARDDEMO.CSD} defines
-     * {@code FILE(USRSEC)} with {@code UPDATEMODEL(LOCKING)} - and a stateless surface cannot hold a lock
-     * across requests. The body type declares no snapshot member and the entity declares no version column,
-     * so neither layer of the two-layer concurrency design is available on this resource; the snapshot
-     * argument is therefore passed as absent, which the service documents as reproducing the source's own
-     * submission exactly. The residual lost-update exposure is disclosed rather than hidden. Severity: Medium.
-     * Remediation: carry a sealed as-displayed snapshot on a conditional-request header, as the account and
-     * card update surfaces do.
+     * <p><strong>Concurrency: the row is held for update, exactly as the source held it.</strong>
+     * {@code app/cbl/COUSR02C.cbl:L322-L328} reads with {@code EXEC CICS READ ... UPDATE} against a file
+     * {@code app/csd/CARDDEMO.CSD:L88-L89} defines with {@code UPDATEMODEL(LOCKING)}, and rewrites at
+     * {@code :L360}. The service reproduces that with
+     * {@code com.cardemo.repository.UserSecurityRepository#findByIdForUpdate(String)} inside one transaction, so
+     * the read, the change detection and the rewrite are indivisible and a second administrator's update cannot
+     * interleave with this one. <strong>Finding, Medium severity, resolved:</strong> the read previously used the
+     * unlocked {@code findById}, and the sequence was an unguarded read-modify-write.
+     *
+     * <p><strong>Labelled deviation, Medium severity: no as-displayed snapshot travels.</strong> The source
+     * carried none, and the business-level comparison layer therefore stays unengaged on this resource. The
+     * reason is structural rather than an oversight - no per-user read transaction exists among the seventeen
+     * {@code app/csd/CARDDEMO.CSD} defines, so nothing can issue a sealed snapshot for a caller to return, and
+     * adding an eighteenth route would exceed the declared endpoint set. What that leaves exposed is narrower
+     * than before: not a lost update, which the lock now prevents, but a caller composing a submission from a
+     * view that has since moved. See {@link #NO_CLIENT_SNAPSHOT}. Remediation, if a per-user read is ever added:
+     * issue a sealed snapshot from it and require it on a conditional-request header, as the account and card
+     * update surfaces do.
      *
      * <p><strong>Failure modes and troubleshooting.</strong> {@code 400} when one of the five fields is empty
      * - the {@code BLANK} failure kind - when a field is wider than its screen field, or when the user type is
@@ -1011,7 +1071,7 @@ public class AdminController {
      * <strong>no clear-screen endpoint is added</strong> - that would be an eighteenth operation.
      * {@code WHEN DFHPF12} at {@code :L124} left without saving, which a client does by not calling this
      * operation. Cursor repositioning names the field at fault, which the field name on a {@code 400} carries
-     * instead. Severity: Low.
+     * instead.
      *
      * @param userId the eight-character identifier of the record to rewrite, {@code SEC-USR-ID PIC X(08)};
      * supplied by the caller rather than recovered from a server-side selection, and width-checked by the
@@ -1049,9 +1109,8 @@ public class AdminController {
      * times in all 359 of its lines. Deleting the acting administrator's own record therefore
      * <strong>succeeds</strong>. That behaviour is preserved deliberately - parity is the contract - so no
      * comparison against the token subject appears anywhere in this class, no {@code 403} is returned for a
-     * self-delete, and no confirmation beyond the one the source itself required is demanded. The quirk is
-     * cited in the planned {@code TRACEABILITY_MATRIX.md} and justified in the planned
-     * {@code DECISION_LOG.md}, and it is disclosed as residual risk rather than repaired. Severity: Medium.
+     * self-delete, and no confirmation beyond the one the source itself required is demanded. It is
+     * disclosed as residual risk rather than repaired.
      *
      * <p><strong>Inputs.</strong> The identifier as a path variable, and the confirmation as a request
      * parameter. There is no request body: the source read the record and displayed it for confirmation
@@ -1116,7 +1175,7 @@ public class AdminController {
      * {@code WHEN DFHPF3} at {@code :L111-L118} and {@code WHEN DFHPF12} at {@code :L123-L125} leave without
      * deleting - which a client does by not calling this operation. PF3 is conventional in this program,
      * unlike the sibling update program where the same key saves; the two are genuinely different and are not
-     * harmonised. Severity: Low.
+     * harmonised.
      *
      * @param userId the eight-character identifier of the record to destroy, {@code SEC-USR-ID PIC X(08)};
      * width-checked by the service against the cluster key, and never compared against the acting
@@ -1143,6 +1202,21 @@ public class AdminController {
         final boolean confirmed = requireConfirmation(confirmedToken);
 
         return ResponseEntity.ok(applyUserDelete(userId, confirmed));
+    }
+
+    /**
+     * Returns the failure's own message when it is one of the source captions this class may publish, and the
+     * supplied fixed detail otherwise.
+     *
+     * <p>See {@link #RETURNABLE_SOURCE_CAPTIONS} for why membership is decided by exact match. A {@code null}
+     * message takes the fallback, which is the same outcome as an unrecognised one.
+     *
+     * @param message  the failure's message, possibly {@code null} and always treated as untrusted
+     * @param fallback the fixed detail to publish when the message may not be, never {@code null}
+     * @return the detail to publish, never {@code null}
+     */
+    private static String publishableDetail(final String message, final String fallback) {
+        return RETURNABLE_SOURCE_CAPTIONS.contains(message) ? message : fallback;
     }
 
     /**
@@ -1197,13 +1271,13 @@ public class AdminController {
      *
      * <p>The translation of the {@code DFHRESP(NOTFND)} arms of {@code app/cbl/COUSR02C.cbl:L340} and
      * {@code app/cbl/COUSR03C.cbl:L287}, of the {@code STARTBR} arm at
-     * {@code app/cbl/COUSR00C.cbl:L600-L606}, and of file status {@code '23'}. The detail is
-     * {@value #NOT_FOUND_PROBLEM_DETAIL} rather than the exception's message: this type is one of the five
-     * {@code FileStatusMapper} composes, and the message it composes names the operation, the logical file and
-     * the {@code COBOL FILE STATUS}. It happens to be true that a user-administration service may instead
-     * raise it with a screen caption, but relying on that would be relying on a property of four other files
-     * rather than of this one, so the rule is applied by type. The screen caption travels on the screen result
-     * of a successful exchange, where the source put it.</p>
+     * {@code app/cbl/COUSR00C.cbl:L600-L606}, and of file status {@code '23'}. The detail is the source's own
+     * caption when the failure carries one this class may publish, and {@value #NOT_FOUND_PROBLEM_DETAIL}
+     * otherwise. The distinction is necessary because this type is one of the five {@code FileStatusMapper}
+     * composes, and the messages it composes name the operation, the logical file and the
+     * {@code COBOL FILE STATUS} - none of which a caller may see. Deciding by exact match against
+     * {@link #RETURNABLE_SOURCE_CAPTIONS} keeps the literal parity without depending on how any other file
+     * happens to phrase an error.</p>
      *
      * <p><strong>The record key is deliberately not reported.</strong> The exception can carry a record type
      * and a record key, and on this resource group the key is a user identifier. This handler reads neither. A
@@ -1219,7 +1293,7 @@ public class AdminController {
 
         final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle(NOT_FOUND_PROBLEM_TITLE);
-        problem.setDetail(NOT_FOUND_PROBLEM_DETAIL);
+        problem.setDetail(publishableDetail(absent.getMessage(), NOT_FOUND_PROBLEM_DETAIL));
 
         LOG.warn("Refused a user administration request with 404: no matching record."
                 + " No key is logged or returned");
@@ -1316,21 +1390,28 @@ public class AdminController {
      *
      * <p>The four-character expanded status the legacy status renderer produced, the logical file and the
      * operation are all <strong>logged rather than returned</strong>. Individually none discloses data;
-     * together they tell a caller which internal dataset failed which verb with which status. The detail is
-     * fixed, the body carries {@value #ERROR_CODE_IO_FAILURE} and the correlation identifier that joins it to
-     * the log record holding the three withheld values, and the cause is logged rather than returned. This is
-     * also where the source's own {@code DISPLAY 'RESP:' ... 'REAS:'} at {@code app/cbl/COUSR03C.cbl:L330}
-     * ends up: on a log stream, never on the screen.</p>
+     * together they tell a caller which internal dataset failed which verb with which status. The body carries
+     * {@value #ERROR_CODE_IO_FAILURE} and the correlation identifier that joins it to the log record holding
+     * the three withheld values, and the cause is logged rather than returned. This is also where the source's
+     * own {@code DISPLAY 'RESP:' ... 'REAS:'} at {@code app/cbl/COUSR03C.cbl:L330} ends up: on a log stream,
+     * never on the screen.</p>
+     *
+     * <p>The detail is the source's own caption when the failure carries one this class may publish -
+     * {@code 'Unable to Update User...'} from {@code app/cbl/COUSR02C.cbl:L386} and
+     * {@code app/cbl/COUSR03C.cbl:L332} reaches a caller through this handler, wrong verb and all - and
+     * {@value #IO_PROBLEM_DETAIL} otherwise. Membership is decided by exact match against
+     * {@link #RETURNABLE_SOURCE_CAPTIONS}, so a message composed by {@code FileStatusMapper} naming the
+     * dataset and the status can never be published by this path.</p>
      *
      * @param failure the I/O failure, never null when Spring MVC dispatches here.
-     * @return {@code 502 Bad Gateway} carrying a fixed problem detail, the stable error code and the
+     * @return {@code 502 Bad Gateway} carrying a publishable problem detail, the stable error code and the
      * correlation identifier
      */
     @ExceptionHandler(FileAccessException.class)
     public ResponseEntity<ProblemDetail> handleFileAccessFailure(final FileAccessException failure) {
 
-        final ProblemDetail problem =
-                ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY, IO_PROBLEM_DETAIL);
+        final ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY,
+                publishableDetail(failure.getMessage(), IO_PROBLEM_DETAIL));
         problem.setTitle(IO_PROBLEM_TITLE);
 
         LOG.error("Answered a user administration request with 502: status {} on file {} during {}",
@@ -1469,13 +1550,18 @@ public class AdminController {
     /**
      * Adds one user, delegating exactly once.
      *
-     * <p>The credential is handed straight through as the service's separate argument and is not assigned to
-     * any field, copied into any local structure beyond this call, or included in the abend payload built
-     * below - the reason, the message and the culprit name the operation and the program, never a value.</p>
+     * <p>The credential is read from the body exactly once, in the argument expression of the delegation
+     * below, and is handed straight through as the service's explicit argument. It is not assigned to any
+     * field, not copied into any local variable or structure, and not included in the abend payload built
+     * below - the reason, the message and the culprit name the operation and the program, never a value.
+     * Reading it in the call expression is what makes "the value audited is the value hashed" structural
+     * rather than conventional: there is no second channel it could have arrived on and no intermediate copy
+     * that could diverge from what was bound.</p>
      *
-     * @param request the twelve declared fields of the add screen.
-     * @param presentedPassword the presented plaintext credential, taken from the request header because the
-     * body type publishes no read path to its own credential member; may be null, empty or blank.
+     * @param request the twelve declared fields of the add screen, one of which is the presented plaintext
+     * credential; may carry that credential as null, empty or blank.
+     * @param presentedPassword the credential the body's one-way reader surrendered for this call alone; may
+     * be null, empty or blank, each of which takes the source's own empty-password arm
      * @return the assembled screen carrying the source's added message, never null
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure, or returns nothing
@@ -1498,11 +1584,21 @@ public class AdminController {
     /**
      * Updates one user, delegating exactly once, after proving that the identifier was named consistently.
      *
-     * <p>The snapshot argument is passed as absent, which the service documents as reproducing the source's
-     * own submission: the source held the row locked from its read through its rewrite and needed no snapshot,
-     * the body type declares no snapshot member, and {@code UserSecurity} declares no version column. The
-     * consequence is disclosed on {@link #updateUser} as a Medium-severity deviation rather than hidden
-     * here.</p>
+     * <p><strong>The store-level guard is the source's own, and it is why no snapshot is presented here.</strong>
+     * {@code app/cbl/COUSR02C.cbl:L322-L328} reads with {@code EXEC CICS READ ... UPDATE} against a file defined
+     * {@code UPDATEMODEL(LOCKING)}, and rewrites at {@code :L360}; the service's read now goes through
+     * {@code com.cardemo.repository.UserSecurityRepository#findByIdForUpdate(String)}, which acquires the same
+     * exclusive hold and keeps it until the service's transaction ends. The read, the change detection and the
+     * rewrite are therefore indivisible, and two administrators can no longer interleave them.
+     *
+     * <p>The business-level snapshot argument is passed as {@link #NO_CLIENT_SNAPSHOT}, which the service
+     * documents as reproducing the source's own submission - the source carried no snapshot beyond the screen
+     * itself. That is a deliberate consequence of the surface rather than an omission: the seventeen CSD
+     * transactions fix the endpoint set, there is no per-user read among them from which a sealed as-displayed
+     * snapshot could be issued, and inventing an eighteenth route would exceed the migration's declared scope.
+     * The sibling account and card updates do carry a sealed snapshot precisely because
+     * {@code app/csd/CARDDEMO.CSD} gives each of them a read transaction to issue one from. This limitation, and
+     * the pessimistic lock that covers it, are stated on {@link #updateUser} rather than hidden here.</p>
      *
      * @param userId the identifier from the path, which addresses the record.
      * @param request the twelve declared fields of the update screen.
@@ -1519,7 +1615,7 @@ public class AdminController {
 
         final UserUpdateService.UserUpdateScreen screen;
         try {
-            screen = this.userUpdateService.updateUser(request, null);
+            screen = this.userUpdateService.updateUser(request, NO_CLIENT_SNAPSHOT);
         } catch (final CardDemoException modelled) {
             throw modelled;
         } catch (final RuntimeException unexpected) {

@@ -138,33 +138,30 @@ import com.cardemo.repository.TransactionRepository;
  *       {@code NONUNIQKEY} appears three times - {@code :285}, {@code :488} and {@code :3678}, one per
  *       alternate index - against zero occurrences of {@code UNIQUEKEY}. Many transactions share a
  *       processing timestamp, so the finder over it is multi-valued and the index over it is non-unique.
- *       Asserting uniqueness on any of the three alternate indexes would be a <strong>Blocker</strong>.</li>
+ *       Asserting uniqueness on any of the three alternate indexes would break parity.</li>
  *   </ul>
  *
- * <h3>Three corrections to the Agent Action Plan, recorded rather than silently absorbed</h3>
+ * <h3>Three facts established here from the members and the migration</h3>
  *
  * <ol>
- *   <li><strong>Medium.</strong> The plan maps {@code app/jcl/TRANIDX.jcl} to the card repository. That is
- *       wrong: {@code app/jcl/TRANIDX.jcl:25-28} defines the <em>TRANSACT</em> alternate index, identically
- *       to {@code app/jcl/TRANFILE.jcl:82-85}, so the transaction alternate index is defined by
- *       <em>both</em> members. The card alternate index comes from {@code app/jcl/CARDFILE.jcl} instead.</li>
- *   <li><strong>Medium.</strong> The index emitted by {@code V2__create_indexes.sql} is named
- *       {@code idx_transaction_proc_ts}, not {@code idx_transaction_tran_proc_ts}. The three names the
- *       migration actually writes are {@code idx_card_acct_id},
+ *   <li>{@code app/jcl/TRANIDX.jcl:25-28} defines the <em>TRANSACT</em> alternate index, identically to
+ *       {@code app/jcl/TRANFILE.jcl:82-85}, so the transaction alternate index is defined by <em>both</em>
+ *       members. The card alternate index comes from {@code app/jcl/CARDFILE.jcl} instead.</li>
+ *   <li>The index emitted by {@code V2__create_indexes.sql} is named {@code idx_transaction_proc_ts}. The
+ *       three names the migration writes are {@code idx_card_acct_id},
  *       {@code idx_card_cross_reference_acct_id} and {@code idx_transaction_proc_ts}. <em>The migration
  *       governs</em>, and it is what this test asserts.</li>
- *   <li><strong>Low.</strong> The transaction list page size of 10 is not evidenced by
+ *   <li>The transaction list page size of 10 is evidenced by the loop bounds at {@code :290}
+ *       ({@code UNTIL WS-IDX > 10}), {@code :297} ({@code UNTIL WS-IDX >= 11}), {@code :344}, {@code :349}
+ *       ({@code MOVE 10 TO WS-IDX}) and {@code :351}, corroborated by the ten generated row fields
+ *       {@code TRNID01} to {@code TRNID10} in {@code app/cpy-bms/COTRN00.CPY} - and not by
  *       {@code app/cbl/COTRN00C.cbl:65-68}, which is the pagination <em>state</em> block
  *       ({@code CDEMO-CT00-TRNID-FIRST}, {@code -LAST}, {@code -PAGE-NUM}, {@code -NEXT-PAGE-FLG}). The
- *       real evidence is the loop bounds at {@code :290} ({@code UNTIL WS-IDX > 10}), {@code :297}
- *       ({@code UNTIL WS-IDX >= 11}), {@code :344}, {@code :349} ({@code MOVE 10 TO WS-IDX}) and
- *       {@code :351}, corroborated by the ten generated row fields {@code TRNID01} to {@code TRNID10} in
- *       {@code app/cpy-bms/COTRN00.CPY}. The value is carried by the property
- *       {@code carddemo.pagination.transaction-list-page-size} and is never a literal in production code,
- *       so no literal 10 is asserted here either.</li>
+ *       value is carried by the property {@code carddemo.pagination.transaction-list-page-size} and is never
+ *       a literal in production code, so no literal 10 is asserted here either.</li>
  *   </ol>
  *
- * <p>A further <strong>Low</strong> finding: the alternate index {@code PATH} at
+ * <p>A further observation: the alternate index {@code PATH} at
  * {@code app/catlg/LISTCAT.txt:3541} has no {@code DEFINE FILE} entry in {@code app/csd/CARDDEMO.CSD},
  * which holds exactly eight of them. The base cluster {@code TRANSACT} is one of the eight, at
  * {@code app/csd/CARDDEMO.CSD:76-77}, so the alternate index is <strong>batch-only</strong>: its sole
@@ -214,7 +211,7 @@ import com.cardemo.repository.TransactionRepository;
  * <h2>3. Key configs and defaults</h2>
  *
  * <ul>
- *   <li><strong>Profile {@code test}</strong>, PostgreSQL <strong>16.10 pinned by image digest</strong> on
+ *   <li><strong>Profile {@code test}</strong>, PostgreSQL <strong>16.14 pinned by image digest</strong> on
  *       Debian with glibc rather than the musl variant, and the connection injected from the container.
  *       This class names no host, port, database, user, password or JDBC URL, performs no
  *       environment-variable or system-property read and no system-property write, and reaches no live
@@ -263,7 +260,7 @@ import com.cardemo.repository.TransactionRepository;
  *   <li><em>Every test aborts with a container or Docker error.</em> No reachable Docker socket. State the
  *       blocker rather than asserting an untested pass.</li>
  *   <li><em>A Testcontainers artefact fails to resolve, or a 1.x version is resolved.</em>
- *       <strong>Blocker</strong>, and the remedy has two halves that are both required. Testcontainers is
+ *       fatal, and the remedy has two halves that are both required. Testcontainers is
  *       pinned to exactly {@code 2.0.3} by <em>overriding the version property the Spring Boot parent
  *       manages</em> - never by importing a second bill of materials, because two competing imports resolve
  *       in an ordering-dependent way that can silently select the parent-managed 1.x line - and only the
@@ -282,11 +279,11 @@ import com.cardemo.repository.TransactionRepository;
  *       passes, an {@code Integer} over {@code NUMERIC(4)} where {@code INTEGER} or {@code SMALLINT}
  *       passes, and a {@code BigDecimal} over {@code NUMERIC(11,2)} must match exactly. <strong>The fix is
  *       upstream</strong>, in {@code V1__create_schema.sql} or in the entity mapping. Never widen a column
- *       to silence it and never patch this test. Severity <strong>Medium</strong>.</li>
+ *       to silence it and never patch this test.</li>
  *   <li><em>A native query fails with a syntax error near {@code transaction}.</em> The identifier was left
  *       unquoted. It must be written {@code "transaction"}.</li>
  *   <li><em>An assertion insists the alternate index is unique, or types the timestamp finder as
- *       {@link java.util.Optional}.</em> Both are <strong>Blocker</strong>-severity misreadings of
+ *       {@link java.util.Optional}.</em> Both are misreadings of
  *       {@code app/catlg/LISTCAT.txt:3677} against {@code :3678}. So are mapping {@code tran_source} to an
  *       enum, mapping either timestamp as a temporal type, introducing a sequence, identity,
  *       {@code @GeneratedValue}, retry loop or upsert for the identifier, adding a non-negative constraint
@@ -294,11 +291,11 @@ import com.cardemo.repository.TransactionRepository;
  *   <li><em>A timestamp assertion fails by a few trailing digits.</em> The value was formatted at
  *       millisecond or nanosecond precision. The batch rendering is
  *       {@code yyyy-MM-dd-HH.mm.ss.SS0000}: <strong>two hundredths-of-a-second digits then the four
- *       literal characters {@code 0000}</strong>, summing to 26. Severity <strong>High</strong>, because a
+ *       literal characters {@code 0000}</strong>, summing to 26. This matters, because a
  *       wrong width silently breaks every parity comparison downstream.</li>
  *   <li><em>An amount assertion fails although the numbers look identical.</em>
  *       {@code BigDecimal.equals} compares scale as well as value, so {@code 1.0} and {@code 1.00} are
- *       unequal. Use {@code isEqualByComparingTo}. Severity <strong>Medium</strong>.</li>
+ *       unequal. Use {@code isEqualByComparingTo}.</li>
  *   <li><em>A test looks for a transaction fixture.</em> There is none, deliberately, and the harness
  *       fixture reader refuses the name. Do not create one.</li>
  *   <li><em>The empty-table assertion fails only when the suite is run whole.</em> A row leaked. Isolation
@@ -397,8 +394,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
     /**
      * The index {@code V2__create_indexes.sql} creates over {@code tran_proc_ts}, non-unique and B-tree.
      *
-     * <p>The name is the one the migration actually emits. The Agent Action Plan's
-     * {@code idx_transaction_tran_proc_ts} does not exist; see correction 2 in the class documentation.
+     * <p>The name is the one the migration emits, which is the name asserted throughout this class.
      */
     private final String alternateIndexName = "idx_transaction_proc_ts";
 
@@ -437,7 +433,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
      *
      * <p>{@code dailytran.txt} holds 300 distinct merchant postal codes in mixed formats, so the column
      * carries no format constraint and must not acquire one: adding a validator would be a
-     * <strong>Blocker</strong>. Ten characters wide, which is exactly {@code PIC X(10)}.
+     * Ten characters wide, which is exactly {@code PIC X(10)}.
      */
     private final String nonCanonicalMerchantZip = "53200-7529";
 
@@ -450,7 +446,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
      * The transaction source the 250 point-of-sale staging rows carry, at fixture columns 23 to 32.
      *
      * <p>It is a plain {@code String} and never an enum constant. Mapping {@code tran_source} to
-     * {@code com.cardemo.model.enums.TransactionSource} would be a <strong>Blocker</strong>, because the
+     * {@code com.cardemo.model.enums.TransactionSource} would break parity, because the
      * corpus emits at least three different values into the same ten-byte field and an enum would reject
      * or mistranslate whichever it did not know.
      */
@@ -629,7 +625,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
 
             assertThat(attached)
                     .as("substituting a database sequence would change every generated value and break "
-                            + "comparison against the legacy baseline - a Blocker. The count is scoped to "
+                            + "comparison against the legacy baseline - forbidden. The count is scoped to "
                             + "this table on purpose: the schema does hold sequences, but they belong to "
                             + "the framework's own BATCH_* tables")
                     .isZero();
@@ -656,7 +652,8 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                             + "engineered away: substituting a serialised generator would change the "
                             + "generated values and forfeit baseline comparison. The chosen remedy is to "
                             + "let the primary key surface the collision, which the service layer maps to "
-                            + "a duplicate-record condition. Recorded in DECISION_LOG.md. The base key IS "
+                            + "a duplicate-record condition. Owed an entry in the planned DECISION_LOG.md. "
+                            + "The base key IS "
                             + "unique - LISTCAT.txt:3595 carries no NONUNIQKEY - while the alternate key "
                             + "is not")
                     .isInstanceOf(DataIntegrityViolationException.class)
@@ -698,7 +695,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                             + "LISTCAT.txt:3677: the UNIQUE token there is the dataset-name attribute, not "
                             + "key uniqueness. Many transactions share a processing timestamp, so the "
                             + "finder returns a Slice and never an Optional - typing it as single-valued "
-                            + "would be a Blocker")
+                            + "would break parity")
                     .hasSizeGreaterThanOrEqualTo(2)
                     .extracting(Transaction::getTransactionId)
                     .containsExactly(identifier(1L), identifier(2L));
@@ -800,14 +797,13 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                     """, Boolean.class, relationName, alternateIndexName);
 
             assertThat(unique)
-                    .as("V2__create_indexes.sql emits this index name; the Agent Action Plan's "
-                            + "idx_transaction_tran_proc_ts does not exist and the migration governs")
+                    .as("V2__create_indexes.sql emits this index name, and the migration governs")
                     .hasSize(1);
             assertThat(unique.getFirst())
                     .as("LISTCAT.txt:3676 AXRKP 304 = record byte 305; :3678 NONUNIQKEY. A legacy "
                             + "alternate key is non-unique - three NONUNIQKEY occurrences in the catalogue "
                             + "at :285, :488 and :3678 against zero of UNIQUEKEY - so asserting uniqueness "
-                            + "on any of the three alternate indexes would be a Blocker")
+                            + "on any of the three alternate indexes would break parity")
                     .isFalse();
         }
 
@@ -882,7 +878,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                             + "COBIL00C.cbl:230-232, and pure pass-through - and the frozen staging fixture "
                             + "carries twenty-six blanks in all 300 of its processing-timestamp positions. "
                             + "No temporal type can hold twenty-six blanks, so text is the only faithful "
-                            + "mapping; typing either column as a timestamp would be a Blocker")
+                            + "mapping; typing either column as a timestamp would break parity")
                     .containsExactly("character", "character");
             assertThat(widths)
                     .as("CVTRA05Y.cpy:16-17 declares both as PIC X(26), and KEYLEN 26 on the alternate "
@@ -899,7 +895,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                     .as("the shape is yyyy-MM-dd-HH.mm.ss. then two hundredths digits then the literal "
                             + "0000 that CBTRN02C.cbl:701 moves into DB2-REST PIC X(04). Formatting at "
                             + "millisecond or nanosecond precision changes the width and silently breaks "
-                            + "every downstream parity comparison - severity High")
+                            + "every downstream parity comparison")
                     .hasSize(timestampWidth)
                     .endsWith("0000")
                     .matches("\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{6}");
@@ -1019,7 +1015,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                             + "CBTRN02C.cbl:548-552 adds a negative amount to the current-cycle DEBIT "
                             + "accumulator, which is exactly why the over-limit formula subtracts that "
                             + "accumulator - so any absolute-value normalisation, or a non-negative check "
-                            + "constraint, would be a Blocker. Compared with compareTo rather than equals, "
+                            + "constraint, would break parity. Compared with compareTo rather than equals, "
                             + "because equals also compares scale")
                     .isEqualByComparingTo(negative);
         }
@@ -1321,7 +1317,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                     .as("CBACT04C.cbl:484 moves a different literal into the very same ten-byte field, and "
                             + "the fixture carries a third value in its remaining 50 rows. An enum mapping "
                             + "would reject or mistranslate whichever value it did not know, so "
-                            + "tran_source is a String and mapping it to the enum would be a Blocker")
+                            + "tran_source is a String and mapping it to the enum would break parity")
                     .hasSize(sourceWidth);
             assertThat(fromInterestRun.getTransactionSource().strip()).isEqualTo(systemSource);
         }
@@ -1337,7 +1333,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
             assertThat(transactionRepository.findById(identifier(1L)).orElseThrow().getMerchantZip())
                     .as("the frozen staging fixture carries 300 distinct merchant postal codes in mixed "
                             + "formats, so PIC X(10) at bytes 253-262 is unvalidated text. Adding a format "
-                            + "constraint would reject data the source accepts - a Blocker")
+                            + "constraint would reject data the source accepts - forbidden")
                     .hasSize(sourceWidth)
                     .isEqualTo(nonCanonicalMerchantZip);
         }
@@ -1721,4 +1717,32 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                 description, amount, merchantId, merchantName, merchantCity, nonCanonicalMerchantZip,
                 cardNumber, originatedAt, processedAt);
     }
+
+    /**
+     * The complete PostgreSQL metadata contract for the {@code transaction} table.
+     *
+     * <p><strong>Finding, severity High, RESOLVED.</strong> This class asserted whichever columns its
+     * behavioural tests happened to touch, and every one of those assertions was true and none of them was a
+     * contract. A widened character column, a lost decimal scale, a reordered composite key, a retargeted
+     * foreign key or a dropped check constraint would all have left this class green - and Hibernate's
+     * {@code ddl-auto: validate} would not have caught any of them either, because it compares type
+     * <em>compatibility</em> and not geometry. For a migration whose contract is that every width comes from
+     * a frozen picture clause, that was the gap that mattered most.
+     *
+     * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet once and asserts
+     * the live catalogue against it by exact equality on ordered lists, so a missing facet and an extra facet
+     * both fail. Delegating rather than restating is deliberate: the shared schema test drives the identical
+     * contract over all eleven tables, and a paraphrase here could agree with the schema while disagreeing
+     * with the authority.
+     *
+     * <p>For {@code transaction} that is fourteen columns whose widths sum to the 350-byte record, the sixteen-character key, the three foreign keys fk04 to fk06, the version column, and the non-unique processing-timestamp index that replaces TRANSACT.VSAM.AIX - every value measured from the schema the migrations
+     * produce and checked against {@code app/cpy/CVTRA05Y.cpy}, never transcribed from prose.
+     */
+    @Test
+    @DisplayName("the transaction table matches the complete declared metadata contract: columns, types, "
+            + "widths, precision, scale, nullability, primary key, foreign keys, indexes and constraints")
+    void theTableMatchesTheCompleteMetadataContract() {
+        SchemaMetadataMatrix.assertTableMatches(jdbcTemplate, "transaction");
+    }
+
 }

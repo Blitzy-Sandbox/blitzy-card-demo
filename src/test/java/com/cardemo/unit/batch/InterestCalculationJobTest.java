@@ -12,7 +12,7 @@
  * Source      : app/jcl/INTCALC.jcl:L22        (PARM='2022071800')
  *               app/jcl/INTCALC.jcl:L37-L41    (SYSTRAN(+1), LRECL 350)
  *               app/cbl/CBACT04C.cbl:L188-L222 (the main loop)
- *               app/cbl/CBACT04C.cbl:L219-L220 (the unreachable ELSE)
+ *               app/cbl/CBACT04C.cbl:L219-L220 (the end-of-data ELSE)
  *               app/cbl/CBACT04C.cbl:L462-L470 (x rate / 1200)
  *               app/cbl/CBACT04C.cbl:L631      (MOVE 999 TO ABCODE)
  *               app/cbl/CBTRN02C.cbl:L562      (the keyed-cluster writer
@@ -52,14 +52,12 @@ import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.TransactionSource;
 import com.cardemo.observability.CorrelationIdFilter;
-import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.DisclosureGroupRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.S3Operations;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -103,11 +101,14 @@ import org.slf4j.MDC;
  * keeps the planned {@code com.cardemo.config.BatchConfig} - named by the migration plan and not authored
  * at this commit - collision-free when it arrives.
  *
- * <p>The most important assertion in this class is {@link NoFinalFlush}, which pins <b>Blocker 5.3</b>:
- * the {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at {@code app/cbl/CBACT04C.cbl:L219}-{@code :L220} hangs
- * off the outer {@code IF} at {@code :L189}, and {@code PERFORM UNTIL} at {@code :L188} tests before
- * each iteration, so it can never execute. AAP section 0.7.3.3 asserts the opposite. These tests fail
- * if a well-meaning "fix" adds the flush.
+ * <p>The most important assertion in this class is {@link AccountWriteOwnership}: the account rewrite of
+ * {@code 1050-UPDATE-ACCOUNT} belongs to the processor's loop body and to no part of this configuration
+ * class, so neither the job listener nor the generation writer may persist an account. The
+ * {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at {@code app/cbl/CBACT04C.cbl:L219}-{@code :L220} hangs off the
+ * outer {@code IF} at {@code :L189}, and {@code PERFORM UNTIL} at {@code :L188} tests before each iteration,
+ * so the flush the source reaches is the control-break arm at {@code :L196} and it is reached from the
+ * processor. The variance against the specification prose is recorded once, in the register carried by the
+ * documentation of the {@code com.cardemo} root package.
  */
 class InterestCalculationJobTest {
 
@@ -122,7 +123,6 @@ class InterestCalculationJobTest {
     private DisclosureGroupRepository disclosureGroupRepository;
     private TransactionWriter transactionWriter;
     private S3Operations s3Operations;
-    private MetricsConfig metricsConfig;
     private InterestCalculationJob job;
 
     @BeforeEach
@@ -135,7 +135,6 @@ class InterestCalculationJobTest {
         disclosureGroupRepository = mock(DisclosureGroupRepository.class);
         transactionWriter = mock(TransactionWriter.class);
         s3Operations = mock(S3Operations.class);
-        metricsConfig = new MetricsConfig(new SimpleMeterRegistry());
 
         final Slice<com.cardemo.model.entity.TransactionCategoryBalance> empty =
                 new SliceImpl<>(List.of());
@@ -151,7 +150,7 @@ class InterestCalculationJobTest {
 
         job = new InterestCalculationJob(jobRepository, transactionManager, categoryBalanceRepository,
                 accountRepository, crossReferenceRepository, disclosureGroupRepository,
-                transactionWriter, s3Operations, new FileStatusMapper(), metricsConfig,
+                transactionWriter, s3Operations, new FileStatusMapper(),
                 "INTCALC", 100, "carddemo-batch-output", "gdg/systran");
     }
 
@@ -645,16 +644,18 @@ class InterestCalculationJobTest {
         }
     }
 
-    // ------------------------------- 8. BLOCKER 5.3 - no final flush exists
+    // ------------------------- 8. the account rewrite belongs to the processor
 
     @Nested
-    @DisplayName("BLOCKER 5.3: the unreachable final flush is NOT implemented")
-    class NoFinalFlush {
+    @DisplayName("The account rewrite of 1050-UPDATE-ACCOUNT belongs to the processor, not to this class")
+    class AccountWriteOwnership {
 
         /**
-         * {@code app/cbl/CBACT04C.cbl:L219}-{@code :L220} is unreachable because {@code PERFORM UNTIL}
-         * at {@code :L188} tests before each iteration. AAP section 0.7.3.3 claims the opposite. This
-         * test FAILS if a well-meaning "fix" adds the flush to the job, its listener or its writer.
+         * {@code 1050-UPDATE-ACCOUNT} sits inside the {@code :L185}-{@code :L232} loop body that
+         * {@code InterestCalculationProcessor} owns, and both of its {@code PERFORM} sites - the
+         * control-break arm at {@code :L196} and the end-of-data arm at {@code :L220} - are reproduced there.
+         * This test fails if a second account-persisting call site appears in the job, its listener or its
+         * writer, because two owners of one paragraph is how the flush count silently changes.
          */
         @Test
         @DisplayName("neither the listener nor the writer ever persists an account")
@@ -854,7 +855,7 @@ class InterestCalculationJobTest {
             assertThatThrownBy(() -> new InterestCalculationJob(null, transactionManager,
                     categoryBalanceRepository, accountRepository, crossReferenceRepository,
                     disclosureGroupRepository, transactionWriter, s3Operations,
-                    new FileStatusMapper(), metricsConfig, "INTCALC", 100, "b", "p"))
+                    new FileStatusMapper(), "INTCALC", 100, "b", "p"))
                     .as("requireCollaborator raises the typed abend, not a bare NPE")
                     .isInstanceOf(FatalProcessingException.class)
                     .hasMessageContaining("jobRepository");
@@ -873,7 +874,7 @@ class InterestCalculationJobTest {
             return new InterestCalculationJob(jobRepository, transactionManager,
                     categoryBalanceRepository, accountRepository, crossReferenceRepository,
                     disclosureGroupRepository, transactionWriter, s3Operations,
-                    new FileStatusMapper(), metricsConfig, name, chunk, bucket, prefix);
+                    new FileStatusMapper(), name, chunk, bucket, prefix);
         }
 
         @Test
@@ -953,7 +954,7 @@ class InterestCalculationJobTest {
             return new InterestCalculationJob(jobRepository, transactionManager,
                     categoryBalanceRepository, accountRepository, crossReferenceRepository,
                     disclosureGroupRepository, transactionWriter, s3Operations,
-                    new FileStatusMapper(), metricsConfig, "INTCALC", 100, "b", prefix);
+                    new FileStatusMapper(), "INTCALC", 100, "b", prefix);
         }
 
         private List<String> publishTwo(final InterestCalculationJob variant, final JobExecution je)

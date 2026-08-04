@@ -147,7 +147,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * member the execute statement resolves, {@code app/proc/TRANREPT.prc:L1} declaring {@code //REPROC PROC}
  * while {@code EXEC PROC=TRANREPT} resolves {@code TRANREPT}. {@link LoggedLegacyDefects} states each.
  *
- * <h2>The removed 510-transaction ceiling is a labelled deviation, not parity</h2>
+ * <h2>The removed 510-transaction ceiling is a deliberate deviation, not parity</h2>
  *
  * <p>{@code app/cbl/CBSTM03A.CBL:L225-L233} declares the working set as
  * {@value StatementTransaction#LEGACY_MAX_CARDS_PER_RUN} card entries of
@@ -157,15 +157,12 @@ import org.junit.jupiter.params.provider.ValueSource;
  * defect. The Java target streams into an unbounded {@link List} instead, which removes a silent
  * truncation-and-corruption hazard.
  *
- * <p><strong>That removal is a deliberate, labelled deviation and not equivalence.</strong> Pretending the
- * ceiling was preserved would be false; pretending its removal is invisible would be worse. The tradeoff is
- * therefore justified in writing <em>here</em>, in this docstring, which is the one place it cannot drift
- * away from the code it governs; it is additionally owed an entry in the planned {@code DECISION_LOG.md}
- * under the statement-generation capacity heading. The three legacy figures remain published as constants so
- * the historical limit stays discoverable, and they are owed an entry in the planned
- * {@code TRACEABILITY_MATRIX.md} as the capacity of the legacy program. Neither register exists in this
- * branch, so both references are forward references rather than citations.
- * {@link PreservedLegacyQuirks} asserts that the figures are carried and that no cap is enforced.
+ * <p><strong>That removal is deliberate and is not equivalence.</strong> Pretending the ceiling was
+ * preserved would be false; pretending its removal is invisible would be worse. The tradeoff is therefore
+ * justified in writing <em>here</em>, in this docstring, which is the one place it cannot drift away from the
+ * code it governs. The three legacy figures stay published as constants so the historical limit remains
+ * discoverable, and {@link PreservedLegacyQuirks} asserts that they are carried and that no cap is
+ * enforced.
  *
  * <h2>How to build, run and test</h2>
  *
@@ -213,16 +210,14 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>An unused import or a raw type fails the build rather than warning, because {@code -Werror} and
  *       {@code failOnWarning} both apply to test compilation.</li>
  *   <li>"Fixing" the two-byte projection truncation so the processing timestamp carries 26 significant
- *       characters. <strong>Blocker.</strong> The 24 is the contract; see {@link ProjectionTruncation}.</li>
+ *       characters. The 24 is the contract; see {@link ProjectionTruncation}.</li>
  *   <li>Unifying {@link StatementTransaction#DETAIL_AMOUNT_MASK} and
- *       {@link StatementTransaction#TOTALS_AMOUNT_MASK} into one formatter. <strong>Blocker.</strong> A
- *       positive detail amount renders with a leading space; a positive total renders with a leading
- *       {@code '+'}.</li>
- *   <li>Treating {@code Z} as {@code 9}, so leading zeros render as zeros instead of spaces.
- *       <strong>High.</strong></li>
- *   <li>Harmonising the 80 and 100 statement output widths to a single value. <strong>High.</strong> They are
- *       measured, not chosen.</li>
- *   <li>Letting a card number reach {@code toString}. <strong>Blocker.</strong> The card number is the
+ *       {@link StatementTransaction#TOTALS_AMOUNT_MASK} into one formatter: a positive detail amount renders
+ *       with a leading space, while a positive total renders with a leading {@code '+'}.</li>
+ *   <li>Treating {@code Z} as {@code 9}, so leading zeros render as zeros instead of spaces.</li>
+ *   <li>Harmonising the 80 and 100 statement output widths to a single value. They are measured, not
+ *       chosen.</li>
+ *   <li>Letting a card number reach {@code toString}. The card number is the
  *       <em>first</em> component of the key, so a naive key-oriented rendering leaks it. No assertion message
  *       in this file interpolates a card number either; failures are identified by field name or row
  *       index.</li>
@@ -635,7 +630,7 @@ class StatementTransactionTest {
         @DisplayName("the two statement outputs keep their distinct record lengths")
         void statementOutputsKeepDistinctLengths() {
             // app/jcl/CREASTMT.JCL:L89 declares LRECL=80 for the text output and :L94 declares LRECL=100 for
-            // the HTML output. Harmonising them would be a High-severity regression.
+            // the HTML output. Harmonising them would be a regression against both declarations.
             assertThat(StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH).isEqualTo(80);
             assertThat(StatementTransaction.STATEMENT_HTML_RECORD_LENGTH).isEqualTo(100);
             assertThat(StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH)
@@ -787,8 +782,8 @@ class StatementTransactionTest {
         @DisplayName("the card number and the transaction identifier are text, so leading zeros survive")
         void keyComponentsAreText() {
             // app/cpy/COSTM01.CPY:22-23 declares both PIC X(16). A long or a BigInteger would strip a leading
-            // zero and change the byte image, and the fixture proves leading zeros are real: cardxref.txt row 1
-            // begins 0500024453765740.
+            // zero and change the byte image, and the fixture proves leading zeros are real: row 1 of
+            // cardxref.txt begins with one.
             final List<String> componentTypes = componentTypeNames(StatementTransaction.class);
 
             assertThat(componentTypes.get(0)).isEqualTo(String.class.getName());
@@ -875,7 +870,7 @@ class StatementTransactionTest {
             // PIC X(10) at app/cpy/COSTM01.CPY:27. The two program literals are 'System' at
             // app/cbl/CBACT04C.cbl:484 and 'POS TERM' at app/cbl/COBIL00C.cbl:222, but the fixture also carries
             // OPERATOR on 50 of its 300 rows and OPERATOR appears in no program literal anywhere in the corpus.
-            // Binding this component to an enum would make that legacy value unreadable - Blocker severity.
+            // Binding this component to an enum would make that legacy value unreadable.
             final StatementTransaction record = new StatementTransaction(null, null, null, null, sourceValue,
                     null, null, null, null, null, null, null, null, null);
 
@@ -947,7 +942,7 @@ class StatementTransactionTest {
         @DisplayName("the statement record does not extend or implement anything, so no base class can assume an order")
         void theRecordSharesNoBaseType() {
             // A shared base class or a bidirectional converter between the two layouts would have to assume one
-            // field order, and whichever it assumed would be wrong for the other layout - High severity.
+            // field order, and whichever it assumed would be wrong for the other layout.
             assertThat(StatementTransaction.class.getSuperclass()).isEqualTo(Record.class);
             assertThat(StatementTransaction.class.getInterfaces()).isEmpty();
             for (final Class<?> recordType : statementRecordTypes()) {
@@ -1148,7 +1143,7 @@ class StatementTransactionTest {
         void everyLayoutIsShorterThanTheRecord() {
             // 133 - 114 = 19 for the detail and header lines; 133 - 115 = 18 for the name header; 133 - 112 = 21
             // for a totals line. The writer right-pads; it must not stretch a field to close the gap, which
-            // would shift every subsequent column - High severity.
+            // would shift every subsequent column.
             assertThat(StatementTransaction.REPORT_LINE_LENGTH
                     - StatementTransaction.REPORT_DETAIL_LINE_LENGTH).isEqualTo(19);
             assertThat(StatementTransaction.REPORT_LINE_LENGTH
@@ -1219,7 +1214,7 @@ class StatementTransactionTest {
         void noBatchPageSizeOnThisType() {
             // app/cbl/CBTRN03C.cbl:131 declares WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20. Pagination is the batch
             // tier's concern: it needs a line counter and a control-break state that a value carrier has no
-            // business holding - High severity if one appears here.
+            // business holding, so neither may appear here.
             final Set<String> staticNames = publicStaticFieldNames(StatementTransaction.class);
 
             assertThat(staticNames)
@@ -1241,7 +1236,7 @@ class StatementTransactionTest {
         @DisplayName("the date header keeps its trailing space inside the twelve-character field")
         void dateHeaderKeepsItsTrailingSpace() {
             // app/cpy/CVTRA07Y.cpy:L9-L10 declares PIC X(12) VALUE 'Date Range: '. Trimming it would close the
-            // gap before the start date and shift the whole header - Blocker severity, because the parity gate
+            // gap before the start date and shift the whole header, because the parity gate
             // compares this text byte for byte.
             assertThat(StatementTransaction.REPORT_DATE_HEADER)
                     .isEqualTo("Date Range: ")
@@ -1279,7 +1274,7 @@ class StatementTransactionTest {
         void amountCaptionCarriesEightLeadingSpaces() {
             // app/cpy/CVTRA07Y.cpy:L45-L46 declares FILLER PIC X(16) VALUE '        Amount'. The eight spaces
             // are what right-align the caption over the fifteen-character amount mask, so re-spacing the literal
-            // misaligns the column - Blocker severity.
+            // misaligns the column.
             final String caption = "        Amount";
 
             assertThat(caption).hasSize(14).endsWith("Amount");
@@ -1405,7 +1400,7 @@ class StatementTransactionTest {
         @DisplayName("a non-negative value renders with a blank sign on the detail mask and a plus on the totals mask")
         void nonNegativeValuesRenderWithTheirOwnSignConvention(final String value, final String detail,
                 final String totals) {
-            // This is the Blocker-severity difference: the same value renders differently through the two masks,
+            // This is the difference that matters: the same value renders differently through the two masks,
             // so they cannot be one formatter. The detail mask's leading '-' is blank when the value is not
             // negative; the totals mask's leading '+' is mandatory.
             final BigDecimal amount = new BigDecimal(value);
@@ -1439,7 +1434,7 @@ class StatementTransactionTest {
         @ValueSource(strings = {"0.00", "1.00", "999.77", "1234567.89"})
         @DisplayName("Z suppresses a leading zero to a space, so no rendering ever carries a leading zero digit")
         void zeroSuppressionNeverEmitsALeadingZero(final String value) {
-            // High severity if Z is treated as 9. A '9' picture would render 1.00 as 000,000,001.00; a 'Z'
+            // Treating Z as 9 is what breaks this: a '9' picture renders 1.00 as 000,000,001.00, while a 'Z'
             // picture renders it as ten spaces then 1.
             final BigDecimal amount = new BigDecimal(value);
             final String rendered = renderEditMask(StatementTransaction.DETAIL_AMOUNT_MASK, amount);
@@ -1519,7 +1514,7 @@ class StatementTransactionTest {
         @Test
         @DisplayName("both timestamp components are strings, never a temporal type")
         void timestampsAreStrings() {
-            // High severity if a temporal type is used. A LocalDateTime or an Instant would either reject the
+            // A temporal type is what breaks this: a LocalDateTime or an Instant would either reject the
             // 24-character projected value outright or normalise it, and either outcome breaks the byte-exact
             // baseline. A 24-of-26-character value is not a parseable timestamp at all.
             final List<String> componentTypes = componentTypeNames(StatementTransaction.class);
@@ -1812,7 +1807,7 @@ class StatementTransactionTest {
         @Test
         @DisplayName("the early exit would miss records if the input were not ascending")
         void theEarlyExitDependsOnTheOrdering() {
-            // A direct demonstration of why the ordering guarantee cannot be dropped silently - High severity.
+            // A direct demonstration of why the ordering guarantee cannot be dropped silently.
             // Scanning a descending list with the legacy early-exit predicate misses a record that is present.
             final String sought = "9805583408996588";
             final List<String> descending = List.of("9905583408996588", sought, "0500024453765740");
@@ -2031,7 +2026,7 @@ class StatementTransactionTest {
         @Test
         @DisplayName("overpunch decoding is position-aware, so letters inside merchant text are never signs")
         void overpunchDecodingIsPositionAware() {
-            // Blocker severity if a global text substitution is used instead. The letters A-R that encode a sign
+            // A global text substitution is what breaks this. The letters A-R that encode a sign
             // in the last position of a numeric field occur legitimately inside TRNX-DESC, TRNX-MERCHANT-NAME and
             // TRNX-MERCHANT-CITY, so decoding must be driven by the PIC clause offset and width alone. Decoding
             // a merchant-name slice as a zoned decimal must therefore FAIL rather than yield a number.
@@ -2086,7 +2081,7 @@ class StatementTransactionTest {
         @DisplayName("the processing timestamp is 26 blanks on every row, which is not the same as absent")
         void everyRowCarriesABlankProcessingTimestamp() {
             // A staging record has not been posted yet, so its processing timestamp is blank rather than missing.
-            // Collapsing blank into null would lose that distinction - Blocker severity.
+            // Collapsing blank into null would lose that distinction.
             final FixtureLoader.FixtureData daily =
                     FixtureLoader.load(FixtureLoader.Fixture.DAILY_TRANSACTION);
 
@@ -2199,7 +2194,7 @@ class StatementTransactionTest {
             // no class of its own - and it models exactly OK / NOT-OK / BLANK, with the markers firing only on
             // re-entry. app/cbl/COACTUPC.cbl:505-508 corroborates at message level: 'Credit Limit must be
             // supplied' for BLANK against 'Credit Limit is not valid' for NOT-OK. Two different messages means
-            // two different states, so collapsing them is Blocker severity.
+            // two different states, so collapsing them breaks it.
             final StatementTransaction absent = new StatementTransaction(null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null);
             final StatementTransaction empty = new StatementTransaction("", "", "", "", "", "", null, "", "",
@@ -2414,7 +2409,7 @@ class StatementTransactionTest {
         void noClassLevelCrossFieldConstraint() {
             // app/cbl/COACTUPC.cbl:1667-1672 runs the two single-field edits and :L1674-L1678 runs the cross-field
             // edit ONLY when both have already passed. A class-level @AssertTrue fires unconditionally and would
-            // therefore produce a different message set from the source - High severity. The record carries no
+            // therefore produce a different message set from the source. The record carries no
             // type-level annotation at all, which settles it.
             for (final Class<?> recordType : statementRecordTypes()) {
                 final List<String> annotationNames = new ArrayList<>();
@@ -2448,13 +2443,12 @@ class StatementTransactionTest {
         }
 
         @Test
-        @DisplayName("the ceiling is recorded but NOT enforced, which is the labelled deviation")
+        @DisplayName("the ceiling is recorded but NOT enforced, which is the deviation")
         void theCeilingIsRecordedButNotEnforced() {
-            // High severity either way: implementing a 510 cap would be a regression, and removing the ceiling
-            // without labelling it would be a false parity claim. The deviation is justified in writing in this
-            // class's docstring and in the record's own, and it is owed an entry in the planned DECISION_LOG.md;
-            // the legacy figure is owed an entry in the planned TRACEABILITY_MATRIX.md as the historical capacity
-            // limit. Here the removal is proven executable: a group larger than the ceiling is constructible.
+            // Both directions are wrong: implementing a 510 cap would be a regression, and removing the
+            // ceiling without saying so would be a false parity claim. The deviation is justified in writing in
+            // this class's docstring and in the record's own. Here the removal is proven executable: a group
+            // larger than the ceiling is constructible.
             final List<StatementTransaction> beyondTheCeiling = new ArrayList<>();
             for (int sequence = 0;
                     sequence <= StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_RUN;
@@ -2517,8 +2511,8 @@ class StatementTransactionTest {
             // app/jcl/CREASTMT.JCL:L69 declares LRECL=80 for HTMLFILE in the pre-delete step while :L94 declares
             // LRECL=100 for the same DD in the execution step. The execution step governs, and the 100 is
             // corroborated independently by HTML-FIXED-LN PIC X(100) at app/cbl/CBSTM03A.CBL:149 - which is
-            // precisely why this is a defect to LOG rather than a signal to change the width. Harmonising the two
-            // to a single value is High severity.
+            // precisely why this is a defect to LOG rather than a signal to change the width. Harmonising the
+            // two widths to a single value would break byte-exact reproduction of both outputs.
             assertThat(StatementTransaction.STATEMENT_HTML_RECORD_LENGTH).isEqualTo(100);
             assertThat(StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH).isEqualTo(80);
             assertThat(StatementTransaction.STATEMENT_HTML_RECORD_LENGTH
@@ -2549,7 +2543,7 @@ class StatementTransactionTest {
             // app/cbl/CBSTM03A.CBL:149 emits HTML through a single PIC X(100) field carrying one literal fragment
             // per 88-level, so HTML emission is a fixed-width TEXT writer over a constant map of fragments - never
             // a rendered interface. There is no HTML, CSS or JavaScript application anywhere in scope: the
-            // 3270/BMS layer is a field contract only. A markup-bearing component here would be High severity.
+            // 3270/BMS layer is a field contract only. A markup-bearing component here would break it.
             //
             // STATEMENT_HTML_RECORD_LENGTH names HTML but is a byte width, which is why this assertion is scoped
             // to record components rather than to static field names.
@@ -2608,7 +2602,7 @@ class StatementTransactionTest {
         @Test
         @DisplayName("no rendering of the record, the key or the group discloses the card number")
         void noRenderingDisclosesTheCardNumber() {
-            // Blocker severity. The card number is the FIRST component of the key, so the generated record
+            // The card number is the FIRST component of the key, so the generated record
             // rendering would publish it and a naive key-oriented log line would too. All three renderings are
             // overridden to emit only non-sensitive values.
             final String cardNumber = "0500024453765740";
@@ -2769,7 +2763,8 @@ class StatementTransactionTest {
             // counterpart are CDEMO-FROM-TRANID, CDEMO-TO-TRANID, CDEMO-FROM-PROGRAM, CDEMO-TO-PROGRAM,
             // CDEMO-PGM-CONTEXT and the two screen-state fields CDEMO-LAST-MAP and CDEMO-LAST-MAPSET, both
             // PIC X(7) - seven, not eight - at app/cpy/COCOM01Y.cpy:L43-L44. Routing is URL-based and the
-            // enter-versus-re-enter flag collapses into stateless request handling. High severity if one appears.
+            // enter-versus-re-enter flag collapses into stateless request handling, so none of them may
+            // reappear on a statement record.
             for (final Class<?> recordType : statementRecordTypes()) {
                 assertThat(componentNames(recordType))
                         .as("session or navigation component on %s", recordType.getSimpleName())

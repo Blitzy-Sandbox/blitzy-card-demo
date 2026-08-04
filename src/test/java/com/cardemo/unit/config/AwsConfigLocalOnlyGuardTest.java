@@ -126,12 +126,32 @@ final class AwsConfigLocalOnlyGuardTest {
             "http://localhost.localstack.cloud:4566",
             "http://localstack:4566",
             "http://carddemo-localstack:4566",
-            "http://host.docker.internal:4566",
             "https://localhost:4566",
-            "http://localhost:32769"})
+            "http://localhost:32769",
+            "http://[::1]:4566"})
         void permittedEndpointsAreAccepted(final String endpoint) {
             assertThatCode(() -> build(endpoint, endpoint, endpoint, TEST_KEY, TEST_KEY, PHYSICAL_QUEUE))
                     .doesNotThrowAnyException();
+        }
+
+        /**
+         * The Docker host-gateway alias is refused, and the refusal is the point rather than an oversight.
+         *
+         * <p>It was accepted here while {@code localstack-init/init-aws.sh} refused it, so a developer could set
+         * an endpoint that started the application and then failed provisioning - a contract drift diagnosed as an
+         * application defect. It also reaches any service listening on the developer's host rather than only the
+         * emulator, which is not least privilege. The container-to-host topology is served by the Compose service
+         * name inside the bridge network and the Testcontainers topology by {@code localhost}, so refusing it costs
+         * no reachable configuration.
+         */
+        @Test
+        @DisplayName("the Docker host-gateway alias is refused, because the provisioning script refuses it")
+        void theHostGatewayAliasIsRefused() {
+            assertThatThrownBy(() -> build("http://host.docker.internal:4566",
+                    LOCAL_ENDPOINT, LOCAL_ENDPOINT, TEST_KEY, TEST_KEY, PHYSICAL_QUEUE))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("spring.cloud.aws.s3.endpoint")
+                    .hasMessageContaining("does not name one of the approved local emulator hosts");
         }
 
         @Test

@@ -99,8 +99,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>The preserved misspelling.</strong> {@code CVACT01Y.cpy:L11} reads
  *       {@code ACCT-EXPIRAION-DATE} - the second T of EXPIRATION is absent. The Java property is
  *       {@code expiraionDate} and the column {@code acct_expiraion_date}. It is not a typo to fix; it is the
- *       field contract, read by name at {@code CBTRN02C.cbl:L414} and {@code COACTUPC.cbl:L4131-L4133}.
- *       Severity of a silent correction: High.</li>
+ *       field contract, read by name at {@code CBTRN02C.cbl:L414} and {@code COACTUPC.cbl:L4131-L4133}, so
+ *       correcting it silently would break both the mapping and the parity comparison.</li>
  *   <li><strong>Dates are text.</strong> All three date fields are {@code CHAR(10)} {@link String}, never a
  *       temporal type, because {@code COACTUPC.cbl:L4131-L4133} compares them as three separate substrings -
  *       {@code (1:4)} year, {@code (6:2)} month, {@code (9:2)} day - and {@code CBTRN02C.cbl:L414} compares
@@ -163,9 +163,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       fixture spells the word in full, so {@code dalytran.txt} does not exist and never did. The account
  *       fixture used here is {@code acctdata.txt}.</li>
  *   <li><strong>The no-floating-point assertion fails.</strong> A money field became {@code double} or
- *       {@code float}. Severity: Blocker - it is a security-audit failure rather than a style preference,
- *       because it makes a financial comparison non-deterministic. Remediation: restore
- *       {@link java.math.BigDecimal} and rescale with {@link java.math.RoundingMode#HALF_EVEN}.</li>
+ *       {@code float}, which makes a financial comparison non-deterministic and fails the security audit
+ *       rather than a style preference. Restore {@link java.math.BigDecimal} and rescale with
+ *       {@link java.math.RoundingMode#HALF_EVEN}.</li>
  *   <li><strong>The misspelling assertion fails.</strong> Somebody corrected {@code expiraionDate}. The
  *       property, the column and the copybook would then disagree and the parity comparison would break.</li>
  *   <li><strong>A geometry assertion fails.</strong> A width changed. Re-derive it from {@code CVACT01Y.cpy};
@@ -686,7 +686,7 @@ class AccountTest {
             assertThat(persistentFields())
                     .as("app/cpy/CVACT01Y.cpy:L11 reads ACCT-EXPIRAION-DATE - the second T of EXPIRATION is "
                             + "absent in the system of record. The Java name preserves it so the "
-                            + "traceability mapping stays one-to-one. Severity of a silent correction: High")
+                            + "mapping to the copybook stays one-to-one")
                     .anyMatch(field -> "expiraionDate".equals(field.getName()));
         }
 
@@ -1835,7 +1835,7 @@ class AccountTest {
 
             assertThat(account.getCurrentBalance())
                     .as("1.235 rescaled half-even goes to 1.24 because the digit before the tie is odd; "
-                            + "HALF_UP would agree here, so the remediation the guard's own message "
+                            + "HALF_UP would agree here, so the rescaling the guard's own message "
                             + "prescribes is asserted rather than merely quoted")
                     .isEqualByComparingTo("1.24");
             assertThat(account.getCurrentBalance().scale()).isEqualTo(MONEY_SCALE);
@@ -1889,11 +1889,9 @@ class AccountTest {
             assertThat(account.getAddressZip()).isEqualTo("A000000001");
             assertThat(account.getGroupId()).isEqualTo("ZEROAPR   ");
             assertThat(account.getVersion())
-                    .as("thirteen properties, thirteen round-trips. This method carried NO @Test annotation "
-                            + "before, so every assertion in it silently did not run while the build stayed "
-                            + "green - the same failure mode as an uncollected class, one level down. "
-                            + "Severity of that omission: Blocker, because it is invisible. Remediation: "
-                            + "annotate the method, which is what the annotation above now does")
+                    .as("thirteen properties, thirteen round-trips. An unannotated method here would let "
+                            + "every assertion in it silently not run while the build stayed green - the same "
+                            + "failure mode as an uncollected class, one level down, and invisible either way")
                     .isEqualTo(7L);
         }
     }

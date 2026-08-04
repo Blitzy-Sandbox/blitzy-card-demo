@@ -31,21 +31,21 @@
 package com.cardemo.unit.model;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.cardemo.batch.writers.RejectWriter;
 import com.cardemo.model.entity.DailyTransaction;
 import com.cardemo.model.enums.RejectCode;
 import com.cardemo.observability.MetricsConfig;
 import com.cardemo.service.shared.FileStatusMapper;
-import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
+import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -55,7 +55,6 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
 /**
  * The staging key: {@code DailyTransaction.ingestSequence} is a fourteenth mapped property on a
@@ -183,16 +182,21 @@ class StagingKeyParityTest {
      */
     private static byte[] emit(final DailyTransaction transaction) throws IOException {
         final S3Operations objectStorage = mock(S3Operations.class);
+        // The writer opens ONE stream per (+1) generation and closes it at the end of the step, so the bytes are
+        // observed in the buffer that stream writes to rather than in an upload argument - finding H-04.
+        final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        final S3Resource resource = mock(S3Resource.class);
+        when(resource.getOutputStream()).thenReturn((OutputStream) sink);
+        when(objectStorage.createResource(anyString(), anyString())).thenReturn(resource);
+
         final RejectWriter writer = new RejectWriter(objectStorage,
                 new MetricsConfig(new SimpleMeterRegistry()), new FileStatusMapper(),
                 "carddemo-batch-output", "gdg/dalyrejs", null);
 
         writer.writeReject(transaction, RejectCode.ACCOUNT_RECORD_NOT_FOUND);
+        writer.close();
 
-        final ArgumentCaptor<InputStream> payload = ArgumentCaptor.forClass(InputStream.class);
-        verify(objectStorage).upload(anyString(), anyString(), payload.capture(),
-                any(ObjectMetadata.class));
-        return payload.getValue().readAllBytes();
+        return sink.toByteArray();
     }
 
     /**

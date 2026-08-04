@@ -1026,7 +1026,7 @@ final class EntityContractTest {
         @Test
         @DisplayName("the card number never reaches a card rendering")
         void cardNumberIsWithheld() {
-            final Card card = new Card("4111111111111111", 1L, "A CARDHOLDER",
+            final Card card = new Card("4111111111111111", 1L, "007", "A CARDHOLDER",
                     "2025-01-01", "Y");
 
             assertThat(card.toString())

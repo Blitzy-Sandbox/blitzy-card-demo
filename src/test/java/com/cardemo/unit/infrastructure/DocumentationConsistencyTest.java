@@ -171,7 +171,31 @@ final class DocumentationConsistencyTest {
             new String[] {"src/main/java/com/cardemo/config/SecurityConfig.java", "SecurityConfig"},
             new String[] {"src/main/java/com/cardemo/CardDemoApplication.java", "CardDemoApplication"},
             new String[] {"src/main/java/com/cardemo/observability/HealthIndicators.java", "HealthIndicators"},
-            new String[] {"src/main/java/com/cardemo/observability/MetricsConfig.java", "MetricsConfig"});
+            new String[] {"src/main/java/com/cardemo/observability/MetricsConfig.java", "MetricsConfig"},
+            // Added 4 August 2026. Each of these five was delivered after the entries above were written, and
+            // each had its absence asserted somewhere in the documentation at the moment it became untrue -
+            // a package document calling a delivered controller planned, a configuration comment recording a
+            // present class as Not available. Listing them here is what turns that reconciliation from a
+            // one-off correction into a standing check, so the same drift cannot recur silently for them.
+            //
+            // DailyTransactionReader was delivered in the same batch and is deliberately NOT listed, which is
+            // a limitation of this rule rather than an exemption granted to that class. The rule pairs a
+            // spelling with an absence assertion in the same window, and that reader's own documentation
+            // discusses, correctly and repeatedly, a configuration KEY being absent - "the default is what the
+            // shipped configuration uses when the key is absent". Adding it reported that true sentence as a
+            // defect, and the only ways to silence it would be to reword correct prose to suit a tool or to
+            // loosen the assertion for everyone. Its delivery is instead held by the reconciled roster in
+            // src/main/java/com/cardemo/batch/readers/package-info.java and by EvidenceHonestyTest's
+            // test-class-denial rule, which forbids saying DailyTransactionReaderTest does not exist.
+            new String[] {"src/main/java/com/cardemo/config/ObservabilityConfig.java", "ObservabilityConfig"},
+            new String[] {"src/main/java/com/cardemo/controller/AuthController.java", "AuthController"},
+            new String[] {"src/main/java/com/cardemo/controller/AdminController.java", "AdminController"},
+            new String[] {
+                "src/main/java/com/cardemo/batch/jobs/DailyTransactionPostingJob.java",
+                "DailyTransactionPostingJob"},
+            new String[] {
+                "src/main/java/com/cardemo/batch/jobs/StatementGenerationJob.java",
+                "StatementGenerationJob"});
 
     /**
      * Assertions of absence. Each is anchored so it can only match a claim <em>about</em> something, never a

@@ -40,15 +40,12 @@ import com.cardemo.batch.processors.StatementProcessor;
 import com.cardemo.batch.writers.StatementWriter;
 import com.cardemo.model.dto.StatementTransaction;
 import com.cardemo.model.entity.CardCrossReference;
-import com.cardemo.observability.MetricsConfig;
 import com.cardemo.service.shared.FileService;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Resource;
 import io.awspring.cloud.s3.S3Template;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -199,9 +196,8 @@ class StatementStepContractTest {
      * @return a new writer
      */
     private StatementWriter newWriter() {
-        return new StatementWriter(this.s3Template, new MetricsConfig(new SimpleMeterRegistry()),
-                new FileStatusMapper(), Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC),
-                "carddemo-statements");
+        return new StatementWriter(this.s3Template, new FileStatusMapper(),
+                Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC), "carddemo-statements");
     }
 
     @Test

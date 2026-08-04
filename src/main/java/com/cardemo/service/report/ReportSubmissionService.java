@@ -35,6 +35,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -43,7 +44,6 @@ import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -126,21 +126,14 @@ import io.micrometer.tracing.Tracer;
  * <p>December confirms the reading rather than contradicting it: month 13 becomes January of the following
  * year, one day less is 31 December, and the year and month land back on the original year and December.
  *
- * <p><strong>Two secondary sources state this incorrectly and are superseded by the source.</strong>
- * The first is the plan prose at section 0.7.5.2, which describes the monthly period as month to date. The
- * second is the planning prompt written for {@code src/main/java/com/cardemo/model/dto/ReportRequest.java},
- * which repeated that error. The mistake is explainable: an author reading only {@code :L232-L234} sees the
- * current date subfields named and concludes the end date is today, without noticing that
- * {@code :L223-L230} has already overwritten them in place. Had it been implemented that way the emitted
- * end date would differ on every day of the month except the last, and every downstream {@code TRANREPT}
- * report would diverge from the Gate 1 parity baseline.
- *
- * <p>The obligation to fix it was formally assigned to this bean. The delivered
- * {@code com.cardemo.model.dto.ReportRequest} records, in its own findings register, that the monthly
- * period is a full calendar month and that "remediation still owed by the service layer:
- * ReportSubmissionService must implement the arithmetic at :223-234 rather than the prose description; that
- * bean is not available". <strong>This file discharges that obligation.</strong> The delivered DTO and this
- * bean therefore agree, and no conflicting assertion is propagated from it.
+ * <p><strong>Why the reading is easy to get wrong.</strong> An author reading only {@code :L232-L234} sees
+ * the current-date subfields named and concludes the end date is today, without noticing that
+ * {@code :L223-L230} has already overwritten them in place. Implemented that way the emitted end date would
+ * differ on every day of the month except the last, and every downstream {@code TRANREPT} report would
+ * diverge from the parity baseline. {@code com.cardemo.model.dto.ReportRequest} and this bean therefore
+ * carry the same reading, and the variance against the specification prose is disclosed exactly once, with
+ * its severity and its remediation, in the register carried by the documentation of the {@code com.cardemo}
+ * root package.
  *
  * <p>The arithmetic is performed with {@code java.time} month length adjusters against the injected
  * {@link Clock}. There is no hard coded table of month lengths, no leap year branch, and no bare
@@ -998,11 +991,19 @@ public class ReportSubmissionService {
      */
     private static final String HEADER_CORRELATION_ID = CorrelationIdFilter.CORRELATION_ID_HEADER;
 
-    /** Message header carrying the publishing trace identifier, so a consumer can join the same trace. */
-    private static final String HEADER_TRACE_ID = "X-Trace-Id";
-
-    /** Message header carrying the publishing span identifier, so a consumer can parent onto this hop. */
-    private static final String HEADER_SPAN_ID = "X-Span-Id";
+    /**
+     * Message header carrying interoperable W3C trace context, so a consumer parents onto this publish hop.
+     *
+     * <p><strong>Finding M-07, severity Medium, RESOLVED.</strong> This message used to carry a bespoke
+     * {@code X-Trace-Id} and {@code X-Span-Id} pair. Those named the identifiers without establishing parentage:
+     * a consumer has to be told that those two headers exist and how to assemble a parent context from them, and
+     * nothing outside this repository is. So the one hop distributed tracing is here to show - the online
+     * submission joined to the batch run it triggers - was the one hop that could not be reconstructed from the
+     * message. {@link CorrelationIdFilter#TRACE_PARENT_HEADER} is the standard form, extracted by every
+     * OpenTelemetry and Micrometer Tracing consumer with no configuration, and the name and the composition rule
+     * are owned by that class rather than re-declared here.
+     */
+    private static final String HEADER_TRACE_PARENT = CorrelationIdFilter.TRACE_PARENT_HEADER;
 
     /**
      * Message header naming the originating legacy transaction, always the compile-time literal
@@ -1028,10 +1029,11 @@ public class ReportSubmissionService {
      * Longest header value this bean will propagate, in characters.
      *
      * <p>Matches {@link CorrelationIdFilter#MAX_CORRELATION_ID_LENGTH} so the correlation identifier is
-     * bounded identically on both sides of the hop, and it comfortably admits a 32-character trace
-     * identifier and a 16-character span identifier. A value longer than this is dropped rather than
-     * truncated: a truncated identifier correlates to nothing and is worse than an absent one, because it
-     * looks like a real identifier that simply does not match.
+     * bounded identically on both sides of the hop, and it comfortably admits a whole
+     * {@value CorrelationIdFilter#TRACE_PARENT_HEADER} value - two version characters, a 32-character trace
+     * identifier, a 16-character parent identifier, two flag characters and three hyphens, fifty-five in all. A
+     * value longer than this is dropped rather than truncated: a truncated identifier correlates to nothing and
+     * is worse than an absent one, because it looks like a real identifier that simply does not match.
      */
     private static final int MAX_HEADER_VALUE_LENGTH = CorrelationIdFilter.MAX_CORRELATION_ID_LENGTH;
 
@@ -1054,8 +1056,10 @@ public class ReportSubmissionService {
      * context, which is populated from an inbound HTTP header, so it is attacker-influenced input on a path
      * that ends in a message an operator will read. Restricting it to alphanumerics, hyphen and underscore
      * makes header injection structurally impossible - a carriage return, a line feed, a colon and a NUL are
-     * all outside the class - and every identifier this bean actually propagates is hexadecimal or the
-     * bounded token {@link CorrelationIdFilter} already validated.
+     * all outside the class - and every value this bean actually propagates is admitted by it: the bounded
+     * correlation token {@link CorrelationIdFilter} already validated, and a
+     * {@value CorrelationIdFilter#TRACE_PARENT_HEADER} value, whose fields are lowercase hexadecimal joined by
+     * the hyphen this class already permits.
      */
     private static final Pattern HEADER_VALUE_PATTERN = Pattern.compile("[A-Za-z0-9_-]+");
 
@@ -1773,10 +1777,9 @@ public class ReportSubmissionService {
      * <p>An inline stage of that paragraph rather than a paragraph of its own; the source has no label here.
      *
      * <p><strong>The period is the full current calendar month, first day through last day. It is not month
-     * to date.</strong> The class documentation carries the six-step proof, the mechanism that makes it work
-     * - {@code WS-CURDATE-N REDEFINES WS-CURDATE} at {@code app/cpy/CSDAT01Y.cpy:L23} - and the record of the
-     * two secondary sources that state it incorrectly. This method reproduces the source's four steps
-     * literally, in order:
+     * to date.</strong> The class documentation carries the six-step proof and the mechanism that makes it
+     * work - {@code WS-CURDATE-N REDEFINES WS-CURDATE} at {@code app/cpy/CSDAT01Y.cpy:L23}. This method
+     * reproduces the source's four steps literally, in order:
      *
      * <ol>
      *   <li>{@code :L223} forces the day of month to 1, discarding today's day.</li>
@@ -1807,7 +1810,7 @@ public class ReportSubmissionService {
         // :L224-L228 ADD 1 TO WS-CURDATE-MONTH with the twelve-month roll, then :L229-L230
         // DATE-OF-INTEGER(INTEGER-OF-DATE(...) - 1). The first of the next month, less one day, is the last
         // day of this one. :L232-L234 then read the mutated year, month and day back out, which is the step
-        // the two incorrect secondary sources overlook.
+        // a month-to-date reading overlooks.
         final LocalDate periodEnd = periodStart.plusMonths(1L).minusDays(1L);
 
         // :L214 MOVE 'Monthly' TO WS-REPORT-NAME, and :L220-L221 and :L235-L236 move each date to its pair of
@@ -2325,15 +2328,38 @@ public class ReportSubmissionService {
      * asserted in a test; with it, a slow queue produces the source's own literal at a known bound. The
      * deadline is deliberately tighter than the client's, which is sized for the batch writers that share it.
      *
-     * <p><strong>Propagation.</strong> The message carries at most four bounded headers - the correlation
-     * identifier, the trace and span identifiers, and the originating transaction literal - and a child span
-     * wraps the publish when a tracer is configured. The payload itself remains exactly the three fields
+     * <p><strong>Propagation.</strong> The message carries at most three bounded headers - the correlation
+     * identifier, the W3C trace context, and the originating transaction literal - and a child span wraps the
+     * publish when a tracer is configured. The payload itself remains exactly the three fields
      * {@link JobSubmissionMessage} declares: identity travels in headers, never inside the typed body, so the
      * payload contract the batch tier consumes is unchanged.
      *
-     * <p>No deduplication identifier is set, because the source has no idempotency key and adding one would
-     * be inventing a guard it lacks. Whether two identical submissions collapse is therefore a queue
-     * attribute rather than a decision of this bean, and it is configured where the queue is provisioned.
+     * <p><strong>Deduplication. Finding H-08, severity High, RESOLVED here.</strong> An explicit
+     * {@code MessageDeduplicationId} is generated once per call by {@link #newDeduplicationId()}. That alone is
+     * what carries the parity, and it carries it unconditionally: an explicit identifier takes precedence over
+     * the queue's body hash, so two identical submissions are both delivered even against a queue that still
+     * reports {@code ContentBasedDeduplication=true}. This was confirmed against the emulator rather than
+     * assumed - two identical bodies with distinct identifiers both arrived, where the same two bodies without
+     * one collapsed. The queue is nevertheless provisioned with the attribute disabled by
+     * {@code localstack-init/init-aws.sh}, as defence for any future publisher that omits an identifier;
+     * {@code com.cardemo.config.AwsConfig} reports that attribute at startup but deliberately does not refuse
+     * to start over it, because it is mutable by any holder of the queue and this send path does not depend on
+     * it.
+     *
+     * <p>The previous arrangement was the reverse and it lost submissions. Setting no identifier left the queue's
+     * body hash as the deduplication key, so two submissions of the same period - identical report name,
+     * identical start and end dates, which is exactly what an operator re-submitting produces - collapsed into
+     * one inside the five-minute deduplication window. The second was accepted here, logged as published and
+     * then discarded by the queue, with nothing on the caller's side to show it. That is not what the source
+     * does: {@code DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)} <em>appends</em>, and {@code :L515-L523} writes
+     * unconditionally with no idempotency key at all, so two identical writes produced two reader entries.
+     *
+     * <p>A fresh identifier per call is what reproduces that append, and it is not the invention of a guard the
+     * source lacks - it is the mechanism by which the queue is told <em>not</em> to guard. What it does still
+     * prevent is the one duplicate that would be an artefact of this implementation rather than of the caller's
+     * intent: a transport-level retry by the shared client's bounded retry strategy re-sends the same request,
+     * carrying the same identifier, and the queue collapses it. One submission therefore becomes exactly one
+     * message however many times the transport tries.
      *
      * @param card the typed message standing in for the eighty-byte card images
      * @throws FileAccessException when the publish fails, carrying the source's literal and the cause
@@ -2354,10 +2380,15 @@ public class ReportSubmissionService {
             // retry policy and the transport agree on, which is stated nowhere and cannot be tested. The
             // asynchronous form plus an explicit await makes the deadline this method's own, and gives it a
             // future it can cancel. The observable behaviour on success is identical.
+            // One identifier per call, held in a local so the value that reaches the queue is also the value
+            // that could be logged: reading it twice from a generator would produce two different identities.
+            final String deduplicationId = newDeduplicationId();
+
             pending = this.sqsTemplate.sendAsync(options -> options
                     .queue(this.reportQueueName)
                     .payload(card)
                     .messageGroupId(this.reportMessageGroupId)
+                    .messageDeduplicationId(deduplicationId)
                     .headers(headers));
             final SendResult<JobSubmissionMessage> sendResult =
                     pending.get(SEND_DEADLINE_SECONDS, TimeUnit.SECONDS);
@@ -2460,6 +2491,21 @@ public class ReportSubmissionService {
      * <p>It is not retried, for the reason the queue publish is not: the source retries nothing, and a retry
      * would change how many notifications a failing topic eventually receives.
      *
+     * <p><strong>Boundedness. Finding M-08, severity Medium, RESOLVED.</strong> This publish is synchronous on
+     * the request thread, and the submission it follows has already succeeded - so whatever budget bounds it
+     * bounds how long a successful request can be held open by a courtesy. It used to share the object and
+     * queue clients' thirty-second budget, which is sized for a batch generation, so an unreachable topic
+     * delayed a completed submission for thirty seconds before the failure was logged and discarded. The
+     * notification client now carries its own much shorter budget, applied by
+     * {@code com.cardemo.config.AwsConfig.applyNotificationPolicy}, so the worst case here is that budget.
+     *
+     * <p>The publish is deliberately <em>not</em> moved onto another thread. An executor would need lifecycle
+     * management, would make the ordering of notifications relative to submissions nondeterministic, and would
+     * let a shutdown drop a notification that had been reported as sent; correcting the budget where the budget
+     * is declared achieves the same bound with none of that. The corollary is that the bound is a property of
+     * the client rather than of this method, which is why this method imposes no deadline of its own -
+     * two independent deadlines on one call would leave neither authoritative.
+     *
      * <p>Side effects: one notification on {@link #notificationTopic}, or one warning line. Configuration:
      * the topic name only. Error modes: none propagate.
      *
@@ -2504,14 +2550,38 @@ public class ReportSubmissionService {
     }
 
     /**
+     * Mints the deduplication identity for one submission.
+     *
+     * <p><strong>Finding H-08, severity High.</strong> See {@link #wirteJobsubTdq(JobSubmissionMessage)} for why
+     * the identity is explicit and why it is fresh on every call rather than derived from the message. Two
+     * properties are required of it and a random identifier has both: it is distinct for every submission, so a
+     * legitimate re-submission of the same period is delivered exactly as {@code DISPOSITION(MOD)} delivered it;
+     * and it is fixed within one call, so a transport retry of that call re-sends the same value and the queue
+     * collapses the duplicate.
+     *
+     * <p>Deliberately <em>not</em> derived from the report parameters, which would reinstate body-keyed
+     * collapse under another name, and deliberately not the correlation identifier, which an upstream caller
+     * controls and may repeat across genuinely separate submissions.
+     *
+     * <p>A random UUID renders as 36 characters from the alphabet SQS accepts for this attribute, well inside its
+     * 128-character limit, so no validation or truncation is needed. It is an identity and not a secret: it
+     * names a submission and carries nothing about it.
+     *
+     * @return a fresh deduplication identifier, never {@code null}
+     */
+    private static String newDeduplicationId() {
+        return UUID.randomUUID().toString();
+    }
+
+    /**
      * Builds the bounded propagation headers the message carries.
      *
-     * <p>Four headers at most, every one of them an identifier and none of them derived from the report
+     * <p>Three headers at most, every one of them an identifier and none of them derived from the report
      * parameters, so the header set cannot grow with input. The correlation identifier comes from
      * {@link CorrelationIdFilter#currentCorrelationId()}, which returns {@code null} rather than a malformed
-     * value; the trace and span identifiers come from the span when one was opened and otherwise from the
-     * diagnostic context the tracing bridge maintains, so the hop is correlatable whether or not tracing is
-     * configured. The source transaction header is a compile-time constant.
+     * value; the trace context comes from the span when one was opened and otherwise from the diagnostic
+     * context the tracing bridge maintains, so the hop is correlatable whether or not tracing is configured.
+     * The source transaction header is a compile-time constant.
      *
      * <p>Every value passes {@link #propagatable(String)} before it is attached. That is not defensive
      * padding: the correlation identifier originates in an inbound HTTP header, so it is attacker-influenced
@@ -2529,13 +2599,12 @@ public class ReportSubmissionService {
         putIfPropagatable(headers, HEADER_CORRELATION_ID, CorrelationIdFilter.currentCorrelationId());
 
         if (span == null) {
-            putIfPropagatable(headers, HEADER_TRACE_ID, MDC.get(CorrelationIdFilter.MDC_KEY_TRACE_ID));
-            putIfPropagatable(headers, HEADER_SPAN_ID, MDC.get(CorrelationIdFilter.MDC_KEY_SPAN_ID));
+            putIfPropagatable(headers, HEADER_TRACE_PARENT, CorrelationIdFilter.currentTraceParent());
         } else {
             // The span's own identifiers rather than the diagnostic context's, so a consumer parents onto
             // this publish hop and not onto the request span that contains it.
-            putIfPropagatable(headers, HEADER_TRACE_ID, span.context().traceId());
-            putIfPropagatable(headers, HEADER_SPAN_ID, span.context().spanId());
+            putIfPropagatable(headers, HEADER_TRACE_PARENT,
+                    CorrelationIdFilter.traceParent(span.context().traceId(), span.context().spanId()));
         }
 
         headers.put(HEADER_SOURCE_TRANSACTION, TRANSACTION_ID);

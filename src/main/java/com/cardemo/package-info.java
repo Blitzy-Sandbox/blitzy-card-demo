@@ -92,15 +92,19 @@
  *       security and web configuration; {@code BatchConfig} and {@code ObservabilityConfig} are authored and
  *       no longer outstanding. Derived from the JCL dataset wiring, the CICS file control table of
  *       {@code app/csd/CARDDEMO.CSD} and the batch job topology.</li>
- *   <li>{@code com.cardemo.security} - 3 classes. Token issue and validation plus user details lookup,
- *       replacing COMMAREA identity propagation across {@code EXEC CICS XCTL}. Derived from
- *       {@code app/cbl/COSGN00C.cbl} (260 lines), {@code app/cpy/CSUSR01Y.cpy} (the 80 byte user security
- *       layout) and the {@code CDEMO-USER-ID} and {@code CDEMO-USER-TYPE} fields of
- *       {@code app/cpy/COCOM01Y.cpy}.</li>
+ *   <li>{@code com.cardemo.security} - <strong>4 present / 3 target</strong>. Token issue and validation
+ *       plus user details lookup, replacing COMMAREA identity propagation across
+ *       {@code EXEC CICS XCTL}. Derived from {@code app/cbl/COSGN00C.cbl} (260 lines),
+ *       {@code app/cpy/CSUSR01Y.cpy} (the 80 byte user security layout) and the {@code CDEMO-USER-ID} and
+ *       {@code CDEMO-USER-TYPE} fields of {@code app/cpy/COCOM01Y.cpy}. The one above target is
+ *       {@code SnapshotTokenService}, which seals the as-displayed snapshot and the list cursor so a
+ *       stateless caller cannot forge either.</li>
  *   <li>{@code com.cardemo.model} - a container package with no classes of its own and four leaves:
- *       {@code entity} 11, {@code key} 3, {@code enums} 4, {@code dto} 17. Field contracts derived from the
- *       11 record layout copybooks of {@code app/cpy/**} and the 17 BMS symbolic maps of
- *       {@code app/cpy-bms/**}.</li>
+ *       {@code entity} 11, {@code key} 3, {@code enums} 4, {@code dto} <strong>26 present / 16
+ *       target</strong>. Field contracts derived from the 11 record layout copybooks of
+ *       {@code app/cpy/**} and the 17 BMS symbolic maps of {@code app/cpy-bms/**}. The ten DTOs above
+ *       target are per-endpoint response records that keep an entity from being serialised onto the
+ *       wire; {@code InventoryCountGateTest} asserts the figure 26 against the directory.</li>
  *   <li>{@code com.cardemo.repository} - 11 interfaces. Spring Data JPA over the 10 VSAM KSDS clusters
  *       catalogued in {@code app/catlg/LISTCAT.txt} plus the daily transaction staging dataset. Three
  *       derived finders replace the three alternate indexes.</li>
@@ -111,13 +115,16 @@
  *       status translation and the file access call contract. The service layer is complete:
  *       {@code admin/UserDeleteService} from {@code app/cbl/COUSR03C.cbl} is authored, with that program's
  *       absent self-delete guard preserved rather than closed.</li>
- *   <li>{@code com.cardemo.controller} - <strong>6 present / 8 target</strong>, exposing
- *       <strong>12 operations today of a target 17</strong>. REST adapters for the 17 sourced CICS
- *       transactions. Planned: {@code AuthController} (sign-on, 1 operation) and {@code AdminController}
- *       (4 operations at {@code /api/admin/*}), which is the reconciliation 12 + 1 + 4 = 17.</li>
+ *   <li>{@code com.cardemo.controller} - <strong>8 present / 8 target, complete</strong>, exposing
+ *       <strong>all 17 operations</strong>. REST adapters for the 17 sourced CICS transactions. The
+ *       reconciliation is {@code AuthController} 1, {@code MenuController} 2, {@code AccountController} 2,
+ *       {@code CardController} 3, {@code TransactionController} 3, {@code BillingController} 1,
+ *       {@code ReportController} 1 and {@code AdminController} 4 at {@code /api/admin/*}, which is 17. The eighteenth CSD transaction, {@code CDV1}, fronts
+ *       {@code COCRDSEC}, whose source is absent from the repository, so no endpoint exists for
+ *       it.</li>
  *   <li>{@code com.cardemo.batch} - a container package with four leaves: {@code jobs}
- *       <strong>1 present / 6 target</strong>, {@code processors} 5, {@code readers}
- *       <strong>5 present / 7 target</strong>, {@code writers} 3. Spring Batch replacing the JCL job stream,
+ *       <strong>3 present / 6 target</strong>, {@code processors} 5, {@code readers}
+ *       <strong>6 present / 7 target</strong>, {@code writers} 3. Spring Batch replacing the JCL job stream,
  *       the DFSORT specifications and the IDCAMS control cards. The two leaf documents name each planned
  *       job and reader individually.</li>
  *   <li>{@code com.cardemo.exception} - 9 classes. A typed hierarchy replacing COBOL {@code FILE STATUS}
@@ -131,21 +138,34 @@
  * {@code com.cardemo.CardDemoApplication}, declared as the Spring Boot main class through the
  * {@code start-class} property in the root {@code pom.xml}.
  *
- * <h2>Directory shape: the target is 132 {@code .java} files, of which 14 are {@code package-info.java}</h2>
+ * <h2>Directory shape: what remains, and where the file totals live</h2>
  *
- * <p>The <strong>target</strong> for this tree is 132 {@code .java} files, and that count is a gate rather
- * than an observation. The target arithmetic is 1 bootstrap class, then 6 config, 3 security, 11 entity, 3
- * key, 4 enums, 17 DTO, 11 repository, 21 service, 8 controller, 6 batch jobs, 5 batch processors, 7 batch
- * readers, 3 batch writers, 9 exception and 3 observability, giving 118 production classes, plus
- * <strong>14 {@code package-info.java}</strong> files, for 132 in total.
+ * <p><strong>Finding M-10, severity Medium, RESOLVED.</strong> This section previously carried a
+ * hand-maintained target arithmetic - 118 production classes plus 14 package documents for 132 files - beside
+ * a list of thirteen remaining classes, and neither had kept pace with the work while the bullets above were
+ * being updated one at a time. The result was a root inventory that contradicted its own subpackage list: the
+ * bullets named a delivered controller layer that the arithmetic still counted as planned. Both figures were
+ * also wrong in the understating direction, which is the damaging one for an evidence artefact, because a
+ * reader concludes that authored, tested code does not exist.
  *
- * <p><strong>The tree has not yet reached that target, and this document does not claim it has.</strong>
- * Thirteen production classes remain to be authored: 2 config, 1 service, 2 controller, 5 batch jobs and 3
- * batch readers. Each is named individually in the document of the package that will own it, so that no
- * planned type is mistaken for a delivered one. For the measured file counts as of a specific date, together
- * with the command that reproduces them, see section 0.4.5.1 of {@code docs/technical-specifications.md},
- * which is the single authoritative dated inventory for this repository and governs over any count quoted in
- * a Javadoc comment.
+ * <p><strong>What remains to be authored</strong>, taken from the same measurement as the bullets above and
+ * from nothing else: <strong>three batch jobs and one batch reader</strong> - Each is named individually in the
+ * {@code batch.jobs.CombineTransactionsJob}, {@code batch.jobs.TransactionReportJob},
+ * {@code batch.jobs.BatchPipelineOrchestrator} and
+ * {@code batch.readers.CombinedTransactionReader}.
+ * document of the package that will own it, so that no planned type is mistaken for a delivered one. Every
+ * other package in the list above is complete - notably the controller layer and the service layer, both of
+ * which earlier revisions of this document reported as unfinished after they were done.
+ *
+ * <p><strong>Whole-tree file totals are deliberately not restated here.</strong> A total changes with every
+ * file added anywhere beneath this package, so it goes stale faster than any other figure in this document and
+ * carries the least information per character. A reader who needs one is better served by the command that
+ * produces it - {@code find src/main/java -name '*.java' | wc -l}, and the same with
+ * {@code -name 'package-info.java'} for the package documents - than by a number that was true once. The
+ * per-package counts in the bullets above are kept because they are stable, they orient a reader, and
+ * {@code InventoryCountGateTest} fails the build if they drift. Section 0.4.5.1 of
+ * {@code docs/technical-specifications.md} remains the single authoritative dated inventory and governs over
+ * any count quoted in a Javadoc comment.
  *
  * <p><strong>The fourteen-location census of package documentation is withdrawn.</strong> An earlier revision of
  * this paragraph asserted that exactly 14 such files existed "at exactly these locations and nowhere else",
@@ -159,9 +179,10 @@
  * below, asserted by {@code PackageDocumentationInventoryTest}. Measure it rather than quoting it, with
  * {@code find src/main/java -name 'package-info.java' | wc -l}.
  *
- * <p><strong>Dated readings, offered as a sample and not as a specification.</strong> At commit
- * {@code 2e087c4} on 3 August 2026: 105 types, 24 packages containing a type, and therefore 24
- * {@code package-info.java} files. Re-measure rather than quote:
+ * <p><strong>Dated readings, offered as a sample and not as a specification.</strong> Measured on 4 August
+ * 2026: <strong>124 types, 25 packages containing a type, and therefore 25 {@code package-info.java}
+ * files</strong>, for 149 {@code .java} files in total. An earlier reading of 105 types and 24 documents,
+ * taken on 3 August 2026, is historical. Re-measure rather than quote:
  *
  * <pre>{@code find src/main/java -name '*.java' ! -name package-info.java | wc -l
  * find src/main/java -name package-info.java | wc -l
@@ -363,9 +384,15 @@
  * the topic is {@code ${CARDDEMO_SNS_NOTIFICATION_TOPIC}}. Seven {@code gdg-prefixes} entries map the seven
  * generation data group bases onto key prefixes, and {@code gdg-retention-generations} is {@code 10} - which
  * resolves a genuine conflict in the source, where the report group is declared {@code LIMIT(5)} in one JCL
- * member and {@code LIMIT(10)} in another. <strong>The LocalStack endpoint override exists only in the
- * {@code local} and {@code test} profiles, there are no credential defaults anywhere, and all AWS interaction
- * targets LocalStack with zero live credentials.</strong>
+ * member and {@code LIMIT(10)} in another. <strong>The endpoint override is declared in all four profiles,
+ * there are no credential defaults anywhere, and all AWS interaction targets LocalStack with zero live
+ * credentials.</strong> An earlier revision of this sentence said the override existed only in the
+ * {@code local} and {@code test} profiles; that is withdrawn. The base, {@code test} and {@code prod} profiles
+ * each bind the three service endpoints to a bare {@code ${AWS_ENDPOINT_URL}} <em>with no default</em>, so the
+ * value is required and an unset variable fails placeholder resolution at startup; only
+ * {@code application-local.yml} supplies a default, and it is the LocalStack edge. Requiring the value is what
+ * makes a live fallback impossible - a defaulted override would be the weaker guarantee, not the stronger
+ * one.
  *
  * <p><strong>Observability.</strong> {@code management.endpoints.web.exposure.include} is exactly
  * {@code health,info,prometheus} and never a wildcard. {@code management.endpoint.health.show-details} is
@@ -532,6 +559,16 @@
  *
  * <p><strong>Corrections against the specification prose, all resolved in favour of the primary source.</strong>
  *
+ * <p>This list is the <em>single authoritative register</em> of every prose-versus-corpus variance in this
+ * tree. It is stated here once so that no other file - and, in particular, no test assertion message - has to
+ * restate it: a second copy of a correction is how the two drift apart, and a test that argues with a
+ * specification stops being parity evidence and becomes a competing specification. Each entry carries its
+ * severity and its remediation. Where a variance concerns <em>behaviour</em>, the resolution is always to
+ * preserve what the frozen corpus does: behavioural parity is the acceptance contract, rewriting a COBOL
+ * business rule to be "more correct" is explicitly excluded from scope, and {@code app/} is simultaneously the
+ * parity oracle, the field-contract source and the traceability anchor, so it cannot be second-guessed by an
+ * implementation that claims to reproduce it.
+ *
  * <ul>
  *   <li><strong>Blocker.</strong> The Testcontainers 2.x module artefacts were renamed, so the unprefixed
  *       coordinates do not resolve at all. Remedy in the build section above; both halves are required.</li>
@@ -539,16 +576,58 @@
  *       <strong>unreachable</strong>. The {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at {@code :L219-L220}
  *       belongs to {@code IF END-OF-FILE = 'N'} at {@code :L189}, so it can only be taken once
  *       {@code END-OF-FILE} is {@code 'Y'} - precisely the state in which the enclosing test before
- *       {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already exited. The last account in key
- *       order therefore never receives its accrued interest and keeps stale cycle accumulators.</li>
+ *       {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already exited. Indentation settles the
+ *       pairing: the inner {@code IF} at {@code :L191} and its {@code END-IF} at {@code :L218} both stand at
+ *       column 20, while the outer {@code IF}, the {@code ELSE} and the {@code END-IF} at {@code :L221} all
+ *       stand at column 16. The flush the source reaches is therefore the control-break arm at {@code :L196},
+ *       and the last account in key order keeps its accrued interest unposted and its cycle accumulators
+ *       unreset. <em>Remediation:</em> preserved, not repaired - the outcome is a deterministic arithmetic
+ *       result rather than a corruption hazard, and posting one extra account update per run would diverge
+ *       from the parity oracle on every run. {@code InterestCalculationProcessor} reproduces both
+ *       {@code PERFORM} sites so the paragraph map stays provable, and its unit and job tests measure the
+ *       boundary <em>and</em> what a flush does when it fires. Closing the variance in the other direction
+ *       requires a stakeholder decision to accept a behaviour change, which is outside this migration's
+ *       scope.</li>
  *   <li><strong>High.</strong> The monthly report range in {@code app/cbl/CORPT00C.cbl:L213-L238} is the
  *       <strong>full current calendar month</strong>, not month to date: the start day is forced to
  *       {@code '01'} at {@code :L219}, and the end is the first of next month ({@code :L224}) minus one day
- *       ({@code :L230}).</li>
+ *       ({@code :L230}), read back out of the redefined date area at {@code :L232-L234}.
+ *       <em>Remediation:</em> preserved, not repaired - the range decides which transactions the submitted
+ *       report covers, so narrowing it to month to date would change the report's contents and break parity
+ *       against the oracle. {@code ReportSubmissionService.monthlyPeriod()} reproduces the four source steps
+ *       in order and its tests assert the resulting range positively. Closing the variance in the other
+ *       direction requires a stakeholder decision to accept a behaviour change.</li>
  *   <li><strong>Medium.</strong> The BMS input field census is <strong>441</strong> fields across the 17
  *       symbolic maps, with {@code COACTVW} at <strong>37</strong>. The widely quoted 460 and 36 are both
- *       wrong; {@code COACTVW} has 37 length fields but only 36 input fields, one field being output only,
- *       which is how the lower figure arose.</li>
+ *       wrong; {@code COACTVW} has 37 length fields and 37 corresponding data fields, of which 36 carry a
+ *       parenthesised {@code PIC X(n)} and one - {@code ACCTSIDI PIC 99999999999} - does not, which is how the
+ *       lower figure arose. The 460 figure is not reachable from the per-map table it accompanies either:
+ *       that table sums to 440. <em>Remediation:</em> field names, types and lengths are derived from
+ *       {@code app/cpy-bms/**} by a parser rather than transcribed, so the census is measured on every run and
+ *       a missing or extra field fails the build; the DTO field budget cannot be reconciled to 460 without
+ *       inventing fields the frozen copybooks do not declare, which the bidirectional field-contract rule
+ *       forbids.</li>
+ *   <li><strong>Medium.</strong> The observability contract names <strong>four counters</strong>. Three of
+ *       the four named series are counters; the fourth, the signed transaction-amount total, is published as
+ *       a <strong>gauge</strong> over an exact {@code BigDecimal} accumulator, and no counter can carry it.
+ *       Two independent facts force that, both measured rather than argued. Micrometer's incrementing
+ *       counter ignores a non-positive increment, so a counter fed by increments silently discards every
+ *       debit. And the Prometheus client rejects a negative counter <em>at scrape time</em>: a
+ *       {@code FunctionCounter} reading the same signed accumulator renders correctly while the total is
+ *       positive and then fails the entire scrape with
+ *       {@code IllegalArgumentException: counters cannot have a negative value}, taking every other series
+ *       off {@code /actuator/prometheus} with it. Signed amounts are the contract -
+ *       {@code app/cbl/CBTRN02C.cbl:L548-L552} adds a negative amount to the current-cycle <em>debit</em>
+ *       accumulator, which is precisely why the over-limit formula subtracts it - so no absolute value may be
+ *       taken anywhere. <em>Remediation:</em> the contract is honoured as four <em>named series</em> of
+ *       counter type - the amount name partitioned on the source's own sign predicate into a {@code credit}
+ *       and a {@code debit} series of magnitudes, whose difference is the signed net - so no debit is
+ *       discarded and no negative value ever reaches the scrape. Timers remain complementary and additive
+ *       rather than forbidden. Restating the requirement as four named series rather than four instruments
+ *       closes the variance in the prose. Note the naming consequence that decided it: the Prometheus client
+ *       reserves the {@code _total} suffix for counters and strips it from a gauge, so as a gauge this series
+ *       rendered as {@code carddemo_transaction_amount} while every panel queried
+ *       {@code carddemo_transaction_amount_total}; as a counter the rendered name and the query agree.</li>
  *   <li><strong>Medium.</strong> {@code app/cpy/CSMSG02Y.cpy} is internally titled {@code CABENDD.CPY} and
  *       holds <strong>abend work areas</strong>, not messages: {@code ABEND-CODE X(4)},
  *       {@code ABEND-CULPRIT X(8)}, {@code ABEND-REASON X(50)} and {@code ABEND-MSG X(72)}. Reading it as a

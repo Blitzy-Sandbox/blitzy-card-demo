@@ -523,6 +523,26 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
     public static final String SPAN_TAG_CORRELATION_ID = "correlation.id";
 
     /**
+     * The W3C Trace Context header name, {@value} - lowercase, as that specification requires.
+     *
+     * <p><strong>Finding M-07, severity Medium.</strong> Outbound propagation used to carry only this
+     * application's own {@value #CORRELATION_ID_HEADER}, plus a pair of bespoke {@code X-Trace-Id} and
+     * {@code X-Span-Id} message headers on the report publish. Those three name identifiers; none of them
+     * <em>establishes parentage</em>, because no consumer outside this repository knows to look for them. A
+     * downstream that receives them starts a fresh, unparented trace, so the very hop the tracing exists to
+     * show - the request that produced a queue message, joined to the batch run that consumed it - is the one
+     * hop that could not be reconstructed. {@code traceparent} is the interoperable form: every OpenTelemetry
+     * and Micrometer Tracing consumer extracts it without being told to.
+     *
+     * <p>It is a published contract constant, declared once here alongside the diagnostic-context keys it is
+     * composed from, because two producers write it - the outbound cloud-request interceptor in
+     * {@code com.cardemo.config.AwsConfig} and the message headers in
+     * {@code com.cardemo.service.report.ReportSubmissionService} - and a divergence between them would be
+     * invisible.
+     */
+    public static final String TRACE_PARENT_HEADER = "traceparent";
+
+    /**
      * Maximum accepted length of an inbound correlation identifier, in characters: {@value}.
      *
      * <p>Generous enough for a UUID (36 characters) or a typical upstream identifier, small enough that an
@@ -554,6 +574,45 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
      */
     private static final Pattern CORRELATION_ID_PATTERN =
             Pattern.compile("\\A[A-Za-z0-9_-]{1," + MAX_CORRELATION_ID_LENGTH + "}\\z");
+
+    /** The only {@value #TRACE_PARENT_HEADER} version this application emits, {@value}. */
+    private static final String TRACE_PARENT_VERSION = "00";
+
+    /**
+     * The trace-flags octet emitted with every {@value #TRACE_PARENT_HEADER}, {@value} - the sampled bit set.
+     *
+     * <p>The diagnostic context carries identifiers and not the sampling decision, so the flag is asserted
+     * rather than read. Asserting <em>sampled</em> is the only defensible direction: the identifiers are present
+     * only when this process has an active span it is exporting, and emitting {@code 00} would invite the next
+     * hop to discard its half of a trace whose first half is already on its way to the collector - producing a
+     * broken trace, which is worse than none.
+     */
+    private static final String TRACE_PARENT_FLAGS_SAMPLED = "01";
+
+    /** Length in hexadecimal characters of a W3C trace identifier, {@value}. */
+    private static final int TRACE_ID_HEX_LENGTH = 32;
+
+    /** Length in hexadecimal characters of a W3C parent (span) identifier, {@value}. */
+    private static final int SPAN_ID_HEX_LENGTH = 16;
+
+    /**
+     * The compact 64-bit trace-identifier width some tracing bridges emit, {@value} hexadecimal characters.
+     *
+     * <p>A value of this width is left-padded with zeros to {@value #TRACE_ID_HEX_LENGTH}, which is the
+     * conversion the specification prescribes and the same one the OpenTelemetry and B3 bridges perform.
+     */
+    private static final int COMPACT_TRACE_ID_HEX_LENGTH = 16;
+
+    /**
+     * The single validation pattern for one hexadecimal identifier field, compiled once.
+     *
+     * <p>Lowercase only, because the specification requires the lowercase form and a consumer is entitled to
+     * compare the field byte-wise. Bounded and anchored with {@code \A} and {@code \z} on exactly the reasoning
+     * given for {@link #CORRELATION_ID_PATTERN}: an identifier composed into a text protocol must not be able to
+     * carry a line terminator.
+     */
+    private static final Pattern LOWERCASE_HEX_PATTERN =
+            Pattern.compile("\\A[0-9a-f]{" + COMPACT_TRACE_ID_HEX_LENGTH + "," + TRACE_ID_HEX_LENGTH + "}\\z");
 
     /**
      * The tracing facade supplying the current span, injected through the constructor.
@@ -851,6 +910,81 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
      */
     public static String usableCorrelationId(final String candidate) {
         return isWellFormed(candidate) ? candidate : null;
+    }
+
+    /**
+     * Composes the W3C Trace Context value for the trace identity in scope on the calling thread, or
+     * {@code null} when there is none to propagate.
+     *
+     * <p><strong>Finding M-07, severity Medium.</strong> This is the interoperable propagation the two process
+     * boundaries emit as {@value #TRACE_PARENT_HEADER}; see that constant for why naming identifiers in bespoke
+     * headers did not establish parentage. The value is read from {@value #MDC_KEY_TRACE_ID} and
+     * {@value #MDC_KEY_SPAN_ID}, which {@link #applyTraceContext(String)} sourced from the injected
+     * {@link Tracer} - so the identity emitted is the one the log records already carry, and the trace, the
+     * logs and the downstream hop all agree without any second source of truth.
+     *
+     * <p>Both fields are validated before composition and a field that fails is a {@code null} result, never a
+     * partially corrected one. A malformed {@code traceparent} is worse than an absent one: a consumer that
+     * rejects it starts a fresh trace anyway, and a consumer that accepts it records parentage onto a trace that
+     * does not exist. The failure mode is therefore a missing header.
+     *
+     * <p>Side effects: none. It reads the diagnostic context and nothing else.
+     *
+     * @return a well-formed {@value #TRACE_PARENT_HEADER} value, or {@code null} when no usable trace identity
+     *         is in scope
+     */
+    public static String currentTraceParent() {
+        return traceParent(MDC.get(MDC_KEY_TRACE_ID), MDC.get(MDC_KEY_SPAN_ID));
+    }
+
+    /**
+     * Composes a W3C Trace Context value from an explicit trace and span identifier pair.
+     *
+     * <p>The counterpart to {@link #currentTraceParent()} for a caller that holds a span directly rather than
+     * reading the ambient diagnostic context - a publisher that opened a child span for one hop wants that
+     * span's identifiers, so that a consumer parents onto the publish and not onto the request containing it.
+     *
+     * <p>A trace identifier of {@value #COMPACT_TRACE_ID_HEX_LENGTH} characters is left-padded with zeros to
+     * {@value #TRACE_ID_HEX_LENGTH}, which is what the specification prescribes for a 64-bit identifier. An
+     * all-zero identifier in either field is refused: the specification declares both invalid, and they are what
+     * a no-op tracer reports.
+     *
+     * <p>A pure function of its arguments, with no side effects.
+     *
+     * @param traceId the trace identifier, possibly {@code null}
+     * @param spanId  the span identifier that becomes the parent field, possibly {@code null}
+     * @return a well-formed {@value #TRACE_PARENT_HEADER} value, or {@code null} when either field is unusable
+     */
+    public static String traceParent(final String traceId, final String spanId) {
+        final String trace = normalisedTraceField(traceId, TRACE_ID_HEX_LENGTH);
+        final String parent = normalisedTraceField(spanId, SPAN_ID_HEX_LENGTH);
+        if (trace == null || parent == null) {
+            return null;
+        }
+        return TRACE_PARENT_VERSION + '-' + trace + '-' + parent + '-' + TRACE_PARENT_FLAGS_SAMPLED;
+    }
+
+    /**
+     * Validates one identifier field and returns it at its required width, or {@code null} if it is unusable.
+     *
+     * @param candidate the identifier as the tracing bridge reported it, possibly {@code null}
+     * @param width     the width the field must occupy: {@value #TRACE_ID_HEX_LENGTH} or
+     *                  {@value #SPAN_ID_HEX_LENGTH}
+     * @return the field at exactly {@code width} lowercase hexadecimal characters, or {@code null}
+     */
+    private static String normalisedTraceField(final String candidate, final int width) {
+        if (candidate == null || !LOWERCASE_HEX_PATTERN.matcher(candidate).matches()) {
+            return null;
+        }
+        final String padded = candidate.length() == COMPACT_TRACE_ID_HEX_LENGTH && width == TRACE_ID_HEX_LENGTH
+                ? "0".repeat(TRACE_ID_HEX_LENGTH - COMPACT_TRACE_ID_HEX_LENGTH) + candidate
+                : candidate;
+        if (padded.length() != width) {
+            return null;
+        }
+        // An all-zero field is invalid per the specification, and is what a no-op tracer reports; treating it
+        // as usable would publish parentage onto a trace that does not exist.
+        return padded.chars().allMatch(character -> character == '0') ? null : padded;
     }
 
     /**

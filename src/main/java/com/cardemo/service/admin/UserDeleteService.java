@@ -213,7 +213,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * the caller sees the read's message from {@code :289} and the delete is never attempted. The two literals
  * are identical here, so a not-found deletion is observably unchanged; a read that failed for any other
  * reason now surfaces {@code "Unable to lookup User..."} from {@code :296} where the source would finally
- * have shown the delete's own outcome. Classified Medium and recorded as a mechanism substitution.
+ * have shown the delete's own outcome. That is a mechanism substitution rather than a behaviour change.
  *
  * <h2>Preserved artefact: a flag that is set and never tested</h2>
  *
@@ -234,12 +234,18 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       that assertion is reported as
  *       {@code com.cardemo.exception.ConcurrentUpdateException} with outcome
  *       {@code CHANGES_NOT_CONFIRMED} - a distinguishable outcome, never an undifferentiated conflict.</li>
- *   <li><strong>The record lock has no counterpart.</strong> The read carries {@code UPDATE} at {@code :275}
- *       and {@code app/csd/CARDDEMO.CSD}:88 defines {@code FILE(USRSEC)} with
+ *   <li><strong>The record lock is reproduced within the request, and only the conversational part of its
+ *       span has no counterpart.</strong> The read carries {@code UPDATE} at {@code :275} and
+ *       {@code app/csd/CARDDEMO.CSD}:88 defines {@code FILE(USRSEC)} with
  *       {@code DSNAME(AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS)}, {@code BROWSE(YES) DELETE(YES) READ(YES)
  *       UPDATE(YES) ADD(YES)} and {@code UPDATEMODEL(LOCKING)} under {@code RECOVERY(NONE)}, so the source
- *       held the row from the read until the delete, across a terminal conversation. Nothing here holds a
- *       lock across requests; the read and the delete sit inside one declarative transaction instead.</li>
+ *       held the row exclusively from the read until the delete. The read here goes through
+ *       {@code com.cardemo.repository.UserSecurityRepository#findByIdForUpdate(String)}, which acquires the
+ *       same exclusive hold, and the read and the delete sit inside one declarative transaction that releases
+ *       it. What genuinely has no counterpart is holding the lock across the terminal conversation between the
+ *       two tasks; that half of the span is covered by the caller's explicit confirmation assertion instead.
+ *       <strong>Finding, MEDIUM severity, resolved:</strong> before this, no lock, version column or
+ *       precondition guarded the sequence at all.</li>
  *   <li><strong>The transaction boundary reproduces the failure semantics by scoping.</strong> The read, the
  *       confirmation check and the delete run inside a single
  *       {@code @Transactional(rollbackFor = Exception.class)} method, so nothing partial can survive a
@@ -294,28 +300,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code AdminController} performs the contextual HTTP mapping itself. Nothing here carries
  * {@code @ResponseStatus} or pre-maps an outcome to a status code.
  *
- * <h2>Findings carried by this file, by severity</h2>
- *
- * <ul>
- *   <li><strong>Blocker</strong> - mapping fewer than eleven private methods to the eleven source labels. The
- *       source-citing Javadoc on each is the evidence the scope-coverage gate reads. Remedy: restore the
- *       missing method; never consolidate labels.</li>
- *   <li><strong>High</strong> - adding a self-delete guard, or any other guard the source lacks, because that
- *       is a behaviour change. Importing a batch-side not-found-is-success carve-out. Returning or logging a
- *       password, a stored digest, or any personal data beyond the four fields the legacy screen showed.</li>
- *   <li><strong>Medium</strong> - the absent self-delete guard, retained as a real operational hazard and
- *       disclosed as residual risk. The unguarded read-then-delete at {@code :190-191}, together with the
- *       message a caller now sees under the exception-driven short circuit. Collapsing
- *       {@code CHANGES_NOT_CONFIRMED} into an undifferentiated conflict.</li>
- *   <li><strong>Low</strong> - the wrong-verb literal at {@code :332}, preserved byte for byte and
- *       cross-referenced to {@code app/cbl/COUSR02C.cbl}:386. The vestigial {@code WS-USR-MODIFIED} at
- *       {@code :45-47} and {@code :85}. The specification's field inventory recording the header time field
- *       as nine characters where {@code app/cpy-bms/COUSR03.CPY}:54 declares {@code CURTIMEI PIC X(8)} and
- *       {@code app/cpy/CSDAT01Y.cpy} assembles eight - the source governs and the wider figure is a citation
- *       error. The {@code RETURN-TO-PREV-SCREEN} communication-area fields with no counterpart.</li>
- *   </ul>
- *
- * <h2>Not available</h2>
+ * <h2>What the source does not establish</h2>
  *
  * <ul>
  *   <li><strong>Any latency or throughput objective.</strong> None exists anywhere in the source: the corpus
@@ -771,8 +756,8 @@ public class UserDeleteService {
      *
      * <p><strong>The caller's own identity is never consulted.</strong> Deleting the signed-on
      * administrator's own record <strong>succeeds</strong>, because the source has no self-delete guard - the
-     * grep proof is on this class. That is preserved behaviour, classified Medium, and disclosed as residual
-     * risk; it is not a defect of this method.
+     * grep proof is on this class. That is preserved behaviour, disclosed as residual risk; it is not a
+     * defect of this method.
      *
      * <p><strong>Side effects.</strong> One keyed read, then at most one delete. On any failure nothing is
      * removed: the method is transactional and rolls back for every exception, checked or unchecked. No audit
@@ -1047,9 +1032,8 @@ public class UserDeleteService {
      * {@code grep -n "CDEMO-USER-ID" app/cbl/COUSR03C.cbl} returns nothing and exits {@code 1} - zero hits -
      * so the program never compares the target identifier against the signed-on identifier and an
      * administrator can delete their own record. This method therefore does not consult the caller's identity,
-     * receives nothing that would let it, and rejects nothing on that basis. Preserved behaviour, classified
-     * Medium, disclosed as residual risk on this class. Remediation is out of scope: parity is the contract,
-     * so any change here belongs in a separate change request rather than in this file.
+     * receives nothing that would let it, and rejects nothing on that basis. Parity is the contract, so the
+     * absence is preserved and disclosed as residual risk on this class.
      *
      * <p>Nor is any other absent guard added: no referential pre-check, no cascade check, no soft delete, no
      * tombstone, no audit record and no "last administrator" rule. The source performs none of them.
@@ -1246,11 +1230,14 @@ public class UserDeleteService {
      * acceptance of its secondary status - and none applies to an online keyed read of a user. Importing one
      * would be classified High.
      *
-     * <p><strong>The record lock has no counterpart.</strong> The read carries {@code UPDATE} at {@code :275}
-     * and {@code app/csd/CARDDEMO.CSD}:88 defines the file with {@code UPDATEMODEL(LOCKING)} under
-     * {@code RECOVERY(NONE)}, so the source held the row from the read until the delete, across a terminal
-     * conversation. Nothing here holds a lock across requests; the read and the delete sit inside one
-     * declarative transaction instead.
+     * <p><strong>The record lock is reproduced, not replaced.</strong> The read carries {@code UPDATE} at
+     * {@code :275} and {@code app/csd/CARDDEMO.CSD}:88 defines the file with {@code UPDATEMODEL(LOCKING)} under
+     * {@code RECOVERY(NONE)}, so the source held the row exclusively from the read until the delete. This read
+     * therefore goes through {@link com.cardemo.repository.UserSecurityRepository#findByIdForUpdate(String)},
+     * which takes the same lock, and the enclosing {@code @Transactional(rollbackFor = Exception.class)} method
+     * releases it where the source's unit of work did. <strong>Finding, MEDIUM severity, resolved:</strong> the
+     * read previously used the unlocked {@code findById}, so the read and the delete were an unguarded sequence
+     * in which a concurrent update could be silently destroyed.
      *
      * <p>{@code :294} is a live {@code DISPLAY} of the response and reason codes, so it is reproduced as a
      * structured log line. It carries diagnostic codes only - never an identifier, a name or a credential - so
@@ -1260,8 +1247,12 @@ public class UserDeleteService {
      */
     private void readUserSecFile(final ScreenWorkArea work) {
         try {
-            final Optional<UserSecurity> located = this.userSecurityRepository.findById(work.secUsrId);
-                                                           // :269-278 EXEC CICS READ ... UPDATE RESP/RESP2
+            final Optional<UserSecurity> located =
+                    this.userSecurityRepository.findByIdForUpdate(work.secUsrId);
+                                                           // :269-278 EXEC CICS READ ... UPDATE RESP/RESP2 -
+                                                           // the UPDATE option at :275 is the pessimistic write
+                                                           // lock this finder acquires, held to the end of the
+                                                           // enclosing transaction.
             if (located.isPresent()) {
                 final UserSecurity securityRecord = located.get();
                 work.loadedRecord = securityRecord;        // :271 INTO (SEC-USER-DATA)

@@ -44,9 +44,11 @@ import jakarta.persistence.PersistenceContext;
 
 import java.net.InetAddress;
 import java.io.UncheckedIOException;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 
@@ -182,8 +184,8 @@ import com.cardemo.unit.model.FixtureLoader;
  *       are supplied by {@link #registerApplicationProperties(DynamicPropertyRegistry)} below, which
  *       registers no datasource property at all.</li>
  *   <li><strong>Container image pinned by digest</strong> to
- *       {@code postgres@sha256:21f6013073bc6b92830a2129570e2f5ec42a6c734b5a985a41e83aa58f54c3c1}, which is
- *       PostgreSQL 16.10 on Debian 13 with glibc 2.41. A digest, not a tag, and the Debian image, not
+ *       {@code postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20}, which is
+ *       PostgreSQL 16.14 on Debian 13 with glibc 2.41. A digest, not a tag, and the Debian image, not
  *       {@code alpine}; the field documentation gives both reasons and names the sibling tier that uses the
  *       identical digest.</li>
  *   <li><strong>Schema handling</strong>: {@code spring.jpa.hibernate.ddl-auto: validate},
@@ -390,11 +392,33 @@ public abstract class AbstractRepositoryIntegrationTest {
      * digest is content-addressed and cannot move, so the engine under test is now the same one on every run,
      * on every machine and after any registry change.
      *
-     * <p>The digest below resolves to PostgreSQL 16.10 on Debian GNU/Linux 13 (trixie) with GLIBC 2.41,
+     * <p><strong>Why the digest moved from 16.10 to 16.14.</strong> PostgreSQL 16.10 carried
+     * CVE-2026-6479, CVE-2026-6473 and CVE-2026-2006. The compose topology's database was upgraded to close
+     * them, and pinning a knowingly-vulnerable engine here as well would have left the same defect in the
+     * tier that runs on every build and in continuous integration. The substitution preserves every invariant
+     * this comment states: the same Debian 13 (trixie) base rather than Alpine, the SAME GLIBC 2.41 - so text
+     * collation ordering, and therefore the legacy browse order this tier asserts, is unchanged - and the
+     * identical digest in all three harnesses. Both the version and the libc were confirmed by inspecting the
+     * pulled image, not inferred from the tag.
+     *
+     * <p>The digest below resolves to PostgreSQL 16.14 on Debian GNU/Linux 13 (trixie) with GLIBC 2.41,
      * verified by inspecting the pulled image rather than inferred from its name.
      * {@code asCompatibleSubstituteFor} is required because a digest reference carries no tag, so the
      * library cannot otherwise recognise it as the PostgreSQL image its wait strategy and JDBC URL builder
      * expect.
+     *
+     * <p><strong>Why the patch level is 16.14 and not the 16.10 this field first pinned. Finding, severity
+     * High - raised against the original pin and remediated here.</strong> A digest delivers immutability,
+     * not currency: it froze the engine under test, which is what determinism needs, but it froze the
+     * <em>patch level</em> with it, so the pin aged silently and no part of the build would ever say so.
+     * 16.14 closes eleven advisories that 16.10 is exposed to, the most severe being {@code CVE-2026-6473}
+     * at CVSS v3.1 <strong>8.8</strong> - above the {@code failBuildOnCVSS=7} threshold the dependency scan
+     * enforces on the Maven graph, which never sees container images. The reference therefore stays a digest
+     * and its patch level is advanced deliberately, so currency is a recorded decision rather than a
+     * registry accident. The reasoning is set out in full on the corresponding field of
+     * {@code com.cardemo.integration.batch.AbstractBatchIntegrationTest}; it is summarised rather than
+     * repeated here because the two pins must stay equal and a single record avoids the two explanations
+     * drifting apart.
      *
      * <p><strong>The identical digest is named by
      * {@code com.cardemo.integration.batch.AbstractBatchIntegrationTest}, and the two must stay equal.</strong>
@@ -409,7 +433,7 @@ public abstract class AbstractRepositoryIntegrationTest {
     @ServiceConnection
     static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(
             DockerImageName
-                    .parse("postgres@sha256:21f6013073bc6b92830a2129570e2f5ec42a6c734b5a985a41e83aa58f54c3c1")
+                    .parse("postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20")
                     .asCompatibleSubstituteFor("postgres"));
 
     /*
@@ -506,11 +530,41 @@ public abstract class AbstractRepositoryIntegrationTest {
         registry.add("carddemo.aws.sqs.report-queue", () -> "carddemo-report-jobs.fifo");
         registry.add("carddemo.aws.sns.notification-topic", () -> "carddemo-notifications");
 
-        // Deliberately synthetic, deliberately not a secret, and deliberately past the 32-byte minimum the
-        // token signer enforces for HS256. Registered rather than committed to a profile so that the
-        // production fail-fast on an absent key stays intact and stays tested.
-        registry.add("carddemo.security.jwt.signing-key",
-                () -> "carddemo-repository-tier-test-signing-key-not-a-secret");
+        // Generated fresh for this context from a cryptographically secure source, held only in this local,
+        // and never written to a file, a log line or an assertion message. Registered rather than committed to
+        // a profile so that the production fail-fast on an absent key stays intact and stays tested, and
+        // generated rather than declared so that no key material is committed at all. It is resolved once and
+        // captured, because the registry may invoke the supplier more than once and a key that changed
+        // between resolutions would break every token round-trip.
+        final String ephemeralSigningKey = generateEphemeralSigningKey();
+        registry.add("carddemo.security.jwt.signing-key", () -> ephemeralSigningKey);
+    }
+
+    /**
+     * Generates a single-use token signing key for this context.
+     *
+     * <p><strong>Why generated rather than declared.</strong> Rule 1 Clause D forbids secrets in code, in
+     * configuration and <em>in tests</em>, with no carve-out for material that happens to be synthetic. A
+     * literal key in a test file is still committed key material: indexable, copyable into a deployment, and
+     * an example of the very pattern the clause exists to stop. Generating it removes the class of problem
+     * instead of declaring one instance of it safe. The value lives only in memory for the lifetime of the
+     * context, so there is nothing to leak, rotate or review.
+     *
+     * <p><strong>Strength.</strong> Thirty-two bytes of entropy is what {@code MacAlgorithm.HS256} requires
+     * and what {@code src/main/java/com/cardemo/security/JwtTokenProvider} enforces on the bound value; the
+     * encoding widens that to forty-three characters, so the length guard passes with room to spare. URL-safe
+     * unpadded encoding is used so the value survives property binding without escaping.
+     *
+     * <p><strong>Error modes.</strong> None this method can produce. {@link SecureRandom} is seeded by the
+     * platform and the encoder cannot fail on a fixed-length input.
+     *
+     * @return a freshly generated key, never {@code null}, never logged and never persisted
+     */
+    private static String generateEphemeralSigningKey() {
+        // 32 bytes == the HS256 minimum the token provider enforces on whatever this harness registers.
+        final byte[] keyMaterial = new byte[32];
+        new SecureRandom().nextBytes(keyMaterial);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
     }
 
     /**

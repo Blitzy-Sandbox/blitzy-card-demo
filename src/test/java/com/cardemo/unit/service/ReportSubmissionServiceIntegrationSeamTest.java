@@ -345,12 +345,11 @@ class ReportSubmissionServiceIntegrationSeamTest {
                     (ReportSubmissionService.JobSubmissionMessage) send.payload();
             assertThat(message.reportName()).isEqualTo("Monthly");
             assertThat(message.startDate()).isEqualTo("2026-08-01");
-            // The last day of the current month, NOT month-to-date. app/cbl/CORPT00C.cbl:L223-L231 moves 1
-            // into the day, adds 1 to the month with a year roll, then subtracts one day through
-            // DATE-OF-INTEGER(INTEGER-OF-DATE(...) - 1), which lands on the final day of the ORIGINAL month.
-            // Pinned by this assertion because prose elsewhere describes this period as month-to-date, and
-            // the frozen source is the authority: a reader who trusts the prose would "fix" a correct
-            // implementation into a divergent one.
+            // The last day of the current month. app/cbl/CORPT00C.cbl:L223-L231 moves 1 into the day, adds 1
+            // to the month with a year roll, then subtracts one day through
+            // DATE-OF-INTEGER(INTEGER-OF-DATE(...) - 1), which lands on the final day of the ORIGINAL month,
+            // and :L232-L234 read all three subfields back out of the redefined area. Pinned by this
+            // assertion because a month-to-date reading agrees with the source on one day per month only.
             assertThat(message.endDate()).isEqualTo("2026-08-31");
         }
 
@@ -388,8 +387,8 @@ class ReportSubmissionServiceIntegrationSeamTest {
         }
 
         @Test
-        @DisplayName("the trace and span identifiers come from the span when a tracer is configured")
-        void spanIdentifiersArePropagated() {
+        @DisplayName("W3C trace context is composed from the span when a tracer is configured")
+        void traceContextIsPropagated() {
             stubSuccessfulSend();
             final RecordedSpan span = new RecordedSpan("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7");
             // The double is built before the tracer stubbing is opened: building it inside the thenReturn
@@ -400,9 +399,17 @@ class ReportSubmissionServiceIntegrationSeamTest {
 
             submitMonthly(newService(MESSAGE_GROUP_ID, tracer));
 
+            // Finding M-07, severity Medium. This asserted a bespoke X-Trace-Id and X-Span-Id pair, which named
+            // the identifiers without establishing parentage anywhere: no consumer outside this repository knows
+            // to look for them, so the very hop tracing exists to show - this publish joined to the batch run
+            // that consumes the message - could not be reconstructed. The two identifiers above are the
+            // specification's own example values, and this is the single header every OpenTelemetry and
+            // Micrometer Tracing consumer extracts unprompted.
             assertThat(onlySend().headers())
-                    .containsEntry("X-Trace-Id", "4bf92f3577b34da6a3ce929d0e0e4736")
-                    .containsEntry("X-Span-Id", "00f067aa0ba902b7");
+                    .containsEntry(CorrelationIdFilter.TRACE_PARENT_HEADER,
+                            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+                    .doesNotContainKey("X-Trace-Id")
+                    .doesNotContainKey("X-Span-Id");
             assertThat(span.name).isEqualTo("carddemo.report.submit");
             assertThat(span.tags).containsEntry("messaging.destination", QUEUE_LOGICAL_NAME);
             assertThat(span.started).isTrue();

@@ -31,13 +31,10 @@
 package com.cardemo.unit.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -49,7 +46,6 @@ import static org.mockito.Mockito.when;
 import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.ConcurrentUpdateException;
 import com.cardemo.exception.FatalProcessingException;
-import com.cardemo.exception.FileAccessException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.CardUpdateRequest;
 import com.cardemo.model.entity.Card;
@@ -62,10 +58,12 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -154,7 +152,7 @@ import org.springframework.transaction.annotation.Transactional;
  * appears anywhere.
  *
  * <p><strong>4. Common failure modes and troubleshooting.</strong> Five ways to get this wrong,
- * each pinned by a test below and each carrying its own remediation, which in every case is to
+ * each pinned by a test below, and the correct handling in every case is to
  * implement the cited paragraph exactly as the source writes it rather than as it reads more
  * naturally in Java.
  * <ul>
@@ -201,19 +199,23 @@ import org.springframework.transaction.annotation.Transactional;
  * {@link CardStatusEdit#caseOnlyStatusChangeNeverReachesTheCaseSensitiveEdit()} exists alongside
  * {@link CardStatusEdit#lowerCaseYesIsInvalid()}.
  *
- * <p><strong>Finding register.</strong> <em>Blocker</em> - a test class for this bean placed
+ * <p><strong>Where this suite has to live, and why.</strong> A test class for this bean placed
  * outside {@code src/test/java/com/cardemo/unit/} matches neither Surefire's include set nor
  * Failsafe's, so it is collected by neither plugin and never runs: the build stays green, both
  * plugins report success and the coverage report records the bean as untested, with no error and
- * no warning anywhere to reveal it. Remediation - keep the class inside that tree with a
- * {@code *Test} suffix, as this one is, and after every run confirm that
+ * no warning anywhere to reveal it. So the class stays inside that tree with a
+ * {@code *Test} suffix, as this one is, and after every run it is worth confirming that
  * {@code target/surefire-reports/TEST-com.cardemo.unit.service.CardUpdateServiceTest.xml} exists
- * and carries the expected {@code testcase} count. <em>Medium</em> - importing {@code COACTUPC}'s
+ * and carries the expected {@code testcase} count.
+ *
+ * <p><strong>Three readings that would be wrong here.</strong> Importing {@code COACTUPC}'s
  * asymmetric-rollback reasoning into this program is wrong, because {@code 9200} writes exactly
  * one dataset and contains no {@code SYNCPOINT ROLLBACK} verb at all; collapsing the three write
  * outcomes into one conflict status destroys information the legacy screen displayed; and treating
  * the two case folds described above as one mechanism silently skips the field cascade.
- * <em>Low</em> - {@code SEARCHED-ACCT-ZEROES} at {@code :189-190} and
+ *
+ * <p><strong>Legacy oddities preserved rather than corrected.</strong>
+ * {@code SEARCHED-ACCT-ZEROES} at {@code :189-190} and
  * {@code SEARCHED-ACCT-NOT-NUMERIC} at {@code :191-192} carry byte-identical literals;
  * {@code LIT-CCLISTMAP} at {@code :233-234} holds {@code 'CCRDSLA'}, the card <em>detail</em> map
  * name, identical to {@code LIT-CARDDTLMAP} at {@code :249-250}, a copy-paste defect preserved
@@ -226,7 +228,7 @@ import org.springframework.transaction.annotation.Transactional;
  * is unreachable because {@code CSMSG02Y} initialises every abend field to {@code VALUE SPACES},
  * whereas its Java counterpart is reachable - a resurrected branch, harmless but worth recording.
  *
- * <p><strong>Seven declared-but-never-SET outcome literals</strong> (<em>Low</em>) deserve their own
+ * <p><strong>Seven declared-but-never-SET outcome literals</strong> deserve their own
  * note, because a reader comparing the two sources will otherwise think they were lost. Verified by
  * scanning every line from {@code :261} onward - a deliberate superset, since the procedure division
  * itself only begins at {@code :366} - {@code WS-EXIT-MESSAGE} {@code :175-176},
@@ -240,8 +242,8 @@ import org.springframework.transaction.annotation.Transactional;
  * that distinction in both directions, so neither a spurious addition nor a genuine omission can
  * pass unnoticed.
  *
- * <p><strong>Eight declared-but-never-referenced {@code WS-LITERALS} fields</strong> (<em>Low</em>)
- * are the same finding one block further down - {@code 01 WS-LITERALS} spans {@code :218-263}, of
+ * <p><strong>Eight declared-but-never-referenced {@code WS-LITERALS} fields</strong>
+ * are the same case one block further down - {@code 01 WS-LITERALS} spans {@code :218-263}, of
  * which {@code :219-254} are the program, transaction, mapset, map and file-name literals - and they
  * sharpen the copy-paste defect above. Counting references from {@code :366}, where the procedure
  * division begins, {@code LIT-CCLISTTRANID} {@code :229-230}, {@code LIT-MENUMAPSET}
@@ -267,14 +269,11 @@ import org.springframework.transaction.annotation.Transactional;
  * live {@code CARDDAT} table is equally out of reach from a pure-JVM tier - it needs a container
  * runtime and belongs to the Failsafe integration tier, which this class must not duplicate.
  *
- * <p><strong>The documented conflict - parity governs.</strong> Rule 1 clause B forbids dead code
- * while the migration mandate requires one-to-one control-flow parity. They collide on the
- * retained bare-{@code EXIT} paragraphs, the redundant in-paragraph {@code EXIT} of {@code 9300}
- * and the {@code LIT-CCLISTMAP} defect. Parity governs, and clause B is satisfied on its own
- * terms: what it prohibits is an artefact <em>without an owner or tracking reference</em>, and each
- * retained item carries the source locator cited above and an explicit intentional-no-op marker on
- * the test that pins it. Deleting any of them would break the paragraph map the scope-coverage
- * gate is proved against.
+ * <p><strong>Reachable no-ops, retained for control-flow parity.</strong> The retained
+ * bare-{@code EXIT} paragraphs, the redundant in-paragraph {@code EXIT} of {@code 9300} and the
+ * {@code LIT-CCLISTMAP} defect all look like residue and are none of them: each carries the source
+ * locator cited above and an explicit intentional-no-op marker on the test that pins it, and deleting
+ * any of them would break the paragraph-level correspondence with the source.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)
@@ -417,11 +416,11 @@ final class CardUpdateServiceTest {
     private CardRepository cardRepository;
 
     /**
-     * A test signing key of exactly the length {@code SnapshotTokenService} requires, so the sealer can be
-     * built without the environment. It is a literal in a test rather than a secret in production, and it
-     * signs nothing outside this suite.
+     * A signing key of at least the length {@code SnapshotTokenService} requires, so the sealer can be built
+     * without the environment. It is generated per run rather than declared, so no key material is committed,
+     * and it signs nothing outside this suite.
      */
-    private static final String TEST_SIGNING_KEY = "carddemo-unit-test-signing-key-0123456789";
+    private static final String TEST_SIGNING_KEY = ephemeralSigningKey();
 
     /** The token lifetime the sealer is built with, long enough that no test can age one out by accident. */
     private static final long TOKEN_LIFETIME_SECONDS = 900L;
@@ -474,6 +473,13 @@ final class CardUpdateServiceTest {
     // -----------------------------------------------------------------------------------------
 
     /**
+     * The three characters {@code CARD-CVV-CD PIC 9(03)} holds on the stored row, chosen with a leading zero
+     * because that is the shape eight of the fifty fixture rows carry and the shape a numeric column would
+     * corrupt. Synthetic: it is not a value copied from {@code app/data/ASCII/carddata.txt}.
+     */
+    private static final String STORED_VERIFICATION_VALUE = "007";
+
+    /**
      * Builds the stored {@code CARD-RECORD} of {@code app/cpy/CVACT02Y.cpy} as the repository would
      * return it under the update lock.
      *
@@ -484,8 +490,8 @@ final class CardUpdateServiceTest {
      */
     private Card storedCard(final String embossedName, final String expiraionDate,
                             final String activeStatus) {
-        final Card card = new Card(CARD_NUMBER, ACCOUNT_ID_NUMERIC, embossedName,
-                expiraionDate, activeStatus);
+        final Card card = new Card(CARD_NUMBER, ACCOUNT_ID_NUMERIC, STORED_VERIFICATION_VALUE,
+                embossedName, expiraionDate, activeStatus);
         card.setVersion(0L);
         return card;
     }
@@ -605,45 +611,84 @@ final class CardUpdateServiceTest {
      * {@code COCRDUPC.cbl:1498-1521}, one assertion per clause and none consolidated.
      *
      * <p>The source declares six clauses over four logical fields. Five are implemented and asserted
-     * here individually. The sixth, clause one at {@code :1503}, compared {@code CARD-CVV-CD}; finding
-     * F13 removed that field from the operational record, so the clause has no Java counterpart. The
-     * clause numbers below still cite the source positions, which are frozen, rather than being
-     * renumbered to close the gap - renumbering would break the traceability the migration is measured
-     * on and would hide the deviation instead of recording it.</p>
+     * here individually. The sixth, clause one at {@code :1503}, compared {@code CARD-CVV-CD}. That field
+     * <em>is</em> persisted - {@code app/cpy/CVACT02Y.cpy:L7} places it inside the authoritative record - but
+     * it has no operand on the request side of this conversation, because {@code app/cbl/COCRDUPC.cbl} never
+     * assigns {@code CCUP-NEW-CVV-CD} and none of the seventeen BMS symbolic maps carries it, so the legacy
+     * screen supplied no value to compare against and neither does {@code CardUpdateRequest}. The clause is
+     * therefore vacuous rather than removed, and what this block asserts instead is the consequence that
+     * matters: the update leaves the stored value untouched. The clause numbers below still cite the source
+     * positions, which are frozen, rather than being renumbered to close the gap.</p>
      */
     @Nested
-    @DisplayName("9300-CHECK-CHANGE-IN-REC :1498-1521 - five of six clauses, over three of four fields")
+    @DisplayName("9300-CHECK-CHANGE-IN-REC :1498-1521 - five live clauses and one vacuous clause")
     class ChangeDetection {
 
         /**
-         * Clause one of {@code 9300} at {@code COCRDUPC.cbl:1503} compared {@code CARD-CVV-CD}. It is
-         * deliberately not implemented, and this asserts that its absence is total rather than partial.
+         * Clause one of {@code 9300} at {@code COCRDUPC.cbl:1503} compared {@code CARD-CVV-CD}. The field is
+         * persisted, but this conversation carries no operand for it, so the clause is vacuous rather than
+         * removed - and the property that matters is that the update cannot destroy the stored value.
          *
-         * <p>The risk a removed comparison clause creates is a stale-write window: if the field still
-         * existed anywhere on the read path but no longer participated in the comparison, a concurrent
-         * change to it would go undetected and be silently overwritten. That window is closed by absence
-         * rather than by comparison - there is no column, no entity field and no request component - so
-         * the property asserted is structural, across every type the comparison touches.</p>
+         * <p>The risk the source itself carries here is worth stating, because it is the reason the target
+         * behaves differently. The two {@code MOVE} statements at {@code :1464-1465} wrote the never-assigned
+         * {@code CCUP-NEW-CVV-CD} - left at {@code SPACES} by {@code INITIALIZE CCUP-NEW-DETAILS} at
+         * {@code :586} - onto the record, so every successful legacy update blanked the stored verification
+         * value. The target does not reproduce that, and cannot: no request component and no snapshot
+         * component names the field, so the rewrite has nothing to move onto it and the persisted value
+         * survives. That is a labelled, tested improvement rather than a silent difference.</p>
          *
          * <p>The five surviving clauses are asserted immediately below, so this test's passing cannot be
          * mistaken for the comparison having been weakened generally: a snapshot that disagrees on any
          * implemented field still abandons the rewrite.</p>
          */
         @Test
-        @DisplayName("clause 1 of 6 has no operand anywhere: no entity field, no component, no accessor")
-        void theVerificationClauseHasNoOperandAnywhere() {
+        @DisplayName("clause 1 of 6 is vacuous: the value is persisted, unrequestable and left untouched")
+        void theVerificationClauseHasNoRequestOperandAndTheStoredValueSurvives() {
             assertThat(Card.class.getDeclaredFields())
-                    .as("no persisted field can carry a verification value")
-                    .noneMatch(field -> namesVerificationValue(field.getName()));
+                    .as("the entity persists exactly one verification field, because "
+                            + "app/cpy/CVACT02Y.cpy:L7 declares it inside the authoritative 150-byte record")
+                    .filteredOn(field -> namesVerificationValue(field.getName())
+                            && !java.lang.reflect.Modifier.isStatic(field.getModifiers()))
+                    .hasSize(1);
             assertThat(Card.class.getMethods())
-                    .as("no accessor can expose one")
-                    .noneMatch(method -> namesVerificationValue(method.getName()));
+                    .as("but no accessor exposes it: the only method naming it answers a boolean question")
+                    .filteredOn(method -> namesVerificationValue(method.getName()))
+                    .allSatisfy(method ->
+                            assertThat(method.getReturnType()).isEqualTo(boolean.class));
             assertThat(CardUpdateRequest.CardDetails.class.getRecordComponents())
-                    .as("no request component can accept one")
+                    .as("no request component can accept one, which is why the clause has no operand: "
+                            + "COCRDUPC never assigns CCUP-NEW-CVV-CD and no symbolic map carries the field")
                     .noneMatch(component -> namesVerificationValue(component.getName()));
             assertThat(CardUpdateService.CardSnapshot.class.getRecordComponents())
-                    .as("no sealed snapshot component can record one")
+                    .as("nor can the sealed snapshot record one")
                     .noneMatch(component -> namesVerificationValue(component.getName()));
+        }
+
+        /**
+         * A successful rewrite leaves the stored verification value exactly as it was.
+         *
+         * <p>This is the behavioural half of the clause above, and it is the assertion that would fail if a
+         * future edit reconstructed the entity from the request instead of mutating the loaded row: the
+         * reconstruction would have no verification value to supply, and the legacy blanking defect of
+         * {@code COCRDUPC.cbl:1464-1465} would reappear.</p>
+         */
+        @Test
+        @DisplayName("a successful rewrite preserves the stored verification value byte for byte")
+        void aSuccessfulRewritePreservesTheStoredVerificationValue() {
+            when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER,
+                    ACCOUNT_ID_NUMERIC)).thenReturn(Optional.of(storedCard()));
+            final ArgumentCaptor<Card> persisted = ArgumentCaptor.forClass(Card.class);
+
+            final CardUpdateRequest request =
+                    requestWith(matchingSnapshot(), "ANNA LEE", "N", "12", "2099", "28");
+            service.updateCard(request, sealed(request));
+
+            verify(cardRepository).save(persisted.capture());
+            assertThat(persisted.getValue().matchesVerificationValue(STORED_VERIFICATION_VALUE))
+                    .as("the service mutates the loaded row through its setters, and there is no setter for "
+                            + "the verification value, so the rewrite carries the stored three characters "
+                            + "forward untouched - unlike COCRDUPC.cbl:1464-1465, which blanked them")
+                    .isTrue();
         }
 
         /**
@@ -1266,9 +1311,10 @@ final class CardUpdateServiceTest {
             assertThat(written.getAccountId()).isEqualTo(1L);
             // The two MOVEs of :1464-1465 have no counterpart. They wrote the never-assigned
             // CCUP-NEW-CVV-CD - left at SPACES by INITIALIZE CCUP-NEW-DETAILS at :586 - onto the record,
-            // destroying the stored verification value on every successful update. This system retains no
-            // such value at any layer, so there is nothing for the rewrite to destroy and nothing for it to
-            // carry; the structural absence is asserted by theVerificationClauseHasNoOperandAnywhere().
+            // destroying the stored verification value on every successful update. The target mutates the
+            // loaded row and publishes no setter for that field, so the stored value survives; the two
+            // properties are asserted by theVerificationClauseHasNoRequestOperandAndTheStoredValueSurvives()
+            // and aSuccessfulRewritePreservesTheStoredVerificationValue().
         }
     }
 
@@ -2133,7 +2179,7 @@ final class CardUpdateServiceTest {
 
         /**
          * {@code SEARCHED-ACCT-ZEROES} at {@code COCRDUPC.cbl:189-190} and {@code SEARCHED-ACCT-NOT-NUMERIC} at
-         * {@code :191-192} carry the same literal, recorded as a Low finding.
+         * {@code :191-192} carry the same literal, preserved rather than differentiated.
          */
         @Test
         @DisplayName("the two account 88-levels at :189-192 carry byte-identical literals")
@@ -2438,7 +2484,7 @@ final class CardUpdateServiceTest {
 
         /**
          * Every abend field is {@code VALUE SPACES}, so the source's {@code LOW-VALUES} default-message guard can
-         * never fire; the Java counterpart is reachable, recorded as a Low finding.
+         * never fire; the Java counterpart is reachable, which this pins.
          */
         @Test
         @DisplayName("the LOW-VALUES message guard of :1533 is unreachable, VALUE SPACES having won")
@@ -3394,4 +3440,26 @@ final class CardUpdateServiceTest {
                     + "guard.");
         }
     }
+
+    /**
+     * Generates a single-use signing key for this suite.
+     *
+     * <p>Rule 1 Clause D forbids secrets in code, in configuration and <em>in tests</em>, with no carve-out
+     * for material that happens to be synthetic: a literal key in a committed file is still committed key
+     * material, indexable and copyable into a deployment, and it teaches the pattern the clause exists to
+     * stop. Generating it removes the class of problem instead of declaring one instance of it harmless. The
+     * value exists only in memory for the lifetime of this class, so there is nothing to leak or rotate, and
+     * no assertion anywhere depends on its content - only on its being long enough and internally consistent.
+     *
+     * <p>Thirty-two bytes of entropy is the HS256 minimum the sealer enforces; URL-safe unpadded encoding
+     * widens that to forty-three characters, so the length guard passes with room to spare.
+     *
+     * @return a freshly generated key, never {@code null}, never logged and never persisted
+     */
+    private static String ephemeralSigningKey() {
+        final byte[] keyMaterial = new byte[32];
+        new SecureRandom().nextBytes(keyMaterial);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
+    }
+
 }

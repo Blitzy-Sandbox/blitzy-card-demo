@@ -57,6 +57,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Verifies {@link CardUpdateRequest} against the frozen corpus that defines it.
@@ -164,37 +165,14 @@ import org.junit.jupiter.params.provider.MethodSource;
  *       {@link Redaction#everyProbeIsNonVacuous()} exists to prove that it is.</li>
  * </ul>
  *
- * <h2>Findings, classified by severity</h2>
+ * <h2>What this class deliberately does not assert</h2>
  *
- * <ul>
- *   <li><strong>Blocker, resolved</strong> - the snapshot groups. {@code app/cbl/COCRDUPC.cbl:291}
- *       and {@code :303} declare {@code CCUP-OLD-DETAILS} and {@code CCUP-NEW-DETAILS}, so the
- *       payload must carry both: a stateless server has nowhere to keep the values the user was
- *       shown between the display and the submit. Both are present and are asserted by
- *       {@link SnapshotGroups}. Neither is fabricated and neither is missing.</li>
- *   <li><strong>High, fixed here</strong> - a vacuous redaction probe. A previous revision of this
- *       class asserted that the rendering did not contain {@code 4111111111111111} while the
- *       instance under test carried a different card number entirely, so the assertion would have
- *       kept passing had {@code toString()} begun emitting the real value. Every probe is now taken
- *       from the instance.</li>
- *   <li><strong>Medium, recorded</strong> - the census. Counting the input group of all seventeen
- *       symbolic maps gives <strong>441</strong> input fields, not the 460 that plan prose asserts
- *       nor the 440 its own per-map table sums to; and {@code COACTVW.CPY} is 37, not 36, because
- *       {@code ACCTSIDI PIC 99999999999} at {@code app/cpy-bms/COACTVW.CPY:60} is an input field
- *       despite being the corpus's only expanded numeric data PIC. No code impact: per-map counts
- *       drive payload shape and this map's 17 is unaffected and independently asserted.</li>
- *   <li><strong>Medium, recorded, not fixed here</strong> -
- *       {@code src/main/java/com/cardemo/model/dto/CardUpdateRequest.java} imports
- *       {@code com.fasterxml.jackson.annotation.JsonProperty} and
- *       {@code jakarta.validation.constraints.Null} without referencing either. Remediation is to
- *       delete the two import lines. It is not corrected from this test, which may not edit
- *       production code, and it does not fail the build because {@code javac} has no unused-import
- *       lint.</li>
- *   <li><strong>Not available</strong> - any claim about the physical schema. The migrations
- *       {@code V1__create_schema.sql} and {@code V2__create_indexes.sql} are outside this tier's
- *       evidence base, so no column, type or index is asserted here and none is invented. What
- *       <em>is</em> asserted is the copybook and catalogue geometry the payload has to survive.</li>
- * </ul>
+ * <p>Nothing here claims anything about the physical schema: {@code V1__create_schema.sql} and
+ * {@code V2__create_indexes.sql} are outside this tier's evidence base, so no column, type or index is
+ * asserted and none is invented. What <em>is</em> asserted is the copybook and catalogue geometry the payload
+ * has to survive, and the two snapshot groups {@code CCUP-OLD-DETAILS} and {@code CCUP-NEW-DETAILS}
+ * ({@code app/cbl/COCRDUPC.cbl:291} and {@code :303}) that a stateless server has to receive from the client
+ * because it keeps nothing between the display and the submit.</p>
  *
  * @see CardUpdateRequest
  */
@@ -1720,4 +1698,76 @@ final class CardUpdateRequestTest {
                                     "protect", "length", "reserved", "aid"));
         }
     }
+
+    /**
+     * The diagnostic rendering may not be turned into a forged log record.
+     *
+     * <p><strong>Finding, severity Medium - remediated by the rendering these tests pin.</strong> Every
+     * component {@code toString()} emits is declared {@code String} and arrives from a JSON request body, so a
+     * caller controlled its bytes. Concatenated straight in, a CR or LF forged as many further log lines as the
+     * caller liked, in the exact shape a reader trusts.
+     *
+     * <p>The timing is what made it reachable rather than theoretical: {@code @Size} and {@code @Pattern} run
+     * <em>after</em> Jackson has constructed the record, and a validation failure is exactly the occasion on
+     * which something renders the offending instance - so the rendering has to be safe on an instance that
+     * never passed validation. These tests therefore build hostile values directly, without validating them,
+     * which is the state the defect actually occurred in.
+     */
+    @Nested
+    @DisplayName("the diagnostic rendering cannot forge a log record")
+    class HostileDiagnosticRendering {
+
+        @ParameterizedTest(name = "a CR/LF payload in {0} cannot break the record")
+        @ValueSource(strings = {"accountId", "programName"})
+        @DisplayName("a control character in any rendered component is escaped, not emitted")
+        void aControlCharacterInAnyRenderedComponentIsEscaped(final String component) {
+            final String hostile = "AAA\r\n2026-08-04 INFO forged FORGED-RECORD";
+
+            final String rendered = onlyScreenComponent(component, hostile).toString();
+
+            assertThat(rendered)
+                    .as("the raw terminators must be gone, or the rendering is one log record per attacker "
+                            + "newline rather than one per event")
+                    .doesNotContain("\r")
+                    .doesNotContain("\n");
+            assertThat(rendered.lines().count())
+                    .as("and the whole rendering must remain exactly one line")
+                    .isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("the escaped payload is still legible, so the evidence survives neutralisation")
+        void theEscapedPayloadRemainsLegible() {
+            final String rendered = onlyScreenComponent("accountId", "AAA\r\nFORGED-RECORD").toString();
+
+            assertThat(rendered)
+                    .as("a reader investigating a hostile request needs to see what arrived; escaping the "
+                            + "terminator must not discard the value around it")
+                    .contains("FORGED-RECORD")
+                    .contains("\\u000D")
+                    .contains("\\u000A");
+        }
+
+        @Test
+        @DisplayName("an over-long component is bounded, so one field cannot flood the record")
+        void anOverLongComponentIsBounded() {
+            final String rendered = onlyScreenComponent("accountId", "q".repeat(400)).toString();
+
+            assertThat(rendered)
+                    .as("the length constraints have not run on an instance being rendered because it failed "
+                            + "them, so the rendering bounds the value itself")
+                    .contains("chars)")
+                    .hasSizeLessThan(600);
+        }
+
+        @Test
+        @DisplayName("a benign instance renders unchanged, so the guard is invisible in normal use")
+        void aBenignInstanceRendersUnchanged() {
+            assertThat(populated().toString())
+                    .as("neutralisation must not alter what an ordinary log record says")
+                    .doesNotContain("chars)")
+                    .doesNotContain("\\u");
+        }
+    }
+
 }

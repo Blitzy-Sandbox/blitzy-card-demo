@@ -43,6 +43,8 @@ import com.cardemo.security.JwtTokenProvider;
 import jakarta.servlet.Filter;
 import jakarta.servlet.http.HttpServletResponse;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -50,6 +52,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.DisplayName;
@@ -65,6 +68,7 @@ import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.mock.web.MockServletContext;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -102,7 +106,8 @@ import org.springframework.web.context.support.AnnotationConfigWebApplicationCon
  */
 class SecurityConfigTest {
 
-    private static final String GOOD_KEY = "adhoc-validation-key-material-not-a-real-secret-0123456789";
+    /** A signing key the provider accepts, generated per run so no key material is committed. */
+    private static final String GOOD_KEY = ephemeralSigningKey();
     private static final String OTHER_KEY = "a-completely-different-key-of-sufficient-length-0987654321";
     private static final String ISSUER = "carddemo";
     /**
@@ -213,12 +218,21 @@ class SecurityConfigTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("publishes exactly one decoder, one encoder and one filter chain, and no second clock")
+    @DisplayName("publishes exactly one decoder, one encoder and two filter chains, and no second clock")
     void beanSurface() {
         withContext(ctx -> {
             assertThat(ctx.getBeanNamesForType(JwtDecoder.class)).hasSize(1);
             assertThat(ctx.getBeanNamesForType(PasswordEncoder.class)).hasSize(1);
-            assertThat(ctx.getBeanNamesForType(SecurityFilterChain.class)).hasSize(1);
+            // TWO chains, and the count is the contract. The business chain declares no security matcher
+            // and therefore matches every request, so the metrics scrape chain can only win its one path by
+            // being declared ahead of it - @Order(1) against @Order(2). A regression that deleted the scrape
+            // chain would silently return /actuator/prometheus to anonymous reachability, because the
+            // business chain would then serve it and its deny-all would be the only rule left; this
+            // assertion is what makes that deletion fail instead.
+            assertThat(ctx.getBeanNamesForType(SecurityFilterChain.class)).hasSize(2);
+            // No second UserDetailsService: the scrape principal is confined to the scrape chain's own
+            // authentication manager, so it cannot authenticate against any business rule.
+            assertThat(ctx.getBeanNamesForType(UserDetailsService.class)).isEmpty();
             // Exactly one, and it is the slice's own: see Support#clock(). What matters here is that
             // registering SecurityConfig does not add a second one.
             assertThat(ctx.getBeanNamesForType(Clock.class)).containsExactly("clock");
@@ -412,7 +426,7 @@ class SecurityConfigTest {
         // is ever constructed (asserted separately below). The guard exists for a LENIENT context, which
         // injects the placeholder text itself - 32+ bytes, and therefore long enough to pass every other
         // check. Constructing directly is the only way to reach that branch.
-        assertThatThrownBy(() -> new SecurityConfig("${JWT_SIGNING_KEY}", ISSUER, 10))
+        assertThatThrownBy(() -> new SecurityConfig("${JWT_SIGNING_KEY}", ISSUER, 10, "", ""))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("carddemo.security.jwt.signing-key")
                 .hasMessageContaining("unresolved")
@@ -429,20 +443,26 @@ class SecurityConfigTest {
                 .hasStackTraceContaining("JWT_SIGNING_KEY_NEVER_SET");
     }
 
+    /**
+     * The two trailing arguments are the metrics scrape user name and credential. Blank is passed
+     * throughout this test because blank is the fail-CLOSED value: the scrape chain then holds zero
+     * principals. None of the assertions below concerns the scrape credential, and passing a value would
+     * imply the signing-key guards depended on it.
+     */
     @Test
     @DisplayName("the constructor rejects every bad signing key without naming any value")
     void constructorLevelFailFast() {
         for (final String bad : new String[] {null, "", "   ", "short", "${JWT_SIGNING_KEY}"}) {
-            assertThatThrownBy(() -> new SecurityConfig(bad, ISSUER, 10))
+            assertThatThrownBy(() -> new SecurityConfig(bad, ISSUER, 10, "", ""))
                     .as("signing key %s", bad == null ? "null" : "'" + bad + "'")
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("carddemo.security.jwt.signing-key")
                     .hasMessageContaining("JWT_SIGNING_KEY");
         }
-        assertThatThrownBy(() -> new SecurityConfig(GOOD_KEY, null, 10))
+        assertThatThrownBy(() -> new SecurityConfig(GOOD_KEY, null, 10, "", ""))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("carddemo.security.jwt.issuer");
-        assertThatThrownBy(() -> new SecurityConfig(GOOD_KEY, ISSUER, 4))
+        assertThatThrownBy(() -> new SecurityConfig(GOOD_KEY, ISSUER, 4, "", ""))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("carddemo.security.bcrypt.strength");
     }
@@ -550,9 +570,13 @@ class SecurityConfigTest {
             assertThat(signOn.reachedApplication()).isTrue();
             assertThat(signOn.sessionCreated()).isFalse();
 
+            // The health paths and build identity stay anonymous: the image's HEALTHCHECK probes
+            // /actuator/health/readiness with no credential, so a rule requiring one would report a
+            // permanently unhealthy container. PROMETHEUS IS DELIBERATELY ABSENT FROM THIS LIST - see
+            // metricsScrapeIsNotAnonymous below.
             for (final String path : new String[] {
                     "/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness",
-                    "/actuator/info", "/actuator/prometheus" }) {
+                    "/actuator/info" }) {
                 final Outcome probe = call(ctx, "GET", path, null);
                 assertThat(probe.reachedApplication()).as(path).isTrue();
                 assertThat(probe.sessionCreated()).as(path).isFalse();
@@ -588,6 +612,162 @@ class SecurityConfigTest {
                         .as("%s %s must not reach a handler", namespaceProbe[0], namespaceProbe[1])
                         .isFalse();
                 assertThat(overreach.sessionCreated()).isFalse();
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // F-S06 - the metrics scrape is the one management endpoint that is NOT anonymous
+    // ---------------------------------------------------------------------------------------------
+
+    /** The scrape user name and credential this slice configures; neither is a production value. */
+    private static final String SCRAPE_USER = "carddemo-metrics-scraper";
+
+    /** Not a secret: a literal confined to this test, matching nothing any environment supplies. */
+    private static final String SCRAPE_PASSWORD = "unit-test-scrape-credential-not-a-secret";
+
+    /**
+     * An environment that also carries a metrics scrape credential.
+     *
+     * @return the environment, never {@code null}
+     */
+    private static MockEnvironment environmentWithScrapeCredential() {
+        final MockEnvironment environment = environment();
+        environment.setProperty("carddemo.observability.metrics.scrape.username", SCRAPE_USER);
+        environment.setProperty("carddemo.observability.metrics.scrape.password", SCRAPE_PASSWORD);
+        return environment;
+    }
+
+    /**
+     * Performs a {@code GET} carrying HTTP Basic credentials.
+     *
+     * @param ctx      the refreshed context whose chain is exercised; must not be {@code null}
+     * @param uri      the request path; must not be {@code null}
+     * @param user     the user name to present; must not be {@code null}
+     * @param password the credential to present; must not be {@code null}
+     * @return the outcome, never {@code null}
+     * @throws Exception if the mock layer cannot dispatch, which is a harness failure
+     */
+    private static Outcome basicGet(final AnnotationConfigWebApplicationContext ctx,
+                                    final String uri,
+                                    final String user,
+                                    final String password) throws Exception {
+        final Filter chain = ctx.getBean("springSecurityFilterChain", Filter.class);
+        final MockHttpServletRequest request = new MockHttpServletRequest("GET", uri);
+        request.setServletPath(uri);
+        request.setRequestURI(uri);
+        request.addHeader("Authorization", "Basic " + Base64.getEncoder().encodeToString(
+                (user + ":" + password).getBytes(StandardCharsets.UTF_8)));
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+        final MockFilterChain terminal = new MockFilterChain();
+        chain.doFilter(request, response, terminal);
+        return new Outcome(response.getStatus(), terminal.getRequest() != null,
+                request.getSession(false) != null, response.getHeader("WWW-Authenticate"));
+    }
+
+    /**
+     * F-S06 regression guard. The scrape body renders business series - transaction volumes, reject counts
+     * tagged by reject code and authentication attempt counts - so anonymous reachability is a disclosure,
+     * not a convenience. This is the assertion that must fail if the path is ever returned to
+     * {@code permitAll()}.
+     *
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    @Test
+    @DisplayName("F-S06: the metrics scrape refuses an anonymous caller and challenges for Basic")
+    void metricsScrapeIsNotAnonymous() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environmentWithScrapeCredential())) {
+            final Outcome anonymous = call(ctx, "GET", "/actuator/prometheus", null);
+            assertThat(anonymous.status())
+                    .as("an anonymous scrape must be refused; the body renders business series")
+                    .isEqualTo(401);
+            assertThat(anonymous.reachedApplication())
+                    .as("and must not reach the Actuator handler at all")
+                    .isFalse();
+            assertThat(anonymous.challenge())
+                    .as("the challenge must name Basic, not Bearer: a scraper cannot mint a JWT, which is "
+                            + "why this path has its own chain and its own authentication manager")
+                    .startsWith("Basic");
+            assertThat(anonymous.sessionCreated())
+                    .as("and no session may be minted on the way to the refusal")
+                    .isFalse();
+        }
+    }
+
+    /**
+     * The other half of the contract: a correctly credentialled scrape is admitted, so securing the path
+     * has not simply broken metrics collection.
+     *
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    @Test
+    @DisplayName("F-S06: the metrics scrape admits the configured principal and refuses a wrong credential")
+    void metricsScrapeAdmitsTheConfiguredPrincipal() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environmentWithScrapeCredential())) {
+            final Outcome admitted = basicGet(ctx, "/actuator/prometheus", SCRAPE_USER, SCRAPE_PASSWORD);
+            assertThat(admitted.reachedApplication())
+                    .as("the configured principal must reach the handler, or provisioning this credential "
+                            + "would have secured the endpoint by breaking it")
+                    .isTrue();
+            assertThat(admitted.sessionCreated())
+                    .as("a scrape arrives every fifteen seconds; a session per scrape would leak memory")
+                    .isFalse();
+
+            assertThat(basicGet(ctx, "/actuator/prometheus", SCRAPE_USER, "wrong-credential").status())
+                    .as("a wrong credential must be refused")
+                    .isEqualTo(401);
+            assertThat(basicGet(ctx, "/actuator/prometheus", "wrong-user", SCRAPE_PASSWORD).status())
+                    .as("an unknown user name must be refused")
+                    .isEqualTo(401);
+        }
+    }
+
+    /**
+     * The fail-closed direction, which is the whole reason the credential is not fail-fast. A deployment
+     * that omits the credential must lose metrics visibly rather than publish them silently.
+     *
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    @Test
+    @DisplayName("F-S06: with no credential configured the scrape fails CLOSED rather than open")
+    void metricsScrapeFailsClosedWhenUnconfigured() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
+            assertThat(call(ctx, "GET", "/actuator/prometheus", null).status())
+                    .as("an absent credential must not reopen the endpoint")
+                    .isEqualTo(401);
+            assertThat(basicGet(ctx, "/actuator/prometheus", SCRAPE_USER, SCRAPE_PASSWORD).status())
+                    .as("and no principal exists to admit, so even the documented credential is refused")
+                    .isEqualTo(401);
+            assertThat(call(ctx, "GET", "/actuator/health/readiness", null).reachedApplication())
+                    .as("while readiness stays anonymous, so the container health check keeps working")
+                    .isTrue();
+        }
+    }
+
+    /**
+     * The scrape credential must authorise nothing beyond the scrape path. A private authority plus a
+     * confined authentication manager is what guarantees that; this proves it behaviourally.
+     *
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    @Test
+    @DisplayName("F-S06: the scrape credential authorises no business path and no other method")
+    void scrapeCredentialIsConfinedToTheScrapePath() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environmentWithScrapeCredential())) {
+            for (final String path : new String[] {
+                    "/api/admin/users", "/api/accounts/00000000001", "/api/transactions",
+                    "/api/menu/main", "/actuator/health", "/actuator/info" }) {
+                final Outcome outcome = basicGet(ctx, path, SCRAPE_USER, SCRAPE_PASSWORD);
+                assertThat(outcome.status())
+                        .as("the scrape credential must buy nothing at %s: the business chain knows "
+                                + "nothing of it and answers 401, and an anonymous management path answers "
+                                + "200 on its own merits rather than on the credential's", path)
+                        .isIn(200, 401);
+                if (path.startsWith("/api/")) {
+                    assertThat(outcome.reachedApplication())
+                            .as("%s must not be reachable with a scrape credential", path)
+                            .isFalse();
+                }
             }
         }
     }
@@ -772,4 +952,28 @@ class SecurityConfigTest {
             assertThat(outcome.sessionCreated()).isFalse();
         }
     }
+
+    /**
+     * Generates a single-use signing key for this suite.
+     *
+     * <p>Rule 1 Clause D forbids secrets in code, in configuration and <em>in tests</em>, with no carve-out
+     * for material that happens to be synthetic: a literal key in a committed file is still committed key
+     * material, indexable and copyable into a deployment, and it teaches the pattern the clause exists to
+     * stop. Generating it removes the class of problem instead of declaring one instance of it harmless. The
+     * value exists only in memory for the lifetime of this class, and no assertion depends on its content -
+     * only on its being long enough for the algorithm to accept.
+     *
+     * <p>Thirty-two bytes of entropy is the HS256 minimum the token provider enforces; URL-safe unpadded
+     * encoding widens that to forty-three characters, so the length guard passes with room to spare. The
+     * negative paths in this class continue to use deliberately <em>invalid</em> literals - empty, blank and
+     * too short - because those are the inputs under test rather than key material.
+     *
+     * @return a freshly generated key, never {@code null}, never logged and never persisted
+     */
+    private static String ephemeralSigningKey() {
+        final byte[] keyMaterial = new byte[32];
+        new SecureRandom().nextBytes(keyMaterial);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
+    }
+
 }

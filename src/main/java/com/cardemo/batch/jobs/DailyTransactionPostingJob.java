@@ -27,10 +27,15 @@
  */
 package com.cardemo.batch.jobs;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -44,6 +49,7 @@ import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
 import org.springframework.batch.core.job.builder.FlowBuilder;
@@ -58,7 +64,7 @@ import org.springframework.batch.core.scope.context.StepSynchronizationManager;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
-import org.springframework.batch.item.ItemWriter;
+import org.springframework.batch.item.ItemStreamWriter;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -68,8 +74,10 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.interceptor.DefaultTransactionAttribute;
 import org.springframework.transaction.interceptor.TransactionAttribute;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.cardemo.batch.processors.TransactionPostingProcessor;
 import com.cardemo.batch.readers.DailyTransactionReader;
@@ -107,9 +115,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <ol>
  *   <li>{@link #dailyTransactionPostingPreFlightStep(DailyTransactionReader)} - the diagnostic pass of
  *       {@code app/cbl/CBTRN01C.cbl}. It opens six datasets, reads, and closes six datasets.
- *       <strong>It writes nothing at all</strong>, and its transaction is declared read-only through
- *       {@link #readOnlyTransactionAttribute()} so the infrastructure enforces that rather than the code
- *       merely asserting it.</li>
+ *       <strong>It writes nothing at all</strong>, and its business work runs in a nested read-only
+ *       transaction declared by {@link #readOnlyTransactionAttribute()} so the infrastructure enforces that
+ *       rather than the code merely asserting it. The step's own chunk transaction stays writable because
+ *       the framework persists the step execution context inside it.</li>
  *   <li>{@link #dailyTransactionPostingStep(DailyTransactionReader, TransactionPostingProcessor,
  *       TransactionWriter, RejectWriter)} - the chunk-oriented realisation of the mainline loop at
  *       {@code app/cbl/CBTRN02C.cbl:L202}-{@code :L219}. Each record is validated and then either posted or
@@ -190,7 +199,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>Deviation 1 - one atomic unit instead of three independent commits</h2>
  *
- * <p><strong>Severity: High. This is a genuine behavioural improvement, not parity, and it is labelled as a
+ * <p><strong>This is a genuine behavioural improvement, not parity, and it is labelled as a
  * deviation rather than presented as equivalence.</strong>
  *
  * <p>{@code app/cbl/CBTRN02C.cbl:L440}-{@code :L442} performs, in this exact order:
@@ -205,13 +214,15 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code 2800-UPDATE-ACCOUNT-REC} leaves an orphaned category-balance row and an orphaned transaction row.
  * Here the <strong>order is preserved exactly</strong> - {@link TransactionPostingProcessor} performs 2700
  * then 2800, and {@link TransactionWriter} performs 2900 - but the chunk transaction this class establishes
- * through {@code chunk(chunkSize, transactionManager)} makes all three <strong>one atomic unit</strong>, so
- * the orphan hazard cannot occur. Owed an entry, with the locator above, in the planned
- * {@code DECISION_LOG.md}.
+ * through {@code chunk(POSTING_COMMIT_INTERVAL, transactionManager)} makes all three <strong>one atomic
+ * unit</strong>, so the orphan hazard cannot occur. The interval is <strong>one record</strong>, which is what
+ * keeps the unit of work exactly as wide as the source's own: a failure on one record rolls back that record
+ * and no other, and every record already processed is already durable. Owed an entry, with the locator above,
+ * in the planned {@code DECISION_LOG.md}.
  *
  * <h2>Deviation 2 - the pre-flight adds two datasets POSTTRAN never supplied</h2>
  *
- * <p><strong>Severity: Medium. Documented rather than silently absorbed, and the two datasets are
+ * <p><strong>Documented rather than silently absorbed, and the two datasets are
  * deliberately not dropped to hide it.</strong>
  *
  * <p>{@code app/cbl/CBTRN01C.cbl:L28}-{@code :L60} declares six DD names: {@code DALYTRAN},
@@ -228,9 +239,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * pre-flight is folded in at all is that {@code CBTRN01C} has <strong>no JCL member anywhere in the corpus
  * that runs it</strong> - a standalone job would be an invention - and its verb inventory makes it
  * incapable of writing: {@code WRITE} 0, {@code REWRITE} 0, {@code DELETE} 0, against six {@code OPEN} and
- * six {@code CLOSE} statements. Owed an entry in the planned {@code DECISION_LOG.md}, and a row in the
- * planned {@code TRACEABILITY_MATRIX.md} - the program must still appear there even though no JCL member
- * runs it.
+ * six {@code CLOSE} statements. The program is nonetheless part of the migrated scope, which is why its
+ * paragraphs are cited on the pre-flight methods below even though no JCL member runs it.
  *
  * <h2>Preserved quirks - parity governs over clause B</h2>
  *
@@ -240,7 +250,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * cited, tracked and marked intentional.
  *
  * <ul>
- *   <li><strong>Reject code 109 is assigned but never consumed. Severity: Medium.</strong> The
+ *   <li><strong>Reject code 109 is assigned but never consumed.</strong> The
  *       control-flow proof, from disk: it is assigned only inside {@code 2800-UPDATE-ACCOUNT-REC} on the
  *       {@code INVALID KEY} arm of the {@code REWRITE} at {@code app/cbl/CBTRN02C.cbl:L556}-{@code :L558};
  *       that paragraph is performed only from {@code 2000-POST-TRANSACTION} at {@code :L441}; and
@@ -253,22 +263,22 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       <strong>no reject record bearing 109 is ever written and the reject count is never incremented for
  *       it</strong>, and this job adds no reject path for it. The constant still exists because the
  *       assignment is real code on a reachable path.</li>
- *   <li><strong>{@code CBTRN02C} has no final-flush construct at all. Severity: Low.</strong> Neither the
+ *   <li><strong>{@code CBTRN02C} has no final-flush construct at all.</strong> Neither the
  *       outer {@code IF} at {@code app/cbl/CBTRN02C.cbl:L203} nor the inner {@code IF} at {@code :L205} has
  *       an {@code ELSE}, so there is nothing to flush after the loop - the exact contrast with
  *       {@code app/cbl/CBACT04C.cbl}, which does have one. No end-of-data flush is added here, because
  *       adding one would invent behaviour.</li>
  *   <li><strong>The commented-out {@code DISPLAY DALYTRAN-RECORD} at {@code app/cbl/CBTRN02C.cbl:L207} is
- *       noted and deliberately not reproduced as code. Severity: Low.</strong> It is a comment in the
+ *       noted and deliberately not reproduced as code.</strong> It is a comment in the
  *       source, so reproducing it as an executable statement would add an emission the source does not
  *       make - and one that would put a full card number into the log.</li>
  *   <li><strong>The scoped {@code FILE STATUS} leniency at {@code app/cbl/CBTRN02C.cbl:L481} is preserved.
- *       Severity: Medium.</strong> {@code IF  TCATBALF-STATUS = '00'  OR '23'} - note the two spaces the
+ *</strong> {@code IF  TCATBALF-STATUS = '00'  OR '23'} - note the two spaces the
  *       source carries - makes {@code 2700-UPDATE-TCATBAL} an upsert in which a record-not-found status is
  *       <em>success</em>, one of only three such sites tree-wide. It is enforced by
  *       {@link FileStatusMapper#requireCategoryBalanceReadSuccess(String)} and consumed by
  *       {@link TransactionPostingProcessor}; this class must not, and does not, re-implement it.</li>
- *   <li><strong>The unguarded sequential validation checks are preserved. Severity: Medium.</strong>
+ *   <li><strong>The unguarded sequential validation checks are preserved.</strong>
  *       {@code app/cbl/CBTRN02C.cbl:L407}-{@code :L420} tests the credit limit and then, with no
  *       intervening guard or early exit, tests the expiry date - so when both fail, code 103 overwrites
  *       code 102 and a single reject bearing 103 is written. Owned by
@@ -299,8 +309,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * create a second place for the two to drift apart. <strong>The namespace is
  * {@code carddemo.aws.s3.*}</strong> - verified against {@code src/main/resources/application.yml}, which
  * declares it under {@code carddemo: aws: s3:}; a {@code carddemo.s3.*} spelling without the {@code aws}
- * segment does not exist; the correction is owed an entry, under clause F, in the planned
- * {@code DECISION_LOG.md}.
+ * segment does not exist.
  * No AWS client is constructed here, no bucket or endpoint is hardcoded, and the process environment is never
  * read directly - every value arrives through Spring property binding.
  *
@@ -317,25 +326,25 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <table border="1">
  *   <caption>Failure modes</caption>
- *   <tr><th>Symptom</th><th>Cause</th><th>Severity</th><th>Remedy</th></tr>
+ *   <tr><th>Symptom</th><th>Cause</th><th>Remedy</th></tr>
  *   <tr><td>Startup fails naming a duplicate bean</td><td>Another configuration declared one of this
  *       class's four bean names; {@code application.yml} sets
  *       {@code spring.main.allow-bean-definition-overriding: false}, so this is fatal rather than silent
- *       </td><td>Blocker</td><td>Keep the {@code dailyTransactionPosting} prefix unique. This class
+ *       </td><td>Keep the {@code dailyTransactionPosting} prefix unique. This class
  *       declares only {@link Job}, {@link Step} and {@link Flow} beans and redeclares no
  *       infrastructure</td></tr>
  *   <tr><td>Job ends {@code COMPLETED} when records were rejected</td><td>The reject count never reached the
- *       step execution context</td><td>Blocker</td><td>{@link PostTranReturnCodeDecider} reads
+ *       step execution context</td><td>{@link PostTranReturnCodeDecider} reads
  *       {@value #REJECT_COUNT_CONTEXT_ENTRY} as the authoritative signal; confirm the composite writer
  *       incremented it</td></tr>
  *   <tr><td>Exit status is {@code FAILED} where an abend was expected</td><td>The failure was not a
- *       {@link FatalProcessingException}</td><td>High</td><td>Only that type maps to RC 12; every other
+ *       {@link FatalProcessingException}</td><td>Only that type maps to RC 12; every other
  *       failure is RC 8, deliberately</td></tr>
  *   <tr><td>A reject object is not a whole multiple of {@value RejectCode#REJECT_RECORD_LENGTH} bytes</td>
- *       <td>Record geometry changed</td><td>Blocker</td><td>Geometry belongs to {@link RejectWriter}; this
+ *       <td>Record geometry changed</td><td>Geometry belongs to {@link RejectWriter}; this
  *       class configures nothing that can change a record width</td></tr>
  *   <tr><td>The pre-flight step abends immediately</td><td>One of its six datasets is unreachable</td>
- *       <td>High</td><td>The abend names the DD it failed on, in the source's own open order</td></tr>
+ *       <td>The abend names the DD it failed on, in the source's own open order</td></tr>
  * </table>
  *
  * <h2>Not available - stated plainly rather than guessed, per clause F</h2>
@@ -366,15 +375,17 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code IF LASTCC=12 THEN SET MAXCC=0}, the idempotent-provisioning idiom, whereas the seventh base -
  * {@code DALYREJS}, this job's reject output, defined at {@code app/jcl/DALYREJS.jcl:L24}-{@code :L28} with
  * the same {@code LIMIT(5) SCRATCH} - carries no such guard. The asymmetry is real in the source and is
- * recorded, not repaired. Severity: Low.
+ * recorded, not repaired.
  *
  * <h2>Thread safety and state</h2>
  *
  * <p>Every field is {@code final} and set by the sole constructor, so an instance cannot be half-configured.
  * There is <strong>no static mutable state</strong>: the only static members are the logger, immutable
- * constants, and one {@link ThreadLocal} whose value is an immutable record. Per-execution counters live in
- * the step execution context, reached through {@link StepSynchronizationManager}, which is thread-bound and
- * therefore correct when several executions share a pool.
+ * constants, and one {@link ThreadLocal} whose value is a thread-confined stack of immutable records - one
+ * entry per in-progress execution on that thread, so nested launches nest rather than overwrite each other.
+ * Per-execution counters live in the step execution context, reached through
+ * {@link StepSynchronizationManager}, which is thread-bound and therefore correct when several executions
+ * share a pool.
  *
  * @see TransactionPostingProcessor for the validation cascade and paragraphs 1500 through 2800
  * @see TransactionWriter for paragraph 2900 and the 350-byte record geometry
@@ -444,9 +455,11 @@ public class DailyTransactionPostingJob {
      * instrumentation either program had.
      *
      * <p>The run boundary markers, the two end-of-run counters and the failure diagnostics travel on this
-     * logger, none of them carrying a card number, an amount or any personal field. The
-     * <em>record-image</em> emissions of the pre-flight go to {@link #PARITY_LOG} instead and never to this
-     * logger.
+     * logger, none of them carrying a card number, an account identifier, a transaction identifier, an
+     * amount or any personal field. The <em>record-image</em> emissions of the pre-flight, and every
+     * emission that names an identifier at all, go to {@link #PARITY_LOG} instead and never to this logger;
+     * where an identifier would have located a record, a bounded ordinal does so instead - see
+     * {@link #MSG_PRE_FLIGHT_ACCOUNT_NOT_FOUND}.
      */
     private static final Logger LOG = LoggerFactory.getLogger(DailyTransactionPostingJob.class);
 
@@ -463,15 +476,22 @@ public class DailyTransactionPostingJob {
      * Sink for the pre-flight's record-image emissions.
      *
      * <p><strong>Why this exists.</strong> {@code app/cbl/CBTRN01C.cbl:L168} is an
-     * <em>uncommented</em> {@code DISPLAY DALYTRAN-RECORD}, and {@code :L181}-{@code :L183} displays a full
-     * {@code DALYTRAN-CARD-NUM}. Deleting them would break the paragraph map that the coverage gate reads;
-     * emitting them on the application logger would put a sixteen-digit card number into the operational log
-     * stream. So they travel here, on {@value #PARITY_LOGGER_NAME}, which
+     * <em>uncommented</em> {@code DISPLAY DALYTRAN-RECORD}, {@code :L177}-{@code :L179} displays a full
+     * {@code ACCT-ID} and {@code :L181}-{@code :L183} displays a full {@code DALYTRAN-CARD-NUM}. Deleting
+     * them would break the paragraph map that the coverage gate reads; emitting them on the application
+     * logger would put an eleven-digit account identifier and a sixteen-digit card number into the
+     * operational log stream. So they travel here, on {@value #PARITY_LOGGER_NAME}, which
      * {@code src/main/resources/application.yml} and {@code src/main/resources/logback-spring.xml} both pin
      * to {@code OFF} for the whole {@code com.cardemo.parity} tree, in every shipped profile. No deployment
      * emits them, and every emission is additionally guarded by a level check and carries a
-     * {@linkplain #maskCardNumber(String) masked} card number rather than the raw value - so the value is
-     * protected twice over, by routing and by redaction.
+     * {@linkplain #maskCardNumber(String) masked} card number or a
+     * {@linkplain #maskAccountIdentifier(Long) masked} account identifier rather than the raw value - so
+     * each value is protected twice over, by routing and by redaction.
+     *
+     * <p>The same two-layer rule covers account and customer identifiers, through
+     * {@link #maskIdentifier(Long)}. Routing alone would not be enough for them: this tree is pinned
+     * {@code OFF} by configuration, and configuration is exactly the kind of thing an operator turns on to
+     * diagnose a live incident. Masking is what makes that safe to do.
      *
      * <p>This is deliberately <em>not</em> the same situation as
      * {@code app/cbl/CBTRN02C.cbl:L207}, where the equivalent {@code DISPLAY DALYTRAN-RECORD} is commented
@@ -490,16 +510,78 @@ public class DailyTransactionPostingJob {
     /** Replacement character for every masked digit of a card number. */
     private static final char CARD_NUMBER_MASK = '*';
 
+    /**
+     * Number of trailing digits of an account or customer identifier that may appear in a diagnostic.
+     *
+     * <p>Matches {@link #CARD_NUMBER_VISIBLE_SUFFIX} in value but is a separate constant because it answers
+     * a separate question. Four trailing digits of an eleven-digit account number are enough to correlate
+     * two log lines and not enough to quote the account, and the two projections must be free to diverge
+     * without one silently changing the other.
+     */
+    private static final int IDENTIFIER_VISIBLE_SUFFIX = 4;
+
+    /**
+     * Number of trailing digits of an account identifier that may appear in a diagnostic.
+     *
+     * <p><strong>Finding, severity Medium, resolved - CWE-532.</strong> {@code ACCT-ID} is
+     * {@code PIC 9(11)} and the pre-flight's {@code DISPLAY 'ACCOUNT ' ACCT-ID ' NOT FOUND'} at
+     * {@code app/cbl/CBTRN01C.cbl:L177}-{@code :L179} published it in full. Reproduced literally on the
+     * application logger it put a complete account identifier into the operational log stream at
+     * {@code WARN}, which is enabled in every deployment - so the identifier travelled wherever the log
+     * travelled. Two controls now apply together, and the reasoning is the same as for a card number: the
+     * identifier-bearing reproduction moved to {@link #PARITY_LOG}, which every shipped profile pins to
+     * {@code OFF}, <em>and</em> the value it carries is reduced to this suffix. The operational
+     * {@code WARN} that an operator actually reads carries no identifier at all - only the logical dataset
+     * names and the record's ordinal within the file, which is what locates the record without disclosing
+     * whose it is.
+     *
+     * <p>Four rather than the whole value, and four rather than none: a bounded suffix lets two
+     * diagnostics about the same account be recognised as such while leaving the remaining seven digits -
+     * ten million possibilities - unstated.
+     */
+    private static final int ACCOUNT_ID_VISIBLE_SUFFIX = 4;
+
     /** Default job name, matching {@code carddemo.batch.jobs.posttran.name} and the JCL member name. */
     private static final String DEFAULT_JOB_NAME = "POSTTRAN";
 
     /**
-     * Default commit interval when neither the job-specific nor the shared chunk-size property is set.
+     * Default bounded read window when neither the job-specific nor the shared chunk-size property is set.
      *
      * <p>A tunable rather than a parity contract: {@code app/cbl/CBTRN02C.cbl} has no chunk concept at all,
-     * so no source value is being reproduced or contradicted.
+     * so no source value is being reproduced or contradicted. It bounds how many staged rows the pre-flight
+     * resolves per set-based lookup; it is <strong>not</strong> the commit interval - see
+     * {@link #POSTING_COMMIT_INTERVAL}.
      */
     private static final int DEFAULT_CHUNK_SIZE = 100;
+
+    /**
+     * The commit interval of the posting step, pinned at one record.
+     *
+     * <p><strong>BLOCKER, remediated here. This value is a parity contract, not a tunable, which is why it is
+     * a constant and not a property.</strong> Spring Batch makes the chunk the JDBC transaction boundary, so
+     * a commit interval of {@value #DEFAULT_CHUNK_SIZE} meant that a failure while posting record 100 rolled
+     * back records 1 through 99 as well. {@code app/cbl/CBTRN02C.cbl} cannot behave that way: its mainline at
+     * {@code :L202}-{@code :L219} handles one record per iteration and its three writes at
+     * {@code :L440}-{@code :L442} are three <em>separate</em> commits, so every record that has already been
+     * processed is already durable when the next one fails. A batch-wide rollback is therefore not a
+     * conservative choice but a different behaviour, and one that would make a single defective record
+     * discard up to ninety-nine good ones.
+     *
+     * <p>One record per transaction reproduces the source's guarantee on both sides. Prior records stay
+     * committed, exactly as they do on the mainframe. And the three writes of one record - paragraph
+     * {@code 2700-UPDATE-TCATBAL}, {@code 2800-UPDATE-ACCOUNT-REC} and
+     * {@code 2900-WRITE-TRANSACTION-FILE} - remain inside one unit of work, which is deviation 1 as
+     * documented on this class: the source's own failure path inside {@code 2800} leaves an orphaned
+     * category-balance row and an orphaned transaction row, and one transaction per record closes that
+     * hazard without widening the blast radius past the record that caused it.
+     *
+     * <p>The cost is one commit per record rather than one per hundred. That is the price of the atomicity
+     * contract and it is paid deliberately; the read path stays bounded and batched independently through
+     * {@link #chunkSize}, and the object-storage output stays aggregated because
+     * {@link TransactionWriter} buffers committed records and emits one object per block rather than one per
+     * transaction.
+     */
+    private static final int POSTING_COMMIT_INTERVAL = 1;
 
     /** Return code 0. The normal outcome: every record either posted or the file was empty. */
     private static final String EXIT_CODE_COMPLETED = ExitStatus.COMPLETED.getExitCode();
@@ -594,6 +676,24 @@ public class DailyTransactionPostingJob {
     /** {@code DISPLAY 'END OF EXECUTION OF PROGRAM CBTRN01C'} at {@code app/cbl/CBTRN01C.cbl:L195}. */
     private static final String MSG_PRE_FLIGHT_END_OF_EXECUTION = "END OF EXECUTION OF PROGRAM CBTRN01C";
 
+    /**
+     * The operational form of {@code DISPLAY 'ACCOUNT ' ACCT-ID ' NOT FOUND'},
+     * {@code app/cbl/CBTRN01C.cbl:L177}-{@code :L179}.
+     *
+     * <p>Names the two logical datasets involved - the cross reference resolved a card number to an account
+     * identifier, and the account master does not hold it - and locates the record by its one-based ordinal
+     * within {@code DALYTRAN}. It carries <strong>no identifier of any kind</strong>: not the account, not
+     * the card number, not the transaction identifier. An operator reading this line learns which dataset
+     * pair disagrees and which record to look at, which is everything the diagnostic is for; whose account
+     * it is is not part of that.
+     *
+     * <p>The identifier-bearing reproduction of the same {@code DISPLAY} travels on {@link #PARITY_LOG}
+     * with a {@linkplain #ACCOUNT_ID_VISIBLE_SUFFIX bounded suffix}, so the paragraph map the coverage gate
+     * reads is intact while nothing an enabled logger emits can identify an account.
+     */
+    private static final String MSG_PRE_FLIGHT_ACCOUNT_NOT_FOUND =
+            "DALYTRAN RECORD {} RESOLVED THROUGH XREFFILE TO AN ACCOUNT THAT ACCTFILE DOES NOT HOLD";
+
     /** {@code DISPLAY 'ERROR OPENING DALYTRAN'} at {@code app/cbl/CBTRN02C.cbl:L248}. */
     private static final String MSG_ERROR_OPENING_DALYTRAN = "ERROR OPENING DALYTRAN";
 
@@ -629,7 +729,7 @@ public class DailyTransactionPostingJob {
     /**
      * {@code DISPLAY 'ERROR CLOSING DAILY REJECTS FILE'}, paragraph {@code 9300-DALYREJS-CLOSE}.
      *
-     * <p><strong>Finding, severity Low: the source is internally inconsistent here.</strong> The open
+     * <p><strong>the source is internally inconsistent here.</strong> The open
      * paragraph spells the word {@code DALY} and this close paragraph spells it {@code DAILY}. Both are
      * reproduced exactly as written; normalising either would put a diff into the parity comparison.
      */
@@ -668,13 +768,13 @@ public class DailyTransactionPostingJob {
     /**
      * {@code DISPLAY 'ERROR CLOSING CUSTOMER FILE'} at {@code app/cbl/CBTRN01C.cbl:L372}.
      *
-     * <p><strong>Finding, severity Medium: this is a copy-and-paste defect in the source and it is
+     * <p><strong>this is a copy-and-paste defect in the source and it is
      * preserved, not repaired.</strong> The literal sits inside {@code 9000-DALYTRAN-CLOSE} at
      * {@code app/cbl/CBTRN01C.cbl:L361}, so a failure to close the <em>daily transaction</em> file reports
      * the <em>customer</em> file. Correcting it would improve the diagnostic and break the parity
      * comparison, and parity is the contract. Note that {@code 9100-CUSTFILE-CLOSE} at {@code :L390} emits
      * the identical literal, so the two are genuinely indistinguishable in the legacy output - which is the
-     * defect, faithfully reproduced. Owed an entry in the planned {@code DECISION_LOG.md}.
+     * defect, faithfully reproduced.
      */
     private static final String MSG_PRE_FLIGHT_ERROR_CLOSING_DALYTRAN = "ERROR CLOSING CUSTOMER FILE";
 
@@ -840,15 +940,32 @@ public class DailyTransactionPostingJob {
     private static final int MAX_JOB_PARAMETER_VALUE_LENGTH = 250;
 
     /**
-     * Per-thread record of the diagnostic context entries this job displaced, so they can be restored
+     * Per-thread stack of the diagnostic context entries this job displaced, so they can be restored
      * exactly rather than blanket-removed.
      *
-     * <p>This is the only {@code ThreadLocal} in the class and its value is an immutable record, so it is
-     * shared static state without being <em>mutable</em> static state. It is always set by
-     * {@link #establishDiagnosticContext(long)} and cleared by {@link #restoreDiagnosticContext()} in a
-     * {@code finally} block.
+     * <p><strong>Why a stack rather than a single slot.</strong> A single slot holds one displacement per
+     * thread, which is correct only while no second execution can begin on a thread that already has one in
+     * progress. The planned {@code BatchPipelineOrchestrator} launches this job as part of a wider stream, so
+     * a nested or re-entrant launch on the same thread is reachable. (It is named in a code font rather than
+     * linked because it is not authored yet, so this sentence stays true either way.) With a single slot that
+     * reachable case is silently destructive in both directions: the inner {@code set} overwrites the
+     * outer's displaced values, and the inner {@code remove} then leaves the outer restore with nothing to
+     * put back. The outer scope's correlation identifier would be lost for the remainder of the thread's
+     * life, which on a pooled thread means it leaks into unrelated work. A stack makes each displacement
+     * belong to the invocation that created it, so the two nest instead of colliding.
+     *
+     * <p>Each entry is an immutable record, so this is shared static state without being <em>mutable</em>
+     * static state in the sense that matters: no entry is ever mutated after being pushed. The deque itself
+     * is confined to one thread and is discarded the moment it empties, so a pooled thread retains no
+     * bookkeeping between jobs.
+     *
+     * <p>Growth is bounded by construction rather than by a ceiling: every push in
+     * {@link #establishDiagnosticContext(long, long)} is matched by a pop in
+     * {@link #restoreDiagnosticContext(long)}, which the listener performs in a {@code finally} block, and
+     * Spring Batch invokes {@code afterJob} for every execution whose {@code beforeJob} ran.
      */
-    private static final ThreadLocal<DiagnosticContextSnapshot> DIAGNOSTIC_SNAPSHOT = new ThreadLocal<>();
+    private static final ThreadLocal<Deque<DiagnosticContextSnapshot>> DIAGNOSTIC_SNAPSHOTS =
+            new ThreadLocal<>();
 
     /** The batch metadata store, from Spring Boot's batch auto-configuration. Never redeclared here. */
     private final JobRepository jobRepository;
@@ -857,8 +974,9 @@ public class DailyTransactionPostingJob {
      * The transaction manager the chunk boundary commits through.
      *
      * <p>This is the mechanism of deviation 1: handing it to
-     * {@code chunk(chunkSize, transactionManager)} is what makes paragraphs 2700, 2800 and 2900 one atomic
-     * unit instead of the source's three independent commits.
+     * {@code chunk(POSTING_COMMIT_INTERVAL, transactionManager)} is what makes paragraphs 2700, 2800 and
+     * 2900 one atomic unit instead of the source's three independent commits - and, because that interval is
+     * one record, what keeps the unit of work exactly one input record wide.
      */
     private final PlatformTransactionManager transactionManager;
 
@@ -918,7 +1036,14 @@ public class DailyTransactionPostingJob {
     /** The registered job name, from {@code carddemo.batch.jobs.posttran.name}. */
     private final String jobName;
 
-    /** The commit interval and reader page size, from {@code carddemo.batch.posttran.chunk-size}. */
+    /**
+     * The bounded read window, from {@code carddemo.batch.posttran.chunk-size}.
+     *
+     * <p>It sizes the pre-flight's set-based lookups, so the number of round trips the pre-flight makes is
+     * proportional to the record count divided by this value rather than to the record count itself. It is
+     * <strong>not</strong> the commit interval: that is {@link #POSTING_COMMIT_INTERVAL} and is pinned by
+     * parity rather than configured.
+     */
     private final int chunkSize;
 
     /**
@@ -950,7 +1075,9 @@ public class DailyTransactionPostingJob {
      * @param metricsConfig the owner of the four batch counters
      * @param fileStatusMapper the single {@code FILE STATUS} translation
      * @param jobName the registered job name, defaulting to {@value #DEFAULT_JOB_NAME}
-     * @param chunkSize the commit interval, defaulting to {@value #DEFAULT_CHUNK_SIZE}
+     * @param chunkSize the bounded read window used by the pre-flight's set-based lookups, defaulting to
+     *     {@value #DEFAULT_CHUNK_SIZE}; the commit interval is {@link #POSTING_COMMIT_INTERVAL} and is not
+     *     configurable
      * @throws FatalProcessingException if any collaborator is absent, the job name is blank or the chunk
      *     size is not positive
      */
@@ -1069,15 +1196,18 @@ public class DailyTransactionPostingJob {
      * <p>It is folded in here rather than given a job of its own because <strong>no JCL member anywhere in
      * the corpus runs {@code CBTRN01C}</strong> - verified by searching {@code app/jcl} and
      * {@code app/proc} for the program name, which returns nothing - so a standalone job would be an
-     * invention. The program must still appear in the planned {@code TRACEABILITY_MATRIX.md}.
+     * invention. Its paragraphs are cited on the pre-flight methods of this class instead.
      *
      * <p>The tasklet returns {@link RepeatStatus#FINISHED} after one pass, matching
      * {@code MAIN-PARA} at {@code app/cbl/CBTRN01C.cbl:L155}, which runs its opens, its read loop and its
      * closes exactly once and then returns.
      *
-     * <p>Its transaction is read-only. The tasklet is handed {@link #transactionManager} because
-     * {@link StepBuilder#tasklet} requires one, and a read-only step still needs a transaction for the
-     * repository reads to run inside; nothing inside it enrols a dirty entity, so the commit is empty.
+     * <p>Its business work runs read-only, in a nested transaction of its own rather than in the step's
+     * chunk transaction. The reason that distinction is load-bearing, rather than a stylistic preference,
+     * is spelled out on {@link #readOnlyTransactionAttribute()}: the step's own chunk transaction must stay
+     * writable because the framework persists {@code BATCH_STEP_EXECUTION_CONTEXT} inside it, so declaring
+     * <em>that</em> transaction read-only stops the step completing at all. The tasklet is still handed
+     * {@link #transactionManager} because {@link StepBuilder#tasklet} requires one.
      *
      * @param dailyTransactionReader the {@code DALYTRAN} reader, resolved so the pre-flight probe uses the
      *     same step-scoped component the posting step reads with rather than a second, divergent path
@@ -1090,39 +1220,66 @@ public class DailyTransactionPostingJob {
         final DailyTransactionReader reader =
                 requireCollaborator(dailyTransactionReader, "dailyTransactionReader");
 
+        // Built once, here, and captured by the tasklet: a TransactionTemplate copies the definition it is
+        // given into itself, so the mutable attribute instance is not retained and this class still holds no
+        // mutable state, static or otherwise.
+        final TransactionTemplate readOnlyBusinessWork =
+                new TransactionTemplate(transactionManager, readOnlyTransactionAttribute());
+
         return new StepBuilder(PRE_FLIGHT_STEP_BEAN_NAME, jobRepository)
-                .tasklet((contribution, chunkContext) -> preFlightMainPara(reader), transactionManager)
-                .transactionAttribute(readOnlyTransactionAttribute())
+                .tasklet((contribution, chunkContext) -> readOnlyBusinessWork.execute(
+                                status -> preFlightMainPara(reader, contribution)),
+                        transactionManager)
                 .build();
     }
 
     /**
-     * The transaction attribute of the pre-flight step: read-only.
+     * The transaction attribute the pre-flight step's <em>business work</em> runs under: read-only, and
+     * nested in a transaction of its own.
      *
-     * <p><strong>Finding, severity Medium - raised against this class and remediated here.</strong> The
-     * step's read-only nature was documented and true, but nothing enforced it: a later edit that added a
-     * {@code save} would have compiled and committed. Remediation: declare the transaction read-only, as
-     * below, so the property is structural rather than a matter of discipline.
+     * <p><strong>Why the attribute is declared rather than merely documented.</strong> Documenting the
+     * step's read-only nature enforces nothing: a later edit that added a {@code save} would compile and
+     * commit. Declaring the transaction read-only, as below, makes the property structural rather than a
+     * matter of discipline.
      *
-     * <p>Turns "this step performs no write" from a claim into a property the infrastructure enforces. A
-     * tasklet step runs inside a transaction, because {@link #transactionManager} is handed to
-     * {@code tasklet(...)}, and marking that transaction read-only puts the persistence context into a
-     * manual flush mode, so an accidentally dirtied entity cannot reach the database even if a future edit
-     * introduced one. Rule 1 clause A puts explicit behaviour ahead of cleverness and clause D asks for least
-     * privilege; both point at declaring the intent rather than relying on the absence of a call. The
-     * evidence that read-only is faithful is the source's own verb inventory: {@code app/cbl/CBTRN01C.cbl}
-     * contains {@code WRITE} 0, {@code REWRITE} 0 and {@code DELETE} 0 against six {@code OPEN} and six
-     * {@code CLOSE} statements.
+     * <p><strong>Finding, severity High - raised against that first remediation and remediated here.</strong>
+     * The read-only attribute was originally applied to the step itself, through
+     * {@code StepBuilder.transactionAttribute(...)}, and that made the step unable to complete on any input.
+     * {@code TaskletStep} persists the step execution context <em>inside</em> the chunk transaction - see
+     * {@code TaskletStep$ChunkTransactionCallback.doInTransaction}, which calls
+     * {@code JobRepository.updateExecutionContext} before that transaction commits - so the framework issues
+     * {@code UPDATE BATCH_STEP_EXECUTION_CONTEXT} against a connection the attribute has just marked read
+     * only. PostgreSQL refuses it with SQL state {@code 25006}, "cannot execute UPDATE in a read-only
+     * transaction", the framework wraps that as {@code FatalStepExecutionException: JobRepository failure
+     * forcing rollback}, and the step ends {@code FAILED} before the decider is ever consulted. Remediation:
+     * leave the step's own transaction writable, which the framework requires for its bookkeeping, and apply
+     * this attribute to a nested transaction that wraps only the tasklet body - the part that is genuinely
+     * read-only. The enforcement the first remediation asked for is kept; what is dropped is applying it to a
+     * transaction that was never the business one.
+     *
+     * <p>{@link TransactionDefinition#PROPAGATION_REQUIRES_NEW} is therefore not decoration but the whole
+     * mechanism. Under {@code PROPAGATION_REQUIRED} the nested attribute would join the step's writable
+     * transaction and the read-only flag would be silently discarded, leaving documentation that claims an
+     * enforcement that does not exist - worse than no enforcement, because it would be believed. Requiring a
+     * new transaction gives the tasklet a connection of its own on which the database itself rejects a write;
+     * the pool is sized at ten, so holding two at once is unremarkable.
+     *
+     * <p>The evidence that read-only is faithful to the source is the program's own verb inventory:
+     * {@code app/cbl/CBTRN01C.cbl} contains {@code WRITE} 0, {@code REWRITE} 0 and {@code DELETE} 0 against
+     * six {@code OPEN} and six {@code CLOSE} statements. Rule 1 clause A puts explicit behaviour ahead of
+     * cleverness and clause D asks for least privilege; both point at declaring the intent rather than
+     * relying on the absence of a call.
      *
      * <p>Built fresh on each call rather than held in a constant, because
      * {@link DefaultTransactionAttribute} is mutable and a shared instance would be static mutable state -
      * which this class does not have and will not acquire. Only the pre-flight step uses it: the posting step
      * writes, so a read-only attribute there would be wrong.
      *
-     * @return a read-only transaction attribute naming the step, never {@code null}
+     * @return a read-only, requires-new transaction attribute naming the step, never {@code null}
      */
     private static TransactionAttribute readOnlyTransactionAttribute() {
         final DefaultTransactionAttribute attribute = new DefaultTransactionAttribute();
+        attribute.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         attribute.setReadOnly(true);
         attribute.setName(PRE_FLIGHT_STEP_BEAN_NAME);
         return attribute;
@@ -1148,6 +1305,18 @@ public class DailyTransactionPostingJob {
      * <p>The reader's page size and the commit interval are the same value deliberately: a chunk that
      * committed across page boundaries would hold a transaction open over an extra fetch for no benefit.
      *
+     * <p><strong>Finding, severity High - found by
+     * {@code src/test/java/com/cardemo/integration/batch/DailyTransactionPostingJobTest.java} and fixed
+     * here.</strong> {@link TransactionWriter} declares {@link StepExecutionListener} and obtains the
+     * {@code StepExecution} it needs for the object key from {@code beforeStep}. {@code SimpleStepBuilder}
+     * auto-registers a reader, processor or writer as a step listener - but it inspects <em>the writer it was
+     * given</em>, and the writer given here is {@link PostingOutcomeWriter}, a composite that is not itself a
+     * listener. The delegate was therefore invisible to that check, {@code beforeStep} was never called, and
+     * <strong>the first posted transaction of every run abended the step</strong> with
+     * {@code no step execution was captured before the first write}. Fix: register the delegate explicitly,
+     * as {@code StatementGenerationJob} already does for {@code StatementWriter}. {@link RejectWriter} needs
+     * no such registration - it takes its {@code StepExecution} by step-scoped injection instead.
+     *
      * @param dailyTransactionReader the {@code DALYTRAN} reader, paragraph {@code 1000-DALYTRAN-GET-NEXT}
      * @param transactionPostingProcessor the validation cascade and the two updates, paragraphs
      *     {@code 1500} through {@code 2800}
@@ -1171,10 +1340,11 @@ public class DailyTransactionPostingJob {
 
         return new StepBuilder(POSTING_STEP_BEAN_NAME, jobRepository)
                 .<DailyTransaction, TransactionPostingProcessor.PostingResult>chunk(
-                        chunkSize, transactionManager)
+                        POSTING_COMMIT_INTERVAL, transactionManager)
                 .reader(reader)
                 .processor(processor)
                 .writer(new PostingOutcomeWriter(posted, rejected))
+                .listener((StepExecutionListener) posted)
                 .listener(new PostTranStepListener(rejected))
                 .build();
     }
@@ -1272,7 +1442,7 @@ public class DailyTransactionPostingJob {
      * preserved so that a failed open reports the first dataset that is unavailable, exactly as it does on
      * the mainframe.
      *
-     * <p><strong>Finding, severity Medium - a legacy control-flow quirk, preserved.</strong> The loop reads
+     * <p><strong>A legacy control-flow quirk, preserved.</strong> The loop reads
      * a record, and only the {@code DISPLAY} at {@code :L168} is guarded by the end-of-file test at
      * {@code :L167}. The cross-reference lookup and the account read at {@code :L170}-{@code :L184} sit
      * <em>outside</em> that inner {@code IF} and inside the outer one at {@code :L165}, so on the iteration
@@ -1284,12 +1454,18 @@ public class DailyTransactionPostingJob {
      * {@code flush}. The evidence is the program's verb inventory - {@code WRITE} 0, {@code REWRITE} 0,
      * {@code DELETE} 0.
      *
-     * @param reader the {@code DALYTRAN} reader, used only to prove the dataset is reachable
+     * @param reader the {@code DALYTRAN} reader this paragraph opens at {@code :L157}, drives at
+     *     {@code :L166} and releases at {@code :L188}, exactly as the source's {@code MAIN-PARA} does
+     * @param contribution the step's contribution, credited with one read per record consumed so that
+     *     the diagnostic pass's volume is visible in the job repository the way {@code CBTRN01C}'s own
+     *     {@code DISPLAY} counters made it visible on the job log. A tasklet contributes nothing unless
+     *     it says so, so a pass that read three hundred records would otherwise report none
      * @return {@link RepeatStatus#FINISHED}, because {@code MAIN-PARA} runs once and returns at
      *     {@code :L197}
      * @throws FatalProcessingException if any of the six datasets cannot be opened, read or closed
      */
-    private RepeatStatus preFlightMainPara(final DailyTransactionReader reader) {
+    private RepeatStatus preFlightMainPara(final DailyTransactionReader reader,
+            final StepContribution contribution) {
         LOG.info(MSG_PRE_FLIGHT_START_OF_EXECUTION);
 
         openPreFlightDailyTransactionFile(reader);
@@ -1299,26 +1475,53 @@ public class DailyTransactionPostingJob {
         openPreFlightAccountFile();
         openPreFlightTransactionFile();
 
-        // :L164-:L186. Spring Batch owns no loop here - this is a tasklet, so the loop is written out. The
-        // reader has already been opened and positioned by the step's ItemStream registration, so the
-        // driving read is the reader's own; the pre-flight consumes the whole file exactly as the source
-        // does, because its purpose is to report on every record.
-        DailyTransaction current = preFlightDalytranGetNext(reader);
-        boolean endOfFile = current == null;
-        while (!endOfFile) {
-            // :L167-:L169 - the record image is emitted only while not at end of file.
-            preFlightDisplayDalytranRecord(current);
-            preFlightVerifyRecord(current);
-            current = preFlightDalytranGetNext(reader);
-            endOfFile = current == null;
+        // :L164-:L186. Spring Batch owns no loop here - this is a tasklet, so the loop is written out, and
+        // for the same reason the step registers no ItemStream and opens nothing: the reader was opened by
+        // openPreFlightDailyTransactionFile above, which is 0000-DALYTRAN-OPEN, and is released by
+        // closePreFlightDailyTransactionFile below, which is 9000-DALYTRAN-CLOSE. The source performs both
+        // itself, at :L157 and :L188. The pre-flight consumes the whole file exactly as the source does,
+        // because its purpose is to report on every record.
+        //
+        // The records are consumed in bounded windows rather than one at a time, and the two lookups of
+        // :L170-:L184 are resolved for a whole window with one query each. See preFlightResolveWindow():
+        // the emission order inside the window is still the file's own, so what an operator sees is
+        // unchanged, but the round-trip count falls from two per record to two per window.
+        //
+        // recordOrdinal is the one-based position of the record within DALYTRAN. Not a parity artefact - the
+        // source has no such counter - but the ordinal is what lets the identifier-free diagnostic below
+        // locate a record, so it is what replaces the account identifier the source's DISPLAY carried.
+        long recordOrdinal = 0L;
+        DailyTransaction last = null;
+        PreFlightWindow window = preFlightReadWindow(reader);
+        while (!window.isEmpty()) {
+            final PreFlightLookups resolved = preFlightResolveWindow(window);
+            for (final DailyTransaction current : window.records()) {
+                recordOrdinal++;
+                // :L167-:L169 - the record image is emitted only while not at end of file.
+                preFlightDisplayDalytranRecord(current);
+                preFlightVerifyRecord(current, recordOrdinal, resolved);
+                contribution.incrementReadCount();
+                last = current;
+            }
+            if (window.endOfFile()) {
+                // :L170-:L184 once more, on the iteration that set the end-of-file flag, against the record
+                // the previous pass left in DALYTRAN-CARD-NUM. It is a genuine re-execution of both lookups
+                // and both emissions, not a narrative about one: the source really does perform them, and
+                // they are visible in the diagnostic output this program exists to produce. No extra round
+                // trip is needed, because the window that carried the record also carried its lookups.
+                preFlightVerifyTrailingRecord(last, recordOrdinal, resolved);
+                break;
+            }
+            window = preFlightReadWindow(reader);
         }
-        // :L170-:L184 once more, on the end-of-file iteration, against the record the previous pass left
-        // behind. This is the preserved quirk described in this method's documentation. When the file was
-        // empty from the outset there is no previous record at all, which the source would have seen as
-        // low values; that case is handled explicitly rather than allowed to dereference nothing.
-        preFlightVerifyTrailingRecord();
+        if (last == null) {
+            // An empty file from the outset. The source's DALYTRAN-CARD-NUM is still at its initial value, so
+            // the cross-reference lookup fails and the unverifiable-card arm is what an observer sees. That
+            // branch is taken here too rather than skipped, so the emptiness case emits what the source emits.
+            preFlightVerifyTrailingRecord(null, 0L, PreFlightLookups.empty());
+        }
 
-        closePreFlightDailyTransactionFile();
+        closePreFlightDailyTransactionFile(reader);
         closePreFlightCustomerFile();
         closePreFlightCrossReferenceFile();
         closePreFlightCardFile();
@@ -1335,20 +1538,44 @@ public class DailyTransactionPostingJob {
      * <p>Resets the cross-reference status, moves the card number, performs the lookup, and on success moves
      * the account identifier and performs the account read - reporting a missing account at {@code :L178} and
      * an unverifiable card at {@code :L181}-{@code :L183}. Kept separate from {@link #preFlightMainPara(
-     * DailyTransactionReader)} only so that the preserved trailing invocation and the in-loop invocation
-     * cannot drift apart; it is not a consolidation of paragraphs, since both {@code 2000-LOOKUP-XREF} and
+     * DailyTransactionReader, StepContribution)} only so that the preserved trailing invocation and the
+     * in-loop invocation cannot drift apart; it is not a consolidation of paragraphs, since both
+     * {@code 2000-LOOKUP-XREF} and
      * {@code 3000-READ-ACCOUNT} keep their own methods.
      *
+     * <p><strong>Finding, severity Medium, resolved - CWE-532, insertion of sensitive information into a
+     * log file.</strong> The {@code DISPLAY} at {@code :L177}-{@code :L179} names the account identifier,
+     * and reproducing it on the application logger published a complete {@code PIC 9(11)} account
+     * identifier at {@code WARN} - a level enabled in every deployment, so the value reached every log
+     * aggregator, retention store and replica the log stream reaches. The remedy is the one this class
+     * already applies to the card number three lines below, applied to the account identifier as well: the
+     * operational emission carries {@link #MSG_PRE_FLIGHT_ACCOUNT_NOT_FOUND}, which names the two logical
+     * datasets and the record's ordinal and <em>no identifier at all</em>, while the identifier-bearing
+     * reproduction of the source's own wording travels on {@link #PARITY_LOG} - pinned {@code OFF} in every
+     * shipped profile, guarded by a level check, and carrying only a
+     * {@linkplain #ACCOUNT_ID_VISIBLE_SUFFIX bounded suffix}. Neither the paragraph map nor the operator's
+     * ability to locate the offending record is lost.
+     *
      * @param record the daily transaction whose card number drives the lookup; must not be {@code null}
+     * @param recordOrdinal the one-based position of {@code record} within {@code DALYTRAN}, used to
+     *     locate the record in a diagnostic without naming anything that identifies its owner
+     * @param resolved the window's pre-resolved cross-reference and account rows, which stand in for the
+     *     two keyed reads without changing which rows they find; must not be {@code null}
      */
-    private void preFlightVerifyRecord(final DailyTransaction record) {
+    private void preFlightVerifyRecord(final DailyTransaction record, final long recordOrdinal,
+            final PreFlightLookups resolved) {
         // :L170-:L171 MOVE 0 TO WS-XREF-READ-STATUS / MOVE DALYTRAN-CARD-NUM TO XREF-CARD-NUM
-        final Long accountId = preFlightLookupXref(record.getCardNumber());
+        final Long accountId = preFlightLookupXref(record.getCardNumber(), resolved);
         if (accountId != null) {
             // :L173-:L176 the xref read succeeded, so the account read is attempted
-            if (!preFlightReadAccount(accountId)) {
-                // :L177-:L179 DISPLAY 'ACCOUNT ' ACCT-ID ' NOT FOUND'
-                LOG.warn("ACCOUNT {} NOT FOUND", accountId);
+            if (!preFlightReadAccount(accountId, resolved)) {
+                // :L177-:L179 DISPLAY 'ACCOUNT ' ACCT-ID ' NOT FOUND'. Split in two: an identifier-free
+                // operational line, and the source's own wording on the hard-OFF parity channel with the
+                // identifier reduced to its last four digits.
+                LOG.warn(MSG_PRE_FLIGHT_ACCOUNT_NOT_FOUND, Long.valueOf(recordOrdinal));
+                if (PARITY_LOG.isDebugEnabled()) {
+                    PARITY_LOG.debug("ACCOUNT {} NOT FOUND", maskAccountIdentifier(accountId));
+                }
             }
             return;
         }
@@ -1361,26 +1588,192 @@ public class DailyTransactionPostingJob {
     }
 
     /**
+     * Reads up to {@link #chunkSize} records from the {@code DALYTRAN} reader, reporting whether the read that
+     * filled the window also reached end of file.
+     *
+     * <p>Windowing is what makes the two lookups of {@code app/cbl/CBTRN01C.cbl:L170}-{@code :L184} resolvable
+     * as set operations. It changes nothing an observer can see: the records are returned in the order the
+     * reader produced them, which is the file's order, and every one of them is emitted individually and in
+     * that order by the caller.
+     *
+     * <p>The window is bounded by construction, so a staged file of any size costs at most
+     * {@link #chunkSize} resident records. That matters because the pre-flight reads the <em>whole</em> file -
+     * the source does, at {@code :L164}-{@code :L186}, because its purpose is to report on every record.
+     *
+     * @param reader the {@code DALYTRAN} reader, already opened by the step's stream registration
+     * @return the next window, empty only when the reader was exhausted before it produced anything
+     * @throws FatalProcessingException if a read fails with any status other than success or end of file
+     */
+    private PreFlightWindow preFlightReadWindow(final DailyTransactionReader reader) {
+        final List<DailyTransaction> records = new ArrayList<>(chunkSize);
+        for (int index = 0; index < chunkSize; index++) {
+            final DailyTransaction next = preFlightDalytranGetNext(reader);
+            if (next == null) {
+                // MOVE 'Y' TO END-OF-DAILY-TRANS-FILE (:L217). The window is short, and the caller must run
+                // the end-of-file repetition rather than ask for another window.
+                return new PreFlightWindow(List.copyOf(records), true);
+            }
+            records.add(next);
+        }
+        return new PreFlightWindow(List.copyOf(records), false);
+    }
+
+    /**
+     * Resolves one window's cross-reference and account rows with one query each.
+     *
+     * <p><strong>Finding, severity High - remediated here.</strong> This method replaces a keyed read per
+     * record on each of two datasets. For the 300-record parity fixture that was about 600 round trips, and it
+     * grew linearly with the staged file, which is the "obvious inefficiency" Rule 1 clause A forbids.
+     *
+     * <p><strong>What is preserved, exactly.</strong> A keyed read either finds a row or does not, and which
+     * rows a set of keys finds is the same question asked once as asked one key at a time - so the outcome per
+     * record is identical. The <em>order</em> of the diagnostics is preserved by the caller, which iterates the
+     * window in file order and emits each record's own messages, and the <em>order of the two lookups</em> is
+     * preserved by {@link #preFlightVerifyRecord(DailyTransaction, long, PreFlightLookups)}, which still
+     * consults
+     * the cross-reference first and only then the account. The account keys are collected from the resolved
+     * cross-references rather than guessed, so the second query asks for exactly the accounts the first
+     * query's results name - which is what {@code :L173}-{@code :L176} does one record at a time.
+     *
+     * <p>Duplicate card numbers within a window cost nothing extra: the keys are de-duplicated into a set
+     * before the query, which is a property of the query and not of the emission.
+     *
+     * @param window the records to resolve; must not be {@code null}
+     * @return the resolved rows, never {@code null}
+     * @throws FatalProcessingException if either dataset cannot be read
+     */
+    private PreFlightLookups preFlightResolveWindow(final PreFlightWindow window) {
+        final Set<String> cardNumbers = new LinkedHashSet<>();
+        for (final DailyTransaction record : window.records()) {
+            final String cardNumber = record.getCardNumber();
+            if (cardNumber != null && !cardNumber.isBlank()) {
+                cardNumbers.add(cardNumber);
+            }
+        }
+        if (cardNumbers.isEmpty()) {
+            return PreFlightLookups.empty();
+        }
+
+        final Map<String, CardCrossReference> crossReferences = new LinkedHashMap<>();
+        try {
+            for (final CardCrossReference found : crossReferenceRepository.findAllById(cardNumbers)) {
+                crossReferences.put(found.getCardNumber(), found);
+            }
+        } catch (final CardDemoException alreadyTyped) {
+            throw alreadyTyped;
+        } catch (final DataAccessException cause) {
+            LOG.error(MSG_PRE_FLIGHT_ERROR_OPENING_XREFFILE);
+            preFlightDisplayIoStatus(IO_ERROR_STATUS);
+            throw preFlightAbendProgram(MSG_PRE_FLIGHT_ERROR_OPENING_XREFFILE, REASON_READ_FAILED, cause);
+        }
+
+        final Set<Long> accountIds = new LinkedHashSet<>();
+        for (final CardCrossReference crossReference : crossReferences.values()) {
+            if (crossReference.getAccountId() != null) {
+                accountIds.add(crossReference.getAccountId());
+            }
+        }
+        final Set<Long> presentAccounts = new LinkedHashSet<>();
+        if (!accountIds.isEmpty()) {
+            try {
+                for (final Account found : accountRepository.findAllById(accountIds)) {
+                    presentAccounts.add(found.getAccountId());
+                }
+            } catch (final CardDemoException alreadyTyped) {
+                throw alreadyTyped;
+            } catch (final DataAccessException cause) {
+                LOG.error(MSG_PRE_FLIGHT_ERROR_OPENING_ACCTFILE);
+                preFlightDisplayIoStatus(IO_ERROR_STATUS);
+                throw preFlightAbendProgram(MSG_PRE_FLIGHT_ERROR_OPENING_ACCTFILE, REASON_READ_FAILED,
+                        cause);
+            }
+        }
+        return new PreFlightLookups(Map.copyOf(crossReferences), Set.copyOf(presentAccounts));
+    }
+
+    /**
      * The end-of-file repetition of {@code app/cbl/CBTRN01C.cbl:L170}-{@code :L184}.
      *
-     * <p>The source reaches those statements once more on the iteration that sets the end-of-file flag,
-     * with {@code DALYTRAN-CARD-NUM} still holding whatever the previous successful read left in it. In
-     * Java the previous record is no longer in scope once the loop exits, and re-reading it would perform an
-     * extra dataset access the source does not perform. So the repetition is <strong>reproduced as the
-     * observable emission it is</strong>, not as a second physical lookup: the source's own re-read returns
-     * the same result it returned moments earlier for that same card number, so the only difference an
-     * observer sees is the repeated diagnostic line, which is what this method emits.
+     * <p><strong>Finding, severity High - remediated here.</strong> The source really does execute both
+     * lookups and both emissions once more, on the iteration that sets the end-of-file flag, because they sit
+     * outside the inner {@code IF END-OF-FILE = 'N'} at {@code :L167} and inside the outer one at
+     * {@code :L165} - with {@code DALYTRAN-CARD-NUM} still holding whatever the previous successful read left
+     * in it. An earlier revision of this method emitted a <em>narrative</em> about that repetition instead of
+     * performing it, which is not the same observable behaviour: the diagnostic line an operator sees is the
+     * record's own line, not a note about it, and this program exists only to produce that output. The
+     * repetition is now genuinely executed, against the record the loop left behind.
+     *
+     * <p>It costs no extra dataset access, which is what made the earlier shortcut tempting. The window that
+     * carried the record also carried its resolved cross-reference and account rows, so the repeated lookup is
+     * answered from the same resolution the in-loop lookup used - which is exactly what the source's own
+     * re-read does, since re-reading the same key returns the same row.
      *
      * <p>On an empty file the source's card number field is still at its initial value and the lookup fails,
-     * so the unverifiable-card arm is what an observer sees; that is the branch taken here too. Both cases
-     * are therefore handled explicitly rather than left implicit. Owed an entry in the planned
-     * {@code DECISION_LOG.md} as a preserved quirk whose physical dataset access is deliberately not
-     * duplicated.
+     * so the unverifiable-card arm is what an observer sees; that is the branch taken here too, by passing
+     * a {@code null} record. Both cases are therefore executed rather than described. It is a preserved
+     * quirk whose physical dataset access is deliberately not duplicated.
+     *
+     * @param lastRecord the record the loop last emitted, or {@code null} when the file was empty from the
+     *     outset
+     * @param recordOrdinal the one-based position of {@code lastRecord} within {@code DALYTRAN}, or
+     *     {@code 0} when the file was empty from the outset
+     * @param resolved the window's resolved rows, which answer the repeated lookup without a further round
+     *     trip; must not be {@code null}
      */
-    private void preFlightVerifyTrailingRecord() {
-        if (PARITY_LOG.isDebugEnabled()) {
-            PARITY_LOG.debug("app/cbl/CBTRN01C.cbl:L170-L184 repeats once at end of file against the"
-                    + " previous record; the repeated lookup is reported, not re-executed");
+    private void preFlightVerifyTrailingRecord(final DailyTransaction lastRecord,
+            final long recordOrdinal, final PreFlightLookups resolved) {
+
+        if (lastRecord == null) {
+            // An empty file: DALYTRAN-CARD-NUM holds its initial value, the xref read fails, and :L180-:L184
+            // is the arm the source takes. Reproduced by resolving a blank card number, which the lookup
+            // already treats as unverifiable.
+            preFlightLookupXref(null, resolved);
+            return;
+        }
+        preFlightVerifyRecord(lastRecord, recordOrdinal, resolved);
+    }
+
+    /**
+     * One bounded window of staged records, and whether the read that filled it reached end of file.
+     *
+     * @param records the records in file order, never {@code null} and immutable
+     * @param endOfFile {@code true} when the reader reported end of file while filling this window, which is
+     *     {@code MOVE 'Y' TO END-OF-DAILY-TRANS-FILE} at {@code app/cbl/CBTRN01C.cbl:L217}
+     */
+    private record PreFlightWindow(List<DailyTransaction> records, boolean endOfFile) {
+
+        /**
+         * Reports whether the window carries no records at all, which happens only when the reader was already
+         * exhausted.
+         *
+         * @return {@code true} when there is nothing to emit
+         */
+        private boolean isEmpty() {
+            return records.isEmpty();
+        }
+    }
+
+    /**
+     * One window's resolved cross-reference and account rows.
+     *
+     * <p>Immutable, and built once per window by {@link #preFlightResolveWindow(PreFlightWindow)}. It answers
+     * the two keyed reads of {@code app/cbl/CBTRN01C.cbl:L170}-{@code :L184} for every record in the window,
+     * and it also answers the end-of-file repetition, which asks the same two questions about a record the
+     * window already covered.
+     *
+     * @param crossReferences the cross-reference rows found, keyed by card number; never {@code null}
+     * @param presentAccounts the account identifiers that exist; never {@code null}
+     */
+    private record PreFlightLookups(Map<String, CardCrossReference> crossReferences,
+                                    Set<Long> presentAccounts) {
+
+        /**
+         * An empty resolution, for a window that carries no usable card number and for the empty-file case.
+         *
+         * @return a resolution in which every lookup misses, never {@code null}
+         */
+        private static PreFlightLookups empty() {
+            return new PreFlightLookups(Map.of(), Set.of());
         }
     }
 
@@ -1430,35 +1823,32 @@ public class DailyTransactionPostingJob {
      *
      * @param cardNumber the card number from the current daily transaction; may be {@code null} or blank,
      *     which is treated as an unverifiable card rather than as an error
+     * @param resolved the window's resolved cross-reference rows, which stand in for the keyed read; must not
+     *     be {@code null}
      * @return the cross-referenced account identifier, or {@code null} when the card is not on file
-     * @throws FatalProcessingException if the underlying store fails for a reason other than not-found
      */
-    private Long preFlightLookupXref(final String cardNumber) {
+    private Long preFlightLookupXref(final String cardNumber, final PreFlightLookups resolved) {
         if (cardNumber == null || cardNumber.isBlank()) {
             LOG.warn(MSG_INVALID_CARD_NUMBER_FOR_XREF);
             return null;
         }
-        final Optional<CardCrossReference> found;
-        try {
-            found = crossReferenceRepository.findById(cardNumber);
-        } catch (final CardDemoException alreadyTyped) {
-            throw alreadyTyped;
-        } catch (final DataAccessException cause) {
-            LOG.error(MSG_PRE_FLIGHT_ERROR_OPENING_XREFFILE);
-            preFlightDisplayIoStatus(IO_ERROR_STATUS);
-            throw preFlightAbendProgram(MSG_PRE_FLIGHT_ERROR_OPENING_XREFFILE, REASON_READ_FAILED, cause);
-        }
-        if (found.isEmpty()) {
+        final CardCrossReference located = resolved.crossReferences().get(cardNumber);
+        if (located == null) {
             // :L231-:L233 INVALID KEY
             LOG.warn(MSG_INVALID_CARD_NUMBER_FOR_XREF);
             return null;
         }
         // :L234-:L238 NOT INVALID KEY
-        final CardCrossReference crossReference = found.get();
+        final CardCrossReference crossReference = located;
         if (PARITY_LOG.isDebugEnabled()) {
+            // All three identifiers are masked, not just the card number. The cross-reference record is
+            // the one place where a card number, an account number and a customer number appear on a
+            // single line, so an unmasked pair here would re-link exactly what masking the card number
+            // is meant to break.
             PARITY_LOG.debug("{} CARD NUMBER: {} ACCOUNT ID : {} CUSTOMER ID: {}",
                     MSG_SUCCESSFUL_READ_OF_XREF, maskCardNumber(crossReference.getCardNumber()),
-                    crossReference.getAccountId(), crossReference.getCustomerId());
+                    maskIdentifier(crossReference.getAccountId()),
+                    maskIdentifier(crossReference.getCustomerId()));
         }
         return crossReference.getAccountId();
     }
@@ -1472,21 +1862,12 @@ public class DailyTransactionPostingJob {
      * {@code :L249}. Like the cross-reference lookup, <strong>it does not abend on a missing record.</strong>
      *
      * @param accountId the account identifier the cross-reference yielded; never {@code null} at this point
+     * @param resolved the window's resolved account identifiers, which stand in for the keyed read; must not
+     *     be {@code null}
      * @return {@code true} when the account is on file, mirroring {@code WS-ACCT-READ-STATUS} remaining zero
-     * @throws FatalProcessingException if the underlying store fails for a reason other than not-found
      */
-    private boolean preFlightReadAccount(final Long accountId) {
-        final Optional<Account> found;
-        try {
-            found = accountRepository.findById(accountId);
-        } catch (final CardDemoException alreadyTyped) {
-            throw alreadyTyped;
-        } catch (final DataAccessException cause) {
-            LOG.error(MSG_PRE_FLIGHT_ERROR_OPENING_ACCTFILE);
-            preFlightDisplayIoStatus(IO_ERROR_STATUS);
-            throw preFlightAbendProgram(MSG_PRE_FLIGHT_ERROR_OPENING_ACCTFILE, REASON_READ_FAILED, cause);
-        }
-        if (found.isEmpty()) {
+    private boolean preFlightReadAccount(final Long accountId, final PreFlightLookups resolved) {
+        if (!resolved.presentAccounts().contains(accountId)) {
             // :L245-:L247 INVALID KEY
             LOG.warn(MSG_INVALID_ACCOUNT_NUMBER_FOUND);
             return false;
@@ -1518,20 +1899,41 @@ public class DailyTransactionPostingJob {
     /**
      * {@code 0000-DALYTRAN-OPEN} of the pre-flight - {@code app/cbl/CBTRN01C.cbl:L252}-{@code :L270}.
      *
-     * <p>The source's {@code OPEN INPUT DALYTRAN-FILE} at {@code :L254} has already happened by the time
-     * this runs: the reader is registered as an {@code ItemStream} by the step builder, which opens it
-     * around the step. What remains, and what the source's guard actually asserts, is that the dataset is
-     * reachable - so that is what is probed, through the repository the reader draws from.
+     * <p>The source performs this paragraph itself, from {@code app/cbl/CBTRN01C.cbl:L157}, and it is the
+     * paragraph that issues {@code OPEN INPUT DALYTRAN-FILE} at {@code :L254}. <strong>So this method opens
+     * the reader.</strong> Nothing else does: the pre-flight is a {@code tasklet}, so the step builder
+     * registers no {@code ItemStream} and performs no open around it - unlike the posting step, which
+     * registers the same reader through {@code .reader(...)} and is opened for that reason. A cursor of its
+     * own is supplied rather than the step's, because this is a complete read of the whole file for
+     * reporting and must start at the first record every time; restart positioning belongs to the posting
+     * step, whose reader is a different instance because the bean is {@code @StepScope}.
      *
-     * @param reader the {@code DALYTRAN} reader whose open the step builder has already performed, named in
-     *     the trace so the probe and the reader that follows it are visibly the same dataset
-     * @throws FatalProcessingException if the dataset is unreachable
+     * <p>The reachability probe is retained alongside the open, because it is what the source's guard
+     * actually asserts and because it names the dataset in the failure the same way on both paths.
+     *
+     * @param reader the {@code DALYTRAN} reader this paragraph opens, and which
+     *     {@link #closePreFlightDailyTransactionFile(DailyTransactionReader)} releases
+     * @throws FatalProcessingException if the dataset is unreachable or the open fails
      */
     private void openPreFlightDailyTransactionFile(final DailyTransactionReader reader) {
         LOG.debug("{} pre-flight open probe using reader {}", DD_DALYTRAN, reader.getClass().getSimpleName());
         probeDataset(() -> dailyTransactionRepository.findAllByOrderByIngestSequenceAsc(openProbePage()),
                 DD_DALYTRAN, MSG_PRE_FLIGHT_ERROR_OPENING_DALYTRAN, REASON_OPEN_FAILED,
                 ABEND_CULPRIT_PRE_FLIGHT, OPEN_FAILURE_STATUS);
+        // The probe above answers "is the dataset reachable"; it does not open the reader, and the reader
+        // refuses a read until it has been opened. 0000-DALYTRAN-OPEN at app/cbl/CBTRN01C.cbl:L245-L262 is one
+        // OPEN INPUT covering both questions, so both are performed here.
+        //
+        // A fresh context rather than the step's own: this step is read-only and CBTRN01C is not restartable -
+        // it has no checkpoint of any kind - so the sequential scan below must always begin at the first
+        // record. Passing the step context would let a restart of the posting step reposition the verification
+        // scan, which would verify a suffix of the file and report the whole of it as verified.
+        //
+        // The reader is @StepScope, so the instance reached through the proxy here belongs to this step alone
+        // and opening it cannot disturb the posting step's own instance.
+        probeDataset(() -> reader.open(new ExecutionContext()), DD_DALYTRAN,
+                MSG_PRE_FLIGHT_ERROR_OPENING_DALYTRAN, REASON_OPEN_FAILED, ABEND_CULPRIT_PRE_FLIGHT,
+                OPEN_FAILURE_STATUS);
     }
 
     /**
@@ -1597,12 +1999,25 @@ public class DailyTransactionPostingJob {
     /**
      * {@code 9000-DALYTRAN-CLOSE} - {@code app/cbl/CBTRN01C.cbl:L361}-{@code :L378}.
      *
+     * <p>The source performs this paragraph itself, from {@code app/cbl/CBTRN01C.cbl:L188}, and it issues
+     * {@code CLOSE DALYTRAN-FILE} at {@code :L363}. <strong>So this method closes the reader</strong> that
+     * {@link #openPreFlightDailyTransactionFile(DailyTransactionReader)} opened. The pair has to balance:
+     * nothing else releases it, because the pre-flight registers no {@code ItemStream}, and a reader left
+     * open holds its cursor and its stream for the remainder of the step.
+     *
      * <p>Emits {@link #MSG_PRE_FLIGHT_ERROR_CLOSING_DALYTRAN} on failure, which is the source's own
      * copy-and-paste defect naming the customer file - preserved, not repaired. See that constant.
      *
+     * @param reader the {@code DALYTRAN} reader opened by
+     *     {@link #openPreFlightDailyTransactionFile(DailyTransactionReader)}, closed here so the pair is
+     *     symmetrical
      * @throws FatalProcessingException if the dataset cannot be released
      */
-    private void closePreFlightDailyTransactionFile() {
+    private void closePreFlightDailyTransactionFile(final DailyTransactionReader reader) {
+        // Symmetrical with the open above: the reader holds the scan position and, in fixed-width mode, an
+        // open stream, so leaving it open would leak that stream for the life of the step scope.
+        probeDataset(reader::close, DD_DALYTRAN, MSG_PRE_FLIGHT_ERROR_CLOSING_DALYTRAN,
+                REASON_CLOSE_FAILED, ABEND_CULPRIT_PRE_FLIGHT, IO_ERROR_STATUS);
         guardClose(DD_DALYTRAN, MSG_PRE_FLIGHT_ERROR_CLOSING_DALYTRAN, ABEND_CULPRIT_PRE_FLIGHT);
     }
 
@@ -2033,10 +2448,10 @@ public class DailyTransactionPostingJob {
     /**
      * Adds the rejected records of one chunk to the {@code records processed} counter.
      *
-     * <p><strong>Finding, severity Medium - raised against this class and remediated here.</strong> The
-     * {@code records processed} meter disagreed with the {@value #MSG_TRANSACTIONS_PROCESSED} literal this
-     * class emits, under-reporting by exactly the number of rejected records. Remediation: add the rejects to
-     * the existing meter, as below. A dashboard built on the meter would otherwise have contradicted the log.
+     * <p><strong>Why the rejects are added to the existing meter.</strong> Counting only the posted records
+     * would make the {@code records processed} meter disagree with the
+     * {@value #MSG_TRANSACTIONS_PROCESSED} literal this class emits, under-reporting by exactly the number of
+     * rejected records, so a dashboard built on the meter would contradict the log.
      *
      * <p>Closes a real gap rather than duplicating an existing count. {@code WS-TRANSACTION-COUNT} is
      * incremented at {@code app/cbl/CBTRN02C.cbl:L206}, <em>before</em> validation runs at {@code :L210}, so
@@ -2085,10 +2500,9 @@ public class DailyTransactionPostingJob {
     /**
      * The page request used by an open probe that goes through the unordered {@code findAll(Pageable)}.
      *
-     * <p><strong>Finding, severity Medium - raised against this class and remediated here.</strong> These
-     * probes originally went through {@code findAll(PageRequest.of(0, 1))} with no ordering at all, which
-     * left the emitted query dependent on whatever row order the store happened to return. Remediation: pass
-     * the ordering through the page request, as below.
+     * <p><strong>Why the ordering travels in the page request.</strong> An unordered
+     * {@code findAll(PageRequest.of(0, 1))} would leave the emitted query dependent on whatever row order the
+     * store happened to return, so the ordering is passed through the page request, as below.
      *
      * <p>Sorts ascending on the entity's identifier property so the probe is deterministic rather than
      * dependent on whatever row order the store happens to return. Rule 1 clause A puts determinism ahead of
@@ -2128,6 +2542,67 @@ public class DailyTransactionPostingJob {
         }
         final int maskedLength = trimmed.length() - CARD_NUMBER_VISIBLE_SUFFIX;
         return String.valueOf(CARD_NUMBER_MASK).repeat(maskedLength) + trimmed.substring(maskedLength);
+    }
+
+    /**
+     * Masks all but the last {@value #IDENTIFIER_VISIBLE_SUFFIX} digits of an account or customer identifier.
+     *
+     * <p>{@code ACCT-ID} is {@code PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy} and {@code CUST-ID} is
+     * {@code PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy}. Both are durable identifiers for a real
+     * cardholder: an account number is what a caller quotes to be recognised, and a nine-digit customer
+     * number sits in the same shape as the {@code CUST-SSN} that
+     * {@code src/main/resources/logback-spring.xml} deliberately refuses to redact by pattern, because a
+     * blanket nine-digit rule would also redact the end-of-run counters. That is precisely why these values
+     * are masked <em>here</em>, at the call site, where the field is known: an encoder rule cannot tell a
+     * customer identifier from {@code WS-TRANSACTION-COUNT}, and this method can.
+     *
+     * <p>The last four digits are kept so an operator can still correlate two lines about the same account
+     * without being handed the identifier, which is the same trade the card-number projection makes - and
+     * {@link #CARD_NUMBER_MASK} is reused as the glyph so every masked value in this job's output looks
+     * alike rather than inventing a second convention.
+     *
+     * @param identifier the raw account or customer identifier; may be {@code null}
+     * @return the masked projection, never {@code null} and never the literal {@code "null"}
+     */
+    private static String maskIdentifier(final Long identifier) {
+        if (identifier == null) {
+            return "(absent)";
+        }
+        final String digits = Long.toString(identifier);
+        if (digits.length() <= IDENTIFIER_VISIBLE_SUFFIX) {
+            return String.valueOf(CARD_NUMBER_MASK).repeat(digits.length());
+        }
+        final int maskedLength = digits.length() - IDENTIFIER_VISIBLE_SUFFIX;
+        return String.valueOf(CARD_NUMBER_MASK).repeat(maskedLength) + digits.substring(maskedLength);
+    }
+
+    /**
+     * Masks all but the last {@value #ACCOUNT_ID_VISIBLE_SUFFIX} digits of an account identifier.
+     *
+     * <p>Applied to every account identifier this class can emit, so that no log line - not even one on the
+     * parity logger, and not even at {@code DEBUG} - can reconstruct an account number. The identifier is
+     * rendered at its declared {@code PIC 9(11)} width first, so that the masked prefix has a constant
+     * length and a short identifier is not accidentally disclosed in full by being shorter than the visible
+     * suffix. A {@code null} is reported as such rather than producing the literal {@code "null"}.
+     *
+     * <p>Separate from {@link #maskCardNumber(String)} rather than shared with it, and deliberately so. The
+     * two take different types - a {@code Long} keyed on {@code PIC 9(11)} against space-padded
+     * {@code PIC X(16)} text - and the card-number rule has to cope with the blank filler rows and trailing
+     * padding a fixed-width text field carries, which a numeric identifier never has. Folding them into one
+     * routine would mean one of the two callers passing a converted value through a rule written for the
+     * other, which is how a masking rule ends up applied to the wrong extent.
+     *
+     * @param accountId the account identifier; may be {@code null}
+     * @return the masked projection, never {@code null}
+     */
+    private static String maskAccountIdentifier(final Long accountId) {
+        if (accountId == null) {
+            return "(absent)";
+        }
+        // PIC 9(11): zero-padded to its declared width, so the mask always covers seven digits.
+        final String rendered = String.format(Locale.ROOT, "%011d", accountId);
+        final int maskedLength = rendered.length() - ACCOUNT_ID_VISIBLE_SUFFIX;
+        return String.valueOf(CARD_NUMBER_MASK).repeat(maskedLength) + rendered.substring(maskedLength);
     }
 
     /**
@@ -2254,47 +2729,72 @@ public class DailyTransactionPostingJob {
      * bridge populates them from real span identity, and setting them by hand would replace that identity
      * with a fabrication - which would be worse than leaving them to the mechanism that owns them.
      *
-     * <p>Side effects: mutates two diagnostic context entries and sets {@link #DIAGNOSTIC_SNAPSHOT} on the
-     * calling thread. Always paired with {@link #restoreDiagnosticContext()} in a {@code finally} block.
+     * <p>Side effects: mutates two diagnostic context entries and pushes one entry onto
+     * {@link #DIAGNOSTIC_SNAPSHOTS} for the calling thread. Always paired with
+     * {@link #restoreDiagnosticContext(long)} in a {@code finally} block.
      *
      * @param jobInstanceId the Spring Batch instance identifier of the starting execution
+     * @param jobExecutionId the identifier of the starting execution, carried so that the matching restore
+     *     can prove it is undoing its own displacement rather than someone else's
      */
-    private static void establishDiagnosticContext(final long jobInstanceId) {
+    private static void establishDiagnosticContext(final long jobInstanceId, final long jobExecutionId) {
         final String previousJobInstanceId =
                 CorrelationIdFilter.propagateJobInstanceId(Long.toString(jobInstanceId));
         final String previousCorrelationId = CorrelationIdFilter.currentCorrelationId();
         if (previousCorrelationId == null) {
             CorrelationIdFilter.propagate(UUID.randomUUID().toString());
         }
-        DIAGNOSTIC_SNAPSHOT.set(
-                new DiagnosticContextSnapshot(previousJobInstanceId, previousCorrelationId));
+        // computeIfAbsent has no ThreadLocal equivalent, so the deque is created on first use for this
+        // thread. Confined to one thread throughout, which is why an unsynchronised ArrayDeque is correct.
+        Deque<DiagnosticContextSnapshot> displaced = DIAGNOSTIC_SNAPSHOTS.get();
+        if (displaced == null) {
+            displaced = new ArrayDeque<>();
+            DIAGNOSTIC_SNAPSHOTS.set(displaced);
+        }
+        displaced.push(
+                new DiagnosticContextSnapshot(jobExecutionId, previousJobInstanceId, previousCorrelationId));
     }
 
     /**
-     * Puts both diagnostic context entries back exactly as {@link #establishDiagnosticContext(long)} found
-     * them.
+     * Puts both diagnostic context entries back exactly as {@link #establishDiagnosticContext(long, long)}
+     * found them, undoing this invocation's displacement and no other.
      *
      * <p>Restoring rather than removing is the point. An entry that was absent is removed, so nothing leaks
      * onto the next job to borrow this pooled thread; an entry that existed is put back, so context owned by
      * an outer scope survives. A blanket removal satisfies the first obligation and violates the second.
      *
-     * <p>A missing snapshot is tolerated by doing nothing. That is reachable rather than defensive padding:
-     * if the listener abends before the snapshot is set, this thread's context was never modified, so there
-     * is nothing to undo.
+     * <p>The most recent displacement is the one this invocation owns, because pushes and pops are paired
+     * and nest. The execution identifier is compared to confirm that, and a mismatch is reported rather than
+     * hidden: it would mean pushes and pops had been interleaved out of order, which no supported launcher
+     * does, and silently restoring the wrong values would leave a correlation identifier attributed to the
+     * wrong run. The pop still happens, because leaving the entry in place would strand it on the thread.
      *
-     * <p>Side effects: mutates two diagnostic context entries and clears {@link #DIAGNOSTIC_SNAPSHOT} on the
-     * calling thread.
+     * <p>An empty or absent stack is tolerated by doing nothing. That is reachable rather than defensive
+     * padding: if the listener abends before the push completes, this thread's context was never modified,
+     * so there is nothing to undo.
+     *
+     * <p>Side effects: mutates two diagnostic context entries, pops one entry, and clears
+     * {@link #DIAGNOSTIC_SNAPSHOTS} for the calling thread once its last entry is gone.
+     *
+     * @param jobExecutionId the identifier of the finishing execution, matched against the entry being popped
      */
-    private static void restoreDiagnosticContext() {
-        final DiagnosticContextSnapshot snapshot = DIAGNOSTIC_SNAPSHOT.get();
-        if (snapshot == null) {
+    private static void restoreDiagnosticContext(final long jobExecutionId) {
+        final Deque<DiagnosticContextSnapshot> displaced = DIAGNOSTIC_SNAPSHOTS.get();
+        if (displaced == null || displaced.isEmpty()) {
             return;
         }
+        final DiagnosticContextSnapshot snapshot = displaced.pop();
         try {
+            if (snapshot.jobExecutionId() != jobExecutionId) {
+                LOG.warn("Diagnostic context restored out of order: expected execution {}, found {}",
+                        jobExecutionId, snapshot.jobExecutionId());
+            }
             CorrelationIdFilter.propagateJobInstanceId(snapshot.jobInstanceId());
             CorrelationIdFilter.propagate(snapshot.correlationId());
         } finally {
-            DIAGNOSTIC_SNAPSHOT.remove();
+            if (displaced.isEmpty()) {
+                DIAGNOSTIC_SNAPSHOTS.remove();
+            }
         }
     }
 
@@ -2344,14 +2844,17 @@ public class DailyTransactionPostingJob {
     /**
      * What the diagnostic context held before this job replaced it.
      *
-     * <p>A record, so the snapshot is immutable and the {@link ThreadLocal} that holds it is shared static
-     * state without being mutable static state. A {@code null} component means the entry was absent and must
-     * be removed rather than restored.
+     * <p>A record, so the snapshot is immutable and the stack that holds it is shared static state without
+     * being mutable static state. A {@code null} string component means the entry was absent and must be
+     * removed rather than restored.
      *
+     * @param jobExecutionId the execution that displaced these values, so the matching restore can prove it
+     *     is undoing its own displacement even when several are stacked on one thread
      * @param jobInstanceId the displaced job instance identifier, or {@code null} if there was none
      * @param correlationId the displaced correlation identifier, or {@code null} if there was none
      */
-    private record DiagnosticContextSnapshot(String jobInstanceId, String correlationId) {
+    private record DiagnosticContextSnapshot(
+            long jobExecutionId, String jobInstanceId, String correlationId) {
     }
 
     /**
@@ -2393,7 +2896,7 @@ public class DailyTransactionPostingJob {
      * context.
      */
     private final class PostingOutcomeWriter
-            implements ItemWriter<TransactionPostingProcessor.PostingResult> {
+            implements ItemStreamWriter<TransactionPostingProcessor.PostingResult>, StepExecutionListener {
 
         /** Paragraph {@code 2900-WRITE-TRANSACTION-FILE}, and the 350-byte record geometry. */
         private final TransactionWriter postedWriter;
@@ -2412,6 +2915,39 @@ public class DailyTransactionPostingJob {
 
             this.postedWriter = postedWriter;
             this.rejectedWriter = rejectedWriter;
+        }
+
+        /**
+         * {@inheritDoc}
+         *
+         * <p><strong>Finding, severity High - remediated here.</strong> Forwards the step execution to
+         * {@link TransactionWriter}, which implements {@link StepExecutionListener} itself and captures the
+         * execution in {@code beforeStep} so that it can scope its object key on the job instance. Spring
+         * Batch registers the reader, processor and writer as listeners when they implement a listener
+         * interface, but it inspects only the objects handed to {@code reader}, {@code processor} and
+         * {@code writer} - and the object handed to {@code writer} here is this wrapper. Wrapping the
+         * transaction writer therefore hid it from that registration, its {@code beforeStep} never ran, and
+         * the first write of every run abended with "no step execution was captured before the first write",
+         * which made the posting step - and so the whole job - unable to complete on any input.
+         *
+         * <p>The remediation is to give the wrapper the lifecycle responsibility that comes with wrapping:
+         * a composite owns its delegates' callbacks, which is the same reason the framework's own
+         * {@code CompositeItemWriter} implements {@code ItemStream} and forwards {@code open}, {@code update}
+         * and {@code close}. Because this class now implements the interface, the framework registers
+         * <em>it</em> automatically, and it passes the execution on. {@link RejectWriter} needs no forwarding:
+         * it implements no listener interface, and its per-step configuration is done by
+         * {@link PostTranStepListener#beforeStep(StepExecution)} through {@code openRejectFile}.
+         *
+         * <p>Purpose: wire the delegate's step lifecycle. Inputs: the framework's step execution. Output:
+         * none. Side effects: replaces the execution captured by the transaction writer. Error modes: none of
+         * its own; a {@code null} execution is passed through and reported by the delegate at its first write,
+         * where the diagnostic can name the step.
+         *
+         * @param stepExecution the step execution supplied by the framework
+         */
+        @Override
+        public void beforeStep(final StepExecution stepExecution) {
+            postedWriter.beforeStep(stepExecution);
         }
 
         /**
@@ -2471,6 +3007,50 @@ public class DailyTransactionPostingJob {
                 rejectedWriter.write(new Chunk<>(rejected));
             }
         }
+
+        /**
+         * {@inheritDoc}
+         *
+         * <p>Forwards the stream lifecycle to the reject writer, which needs it because
+         * {@code AWS.M2.CARDDEMO.DALYREJS(+1)} at {@code app/jcl/POSTTRAN.jcl:L38} is <strong>one</strong>
+         * dataset: that writer therefore appends every chunk to one object and completes it on
+         * {@link #close()}. Spring Batch registers a step's writer as a stream only when the object handed to
+         * {@code writer(...)} implements {@code ItemStream}, and the object handed to it is this decorator - so
+         * without these three methods the reject generation would never be closed and the run's rejects would
+         * never reach the store.
+         *
+         * <p>The transaction writer is deliberately not forwarded to: it is not an {@code ItemStream}, because
+         * its output is the keyed transaction relation plus one mirror object per commit interval rather than a
+         * single generation.
+         *
+         * @param executionContext the step's context
+         */
+        @Override
+        public void open(final ExecutionContext executionContext) {
+            rejectedWriter.open(executionContext);
+        }
+
+        /**
+         * {@inheritDoc}
+         *
+         * @param executionContext the step's context, into which the reject writer publishes its running count
+         */
+        @Override
+        public void update(final ExecutionContext executionContext) {
+            rejectedWriter.update(executionContext);
+        }
+
+        /**
+         * {@inheritDoc}
+         *
+         * <p>This is {@code 9300-DALYREJS-CLOSE} at {@code app/cbl/CBTRN02C.cbl:L654}: the single reject
+         * generation is completed here and its concrete key published. A failure is the source's own failed
+         * {@code CLOSE} and fails the step.
+         */
+        @Override
+        public void close() {
+            rejectedWriter.close();
+        }
     }
 
     /**
@@ -2527,8 +3107,9 @@ public class DailyTransactionPostingJob {
         /**
          * {@inheritDoc}
          *
-         * <p>Runs the six {@code CLOSE} paragraphs in source order, emits the two end-of-run counters and the
-         * end-of-execution marker, promotes the generation keys, and applies the return-code-4 exit status.
+         * <p>Runs the six {@code CLOSE} paragraphs in source order and then, <em>only if the step completed</em>,
+         * emits the two end-of-run counters and the end-of-execution marker, promotes the generation keys, and
+         * applies the return-code-4 exit status.
          *
          * <p><strong>Returns {@code null} deliberately.</strong> Spring Batch merges a returned status into
          * the step's own with {@link ExitStatus#and(ExitStatus)}. That merge would in fact preserve
@@ -2544,9 +3125,12 @@ public class DailyTransactionPostingJob {
          * documented contract: {@code FAILED.and("COMPLETED WITH REJECTS")} stays {@code FAILED}, so a
          * genuine failure can never be downgraded to return code 4.
          *
-         * <p>A step that already failed keeps its failure: the reject-count status is applied only to a step
-         * that completed, because return code 4 means "completed, with rejects" and must never mask a
-         * genuine failure or an abend.
+         * <p>A step that already failed keeps its failure and, beyond that, produces <strong>no
+         * end-of-run output at all</strong>: no counter emission, no generation-key promotion and no
+         * reject-count exit status. Return code 4 means "completed, with rejects" and must never mask a
+         * genuine failure or an abend, and a summary or a promoted key would advertise a completed run to
+         * anything reading the job context. The six closes still run, because the language environment
+         * releases the datasets on an abend too.
          *
          * @param stepExecution the finished step
          * @return {@code null}, to leave the framework's own status merge untouched
@@ -2563,6 +3147,25 @@ public class DailyTransactionPostingJob {
             final long processed = readCounter(stepExecution, PROCESSED_COUNT_CONTEXT_ENTRY);
             final long rejected = readCounter(stepExecution, REJECT_COUNT_CONTEXT_ENTRY);
 
+            // FINDING, SEVERITY HIGH - remediated here. Everything below used to run unconditionally, so a
+            // step that FAILED still emitted the two end-of-run counters as though the run had completed and
+            // still promoted its generation keys into the job context, where a downstream step would read them
+            // as the run's output. The source cannot do that: :L227-:L232 is reached only by falling out of the
+            // mainline loop, and every failure path before it goes through 9999-ABEND-PROGRAM, which calls
+            // CEE3ABD and never returns. A failed step therefore emits no summary and publishes no output, and
+            // that is what the guard below reproduces. The closes above are NOT guarded, because they must run
+            // either way - CICS and the language environment release the datasets on abend too.
+            if (stepExecution.getStatus().isUnsuccessful()) {
+                LOG.error("{} did not complete: status={}; the end-of-run counters of "
+                                + "app/cbl/CBTRN02C.cbl:L227-L228 are not emitted and no generation key is "
+                                + "promoted, because :L227 is reached only by completing the mainline loop "
+                                + "and every failure path abends at 9999-ABEND-PROGRAM instead. Records "
+                                + "observed before the failure: processed={} rejected={}",
+                        POSTING_STEP_BEAN_NAME, stepExecution.getStatus(), Long.valueOf(processed),
+                        Long.valueOf(rejected));
+                return null;
+            }
+
             // :L227-:L228. Rendered as nine zero-padded digits because both counters are PIC 9(09), and
             // emitted with the source's own literals - one space before the first colon, two before the
             // second.
@@ -2573,7 +3176,7 @@ public class DailyTransactionPostingJob {
 
             // :L229-:L231 IF WS-REJECT-COUNT > 0 MOVE 4 TO RETURN-CODE. The only condition, and nothing else
             // participates in it.
-            if (rejected > 0L && !stepExecution.getStatus().isUnsuccessful()) {
+            if (rejected > 0L) {
                 stepExecution.setExitStatus(COMPLETED_WITH_REJECTS_EXIT_STATUS);
             }
 
@@ -2610,7 +3213,8 @@ public class DailyTransactionPostingJob {
          */
         @Override
         public void beforeJob(final JobExecution jobExecution) {
-            establishDiagnosticContext(jobExecution.getJobInstance().getInstanceId());
+            establishDiagnosticContext(
+                    jobExecution.getJobInstance().getInstanceId(), jobExecution.getId());
         }
 
         /**
@@ -2626,7 +3230,7 @@ public class DailyTransactionPostingJob {
             try {
                 applyAbendExitStatus(jobExecution);
             } finally {
-                restoreDiagnosticContext();
+                restoreDiagnosticContext(jobExecution.getId());
             }
         }
     }

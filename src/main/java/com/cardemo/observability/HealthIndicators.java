@@ -85,11 +85,12 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  *
  * <h2>Why it exists: new capability, not a translation</h2>
  *
- * <p>The legacy system has <strong>no instrumentation whatsoever</strong>. The entire telemetry
- * surface of 19,254 lines of COBOL is 322 {@code DISPLAY} statements across {@code app/cbl/**},
- * plus the four-character file-status renderer at {@code app/cbl/CBTRN02C.cbl:L714-L727}. A search
- * of the frozen corpus for {@code prometheus}, {@code micrometer}, {@code opentelemetry},
- * {@code healthcheck} or {@code actuator} matches nothing at all.
+ * <p>The legacy system has <strong>no structured instrumentation</strong>. Its entire telemetry
+ * surface is {@code DISPLAY} to SYSOUT across {@code app/cbl/**}, plus the four-character
+ * file-status renderer at {@code app/cbl/CBTRN02C.cbl:L714-L727}. A search of the frozen corpus for
+ * {@code prometheus}, {@code micrometer}, {@code opentelemetry}, {@code healthcheck} or
+ * {@code actuator} matches nothing at all, and there is no metric, trace, health probe or service
+ * level objective anywhere in it.
  *
  * <p>This file is therefore <strong>not</strong> a translation of existing behaviour and nothing in
  * it may be justified as "preserved for parity". It exists solely because Rule 1 Clause A requires
@@ -299,9 +300,10 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  *       any kind;</li>
  *   <li><strong>health-group composition and endpoint exposure</strong> - {@code application.yml};</li>
  *   <li><strong>AWS client construction</strong> - {@code com.cardemo.config.AwsConfig};</li>
- *   <li><strong>tracing and metrics registration</strong>, and the wiring of the three
- *       observability classes - {@code com.cardemo.config.ObservabilityConfig}, which is
- *       <strong>planned rather than authored</strong>; these three classes are self-registering meanwhile;</li>
+ *   <li><strong>tracing configuration and the wiring of this package</strong> -
+ *       {@code com.cardemo.config.ObservabilityConfig}, which is the declared wiring owner and the
+ *       single declaration site of the application {@link java.time.Clock}; the three classes in this
+ *       package register themselves and it re-declares none of them;</li>
  *   <li><strong>the business counters</strong> - {@link MetricsConfig};</li>
  *   <li><strong>correlation identity</strong> - {@link CorrelationIdFilter};</li>
  *   <li><strong>the Prometheus scrape configuration</strong> - {@code observability/prometheus.yml};</li>
@@ -335,8 +337,6 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  * {@link #REASON_NOT_CONFIGURED} and the offending property key rather than throwing a
  * {@link NullPointerException}.
  *
- * <h2>Verified divergences from the migration plan</h2>
- *
  * <p>Two binding details are easy to get wrong and are therefore stated explicitly:
  *
  * <ul>
@@ -351,39 +351,27 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  *       LocalStack, Jaeger, Prometheus and Grafana, the first two carrying healthchecks of their own.</li>
  *   </ul>
  *
- * <h2>Resolved defects in this class</h2>
- *
- * <p>Three defects were found in the first authoring of this class by external review and are fixed
- * here. They are recorded rather than quietly corrected, because each one's absence is exactly what
- * a reader would otherwise have to rediscover.
+ * <h2>Three constraints on how a probe may behave, and why each holds</h2>
  *
  * <ul>
- *   <li><strong>RESOLVED, was High - unbounded and uncancelled calls.</strong> The three
- *       {@code HeadBucket} calls carried no deadline of their own and relied entirely on the shared
- *       client's timeouts, which are sized for batch uploads and are an order of magnitude longer than
- *       a readiness probe may take; and the SQS future was awaited with a timeout but was
- *       <em>never captured</em>, so on expiry the request kept running with no reference left to
- *       cancel it - one orphaned request, connection and response buffer per readiness poll against a
- *       slow substrate. Remediation, applied: a per-contributor budget, a request-level deadline drawn
- *       from what remains of it on every call, a refusal to call at all once the budget is spent, and
- *       {@code cancel(true)} on every abandonment path.</li>
- *   <li><strong>RESOLVED, was High - raw SDK throwables on the log.</strong> Both {@code unreachable}
- *       helpers passed the caught throwable as the final SLF4J argument, which renders its message and
- *       full stack. An SDK message carries the resolved endpoint and the queue URL with its
- *       twelve-digit account segment, and a rendered stack carries the same values as frame arguments
- *       where no field-path masking rule in {@code logback-spring.xml} can reach them. Remediation,
- *       applied: {@link #describeFailure(Throwable)} reduces the cause to an exception class name plus
- *       a numeric service status, and the throwable itself is never handed to the logger. The
- *       masking layer additionally gained AWS-specific rules, but the fix here is at source, because
- *       masking a positional value inside a rendered stack trace is not achievable.</li>
- *   <li><strong>RESOLVED, was Medium - {@code UP} after existence alone.</strong> Both probes reported
- *       {@code UP} once the resource answered, without verifying the two attributes that make the
- *       resource usable: object versioning on the batch-output bucket, and FIFO plus content-based
- *       deduplication on the report queue. Neither can be added after creation, and neither fault is
- *       visible to an existence check, so a misprovisioned substrate passed readiness and failed later
- *       as silently lost generations or reordered report jobs. Remediation, applied: one
- *       {@code GetBucketVersioning} and one two-attribute {@code GetQueueAttributes}, both inside the
- *       existing budget, reported as {@link #REASON_ATTRIBUTE_MISMATCH}.</li>
+ *   <li><strong>Every remote call is bounded and cancellable.</strong> The shared clients' timeouts are
+ *       sized for batch uploads and are an order of magnitude longer than a readiness probe may take,
+ *       so each contributor carries its own budget, draws a request-level deadline from what remains of
+ *       it on every call, refuses to call at all once the budget is spent, and calls
+ *       {@code cancel(true)} on every abandonment path. An uncaptured future would otherwise leave one
+ *       orphaned request, connection and response buffer per readiness poll against a slow substrate.</li>
+ *   <li><strong>A raw SDK throwable is never handed to the logger.</strong>
+ *       {@link #describeFailure(Throwable)} reduces the cause to an exception class name plus, when the
+ *       service answered, its numeric status. The fix has to be at source: an SDK message carries the
+ *       resolved endpoint and the queue URL with its account segment, and a rendered stack carries the
+ *       same values as frame arguments, where no field-path masking rule in {@code logback-spring.xml}
+ *       can reach them.</li>
+ *   <li><strong>Existence alone is not {@code UP}.</strong> Object versioning on the batch-output
+ *       bucket, and FIFO plus content-based deduplication on the report queue, can neither be added
+ *       after creation nor observed by an existence check, so a misprovisioned substrate would pass
+ *       readiness and fail later as silently lost generations or reordered report jobs. One
+ *       {@code GetBucketVersioning} and one two-attribute {@code GetQueueAttributes} therefore run
+ *       inside the same budget, reported as {@link #REASON_ATTRIBUTE_MISMATCH}.</li>
  *   </ul>
  *
  * <h2>Failure modes and troubleshooting</h2>
@@ -416,9 +404,9 @@ import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
  *       by hand or by an older revision of that script will not have it.</li>
  *   <li><strong>{@link #REASON_ATTRIBUTE_MISMATCH} with {@link #DETAIL_ATTRIBUTE}
  *       {@code FifoQueue} or {@code ContentBasedDeduplication}.</strong> A standard queue exists under
- *       the configured name, or a FIFO queue was created without content-based deduplication. Neither
- *       attribute can be added to an existing queue: delete it and re-run
- *       {@code localstack-init/init-aws.sh}. A queue created without the {@code .fifo} suffix is the
+ *       the configured name, or a FIFO queue still carries content-based deduplication. Re-run
+ *       {@code localstack-init/init-aws.sh}, which converges the mutable deduplication attribute; a
+ *       queue that is not FIFO at all cannot be converted and must be deleted and recreated. A queue created without the {@code .fifo} suffix is the
  *       usual cause, because SQS rejects FIFO attributes on a name that lacks it.</li>
  *   <li><strong>{@code /actuator/health/readiness} returns 404.</strong> The readiness group was
  *       removed or renamed, or {@code probes.enabled} was turned off. See the container binding
@@ -593,13 +581,29 @@ public class HealthIndicators {
     /**
      * Detail key carrying the outcome of the report queue's FIFO-contract verification, present only
      * on {@code UP}. Its value is the literal {@code verified}, because a queue that is not a FIFO
-     * queue with content-based deduplication is reported as {@link #REASON_ATTRIBUTE_MISMATCH}
-     * instead of {@code UP}.
+     * queue is reported as {@link #REASON_ATTRIBUTE_MISMATCH} instead of {@code UP}. The deduplication
+     * attribute no longer contributes to that verdict - finding H-08 - and is published on its own key,
+     * {@link #DETAIL_CONTENT_DEDUPLICATION}.
      *
-     * <p>A single symbolic token rather than the two observed attribute values, so that the detail
-     * cannot drift into republishing service output.
+     * <p>A single symbolic token rather than an observed attribute value, so that this detail cannot
+     * drift into republishing service output.
      */
     public static final String DETAIL_FIFO_CONTRACT = "fifoContract";
+
+    /**
+     * Detail key carrying the queue's live {@code ContentBasedDeduplication} value.
+     *
+     * <p>Finding H-08, severity High. The attribute is expected to be disabled, but it does not gate
+     * readiness: every submission carries its own {@code MessageDeduplicationId} and an explicit
+     * identifier takes precedence over the body hash, so an enabled hash impairs nothing. It is
+     * published instead of asserted, because it is mutable by any holder of the queue and a probe that
+     * merely refused would say less than one that reports what it saw.
+     *
+     * <p>Publishing the observed boolean is safe in a way that republishing service output generally is
+     * not: the value is one of two service-rendered literals, it is fixed vocabulary rather than
+     * caller-influenced text, and it names no account, address or credential.
+     */
+    public static final String DETAIL_CONTENT_DEDUPLICATION = "contentDeduplication";
 
     /**
      * Detail key carrying the configuration <em>property key</em> that is misconfigured - never its
@@ -656,7 +660,7 @@ public class HealthIndicators {
     /**
      * The resource exists and answered, but an attribute the substrate contract requires does not
      * hold: the batch-output bucket does not have versioning enabled, or the report queue is not a
-     * FIFO queue with content-based deduplication.
+     * FIFO queue, or its deduplication attribute contradicts what the send path requires.
      *
      * <p>Distinguished from {@link #REASON_MISSING} because existence and correctness are different
      * facts with different remedies. A bucket without versioning silently loses the generation
@@ -776,21 +780,48 @@ public class HealthIndicators {
     private static final long MINIMUM_CALL_BUDGET_MILLIS = 50L;
 
     /**
-     * The two queue attributes whose values the FIFO contract requires, in the order they are
-     * verified. Immutable, so this class still holds no static mutable state.
+     * The two queue attributes this probe reads, in the order they are examined. Immutable, so this
+     * class still holds no static mutable state.
      *
-     * <p>{@code FifoQueue} is what makes message-group ordering exist at all, and
-     * {@code ContentBasedDeduplication} is what allows
-     * {@code com.cardemo.service.report.ReportSubmissionService} to publish without computing a
-     * deduplication id per message. Both are set by {@code localstack-init/init-aws.sh} at queue
-     * creation and cannot be added afterwards, which is exactly why verifying them at readiness is
-     * worth two hundred bytes of request.
+     * <p>Both are read, but they are not treated alike, and only the first gates the verdict.
+     * {@code FifoQueue} is what makes message-group ordering exist at all and cannot be changed after
+     * the queue is created, so requiring it is both necessary and stable - see
+     * {@link #REQUIRED_QUEUE_ATTRIBUTE_VALUES}. {@code ContentBasedDeduplication} governs whether the
+     * queue collapses two messages carrying the same body; it is read so that its live value can be
+     * published as {@link #DETAIL_CONTENT_DEDUPLICATION}, because it is mutable and drift in it is
+     * worth seeing, but it does not fail readiness. Both are provisioned by
+     * {@code localstack-init/init-aws.sh}.
      */
-    private static final List<QueueAttributeName> REQUIRED_QUEUE_ATTRIBUTES =
+    private static final List<QueueAttributeName> REQUESTED_QUEUE_ATTRIBUTES =
             List.of(QueueAttributeName.FIFO_QUEUE, QueueAttributeName.CONTENT_BASED_DEDUPLICATION);
 
-    /** The only value either required queue attribute may hold for the contract to be satisfied. */
-    private static final String ATTRIBUTE_VALUE_TRUE = "true";
+    /**
+     * The value each <em>gating</em> queue attribute must hold for readiness.
+     *
+     * <p>Finding H-08, severity High. Readiness used to require {@code ContentBasedDeduplication} to
+     * be {@code true}, on the reading that it was what let the publisher send without computing a
+     * deduplication identifier. That had it backwards: the body of a report message is the report name
+     * and two dates, so content-based deduplication collapses two legitimate submissions of the same
+     * period, while {@code DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)} in {@code app/csd/CARDDEMO.CSD}
+     * appends every write.
+     *
+     * <p>An intermediate revision then inverted the requirement and refused readiness unless the
+     * attribute was {@code false}. That is not right either, and the reason is what readiness is
+     * <em>for</em>: it answers whether traffic should be routed here. The publisher supplies an
+     * explicit {@code MessageDeduplicationId} on every submission, and an explicit identifier takes
+     * precedence over the body hash - confirmed against the emulator, where two identical bodies sent
+     * with distinct identifiers onto a queue reporting {@code true} both arrived. Submission is
+     * therefore correct whatever this attribute says, so failing readiness over it would withdraw a
+     * healthy instance from service for a condition that impairs nothing.
+     *
+     * <p>Only {@code FifoQueue} gates readiness, and it is the one that should: message-group ordering
+     * does not exist without it, and it is fixed when the queue is created so the verdict cannot go
+     * stale. {@code ContentBasedDeduplication} is still read and still published, as
+     * {@link #DETAIL_CONTENT_DEDUPLICATION}, so live drift stays visible on every probe without being
+     * mistaken for an outage.
+     */
+    private static final Map<QueueAttributeName, String> REQUIRED_QUEUE_ATTRIBUTE_VALUES = Map.of(
+            QueueAttributeName.FIFO_QUEUE, "true");
 
     /**
      * Symbolic label published as {@link #DETAIL_ATTRIBUTE} when the batch-output bucket's versioning
@@ -799,7 +830,7 @@ public class HealthIndicators {
      */
     private static final String ATTRIBUTE_LABEL_VERSIONING = "Versioning";
 
-    /** Value published as {@link #DETAIL_FIFO_CONTRACT} once both required attributes verified. */
+    /** Value published as {@link #DETAIL_FIFO_CONTRACT} once every gating attribute has verified. */
     private static final String FIFO_CONTRACT_VERIFIED = "verified";
 
     /**
@@ -1020,8 +1051,8 @@ public class HealthIndicators {
      * {@link #REASON_NOT_CONFIGURED}; an ARN or URL in place of a name yields
      * {@link #REASON_INVALID_NAME} without echoing the value; an absent queue yields
      * {@link #REASON_MISSING}; an unreachable endpoint or service error yields
-     * {@link #REASON_UNREACHABLE}; a queue that resolves but is not FIFO with content-based
-     * deduplication yields {@link #REASON_ATTRIBUTE_MISMATCH}; exceeding the deadline or exhausting
+     * {@link #REASON_UNREACHABLE}; a queue that resolves but is not FIFO, or whose deduplication
+     * attribute contradicts the send path, yields {@link #REASON_ATTRIBUTE_MISMATCH}; exceeding the deadline or exhausting
      * the budget yields {@link #REASON_TIMEOUT}; an interrupt yields {@link #REASON_INTERRUPTED};
      * anything else yields {@link #REASON_ERROR}. All are returned as {@code DOWN} - the indicator
      * never throws.
@@ -1579,6 +1610,10 @@ public class HealthIndicators {
             // unconditionally rather than tracked with a completion flag.
             CompletableFuture<GetQueueUrlResponse> pendingUrl = null;
             CompletableFuture<GetQueueAttributesResponse> pendingAttributes = null;
+
+            // Declared out here for the same reason as the futures: the response itself is scoped to the
+            // try, but the observed deduplication value is published on the UP path below. Finding H-08.
+            String observedDeduplication;
             try {
                 long remainingMillis = remainingBudgetMillis(startedAtNanos, SQS_PROBE_BUDGET_MILLIS);
                 if (!hasCallBudget(remainingMillis)) {
@@ -1606,7 +1641,7 @@ public class HealthIndicators {
                 pendingAttributes =
                         this.sqsAsyncClient.getQueueAttributes(GetQueueAttributesRequest.builder()
                                 .queueUrl(queueUrl)
-                                .attributeNames(REQUIRED_QUEUE_ATTRIBUTES)
+                                .attributeNames(REQUESTED_QUEUE_ATTRIBUTES)
                                 .overrideConfiguration(callDeadline(remainingMillis))
                                 .build());
                 GetQueueAttributesResponse attributes =
@@ -1616,6 +1651,12 @@ public class HealthIndicators {
                 if (unsatisfied != null) {
                     return attributeMismatch(publishedName, unsatisfied.toString(), startedAtNanos);
                 }
+
+                // Omission is how the service renders "off", so an absent attribute is normalised to
+                // false rather than published as null.
+                String reported =
+                        attributes.attributes().get(QueueAttributeName.CONTENT_BASED_DEDUPLICATION);
+                observedDeduplication = reported == null ? "false" : reported.trim();
             } catch (TimeoutException deadlineExceeded) {
                 cancelQuietly(pendingUrl);
                 cancelQuietly(pendingAttributes);
@@ -1640,6 +1681,7 @@ public class HealthIndicators {
                     .withDetail(DETAIL_COMPONENT, SQS_HEALTH_COMPONENT_NAME)
                     .withDetail(DETAIL_QUEUE, publishedName)
                     .withDetail(DETAIL_FIFO_CONTRACT, FIFO_CONTRACT_VERIFIED)
+                    .withDetail(DETAIL_CONTENT_DEDUPLICATION, observedDeduplication)
                     .withDetail(DETAIL_ELAPSED_MILLIS, elapsedMillis(startedAtNanos))
                     .build();
         }
@@ -1647,12 +1689,14 @@ public class HealthIndicators {
         /**
          * Returns the first required queue attribute whose value does not satisfy the FIFO contract.
          *
-         * <p>Checked in {@link HealthIndicators#REQUIRED_QUEUE_ATTRIBUTES} order so the reported
-         * attribute is deterministic rather than dependent on map iteration. An attribute the service
-         * did not return is treated exactly as one returned {@code false}: a FIFO queue always reports
-         * both, so absence means the guarantee is not in force, which is the same fault with the same
-         * remedy. Comparison is case-insensitive because the value is a service-rendered boolean and
-         * its casing is not part of any contract this project owns.
+         * <p>Walked in {@link HealthIndicators#REQUESTED_QUEUE_ATTRIBUTES} order so the reported
+         * attribute is deterministic rather than dependent on map iteration. An attribute that
+         * {@link HealthIndicators#REQUIRED_QUEUE_ATTRIBUTE_VALUES} does not name is read but not
+         * gating and is skipped here; finding H-08 records why {@code ContentBasedDeduplication} is in
+         * that position. An attribute the service did not return is treated exactly as one returned
+         * {@code false}, which is what omission means, so an absent {@code FifoQueue} is a fault.
+         * Comparison is case-insensitive because the value is a service-rendered boolean and its
+         * casing is not part of any contract this project owns.
          *
          * @param attributes the attribute response, never {@code null}
          * @return the first unsatisfied attribute, or {@code null} when both are satisfied
@@ -1660,10 +1704,17 @@ public class HealthIndicators {
         private static QueueAttributeName firstUnsatisfiedAttribute(
                 GetQueueAttributesResponse attributes) {
             Map<QueueAttributeName, String> values = attributes.attributes();
-            for (QueueAttributeName required : REQUIRED_QUEUE_ATTRIBUTES) {
-                String value = values.get(required);
-                if (value == null || !ATTRIBUTE_VALUE_TRUE.equalsIgnoreCase(value.trim())) {
-                    return required;
+            for (QueueAttributeName requested : REQUESTED_QUEUE_ATTRIBUTES) {
+                String gatingValue = REQUIRED_QUEUE_ATTRIBUTE_VALUES.get(requested);
+                if (gatingValue == null) {
+                    // Read and published, but not gating: see REQUIRED_QUEUE_ATTRIBUTE_VALUES for why
+                    // ContentBasedDeduplication cannot legitimately fail readiness.
+                    continue;
+                }
+                String value = values.get(requested);
+                String observed = value == null ? "false" : value.trim();
+                if (!gatingValue.equalsIgnoreCase(observed)) {
+                    return requested;
                 }
             }
             return null;

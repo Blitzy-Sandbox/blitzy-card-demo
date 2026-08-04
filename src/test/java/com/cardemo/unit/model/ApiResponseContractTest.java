@@ -8,8 +8,8 @@
  *               routing or 3270 attribute appears, and the two list envelopes
  *               carry the page metadata and the screen status messages the
  *               source produced.
- * Source      : app/cpy/CVACT02Y.cpy:L18 (CARD-NUM PIC X(16)),
- *                 :L20 (CARD-CVV-CD PIC X(03))
+ * Source      : app/cpy/CVACT02Y.cpy:L5 (CARD-NUM PIC X(16)),
+ *                 :L7 (CARD-CVV-CD PIC 9(03))
  *               + app/cpy/CVCUS01Y.cpy (CUST-SSN, CUST-DOB-YYYY-MM-DD,
  *                 CUST-GOVT-ISSUED-ID, CUST-EFT-ACCOUNT-ID, CUST-PHONE-NUM-1/2)
  *               + app/cbl/COCRDLIC.cbl:L112, :L117 (WS-INFO-MSG, WS-ERROR-MSG),

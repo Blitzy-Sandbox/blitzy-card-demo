@@ -159,7 +159,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>A numeric card verification value or account identifier loses its leading zero.</strong> Eight
  *       of the fifty seeded verification values begin with a zero and every seeded account identifier is
  *       zero-padded to eleven characters, so {@code String} is the only representation that round-trips.</li>
- *   <li><strong>A card number leaking through a rendered string is a Blocker.</strong> Neither
+ *   <li><strong>A card number leaking through a rendered string matters.</strong> Neither
  *       {@link CardDto} nor {@code CardDto.CardListRow} declares {@code toString}, which is what keeps field
  *       values out of the inherited rendering. Adding one, or converting either type to a record, reintroduces
  *       the disclosure; {@code ProtectedCardholderData} is the group that catches it.</li>
@@ -170,16 +170,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       no decode belongs anywhere near it.</li>
  *   </ul>
  *
- * <h2>Findings this file records, by severity</h2>
+ * <h2>Invariants a plausible tidy-up would break</h2>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - a card number or verification value reaching a rendered string; a global,
+ *   <li>a card number or verification value reaching a rendered string; a global,
  *       position-blind overpunch decode applied to the card fixture.</li>
- *   <li><strong>High</strong> - a uniform seven-row model; a shared header, paging or next-page abstraction; a
+ *   <li>a uniform seven-row model; a shared header, paging or next-page abstraction; a
  *       numeric verification value or account identifier; anything implying the account-identifier alternate
  *       index is unique; conflating this payload with the card-update payload; collapsing absent, blank and
  *       low-values into one state.</li>
- *   <li><strong>Medium</strong> - the plan's 460-field census for the seventeen maps. Counting the input groups
+ *   <li>the plan's 460-field census for the seventeen maps. Counting the input groups
  *       yields 441, and the plan's own table sums to 440. The two maps this type serves are unaffected at 15
  *       and 45, so no code changes; {@code COACTVW} is 37 rather than 36 because of the expanded
  *       {@code PIC 99999999999} at {@code app/cpy-bms/COACTVW.CPY:60}.</li>
@@ -386,7 +386,7 @@ class CardDtoTest {
         @Test
         @DisplayName("the copybook declares no selector-type field for row 1")
         void copybookOmitsRowOneSelectorType() {
-            // The finding this whole group exists for, asserted against the map rather than the Java.
+            // The reason this whole group exists, asserted against the map rather than the Java.
             assertThat(listMap.declares("CRDSTP1I"))
                     .as("CRDSTP1I appears nowhere in COCRDLI.CPY")
                     .isFalse();
@@ -827,7 +827,7 @@ class CardDtoTest {
         void theTerminalHeaderIsNotSharedAcrossTheCorpus() {
             // The six header fields look identical across the corpus and are not. A base class, interface or
             // mixin would have to choose one width for CURTIMEI and would misreport whichever screen it did not
-            // choose, so the six fields are declared inline on the type instead. Severity High if unified.
+            // choose, so the six fields are declared inline on the type instead.
             assertThat(detailMap.widthOf("CURTIMEI")).isEqualTo(8);
             assertThat(listMap.widthOf("CURTIMEI")).isEqualTo(8);
             assertThat(signOnMap.widthOf("CURTIMEI"))
@@ -873,7 +873,7 @@ class CardDtoTest {
         void theUpdateMapDeclaresAnExpiryDay() {
             // app/cpy-bms/COCRDUP.CPY:96 declares EXPDAYI PIC X(2). The update screen therefore has a shape
             // this payload does not, and reusing this type as the update request body would silently drop a
-            // field the screen sends. Severity High if conflated.
+            // field the screen sends.
             assertThat(updateMap.declares("EXPDAYI")).isTrue();
             assertThat(updateMap.widthOf("EXPDAYI")).isEqualTo(2);
             assertThat(updateMap.inputFieldCount())
@@ -903,7 +903,7 @@ class CardDtoTest {
         void theAccountIdentifierIsTextual() {
             // ACCTSIDI is PIC X(11) at COCRDLI:66 and at COCRDSL:60 - note the different line numbers - while
             // COACTVW:60 declares the same name as an expanded numeric. Text is the representation that
-            // survives both, and it is the only one that keeps a leading zero. Severity High if numeric.
+            // survives both, and it is the only one that keeps a leading zero.
             assertThat(detailMap.widthOf("ACCTSIDI")).isEqualTo(ACCOUNT_ID_WIDTH);
             assertThat(listMap.widthOf("ACCTSIDI")).isEqualTo(ACCOUNT_ID_WIDTH);
             assertThat(detail().getAccountId())
@@ -941,7 +941,7 @@ class CardDtoTest {
         void theTwoNegativeSentinelsAreIncompatible() {
             // Binary zeros against the character 'N'. A shared next-page abstraction would have to pick one,
             // and the list that did not get its own sentinel would report the wrong paging state on every
-            // page - silently, because both values are one character wide. Severity High if unified.
+            // page - silently, because both values are one character wide.
             assertThat(sourceLine(cardListProgram, 243)).contains("LOW-VALUES").doesNotContain("'N'");
             assertThat(sourceLine(transactionListProgram, 68)).contains("'N'").doesNotContain("LOW-VALUES");
             assertThat(sourceLine(cardListProgram, 244))
@@ -1045,7 +1045,7 @@ class CardDtoTest {
             // app/catlg/LISTCAT.txt:283 gives AXRKP 16, a zero-based displacement, which resolves to one-based
             // bytes 17-27 - exactly CARD-ACCT-ID, since CARD-NUM occupies 1-16. Line 285 spells the index
             // NONUNIQKEY, so one account may legitimately carry many cards and nothing may imply otherwise.
-            // Severity High if a uniqueness constraint is implied.
+            //
             assertThat(catalogueLine(202)).contains("KEYLEN----------------16", "AVGLRECL-------------150");
             assertThat(catalogueLine(281)).contains("KEYLEN----------------11");
             assertThat(catalogueLine(283)).isEqualTo("AXRKP-----------------16");
@@ -1102,7 +1102,7 @@ class CardDtoTest {
         @Test
         @DisplayName("rendering a detail payload reproduces neither the card number nor the cardholder name")
         void renderingADetailPayloadDisclosesNothing() {
-            // Blocker. The type declares no toString, so it inherits the Object rendering, which discloses a
+            // The type declares no toString, so it inherits the Object rendering, which discloses a
             // class name and an identity hash and no field value at all. Failures below are identified by
             // account identifier, never by the value being protected.
             final String rendered = detail().toString();
@@ -1258,7 +1258,7 @@ class CardDtoTest {
         void eightSeededVerificationValuesBeginWithAZero() {
             // The evidence that the record's CVV is textual despite its PIC 9(03) picture: a numeric type would
             // render 003 as 3. This payload declares no verification value at all, which is why the assertion
-            // is made against the fixture rather than against an accessor. Severity High if ever made numeric.
+            // is made against the fixture rather than against an accessor.
             final FixtureLoader.FixtureData cards = FixtureLoader.load(FixtureLoader.Fixture.CARD);
             final Set<String> leadingZero = new LinkedHashSet<>();
             for (int index = 0; index < cards.recordCount(); index++) {
@@ -1278,7 +1278,7 @@ class CardDtoTest {
         @Test
         @DisplayName("the card fixture holds no signed field, so no overpunch decode belongs near it")
         void theCardFixtureHoldsNoSignedField() {
-            // Blocker if a global decoder is applied. There is not one overpunch sign character in the whole
+            // There is not one overpunch sign character in the whole
             // fixture, so there is nothing to decode - while the embossed names are full of the very letters a
             // position-blind decoder would treat as signs.
             final FixtureLoader.FixtureData cards = FixtureLoader.load(FixtureLoader.Fixture.CARD);
@@ -1417,7 +1417,7 @@ class CardDtoTest {
             // app/cbl/COCRDLIC.cbl:1007-1009 tests LOW-VALUES, then SPACES, then ZEROS as three separate
             // predicates, and :80-82 lists SPACE and LOW-VALUES side by side under one condition name. The
             // template at app/cpy/CSSETATY.cpy models the same OK / NOT-OK / BLANK triple and is procedural, so
-            // it has no Java counterpart of its own. Severity High if collapsed.
+            // it has no Java counterpart of its own.
             assertThat(sourceLine(cardListProgram, 1007)).isEqualTo("IF CC-ACCT-ID EQUAL LOW-VALUES");
             assertThat(sourceLine(cardListProgram, 1008)).isEqualTo("OR CC-ACCT-ID EQUAL SPACES");
             assertThat(sourceLine(cardListProgram, 1009)).isEqualTo("OR CC-ACCT-ID-N EQUAL ZEROS");
@@ -1925,4 +1925,3 @@ class CardDtoTest {
                 SAMPLE_CARD_NUMBER, List.of(row(CardDto.FIRST_ROW_NUMBER)), null, null);
     }
 }
-

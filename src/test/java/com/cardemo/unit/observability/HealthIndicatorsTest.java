@@ -266,7 +266,7 @@ class HealthIndicatorsTest {
                         attributeRequest.set(invocation.getArgument(0));
                         return CompletableFuture.completedFuture(GetQueueAttributesResponse.builder()
                                 .attributes(Map.of(QueueAttributeName.FIFO_QUEUE, "true",
-                                        QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "true"))
+                                        QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "false"))
                                 .build());
                     });
 
@@ -291,7 +291,7 @@ class HealthIndicatorsTest {
                         issued.set(invocation.getArgument(0));
                         return CompletableFuture.completedFuture(GetQueueAttributesResponse.builder()
                                 .attributes(Map.of(QueueAttributeName.FIFO_QUEUE, "true",
-                                        QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "true"))
+                                        QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "false"))
                                 .build());
                     });
 
@@ -438,7 +438,7 @@ class HealthIndicatorsTest {
         void successPublishesLogicalNameOnly() {
             SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
             stubQueueResolves(sqsAsyncClient);
-            stubQueueAttributes(sqsAsyncClient, "true", "true");
+            stubQueueAttributes(sqsAsyncClient, "true", "false");
 
             Health health =
                     indicators(mock(S3Client.class), sqsAsyncClient).sqsHealthIndicator().health();
@@ -587,11 +587,11 @@ class HealthIndicatorsTest {
         }
 
         @Test
-        @DisplayName("UP requires both queue attributes and publishes the verified token")
-        void bothQueueAttributesTrueIsUp() {
+        @DisplayName("UP requires both queue attributes at their required values and publishes the token")
+        void bothQueueAttributesSatisfiedIsUp() {
             SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
             stubQueueResolves(sqsAsyncClient);
-            stubQueueAttributes(sqsAsyncClient, "true", "true");
+            stubQueueAttributes(sqsAsyncClient, "true", "false");
 
             Health health =
                     indicators(mock(S3Client.class), sqsAsyncClient).sqsHealthIndicator().health();
@@ -606,7 +606,7 @@ class HealthIndicatorsTest {
         void nonFifoQueueIsDown() {
             SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
             stubQueueResolves(sqsAsyncClient);
-            stubQueueAttributes(sqsAsyncClient, "false", "true");
+            stubQueueAttributes(sqsAsyncClient, "false", "false");
 
             Health health =
                     indicators(mock(S3Client.class), sqsAsyncClient).sqsHealthIndicator().health();
@@ -619,8 +619,42 @@ class HealthIndicatorsTest {
         }
 
         @Test
-        @DisplayName("a FIFO queue without content-based deduplication is DOWN naming that attribute")
-        void missingContentDeduplicationIsDown() {
+        @DisplayName("a FIFO queue that still deduplicates on content stays UP and reports the attribute")
+        void contentBasedDeduplicationIsReportedButDoesNotFailReadiness() {
+            // Finding H-08, severity High, and this test has now been wrong in both directions. It first
+            // asserted that ContentBasedDeduplication=FALSE was the fault, which inverted the requirement:
+            // hashing the body collapses two legitimate submissions of the same period, where
+            // DISPOSITION(MOD) at app/csd/CARDDEMO.CSD:503 appended both. It was then corrected to assert
+            // DOWN on true - and that overshot, because readiness answers whether traffic should be routed
+            // here. It should be: the publisher mints an explicit MessageDeduplicationId per submission and
+            // an explicit identifier takes precedence over the body hash, verified against the emulator, so
+            // both submissions arrive even with the attribute enabled. Reporting DOWN would withdraw a
+            // working instance from service over a condition that impairs nothing.
+            //
+            // So the attribute is published rather than judged. FifoQueue keeps gating readiness - ordering
+            // does not exist without it and it is immutable once the queue is created - while this one is
+            // mutable by any holder of the queue, is converged by localstack-init/init-aws.sh, and is
+            // surfaced here on every probe so drift stays visible.
+            SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
+            stubQueueResolves(sqsAsyncClient);
+            stubQueueAttributes(sqsAsyncClient, "true", "true");
+
+            Health health =
+                    indicators(mock(S3Client.class), sqsAsyncClient).sqsHealthIndicator().health();
+
+            assertThat(health.getStatus())
+                    .as("an enabled content hash does not impair submission, so it must not fail readiness")
+                    .isEqualTo(Status.UP);
+            assertThat(health.getDetails())
+                    .as("the drift is still visible on every probe, on its own key")
+                    .containsEntry(HealthIndicators.DETAIL_CONTENT_DEDUPLICATION, "true")
+                    .doesNotContainKey(HealthIndicators.DETAIL_REASON)
+                    .doesNotContainKey(HealthIndicators.DETAIL_ATTRIBUTE);
+        }
+
+        @Test
+        @DisplayName("a compliant queue reports the deduplication attribute as disabled")
+        void compliantQueueReportsDeduplicationDisabled() {
             SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
             stubQueueResolves(sqsAsyncClient);
             stubQueueAttributes(sqsAsyncClient, "true", "false");
@@ -628,24 +662,42 @@ class HealthIndicatorsTest {
             Health health =
                     indicators(mock(S3Client.class), sqsAsyncClient).sqsHealthIndicator().health();
 
-            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
-            assertThat(health.getDetails()).containsEntry(HealthIndicators.DETAIL_ATTRIBUTE,
-                    QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString());
+            assertThat(health.getStatus()).isEqualTo(Status.UP);
+            assertThat(health.getDetails())
+                    .as("the observed value is published on both paths, so the detail is a live reading "
+                            + "rather than a token that only appears when something is wrong")
+                    .containsEntry(HealthIndicators.DETAIL_CONTENT_DEDUPLICATION, "false");
         }
 
         @Test
-        @DisplayName("an attribute the service omits is treated as unsatisfied")
-        void omittedAttributeIsUnsatisfied() {
+        @DisplayName("an attribute the service omits is read as false, which each requirement judges its own way")
+        void omittedAttributeIsReadAsFalse() {
             SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
             stubQueueResolves(sqsAsyncClient);
+            // Omission is how the service says false. The two attributes take that differently, which is the
+            // point of asserting both here: an omitted FifoQueue reads as false and so fails the requirement
+            // that it be true, while an omitted deduplication attribute is simply normalised to "false" for
+            // the published detail - it gates nothing either way since finding H-08.
             stubQueueAttributes(sqsAsyncClient, "true", null);
 
-            Health health =
+            Health satisfied =
                     indicators(mock(S3Client.class), sqsAsyncClient).sqsHealthIndicator().health();
 
-            assertThat(health.getStatus()).isEqualTo(Status.DOWN);
-            assertThat(health.getDetails()).containsEntry(HealthIndicators.DETAIL_ATTRIBUTE,
-                    QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString());
+            assertThat(satisfied.getStatus()).isEqualTo(Status.UP);
+            assertThat(satisfied.getDetails())
+                    .as("an omitted attribute is published as the false it means, never as a null")
+                    .containsEntry(HealthIndicators.DETAIL_CONTENT_DEDUPLICATION, "false");
+
+            SqsAsyncClient withoutFifo = mock(SqsAsyncClient.class);
+            stubQueueResolves(withoutFifo);
+            stubQueueAttributes(withoutFifo, null, null);
+
+            Health unsatisfied =
+                    indicators(mock(S3Client.class), withoutFifo).sqsHealthIndicator().health();
+
+            assertThat(unsatisfied.getStatus()).isEqualTo(Status.DOWN);
+            assertThat(unsatisfied.getDetails()).containsEntry(HealthIndicators.DETAIL_ATTRIBUTE,
+                    QueueAttributeName.FIFO_QUEUE.toString());
         }
 
         @ParameterizedTest
@@ -654,7 +706,10 @@ class HealthIndicatorsTest {
         void attributeComparisonIsLenientOnRendering(String rendered) {
             SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
             stubQueueResolves(sqsAsyncClient);
-            stubQueueAttributes(sqsAsyncClient, rendered, rendered);
+            // The same leniency has to hold for both required values, so the deduplication attribute carries
+            // the differently-rendered negation of the same boolean.
+            stubQueueAttributes(sqsAsyncClient, rendered, rendered.replace("true", "false")
+                    .replace("TRUE", "FALSE").replace("True", "False"));
 
             Health health =
                     indicators(mock(S3Client.class), sqsAsyncClient).sqsHealthIndicator().health();
@@ -798,7 +853,7 @@ class HealthIndicatorsTest {
         void attributeMismatchLogIsCurated() {
             SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
             stubQueueResolves(sqsAsyncClient);
-            stubQueueAttributes(sqsAsyncClient, "false", "true");
+            stubQueueAttributes(sqsAsyncClient, "false", "false");
 
             indicators(mock(S3Client.class), sqsAsyncClient).sqsHealthIndicator().health();
 
@@ -819,7 +874,7 @@ class HealthIndicatorsTest {
             stubVersioning(s3Client, BucketVersioningStatus.ENABLED);
             SqsAsyncClient sqsAsyncClient = mock(SqsAsyncClient.class);
             stubQueueResolves(sqsAsyncClient);
-            stubQueueAttributes(sqsAsyncClient, "true", "true");
+            stubQueueAttributes(sqsAsyncClient, "true", "false");
             HealthIndicators factory = indicators(s3Client, sqsAsyncClient);
 
             factory.s3HealthIndicator().health();

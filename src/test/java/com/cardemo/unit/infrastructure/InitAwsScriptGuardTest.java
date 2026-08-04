@@ -42,6 +42,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeAll;
@@ -159,9 +160,22 @@ class InitAwsScriptGuardTest {
 
             assertThat(result.exitCode()).isEqualTo(EXIT_CONFIG);
             assertThat(result.output())
-                    .as("DNS is case insensitive, so the host is lowercased before comparison and the "
-                            + "message quotes the lowercased form, which is the form the guard judged")
-                    .contains("s3.amazonaws.com");
+                    .as("DNS is case insensitive, so the host is lowercased before being compared against "
+                            + "the allowlist, and an unmatched host is refused with the closed reason token")
+                    .contains("[reason=HOST_NOT_ALLOWLISTED]");
+            assertThat(result.output())
+                    .as("""
+                        and the rejected host is NOT quoted back. This assertion replaces an earlier one \
+                        that required the opposite - it demanded the lowercased host appear in the message, \
+                        as evidence that the lowercasing had happened. That evidence was real but the \
+                        mechanism was not safe to generalise: the same interpolation carried userinfo \
+                        credentials and CR/LF payloads out to stderr for every other rejected shape, which \
+                        is the defect RefusalDisclosesNothing below now pins shut. The lowercasing is \
+                        instead proved structurally by theEndpointGuardIsFailClosed, which asserts the \
+                        literal host="${host,,}" is present in the guard body - a stronger proof than an \
+                        echo, because it cannot be satisfied by accident.""")
+                    .doesNotContain("s3.amazonaws.com")
+                    .doesNotContain("AMAZONAWS");
         }
 
         @Test
@@ -175,6 +189,83 @@ class InitAwsScriptGuardTest {
                     .doesNotContain("[readiness]")
                     .doesNotContain("bucket")
                     .doesNotContain("[summary]");
+        }
+
+        @Test
+        @DisplayName("a newline in the value cannot forge a log line: the bytes are refused before any echo")
+        void anEmbeddedNewlineCannotForgeALogLine() {
+            final String forged = "[init-aws] 2026-01-01T00:00:00Z [summary] all resources provisioned";
+            final Result result = run(Map.of("AWS_ENDPOINT_URL", "http://localhost:4566\r\n" + forged));
+
+            assertThat(result.exitCode())
+                    .as("a control byte is a configuration error, so the refusal must carry EXIT_CONFIG. "
+                            + "Output:%n%s", result.output())
+                    .isEqualTo(EXIT_CONFIG);
+            assertThat(result.output())
+                    .as("the whole point of refusing the byte before emitting anything is that the "
+                            + "attacker-chosen text never becomes a line of its own in the log. If this "
+                            + "assertion fails, a reader of the log can be told provisioning succeeded when "
+                            + "it never began")
+                    .doesNotContain(forged)
+                    .doesNotContain("[summary]");
+        }
+
+        @Test
+        @DisplayName("a rejected value is never echoed, so an endpoint carrying a secret cannot leak it")
+        void aRejectedValueIsNeverEchoed() {
+            final String secret = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY";
+            final Result result = run(Map.of(
+                    "AWS_ENDPOINT_URL", "http://AKIAIOSFODNN7EXAMPLE:" + secret + "@localhost:4566"));
+
+            assertThat(result.exitCode()).isEqualTo(EXIT_CONFIG);
+            assertThat(result.output())
+                    .as("the guard must still say WHY it refused, because a refusal without a reason is "
+                            + "undiagnosable")
+                    .contains("embeds userinfo before the host");
+            assertThat(result.output())
+                    .as("but it must not quote the value back. This shape is exactly the one the reason "
+                            + "phrase describes - a URL carrying credentials - so echoing the value to "
+                            + "explain the refusal would write the credential into the log it was refused "
+                            + "for containing")
+                    .doesNotContain(secret)
+                    .doesNotContain("AKIAIOSFODNN7EXAMPLE");
+        }
+
+        @Test
+        @DisplayName("a backslash is refused: it is not an RFC 3986 URL byte and shells treat it specially")
+        void aBackslashIsRefused() {
+            final Result result = run(Map.of("AWS_ENDPOINT_URL", "http://localhost:4566\\evil"));
+
+            assertThat(result.exitCode())
+                    .as("output:%n%s", result.output())
+                    .isEqualTo(EXIT_CONFIG);
+            assertThat(result.output())
+                    .as("the byte rule is a positive RFC 3986 allowlist, so the backslash is refused for "
+                            + "not being a URL byte rather than for matching a denylist entry. Inside a "
+                            + "POSIX bracket expression a backslash is an ordinary character rather than an "
+                            + "escape, so a rule written as a denylist would have admitted the very byte it "
+                            + "was trying to name")
+                    .contains("carries a control character, whitespace, a backslash or a non-ASCII byte");
+        }
+
+        @Test
+        @DisplayName("an over-long value is refused on its length, before it is scanned or logged")
+        void anOverLongValueIsRefused() {
+            final String padded = "http://localhost:4566" + "a".repeat(400);
+            final Result result = run(Map.of("AWS_ENDPOINT_URL", padded));
+
+            assertThat(result.exitCode())
+                    .as("output:%n%s", result.output())
+                    .isEqualTo(EXIT_CONFIG);
+            assertThat(result.output())
+                    .as("the bound is stated in the message so the operator can see both the value's size "
+                            + "and the limit it broke, which is diagnosable without reproducing the value")
+                    .contains("421 characters")
+                    .contains("300-character bound");
+            assertThat(result.output())
+                    .as("and the value itself is still not echoed, which is what keeps a long "
+                            + "credential-bearing value out of the log")
+                    .doesNotContain(padded);
         }
     }
 
@@ -451,6 +542,75 @@ class InitAwsScriptGuardTest {
         }
 
         @Test
+        @DisplayName("credential isolation is unconditional: it is invoked above the CLI branch, not inside it")
+        void credentialIsolationPrecedesTheCliBranch() {
+            final String source = source();
+            final int invocation = source.indexOf("\nisolate_local_credentials\n");
+            final int branch = source.indexOf("if command -v awslocal");
+
+            assertThat(invocation)
+                    .as("the isolation must be invoked as a bare statement. Placing the call inside either "
+                            + "arm of the branch is what left one CLI path unprotected")
+                    .isGreaterThan(0);
+            assertThat(invocation)
+                    .as("awslocal is a thin front end over the same AWS CLI and resolves the same ambient "
+                            + "credential chain, so isolating only the fallback arm protects the path that "
+                            + "was never at issue and leaves the documented path exposed. Hoisting the call "
+                            + "above the branch is what makes the protection apply to whichever CLI is "
+                            + "selected")
+                    .isLessThan(branch);
+            assertThat(source.indexOf("isolate_local_credentials", branch))
+                    .as("and there must be no second, per-arm invocation left behind inside the branch, "
+                            + "which would suggest the hoist was additive rather than a move")
+                    .isEqualTo(-1);
+        }
+
+        @Test
+        @DisplayName("the endpoint guard emits no part of the value it refused, only its length")
+        void theEndpointGuardEchoesNothingItRefused() {
+            final String body = extract("require_local_endpoint() {", "\n}\n");
+
+            // The value must still be READ - it is matched against patterns and decomposed into a
+            // scheme, an authority and a host. What it must never be is EMITTED. So the assertion
+            // is not that the body never mentions the value, which would forbid validating it, but
+            // that every mention is a match or an assignment rather than a diagnostic argument.
+            final List<String> emittingReferences = body.lines()
+                    .map(String::strip)
+                    .filter(line -> line.replace("${#url}", "").contains("${url}"))
+                    .filter(line -> !line.startsWith("case "))
+                    .filter(line -> !line.startsWith("local url="))
+                    .filter(line -> !line.contains("=~"))
+                    .filter(line -> !line.contains("remainder=\"${url#"))
+                    // A bracket test comparing the value against glob patterns is the same category as a
+                    // case: it READS the value and emits nothing. The control-byte refusal is written that
+                    // way because the three patterns are alternatives of one condition rather than arms with
+                    // separate bodies. The emission that would follow such a test is a fail line of its own,
+                    // which this filter does not reach, so the guard keeps its teeth.
+                    .filter(line -> !(line.startsWith("if [[") || line.startsWith("elif [["))
+                            || !(line.contains("==") || line.contains("!=")))
+                    .toList();
+
+            assertThat(emittingReferences)
+                    .as("a refusal message that quotes the value writes any embedded credential or token "
+                            + "into the log, and reproduces whatever control bytes it carried. Every line "
+                            + "that names the value must therefore be a pattern match or a decomposition, "
+                            + "never a fail argument. Offending lines:%n%s", emittingReferences)
+                    .isEmpty();
+            assertThat(body)
+                    .as("the length is the one url-derived fact that is safe to state, because ${#url} is a "
+                            + "count rather than the value, and an operator needs it to understand the "
+                            + "bound that was broken")
+                    .contains("${#url} characters");
+            assertThat(body)
+                    .as("the byte rule must be applied before the structural checks, because those checks "
+                            + "are the ones whose messages name the host, and a control byte reaching them "
+                            + "would be echoed as part of it")
+                    .satisfies(text -> assertThat(text.indexOf("ENDPOINT_CHARACTER_PATTERN"))
+                            .isGreaterThan(0)
+                            .isLessThan(text.indexOf("embeds userinfo before the host")));
+        }
+
+        @Test
         @DisplayName("the readiness budget is computed in base 10 from provably bounded factors")
         void theBudgetArithmeticIsBaseTenAndBounded() {
             final String source = source();
@@ -488,6 +648,150 @@ class InitAwsScriptGuardTest {
             assertThat(source)
                     .doesNotContain("enable_and_verify_versioning \"${STATEMENTS_BUCKET}\"")
                     .doesNotContain("enable_and_verify_versioning \"${INPUT_BUCKET}\"");
+        }
+    }
+
+    // ==================================================================
+    // 5 - A refusal must be actionable without being a disclosure.
+    //     The guard recognises hostile input; it must not republish it.
+    // ==================================================================
+
+    /**
+     * The secret-hygiene and log-integrity contract of a refusal.
+     *
+     * <p>The file header of {@code init-aws.sh} states that nothing in it may ever emit a secret. The endpoint
+     * guard used to interpolate the rejected value into every refusal message, which broke that claim in two
+     * distinct ways, and the two failure modes are separated below because they need different evidence.
+     *
+     * <ul>
+     *   <li><strong>Disclosure.</strong> {@code http://user:password@host} is refused <em>because</em> it may
+     *       carry a credential - and the refusal wrote that credential to stderr, where CI archives it. The
+     *       guard identified the secret and published it in the same statement.</li>
+     *   <li><strong>Log forgery.</strong> Every line the script writes opens with a fixed
+     *       {@code [init-aws] <timestamp> <step>} prefix, so a CR or LF inside an echoed value forges further
+     *       lines in exactly the shape a reader trusts. The invalid-port branch made this trivially
+     *       reachable, because a value that failed a strict numeric test can contain anything at all.</li>
+     * </ul>
+     *
+     * <p>Each test therefore asserts two things rather than one: that the value is still <em>refused</em>, so
+     * hardening the message did not weaken the guard, and that a distinctive sentinel from the input appears
+     * nowhere in the output. The sentinels are deliberately improbable strings, so a passing assertion cannot
+     * be a coincidence of short substrings.
+     */
+    @Nested
+    @DisplayName("5. A refusal names the variable and a closed reason, never the rejected value")
+    class RefusalDisclosesNothing {
+
+        @Test
+        @DisplayName("a userinfo credential is refused and appears nowhere in the output")
+        void aUserinfoCredentialIsNeverEchoed() {
+            final String password = "Zq7-tripwire-PASSWORD-do-not-log";
+            final Result result =
+                    run(Map.of("AWS_ENDPOINT_URL", "http://operator:" + password + "@localhost:4566"));
+
+            assertThat(result.exitCode())
+                    .as("the value is still refused: hardening the message must not soften the guard")
+                    .isEqualTo(EXIT_CONFIG);
+            assertThat(result.output())
+                    .as("the refusal names the variable and a closed reason token")
+                    .contains("AWS_ENDPOINT_URL")
+                    .contains("[reason=USERINFO_PRESENT]");
+            assertThat(result.output())
+                    .as("and neither the password nor the user component reaches the log. This is the whole "
+                            + "point: the branch that fires here is the one most likely to be holding a "
+                            + "credential, so it is the one that must say least about what it saw.")
+                    .doesNotContain(password)
+                    .doesNotContain("operator:")
+                    .doesNotContain("operator@");
+        }
+
+        @ParameterizedTest(name = "a {0} payload is refused as a control character and never echoed")
+        @CsvSource({
+            "carriage-return-and-newline, '\\r\\n'",
+            "bare-newline,                '\\n'",
+            "bare-carriage-return,        '\\r'",
+            "tab,                         '\\t'",
+        })
+        @DisplayName("a control character cannot enter the log, so no line can be forged")
+        void aControlCharacterCannotForgeALogLine(final String shape, final String escaped) {
+            final String injected = escaped
+                    .replace("\\r", "\r")
+                    .replace("\\n", "\n")
+                    .replace("\\t", "\t");
+            final String forgery = "[init-aws] 1970-01-01T00:00:00Z summary                FORGED-BY-" + shape;
+            final Result result =
+                    run(Map.of("AWS_ENDPOINT_URL", "http://localhost:4566" + injected + forgery));
+
+            assertThat(result.exitCode())
+                    .as("a control character is refused outright, before any parsing, so no later branch "
+                            + "has to be the one that happens to catch it")
+                    .isEqualTo(EXIT_CONFIG);
+            assertThat(result.output())
+                    .as("the reason is the dedicated closed token rather than an incidental downstream "
+                            + "verdict such as an invalid port")
+                    .contains("[reason=CONTROL_CHARACTER]");
+            assertThat(result.output())
+                    .as("and the payload does not appear, so the forged line does not exist")
+                    .doesNotContain("FORGED");
+
+            assertThat(result.output().lines().filter(line -> !line.isBlank()).toList())
+                    .as("every non-blank line still carries the fixed prefix. This is the log-integrity "
+                            + "assertion proper: doesNotContain proves the payload was dropped, and this "
+                            + "proves nothing else slipped the line discipline either.")
+                    .allSatisfy(line -> assertThat(line).startsWith("[init-aws] "));
+        }
+
+        @ParameterizedTest(name = "[{0}] is refused without quoting the sentinel {1}")
+        @CsvSource({
+            "'http://localhost:4566/Zq7SentinelPath',   'Zq7SentinelPath',   '[reason=PATH_PRESENT]'",
+            "'http://localhost:99999Zq7SentinelPort',   'Zq7SentinelPort',   '[reason=PORT_INVALID]'",
+            "'http://zq7sentinelhost.example.com:4566', 'zq7sentinelhost',   '[reason=HOST_NOT_ALLOWLISTED]'",
+            "'http://localhost:4566?x=Zq7SentinelQry',  'Zq7SentinelQry',    '[reason=QUERY_OR_FRAGMENT]'",
+            "'http://%Zq7SentinelEnc:4566',             'Zq7SentinelEnc',    '[reason=PERCENT_ENCODED]'",
+            "'gopher://Zq7SentinelScheme:4566',         'Zq7SentinelScheme', '[reason=SCHEME_NOT_HTTP]'",
+        })
+        @DisplayName("no rejection branch quotes the component it rejected")
+        void noRejectionBranchQuotesItsInput(final String endpoint, final String sentinel, final String reason) {
+            final Result result = run(Map.of("AWS_ENDPOINT_URL", endpoint));
+
+            assertThat(result.exitCode()).isEqualTo(EXIT_CONFIG);
+            assertThat(result.output())
+                    .as("each branch reports a token from the closed set, so the reason stays actionable")
+                    .contains(reason);
+            assertThat(result.output())
+                    .as("and none of them quotes the value back. Enumerating every branch matters because "
+                            + "the defect was per-branch: one surviving interpolation anywhere would leave "
+                            + "the guarantee false while the other branches looked clean.")
+                    .doesNotContain(sentinel);
+        }
+
+        @Test
+        @DisplayName("the guard body interpolates no rejected component into any refusal message")
+        void theGuardBodyInterpolatesNoRejectedComponent() {
+            final String body = extract("require_local_endpoint() {", "\n}\n")
+                    + extract("validate_endpoint_port() {", "\n}\n");
+
+            // Only the lines that form a refusal are examined: the success path legitimately names the
+            // ACCEPTED host, which by then has been proved equal to a member of a closed literal set.
+            final String refusals = body.lines()
+                    .filter(line -> !line.stripLeading().startsWith("#"))
+                    .filter(line -> line.contains("AWS_ENDPOINT_URL ") || line.contains("reason="))
+                    .reduce("", (left, right) -> left + right + "\n");
+
+            assertThat(refusals)
+                    .as("a non-trivial set of refusal lines was found, so an empty pass is impossible")
+                    .contains("[reason=");
+            assertThat(refusals)
+                    .as("""
+                        and not one of them interpolates the rejected input. These four expansions are the \
+                        exact spellings the previous revision used, so this assertion is a regression pin \
+                        on the specific defect rather than a general prohibition: ${url} carried the whole \
+                        value including any userinfo, ${path}, ${port} and ${authority} carried the \
+                        component each branch had just objected to.""")
+                    .doesNotContain("${url}")
+                    .doesNotContain("${path}")
+                    .doesNotContain("${port}")
+                    .doesNotContain("${authority}");
         }
     }
 

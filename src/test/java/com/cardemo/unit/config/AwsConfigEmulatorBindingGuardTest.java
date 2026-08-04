@@ -118,7 +118,6 @@ class AwsConfigEmulatorBindingGuardTest {
         "http://localstack:4566",
         "http://carddemo-localstack:4566",
         "http://carddemo-localstack-007:4566",
-        "http://host.docker.internal:4566",
         "HTTP://LOCALHOST:4566",
     })
     @DisplayName("accepts every address at which the emulator is actually reachable")
@@ -163,6 +162,17 @@ class AwsConfigEmulatorBindingGuardTest {
         "http://localhost:4566@attacker.example:80",
         // A clone-index suffix that is not one.
         "http://carddemo-localstack.attacker.example:4566",
+        // The Docker host-gateway alias. It was accepted here until it was noticed that
+        // localstack-init/init-aws.sh refuses it, so a value that passed this guard then failed provisioning -
+        // and it reaches ANY service listening on the developer's host, not only the emulator. The
+        // container-to-host topology is served by the Compose service name inside the bridge network, so
+        // nothing needs it. Refusing it is what makes the two allowlists genuinely identical.
+        "http://host.docker.internal:4566",
+        // The fully-qualified spelling of an allowlisted name. localstack-init/init-aws.sh:L269-L272 refuses it
+        // in as many words - "Nothing else, in any case, with or without a trailing dot" - so accepting it here
+        // would be drift pointing the other way: a value that starts the application and then fails
+        // provisioning. No profile, compose file or setup instruction spells a host this way.
+        "http://localhost.:4566",
     })
     @DisplayName("refuses every endpoint that is not an allowlisted emulator address")
     void refusesNonEmulatorAddresses(final String endpoint) {

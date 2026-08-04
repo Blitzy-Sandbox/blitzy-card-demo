@@ -146,34 +146,50 @@ import com.cardemo.service.shared.FileStatusMapper;
  * </ol>
  *
  * <h2>How to run, build and test</h2>
- * The owning {@code Job} and {@code Step} are wired in {@code com.cardemo.config.BatchConfig}. Their
- * launcher, the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}, is <strong>not authored at
- * this commit</strong> - {@code com.cardemo.batch.jobs} holds {@code InterestCalculationJob} only - so a job
- * is launched deliberately rather than by an orchestrator. What both rely on is already true:
+ * <strong>The batch tier around this reader is largely delivered, and the one thing still owed is precisely
+ * identified.</strong> An earlier revision of this paragraph said the owning {@code Job} and {@code Step} were
+ * wired in {@code com.cardemo.config.BatchConfig} and that {@code com.cardemo.batch.jobs} held
+ * {@code InterestCalculationJob} only; both statements are withdrawn. {@code com.cardemo.batch.jobs} now holds
+ * <strong>three of its six target jobs</strong> - {@code InterestCalculationJob},
+ * {@code DailyTransactionPostingJob} and {@code StatementGenerationJob} - and each declares its own
+ * {@code Step} beans itself; {@code BatchConfig} owns the dataset bindings and record rendering rather than
+ * step topology. What is genuinely still owed is <strong>the read-only verification step that would own this
+ * reader</strong>, the Java counterpart of {@code app/jcl/READACCT.jcl}, together with the name-driven
+ * launcher above it, the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}; until the step
+ * exists a job is launched deliberately rather than by an orchestrator. What both rely on is already true:
  * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no
  * job runs at application startup. This class carries {@code @Component} and {@code @StepScope}, so the
- * component scan registers a definition for it while no instance is constructed until a step is executing.
+ * component scan registers a definition for it while no instance is constructed until a step is executing -
+ * and with no {@code Step} yet referencing it, none is constructed at runtime today.
  * <p>
- * Two build paths were verified in this environment; both are pinned and either may be used.
+ * Two build paths are available; both are pinned and either may be used. Each is stated as a required
+ * <em>capability</em> rather than as a dated reading of one host, because a version measured on one machine
+ * image ages the moment the image changes - dated measurements live in section 0.4.5.3 of
+ * {@code docs/technical-specifications.md}.
  * <ul>
  * <li><b>Host toolchain</b> &mdash; JDK 25 on {@code PATH} with {@code JAVA_HOME} set, however the host
  *     provides it, then {@code ./mvnw -B -ntp -o clean compile}. The prerequisite is a capability and never a
- *     host path; Maven 3.9.11 comes from the pinned wrapper. Verified present: OpenJDK 25.0.3 and Apache
- *     Maven 3.9.11. Note that {@code -o} also causes Maven to skip {@code dependency-check:check}, which
- *     declares {@code requiresOnline}, and a skipped scan is never evidence that the scan passes.</li>
- * <li><b>Pinned container</b> &mdash; Docker Engine 29.7.0 and {@code docker compose} v5.3.1 are available, so
- *     the build can also run hermetically:
+ *     host path; Maven 3.9.11 comes from the pinned wrapper, and {@code maven-enforcer-plugin} floors both so
+ *     a wrong toolchain fails the build rather than producing surprising bytecode. Note that {@code -o} also
+ *     causes Maven to skip {@code dependency-check:check}, which declares {@code requiresOnline}, and a
+ *     skipped scan is never evidence that the scan passes.</li>
+ * <li><b>Pinned container</b> &mdash; given a reachable container daemon, the build can also run
+ *     hermetically:
  *     {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -q -DskipTests compile}.
  *     </li>
  * </ul>
  * The compiler runs with {@code -Xlint:all -Werror} and {@code failOnWarning}, so the build fails on any
- * warning. The tests that would cover this class belong in {@code src/test/java/com/cardemo/unit/batch} for
- * the status renderer and the guard logic, and in {@code src/test/java/com/cardemo/integration/batch} for the
- * Testcontainers PostgreSQL 16 scan. Neither is authored at this commit: {@code unit/batch} holds three
- * classes - {@code InterestCalculationJobTest}, {@code TransactionCombineProcessorTest} and
- * {@code TransactionCombineProcessorCoverageTest} - none of which references this reader, and
- * {@code integration/batch} holds one abstract Testcontainers base with no concrete {@code *IT} beneath it.
- * This class creates neither, because test sources are outside the scope of the package it belongs to.
+ * warning. <strong>Both test tiers now cover this class.</strong> An earlier revision of this paragraph said
+ * neither was authored, that {@code unit/batch} held three classes none of which referenced this reader, and
+ * that {@code integration/batch} held one abstract Testcontainers base with no concrete subclass beneath it;
+ * every part of that is withdrawn. {@code src/test/java/com/cardemo/unit/batch} holds <strong>36</strong>
+ * sources and covers the status renderer, the guard logic and the keyset scan through
+ * {@code AccountReaderTest}, {@code SequentialReaderContractTest},
+ * {@code SequentialReaderKeysetScanTest}, {@code ReaderSensitiveDataTest} and
+ * {@code BatchLogHygieneTest}. {@code src/test/java/com/cardemo/integration/batch} holds <strong>4</strong>
+ * sources - one abstract Testcontainers base and three concrete classes that execute under Failsafe against
+ * PostgreSQL 16 and LocalStack. This class still creates neither, because test sources are outside the scope
+ * of the package it belongs to.
  *
  * <h2>Key configs and defaults</h2>
  * <ul>

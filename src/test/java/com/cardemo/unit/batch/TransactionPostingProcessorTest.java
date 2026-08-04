@@ -223,62 +223,62 @@ import org.springframework.dao.DuplicateKeyException;
  * hand-built input</b>, and the only fixture-derived claims (group 18) are properties of the <em>input
  * data alone</em>, which are model-independent and separately re-derived from the bytes.
  *
- * <p><b>One labelled deviation, asserted as a deviation and never as parity.</b> The source commits the
+ * <p><b>One deliberate deviation, asserted as a deviation and never as parity.</b> The source commits the
  * three writes of {@code :L440-L442} independently; the Java form places all three inside the single
  * {@code @Transactional(rollbackFor = Exception.class)} unit opened by
  * {@link TransactionPostingProcessor#process(DailyTransaction)}. This is an <b>improvement, not
  * equivalence</b>: it closes the legacy hazard in which a failing account rewrite leaves an orphaned
  * category-balance row and an orphaned transaction row behind it. Group 14 asserts the improved outcome
- * and names it as a deviation; the entry belongs in {@code DECISION_LOG.md} and the affected paragraphs
- * in {@code TRACEABILITY_MATRIX.md}. Presenting it as parity would misdescribe the system.
+ * and names it as a deviation, because presenting it as parity would misdescribe the system.
  *
- * <p><b>One documented conflict, resolved in favour of parity.</b> Rule 1 clause B forbids dead code,
- * while the parity mandate requires reproducing reachable no-ops. In this file the collision is
+ * <p><b>One constant that is assigned and never read, retained for parity.</b> Reproducing reachable
+ * no-ops is what parity requires. In this file the instance is
  * {@link RejectCode#ACCOUNT_RECORD_NOT_FOUND_ON_REWRITE}, reject 109: the source assigns it at
  * {@code :L556} and never reads it, because {@code 2800} runs only inside the already-validated path, the
  * reject write and the counter increment live exclusively in the {@code ELSE} arm at {@code :L213-L215},
  * and {@code :L208} clears the field on the next iteration. Parity governs, and clause B is satisfied on
- * its own terms - it prohibits artefacts <em>without a tracking reference</em>, and this one carries a
- * {@code DECISION_LOG.md} entry, a {@code TRACEABILITY_MATRIX.md} row, the source locator in the Javadoc
+ * its own terms - it prohibits artefacts <em>without a tracking reference</em>, and this one is owed
+ * an entry in the planned {@code DECISION_LOG.md}, a row in the planned
+ * {@code TRACEABILITY_MATRIX.md}, the source locator in the Javadoc
  * of every test that touches it, and an explicit intentional-retention marker. Deleting the constant
  * would break the paragraph map that the scope-coverage gate verifies.
  *
  * <p><b>Common failure modes and troubleshooting.</b>
  * <ul>
- * <li><b>Blocker.</b> A failure in group 7 means the unguarded fall-through of {@code :L413-L420} has
+ * <li>A failure in group 7 means the unguarded fall-through of {@code :L413-L420} has
  * been guarded, so a record failing both the over-limit and the expiry test would produce reject 102
  * instead of the 103 the source produces. Restore the sequential form; do not add an early exit.</li>
- * <li><b>Blocker.</b> A failure in group 13 means the sign branch has been normalised. The cycle debit
+ * <li>A failure in group 13 means the sign branch has been normalised. The cycle debit
  * accumulator must hold negative values, because the over-limit formula of {@code :L403-L405} subtracts
  * it. Taking an absolute value anywhere on that path silently inverts every over-limit decision.</li>
- * <li><b>High.</b> A failure in group 11 means {@code FILE STATUS '23'} is no longer accepted as success
+ * <li>A failure in group 11 means {@code FILE STATUS '23'} is no longer accepted as success
  * on the category-balance read, which turns the source's create branch into an abend and loses every
  * first-of-cycle balance row.</li>
- * <li><b>High.</b> A failure in group 10 means the processing timestamp no longer renders twenty-six
+ * <li>A failure in group 10 means the processing timestamp no longer renders twenty-six
  * characters ending in the literal {@code 0000}, which the boundary-parity gate diffs character for
  * character against the legacy baseline.</li>
- * <li><b>Medium.</b> A failure in group 8 means an absent {@code NOT NULL} value is being reported as a
+ * <li>A failure in group 8 means an absent {@code NOT NULL} value is being reported as a
  * reject rather than as an integrity failure, which inflates the reject count and so corrupts the return
  * code decision at {@code :L229-L231}.</li>
- * <li><b>Blocker.</b> A failure in group 16 means the return-code decision no longer keys on
+ * <li>A failure in group 16 means the return-code decision no longer keys on
  * {@code WS-REJECT-COUNT > 0} alone. {@code :L229-L231} is the only {@code MOVE 4 TO RETURN-CODE} in the
  * whole twenty-eight-program corpus and it has exactly one determinant, so any additional condition -
  * a threshold, a severity, an error flag - changes which runs a scheduler treats as clean.</li>
- * <li><b>High.</b> A failure in group 17 means the FILE STATUS vocabulary has drifted. The two cases that
+ * <li>A failure in group 17 means the FILE STATUS vocabulary has drifted. The two cases that
  * matter most are {@code '10'}, which is loop termination and must never be raised as an exception, and
  * the {@code '9x'} family, whose four-character expansion is diffed character for character.</li>
- * <li><b>Low.</b> A failure in group 15 means a card number has reached a log record. The convention in
+ * <li>A failure in group 15 means a card number has reached a log record. The convention in
  * this tree is that not emitting a primary account number is the primary defence and masking is only the
  * backstop, so the fix is to remove the value, not to mask it.</li>
- * <li><b>Low.</b> A failure in group 18 is almost certainly not a code defect. That group re-derives the
+ * <li>A failure in group 18 is almost certainly not a code defect. That group re-derives the
  * reject-code reachability of the shipped fixtures from their bytes, so it fails if a fixture changed -
  * and {@code app/} is frozen, which means the correct response is to restore the fixture, never to relax
  * the assertion.</li>
- * <li><b>Blocker, build rather than test.</b> {@code -Xlint:all -Werror} reaches <em>test</em>
+ * <li><b>build rather than test.</b> {@code -Xlint:all -Werror} reaches <em>test</em>
  * compilation. A single unused import, a raw type or an unchecked cast added to this file fails
  * {@code clean verify} outright with no test ever running, and the compiler names the import rather than
  * the concept, so a diff that "only" removes an assertion can break the build by orphaning its import.</li>
- * <li><b>Medium, and the trap that costs the most time.</b> The parity fixture is
+ * <li><b>and the trap that costs the most time.</b> The parity fixture is
  * {@code dailytran.txt}, with the word spelled in full. <b>{@code dalytran.txt} does not exist anywhere in
  * the repository.</b> The mainframe DD name, the dataset {@code AWS.M2.CARDDEMO.DALYTRAN.PS} and the
  * EBCDIC member {@code DALYTRAN.PS} all elide the {@code I}, so the six-letter spelling is what a reader
@@ -464,17 +464,14 @@ class TransactionPostingProcessorTest {
     /**
      * Constructs the processor under test through its single public constructor.
      *
-     * <p><b>Called directly, not reflectively, and the distinction is a correction.</b> An earlier
-     * revision of this file reached the constructor through {@link Class#getDeclaredConstructor(Class...)}
-     * and documented it as "package-private by design". That was wrong on both counts and is recorded here
-     * as a <b>Medium</b> finding so that nobody restores it. {@link TransactionPostingProcessor} declares
+     * <p><b>Called directly, never reflectively.</b> {@link TransactionPostingProcessor} declares
      * exactly one constructor, at {@code TransactionPostingProcessor.java:L673}, it is {@code public}, and
      * its own Javadoc states that the clock arrives through "this same constructor" for exactly this
      * purpose - the clock seam is part of the public contract precisely so that a test need not subvert
-     * anything to use it. <b>Remediation applied:</b> the direct call below. It costs nothing and buys the
-     * property reflection destroys - a change to the constructor's signature now fails at
-     * <em>compile</em> time, under {@code -Werror}, instead of surviving as a reflective lookup that
-     * throws at run time with the signature it wanted buried in a message.
+     * anything to use it. The direct call below costs nothing and buys the property that
+     * {@link Class#getDeclaredConstructor(Class...)} would destroy: a change to the constructor's
+     * signature fails at <em>compile</em> time, under {@code -Werror}, instead of surviving as a
+     * reflective lookup that throws at run time with the signature it wanted buried in a message.
      *
      * <p>This helper is retained rather than inlined because five of the six tests in group 1 pass a
      * deliberate {@code null} to assert a guard, and naming the operation once keeps each of those tests a
@@ -685,10 +682,9 @@ class TransactionPostingProcessorTest {
         @Test
         @DisplayName("TransactionPostingProcessor declares exactly one constructor, and it is public")
         void exactlyOneConstructorIsDeclaredAndItIsPublic() {
-            // Recorded as a Medium finding and asserted so that it cannot silently regress. An earlier
-            // revision of this file reached the constructor reflectively and documented it as
-            // "package-private by design"; TransactionPostingProcessor.java:L673 declares one constructor
-            // and it is public, so the reflection was unnecessary and the comment was false. If a
+            // TransactionPostingProcessor.java:L673 declares exactly one constructor and it is public, so no
+            // reflection is needed to reach it and no caller can be handed a differently configured
+            // instance. Asserted so that it cannot silently regress. If a
             // clock-defaulting sibling is ever added, this test fails and says why - which is the point,
             // because such a sibling would let a caller silently acquire the wall clock.
             assertThat(TransactionPostingProcessor.class.getDeclaredConstructors())
@@ -1106,6 +1102,80 @@ class TransactionPostingProcessorTest {
             } else {
                 assertThat(result.isPosted()).isTrue();
             }
+        }
+
+        @Test
+        @DisplayName("an intermediate above nine integer digits is TRUNCATED into WS-TEMP-BAL, so a "
+                + "transaction unbounded arithmetic would reject is accepted")
+        void anOverWideIntermediateIsTruncatedIntoTheDestination() {
+            // WS-TEMP-BAL is PIC S9(09)V99 at app/cbl/CBTRN02C.cbl:L187 - nine integer digits - while
+            // ACCT-CURR-CYC-CREDIT and ACCT-CURR-CYC-DEBIT are PIC S9(10)V99 at CVACT01Y:L13-L14. The COMPUTE
+            // at :L403-L405 carries no ON SIZE ERROR, so a result that does not fit is stored with its
+            // high-order digits discarded, and :L407 compares the credit limit against THAT.
+            //
+            // 9,999,999,999.99 - 0 + 0 is ten integer digits. Truncated to nine it becomes 999,999,999.99,
+            // which the one-cent-larger credit limit accommodates, so the record POSTS. Without the narrowing
+            // the comparison sees 9,999,999,999.99, the limit does not accommodate it, and the record is
+            // rejected 102 - which is what this assertion fails with if the narrowing is ever removed.
+            stubArithmetic("1000000000.00", "9999999999.99", "0.00");
+
+            PostingResult result = processor.process(dailyTransaction("0.00"));
+
+            assertThat(result.isPosted())
+                    .as("the leading 9 is the digit PIC S9(09)V99 cannot hold, so the compared value is "
+                            + "999,999,999.99 and the limit of 1,000,000,000.00 accommodates it")
+                    .isTrue();
+            assertThat(result.rejectCode())
+                    .as("truncation always reduces the magnitude, so it can only ever turn a 102 into an "
+                            + "acceptance - never the other way round")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("exactly ten integer digits truncates to zero, every digit the field keeps being zero")
+        void exactlyOneAboveTheWidthTruncatesToZero() {
+            // 1,000,000,000.00 is the smallest value that does not fit. Its nine low-order integer digits are
+            // all zero, so WS-TEMP-BAL holds 0.00 and even a zero credit limit accommodates it.
+            stubArithmetic("0.00", "1000000000.00", "0.00");
+
+            PostingResult result = processor.process(dailyTransaction("0.00"));
+
+            assertThat(result.isPosted())
+                    .as("the retained digits are 000000000 and the retained decimals 00, so the compared "
+                            + "value is 0.00 and a limit of 0.00 satisfies the >= of :L407")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("the sign survives the truncation, because the picture is S9 and not 9")
+        void theSignSurvivesTheTruncation() {
+            // Cycle debit 9,999,999,999.99 with credit zero gives -9,999,999,999.99. S9(09)V99 keeps the sign
+            // and the nine low-order integer digits, so the field holds -999,999,999.99. A negative compared
+            // value is below any non-negative limit, so the record posts - and it would also post without the
+            // narrowing, which is why the assertion below pins the SIGN rather than only the outcome.
+            stubArithmetic("0.00", "0.00", "9999999999.99");
+
+            PostingResult result = processor.process(dailyTransaction("0.00"));
+
+            assertThat(result.isPosted())
+                    .as("a negative temporary balance is under the limit, so :L408 CONTINUE applies")
+                    .isTrue();
+            assertThat(result.rejectCode()).isNull();
+        }
+
+        @Test
+        @DisplayName("the widest value that FITS is untouched, so the narrowing cannot fire early")
+        void theWidestFittingValueIsUntouched() {
+            // 999,999,999.99 is the largest value PIC S9(09)V99 can hold. It must pass through unchanged: a
+            // narrowing that fired one value early would compare 0.00 here and wrongly accept.
+            stubArithmetic("999999999.98", "999999999.99", "0.00");
+
+            PostingResult result = processor.process(dailyTransaction("0.00"));
+
+            assertThat(result.rejectCode())
+                    .as("the value fits exactly, so it is compared as itself and exceeds the limit by one "
+                            + "cent. Truncating it would have compared 0.00 and accepted")
+                    .isEqualTo(RejectCode.OVERLIMIT_TRANSACTION);
         }
 
         @Test
@@ -2246,10 +2316,12 @@ class TransactionPostingProcessorTest {
         void theCountersAreNineDigits() {
             assertThat(frozenSourceLines(185, 187).stream().map(String::trim).toList())
                     .as("app/cbl/CBTRN02C.cbl:L185-L187 declare both counters PIC 9(09) and WS-TEMP-BAL "
-                            + "PIC S9(09)V99 - the COMPUTE target of :L403 is one digit NARROWER than the "
-                            + "PIC S9(10)V99 operands it is computed from at app/cpy/CVACT01Y.cpy:L13-L14, "
-                            + "which is recorded as a Low finding: BigDecimal has no fixed width and cannot "
-                            + "truncate where the source silently would")
+                            + "PIC S9(09)V99 - the COMPUTE target of :L403 is one integer digit NARROWER than "
+                            + "the PIC S9(10)V99 operands it is computed from at app/cpy/CVACT01Y.cpy:L13-L14. "
+                            + "Because the COMPUTE carries no ON SIZE ERROR, an over-wide result is stored "
+                            + "truncated and :L407 compares THAT, so the processor narrows to this picture "
+                            + "before comparing; the boundary itself is asserted by the over-limit group, not "
+                            + "left to the fixture to reach")
                     .containsExactly(
                             "05 WS-TRANSACTION-COUNT          PIC 9(09) VALUE 0.",
                             "05 WS-REJECT-COUNT               PIC 9(09) VALUE 0.",
@@ -2314,7 +2386,7 @@ class TransactionPostingProcessorTest {
                     .as("app/cbl/CBTRN02C.cbl:L229-L231 is the whole decision and this is the only "
                             + "MOVE 4 TO RETURN-CODE in the twenty-eight-program corpus. There is no "
                             + "severity, no threshold, no error flag and no second predicate - adding one "
-                            + "would change which runs a scheduler treats as clean, which is a Blocker")
+                            + "would change which runs a scheduler treats as clean")
                     .containsExactly(
                             "IF WS-REJECT-COUNT > 0",
                             "MOVE 4 TO RETURN-CODE",
@@ -2439,8 +2511,7 @@ class TransactionPostingProcessorTest {
                     .as("app/cbl/CBTRN02C.cbl:L213 - the one ELSE, owning the reject arm")
                     .isEqualTo("ELSE");
             assertThat(loop.get(17).trim())
-                    .as("app/cbl/CBTRN02C.cbl:L219 closes the loop. Recorded as a Low locator correction: "
-                            + "END-PERFORM is at :L219, not at :L206 as another document states")
+                    .as("app/cbl/CBTRN02C.cbl:L219 closes the loop: END-PERFORM is at :L219")
                     .isEqualTo("END-PERFORM.");
         }
 

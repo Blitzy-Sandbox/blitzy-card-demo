@@ -192,7 +192,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   </table>
  * <p><strong>The three write outcomes must stay distinguishable.</strong> Collapsing
  * {@code COULD_NOT_LOCK_FOR_UPDATE}, {@code DATA_WAS_CHANGED_BEFORE_UPDATE} and
- * {@code LOCKED_BUT_UPDATE_FAILED} into one generic conflict response would be a High-severity
+ * {@code LOCKED_BUT_UPDATE_FAILED} into one generic conflict response would be a
  * regression: {@code 2000-DECIDE-ACTION} routes each to a different next state at {@code :993-1000},
  * and only the middle one is recoverable by redisplaying refreshed data rather than terminal.</p>
  * <p>Troubleshooting notes. A startup failure naming {@code Clock} means the context has no
@@ -203,9 +203,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * alphabets and spaces" for an accented character is correct behaviour, not a bug: the source alphabet
  * at {@code :255-257} is ASCII-only.</p>
  *
- * <h2>Deviation and finding register</h2>
+ * <h2>Deviations from the source, and preserved source behaviours</h2>
  * <ol>
- *   <li><strong>High, resolved by not retaining the data. Card verification data is not stored, so
+ *   <li><strong>Card verification data is not stored, so
  *       the legacy quirk that destroyed it has nothing to act on.</strong> {@code CCUP-NEW-CVV-CD} is
  *       declared at {@code :306} inside the inline {@code CCUP-NEW-DETAILS} group, is set to
  *       {@code SPACES} by {@code INITIALIZE CCUP-NEW-DETAILS} at {@code :586}, and is then
@@ -220,10 +220,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       component, so nothing can be accepted, persisted, compared, rendered or destroyed. Retaining
  *       authentication data for the sole purpose of faithfully overwriting it would be indefensible under
  *       Rule 1 Clause D, and the quirk's own observable effect - that a successful update leaves no
- *       usable verification value behind - is what this system exhibits by construction. Recorded as a
- *       deliberate, labelled deviation from byte-level parity on the entity, which is where the
- *       storage decision lives; the change-detection consequence is finding 8 below.</li>
- *   <li><strong>Low, documented. Mechanism substitution, not a behaviour change.</strong> A single
+ *       usable verification value behind - is what this system exhibits by construction. This is a deliberate
+ *       deviation from byte-level parity, taken on the entity, which is where the storage decision lives;
+ *       the change-detection consequence is the six-predicate comparison described below.</li>
+ *   <li><strong>Mechanism substitution, not a behaviour change.</strong> A single
  *       {@code @Transactional(rollbackFor = Exception.class)} method reproduces the source's rollback
  *       semantics by scoping. {@code 9200-WRITE-PROCESSING} touches one dataset and contains
  *       <em>no</em> rollback verb, so there is no asymmetric-rollback branch here, unlike
@@ -231,14 +231,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code SYNCPOINT ROLLBACK}. The program's lone {@code EXEC CICS SYNCPOINT} at {@code :470}
  *       sits in the navigation branch immediately before the {@code XCTL} at {@code :473} and belongs
  *       to the transfer path, not to the write.</li>
- *   <li><strong>High, design constraint. Two-layer concurrency is mandatory.</strong> Relying on
+ *   <li><strong>Two-layer concurrency is mandatory.</strong> Relying on
  *       {@code @Version} alone would silently accept a concurrent write that restored a value, which
  *       the source rejects, and omitting it would miss a concurrent write that Regime B cannot see.
  *       Both layers are therefore load-bearing; see <em>Concurrency</em> above for the full
  *       derivation. Getting this wrong is not cosmetic: an unset snapshot field makes Regime B's
  *       predicate fail unconditionally and no update can ever complete, which is exactly the failure
  *       recorded in the {@code CCUP-OLD-CVV-CD} entry below.</li>
- *   <li><strong>High, design constraint. The snapshot travels in the request.</strong>
+ *   <li><strong>The snapshot travels in the request.</strong>
  *       {@code CCUP-OLD-DETAILS} at
  *       {@code :291-301} and {@code CCUP-NEW-DETAILS} at {@code :303-313} are declared inline in the
  *       program and appear in no copybook, so there is no copybook-derived carrier for them.
@@ -246,12 +246,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       documentation records why the {@code CardData} nesting is load-bearing. The old snapshot is
  *       therefore supplied by the caller and is <strong>never</strong> derived from the live entity;
  *       deriving it would make Regime B tautologically true and destroy the guard.</li>
- *   <li><strong>Low, preserved. {@code EXPDAYI} is the only screen field not normalised.</strong>
+ *   <li><strong>{@code EXPDAYI} is the only screen field not normalised.</strong>
  *       {@code 1100-RECEIVE-MAP} replaces {@code "*"} or spaces with low values for six fields, but
  *       {@code :621} is a bare {@code MOVE EXPDAYI OF CCRDUPAI TO CCUP-NEW-EXPDAY} with no such
  *       handling, so the expiry day is accepted raw. A uniform loop over all seven fields would be
  *       wrong.</li>
- *   <li><strong>Low, preserved. There is no {@code 1270-EDIT-EXPIRY-DAY}.</strong> The expiry day is
+ *   <li><strong>There is no {@code 1270-EDIT-EXPIRY-DAY}.</strong> The expiry day is
  *       accepted at {@code :621} and written at {@code :1471}, but is never range-checked,
  *       numeric-checked or blank-checked, and is always echoed back as the <em>old</em> value
  *       ({@code :1110}, {@code :1123}, {@code :1127}). The {@code MOVE CCUP-NEW-EXPDAY} at
@@ -260,18 +260,18 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code MOVE DFHBMDAR TO EXPDAYC} at {@code :1277}, and by {@code CardDto} having no expiry-day
  *       component at all. No validation the source lacks is added, and in particular no
  *       self-consistency check between month, year and the carried day.</li>
- *   <li><strong>Low, preserved. {@code 1220} clears the new card id to two different values.</strong>
+ *   <li><strong>{@code 1220} clears the new card id to two different values.</strong>
  *       The blank branch moves ZEROES at {@code :777-778}; the not-numeric branch moves LOW-VALUES at
  *       {@code :793}. Both are reproduced distinctly, and {@code null}, {@code ""} and {@code "0"} are
  *       never coerced into one another.</li>
- *   <li><strong>Low. {@code 1260} orders its flags differently from its siblings, and its comment is
+ *   <li><strong>{@code 1260} orders its flags differently from its siblings, and its comment is
  *       wrong.</strong> {@code 1240} and {@code 1250} set the pessimistic not-ok state before the blank
  *       test ({@code :847}, {@code :880}); {@code 1260} sets it <em>after</em>, at {@code :930}, so the
  *       blank branch sets only the blank state. Because these are condition names over one flag byte
  *       the resulting state is identical, but the statement order is transcribed as written rather than
  *       harmonised. Separately, the comment at {@code :927-928} reads "Must be 1 to 12", copy-pasted
  *       from the month paragraph; the code validates 1950-2099.</li>
- *   <li><strong>Low, preserved. One message literal serves both the blank and the invalid
+ *   <li><strong>One message literal serves both the blank and the invalid
  *       outcome</strong> in {@code 1240}, {@code 1250} and {@code 1260}. No second message is
  *       invented.</li>
  *   <li><strong>Medium, implementation hazard. {@code 2000-DECIDE-ACTION} is order-dependent.</strong>
@@ -279,7 +279,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code :988-989}, then unguarded at {@code :1006}. The guarded form must be tested first or the
  *       save can never fire. This is not a defect; it is how COBOL {@code EVALUATE TRUE} works. The
  *       Java branch order matches, and reordering it would silently disable the write path.</li>
- *   <li><strong>Low, documented. The source upper-cases its own record buffer in place, twice.</strong>
+ *   <li><strong>The source upper-cases its own record buffer in place, twice.</strong>
  *       {@code 9000-READ-DATA} runs {@code INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO
  *       LIT-UPPER} at {@code :1356-1358} <em>before</em> snapshotting the name, and {@code 9300} runs
  *       the same conversion again at {@code :1499-1501} before comparing. Both sides of the Regime B
@@ -289,7 +289,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code GO TO 9200-WRITE-PROCESSING-EXIT} at {@code :1518}, jumping into its caller's exit
  *       label; that is modelled as a distinct returned outcome. The source's malformed
  *       {@code END-IF EXIT} at {@code :1519} has no Java counterpart.</li>
- *   <li><strong>Low. Nine declared data items are never referenced and become no Java member.</strong>
+ *   <li><strong>Nine declared data items are never referenced and become no Java member.</strong>
  *       {@code WS-LONG-MSG PIC X(500)} at {@code :156} has no reference anywhere in the program, and
  *       {@code LIT-CARDFILENAME-ACCT-PATH PIC X(8) VALUE 'CARDAIX '} at {@code :253} is never used by
  *       any file verb. A further seven are {@code WS-RETURN-MSG} condition names that no statement ever
@@ -305,7 +305,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       upper case while every live condition name is in mixed case. Separately, every file verb in the
  *       program targets {@code LIT-CARDFILENAME} (the base cluster), which is why only
  *       {@code CardRepository} is injected and why no alternate-index finder is used.</li>
- *   <li><strong>Low, traceability clarity. This program has zero unreachable labels.</strong> A census
+ *   <li><strong>This program has zero unreachable labels.</strong> A census
  *       of every Area-A label for a {@code PERFORM}, {@code GO TO}, {@code THRU} or {@code THROUGH}
  *       reference found none unreferenced: {@code 0000-MAIN} is the entry point by fall-through and
  *       {@code ABEND-ROUTINE} is performed at {@code :1025-1026}. Unlike its two sibling card programs,
@@ -320,21 +320,21 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       ({@code :1247-1258}). No type is created for that copybook. The only copybook this program
  *       copies into its procedure division is {@code CSSTRPFY} at {@code :1528}, contributing the two
  *       labels mapped by {@link #storePfKey} and {@link #storePfKeyExit}.</li>
- *   <li><strong>Low, preserved. Two legacy oddities in the guarded-message idiom.</strong> At
+ *   <li><strong>Two legacy oddities in the guarded-message idiom.</strong> At
  *       {@code :1404-1406} the {@code IF WS-RETURN-MSG-OFF} guard wraps a <em>flag</em> assignment
  *       rather than only a message assignment, which no other site does. At {@code :1490-1491} the
  *       rewrite-failure branch sets neither {@code INPUT-ERROR} nor a guard, unlike the lock-failure
  *       branch above it. Both are transcribed as written.</li>
- *   <li><strong>Low, preserved. Three source redundancies.</strong> {@code 3100-SCREEN-INIT} evaluates
+ *   <li><strong>Three source redundancies.</strong> {@code 3100-SCREEN-INIT} evaluates
  *       {@code FUNCTION CURRENT-DATE} twice, at {@code :1055} and {@code :1062}, discarding the first
  *       result; {@code 3200} names {@code CRDNAMEO} twice in one multi-target {@code MOVE} at
  *       {@code :1101-1102}; and the {@code ABEND-DATA} default-message guard can never fire, see
  *       {@link #abendRoutine}.</li>
- *   <li><strong>Low. Three distinct abend values coexist and are cited per site.</strong> The online
+ *   <li><strong>Three distinct abend values coexist and are cited per site.</strong> The online
  *       payload code is {@code '0001'} ({@code :1021}), the CICS abend code issued by
  *       {@code ABEND-ROUTINE} is {@code '9999'} ({@code :1550-1552}), and the batch corpus uses 999
  *       with return code 12. They are not conflated.</li>
- *   <li><strong>Medium. Every received map field is clamped to the width its symbolic map
+ *   <li><strong>Every received map field is clamped to the width its symbolic map
  *       declares.</strong> Each field {@code 1100-RECEIVE-MAP} reads at {@code :589-635} is declared
  *       {@code PIC X(n)} in {@code app/cpy-bms/COCRDUP.CPY} - {@code ACCTSIDI} X(11) at line 60,
  *       {@code CARDSIDI} X(16) at 66, {@code CRDNAMEI} X(50) at 72, {@code CRDSTCDI} X(1) at 78,
@@ -352,20 +352,20 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       because that is where the terminal's own width applies. It truncates and never pads, since a
  *       legacy {@code MOVE} between equal-width items is the identity. For {@code EXPDAYI} the clamp is
  *       <em>not</em> normalisation: what {@code :621} omits is the asterisk-and-blank test, and that
- *       omission stands untouched, so finding 5 is preserved intact.</li>
- *   <li><strong>High, resolved. {@code CCUP-OLD-CVV-CD} has no counterpart, and that is why the
- *       stateless path still completes.</strong> {@code :396-400} restores the whole of
+ *       omission stands untouched, so the expiry day stays un-normalised.</li>
+ *   <li><strong>{@code CCUP-OLD-CVV-CD} has no counterpart, and that is why the stateless path still
+ *       completes.</strong> {@code :396-400} restores the whole of
  *       {@code WS-THIS-PROGCOMMAREA} in a single {@code MOVE}, re-establishing every leaf of
  *       {@code CCUP-OLD-DETAILS} ({@code :291-301}) including {@code CCUP-OLD-CVV-CD PIC X(3)} at
  *       {@code :294}. Every other leaf is restored here from the sealed snapshot; this one is not,
- *       because the value it would be compared against is not stored - see finding 1. The trap this
- *       entry originally recorded is worth keeping visible: while a verification value WAS compared, an
- *       unrestored snapshot component made {@code :1503}'s first predicate fail unconditionally and
- *       every write returned {@code DATA-WAS-CHANGED-BEFORE-UPDATE}. Dropping the predicate and the
+ *       because the value it would be compared against is not stored at all. The trap is worth keeping
+ *       visible: wherever a verification value IS compared, an unrestored snapshot component makes
+ *       {@code :1503}'s first predicate fail unconditionally and every write returns
+ *       {@code DATA-WAS-CHANGED-BEFORE-UPDATE}. Dropping the predicate and the
  *       component <em>together</em> is what avoids that, and it is why neither may be reinstated alone:
  *       reinstating the predicate without a stored operand refuses every update, and reinstating the
  *       component without storage compares a caller-supplied value against nothing.</li>
- *   <li><strong>Blocker, resolved. Both {@code REDEFINES} views are established in
+ *   <li><strong>Both {@code REDEFINES} views are established in
  *       {@code 1100}.</strong> {@code app/cpy/CVCRD01Y.cpy:36} declares
  *       {@code CC-ACCT-ID-N REDEFINES CC-ACCT-ID} and {@code :39} declares
  *       {@code CC-CARD-NUM-N REDEFINES CC-CARD-NUM}, so the single {@code MOVE} at {@code :594} and the
@@ -392,7 +392,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * echoed into an exception message, returned in a projection or written into a Javadoc example. There is
  * no card verification value anywhere on this path at all - not in the entity, not in the request, not
  * in the context and not in the comparison - which is a stronger statement than the one this paragraph
- * used to make about never rendering one; see finding 1. {@code Card.toString()} deliberately excludes
+ * used to make about never rendering one. {@code Card.toString()} deliberately excludes
  * the card number and the embossed name and offers no masking helper, so the two diagnostic log
  * statements in this file mask at the call site through {@link #maskTail}. The
  * old and new snapshot payloads are never logged as a pair, because together they carry the card number
@@ -425,7 +425,7 @@ public class CardUpdateService {
 
     // ---------------------------------------------------------------------------------------------
     // WS-LITERALS, app/cbl/COCRDUPC.cbl:218-263. Transcribed character for character.
-    // WS-LONG-MSG (:156) and LIT-CARDFILENAME-ACCT-PATH (:253) are deliberately absent; see finding 12.
+    // WS-LONG-MSG (:156) and LIT-CARDFILENAME-ACCT-PATH (:253) are deliberately absent.
     // ---------------------------------------------------------------------------------------------
 
     /** {@code LIT-THISPGM PIC X(8) VALUE 'COCRDUPC'} at {@code :219}. Also the abend culprit. */
@@ -504,11 +504,10 @@ public class CardUpdateService {
     // SEARCHED-ACCT-NOT-NUMERIC (:191), SEARCHED-CARD-NOT-NUMERIC (:193),
     // DID-NOT-FIND-ACCT-IN-CARDXREF (:201), XREF-READ-ERROR (:211) and CODING-TO-BE-DONE (:213). Their
     // literals can never be emitted at run time, so none of them becomes a Java constant - the same
-    // ruling that finding 12 applies to WS-LONG-MSG, since the 1:1 mandate covers labels, not data. Two
+    // ruling that applies to WS-LONG-MSG, since the 1:1 mandate covers labels, not data. Two
     // of the seven are directly load-bearing: because SEARCHED-ACCT-NOT-NUMERIC and
     // SEARCHED-CARD-NOT-NUMERIC are dead, the two not-numeric edits report INLINE literals instead, and
     // those inline literals are worded in upper case where every live condition name is in mixed case.
-    // Recorded as finding 12.
     // ---------------------------------------------------------------------------------------------
 
     /** {@code 88 WS-PROMPT-FOR-ACCT} at {@code :177}. */
@@ -548,22 +547,22 @@ public class CardUpdateService {
 
     /**
      * {@code 88 CARD-STATUS-MUST-BE-YES-NO} at {@code :195}. One literal serves both the blank outcome
-     * at {@code :856} and the invalid outcome at {@code :869}; see finding 9.
+     * at {@code :856} and the invalid outcome at {@code :869}.
      */
     private static final String MSG_CARD_STATUS_MUST_BE_YES_NO = "Card Active Status must be Y or N";
 
     /**
      * {@code 88 CARD-EXPIRY-MONTH-NOT-VALID} at {@code :197}. One literal serves both the blank outcome
-     * at {@code :889} and the invalid outcome at {@code :904}; see finding 9.
+     * at {@code :889} and the invalid outcome at {@code :904}.
      */
     private static final String MSG_CARD_EXPIRY_MONTH_NOT_VALID =
             "Card expiry month must be between 1 and 12";
 
     /**
      * {@code 88 CARD-EXPIRY-YEAR-NOT-VALID} at {@code :199}. One literal serves both the blank outcome
-     * at {@code :922} and the invalid outcome at {@code :940}; see finding 9. Note that this wording,
+     * at {@code :922} and the invalid outcome at {@code :940}. Note that this wording,
      * unlike the month's, states no range - which is consistent with the copy-pasted comment defect at
-     * {@code :927-929} recorded as finding 8, though the code validates 1950 to 2099.
+     * {@code :927-929}, though the code validates 1950 to 2099.
      */
     private static final String MSG_CARD_EXPIRY_YEAR_NOT_VALID = "Invalid card expiry year";
 
@@ -635,7 +634,7 @@ public class CardUpdateService {
     // it is the '0001' payload code that :1021 moves into ABEND-DATA - the '9999' is the separate
     // transaction-level code that the CICS ABEND command takes, and there is no field to put it in. The
     // three-way distinction between it, the '0001' payload and the batch corpus's 999 is documented on
-    // abendRoutine rather than encoded as an unused constant. Finding 17.
+    // abendRoutine rather than encoded as an unused constant.
 
     // ---------------------------------------------------------------------------------------------
     // Attention identifiers, app/cpy/CSSTRPFY.cpy via COPY 'CSSTRPFY' at app/cbl/COCRDUPC.cbl:1528.
@@ -1472,8 +1471,7 @@ public class CardUpdateService {
      * <p>Source: {@code app/cbl/COCRDUPC.cbl} paragraph {@code 0000-MAIN-EXIT.} at line 560. The paragraph body is
      * the single COBOL {@code EXIT} statement at {@code :561}, which transfers control to the end of the paragraph
      * and has no Java counterpart beyond returning. It is retained as its own method because the one-for-one
-     * paragraph mandate covers exit labels, and because the planned {@code TRACEABILITY_MATRIX.md} will be verified
-     * mechanically against that correspondence.</p>
+     * paragraph mandate covers exit labels, so the correspondence stays mechanically checkable.</p>
      */
     private void mainExit0000() {
         // :561 EXIT
@@ -1529,7 +1527,7 @@ public class CardUpdateService {
      * <p>First, {@code INITIALIZE CCUP-NEW-DETAILS} at {@code :586} clears the <em>entire</em> new-values
      * group before any field is populated. Because no statement anywhere in the program ever assigns
      * {@code CCUP-NEW-CVV-CD}, that clear is the only thing that ever touches it, which is the root of
-     * the Blocker deviation recorded as finding 1 in the class documentation.</p>
+     * the verification-value deviation described in the class documentation.</p>
      *
      * <p>Second, the comment at {@code :588} reads "REPLACE * WITH LOW-VALUES" and the substitution is
      * applied to exactly <strong>six</strong> fields: the account filter at {@code :589-596}, the card
@@ -1538,7 +1536,7 @@ public class CardUpdateService {
      * <strong>{@code EXPDAYI} is the one exception</strong>: {@code :621} is a bare, unconditional
      * {@code MOVE EXPDAYI OF CCRDUPAI TO CCUP-NEW-EXPDAY} with no asterisk handling and no blank
      * handling, so the expiry day is accepted raw. A uniform loop over all seven fields would be wrong,
-     * and this asymmetry is preserved deliberately as finding 5.</p>
+     * and this asymmetry is preserved deliberately.</p>
      *
      * <p>The flat map components of the request are the received map and therefore govern, because they
      * are what this paragraph reads. Where a flat component is absent entirely the corresponding
@@ -1574,7 +1572,7 @@ public class CardUpdateService {
             // at :594 establishes the alphanumeric and the numeric view of the same storage at once.
             // Both views must therefore be current after 1100, on EVERY task and not only on the fetch
             // task, because :1463's MOVE CC-ACCT-ID-N TO CARD-UPDATE-ACCT-ID reads the numeric view
-            // from inside 9200 - a paragraph that 1210-EDIT-ACCOUNT never precedes. Finding 20.
+            // from inside 9200 - a paragraph that 1210-EDIT-ACCOUNT never precedes.
             context.receivedAccountId = parseDigits(accountFilter);
             context.newAccountId = accountFilter;
         }
@@ -1592,7 +1590,7 @@ public class CardUpdateService {
             // app/cpy/CVCRD01Y.cpy:39 declares CC-CARD-NUM-N REDEFINES CC-CARD-NUM, so :603 makes both
             // views current together. This is load bearing for the write: :1425's MOVE CC-CARD-NUM TO
             // WS-CARD-RID-CARDNUM is the record identifier 9200 locks on, and 9200 is reached only from
-            // :988 - a path on which 1220-EDIT-CARD has not run. Finding 20.
+            // :988 - a path on which 1220-EDIT-CARD has not run.
             context.receivedCardNumber = parseDigits(cardFilter);
             context.newCardId = cardFilter;
         }
@@ -1606,7 +1604,7 @@ public class CardUpdateService {
                 submittedData == null ? null : submittedData.cardStatusCode()), WIDTH_CARD_STATUS);
         context.newCardStatusCode = isNotSupplied(cardStatusCode) ? null : cardStatusCode;
         // :621 MOVE EXPDAYI OF CCRDUPAI TO CCUP-NEW-EXPDAY - bare and unconditional. The expiry day is
-        //      NOT normalised: an asterisk and a blank both pass straight through. Finding 5. The width
+        //      NOT normalised: an asterisk and a blank both pass straight through. The width
         //      clamp is not normalisation: EXPDAYI is PIC X(2) at COCRDUP.CPY:96 and the receiving item
         //      is PIC X(2) at :300, so the field geometry applies here exactly as it does to the six
         //      normalised fields. What :621 omits is the '*' and SPACES test, and that omission stands.
@@ -1768,7 +1766,7 @@ public class CardUpdateService {
      * validates it. The <strong>verification value, account id and card number do not</strong>, because
      * they sit outside {@code CARDDATA} in the enclosing {@code CCUP-*-DETAILS} group. In the source the
      * verification value was nevertheless compared by Regime B at {@code :1503}, which was one reason the
-     * two regimes could not be merged; that predicate is gone with the field (finding 1), and the regimes
+     * two regimes could not be merged; that predicate is gone with the field, and the regimes
      * still cannot be merged because Regime A folds a 59-byte group while Regime B compares five fields
      * against a snapshot taken at a different moment.</p>
      *
@@ -1902,7 +1900,7 @@ public class CardUpdateService {
      * branch moves ZEROES into both the commarea field and the new-values field in one multi-target
      * statement at {@code :777-778}; the class-test branch moves ZERO into the commarea field at
      * {@code :792} but LOW-VALUES into the new-values field at {@code :793}. That asymmetry is recorded
-     * as finding 7 and is reproduced rather than harmonised.</p>
+     * distinctly and is reproduced rather than harmonised.</p>
      *
      * <p>Success at {@code :796-797} is also asymmetric between the two targets: the commarea receives
      * the numeric redefinition {@code CC-CARD-NUM-N} while the new-values field receives the
@@ -1945,7 +1943,7 @@ public class CardUpdateService {
             }
             // :792 MOVE ZERO TO CDEMO-CARD-NUM
             context.commareaCardNumber = 0L;
-            // :793 MOVE LOW-VALUES TO CCUP-NEW-CARDID - LOW-VALUES here, ZEROES above. Finding 7.
+            // :793 MOVE LOW-VALUES TO CCUP-NEW-CARDID - LOW-VALUES here, ZEROES above.
             context.newCardId = null;
             // :794 GO TO 1220-EDIT-CARD-EXIT
             editCardExit1220();
@@ -2060,7 +2058,7 @@ public class CardUpdateService {
      * {@code false} are all rejected.</p>
      *
      * <p>The <strong>same</strong> message literal serves both the blank outcome at {@code :856} and the
-     * invalid outcome at {@code :869}. No second message is invented; see finding 9.</p>
+     * invalid outcome at {@code :869}. No second message is invented.</p>
      *
      * @param context the per-request state
      */
@@ -2194,13 +2192,13 @@ public class CardUpdateService {
      * only then sets it, at {@code :930}. The blank branch therefore sets the blank state alone. Because
      * these are condition names over a single flag byte the resulting state is identical either way, so
      * the difference is invisible in behaviour, but the order is not reordered to match the siblings.
-     * Finding 8.</p>
+     *</p>
      *
      * <p>{@code :932} moves the value into {@code CARD-YEAR-CHECK} and {@code :934} tests
      * {@code 88 VALID-YEAR VALUES 1950 THRU 2099} declared at {@code :99}, so the accepted range is
      * <strong>1950 to 2099 inclusive</strong>. The comment block at {@code :927-928} reads "Must be
      * numeric" and "Must be 1 to 12", the latter copy-pasted from the month paragraph; the code
-     * validates the year range, and the comment defect is recorded as finding 8 rather than acted on.</p>
+     * validates the year range, and the copy-pasted comment is left as written rather than acted on.</p>
      *
      * <p>One literal serves both the blank outcome at {@code :922} and the invalid outcome at
      * {@code :940}.</p>
@@ -2224,7 +2222,7 @@ public class CardUpdateService {
             return;
         }
         // :927-928 the comment defect: "Must be numeric" / "Must be 1 to 12", the latter wrong.
-        // :930 SET FLG-CARDEXPYEAR-NOT-OK TO TRUE - AFTER the blank test. Finding 8.
+        // :930 SET FLG-CARDEXPYEAR-NOT-OK TO TRUE - AFTER the blank test.
         context.expiryYearState = FieldEditState.NOT_OK;
         // :932 MOVE CCUP-NEW-EXPYEAR TO CARD-YEAR-CHECK - method-local, never a bean field.
         final Long yearCheck = parseNumericClass(context.newExpiryYear, WIDTH_EXPIRY_YEAR);
@@ -2257,7 +2255,7 @@ public class CardUpdateService {
      *
      * <p>There is deliberately <strong>no</strong> {@code 1270-EDIT-EXPIRY-DAY} counterpart: the source
      * has no such paragraph, so the expiry day is never range-checked, numeric-checked or blank-checked,
-     * and no validation the source lacks is added here. Finding 6.</p>
+     * and no validation the source lacks is added here.</p>
      */
     private void editExpiryYearExit1260() {
         // :946 EXIT
@@ -2276,8 +2274,7 @@ public class CardUpdateService {
      * {@code EVALUATE TRUE}: guarded by {@code CCARD-AID-PFK05} at {@code :988-989}, and then again
      * unguarded at {@code :1006}. A COBOL {@code EVALUATE TRUE} runs only the first matching
      * {@code WHEN}, so the guarded form must be tested first or the save can never fire. This is not a
-     * defect; reordering the Java chain to look tidier would silently disable the write path. Recorded
-     * as finding 10.</p>
+     * defect; reordering the Java chain to look tidier would silently disable the write path.</p>
      *
      * <p>Two of the seven branches are intentional no-ops that are nevertheless reachable, so they are
      * emitted explicitly rather than elided: {@code WHEN CCUP-CHANGES-NOT-OK} at {@code :982-983} and
@@ -2328,7 +2325,7 @@ public class CardUpdateService {
             return;
         }
         // :988-989 WHEN CCUP-CHANGES-OK-NOT-CONFIRMED AND CCARD-AID-PFK05 - PF05 is CONFIRM SAVE, and
-        //          this guarded branch MUST be tested before the unguarded one below. Finding 10.
+        //          this guarded branch MUST be tested before the unguarded one below.
         if (context.changeAction == ChangeAction.CHANGES_OK_NOT_CONFIRMED
                 && context.attentionKey == AidKey.PFK05) {
             // :990-991 PERFORM 9200-WRITE-PROCESSING THRU 9200-WRITE-PROCESSING-EXIT
@@ -2462,7 +2459,7 @@ public class CardUpdateService {
      * {@code :38} and {@code :40} carry {@code ':'}. The year is taken two digits at a time from
      * {@code WS-CURDATE-YEAR(3:2)} at {@code :1066}, so the century is deliberately dropped.</p>
      *
-     * <p><strong>Finding 2, severity Low.</strong> {@code FUNCTION CURRENT-DATE} is evaluated
+     * <p><strong>The clock is read twice.</strong> {@code FUNCTION CURRENT-DATE} is evaluated
      * <em>twice</em>, at {@code :1055} and again at {@code :1062}, and the first result is overwritten
      * before any field reads it. The redundancy is preserved as a single clock read followed by a second
      * read, so the paragraph's observable behaviour is identical while the source's redundancy stays
@@ -2520,9 +2517,10 @@ public class CardUpdateService {
      * {@code EXPDAYO}, and the {@code MOVE CCUP-NEW-EXPDAY} that would have echoed the edited day sits
      * <em>commented out</em> at {@code :1122} beneath a comment block at {@code :1119-1121} reading
      * "MOVE OLD VALUES TO NON-DISPLAY FIELDS THAT WE ARE NOT ALLOWING USER TO CHANGE(FOR NOW)".
-     * {@code :1122} is <strong>not</strong> resurrected here. Finding 6.</p>
+     * {@code :1122} is <strong>not</strong> resurrected here.</p>
      *
-     * <p><strong>Finding 16, severity Low.</strong> The multi-target {@code MOVE LOW-VALUES} of the
+     * <p><strong>One assignment in the multi-target MOVE is a duplicate.</strong> The multi-target
+     * {@code MOVE LOW-VALUES} of the
      * {@code CCUP-DETAILS-NOT-FETCHED} branch names {@code CRDNAMEO OF CCRDUPAO} twice, at
      * {@code :1101} and again at {@code :1102}, before naming the other four fields at
      * {@code :1103-1106}. The duplicate assignment is a no-op and is recorded rather than reproduced as
@@ -2549,7 +2547,7 @@ public class CardUpdateService {
         //            tests a GROUP condition, CCUP-CHANGES-MADE, that spans five of the seven states.
         if (context.changeAction == ChangeAction.DETAILS_NOT_FETCHED) {
             // :1100-1106 WHEN CCUP-DETAILS-NOT-FETCHED - clear all five data fields. CRDNAMEO is named
-            //            twice, at :1101 and :1102; see finding 16.
+            //            twice, at :1101 and :1102.
             context.screen.cardholderName = null;
             context.screen.cardStatusCode = null;
             context.screen.expiryDay = null;
@@ -2577,7 +2575,7 @@ public class CardUpdateService {
             // :1124-1129 WHEN OTHER - echoes the stored snapshot unchanged. Reachable only if the state
             //            byte holds a value none of the eight 88-levels at :278-290 declares, which the
             //            enumeration makes impossible; retained because the source declares it and the
-            //            Java language requires a total chain. Finding 16.
+            //            Java language requires a total chain.
             context.screen.cardholderName = context.oldCardholderName;
             context.screen.cardStatusCode = context.oldCardStatusCode;
             // :1127 MOVE CCUP-OLD-EXPDAY TO EXPDAYO
@@ -2845,7 +2843,7 @@ public class CardUpdateService {
         }
         // :1277 MOVE DFHBMDAR TO EXPDAYC OF CCRDUPAO - UNCONDITIONAL. The expiry day is always
         //       non-display, which is the screen-level counterpart of it never being validated and always
-        //       being echoed as the OLD value. Findings 5 and 6.
+        //       being echoed as the OLD value.
         context.screen.expiryDayColour = FieldColour.NON_DISPLAY;
         // :1279-1280 IF FLG-CARDEXPMON-NOT-OK AND CCUP-CHANGES-NOT-OK MOVE DFHRED TO EXPMONC
         if (context.expiryMonthState == FieldEditState.NOT_OK
@@ -2953,7 +2951,7 @@ public class CardUpdateService {
      * {@code INSPECT ... CONVERTING LIT-LOWER TO LIT-UPPER} before the snapshot is taken, so the snapshot
      * always holds the folded form. {@code 9300-CHECK-CHANGE-IN-REC} folds the live record again at
      * {@code :1499-1501} before comparing, which means both sides of that comparison are already folded
-     * and the fold is applied twice on the write path. Finding 11.</p>
+     * and the fold is applied twice on the write path.</p>
      *
      * <p>This method is reached only from the two fetch paths, {@code :486-487} and {@code :962-963}. It
      * is deliberately <strong>not</strong> reached from the write path, which is why the caller-supplied
@@ -2983,9 +2981,9 @@ public class CardUpdateService {
             // :1354 MOVE CARD-CVV-CD TO CCUP-OLD-CVV-CD - NOT REPRODUCED, because there is no stored
             //       verification value to snapshot. See the deviation on this class and on
             //       com.cardemo.model.entity.Card: the value is not persisted, so :1503's first
-            //       predicate has no operands and is dropped with it. Finding 20.
+            //       predicate has no operands and is dropped with it.
             // :1356-1358 INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO LIT-UPPER - the record work
-            //            area is folded IN PLACE before the snapshot is taken. Finding 11.
+            //            area is folded IN PLACE before the snapshot is taken.
             //            The fold is applied to the work area ONLY, never to the loaded entity: an
             //            INSPECT mutates WORKING-STORAGE and never the dataset, whereas mutating a
             //            managed JPA instance inside this transaction would flush an UPDATE the source
@@ -3039,7 +3037,7 @@ public class CardUpdateService {
      * is a validation outcome that marks <em>both</em> filters not-OK and, guarded by
      * {@code IF WS-RETURN-MSG-OFF}, sets the combination message. {@code WHEN OTHER} at
      * {@code :1402-1411} composes {@code WS-FILE-ERROR-MESSAGE} and, unusually, guards only the
-     * <em>flag</em> rather than the message. Finding 15.</p>
+     * <em>flag</em> rather than the message.</p>
      *
      * @param context the per-request state
      * @return the card row, or {@code null} when the read returned {@code NOTFND} at {@code :1395}
@@ -3065,7 +3063,7 @@ public class CardUpdateService {
             //            message is reproduced byte for byte, and the root cause is preserved.
             context.inputError = true;
             // :1404-1406 IF WS-RETURN-MSG-OFF SET FLG-ACCTFILTER-NOT-OK TO TRUE - note that the guard
-            //            wraps the FLAG here, not the message. Finding 15.
+            //            wraps the FLAG here, not the message.
             if (context.returnMessage.isEmpty()) {
                 context.accountFilterState = FieldEditState.NOT_OK;
             }
@@ -3125,12 +3123,12 @@ public class CardUpdateService {
      * {@code @Transactional(rollbackFor = Exception.class)} boundary declared on
      * {@link #processRequest(CardUpdateRequest, String, EntryMode)} and {@link #updateCard} reproduces the
      * source's semantics by <em>scoping</em> rather than by conditional logic, which is a mechanism
-     * substitution and not a behaviour change. Finding 2.</p>
+     * substitution and not a behaviour change.</p>
      *
      * <p>Three distinguishable failure outcomes plus success, exactly as the source produces them:
      * {@code COULD-NOT-LOCK-FOR-UPDATE} at {@code :1446}, {@code DATA-WAS-CHANGED-BEFORE-UPDATE} raised
      * by {@code 9300} at {@code :1511}, and {@code LOCKED-BUT-UPDATE-FAILED} at {@code :1491}. Collapsing
-     * them into one status would be a High-severity regression: {@code :997-998} shows that only the
+     * them into one status would be a regression: {@code :997-998} shows that only the
      * middle one is recoverable, because it returns to {@code CCUP-SHOW-DETAILS} so the caller may retry
      * against refreshed data.</p>
      *
@@ -3141,7 +3139,7 @@ public class CardUpdateService {
      * value on every successful update. This system has no such column, field or request component to
      * write, so the pair of {@code MOVE}s is deliberately absent rather than reproduced: the rewrite
      * cannot destroy a value that is never retained, and retaining authentication data solely to
-     * overwrite it faithfully is not defensible. Finding 1.</p>
+     * overwrite it faithfully is not defensible.</p>
      *
      * <p><strong>Lock acquisition happens at the read, not at the rewrite.</strong> The
      * {@code EXEC CICS READ ... UPDATE} of {@code :1427}-{@code :1436} is a read-for-update, so the row
@@ -3149,7 +3147,7 @@ public class CardUpdateService {
      * {@link CardRepository#findByIdForUpdate(String)} carries
      * {@code @Lock(LockModeType.PESSIMISTIC_WRITE)} to reproduce that timing; the {@code version} column
      * remains as the second layer but cannot substitute for the lock, because it detects a clash after
-     * the fact whereas the source prevents one. Finding 7.</p>
+     * the fact whereas the source prevents one.</p>
      *
      * @param context the per-request state
      * @throws FileAccessException if the locking read fails with a genuine access error
@@ -3231,12 +3229,12 @@ public class CardUpdateService {
         // DECLARED at :306 and READ at :1464 but NEVER ASSIGNED anywhere in the program. This system
         // retains no card verification data at any layer: no card_cvv_cd column, no entity field, no
         // seeded value and no request component, so there is nothing for these MOVEs to target. See the
-        // deviation register on the class javadoc, finding 1.
+        // class javadoc for why no verification value is stored in the first place.
         // :1466 MOVE CCUP-NEW-CRDNAME TO CARD-UPDATE-EMBOSSED-NAME
         card.setEmbossedName(padRight(context.newCardholderName, WIDTH_EMBOSSED_NAME));
         // :1467-1474 STRING CCUP-NEW-EXPYEAR '-' CCUP-NEW-EXPMON '-' CCUP-NEW-EXPDAY DELIMITED BY SIZE
         //            INTO CARD-UPDATE-EXPIRAION-DATE - note that the CARRIED day is written even though
-        //            no paragraph validates it and 3200 always echoes the OLD one. Finding 6.
+        //            no paragraph validates it and 3200 always echoes the OLD one.
         card.setExpiraionDate(assembleExpiraionDate(context.newExpiryYear, context.newExpiryMonth,
                 context.newExpiryDay));
         // :1475 MOVE CCUP-NEW-CRDSTCD TO CARD-UPDATE-ACTIVE-STATUS
@@ -3273,7 +3271,7 @@ public class CardUpdateService {
         } catch (final DataAccessException rewriteFailure) {
             // :1490-1492 ELSE SET LOCKED-BUT-UPDATE-FAILED TO TRUE - note that this branch sets neither
             //            INPUT-ERROR nor a WS-RETURN-MSG-OFF guard, unlike every other failure path in
-            //            the program. Finding 15.
+            //            the program.
             context.writeOutcome = WriteOutcome.LOCKED_BUT_UPDATE_FAILED;
             throw new ConcurrentUpdateException(
                     ConcurrentUpdateException.Outcome.LOCKED_BUT_UPDATE_FAILED,
@@ -3303,7 +3301,7 @@ public class CardUpdateService {
      * <p>{@code :1499-1501} folds {@code CARD-EMBOSSED-NAME} to upper case <strong>in place</strong>,
      * mutating the program's own record buffer before any comparison happens; the same fold was already
      * applied at {@code :1356-1358} when the snapshot was taken, so on the write path it is applied
-     * twice. Finding 11. The fold is reproduced here on a local value so the comparison behaves
+     * twice. The fold is reproduced here on a local value so the comparison behaves
      * identically, and {@code Locale.ROOT} is used so the result cannot vary with the platform locale.</p>
      *
      * <p>{@code :1503-1508} is a single {@code IF} with <strong>six {@code AND}ed predicates</strong>,
@@ -3325,14 +3323,14 @@ public class CardUpdateService {
      * <p>Regime C, the JPA version column, is <em>not</em> a substitute for this check and this check is
      * not a substitute for it. A version column detects that some concurrent write happened; this
      * detects which field values differ from what the caller was shown. A concurrent write that restored
-     * a value passes here and fails there, so both layers are required. Finding 3.</p>
+     * a value passes here and fails there, so both layers are required.</p>
      *
      * @param context the per-request state, carrying both the as-displayed snapshot and the record work
      *                area that the locking read at {@code :1432} populated from the stored row
      */
     private void checkChangeInRec9300(final UpdateContext context) {
         // :1499-1501 INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO LIT-UPPER - in place, on the
-        //            record work area that the locking read populated, before comparing. Finding 11.
+        //            record work area that the locking read populated, before comparing.
         //            The fold never touches the loaded entity, for the reason given in readData9000: an
         //            INSPECT mutates WORKING-STORAGE, not the dataset.
         context.editEmbossedName = context.editEmbossedName == null
@@ -3348,7 +3346,7 @@ public class CardUpdateService {
         //       record work area nor the snapshot carries one. The predicate is dropped rather than
         //       replaced by a constant: a comparison of two absent values is not a weakened comparison,
         //       it is no comparison. The five predicates below still guard every field the screen can
-        //       change, which is every field the legacy rewrite could change. Finding 20.
+        //       change, which is every field the legacy rewrite could change.
         final boolean unchanged =
                 fixedWidthEquals(context.editEmbossedName, context.oldCardholderName,
                         WIDTH_EMBOSSED_NAME)
@@ -3367,7 +3365,7 @@ public class CardUpdateService {
         context.writeOutcome = WriteOutcome.DATA_WAS_CHANGED_BEFORE_UPDATE;
         context.returnMessage = MSG_DATA_WAS_CHANGED_BEFORE_UPDATE;
         // :1512 MOVE CARD-CVV-CD TO CCUP-OLD-CVV-CD - NOT REPRODUCED, for the same reason as :1354
-        //       and :1503. Finding 20.
+        //       and :1503.
         // :1513 MOVE CARD-EMBOSSED-NAME TO CCUP-OLD-CRDNAME
         context.oldCardholderName = context.editEmbossedName;
         // :1514 MOVE CARD-EXPIRAION-DATE(1:4) TO CCUP-OLD-EXPYEAR
@@ -3380,7 +3378,7 @@ public class CardUpdateService {
         context.oldCardStatusCode = context.editCardStatus;
         // :1518 GO TO 9200-WRITE-PROCESSING-EXIT - a cross-paragraph jump into the caller's exit label,
         //       expressed as the DATA_WAS_CHANGED_BEFORE_UPDATE outcome that :1455 tests.
-        // :1519 END-IF EXIT - malformed and inert; no Java counterpart. Finding 16.
+        // :1519 END-IF EXIT - malformed and inert; no Java counterpart.
         writeProcessingExit9200();
     }
 
@@ -3518,7 +3516,7 @@ public class CardUpdateService {
      * {@code :368-370}, and by the explicit
      * {@code PERFORM ABEND-ROUTINE THRU ABEND-ROUTINE-EXIT} at {@code :1025-1026} inside
      * {@code 2000-DECIDE-ACTION}'s {@code WHEN OTHER}. It is therefore genuinely reachable and genuinely
-     * implemented; no tracked-dead-code exception applies anywhere in this file. Finding 13.</p>
+     * implemented; no tracked-dead-code exception applies anywhere in this file.</p>
      *
      * <p>The payload is the {@code ABEND-DATA} group of {@code app/cpy/CSMSG02Y.cpy}, internally titled
      * {@code CABENDD.CPY}: {@code ABEND-CODE PIC X(4)}, {@code ABEND-CULPRIT PIC X(8)},
@@ -3539,7 +3537,7 @@ public class CardUpdateService {
      * while the payload field carries {@code '0001'} from {@code :1021}; batch programs use a third value
      * altogether, {@code 999} with return code 12, at {@code app/cbl/CBTRN02C.cbl:707-711}. The payload
      * code is the one this exception carries, because it is the one the terminal was sent at
-     * {@code :1539-1544}. Finding 17.</p>
+     * {@code :1539-1544}.</p>
      *
      * @param context the per-request state, carrying the four abend fields
      * @param cause   the throwable that triggered the handler, or {@code null} when the routine was
@@ -3566,7 +3564,7 @@ public class CardUpdateService {
                 context.writeOutcome);
         // :1546-1548 EXEC CICS HANDLE ABEND CANCEL
         // :1550-1552 EXEC CICS ABEND ABCODE('9999') - the CICS abend code, distinct from the '0001' the
-        //            payload carries. Finding 17.
+        //            payload carries.
         final FatalProcessingException fatal = cause == null
                 ? new FatalProcessingException(context.abendCode, context.abendCulprit,
                         context.abendReason, abendMessage)
@@ -3751,7 +3749,7 @@ public class CardUpdateService {
      * the terminal's own width applies - keeps every downstream consumer seeing the same byte width the
      * legacy would have seen. Without it an over-width value travels as far as the screen render at
      * {@code :2313} or the entity setter, and surfaces as a masked abend instead of the field-level
-     * rejection the edit paragraphs are there to produce. Finding 18.</p>
+     * rejection the edit paragraphs are there to produce.</p>
      *
      * <p>This truncates but never pads, because a legacy {@code MOVE} between two items of equal width
      * is the identity: padding here would push trailing spaces into comparisons that the source
@@ -4129,7 +4127,7 @@ public class CardUpdateService {
      *
      * <p><strong>This applies to six fields only.</strong> {@code EXPDAYI} is deliberately excluded: its
      * move at {@code :621} is bare and unconditional, so the carried expiry day accepts an asterisk and a
-     * blank as literal values. Finding 5.</p>
+     * blank as literal values.</p>
      *
      * @param value the raw received field value, possibly {@code null}
      * @return {@code true} when the field is absent, all blanks, or the asterisk marker
@@ -4363,7 +4361,7 @@ public class CardUpdateService {
      *
      * <p>Each triad is three {@code 88}-levels over one flag byte, so the three states are mutually
      * exclusive and the last {@code SET} wins &mdash; which is exactly why {@code 1260}'s ordering
-     * asymmetry at {@code :930} is harmless and is nevertheless transcribed as written. Finding 8.</p>
+     * asymmetry at {@code :930} is harmless and is nevertheless transcribed as written.</p>
      *
      * <p>{@link #BLANK} versus {@link #NOT_OK} is the two-state distinction that
      * {@code ValidationException} carries and that {@code 3300} acts on: only a blank field is stamped
@@ -4387,7 +4385,7 @@ public class CardUpdateService {
      * {@code :992-1001} switches on.
      *
      * <p><strong>The three failures must stay distinguishable.</strong> Collapsing them into one status
-     * would be a High-severity regression, because {@code :993-1000} routes each to a different next
+     * would be a regression, because {@code :993-1000} routes each to a different next
      * state and only {@link #DATA_WAS_CHANGED_BEFORE_UPDATE} is recoverable: {@code :998} returns to
      * {@code CCUP-SHOW-DETAILS} so the caller may retry against the refreshed snapshot, whereas
      * {@code :994} and {@code :996} are terminal.</p>
@@ -4448,7 +4446,7 @@ public class CardUpdateService {
 
         /**
          * {@code DFHBMDAR} moved into a colour subfield by {@code :1277}, unconditionally, so the carried
-         * expiry day is never shown. Findings 5 and 6.
+         * expiry day is never shown.
          */
         NON_DISPLAY
     }
@@ -4610,7 +4608,7 @@ public class CardUpdateService {
 
         /**
          * {@code EXPDAYO}, set at {@code :1104}, {@code :1110}, {@code :1123} or {@code :1127}. Always the
-         * OLD day, never the edited one: {@code :1122} is commented out in the source. Finding 6.
+         * OLD day, never the edited one: {@code :1122} is commented out in the source.
          */
         private String expiryDay;
 
@@ -4897,14 +4895,14 @@ public class CardUpdateService {
          * <p>Cleared to {@code LOW-VALUES} on <strong>both</strong> of {@code 1210}'s failure branches, at
          * {@code :734} and {@code :749}, which is precisely the contrast that makes {@code 1220}'s
          * asymmetry worth recording: the card field uses two different clearing values where this one uses
-         * one. Finding 7.</p>
+         * one.</p>
          */
         private String newAccountId;
 
         /**
          * {@code CCUP-NEW-CARDID PIC X(16)} at {@code :305}. Cleared to <strong>ZEROES</strong> on the
          * blank branch at {@code :777-778} and to <strong>LOW-VALUES</strong> on the not-numeric branch at
-         * {@code :793}; the two are never coerced to one another. Read back at {@code :1462}. Finding 7.
+         * {@code :793}; the two are never coerced to one another. Read back at {@code :1462}.
          */
         private String newCardId;
 
@@ -4916,7 +4914,7 @@ public class CardUpdateService {
 
         /**
          * {@code CCUP-NEW-EXPDAY PIC X(2)} at {@code :312}. Accepted unnormalised at {@code :621},
-         * validated by no paragraph, written at {@code :1471}, and never echoed. Findings 5 and 6.
+         * validated by no paragraph, written at {@code :1471}, and never echoed.
          */
         private String newExpiryDay;
 
@@ -4950,7 +4948,7 @@ public class CardUpdateService {
         /**
          * {@code CARD-EMBOSSED-NAME} of the record work area, pre-loaded at {@code :673} and then
          * replaced by {@code INTO(CARD-RECORD)}, and folded in place at {@code :1356-1358} and
-         * {@code :1499-1501}. Finding 11.
+         * {@code :1499-1501}.
          */
         private String editEmbossedName;
 
@@ -5019,7 +5017,7 @@ public class CardUpdateService {
             // and nothing to compare it against; CardUpdateRequest.CardDetails declares no cvvCode
             // component. That is a narrowing, not a gap: a request DTO carrying a verification value
             // would mean ACCEPTING card verification data over the wire, which is the same retention
-            // problem one hop earlier. Finding 20.
+            // problem one hop earlier.
             this.oldAccountId = parseDigits(snapshot == null ? null : snapshot.accountId());
             this.oldCardNumber = parseDigits(snapshot == null ? null : snapshot.cardNumber());
             this.oldCardholderName = snapshotData == null ? null : snapshotData.cardholderName();
@@ -5060,7 +5058,6 @@ public class CardUpdateService {
             // The FOLDED key, never the raw identifier: app/cpy/CSSTRPFY.cpy:62-63 makes DFHPF17 the
             // same key as DFHPF5, and the validity gate at :414-422 will compare the folded value.
             // See foldAttentionIdentifier for why comparing the raw text here disables the save.
-            // Finding 21.
             if (foldAttentionIdentifier(attentionIdentifier) == AidKey.PFK05) {
                 return ChangeAction.CHANGES_OK_NOT_CONFIRMED;
             }
@@ -5071,7 +5068,7 @@ public class CardUpdateService {
         /**
          * Reproduces {@code INITIALIZE CCUP-NEW-DETAILS} at {@code :586}, which clears the whole
          * new-values group including the card verification value that no statement ever assigns. That
-         * clear is the root of the Blocker deviation recorded as finding 1.
+         * clear is the root of the verification-value deviation described in the class documentation.
          */
         private void clearNewDetails() {
             newAccountId = null;

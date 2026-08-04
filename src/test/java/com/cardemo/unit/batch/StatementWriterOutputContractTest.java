@@ -48,13 +48,10 @@ import com.cardemo.batch.writers.StatementWriter;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
 import com.cardemo.model.dto.StatementTransaction;
-import com.cardemo.observability.MetricsConfig;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Resource;
 import io.awspring.cloud.s3.S3Template;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -109,9 +106,6 @@ class StatementWriterOutputContractTest {
     /** The storage boundary, recording rather than calling out. */
     private S3Template s3Template;
 
-    /** The metric registry the writer counts into. */
-    private MeterRegistry meterRegistry;
-
     /** The writer under test. */
     private StatementWriter writer;
 
@@ -138,7 +132,6 @@ class StatementWriterOutputContractTest {
                     this.uploads.add(new Upload(bucket, key, readAll(body)));
                     return Mockito.mock(S3Resource.class);
                 });
-        this.meterRegistry = new SimpleMeterRegistry();
         this.writer = newWriter();
     }
 
@@ -148,8 +141,7 @@ class StatementWriterOutputContractTest {
      * @return a writer whose statement month is already derived
      */
     private StatementWriter newWriter() {
-        StatementWriter created = new StatementWriter(this.s3Template,
-                new MetricsConfig(this.meterRegistry), new FileStatusMapper(),
+        StatementWriter created = new StatementWriter(this.s3Template, new FileStatusMapper(),
                 Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC), "carddemo-statements");
         // beforeStep derives the month and resets the counter. A null execution is the documented
         // directly-driven form, which leaves the generation at its initial value.

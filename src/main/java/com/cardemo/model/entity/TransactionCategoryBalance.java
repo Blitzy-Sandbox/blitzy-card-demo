@@ -74,15 +74,14 @@ import jakarta.persistence.Table;
  * <p><b>How it is built, run and tested.</b> {@code ./mvnw -B clean compile} compiles this class under
  * {@code -Xlint:all -Werror} with {@code failOnWarning} set, so a lint finding in any category
  * {@code javac} 25 publishes is a hard build failure rather than a warning. An unused import is not such a
- * category and is forbidden by review instead. {@code ./mvnw -B clean test} is where this type's unit test
- * belongs, under {@code src/test/java/com/cardemo/unit/model}, and {@code ./mvnw -B clean verify}
- * additionally enforces the JaCoCo line coverage floor. <strong>Not available:</strong> there is no
- * dedicated {@code TransactionCategoryBalanceTest} under that path yet. That is narrower than "untested" -
- * this type is constructed and asserted on from <strong>eight</strong> test classes, among them
- * {@code unit/batch/TransactionPostingProcessorTest}, {@code unit/batch/InterestCalculationProcessorTest}
- * and {@code unit/model/TransactionCategoryBalanceIdTest}, because the accepted-control-path upsert below is
- * a posting behaviour rather than an accessor. What is owed is a focused test of the column contract itself.
- * There is nothing to run: this type has no entry point and is exercised only through the repository and
+ * category and is forbidden by review instead. {@code ./mvnw -B clean test} runs
+ * {@code unit/model/TransactionCategoryBalanceTest}, which pins the column contract, the precision tier
+ * and the free-constructibility this class depends on, alongside
+ * {@code unit/model/TransactionCategoryBalanceIdTest} for the composite key and the posting and interest
+ * processor tests that exercise the upsert as a behaviour. {@code ./mvnw -B clean verify} adds
+ * {@code integration/repository/TransactionCategoryBalanceRepositoryTest}, which validates the mapping
+ * against a Testcontainers PostgreSQL 16 instance, and enforces the JaCoCo line coverage floor. There is
+ * nothing to run directly: this type has no entry point and is reached only through the repository and
  * batch layers.
  *
  * <p><b>Key configuration and defaults.</b> This class configures nothing and reads no property. It
@@ -149,9 +148,9 @@ import jakarta.persistence.Table;
  *       bytes, every line exactly 50 characters. Row 1 splits as
  *
  *       <pre>
- *       00000000001 01 0001 0000000000{ 0000000000000000000000
- *       |         | |  |    |          |
- *       11 acct     2  4    11 balance  22 filler        = 50
+ *       &lt;11 acct id&gt; &lt;2 type&gt; &lt;4 cat&gt; &lt;10 digits&gt;&#123; &lt;22 filler&gt;
+ *       |            |        |       |              |
+ *       11 acct      2        4       11 balance      22 filler       = 50
  *       </pre>
  *
  *       The trailing {@code &#123;} on the balance is a zoned decimal trailing sign overpunch meaning
@@ -199,8 +198,8 @@ import jakarta.persistence.Table;
  * <p>Two facts follow that are worth more than the copybook alone. The three key components occupy bytes 1
  * through 17, which is the composite key length of 17 that {@code app/catlg/LISTCAT.txt} catalogues, derived
  * here from positions rather than from addition. And {@code TRAN-CAT-BAL} is <b>eleven</b> positions wide, not
- * twelve, which is the same {@code NUMERIC(11,2)} the Blocker below insists on - stated by a DFSORT symbol in
- * a different file from the picture clause, so the two cannot both be wrong in the same way. The job's
+ * twelve, which is the same {@code NUMERIC(11,2)} the precision section below insists on - stated by a DFSORT
+ * symbol in a different file from the picture clause, so the two cannot both be wrong in the same way. The job's
  * {@code OUTREC} then edits that field as {@code EDIT=(TTTTTTTTT.TT)}, nine integer digits and two decimals,
  * which is the third independent statement of the same precision.
  *
@@ -215,7 +214,7 @@ import jakarta.persistence.Table;
  * corroboration above and one generation base, {@code TCATBALF.BKUP}, which is already one of the seven
  * catalogued bases the object-storage layout covers.
  *
- * <h2>Blocker: the balance is NUMERIC(11,2), never NUMERIC(12,2)</h2>
+ * <h2>The balance is NUMERIC(11,2), never NUMERIC(12,2)</h2>
  *
  * <p>{@code TRAN-CAT-BAL} is {@code PIC S9(09)V99}: nine integer digits and two decimal digits, so
  * {@code precision = 11, scale = 2}. Widening it to {@code precision = 12} is the single most likely
@@ -231,13 +230,13 @@ import jakarta.persistence.Table;
  * S9(04)V99     NUMERIC(6,2)    DIS-INT-RATE
  * </pre>
  *
- * <p><b>Severity: Blocker.</b> Under {@code ddl-auto: validate} a precision or scale mismatch aborts
- * application context startup, so the fault surfaces as a total outage on first boot. Where validation
- * is not in force it is worse, because it degrades into silent scale divergence: values round at a
- * different digit than the source system did, and no test that does not assert the scale will notice.
- * <b>Remediation:</b> keep {@code precision = 11, scale = 2} on the {@code balance} column and keep
- * {@code tran_cat_bal NUMERIC(11,2)} in the migration; derive both from the picture clause at
- * {@code app/cpy/CVTRA01Y.cpy:L9} and never from a neighbouring entity.
+ * <p>Under {@code ddl-auto: validate} a precision or scale mismatch aborts application context startup,
+ * so the fault surfaces as a total outage on first boot. Where validation is not in force it is worse,
+ * because it degrades into silent scale divergence: values round at a different digit than the source
+ * system did, and no test that does not assert the scale will notice. Keep
+ * {@code precision = 11, scale = 2} on the {@code balance} column and {@code tran_cat_bal NUMERIC(11,2)}
+ * in the migration, both derived from the picture clause at {@code app/cpy/CVTRA01Y.cpy:L9} and never
+ * from a neighbouring entity.
  *
  * <h2>Decimal discipline</h2>
  *
@@ -269,7 +268,7 @@ import jakarta.persistence.Table;
  * absolute-value normalisation anywhere in this file. Any of those would silently discard the sign of a
  * credit and put the row permanently out of agreement with the source system.
  *
- * <h2>Blocker: the key class owns every key column; this class restates none of them</h2>
+ * <h2>The key class owns every key column; this class restates none of them</h2>
  *
  * <p>{@link TransactionCategoryBalanceId} is an {@code @Embeddable} that already declares all three of
  * its own column mappings, in COBOL declaration order and each with an explicit
@@ -290,10 +289,9 @@ import jakarta.persistence.Table;
  *       callers read a component through {@code getId().getAccountId()} instead.</li>
  *   </ul>
  *
- * <p><b>Severity: Blocker.</b> Double mapping a column is a startup failure, not a runtime nuisance.
- * <b>Remediation:</b> the single import from a sibling model package,
- * {@code com.cardemo.model.key.TransactionCategoryBalanceId}, is the only coupling this file needs; every
- * key concern belongs behind it.
+ * <p>Double mapping a column is a startup failure, not a runtime nuisance. The single import from a
+ * sibling model package, {@code com.cardemo.model.key.TransactionCategoryBalanceId}, is the only coupling
+ * this file needs; every key concern belongs behind it.
  *
  * <p>There is deliberately <b>no scalar {@code accountId} property here</b>, and that is a considered
  * difference from two sibling entities rather than an inconsistency. On the card and card cross reference
@@ -309,7 +307,7 @@ import jakarta.persistence.Table;
  * the account identifier leads. The order is fixed by the key class and by the primary key declaration in
  * the migration; nothing in this file may reorder it.
  *
- * <h2>High: a missing row is an accepted control path, so instances must be freely constructible</h2>
+ * <h2>A missing row is an accepted control path, so instances must be freely constructible</h2>
  *
  * <p>Paragraph {@code 2700-UPDATE-TCATBAL} at {@code app/cbl/CBTRN02C.cbl:L467-L501} is an upsert, not a
  * strict read. The sequence is exact and worth following, because it dictates this class's constructors:
@@ -338,8 +336,8 @@ import jakarta.persistence.Table;
  * <p>Three consequences bind this file:
  *
  * <ul>
- *   <li>A <b>public all-argument constructor</b> exists, so a row that does not yet exist can be
- *       constructed complete and inserted in one step, exactly as the create branch does.</li>
+ *   <li>A <b>public all-argument constructor</b> exists, so an absent row can be constructed complete
+ *       and inserted in one step, exactly as the create branch does.</li>
  *   <li>There is <b>no existence-dependent behaviour</b>: no {@code @PrePersist}, {@code @PreUpdate} or
  *       {@code @PostLoad} callback, and no "is new" flag. Whether a key resolves to an existing row is a
  *       question about the database at a moment in time, so the decision belongs to the batch or service
@@ -355,15 +353,16 @@ import jakarta.persistence.Table;
  * Everywhere else a not-found status maps to an exception, which is why the exception mapper must know
  * about these three sites specifically rather than applying one blanket rule.
  *
- * <h2>Low: batch only, and no index beyond the primary key</h2>
+ * <h2>Batch only, and no index beyond the primary key</h2>
  *
  * <p>{@code app/csd/CARDDEMO.CSD} defines exactly eight CICS file names: {@code ACCTDAT},
  * {@code CARDAIX}, {@code CARDDAT}, {@code CCXREF}, {@code CUSTDAT}, {@code CXACAIX}, {@code TRANSACT}
  * and {@code USRSEC}. {@code TCATBALF} is not among them, and a search of that file for the name returns
  * nothing. This dataset therefore has no online definition at all and is reached only from batch, as are
  * {@code DISCGRP}, {@code TRANCATG} and {@code TRANTYPE}. That shapes the authorisation model, since no
- * online role needs access to it, and the integration test surface, since only batch tiers are to exercise
- * it - a shape the tests are to take, since no integration tier exists at this commit.
+ * online role needs access to it, and the integration test surface, which is accordingly the batch and
+ * repository tiers: {@code integration/repository/TransactionCategoryBalanceRepositoryTest} reaches this
+ * table, and no REST path does.
  *
  * <p>It also has no alternate index. {@code app/catlg/LISTCAT.txt:L3938} reports {@code AIX 3} for the
  * whole catalogue, and all three belong to {@code CARDDATA}, {@code CARDXREF} and {@code TRANSACT}. The
@@ -420,10 +419,10 @@ import jakarta.persistence.Table;
  * cardholder and credential material. The rendering is produced by plain concatenation, so it consults no
  * locale, charset or time zone and is byte identical on every machine.
  *
- * <h2>Schema reconciliation, and what is still not available</h2>
+ * <h2>Schema reconciliation</h2>
  *
- * <p><b>Measured 1 August 2026.</b> {@code src/main/resources/db/migration/V1__create_schema.sql} is
- * <b>present</b> and declares {@code CREATE TABLE transaction_category_balance}
+ * <p>{@code src/main/resources/db/migration/V1__create_schema.sql} declares
+ * {@code CREATE TABLE transaction_category_balance}
  * with 4 columns whose names are identical, as a set, to this class's {@code @Column(name = ...)}
  * declaration taken together with the three components of
  * {@link com.cardemo.model.key.TransactionCategoryBalanceId}; the declared types and the component order
@@ -434,9 +433,8 @@ import jakarta.persistence.Table;
  * <p>Both later migrations exist. {@code V2__create_indexes.sql} creates nothing for this table beyond its
  * composite primary key, correctly, because {@code TCATBALF} has no alternate index in
  * {@code app/catlg/LISTCAT.txt} and the account-level control break of {@code CBACT04C} rides the primary
- * key's leading component. {@code V3__seed_data.sql} seeds it from {@code app/data/ASCII/tcatbal.txt}. An
- * earlier revision of this paragraph called both unavailable; that is no longer true and the claim is
- * withdrawn. What {@code V1__create_schema.sql} declares, and what this mapping asserts, is precisely:
+ * key's leading component. {@code V3__seed_data.sql} seeds it from {@code app/data/ASCII/tcatbal.txt}. What
+ * {@code V1__create_schema.sql} declares, and what this mapping asserts, is precisely:
  *
  * <pre>
  * CREATE TABLE transaction_category_balance (
@@ -491,10 +489,10 @@ import jakarta.persistence.Table;
  * it: {@code Long} over {@code NUMERIC(11)} fails validation where {@code Long} over {@code BIGINT}
  * passes, and {@code String} of length 2 over {@code CHAR(2)} fails, reported as
  * {@code found [bpchar (Types#CHAR)], but expecting [varchar(2) (Types#VARCHAR)]}, where
- * {@code VARCHAR(2)} passes. <b>Severity: High</b>, because either literal type would abort startup on
- * first boot, and the failure would appear to be in this entity while its actual cause is the column
- * type. <b>Remediation:</b> treat the key class as authoritative for the three key columns, exactly as
- * this file does by declaring none of them, and reconcile the widths only in documentation. The one column
+ * {@code VARCHAR(2)} passes. Either literal type would abort startup on first boot, and the failure would
+ * appear to be in this entity while its actual cause is the column type, so the key class is
+ * authoritative for the three key columns - exactly as this file treats it by declaring none of them -
+ * and the picture-clause widths are reconciled only in documentation. The one column
  * this class owns is unaffected either way: {@code tran_cat_bal} is {@code NUMERIC(11,2)} under every
  * reading, since a {@link BigDecimal} of {@code precision = 11, scale = 2} pairs with
  * {@code NUMERIC(11,2)} and with nothing else.
@@ -505,16 +503,6 @@ import jakarta.persistence.Table;
  * {@code tran_cat_bal numeric(11,2)}, reports the entity as not versioned, and reports exactly one
  * non-key property. Those are precisely the types the DDL above declares, so the contract in this file is
  * the one the provider will actually validate against.
- *
- * <h2>Findings, by severity</h2>
- *
- * <pre>
- * Blocker  balance must be NUMERIC(11,2), not NUMERIC(12,2)      -> precision = 11, scale = 2
- * Blocker  key columns must not be restated on this entity       -> @EmbeddedId only, no overrides
- * High     a missing row is an accepted control path             -> public all-args constructor
- * High     key column SQL types follow the key class, not PIC    -> BIGINT / VARCHAR(2) / INTEGER
- * Low      batch only, no CICS definition, no alternate index    -> no index beyond the primary key
- * </pre>
  *
  * <h2>Error modes</h2>
  *
@@ -740,19 +728,16 @@ public class TransactionCategoryBalance {
      * hash, no social security number, no cardholder name and no address. It is also the only value here
      * that identifies which row a log line refers to, which is the sole purpose of this rendering.
      *
-     * <p><b>The balance is excluded, which narrows an earlier form of this method.</b> The previous
-     * reasoning was that the balance falls under no masking rule in the logging configuration and is
-     * therefore safe to render. Both halves of that were wrong. {@code balance} and {@code TRAN-CAT-BAL}
-     * are masked paths in {@code src/main/resources/logback-spring.xml}, so a rule does exist - and its
-     * existence would not have made rendering safe anyway, because it keys on a JSON field name while this
-     * rendering interpolates the value into free text, where there is no field name to key on. A
-     * value-shaped rule cannot close that gap either: an unlabelled decimal is indistinguishable from the
-     * preserved counter and total {@code DISPLAY} reproductions the same file protects from
-     * over-redaction. Omission at source has to do the work. And the value itself is customer financial data: this
-     * rendering carries the account
-     * identifier, so a log estate holding both holds a per-account, per-category balance ledger that
-     * joins straight back to the row, reconstructable with no database access and no authorisation. A
-     * reader who needs a balance should read the row, where the access is authorised and audited.
+     * <p><b>The balance is excluded, and a masking rule is not what keeps it out.</b> {@code balance} and
+     * {@code TRAN-CAT-BAL} are masked paths in {@code src/main/resources/logback-spring.xml}, but that
+     * rule keys on a JSON field name while this rendering interpolates the value into free text, where
+     * there is no field name to key on. A value-shaped rule cannot close the gap either: an unlabelled
+     * decimal is indistinguishable from the preserved counter and total {@code DISPLAY} reproductions the
+     * same file protects from over-redaction. Omission at source has to do the work, because the value is
+     * customer financial data and this rendering already carries the account identifier - a log estate
+     * holding both holds a per-account, per-category balance ledger that joins straight back to the row,
+     * reconstructable with no database access and no authorisation. A reader who needs a balance should
+     * read the row, where the access is authorised and audited.
      *
      * <p>Intended for diagnostics only and not a stable log or wire format. The rendering is plain
      * concatenation, so it consults no locale, charset or time zone and is identical on every machine.

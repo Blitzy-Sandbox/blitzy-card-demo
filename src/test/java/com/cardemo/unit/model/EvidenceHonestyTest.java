@@ -118,12 +118,54 @@ class EvidenceHonestyTest {
                     + "|not available at this commit|no file of that name exists|-Dtest=",
             Pattern.CASE_INSENSITIVE);
 
-    /** The two evidence registers, neither of which exists at this commit. */
+    /**
+     * The two evidence registers, neither of which exists at this commit, claimed by a verb of record.
+     *
+     * <p>The intervening {@code [^.;]{0,60}?} is what makes this rule cover the wording a review actually
+     * found rather than only the adjacent form. "Recorded in DECISION_LOG.md" and "Recorded <em>as a
+     * preserved quirk</em> in DECISION_LOG.md" assert exactly the same untrue thing, and an earlier version
+     * of this pattern required the verb and the {@code in} to be adjacent, so the second slipped past it four
+     * times. The bound is lazy and stops at a sentence break, so the rule cannot reach across a full stop and
+     * pair a verb in one sentence with a register named in the next.
+     */
     private static final Pattern REGISTER_CLAIM = Pattern.compile(
             "\\b(?:is|are|and|,)?\\s*(?:recorded|tracked|documented|logged|justified|cited|captured|noted"
-                    + "|registered|entered|listed)\\s+in\\s+(?!(?:the\\s+)?planned\\b)"
+                    + "|registered|entered|listed|reflected|labelled|labeled|marked|disclosed|explained"
+                    + "|declared|stated|flagged|acknowledged|attributed)\\b[^.;]{0,60}?\\bin\\s+"
+                    + "(?!(?:the\\s+)?planned\\b)"
                     + "(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)",
             Pattern.CASE_INSENSITIVE);
+
+    /**
+     * The same untrue assertion made attributively rather than with a verb of record.
+     *
+     * <p>"This one <em>carries a</em> {@code DECISION_LOG.md} entry" and "each <em>carrying a</em>
+     * {@code TRACEABILITY_MATRIX.md} row" claim a held entry without using any verb {@link #REGISTER_CLAIM}
+     * looks for, which is how four of them survived a guard that had been running over these very files since
+     * before they were written. The optional closing brace matters and is not cosmetic: the tree writes the
+     * register inside {@code {@code ...}}, so a pattern that expected the noun immediately after the filename
+     * matches nothing at all - a defect that made a scan of this same rule silently report zero.
+     */
+    private static final Pattern REGISTER_POSSESSION = Pattern.compile(
+            "\\b(?:carr(?:y|ies|ying)|with|has|have|having|bearing|bears)\\b[^.;]{0,40}?"
+                    + "(?!(?:the\\s+)?planned\\b)"
+                    + "(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)\\}?"
+                    + "\\s*(?:entry|entries|row|rows)",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Sources exempt from the string-literal scan because they enumerate the forbidden phrasings verbatim.
+     *
+     * <p>A gate has to be able to spell out what it forbids, and both of these do: this class quotes every
+     * pattern's offender and its honest rewording in {@code TheGuardDiscriminates}, and
+     * {@code PackageDocumentationInventoryTest} holds a literal list of the four claim phrases it rejects,
+     * behind its own {@code everyOccurrenceIsQuoted} check. Exempting them from the literal scan is the same
+     * concession {@link #SELF} already makes for the comment scan, extended to the tier that scan did not
+     * reach. {@link #thePhraseListingExemptionIsEarned} keeps it honest by requiring each exempt file to
+     * still be a gate, so the exemption cannot be inherited by a file that merely makes the claim.
+     */
+    private static final List<String> PHRASE_LISTING_SOURCES =
+            List.of(SELF, "PackageDocumentationInventoryTest.java");
 
     /** Classes named by the plan that have not been authored; a bare reference implies they exist. */
     private static final Pattern UNAUTHORED_CLASS = Pattern.compile(
@@ -182,6 +224,15 @@ class EvidenceHonestyTest {
             "\\bno\\s+\\{@code\\s+(\\w+)\\}\\s+exists"
                     + "|\\{@code\\s+(\\w+)\\}\\s+(?:is\\s+not\\s+available|does\\s+not\\s+exist)",
             Pattern.CASE_INSENSITIVE);
+
+    /**
+     * One double-quoted string literal's contents.
+     *
+     * <p>Escaped quotes are admitted so a message containing {@code \"} does not truncate the run. No attempt
+     * is made to distinguish a literal from a character class inside a regex literal, because a false claim is
+     * a false claim wherever it is spelled out, and the pattern's own sentence rules keep the noise down.
+     */
+    private static final Pattern STRING_LITERAL = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"");
 
     private static final Pattern SENTENCE_SPLIT = Pattern.compile("(?<=[.;:])\\s+(?=[A-Z(<{])");
     private static final Pattern HTML_TAG = Pattern.compile("<[^>]+>");
@@ -272,6 +323,81 @@ class EvidenceHonestyTest {
     }
 
     /**
+     * Reflows each run of string-literal-bearing code lines into sentences, the way {@link #claims} does for
+     * comments.
+     *
+     * <p>An assertion message is documentation. It is the sentence a reader is shown when the build fails,
+     * and a false claim in one is read by more people than a false claim in a Javadoc paragraph. But
+     * {@link #claims} collects only lines beginning {@code *}, {@code /*} or {@code //}, so every claim living
+     * inside an {@code .as(...)} message was invisible to this class - which is how four survived. They are
+     * gathered separately rather than by widening {@link #claims} itself, because that method feeds four other
+     * guards whose patterns were written against prose, and turning code strings into their input would change
+     * what those four assert as a side effect of fixing this one.
+     *
+     * <p>Concatenated literals are joined across lines before splitting, since the tree routinely builds one
+     * message from several {@code + "..."} fragments and the claim usually straddles the join.
+     *
+     * @param file the source to read
+     * @return one entry per sentence found in a string literal
+     */
+    private static List<Claim> literalClaims(final Path file) {
+        final List<String> lines;
+        try {
+            lines = Files.readAllLines(file);
+        } catch (final IOException e) {
+            throw new UncheckedIOException("cannot read " + file, e);
+        }
+        final List<Claim> result = new ArrayList<>();
+        final StringBuilder run = new StringBuilder();
+        int startLine = 0;
+        for (int i = 0; i < lines.size(); i++) {
+            final String trimmed = lines.get(i).trim();
+            final boolean comment =
+                    trimmed.startsWith("*") || trimmed.startsWith("/*") || trimmed.startsWith("//");
+            final Matcher literal = STRING_LITERAL.matcher(lines.get(i));
+            boolean any = false;
+            if (!comment) {
+                while (literal.find()) {
+                    if (run.isEmpty()) {
+                        startLine = i + 1;
+                    }
+                    run.append(literal.group(1)).append(' ');
+                    any = true;
+                }
+            }
+            if (!any && !run.isEmpty()) {
+                addSentences(result, file, startLine, run.toString());
+                run.setLength(0);
+            }
+        }
+        if (!run.isEmpty()) {
+            addSentences(result, file, startLine, run.toString());
+        }
+        return result;
+    }
+
+    /**
+     * Applies a forbidden pattern to both the comment tier and the string-literal tier.
+     *
+     * @param forbidden the pattern whose matches are offences
+     * @return every offending sentence, named by file and line
+     */
+    private static List<String> offendersIncludingLiterals(final Pattern forbidden) {
+        final List<String> found = new ArrayList<>(offenders(forbidden));
+        for (final Path file : sources()) {
+            if (PHRASE_LISTING_SOURCES.contains(file.getFileName().toString())) {
+                continue;
+            }
+            for (final Claim claim : literalClaims(file)) {
+                if (forbidden.matcher(claim.sentence()).find()) {
+                    found.add(claim.describe());
+                }
+            }
+        }
+        return found;
+    }
+
+    /**
      * Returns every test class name one sentence denies the existence of, in the order the sentence names
      * them.
      *
@@ -310,10 +436,53 @@ class EvidenceHonestyTest {
         @Test
         @DisplayName("nothing is described as already recorded in DECISION_LOG.md or TRACEABILITY_MATRIX.md")
         void noRegisterIsDescribedAsAlreadyHoldingAnEntry() {
-            assertThat(offenders(REGISTER_CLAIM))
+            assertThat(offendersIncludingLiterals(REGISTER_CLAIM))
                     .as("neither register exists at this commit, so an entry can only be owed, never held; "
-                            + "reword as \"owed an entry in the planned DECISION_LOG.md\"")
+                            + "reword as \"owed an entry in the planned DECISION_LOG.md\". This now covers "
+                            + "assertion messages as well as comments, and admits words between the verb and "
+                            + "the register, because both gaps were used")
                     .isEmpty();
+        }
+
+        @Test
+        @DisplayName("nothing is described as carrying an entry or a row in either absent register")
+        void noRegisterIsDescribedAsAlreadyCarryingAnEntry() {
+            assertThat(offendersIncludingLiterals(REGISTER_POSSESSION))
+                    .as("an attributive claim asserts the same untrue thing as a verb of record: a file that "
+                            + "\"carries a DECISION_LOG.md entry\" is claiming an entry in a document that "
+                            + "does not exist. Reword as \"owed an entry in the planned DECISION_LOG.md\"")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the phrase-listing exemption is earned, so it cannot be inherited by a file that claims")
+        void thePhraseListingExemptionIsEarned() {
+            for (final String exempt : PHRASE_LISTING_SOURCES) {
+                final List<Path> matches = sources().stream()
+                        .filter(p -> p.getFileName().toString().equals(exempt))
+                        .toList();
+                if (exempt.equals(SELF)) {
+                    // This class removes itself from sources() outright, so it is absent by construction.
+                    assertThat(matches).as("%s is excluded from the scan at source", exempt).isEmpty();
+                    continue;
+                }
+                assertThat(matches)
+                        .as("%s is exempt from the literal scan, so it must exist - an exemption naming a "
+                                + "file that is gone is an exemption nobody is checking", exempt)
+                        .hasSize(1);
+                final String body;
+                try {
+                    body = Files.readString(matches.getFirst());
+                } catch (final IOException e) {
+                    throw new UncheckedIOException("cannot read " + matches.getFirst(), e);
+                }
+                assertThat(body)
+                        .as("%s is exempt only because it is itself a gate that spells out what it forbids. "
+                                + "If it stops asserting, the exemption must be withdrawn rather than left "
+                                + "to shelter a claim", exempt)
+                        .contains("@Test")
+                        .contains("isEmpty()");
+            }
         }
 
         @Test
@@ -466,6 +635,41 @@ class EvidenceHonestyTest {
             assertThat(REGISTER_CLAIM
                     .matcher("The quirk is owed an entry in the planned {@code DECISION_LOG.md}.").find())
                     .as("the register rule must allow the owed form")
+                    .isFalse();
+            assertThat(REGISTER_CLAIM
+                    .matcher("Recorded as a preserved quirk in {@code DECISION_LOG.md}.").find())
+                    .as("words between the verb and the register must not buy an escape: this exact wording "
+                            + "passed the adjacent-only form four times")
+                    .isTrue();
+            assertThat(REGISTER_CLAIM
+                    .matcher("It is recorded here. An entry in {@code DECISION_LOG.md} is owed.").find())
+                    .as("the intervening bound must stop at a sentence break, so a verb in one sentence "
+                            + "cannot be paired with a register named in the next")
+                    .isFalse();
+            assertThat(REGISTER_CLAIM
+                    .matcher("it is labelled explicitly as a deviation in {@code DECISION_LOG.md}.").find())
+                    .as("a claim does not need a verb of record to be a claim. This exact sentence used "
+                            + "'labelled', which no earlier version of this rule listed, and it survived a "
+                            + "guard running over its own file")
+                    .isTrue();
+
+            assertThat(REGISTER_POSSESSION
+                    .matcher("This one carries a {@code DECISION_LOG.md} entry.").find())
+                    .as("an attributive claim must be caught; the closing brace sits between the filename "
+                            + "and the noun, and a rule that forgot it matched nothing")
+                    .isTrue();
+            assertThat(REGISTER_POSSESSION
+                    .matcher("each carrying a {@code TRACEABILITY_MATRIX.md} row - but").find())
+                    .as("the participle form and the row noun must be caught too")
+                    .isTrue();
+            assertThat(REGISTER_POSSESSION
+                    .matcher("is owed an entry in the planned {@code DECISION_LOG.md} plus a row").find())
+                    .as("the owed rewording must survive both rules, or the fix could not be written")
+                    .isFalse();
+            assertThat(REGISTER_POSSESSION
+                    .matcher("destined for a {@code DECISION_LOG.md} entry and a row").find())
+                    .as("a future-tense obligation is not a claim of a held entry; 'destined for' says the "
+                            + "entry is owed, which is exactly what is true")
                     .isFalse();
 
             assertThat(UNAUTHORED_CLASS.matcher(

@@ -1505,11 +1505,9 @@ class ReportRequestTest {
             assertThat(period.endDate())
                     .as("app/cbl/CORPT00C.cbl:L223-L230 sets the day to 1, advances the month and "
                             + "subtracts one day in place over the redefinition at "
-                            + "app/cpy/CSDAT01Y.cpy:L23, so the end is 30 June - NOT the clock's 10th")
+                            + "app/cpy/CSDAT01Y.cpy:L23, and :L232-L234 read that value back out, so the "
+                            + "end is 30 June while the pinned clock reads the 10th")
                     .isEqualTo("2022-06-30");
-            assertThat(period.endDate())
-                    .as("month-to-date would have produced the clock's own day")
-                    .isNotEqualTo("2022-06-10");
         }
 
         @ParameterizedTest(name = "{0} -> {1} .. {2}")

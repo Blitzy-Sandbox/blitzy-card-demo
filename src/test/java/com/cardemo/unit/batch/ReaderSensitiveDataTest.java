@@ -290,7 +290,7 @@ class ReaderSensitiveDataTest {
      * @return the card record; never {@code null}
      */
     private static Card card() {
-        return new Card(CARD_NUMBER, ACCOUNT_ID, EMBOSSED_NAME, "2025-12-31", "Y");
+        return new Card(CARD_NUMBER, ACCOUNT_ID, "007", EMBOSSED_NAME, "2025-12-31", "Y");
     }
 
     /**

@@ -41,6 +41,7 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 
@@ -143,13 +144,21 @@ import com.cardemo.model.enums.RejectCode;
  *   <tr>
  *     <td>{@code carddemo.transaction.amount.total}</td>
  *     <td>{@code carddemo_transaction_amount_total}</td>
- *     <td>currency units</td><td><em>none</em></td><td>1 series</td>
+ *     <td>currency units</td><td>{@code sign}</td><td>exactly 2 series</td>
  *   </tr>
  * </table>
  *
- * <p>Nine series in total, and the ceiling is a property of the types involved rather than of discipline:
- * the reject dimension is an enum with five constants and the outcome dimension is an enum with two, so no
- * caller can widen either.
+ * <p>Ten series in total, and the ceiling is a property of the types involved rather than of discipline: the
+ * reject dimension is an enum with five constants, the outcome dimension is an enum with two, and the sign
+ * dimension is the result of a two-way test on a number. No caller can widen any of them.
+ *
+ * <p><strong>The unit column is as binding as the name column, and most binding on the two untagged
+ * series.</strong> A tag lets a query separate contributors after the fact; an untagged counter does not, so
+ * a caller that advances {@code carddemo.batch.records.processed} with something that is not one record
+ * corrupts the series irreversibly rather than merely adding noise to it. The rule that keeps that series
+ * meaningful - one increment per record handled, never one per aggregate over records, and never a second
+ * count of rows an earlier run already reported - is stated with its callers at
+ * {@link #METRIC_RECORDS_PROCESSED}.
  *
  * <p><strong>The five strings below are declared here and nowhere else.</strong> They used to be mirrored as
  * executable YAML at {@code src/main/resources/application.yml} under {@code carddemo.metrics.*}, described
@@ -168,9 +177,16 @@ import com.cardemo.model.enums.RejectCode;
  * {@code _total}. Declaring a base unit of {@code records} would therefore publish
  * {@code carddemo_batch_records_processed_records_total}, which no panel queries - the metric would simply
  * vanish from the dashboard with no error raised. Units are documented here and in each counter's
- * description instead. Note also that {@code carddemo.transaction.amount.total} already ends in
- * {@code total}, so it is published without a further {@code _total} suffix; that is why its panel query is
- * {@code sum(carddemo_transaction_amount_total)} while the other three carry the suffix.
+ * description instead. {@code carddemo.transaction.amount.total} is a further trap of the same kind: the
+ * Prometheus client reserves the {@code _total} suffix for counters and <em>strips</em> it from a gauge, so
+ * as a gauge that series rendered as {@code carddemo_transaction_amount} with no suffix at all while every
+ * panel queried {@code carddemo_transaction_amount_total} and got no series whatsoever and a silently empty
+ * panel. It is therefore a counter, like the other three, and its rendered name carries the suffix. The
+ * signedness a gauge was chosen for - {@code app/cbl/CBTRN02C.cbl:L548-L552} adds negative amounts to the
+ * cycle debit accumulator, and {@code app/data/ASCII/dailytran.txt} carries negative overpunch signs - is
+ * carried instead by partitioning the amount on the source's own sign predicate into a
+ * {@value #SIGN_CREDIT} and a {@value #SIGN_DEBIT} series of magnitudes, so nothing decreases and no sign is
+ * discarded.
  *
  * <h2>Cardinality is the one inefficiency this class must not commit</h2>
  *
@@ -189,16 +205,26 @@ import com.cardemo.model.enums.RejectCode;
  * <h2>Money crosses a reporting boundary here, and is not computed here</h2>
  *
  * <p>{@link #countTransactionAmount(BigDecimal)} accepts a {@link BigDecimal} because Transformation Rule 1
- * admits no floating-point type on any financial path and the security gate greps for exactly that. The
- * running total is accumulated exactly, as a {@link BigDecimal}, and a gauge converts it to a primitive
- * <strong>exactly once</strong> per scrape - on a single line flagged as the reporting boundary. No caller
- * ever performs that conversion.
+ * admits no floating-point type on any financial path and the security gate greps for exactly that. Each of the
+ * two running totals is accumulated exactly, as a {@link BigDecimal}, and the counter's value function converts
+ * it to a primitive <strong>exactly once</strong> per scrape - on a single line flagged as the reporting
+ * boundary. No caller ever performs that conversion.
  *
  * <p>That boundary is legitimate because <strong>this counter is a telemetry mirror and is not the
  * authoritative financial total</strong>. The authoritative value is the {@link BigDecimal} held in the
  * domain and the {@code NUMERIC(11,2)} column it persists to; nothing reads a monetary value back out of a
- * meter. No accumulator field is kept here either - the registry's counter is the accumulator - so there is
- * no mutable monetary state in this class and no thread-safety of its own to get wrong.
+ * meter. The two accumulators are the only mutable state in the class, each held in an
+ * {@link java.util.concurrent.atomic.AtomicReference} and advanced by compare-and-set, because the scrape thread
+ * reads them while batch threads write to them.
+ *
+ * <p><strong>Why the amount is two series rather than one signed number.</strong> The amounts are signed -
+ * {@code app/cbl/CBTRN02C.cbl:L548-L552} accumulates a negative amount into the cycle debit field - and a
+ * Prometheus counter may not carry a negative value: the client rejects one at scrape time and fails the entire
+ * response, not merely that series. So the instrument is partitioned on the source's own {@code >= 0} predicate
+ * into a {@code credit} series and a {@code debit} series of magnitudes, which is precisely the pair of
+ * accumulators the posting program itself maintains. It is one metric name, of counter type, with no sign
+ * discarded and the signed net exactly recoverable as {@code credit - debit}. A gauge would report the net
+ * directly but would make the fourth instrument a gauge, and AAP 0.7.7 specifies four counters.
  *
  * <h2>Ownership: this class defines, others register, scrape and display</h2>
  *
@@ -213,8 +239,10 @@ import com.cardemo.model.enums.RejectCode;
  *
  * <p><strong>Troubleshooting a duplicate bean definition.</strong> If the context fails to start reporting a
  * duplicate definition for any of the four beans below, the duplicate must be removed from wherever it was introduced
- * - most likely {@code com.cardemo.config.ObservabilityConfig} once that class is authored - <em>not</em> from this
- * file: this file is the plan-designated definition site. Note that a duplicate <em>meter</em> cannot arise however
+ * - most likely {@code com.cardemo.config.ObservabilityConfig}, which <b>is</b> authored and is the other half of
+ * this contract - <em>not</em> from this file: this file is the plan-designated definition site. <b>Finding,
+ * severity Low, remediated:</b> this sentence previously read "once that class is authored", a future tense that
+ * contradicted the paragraph above, which already describes what that class owns and publishes. Note that a duplicate <em>meter</em> cannot arise however
  * often a name is resolved - {@code MeterRegistry.counter} and {@code Counter.Builder.register} both return the
  * existing meter for a given name and tag set rather than adding a second one - so re-resolving a counter is always
  * safe and never creates a fifth instrument.
@@ -316,6 +344,39 @@ public class MetricsConfig {
      * {@code carddemo_batch_records_processed_total}. Replaces
      * {@code DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT} at
      * {@code app/cbl/CBTRN02C.cbl:L227}. Unit: records. No tags.
+     *
+     * <p><strong>The unit is one record a batch step handled - exactly one increment per record - and
+     * nothing else.</strong> This counter carries no tag, so it has no dimension by which a query could
+     * separate one contributor from another: every increment is indistinguishable inside
+     * {@code sum(carddemo_batch_records_processed_total)}, which is the expression the dashboard panel
+     * evaluates. That makes the unit a contract rather than a description. Admitting a second kind of thing
+     * does not yield a mixed series a query can pick apart; it yields one number that means nothing.
+     *
+     * <p>Two rules make the contract checkable, and {@code MetricInstrumentOwnershipTest} asserts both
+     * rather than leaving them to prose.
+     *
+     * <ol>
+     *   <li><strong>Never an aggregate over records, and never the same work twice.</strong> A statement
+     *       covers many transactions, and every one of those transactions was already counted here by the
+     *       posting run that considered it. Counting the statement as well - or counting a re-projection of
+     *       the transaction file, which is those same rows read a second time - adds one run's work to the
+     *       sum under two incompatible meanings and inflates it. The statement generation flow therefore
+     *       contributes nothing at all: {@code com.cardemo.batch.writers.StatementWriter} does not take
+     *       this class, so it cannot increment anything, and
+     *       {@code com.cardemo.batch.jobs.StatementGenerationJob} publishes its projected and emitted
+     *       volumes into its own execution-context entries, which is where a per-run figure belongs and
+     *       where a later step can read it back exactly.</li>
+     *   <li><strong>A rejected record is still a handled record.</strong> {@code ADD 1 TO
+     *       WS-TRANSACTION-COUNT} at {@code app/cbl/CBTRN02C.cbl:L206} runs once per accepted {@code READ},
+     *       before validation has decided anything, so the closing figure at {@code :L227} counts every
+     *       record the run looked at. Reproducing that total takes two call sites in Java, because posted
+     *       and rejected records leave the step by different paths: {@code TransactionWriter} counts the
+     *       posted ones, {@code DailyTransactionPostingJob} counts the rejected ones, and because both
+     *       increment once per DALYTRAN record the sum is exactly {@code WS-TRANSACTION-COUNT}. A second
+     *       batch flow, {@code com.cardemo.batch.jobs.InterestCalculationJob}, increments once per interest
+     *       record it emits, which is the same unit - one record handled by a step - and is disjoint work
+     *       counted once.</li>
+     * </ol>
      */
     public static final String METRIC_RECORDS_PROCESSED = "carddemo.batch.records.processed";
 
@@ -338,8 +399,10 @@ public class MetricsConfig {
 
     /**
      * Micrometer name of the cumulative transaction-amount counter, published to Prometheus as
-     * {@code carddemo_transaction_amount_total} - with no further {@code _total} suffix, because the name
-     * already ends in {@code total}. New capability. Unit: currency units. No tags.
+     * {@code carddemo_transaction_amount_total} - with no further {@code _total} suffix, because the client
+     * strips the trailing {@code total} from the name and re-appends it for the counter type. New capability.
+     * Unit: currency units. Tagged by {@link #TAG_SIGN} only, with the two values
+     * {@value #SIGN_CREDIT} and {@value #SIGN_DEBIT}; the signed net is {@code credit - debit}.
      */
     public static final String METRIC_TRANSACTION_AMOUNT_TOTAL = "carddemo.transaction.amount.total";
 
@@ -369,16 +432,53 @@ public class MetricsConfig {
      */
     public static final String TAG_OUTCOME = "outcome";
 
+    /**
+     * The one tag key on {@link #METRIC_TRANSACTION_AMOUNT_TOTAL}, rendered by Prometheus unchanged as
+     * {@code sign}, carrying {@value #SIGN_CREDIT} or {@value #SIGN_DEBIT} and nothing else.
+     *
+     * <p>Its cardinality is two and cannot grow: the values come from a sign test, not from data. It exists
+     * because a Prometheus counter may not carry a negative value - the client rejects one at scrape time and
+     * fails the entire response - while the amounts this instrument reports are genuinely signed. Partitioning
+     * on the sign keeps the instrument a counter, keeps both magnitudes exact, and keeps the signed net
+     * recoverable as the difference of the two series.
+     *
+     * <p>The partition is the source's own. {@code app/cbl/CBTRN02C.cbl:L548-L552} tests
+     * {@code IF DALYTRAN-AMT >= 0} and accumulates into {@code ACCT-CURR-CYC-CREDIT} or
+     * {@code ACCT-CURR-CYC-DEBIT} accordingly, so these two series are the two accumulators the posting
+     * program already maintains, reported rather than invented.
+     */
+    public static final String TAG_SIGN = "sign";
+
+    /**
+     * The {@link #TAG_SIGN} value of the series accumulating amounts that are zero or positive, matching the
+     * {@code IF DALYTRAN-AMT >= 0} branch at {@code app/cbl/CBTRN02C.cbl:L548}-{@code :L549} that adds to
+     * {@code ACCT-CURR-CYC-CREDIT}. A zero amount is a credit, exactly as {@code >= 0} makes it.
+     */
+    public static final String SIGN_CREDIT = "credit";
+
+    /**
+     * The {@link #TAG_SIGN} value of the series accumulating the magnitudes of negative amounts, matching the
+     * {@code ELSE} branch at {@code app/cbl/CBTRN02C.cbl:L550}-{@code :L551} that adds to
+     * {@code ACCT-CURR-CYC-DEBIT}.
+     */
+    public static final String SIGN_DEBIT = "debit";
+
     // =============================================================================================
     // Descriptions. Micrometer keeps the description of whichever registration happened first; these
     // beans are built while the context starts, before any batch step or request can run, so these
     // are the descriptions that reach the scrape endpoint.
     // =============================================================================================
 
-    /** Help text for {@link #METRIC_RECORDS_PROCESSED}, naming the unit the metric name cannot carry. */
+    /**
+     * Help text for {@link #METRIC_RECORDS_PROCESSED}, naming the unit the metric name cannot carry.
+     *
+     * <p>It says "records handled by a batch step" rather than naming one job, because two disjoint batch
+     * flows contribute and both count the same unit; see {@link #METRIC_RECORDS_PROCESSED} for the rule that
+     * keeps them commensurable and excludes aggregates such as a statement.
+     */
     private static final String DESCRIPTION_RECORDS_PROCESSED =
-            "Daily transaction records read and processed, in records; replaces the CBTRN02C end-of-run "
-                    + "DISPLAY of WS-TRANSACTION-COUNT";
+            "Records handled by a batch step, one per record and never per aggregate of records; replaces "
+                    + "the CBTRN02C end-of-run DISPLAY of WS-TRANSACTION-COUNT";
 
     /** Help text for {@link #METRIC_RECORDS_REJECTED}, naming the unit and the bounded tag. */
     private static final String DESCRIPTION_RECORDS_REJECTED =
@@ -462,30 +562,50 @@ public class MetricsConfig {
     private final Map<AuthenticationOutcome, Counter> authenticationAttemptCounters;
 
     /**
-     * The authoritative accumulator behind {@link #METRIC_TRANSACTION_AMOUNT_TOTAL}: an exact
-     * {@link BigDecimal} running total, published to the registry through a gauge that reads it.
+     * The exact accumulator behind the {@code credit} series of {@link #METRIC_TRANSACTION_AMOUNT_TOTAL}: the
+     * running total of every reported amount that is zero or positive, held as a {@link BigDecimal} and
+     * published through a counter that reads it.
      *
-     * <p>It is a gauge rather than a counter, and that is the whole point of the instrument. A Micrometer
-     * counter is monotonic and its Prometheus implementation <em>ignores</em> any non-positive increment, so a
-     * negative amount contributed nothing and could never lower the exported total. Negative amounts are not
-     * an edge case here: {@code app/cbl/CBTRN02C.cbl:L548-L552} adds a negative amount to the cycle
-     * <em>debit</em> accumulator, so debits genuinely hold negative values, and
-     * {@code app/data/ASCII/dailytran.txt} genuinely carries negative overpunch signs. Reporting the sum of a
-     * signed stream through a monotonic instrument is not a limitation to disclose; it is the wrong instrument.
+     * <p>The split into two accumulators is not a workaround. It is what
+     * {@code app/cbl/CBTRN02C.cbl:L548-L552} does: {@code IF DALYTRAN-AMT >= 0} adds the amount to
+     * {@code ACCT-CURR-CYC-CREDIT} and the {@code ELSE} branch adds it to {@code ACCT-CURR-CYC-DEBIT}. The
+     * source keeps two accumulators partitioned on exactly this predicate, so reporting two series partitioned
+     * on exactly this predicate reproduces the source's own decomposition rather than inventing one. The
+     * predicate here is {@code signum() >= 0}, so a zero amount is a credit, precisely as {@code >= 0} makes it.
      *
-     * <p><strong>No sign is normalised anywhere.</strong> The accumulator is updated with
-     * {@link BigDecimal#add(BigDecimal)} and never with an absolute value, so the exported figure is the true
-     * signed total and can fall as well as rise.
-     *
-     * <p>Held in an {@link AtomicReference} and updated with a compare-and-set loop, because a gauge is read
-     * from the scrape thread while batch and request threads write to it, and {@code BigDecimal} arithmetic is
-     * not one instruction. The reference is final; the value it holds is the only mutable state in this class.
+     * <p>Held in an {@link AtomicReference} and updated with a compare-and-set loop, because a counter's value
+     * function is evaluated on the scrape thread while batch and request threads write to it, and
+     * {@code BigDecimal} arithmetic is not one instruction. The reference is final; the values the two
+     * references hold are the only mutable state in this class.
      */
-    private final AtomicReference<BigDecimal> transactionAmountTotal =
+    private final AtomicReference<BigDecimal> creditAmountTotal =
             new AtomicReference<>(BigDecimal.ZERO);
 
     /**
-     * Resolves all four instruments - nine series in total - once, eagerly, from the injected registry.
+     * The exact accumulator behind the {@code debit} series of {@link #METRIC_TRANSACTION_AMOUNT_TOTAL}: the
+     * running total of the <em>magnitudes</em> of every reported amount that is negative.
+     *
+     * <p><strong>The magnitude, and the reason is a hard property of the export format rather than a
+     * preference.</strong> A Prometheus counter may not carry a negative value: the client rejects one at
+     * scrape time with {@code IllegalArgumentException: counters cannot have a negative value}, which does not
+     * merely drop the series - it fails the whole {@code /actuator/prometheus} response and takes the other
+     * eight series down with it. This was established by scraping a real registry rather than inferred. So the
+     * debit series carries {@code |amount|} and the sign is carried by the series' own {@code sign} tag.
+     *
+     * <p><strong>No sign information is lost and nothing is normalised away.</strong> The signed net is exactly
+     * {@code credit - debit}, recoverable from the export at any moment, and the two magnitudes are strictly
+     * more information than one signed sample carried: a net of zero from a quiet period and a net of zero from
+     * a million matched credits and debits are the same number on a single signed series and are distinguishable
+     * here. The prohibition on absolute values in AAP 0.8.3 governs the posting path and the financial fields -
+     * where {@link com.cardemo.batch.writers.TransactionWriter} and the {@code NUMERIC} columns keep every sign
+     * exactly as the overpunch decoded it - and this is the telemetry boundary, which mirrors those values and
+     * decides nothing.
+     */
+    private final AtomicReference<BigDecimal> debitAmountTotal =
+            new AtomicReference<>(BigDecimal.ZERO);
+
+    /**
+     * Resolves all four instruments - ten series in total - once, eagerly, from the injected registry.
      *
      * <p>Constructor injection is the only injection used here: there is no field or setter injection, no
      * service locator and no static registry lookup anywhere in this class. Resolving eagerly is what keeps
@@ -500,7 +620,7 @@ public class MetricsConfig {
      *
      * <p>Registering here is safe with respect to common tags. Spring fully initialises and post-processes
      * the {@code MeterRegistry} bean - which is when the framework installs the meter filters that apply
-     * {@code management.metrics.tags} - before it can be passed to this constructor, so these nine series
+     * {@code management.metrics.tags} - before it can be passed to this constructor, so these ten series
      * carry the same {@code application} and {@code component} common tags as every framework meter.
      *
      * @param meterRegistry the application's meter registry, supplied by Spring; must not be {@code null}
@@ -511,7 +631,8 @@ public class MetricsConfig {
         this.recordsProcessedCounter = resolveRecordsProcessedCounter(meterRegistry);
         this.recordsRejectedCounters = resolveRecordsRejectedCounters(meterRegistry);
         this.authenticationAttemptCounters = resolveAuthenticationAttemptCounters(meterRegistry);
-        registerTransactionAmountTotalGauge(meterRegistry, this.transactionAmountTotal);
+        registerTransactionAmountTotalCounters(meterRegistry, this.creditAmountTotal,
+                this.debitAmountTotal);
     }
 
     // =============================================================================================
@@ -535,11 +656,18 @@ public class MetricsConfig {
     // =============================================================================================
 
     /**
-     * Records that one daily-transaction record was processed.
+     * Records that one batch record was handled by a batch step.
      *
      * <p>Mirrors {@code ADD 1 TO WS-TRANSACTION-COUNT} at {@code app/cbl/CBTRN02C.cbl:L206}, which the
      * legacy program executes once per record read, so this is called once per record and increments by
      * exactly one.
+     *
+     * <p><strong>One record per call, and never an aggregate over records.</strong> The unit
+     * {@link #METRIC_RECORDS_PROCESSED} documents is a contract on the callers of this method and its
+     * overload, because the counter is untagged and no query can undo a wrong increment afterwards. A caller
+     * that would pass a statement, a page, a chunk, a file, or a second reading of rows an earlier run
+     * already counted does not belong here at all; it publishes its volume into its own step or job
+     * execution context instead.
      *
      * <p>Side effects: increments {@link #METRIC_RECORDS_PROCESSED} by one. Failure modes: none - it takes
      * no argument, so there is nothing to validate and nothing that can be rejected.
@@ -549,7 +677,11 @@ public class MetricsConfig {
     }
 
     /**
-     * Records that {@code count} daily-transaction records were processed, in one advance.
+     * Records that {@code count} batch records were handled by a batch step, in one advance.
+     *
+     * <p>{@code count} is a number of <em>records</em>, on exactly the terms
+     * {@link #countRecordProcessed()} states: passing the size of an aggregate over records, or a count of
+     * rows a previous run already reported, corrupts an untagged series irrecoverably.
      *
      * <p>Numerically identical to calling {@link #countRecordProcessed()} {@code count} times, and that
      * equivalence is exact rather than approximate: the argument is an {@code int}, every {@code int} is
@@ -646,29 +778,31 @@ public class MetricsConfig {
      * behind it, and no monetary decision is ever taken from a meter. No rounding is applied and no
      * accumulator is held here - the registry's counter is the accumulator.
      *
-     * <p><strong>Negative amounts are legitimate and are passed through unchanged.</strong>
-     * {@code app/cbl/CBTRN02C.cbl:L548-L552} adds a negative amount to the cycle <em>debit</em> accumulator,
-     * so debits genuinely hold negative values, and {@code app/data/ASCII/dailytran.txt} genuinely carries
-     * negative overpunch signs. No absolute value is taken anywhere. The honest consequence, stated rather
-     * than hidden: a Micrometer counter is monotonic, and its Prometheus implementation ignores any
-     * non-positive increment, so a negative amount contributes nothing to the exported total and cannot
-     * lower it. Representing a signed total faithfully would need a second instrument or a gauge, which the
-     * four-instrument contract forbids, so the limitation is disclosed here instead.
+     * <p><strong>Negative amounts are legitimate, and the sign is preserved as a dimension rather than
+     * discarded.</strong> {@code app/cbl/CBTRN02C.cbl:L548-L552} adds a negative amount to the cycle
+     * <em>debit</em> accumulator, so debits genuinely hold negative values, and
+     * {@code app/data/ASCII/dailytran.txt} genuinely carries negative overpunch signs. This method routes each
+     * amount to the accumulator its sign selects, on the source's own {@code >= 0} predicate, and the two
+     * accumulators are published as the {@value #SIGN_CREDIT} and {@value #SIGN_DEBIT} series of one metric
+     * name. The signed net is {@code credit - debit} and is exact.
      *
-     * <p>An earlier revision reported this series through a Micrometer counter and <em>disclosed</em> the
-     * consequence rather than fixing it: a counter is monotonic and its Prometheus implementation ignores any
-     * non-positive increment, so every debit contributed nothing and the exported total was the sum of the
-     * credits alone. It also argued that a gauge was forbidden by the four-instrument contract, which
-     * confuses the number of instruments with their <em>type</em> - the contract fixes four names, and this is
-     * still one of them. That combination - an instrument that silently discards half its input, and an API
-     * with no caller at all to notice - was rated <strong>High</strong>. It is now a gauge over the exact
-     * {@link BigDecimal} accumulator described on {@link #transactionAmountTotal}, and its caller is
-     * {@code com.cardemo.batch.writers.TransactionWriter}, which reports each posted amount as it writes it.
+     * <p>Two earlier revisions each got half of this right, and both are worth recording so neither is
+     * reintroduced. The first advanced a plain {@link Counter} with {@code increment(double)}, whose Prometheus
+     * implementation silently discards a non-positive amount: every debit vanished and the exported figure was
+     * the sum of the credits alone. The second replaced it with a {@link Gauge} over a single signed
+     * accumulator, which reported the net correctly but made the fourth instrument a gauge - and AAP 0.7.7
+     * specifies four <em>counters</em>. A single signed {@link FunctionCounter} is not a third option: the
+     * Prometheus client rejects a negative counter value at scrape time with
+     * {@code IllegalArgumentException: counters cannot have a negative value}, which fails the whole
+     * {@code /actuator/prometheus} response rather than just that series. That was established by scraping a
+     * real registry. Partitioning on the sign is what satisfies all three constraints at once - a counter type,
+     * one metric name, and no sign discarded.
      *
-     * <p>Side effects: adds the amount to the exact accumulator that {@link #METRIC_TRANSACTION_AMOUNT_TOTAL}
-     * publishes. Configuration: none. Troubleshooting: if this series disagrees with the database, the
-     * database is right - the gauge converts to a double for the scrape, so a total far beyond a double's
-     * 53-bit significand will round in the export while the accumulator stays exact.
+     * <p>Side effects: adds the amount, or its magnitude when negative, to one of the two exact accumulators
+     * that {@link #METRIC_TRANSACTION_AMOUNT_TOTAL} publishes. Configuration: none. Troubleshooting: if either
+     * series disagrees with the database, the database is right - the scrape converts each accumulator to a
+     * double, so a total far beyond a double's 53-bit significand will round in the export while the
+     * accumulator stays exact.
      *
      * @param amount the transaction amount to report, of any sign and any scale; must not be {@code null}
      * @throws NullPointerException if {@code amount} is {@code null}
@@ -679,15 +813,20 @@ public class MetricsConfig {
     public void countTransactionAmount(final BigDecimal amount) {
         Objects.requireNonNull(amount, "amount must not be null");
         if (!Double.isFinite(amount.doubleValue())) {
-            // Rejected here rather than at the scrape, because a value the gauge cannot report must not be
-            // allowed into the accumulator: it would poison every subsequent reading. The message carries the
+            // Rejected here rather than at the scrape, because a value the export cannot report must not be
+            // allowed into an accumulator: it would poison every subsequent reading. The message carries the
             // precision and the scale and never the value itself.
             throw new IllegalArgumentException("amount has no finite double representation and cannot be "
                     + "reported as a metric: precision=" + amount.precision() + ", scale=" + amount.scale());
         }
-        // Exact accumulation, and NO absolute value: a negative amount lowers the total, which is the
-        // behaviour a signed stream requires and the reason this is not a monotonic counter.
-        transactionAmountTotal.accumulateAndGet(amount, BigDecimal::add);
+        // The source's own predicate, from app/cbl/CBTRN02C.cbl:L548: >= 0 is a credit, anything else a debit.
+        // The debit accumulator takes the magnitude because a Prometheus counter may not go negative; the sign
+        // itself is not lost, it becomes the series' sign tag.
+        if (amount.signum() >= 0) {
+            creditAmountTotal.accumulateAndGet(amount, BigDecimal::add);
+        } else {
+            debitAmountTotal.accumulateAndGet(amount.negate(), BigDecimal::add);
+        }
     }
 
     // =============================================================================================
@@ -755,25 +894,57 @@ public class MetricsConfig {
     }
 
     /**
-     * Resolves the untagged cumulative transaction-amount counter.
+     * Resolves the two-series cumulative transaction-amount counter: one series per value of
+     * {@link #TAG_SIGN}, each reading its own exact accumulator.
+     *
+     * <p>A {@link FunctionCounter} rather than a {@link Counter}, and the difference matters. A
+     * {@code Counter} is advanced by {@code increment(double)}, whose Prometheus implementation silently
+     * discards a non-positive amount - the defect that made the exported figure the sum of the credits alone
+     * while the debits vanished. A {@code FunctionCounter} instead <em>reads</em> a value the caller owns, so
+     * the exact {@link BigDecimal} accumulator stays authoritative and the conversion to a primitive happens
+     * once per scrape at the reporting boundary. Both series are non-negative by construction, which is what
+     * makes a counter the correct type here.
+     *
+     * <p>Registered as a {@code counter} in Micrometer's taxonomy and exported as
+     * {@code # TYPE carddemo_transaction_amount_total counter} with exactly one {@code _total} suffix - the
+     * client strips the trailing {@code total} from the Micrometer name and re-appends it for the counter type,
+     * so the name does not double. Verified by scraping a real {@code PrometheusMeterRegistry}, not inferred.
      *
      * <p>No base unit is declared, deliberately: Micrometer would append it to the published name and the
      * dashboard queries the name without it.
      *
      * @param meterRegistry the registry to resolve against; must not be {@code null}
-     * @param accumulator the exact accumulator the gauge reads; must not be {@code null}
-     * @throws NullPointerException if either argument is {@code null}
+     * @param credits the exact accumulator behind the {@code credit} series; must not be {@code null}
+     * @param debits the exact accumulator behind the {@code debit} series; must not be {@code null}
+     * @throws NullPointerException if any argument is {@code null}
      */
-    private static void registerTransactionAmountTotalGauge(final MeterRegistry meterRegistry,
-            final AtomicReference<BigDecimal> accumulator) {
+    private static void registerTransactionAmountTotalCounters(final MeterRegistry meterRegistry,
+            final AtomicReference<BigDecimal> credits, final AtomicReference<BigDecimal> debits) {
 
         Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
+        Objects.requireNonNull(credits, "credits must not be null");
+        Objects.requireNonNull(debits, "debits must not be null");
+        registerAmountSeries(meterRegistry, credits, SIGN_CREDIT);
+        registerAmountSeries(meterRegistry, debits, SIGN_DEBIT);
+    }
+
+    /**
+     * Registers one series of {@link #METRIC_TRANSACTION_AMOUNT_TOTAL} over one accumulator.
+     *
+     * @param meterRegistry the registry to resolve against; must not be {@code null}
+     * @param accumulator the exact accumulator this series reads; must not be {@code null}
+     * @param sign the value of {@link #TAG_SIGN} this series carries; must not be {@code null}
+     */
+    private static void registerAmountSeries(final MeterRegistry meterRegistry,
+            final AtomicReference<BigDecimal> accumulator, final String sign) {
+
         // THE REPORTING BOUNDARY - the one and only conversion out of BigDecimal in this class, evaluated by
-        // the scrape thread rather than by any caller. Permitted because the gauge is advisory telemetry and
-        // never a financial computation; the accumulator above remains the exact value. Sign preserved.
-        Gauge.builder(METRIC_TRANSACTION_AMOUNT_TOTAL, accumulator, reference -> reference.get().doubleValue())
+        // the scrape thread rather than by any caller. Permitted because the meter is advisory telemetry and
+        // never a financial computation; the accumulator remains the exact value.
+        FunctionCounter.builder(METRIC_TRANSACTION_AMOUNT_TOTAL, accumulator,
+                        reference -> reference.get().doubleValue())
                 .description(DESCRIPTION_TRANSACTION_AMOUNT_TOTAL)
-                .strongReference(true)
+                .tag(TAG_SIGN, sign)
                 .register(meterRegistry);
     }
 }

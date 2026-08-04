@@ -182,10 +182,7 @@ import org.springframework.stereotype.Repository;
  * {@code app/data/ASCII/cardxref.txt} is 1,850 bytes over 50 lines and every line measures exactly 36
  * characters, so {@code (36 + 1) * 50 = 1850} and the {@code FILLER} is not even present in the seed
  * data. Restoring those 14 bytes as blanks at a fixed width boundary is the business of the batch
- * writers, not of this interface. No monetary or rate value appears anywhere in this layout, so the
- * project rule that money is {@code java.math.BigDecimal} compared with {@code compareTo} - never
- * {@code equals}, which is scale sensitive - and that no binary approximate numeric type may appear in
- * a financial field, is inherited here without giving this interface anything to apply it to.
+ * writers, not of this interface. No monetary or rate value appears anywhere in this layout.
  *
  * <h2>The alternate index: offset 25 zero based, record byte 26 one based, and non-unique</h2>
  *
@@ -207,12 +204,11 @@ import org.springframework.stereotype.Repository;
  *  which is exactly where XREF-ACCT-ID PIC 9(11) starts - bytes 26 to 36 one based.
  * </pre>
  *
- * <p>Both numbers are written out above on purpose. The surrounding written material mixes the two
- * conventions - it describes one alternate key as sitting at "byte 16", which is zero based, and another
- * at "record byte 305", which is one based - so a bare byte number in this codebase means nothing until
- * its base is named. The value 25 is triple sourced: {@code app/catlg/LISTCAT.txt:L486}
- * ({@code AXRKP 25}), {@code app/jcl/XREFFILE.jcl:L74} ({@code KEYS(11,25)}), and arithmetic agreement
- * with the copybook field widths.
+ * <p>Both numbers are written out on purpose: the two conventions are mixed elsewhere in this codebase -
+ * one alternate key is described as sitting at "byte 16", which is zero based, and another at "record
+ * byte 305", which is one based - so a bare byte number means nothing until its base is named. This is
+ * the single most error prone number in the file, and it is triple sourced: the catalogue, the IDCAMS
+ * control card, and arithmetic agreement with the copybook field widths.
  *
  * <p><strong>The index is non-unique, and that is recorded in the source rather than inferred.</strong>
  * {@code app/catlg/LISTCAT.txt:L488} carries {@code SPANNED NONUNIQKEY}, and
@@ -270,13 +266,8 @@ import org.springframework.stereotype.Repository;
  *
  * <h2>The schema contract this interface relies on</h2>
  *
- * <p>Rule 1 clause F requires that missing information be declared rather than assumed. Two items remain
- * <strong>Not available</strong>; a third, recorded below, has since been closed.
- *
- * <p><strong>Closed: all three Flyway migrations are present.</strong> An earlier revision of this section
- * recorded {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} as non-existent, and said the
- * alternate-index equivalent for this cluster therefore had no B-tree index; that is no longer true and the
- * claim is withdrawn. {@code src/main/resources/db/migration/V1__create_schema.sql} declares
+ * <p>All three Flyway migrations are present.
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} declares
  * {@code CREATE TABLE card_cross_reference} with the two foreign keys
  * {@code fk02_xref_customer} and {@code fk03_xref_account}; {@code V2} declares
  * {@code idx_card_cross_reference_acct_id ON card_cross_reference USING btree (xref_acct_id)}, the
@@ -306,18 +297,12 @@ import org.springframework.stereotype.Repository;
  *       not be added to {@code V1} either.</li>
  *   </ul>
  *
- * <p><strong>The alternate index offset is 25 zero based</strong>, equivalently record byte 26 one
- * based, from {@code app/catlg/LISTCAT.txt:L486} and {@code app/jcl/XREFFILE.jcl:L74}. It is the single
- * most error prone number in this file, which is why it is cited at every point it is relied upon.
- *
- * <p><strong>FILE STATUS {@code '35'} has no grounding anywhere in the corpus.</strong> The
- * file unavailable status has no basis anywhere in the corpus: the literal {@code '35'} does not occur
- * in any of the 28 programs. The census of CICS response conditions was taken by counting rather than
- * by estimate - {@code NORMAL} 43, {@code NOTFND} 23, {@code ENDFILE} 8, {@code DUPREC} 7,
- * {@code DUPKEY} 3 and {@code NOTOPEN} <strong>zero</strong>. The corresponding exception type therefore
- * exists on written authority alone, and no code path in this package can produce it. What would be
- * needed to ground it is a source occurrence of either construct; there is none, so it is documented as
- * derived rather than observed.
+ * <p><strong>FILE STATUS {@code '35'} is specification derived, not source grounded.</strong> The literal
+ * {@code '35'} does not occur in any of the 28 programs, and the census of CICS response conditions is
+ * {@code NORMAL} 43, {@code NOTFND} 23, {@code ENDFILE} 8, {@code DUPREC} 7, {@code DUPKEY} 3 and
+ * {@code NOTOPEN} <strong>zero</strong>. The corresponding {@code FileUnavailableException} therefore
+ * comes from the migration design rather than from a source comparison, and no code path in this package
+ * can produce it.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -420,13 +405,10 @@ public interface CardCrossReferenceRepository extends JpaRepository<CardCrossRef
      * followed by {@code ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID}.
      *
      * <p><strong>Why this returns one row rather than a list, and why that is the more faithful model.</strong>
-     * An earlier revision declared {@code findByAccountIdOrderByCardNumberAsc} returning
-     * {@link java.util.List}, and every one of its seven call sites - in
-     * {@code service/account/AccountViewService}, {@code service/account/AccountUpdateService},
-     * {@code service/billing/BillPaymentService}, {@code service/transaction/TransactionAddService},
-     * {@code batch/processors/InterestCalculationProcessor} and {@code batch/jobs/InterestCalculationJob}
-     * (twice) - discarded everything after element zero. The database was therefore materialising and
-     * transporting a whole result set per read so that the caller could throw all but its first row away.
+     * Every caller needs exactly one row: the account-view, account-update, bill-payment and transaction-add
+     * services and the interest processor and job all resolve a single cross-reference for an account and would
+     * discard everything after the first element of a list, making the engine materialise and transport a whole
+     * result set per read for nothing.
      *
      * <p>Returning {@link Optional} lets Spring Data derive {@code LIMIT 1} from the {@code First} keyword,
      * so the engine stops at the first index entry. It is also closer to the source: what the COBOL performs

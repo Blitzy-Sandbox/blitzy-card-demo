@@ -6,7 +6,9 @@
  * Function    : Mechanically resolves every app/... citation the migrated tree
  *               makes against the frozen COBOL corpus. A citation is the whole
  *               evidence mechanism of this migration, so a path that does not
- *               resolve is a broken proof, not a typo.
+ *               resolve is a broken proof, not a typo - and neither does a path
+ *               that resolves while the line number beside it does not exist,
+ *               which is why the locator is checked as well as the path.
  * Source      : app/** (the frozen corpus every citation points into: 28
  *                 programs, 28 copybooks, 17 mapsets, 17 symbolic maps, 29 JCL
  *                 members, 2 procedures, 1 control card, 1 CSD, 1 catalogue
@@ -70,6 +72,52 @@ import org.junit.jupiter.api.Test;
  * in {@code app/jcl/DUSRSECJ.jcl} rather than a fixture, and three places state that absence explicitly.
  * {@link #theOneNonResolvingPathIsOnlyEverCitedAsAbsent()} requires every one of those mentions to carry a
  * negation, so the exemption cannot be borrowed to hide a genuinely broken citation.
+ *
+ * <h2>Why the line number is checked too</h2>
+ *
+ * <p>Checking only the path leaves half the citation unverified, and a later review found eleven citations
+ * whose path resolved while the line beside it did not exist. Each failure mode was distinct, and each is
+ * the kind a reader trusts <em>because</em> the path is right. The four below are described with the path and
+ * the number deliberately held apart, never written as a locator, because this gate reads its own source and
+ * an example written in citation form would be reported as the very defect it illustrates.
+ *
+ * <ul>
+ *   <li><b>A COBOL paragraph number written as a line number.</b> {@code 2900-WRITE-TRANSACTION-FILE} is a
+ *       paragraph label in {@code app/cbl/CBTRN02C.cbl}; a locator of 2900 overshoots that file's 731 lines.
+ *       The label sits at line 562.</li>
+ *   <li><b>A locator carried over from a sibling copybook.</b> Line 18 of {@code app/cpy/CVACT02Y.cpy}, which
+ *       has 14. {@code CARD-NUM} is at line 5 and {@code CARD-CVV-CD} at line 7, which is what a hundred other
+ *       sites in this tree already cite correctly.</li>
+ *   <li><b>A file name transcribed wrongly while the range stayed right.</b> Lines 345 to 366 are
+ *       {@code 1000-XREFFILE-GET-NEXT} in {@code app/cbl/CBSTM03A.CBL}, not in the 178-line
+ *       {@code app/cbl/CBACT03C.cbl}.</li>
+ *   <li><b>A range whose end overshot the file by two lines.</b> An end of 262 in
+ *       {@code app/cbl/COSGN00C.cbl}, which has 260. Only a bounds check on the <em>end</em> of a range
+ *       catches this one; the start was perfectly valid.</li>
+ * </ul>
+ *
+ * <p>A fifth kind is worth recording because no bounds check can find it: a locator that is in range and
+ * still wrong. One citation named a line in {@code app/cbl/CBSTM03A.CBL} as the source of
+ * {@code FUNCTION CURRENT-DATE} when that program does not use the intrinsic anywhere at all. That was
+ * corrected by reading the corpus, and it is the reason this gate is described as necessary rather than
+ * sufficient.
+ *
+ * <p>{@link #everyCitedLineIsWithinItsFile()} closes that gap. Two decisions in it are deliberate and were
+ * both established by measuring the tree rather than by assumption.
+ *
+ * <ul>
+ *   <li><b>Only a digit locator is a line reference.</b> The corpus is also cited by JCL step name
+ *       ({@code app/jcl/CREASTMT.JCL:STEP040}, {@code :DELDEF01}), by CSD statement
+ *       ({@code app/csd/CARDDEMO.CSD:DEFINE TDQUEUE(JOBS)}) and, inside a parameterised assertion message,
+ *       by format specifier ({@code app/cpy/CVTRA05Y.cpy:L%d}). None of those is a line number and none is
+ *       checked.</li>
+ *   <li><b>A range admits no whitespace around its hyphen.</b> Every real range in the tree is written
+ *       closed up - {@code :L345-L366}, {@code :L5-L11}, {@code :6-11}. Admitting spaces was measured to
+ *       misread three correct citations of the form {@code app/cbl/CSUTLDTC.cbl:L84 - 01 LS-DATE PIC X(10)},
+ *       where the {@code 01} is a COBOL <em>level number</em> in the following prose rather than the end of a
+ *       range. A gate that reports a correct citation is worse than no gate, because it teaches the reader to
+ *       ignore it.</li>
+ * </ul>
  */
 @DisplayName("Every app/... citation resolves against the frozen corpus")
 final class SourceCitationResolutionTest {
@@ -81,6 +129,20 @@ final class SourceCitationResolutionTest {
      */
     private static final Pattern CITATION =
             Pattern.compile("\\b(app/[A-Za-z0-9_./-]*[A-Za-z0-9_])");
+
+    /**
+     * The line locator that may follow a citation, matched at the character immediately after the path.
+     *
+     * <p>Group 1 is the line, group 2 the optional end of a range. The {@code L} prefix is optional because
+     * the tree uses both forms deliberately - {@code :L5} in Javadoc prose and {@code :5} in the schema
+     * comments - and both are equally valid.
+     *
+     * <p>The hyphen of a range admits no surrounding whitespace, and that restriction is load-bearing rather
+     * than tidy: see the class documentation for the three correct citations that a permissive form misread.
+     * Requiring digits also excludes the step-name, CSD-statement and format-specifier locators, none of
+     * which is a line reference.
+     */
+    private static final Pattern LINE_LOCATOR = Pattern.compile("^:L?(\\d+)(?:-L?(\\d+))?");
 
     /** File extensions worth scanning: everything the migration authors as text. */
     private static final Set<String> SCANNED_EXTENSIONS =
@@ -215,6 +277,82 @@ final class SourceCitationResolutionTest {
         return references;
     }
 
+    /**
+     * A citation that carries a line locator, resolved into its numeric bounds.
+     *
+     * @param path     the citing file, relative to the repository root
+     * @param line     the one-based line of the citing file
+     * @param citation the cited corpus path
+     * @param locator  the locator exactly as written, for a failure message that quotes the source
+     * @param start    the cited line, one-based
+     * @param end      the end of a cited range, or {@code start} when a single line is cited
+     */
+    private record LineReference(
+            String path, int line, String citation, String locator, int start, int end) {
+
+        @Override
+        public String toString() {
+            return path + ":" + line + " -> " + citation + locator;
+        }
+    }
+
+    /**
+     * Extracts every citation that carries a line locator.
+     *
+     * <p>Citations whose path does not resolve are skipped: {@link #everyCitedPathExists()} owns that
+     * failure, and reporting it twice would make one defect look like two.
+     *
+     * @return one entry per line-bearing citation occurrence
+     */
+    private static List<LineReference> lineReferences() {
+        final List<LineReference> located = new ArrayList<>();
+        for (final Path path : SCANNED) {
+            final String relative = ROOT.relativize(path).toString();
+            final List<String> content;
+            try {
+                content = Files.readAllLines(path, StandardCharsets.UTF_8);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read " + path, cause);
+            }
+            for (int index = 0; index < content.size(); index++) {
+                final String line = content.get(index);
+                final Matcher citations = CITATION.matcher(line);
+                while (citations.find()) {
+                    final Matcher locator = LINE_LOCATOR.matcher(line.substring(citations.end()));
+                    if (!locator.find()) {
+                        continue;
+                    }
+                    final int start = Integer.parseInt(locator.group(1));
+                    final int end =
+                            locator.group(2) == null ? start : Integer.parseInt(locator.group(2));
+                    located.add(new LineReference(
+                            relative, index + 1, citations.group(1), locator.group(), start, end));
+                }
+            }
+        }
+        return located;
+    }
+
+    /**
+     * Counts the lines of a corpus file the way a reader counts them, so a locator can be bounded.
+     *
+     * @param corpusPath the cited path, relative to the repository root
+     * @return the number of lines, or {@code -1} when the file does not exist
+     */
+    private static int corpusLineCount(final String corpusPath) {
+        final Path resolved = ROOT.resolve(corpusPath);
+        if (!Files.isRegularFile(resolved)) {
+            return -1;
+        }
+        try {
+            // ISO-8859-1 maps every byte to a character, so a corpus member holding a byte that is not
+            // valid UTF-8 is still counted rather than throwing. Only the line count is wanted here.
+            return Files.readAllLines(resolved, StandardCharsets.ISO_8859_1).size();
+        } catch (final IOException cause) {
+            throw new UncheckedIOException("Cannot read " + resolved, cause);
+        }
+    }
+
     @Test
     @DisplayName("every cited app/... path exists on disk, bar the one deliberately absent fixture")
     void everyCitedPathExists() {
@@ -246,6 +384,78 @@ final class SourceCitationResolutionTest {
                                 + "qualified name the corpus holds. Occurrences: %s",
                         locations)
                 .isEmpty();
+    }
+
+    @Test
+    @DisplayName("every cited line, and every end of a cited range, exists in the file it points into")
+    void everyCitedLineIsWithinItsFile() {
+        final List<LineReference> located = lineReferences();
+        assertThat(located)
+                .as(
+                        "the locator scan must find the line-bearing citations, or it proves nothing. Over "
+                                + "thirteen thousand were measured across the tree")
+                .hasSizeGreaterThan(5_000);
+
+        final List<String> violations = new ArrayList<>();
+        for (final LineReference reference : located) {
+            final int lines = corpusLineCount(reference.citation());
+            if (lines < 0) {
+                continue;
+            }
+            if (reference.start() < 1 || reference.start() > lines) {
+                violations.add(reference + "  (the file has " + lines + " lines)");
+            } else if (reference.end() > lines || reference.end() < reference.start()) {
+                violations.add(reference + "  (range end is outside 1.." + lines
+                        + " or precedes its start)");
+            }
+        }
+
+        assertThat(violations)
+                .as(
+                        "each of these points a reader at a line that is not there, and the path resolving "
+                                + "is exactly what makes the claim look checked when it is not. A COBOL "
+                                + "paragraph number is not a line number; a locator does not survive being "
+                                + "copied from a sibling copybook; and the end of a range needs bounding as "
+                                + "much as its start. Occurrences: %s",
+                        violations)
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("the locator rule reads the forms the tree actually uses, and refuses the ones it does not")
+    void theLocatorRuleMatchesTheMeasuredForms() {
+        assertThat(LINE_LOCATOR.matcher(":L9").find())
+                .as("the dominant Javadoc form, an L prefix and a line")
+                .isTrue();
+        assertThat(LINE_LOCATOR.matcher(":9").find())
+                .as("the schema-comment form, a bare line with no prefix")
+                .isTrue();
+
+        final Matcher range = LINE_LOCATOR.matcher(":L345-L366");
+        assertThat(range.find()).as("a closed-up range is a range").isTrue();
+        assertThat(range.group(1)).isEqualTo("345");
+        assertThat(range.group(2)).isEqualTo("366");
+
+        final Matcher spaced = LINE_LOCATOR.matcher(":L84 - 01 LS-DATE PIC X(10)");
+        assertThat(spaced.find()).as("the line itself still matches").isTrue();
+        assertThat(spaced.group(2))
+                .as(
+                        "a spaced hyphen is prose, not a range: the 01 here is a COBOL level number, and "
+                                + "reading it as a range end reported three correct citations as broken")
+                .isNull();
+
+        assertThat(LINE_LOCATOR.matcher(":STEP040").find())
+                .as("a JCL step name is not a line number")
+                .isFalse();
+        assertThat(LINE_LOCATOR.matcher(":DELDEF01").find())
+                .as("a JCL step name that ends in digits is still not a line number")
+                .isFalse();
+        assertThat(LINE_LOCATOR.matcher(":L%d must begin at byte %d").find())
+                .as("a format specifier inside an assertion message is not a line number")
+                .isFalse();
+        assertThat(LINE_LOCATOR.matcher(":DEFINE TDQUEUE(JOBS)").find())
+                .as("a CSD statement is not a line number")
+                .isFalse();
     }
 
     @Test

@@ -110,20 +110,19 @@
  * for the previous account through {@code 1050-UPDATE-ACCOUNT} at {@code :L196} on each break, guarded
  * by the first record test at {@code :L195-L199}.
  *
- * <p><strong>Correction: the source never flushes the final account.</strong> An earlier revision of this
- * document said the update ran "once more when end of file is reached". It does not. The apparent final
- * flush is {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at {@code :L219-L220}, whose {@code ELSE} belongs to
- * {@code IF END-OF-FILE = 'N'} at {@code :L189}; it is therefore reachable only when
- * {@code END-OF-FILE} is already {@code 'Y'}, which is precisely the state in which the enclosing
- * test-before {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already exited. The branch is
- * dead code, so the last account in key order silently loses its accrued interest and keeps its stale
- * cycle accumulators. A further earlier revision of this paragraph said the Java implementation performs
- * the flush on the end of data condition as a labelled deviation; that is withdrawn too.
- * <strong>There is no final flush in the Java implementation and none may be added</strong> - the loss is
- * a deterministic arithmetic outcome rather than a corruption hazard, so parity governs.
- * {@code com.cardemo.batch.processors.InterestCalculationProcessor} implements none and retains
- * {@code updateAccountAtEndOfFile()} as an explicitly marked, never-invoked no-op so the paragraph map
- * stays provable.
+ * <p><strong>Which flush the source reaches.</strong> The apparent final flush is
+ * {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at {@code :L219-L220}, whose {@code ELSE} belongs to
+ * {@code IF END-OF-FILE = 'N'} at {@code :L189}; it is therefore taken only when {@code END-OF-FILE} is
+ * already {@code 'Y'}, which is precisely the state in which the enclosing test-before
+ * {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already exited. The reachable flush is
+ * consequently the control-break arm at {@code :L196}, so the last account in key order keeps its accrued
+ * interest unposted and its cycle accumulators unreset. That outcome is preserved rather than repaired,
+ * because parity with the frozen corpus is the acceptance contract; the variance against the specification
+ * prose is disclosed once, with its severity and its remediation, in the register carried by the
+ * documentation of the {@code com.cardemo} root package.
+ * {@code com.cardemo.batch.processors.InterestCalculationProcessor} retains
+ * {@code updateAccountAtEndOfFile()} as a faithful reproduction of the branch so the paragraph map stays
+ * provable.
  *
  * <p>That control break is correct <em>only</em> because {@code TRANCAT-ACCT-ID} is the leading component
  * of the key. Reordering the components, for instance alphabetising them, would change the iteration

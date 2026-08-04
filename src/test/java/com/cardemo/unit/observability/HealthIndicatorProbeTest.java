@@ -160,16 +160,21 @@ class HealthIndicatorProbeTest {
      * Answers the FIFO attribute read with a queue that satisfies the contract.
      *
      * <p>Resolving the URL proves the queue exists; it does not prove it is FIFO. The queue replaces the
-     * {@code JOBS} transient data queue, whose ordering the batch bridge depends on, so the probe also
-     * reads {@code FifoQueue} and {@code ContentBasedDeduplication} and requires both to be {@code true}.
-     * Only those two are requested: an unqualified attribute request would return the queue ARN and every
-     * policy document with it, which is exactly the payload a readiness probe must not obtain.
+     * {@code JOBS} transient data queue, whose ordering the batch bridge depends on, so the probe also reads
+     * {@code FifoQueue} and {@code ContentBasedDeduplication} - but only the first one gates the verdict.
+     * {@code FifoQueue} must be {@code true} for that ordering to exist at all, and it cannot change after
+     * the queue is created. {@code ContentBasedDeduplication} is answered {@code false} here to match how the
+     * queue is provisioned, yet finding H-08 records why it is reported rather than required: every
+     * submission carries its own {@code MessageDeduplicationId}, which takes precedence over the body hash,
+     * so two legitimate submissions of the same period both survive either way. Only those two attributes
+     * are requested: an unqualified request would return the queue ARN and every policy document with it,
+     * which is exactly the payload a readiness probe must not obtain.
      */
     private void stubFifoContractSatisfied() {
         Mockito.when(sqsAsyncClient.getQueueAttributes(Mockito.any(GetQueueAttributesRequest.class)))
                 .thenReturn(CompletableFuture.completedFuture(GetQueueAttributesResponse.builder()
                         .attributes(Map.of(QueueAttributeName.FIFO_QUEUE, "true",
-                                QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "true"))
+                                QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "false"))
                         .build()));
     }
 

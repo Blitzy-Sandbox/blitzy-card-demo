@@ -1249,4 +1249,32 @@ class AccountRepositoryTest extends AbstractRepositoryIntegrationTest {
         }
     }
 
+
+    /**
+     * The complete PostgreSQL metadata contract for the {@code account} table.
+     *
+     * <p><strong>Finding, severity High, RESOLVED.</strong> This class asserted whichever columns its
+     * behavioural tests happened to touch, and every one of those assertions was true and none of them was a
+     * contract. A widened character column, a lost decimal scale, a reordered composite key, a retargeted
+     * foreign key or a dropped check constraint would all have left this class green - and Hibernate's
+     * {@code ddl-auto: validate} would not have caught any of them either, because it compares type
+     * <em>compatibility</em> and not geometry. For a migration whose contract is that every width comes from
+     * a frozen picture clause, that was the gap that mattered most.
+     *
+     * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet once and asserts
+     * the live catalogue against it by exact equality on ordered lists, so a missing facet and an extra facet
+     * both fail. Delegating rather than restating is deliberate: the shared schema test drives the identical
+     * contract over all eleven tables, and a paraphrase here could agree with the schema while disagreeing
+     * with the authority.
+     *
+     * <p>For {@code account} that is thirteen columns, the eleven-digit key of app/catlg/LISTCAT.txt:L59, five NUMERIC(12,2) money columns, the version column COACTUPC's dual-dataset rewrite depends on, and the Y/N status check - every value measured from the schema the migrations
+     * produce and checked against {@code app/cpy/CVACT01Y.cpy}, never transcribed from prose.
+     */
+    @Test
+    @DisplayName("the account table matches the complete declared metadata contract: columns, types, "
+            + "widths, precision, scale, nullability, primary key, foreign keys, indexes and constraints")
+    void theTableMatchesTheCompleteMetadataContract() {
+        SchemaMetadataMatrix.assertTableMatches(jdbcTemplate, "account");
+    }
+
 }

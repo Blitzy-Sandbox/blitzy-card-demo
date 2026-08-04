@@ -123,53 +123,52 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       instance, so no test can observe another's mutation regardless of execution order.</li>
  * </ul>
  *
- * <h2>4. Findings, classified by severity</h2>
+ * <h2>4. Contract invariants</h2>
  *
- * <p><i>Blocker - the account identifier property must be named exactly {@code accountId}.</i>
+ * <p><i>the account identifier property must be named exactly {@code accountId}.</i>
  * {@code com.cardemo.repository.CardRepository} declares the derived finder {@code findByAccountId} and
  * Spring Data resolves derived finders against JavaBean property names, so any other spelling makes the
  * finder unresolvable. Asserted by reflection on the declared field and its accessor.
  *
- * <p><i>Blocker - the card number and the card verification value must never be emitted.</i> Rule 1
+ * <p><i>the card number and the card verification value must never be emitted.</i> Rule 1
  * clause D states "No secrets in code, logs, tests, or config" and names tests explicitly, which is why
  * this file contains no payment-card-shaped literal at all. The 16-character keys used below are
  * deliberately non-numeric or all-but-zero synthetic strings that cannot match an issuer range or satisfy
  * a Luhn check, and no assertion message ever interpolates a card number or a verification value: messages
- * name the record index, the column offset and the width instead. An earlier revision of this file used the
- * canonical Visa and Mastercard test numbers as literals; both were removed as a clause D violation.
+ * name the record index, the column offset and the width instead.
  *
- * <p><i>High - the copybook misspelling {@code EXPIRAION} is retained, never corrected.</i>
+ * <p><i>the copybook misspelling {@code EXPIRAION} is retained, never corrected.</i>
  * {@code app/cpy/CVACT02Y.cpy:L9} declares {@code CARD-EXPIRAION-DATE}, missing the {@code T} of
  * EXPIRATION, and {@code app/cpy/CVACT01Y.cpy:L11} carries the identical misspelling as
  * {@code ACCT-EXPIRAION-DATE}. It is therefore a corpus-wide spelling and part of the field contract. Both
  * the property {@code expiraionDate} and the column {@code card_expiraion_date} preserve it, and the
  * correctly spelled alternative is asserted absent.
  *
- * <p><i>High - the alternate index is non-unique and must stay that way.</i>
+ * <p><i>the alternate index is non-unique and must stay that way.</i>
  * {@code app/data/ASCII/carddata.txt} happens to hold 50 distinct card numbers against 50 distinct account
  * identifiers, a one-to-one relationship that is a property of that fixture alone. Reading it as a
  * uniqueness guarantee and adding a unique constraint on {@code card_acct_id} would reject the ordinary
  * case of one account holding several cards, which {@code app/catlg/LISTCAT.txt:L285} shows the legacy
  * system permitted.
  *
- * <p><i>Medium - a verification value must not be reintroduced as a numeric type.</i> A census of all 50
+ * <p><i>the verification value must be text, never a numeric type.</i> A census of all 50
  * rows of the fixture at columns 28-30 finds 8 whose value begins with a zero, so an {@code Integer}
- * mapping would silently drop that zero and break byte-exact re-emission. The entity does not model the
- * field at all, which makes the hazard unreachable; the census is still asserted so the reason stays
+ * mapping would silently drop that zero and break byte-exact re-emission. The column is {@code CHAR(3)} and
+ * the field is a {@code String} for exactly that reason; the census is asserted so the reason stays
  * evidenced rather than remembered.
  *
- * <p><b>Labelled deviation from the assigned field map, with remediation.</b> The specification for this
- * test lists a {@code cvvCode} property mapped to a {@code card_cvv_cd CHAR(3)} column. The implemented
- * system deliberately models no such field, consistently in three places: {@link Card} declares neither
- * the field nor a constructor parameter for it, {@code src/main/resources/db/migration/V1__create_schema.sql}
- * declares {@code CREATE TABLE card} without the column and records why, and no data transfer object
- * carries it. The cited reasons are that verification data must not be retained after authorisation, that
- * the field appears in none of the 17 BMS symbolic maps so no screen ever displayed or accepted it, and
- * that {@code app/cbl/COCRDUPC.cbl} never assigns its update-path field. This test therefore asserts the
- * implemented contract - absence by every route - which is the stronger form of the same requirement, and
- * keeps the three verification bytes inside the 150-byte arithmetic because the copybook is frozen and it
- * is the live column, not the record, that was dropped. Remediation if the field is ever reinstated: map it
- * as {@code String}, never a numeric type, and exclude it from {@link Card#toString()}.
+ * <p><b>The card verification value is persisted, and this test asserts that rather
+ * than its absence.</b> An earlier revision of this file asserted that {@code CARD-CVV-CD} was absent by
+ * every route, matching an entity and a migration that modelled no column for it. That institutionalised a
+ * field-contract break: {@code app/cpy/CVACT02Y.cpy:L7} declares the field inside the authoritative
+ * 150-byte record, all fifty fixture rows carry three digits at bytes 28-30, and the AAP declares field
+ * contracts bidirectional, so three authoritative bytes were being lost. {@link Card} now maps a private
+ * {@code cvvCode} field to {@code card_cvv_cd CHAR(3) NOT NULL}, takes it as the third constructor argument
+ * in copybook order, and publishes <em>no</em> read path for it - no getter, no setter, only the boolean
+ * {@link Card#matchesVerificationValue(String)}. The confidentiality requirement that motivated the
+ * omission is met by withholding the read path rather than the storage, which is the control the concern
+ * actually calls for. This block therefore asserts the mapping, the exact round trip of a leading-zero
+ * value, and non-exposure through every bean-visible route.
  *
  * <p><b>Not available.</b> Nothing in this tier can observe the physical column type, the primary-key
  * constraint, the foreign key or the index uniqueness flag: those live in the migration and are provable
@@ -239,7 +238,7 @@ class CardTest {
     private static final int LEADING_ZERO_CVV_ROWS = 8;
 
     /** Persisted fields on the entity: five from the copybook plus the optimistic-locking version. */
-    private static final int PERSISTENT_FIELD_COUNT = 6;
+    private static final int PERSISTENT_FIELD_COUNT = 7;
 
     /** The widest {@code PIC 9(11)} value, and therefore the inclusive upper bound of the range guard. */
     private static final long MAX_ACCOUNT_ID = 99_999_999_999L;
@@ -291,7 +290,7 @@ class CardTest {
      * @return a populated, valid {@link Card}
      */
     private static Card validCard() {
-        return new Card(SYNTHETIC_KEY, 1L, "FNAMEAA6 LNAME6", "2025-01-01", "Y");
+        return new Card(SYNTHETIC_KEY, 1L, "007", "FNAMEAA6 LNAME6", "2025-01-01", "Y");
     }
 
     /**
@@ -336,7 +335,7 @@ class CardTest {
      *
      * @param fieldName the Java property name
      * @return the column annotation on that field
-     * @throws ReflectiveOperationException if the field does not exist, which is itself the finding
+     * @throws ReflectiveOperationException if the field does not exist, which is itself a failure
      */
     private static Column columnOf(final String fieldName) throws ReflectiveOperationException {
         return Card.class.getDeclaredField(fieldName).getAnnotation(Column.class);
@@ -358,10 +357,9 @@ class CardTest {
         @Test
         @DisplayName("the six copybook field widths plus the filler sum to the catalogued 150 bytes")
         void theCopybookWidthsPlusFillerSumTo150() {
-            // The three verification bytes stay in this arithmetic even though no column holds them. The
-            // COPYBOOK is the record and it is frozen: CARD-RECORD is still 150 bytes wide and every
-            // fixture row still carries all 150. What was removed is the live column, not the record, so
-            // an arithmetic that dropped the field would be asserting the wrong thing.
+            // All six populated widths participate, the three verification bytes included: CARD-RECORD is
+            // 150 bytes wide in the frozen copybook, every fixture row carries all 150, and every one of
+            // the six populated fields now has a column behind it.
             final int populated = CARD_NUMBER_WIDTH + ACCOUNT_ID_WIDTH + CVV_WIDTH + EMBOSSED_NAME_WIDTH
                     + EXPIRY_WIDTH + STATUS_WIDTH;
 
@@ -405,7 +403,7 @@ class CardTest {
         @DisplayName("the account id property is named exactly accountId, which the derived finder requires")
         void theAccountIdPropertyIsNamedExactlyAccountId() throws ReflectiveOperationException {
             assertThat(persistentFields())
-                    .as("Blocker: com.cardemo.repository.CardRepository declares the derived finder "
+                    .as("com.cardemo.repository.CardRepository declares the derived finder "
                             + "findByAccountId, and Spring Data resolves derived finders against JavaBean "
                             + "property names. A rename to acctId or cardAcctId would make the finder "
                             + "unresolvable and fail context startup")
@@ -439,8 +437,8 @@ class CardTest {
                             + "would add a column that could only ever hold 59 spaces")
                     .noneMatch(field -> field.getName().toLowerCase(Locale.ROOT).contains("filler"));
             assertThat(persistentFields())
-                    .as("five copybook fields are persisted, CARD-CVV-CD is not, and the version column is "
-                            + "added by the migration: five plus one is six")
+                    .as("all six copybook fields are persisted, CARD-CVV-CD included, and the version "
+                            + "column is added by the migration: six plus one is seven")
                     .hasSize(PERSISTENT_FIELD_COUNT);
         }
     }
@@ -617,39 +615,123 @@ class CardTest {
     }
 
     @Nested
-    @DisplayName("verification data: absent by every route, and the leading-zero hazard that made it so")
+    @DisplayName("verification data: persisted privately, round-tripped exactly, and never readable")
     class VerificationValueRetention {
 
+        /**
+         * A synthetic verification value whose leading zero is the whole point of the test: it is the shape
+         * that 8 of the 50 fixture rows carry and the shape a numeric column would corrupt. It is not a value
+         * taken from the fixture, so no fixture datum reaches an assertion message.
+         */
+        private static final String SYNTHETIC_LEADING_ZERO_CVV = "007";
+
         @Test
-        @DisplayName("no field, accessor, mutator or column carries the verification value")
-        void theVerificationValueIsAbsentByEveryRoute() {
-            // Each route is checked separately, because closing one and leaving another open would be
-            // indistinguishable from closing none.
-            assertThat(persistentFields())
-                    .as("a persistent field would be retention, whatever it were named")
-                    .noneMatch(field -> field.getName().toLowerCase(Locale.ROOT).contains("cvv"));
-            assertThat(Card.class.getDeclaredMethods())
-                    .as("an accessor or mutator would be an exposure route even with no field behind it")
-                    .noneMatch(method -> method.getName().toLowerCase(Locale.ROOT).contains("cvv"));
-            for (final Field field : persistentFields()) {
-                final Column column = field.getAnnotation(Column.class);
-                assertThat(column.name())
-                        .as("and no column mapping may name the verification column either")
-                        .doesNotContain("cvv");
-            }
+        @DisplayName("the field is mapped to card_cvv_cd CHAR(3) NOT NULL, so the three bytes are retained")
+        void theVerificationValueIsMappedAsAFixedWidthColumn() throws ReflectiveOperationException {
+            final Field field = Card.class.getDeclaredField("cvvCode");
+            final Column column = field.getAnnotation(Column.class);
+
+            assertThat(field.getType())
+                    .as("String, never a numeric type: 8 of the 50 fixture rows lead with a zero and a "
+                            + "numeric mapping would render them one character short, so the record could "
+                            + "not be re-emitted byte-exactly")
+                    .isEqualTo(String.class);
+            assertThat(column.name())
+                    .as("app/cpy/CVACT02Y.cpy:L7 declares CARD-CVV-CD inside the authoritative 150-byte "
+                            + "record, so the column exists; V1__create_schema.sql names it card_cvv_cd")
+                    .isEqualTo("card_cvv_cd");
+            assertThat(column.length())
+                    .as("PIC 9(03) is exactly three characters wide")
+                    .isEqualTo(CVV_WIDTH);
+            assertThat(column.nullable())
+                    .as("every column on this table is NOT NULL, this one included, so a card cannot be "
+                            + "inserted without its three bytes")
+                    .isFalse();
+            assertThat(Modifier.isPrivate(field.getModifiers()))
+                    .as("private: Hibernate reads and writes it reflectively, and that is the only access "
+                            + "there is")
+                    .isTrue();
         }
 
         @Test
-        @DisplayName("the validating constructor takes five arguments, none of them a verification value")
-        void theConstructorTakesFiveArgumentsAndNoVerificationValue() {
+        @DisplayName("no accessor, mutator or bean-visible read path can surrender the value")
+        void theVerificationValueHasNoReadPath() {
+            // Each route is checked separately, because closing one and leaving another open would be
+            // indistinguishable from closing none. What is forbidden is a route that RETURNS the value;
+            // the one permitted method returns a boolean and is asserted on below.
+            assertThat(Card.class.getMethods())
+                    .as("no getter, no setter and no bean-style accessor of any visibility names the field, "
+                            + "so no caller, serializer or reflective bean mapper can read it back")
+                    .noneMatch(method -> {
+                        final String lower = method.getName().toLowerCase(Locale.ROOT);
+                        return lower.equals("getcvvcode") || lower.equals("setcvvcode")
+                                || lower.equals("iscvvcode");
+                    });
+            assertThat(Card.class.getMethods())
+                    .as("and no method anywhere on the type returns a String while naming the verification "
+                            + "value, which is the general form of the same prohibition")
+                    .noneMatch(method -> method.getName().toLowerCase(Locale.ROOT).contains("cvv")
+                            && method.getReturnType() != boolean.class);
+            assertThat(persistentFields())
+                    .as("exactly one persistent field carries it, so there is no second copy of the value "
+                            + "to leak. The static width constant also names the field, which is metadata "
+                            + "and holds no value, so only instance state is counted here")
+                    .filteredOn(field -> field.getName().toLowerCase(Locale.ROOT).contains("cvv"))
+                    .hasSize(1);
+        }
+
+        @Test
+        @DisplayName("the value round-trips exactly, leading zero included, through the one-way comparison")
+        void theVerificationValueRoundTripsExactly() {
+            final Card card = new Card(SYNTHETIC_KEY, 1L, SYNTHETIC_LEADING_ZERO_CVV, "NAME",
+                    "2025-01-01", "Y");
+
+            assertThat(card.matchesVerificationValue(SYNTHETIC_LEADING_ZERO_CVV))
+                    .as("the constructor stores the three characters verbatim, so the value supplied is the "
+                            + "value held - this is the round trip a CHAR(3) column preserves and a numeric "
+                            + "column would break")
+                    .isTrue();
+            assertThat(card.matchesVerificationValue("7"))
+                    .as("and the leading zeros are significant: the numerically equal but shorter form is "
+                            + "NOT the stored value, which is precisely what a numeric mapping would have "
+                            + "made indistinguishable")
+                    .isFalse();
+            assertThat(card.matchesVerificationValue("008"))
+                    .as("a different value of the same width does not match either")
+                    .isFalse();
+            assertThat(card.matchesVerificationValue(null))
+                    .as("and an absent candidate is a false answer rather than an exception, because "
+                            + "\"is this the value\" is a question, not an error")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the validating constructor takes the value in copybook order and refuses an over-wide one")
+        void theConstructorTakesTheVerificationValueInCopybookOrder() {
             assertThat(Card.class.getConstructors())
-                    .as("exactly one public constructor, so there is no second door into the type")
+                    .as("exactly one public constructor, so there is no second door into the type and no "
+                            + "overload that could default the verification value")
                     .hasSize(1);
             assertThat(Card.class.getConstructors()[0].getParameterCount())
-                    .as("five parameters: the card number, the account id, the embossed name, the expiry "
-                            + "text and the status. The verification value is not among them, so a caller "
-                            + "has nothing to supply and no accessor to read one back")
-                    .isEqualTo(5);
+                    .as("six parameters, one per populated copybook field, in the copybook's own order")
+                    .isEqualTo(PERSISTENT_FIELD_COUNT - 1);
+            assertThat(Card.class.getConstructors()[0].getParameterTypes()[2])
+                    .as("and the verification value is the third, exactly where app/cpy/CVACT02Y.cpy:L7 "
+                            + "places CARD-CVV-CD between CARD-ACCT-ID and CARD-EMBOSSED-NAME")
+                    .isEqualTo(String.class);
+
+            assertThatIllegalArgumentException()
+                    .as("the guard is the same width guard every other text field gets")
+                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, 1L, "0007", "NAME", "2025-01-01", "Y"))
+                    .withMessageContaining("cvvCode")
+                    .withMessageContaining("CARD-CVV-CD")
+                    .withMessageContaining(String.valueOf(CVV_WIDTH))
+                    .withNoCause();
+            assertThatIllegalArgumentException()
+                    .as("and null is refused rather than stored, because the column is NOT NULL")
+                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, 1L, null, "NAME", "2025-01-01", "Y"))
+                    .withMessageContaining("cvvCode")
+                    .withNoCause();
         }
 
         @Test
@@ -698,15 +780,15 @@ class CardTest {
             assertThat(narrowedByNumericRoundTrip)
                     .as("parsing each value as an Integer and rendering it back yields a SHORTER string "
                             + "for exactly the 8 leading-zero rows, so an Integer column would corrupt "
-                            + "them and break byte-exact re-emission. Were the field ever reinstated it "
-                            + "must be String, never a numeric type")
+                            + "them and break byte-exact re-emission. That is why the reinstated column is "
+                            + "CHAR(3) and the field is a String")
                     .isEqualTo(LEADING_ZERO_CVV_ROWS);
         }
 
         @Test
         @DisplayName("a text key preserves its leading zeros byte for byte through the entity")
         void aTextKeyPreservesItsLeadingZeros() {
-            final Card card = new Card(LEADING_ZERO_KEY, 1L, "NAME", "2025-01-01", "Y");
+            final Card card = new Card(LEADING_ZERO_KEY, 1L, "007", "NAME", "2025-01-01", "Y");
 
             assertThat(card.getCardNumber())
                     .as("this is the positive form of the same property: CARD-NUM is PIC X(16), so the "
@@ -720,7 +802,7 @@ class CardTest {
         @Test
         @DisplayName("no overpunch decoding is applied to this fixture, which carries no signed field")
         void noOverpunchDecodingIsAppliedToThisFixture() {
-            final Card card = new Card(SYNTHETIC_KEY, 1L, OVERPUNCH_LETTER_NAME, "2025-01-01", "Y");
+            final Card card = new Card(SYNTHETIC_KEY, 1L, "007", OVERPUNCH_LETTER_NAME, "2025-01-01", "Y");
 
             assertThat(card.getEmbossedName())
                     .as("carddata.txt has NO signed field: CARD-ACCT-ID is PIC 9(11) unsigned and "
@@ -744,13 +826,13 @@ class CardTest {
         @Test
         @DisplayName("toString discloses neither the card number nor the embossed name nor the expiry")
         void toStringDisclosesNoSensitiveValue() {
-            final Card card = new Card(LEADING_ZERO_KEY, 7L, OVERPUNCH_LETTER_NAME, "2031-12-25", "Y");
+            final Card card = new Card(LEADING_ZERO_KEY, 7L, "007", OVERPUNCH_LETTER_NAME, "2031-12-25", "Y");
             card.setVersion(4L);
 
             final String rendered = card.toString();
 
             assertThat(rendered)
-                    .as("Blocker: toString is the single most likely route by which an entity leaks into a "
+                    .as("toString is the single most likely route by which an entity leaks into a "
                             + "log line, an exception message or a stack trace, because it is invoked "
                             + "implicitly - by string concatenation, by a logging placeholder, by a "
                             + "debugger and by an agent capturing local variables - on paths no reviewer "
@@ -832,11 +914,11 @@ class CardTest {
         @Test
         @DisplayName("two distinct cards may share one account id, which the entity permits")
         void twoDistinctCardsMayShareOneAccountId() {
-            final Card first = new Card(SYNTHETIC_KEY, 500L, "NAME ONE", "2025-01-01", "Y");
-            final Card second = new Card(SYNTHETIC_KEY_ALT, 500L, "NAME TWO", "2026-01-01", "Y");
+            final Card first = new Card(SYNTHETIC_KEY, 500L, "007", "NAME ONE", "2025-01-01", "Y");
+            final Card second = new Card(SYNTHETIC_KEY_ALT, 500L, "007", "NAME TWO", "2026-01-01", "Y");
 
             assertThat(second.getAccountId())
-                    .as("High: app/catlg/LISTCAT.txt:L285 declares CARDDATA.VSAM.AIX as NONUNIQKEY, and "
+                    .as("app/catlg/LISTCAT.txt:L285 declares CARDDATA.VSAM.AIX as NONUNIQKEY, and "
                             + "UNIQUEKEY appears nowhere in the catalogue's 3,956 lines. Non-unique is a "
                             + "catalogued fact rather than a relaxation, and it is the ordinary case: one "
                             + "account legitimately holds several cards. A unique constraint on "
@@ -937,7 +1019,7 @@ class CardTest {
         @DisplayName("a null card number is rejected, naming the property, the COBOL field and the width")
         void aNullCardNumberIsRejected() {
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new Card(null, 1L, "NAME", "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card(null, 1L, "007", "NAME", "2025-01-01", "Y"))
                     .withMessageContaining("cardNumber")
                     .withMessageContaining("CARD-NUM")
                     .withMessageContaining("16")
@@ -961,7 +1043,7 @@ class CardTest {
             assertThatIllegalArgumentException()
                     .as("%s maps to a NOT NULL column, so null must be refused at construction rather than "
                             + "at flush, where the stack trace no longer identifies the caller", property)
-                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, 1L, name, expiry, status))
+                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, 1L, "007", name, expiry, status))
                     .withMessageContaining(property)
                     .withMessageContaining(cobolField)
                     .withMessageContaining(String.valueOf(width))
@@ -976,7 +1058,7 @@ class CardTest {
                             + "rejection wraps nothing: it is the originating validation failure, so there "
                             + "is no cause to lose and asserting its absence is what proves nothing was "
                             + "swallowed on the way here. The message carries the whole context instead")
-                    .isThrownBy(() -> new Card(null, 1L, "NAME", "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card(null, 1L, "007", "NAME", "2025-01-01", "Y"))
                     .withNoCause()
                     .withMessageContaining("must not be null");
         }
@@ -987,7 +1069,7 @@ class CardTest {
             assertThatIllegalArgumentException()
                     .as("a seventeenth character could not be written to a CHAR(16) column and would be "
                             + "truncated at the byte boundary, corrupting the primary key silently")
-                    .isThrownBy(() -> new Card("X".repeat(CARD_NUMBER_WIDTH + 1), 1L, "NAME",
+                    .isThrownBy(() -> new Card("X".repeat(CARD_NUMBER_WIDTH + 1), 1L, "007", "NAME",
                             "2025-01-01", "Y"))
                     .withMessageContaining("16")
                     .withMessageContaining("17")
@@ -999,7 +1081,7 @@ class CardTest {
         void aFifteenCharacterCardNumberIsAccepted() {
             final String fifteen = "X".repeat(CARD_NUMBER_WIDTH - 1);
 
-            assertThat(new Card(fifteen, 1L, "NAME", "2025-01-01", "Y").getCardNumber())
+            assertThat(new Card(fifteen, 1L, "007", "NAME", "2025-01-01", "Y").getCardNumber())
                     .as("observed behaviour, pinned deliberately: the guard checks an upper bound, so a "
                             + "short key passes and is stored exactly as supplied. Padding to the CHAR(16) "
                             + "width belongs at the fixed-width emission boundary, not in the entity, and a "
@@ -1026,7 +1108,7 @@ class CardTest {
                     .as("%s must reject a value of length %d: the column is CHAR of a narrower width and "
                             + "the excess would be truncated at the byte boundary. The 151-character case "
                             + "is a whole over-long record offered as one field", cobolField, length)
-                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, 1L, name, expiry, status))
+                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, 1L, "007", name, expiry, status))
                     .withMessageContaining(cobolField)
                     .withNoCause();
         }
@@ -1036,7 +1118,7 @@ class CardTest {
         void aValueAtExactlyTheDeclaredWidthIsAccepted() {
             final Card card = new Card(
                     "X".repeat(CARD_NUMBER_WIDTH),
-                    MAX_ACCOUNT_ID,
+                    MAX_ACCOUNT_ID, "007",
                     "N".repeat(EMBOSSED_NAME_WIDTH),
                     "2".repeat(EXPIRY_WIDTH),
                     "Y".repeat(STATUS_WIDTH));
@@ -1053,7 +1135,7 @@ class CardTest {
         @ValueSource(strings = {"", " ", "   ", "SHORT", "FNAMEAA6 LNAME6", "ABCDEFGHIJKLMNOPQR"})
         @DisplayName("a blank or shorter value is accepted verbatim, with no padding and no trimming")
         void aBlankOrShorterValueIsAcceptedVerbatim(final String name) {
-            assertThat(new Card(SYNTHETIC_KEY, 1L, name, "2025-01-01", "Y").getEmbossedName())
+            assertThat(new Card(SYNTHETIC_KEY, 1L, "007", name, "2025-01-01", "Y").getEmbossedName())
                     .as("a fixed-width COBOL record has no concept of an absent field, only of a blank "
                             + "one, so blank is legitimate and the entity declares no @NotBlank that would "
                             + "reject rows the legacy system accepted. The value is stored exactly as "
@@ -1064,7 +1146,7 @@ class CardTest {
         @Test
         @DisplayName("an empty card number is accepted by the width guard, since zero is under the maximum")
         void anEmptyCardNumberIsAcceptedByTheWidthGuard() {
-            assertThat(new Card("", 1L, "NAME", "2025-01-01", "Y").getCardNumber())
+            assertThat(new Card("", 1L, "007", "NAME", "2025-01-01", "Y").getCardNumber())
                     .as("observed behaviour, recorded so a reader does not assume the entity is a complete "
                             + "validator: the guard refuses null and over-width but not emptiness. An empty "
                             + "primary key is refused by the database at flush, which is a deliberate "
@@ -1081,7 +1163,7 @@ class CardTest {
         @DisplayName("a null account id is rejected, naming the NUMERIC(11) column it maps to")
         void aNullAccountIdIsRejected() {
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, null, "NAME", "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, null, "007", "NAME", "2025-01-01", "Y"))
                     .withMessageContaining("accountId")
                     .withMessageContaining("CARD-ACCT-ID")
                     .withNoCause();
@@ -1095,7 +1177,7 @@ class CardTest {
                             + "has no representation in the fixed-width record. Every one of the 50 fixture "
                             + "rows confirms it: the slice at columns 17-27 is plain digits with no "
                             + "trailing overpunch symbol")
-                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, -1L, "NAME", "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, -1L, "007", "NAME", "2025-01-01", "Y"))
                     .withMessageContaining("accountId")
                     .withMessageContaining("0")
                     .withNoCause();
@@ -1106,7 +1188,7 @@ class CardTest {
         void anAccountIdAboveTheMaximumIsRejected() {
             assertThatIllegalArgumentException()
                     .as("a twelfth digit could not be written into an eleven-character field")
-                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, MAX_ACCOUNT_ID + 1L, "NAME",
+                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, MAX_ACCOUNT_ID + 1L, "007", "NAME",
                             "2025-01-01", "Y"))
                     .withMessageContaining("99999999999")
                     .withNoCause();
@@ -1115,7 +1197,7 @@ class CardTest {
         @Test
         @DisplayName("zero is accepted, because the lower bound is inclusive")
         void zeroIsAccepted() {
-            assertThat(new Card(SYNTHETIC_KEY, 0L, "NAME", "2025-01-01", "Y").getAccountId())
+            assertThat(new Card(SYNTHETIC_KEY, 0L, "007", "NAME", "2025-01-01", "Y").getAccountId())
                     .as("an all-zeros account id is a representable PIC 9(11) value even though the seed "
                             + "data does not use it, so the guard must test below zero and not below one")
                     .isZero();
@@ -1124,7 +1206,7 @@ class CardTest {
         @Test
         @DisplayName("exactly 99,999,999,999 is accepted, because the upper bound is inclusive")
         void theMaximumIsAccepted() {
-            assertThat(new Card(SYNTHETIC_KEY, MAX_ACCOUNT_ID, "NAME", "2025-01-01", "Y").getAccountId())
+            assertThat(new Card(SYNTHETIC_KEY, MAX_ACCOUNT_ID, "007", "NAME", "2025-01-01", "Y").getAccountId())
                     .as("an exclusive upper bound would reject the widest legitimate value the picture "
                             + "clause can hold")
                     .isEqualTo(MAX_ACCOUNT_ID);
@@ -1135,12 +1217,12 @@ class CardTest {
         void theExtremeLongValuesAreRejected() {
             assertThatIllegalArgumentException()
                     .as("the lower extreme is caught by the same below-zero test as any negative value")
-                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, Long.MIN_VALUE, "NAME", "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, Long.MIN_VALUE, "007", "NAME", "2025-01-01", "Y"))
                     .withNoCause();
             assertThatIllegalArgumentException()
                     .as("a guard that tested only the lower bound would let Long.MAX_VALUE through and "
                             + "produce a nineteen-digit value in an eleven-character field")
-                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, Long.MAX_VALUE, "NAME", "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card(SYNTHETIC_KEY, Long.MAX_VALUE, "007", "NAME", "2025-01-01", "Y"))
                     .withNoCause();
         }
     }
@@ -1183,7 +1265,7 @@ class CardTest {
                 final String expiry = fixture.field(row, 81, EXPIRY_WIDTH);
                 final String status = fixture.field(row, 91, STATUS_WIDTH);
 
-                final Card card = new Card(key, Long.parseLong(accountId), name, expiry, status);
+                final Card card = new Card(key, Long.parseLong(accountId), "007", name, expiry, status);
 
                 // The key is compared as a boolean rather than through isEqualTo, so that no card number
                 // can reach an assertion message even on failure. Rule 1 clause D names tests explicitly.
@@ -1335,8 +1417,8 @@ class CardTest {
         @Test
         @DisplayName("identity is the card number alone, so every other field may differ")
         void identityIsTheCardNumberAlone() {
-            final Card first = new Card(SYNTHETIC_KEY, 1L, "NAME ONE", "2025-01-01", "Y");
-            final Card second = new Card(SYNTHETIC_KEY, 999L, "NAME TWO", "2031-12-31", "N");
+            final Card first = new Card(SYNTHETIC_KEY, 1L, "007", "NAME ONE", "2025-01-01", "Y");
+            final Card second = new Card(SYNTHETIC_KEY, 999L, "007", "NAME TWO", "2031-12-31", "N");
 
             assertThat(second)
                     .as("CARDDATA's key is CARD-NUM, so two instances of the same card are the same "
@@ -1347,7 +1429,7 @@ class CardTest {
             assertThat(first)
                     .as("equality is reflexive")
                     .isEqualTo(first);
-            assertThat(new Card(SYNTHETIC_KEY_ALT, 1L, "NAME ONE", "2025-01-01", "Y"))
+            assertThat(new Card(SYNTHETIC_KEY_ALT, 1L, "007", "NAME ONE", "2025-01-01", "Y"))
                     .as("and a different key is a different entity even when every attribute matches")
                     .isNotEqualTo(first);
         }
@@ -1370,8 +1452,8 @@ class CardTest {
         @Test
         @DisplayName("the active status carries the legacy Y and N domain in a single character")
         void theActiveStatusCarriesTheLegacyDomain() {
-            final Card active = new Card(SYNTHETIC_KEY, 1L, "NAME", "2025-01-01", "Y");
-            final Card inactive = new Card(SYNTHETIC_KEY_ALT, 1L, "NAME", "2025-01-01", "N");
+            final Card active = new Card(SYNTHETIC_KEY, 1L, "007", "NAME", "2025-01-01", "Y");
+            final Card inactive = new Card(SYNTHETIC_KEY_ALT, 1L, "007", "NAME", "2025-01-01", "N");
 
             assertThat(active.getActiveStatus())
                     .as("the domain is Y and N, from the 88-level FLG-YES-NO-VALID in "

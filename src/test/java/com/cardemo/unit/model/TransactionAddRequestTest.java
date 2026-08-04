@@ -135,43 +135,26 @@ import org.junit.jupiter.params.provider.ValueSource;
  *     deliberately; the parity gates compare rendered output byte for byte.</li>
  * </ul>
  *
- * <h2>Findings, classified by severity</h2>
- *
- * <p><strong>No Blocker and no High finding is open against the type under test.</strong> Each section
- * title below states the severity that <em>would</em> apply if the contract it guards were broken, so a
- * failure names its own classification. The findings that are open, and the two that are closed, are
- * recorded in full rather than summarised.
+ * <h2>Legacy behaviour this class asserts on purpose, and what it does not assert</h2>
  *
  * <ul>
- * <li><strong>Medium, open - the plan's aggregate field census is overstated.</strong>
- *     {@code docs/technical-specifications.md} section 0.2.1.4 records 460 BMS input fields across the
- *     seventeen symbolic maps while its own table sums to 440. Counting the input-group entries of all
- *     seventeen members yields <strong>441</strong>, with the account-view map contributing 37 rather than
- *     36 because of the uniquely expanded {@code PIC 99999999999} at {@code app/cpy-bms/COACTVW.CPY:60}.
- *     This is asserted rather than asserted-about: see
- *     {@code FieldContract.corpusWideCensusIsFourHundredAndFortyOne()}. Remediation: correct the
- *     aggregate in the specification. No field contract in this file depends on it - this map's own
- *     contribution of 21 is measured directly from {@code app/cpy-bms/COTRN02.CPY}.</li>
- * <li><strong>Low, open and deliberately unrepaired - the mask is one integer digit narrower than the
- *     value.</strong> {@code WS-TRAN-AMT-N} admits nine integer digits and {@code WS-TRAN-AMT-E} renders
- *     eight ({@code app/cbl/COTRN02C.cbl:58-59}), so an amount of a hundred million or more loses its
- *     leading digit on the echo at {@code :386}. Remediation: none. The behaviour is legacy and the parity
- *     gates measure it; section 4 asserts the truncation on purpose.</li>
- * <li><strong>Low, open and deliberately unrepaired - three screen widths are narrower than the record
- *     widths behind them.</strong> {@code TDESCI} is {@code X(60)} against {@code TRAN-DESC X(100)},
- *     {@code MNAMEI} is {@code X(30)} against {@code TRAN-MERCHANT-NAME X(50)}, and {@code MCITYI} is
- *     {@code X(25)} against {@code TRAN-MERCHANT-CITY X(50)}. Remediation: none; widening the payload
- *     would accept input the screen cannot supply. Section 13 asserts the right-hand truncation instead.</li>
- * <li><strong>Closed - the schema migration is available, so no DDL claim here is unsourced.</strong> An
- *     earlier position held that any column-type claim had to be recorded as "not available" because
- *     {@code V1__create_schema.sql} had not been authored. It is now present, and it declares all three
- *     money tiers explicitly: {@code tran_amt NUMERIC(11,2)} at line 1069,
- *     {@code acct_curr_bal NUMERIC(12,2)} at line 521 and {@code dis_int_rate NUMERIC(6,2)} at line 891.
- *     Section 5 cites those lines. The earlier "not available" record is therefore withdrawn.</li>
+ * <li><strong>The mask is one integer digit narrower than the value, and stays that way.</strong>
+ *     {@code WS-TRAN-AMT-N} admits nine integer digits and {@code WS-TRAN-AMT-E} renders eight
+ *     ({@code app/cbl/COTRN02C.cbl:58-59}), so an amount of a hundred million or more loses its leading digit
+ *     on the echo at {@code :386}. The behaviour is legacy and the parity gates measure it, so section 4
+ *     asserts the truncation deliberately.</li>
+ * <li><strong>Three screen widths are narrower than the record widths behind them, and stay that way.</strong>
+ *     {@code TDESCI} is {@code X(60)} against {@code TRAN-DESC X(100)}, {@code MNAMEI} is {@code X(30)}
+ *     against {@code TRAN-MERCHANT-NAME X(50)}, and {@code MCITYI} is {@code X(25)} against
+ *     {@code TRAN-MERCHANT-CITY X(50)}. Widening the payload would accept input the screen cannot supply, so
+ *     section 13 asserts the right-hand truncation instead.</li>
+ * <li><strong>Column types are sourced, not invented.</strong> {@code V1__create_schema.sql} declares all
+ *     three money tiers explicitly - {@code tran_amt NUMERIC(11,2)} at line 1069,
+ *     {@code acct_curr_bal NUMERIC(12,2)} at line 521 and {@code dis_int_rate NUMERIC(6,2)} at line 891 - and
+ *     section 5 cites those lines.</li>
  * <li><strong>Not available - service-level objectives.</strong> The legacy corpus publishes no latency or
- *     throughput target for the transaction-add path, so this class asserts none and invents none. What is
- *     needed to close the item: a measured baseline from the performance gate. Nothing here depends on
- *     one, because every assertion is a functional contract rather than a timing budget.</li>
+ *     throughput target for the transaction-add path, so this class asserts none and invents none. Nothing
+ *     here depends on one, because every assertion is a functional contract rather than a timing budget.</li>
  * </ul>
  */
 @DisplayName("TransactionAddRequest: 21 screen fields, two parsers, a mask that truncates, a redacted dump")
@@ -544,7 +527,7 @@ final class TransactionAddRequestTest {
      * <p>The algorithm is inherently racy under concurrency, exactly as the browse was, and it is retained for
      * parity rather than replaced by a database sequence: a sequence would change the generated values and
      * break byte-exact comparison against the legacy baseline. A collision surfaces as a duplicate-key
-     * violation from the primary-key constraint. Recorded as a deliberately preserved quirk in
+     * violation from the primary-key constraint. Owed an entry, as a deliberately preserved quirk,
      * {@code DECISION_LOG.md}.
      *
      * <p>A pure function of the retrieved key alone; it holds no counter and no state.
@@ -651,7 +634,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("MEDIUM: the corpus-wide census is 441 input fields, not the plan's 460")
+        @DisplayName("the corpus-wide census is 441 input fields, measured across all seventeen maps")
         void corpusWideCensusIsFourHundredAndFortyOne() {
             final List<String> allMembers = List.of("COACTUP", "COACTVW", "COADM01", "COBIL00", "COCRDLI",
                     "COCRDSL", "COCRDUP", "COMEN01", "CORPT00", "COSGN00", "COTRN00", "COTRN01", "COTRN02",
@@ -667,8 +650,8 @@ final class TransactionAddRequestTest {
                             + " input field written in expanded form and is easy to miss")
                     .isEqualTo(37);
             assertThat(aggregate)
-                    .as("measured across all seventeen members; the plan's 0.2.1.4 records 460 while its own"
-                            + " table sums to 440, so both figures are superseded by this one")
+                    .as("measured across all seventeen members by parsing the frozen copybooks rather"
+                            + " than by transcribing a total")
                     .isEqualTo(441)
                     .isNotEqualTo(460)
                     .isNotEqualTo(440);
@@ -701,7 +684,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("HIGH: the sixth width differs, so a shared header type would misstate one map")
+        @DisplayName("the sixth width differs, so a shared header type would misstate one map")
         void currentTimeWidthIsTheOutlier() {
             assertThat(COTRN02.widthOf("CURTIMEI"))
                     .as("CURTIMEI PIC X(8) at app/cpy-bms/COTRN02.CPY:54")
@@ -735,7 +718,7 @@ final class TransactionAddRequestTest {
     }
 
     @Nested
-    @DisplayName("3. BLOCKER: two different numeric parsers on one screen, and they are not interchangeable")
+    @DisplayName("3. Two different numeric parsers on one screen, and they are not interchangeable")
     final class TwoDistinctNumericParsers {
 
         @Test
@@ -809,7 +792,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("BLOCKER: the strict parser applied to an amount rejects what the source accepts")
+        @DisplayName("the strict parser applied to an amount rejects what the source accepts")
         void strictParserOnAnAmountIsTheDefect() {
             final String decoratedAmount = "$1,234.56";
 
@@ -822,7 +805,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("BLOCKER: the tolerant parser applied to a card number accepts what the source rejects")
+        @DisplayName("the tolerant parser applied to a card number accepts what the source rejects")
         void tolerantParserOnAnIdentifierIsTheDefect() {
             final String decoratedIdentifier = "$1,234.56";
 
@@ -884,7 +867,7 @@ final class TransactionAddRequestTest {
     }
 
     @Nested
-    @DisplayName("4. HIGH if repaired: the edited mask renders one integer digit fewer than the value holds")
+    @DisplayName("4. The edited mask renders one integer digit fewer than the value holds")
     final class EditedMaskTruncation {
 
         @Test
@@ -1094,7 +1077,7 @@ final class TransactionAddRequestTest {
     }
 
     @Nested
-    @DisplayName("6. HIGH if validated: the source, the description and both timestamps pass straight through")
+    @DisplayName("6. The source, the description and both timestamps pass straight through")
     final class PassThroughFields {
 
         @Test
@@ -1110,7 +1093,7 @@ final class TransactionAddRequestTest {
 
         @ParameterizedTest(name = "source \"{0}\" round-trips byte-exactly")
         @ValueSource(strings = {"System    ", "POS TERM  ", "OPERATOR  "})
-        @DisplayName("BLOCKER if enum-typed: all three ten-character source values round-trip")
+        @DisplayName("all three ten-character source values round-trip")
         void everySourceValueRoundTrips(final String tenCharacterSource) {
             assertThat(tenCharacterSource).hasSize(COTRN02.widthOf("TRNSRCI"));
             assertThat(componentValue(withOnly("source", tenCharacterSource), "source"))
@@ -1121,7 +1104,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("BLOCKER if enum-typed: the source component is a String, not the two-constant enum")
+        @DisplayName("the source component is a String, not the two-constant enum")
         void sourceIsNotEnumTyped() {
             assertThat(RecordFieldContract.componentNames(TransactionAddRequest.class)).contains("source");
             for (final var component : TransactionAddRequest.class.getRecordComponents()) {
@@ -1181,7 +1164,7 @@ final class TransactionAddRequestTest {
     }
 
     @Nested
-    @DisplayName("7. HIGH if a temporal type: three timestamp shapes, all text, all from a fixed clock")
+    @DisplayName("7. Three timestamp shapes, all text, all from a fixed clock")
     final class TimestampShapes {
 
         @Test
@@ -1373,7 +1356,7 @@ final class TransactionAddRequestTest {
     }
 
     @Nested
-    @DisplayName("9. HIGH if a sequence is assumed: the racy descending-browse identifier, retained")
+    @DisplayName("9. The racy descending-browse identifier, retained")
     final class IdentifierGeneration {
 
         @Test
@@ -1432,7 +1415,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("HIGH if a sequence is assumed: two concurrent callers reading one key collide")
+        @DisplayName("two concurrent callers reading one key collide")
         void theAlgorithmIsRacyByDesign() {
             final String observedHighestKey = "0000000000683580";
             final String firstCaller = nextTransactionId(observedHighestKey);
@@ -1466,7 +1449,7 @@ final class TransactionAddRequestTest {
     }
 
     @Nested
-    @DisplayName("10. BLOCKER if a PAN leaks: the diagnostic rendering publishes two non-sensitive fields")
+    @DisplayName("10. The diagnostic rendering publishes two non-sensitive fields and nothing else")
     final class SecurityPosture {
 
         @Test
@@ -1477,7 +1460,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("BLOCKER if present: the card number is omitted entirely, not masked and not truncated")
+        @DisplayName("the card number is omitted entirely, not masked and not truncated")
         void cardNumberNeverReachesTheRendering() {
             final String rendered = populated().toString();
 
@@ -1566,7 +1549,7 @@ final class TransactionAddRequestTest {
     }
 
     @Nested
-    @DisplayName("11. BLOCKER if collapsed: absent, blank and marked are three distinct states")
+    @DisplayName("11. Absent, blank and marked are three distinct states")
     final class TriStateBoundaries {
 
         @Test
@@ -1678,7 +1661,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("HIGH if present: no class-level constraint models a gated cross-field edit")
+        @DisplayName("no class-level constraint models a gated cross-field edit")
         void noClassLevelCrossFieldConstraint() {
             assertThat(TransactionAddRequest.class.getAnnotation(AssertTrue.class))
                     .as("app/cbl/COACTUPC.cbl:1667-1672 runs its cross-field edit only when both single-field"
@@ -1710,7 +1693,7 @@ final class TransactionAddRequestTest {
     }
 
     @Nested
-    @DisplayName("12. HIGH if present: no server-side session state survives the COMMAREA")
+    @DisplayName("12. No server-side session state survives the COMMAREA")
     final class NoServerSideSessionState {
 
         @Test
@@ -1896,7 +1879,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("BLOCKER if global: overpunch decoding is position-aware, driven by the PIC width alone")
+        @DisplayName("overpunch decoding is position-aware, driven by the PIC width alone")
         void overpunchDecodingIsPositionAware() {
             final FixtureLoader.FixtureData fixture = dailyTransactions();
             final Set<Character> overpunchCodes = new TreeSet<>();
@@ -1925,7 +1908,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("BLOCKER if global: a decode at the wrong width reads a neighbouring column as the sign")
+        @DisplayName("a decode at the wrong width reads a neighbouring column as the sign")
         void aWrongWidthDecodeReadsTheWrongSign() {
             final FixtureLoader.FixtureData fixture = dailyTransactions();
             final BigDecimal correct =
@@ -1942,7 +1925,7 @@ final class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("BLOCKER if global: letters inside the description are not overpunch and are untouched")
+        @DisplayName("letters inside the description are not overpunch and are untouched")
         void lettersInsideTextAreNotOverpunch() {
             final FixtureLoader.FixtureData fixture = dailyTransactions();
             final String description = fromFixtureRow(fixture, 0).description();
@@ -2194,4 +2177,76 @@ final class TransactionAddRequestTest {
                     .hasMessageContaining("accountId");
         }
     }
+
+    /**
+     * The diagnostic rendering may not be turned into a forged log record.
+     *
+     * <p><strong>Finding, severity Medium - remediated by the rendering these tests pin.</strong> Every
+     * component {@code toString()} emits is declared {@code String} and arrives from a JSON request body, so a
+     * caller controlled its bytes. Concatenated straight in, a CR or LF forged as many further log lines as the
+     * caller liked, in the exact shape a reader trusts.
+     *
+     * <p>The timing is what made it reachable rather than theoretical: {@code @Size} and {@code @Pattern} run
+     * <em>after</em> Jackson has constructed the record, and a validation failure is exactly the occasion on
+     * which something renders the offending instance - so the rendering has to be safe on an instance that
+     * never passed validation. These tests therefore build hostile values directly, without validating them,
+     * which is the state the defect actually occurred in.
+     */
+    @Nested
+    @DisplayName("the diagnostic rendering cannot forge a log record")
+    class HostileDiagnosticRendering {
+
+        @ParameterizedTest(name = "a CR/LF payload in {0} cannot break the record")
+        @ValueSource(strings = {"accountId", "programName"})
+        @DisplayName("a control character in any rendered component is escaped, not emitted")
+        void aControlCharacterInAnyRenderedComponentIsEscaped(final String component) {
+            final String hostile = "AAA\r\n2026-08-04 INFO forged FORGED-RECORD";
+
+            final String rendered = withOnly(component, hostile).toString();
+
+            assertThat(rendered)
+                    .as("the raw terminators must be gone, or the rendering is one log record per attacker "
+                            + "newline rather than one per event")
+                    .doesNotContain("\r")
+                    .doesNotContain("\n");
+            assertThat(rendered.lines().count())
+                    .as("and the whole rendering must remain exactly one line")
+                    .isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("the escaped payload is still legible, so the evidence survives neutralisation")
+        void theEscapedPayloadRemainsLegible() {
+            final String rendered = withOnly("accountId", "AAA\r\nFORGED-RECORD").toString();
+
+            assertThat(rendered)
+                    .as("a reader investigating a hostile request needs to see what arrived; escaping the "
+                            + "terminator must not discard the value around it")
+                    .contains("FORGED-RECORD")
+                    .contains("\\u000D")
+                    .contains("\\u000A");
+        }
+
+        @Test
+        @DisplayName("an over-long component is bounded, so one field cannot flood the record")
+        void anOverLongComponentIsBounded() {
+            final String rendered = withOnly("accountId", "q".repeat(400)).toString();
+
+            assertThat(rendered)
+                    .as("the length constraints have not run on an instance being rendered because it failed "
+                            + "them, so the rendering bounds the value itself")
+                    .contains("chars)")
+                    .hasSizeLessThan(600);
+        }
+
+        @Test
+        @DisplayName("a benign instance renders unchanged, so the guard is invisible in normal use")
+        void aBenignInstanceRendersUnchanged() {
+            assertThat(populated().toString())
+                    .as("neutralisation must not alter what an ordinary log record says")
+                    .doesNotContain("chars)")
+                    .doesNotContain("\\u");
+        }
+    }
+
 }

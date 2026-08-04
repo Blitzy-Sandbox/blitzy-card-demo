@@ -6,13 +6,13 @@
  * Function    : Turns three counted claims into executable gates, so none can
  *               drift back into prose: the 636 seed rows the ASCII fixtures and
  *               the inline DUSRSECJ users contain, the 17 data transfer objects
- *               the BMS symbolic maps require, and the 37 executable
- *               @ExceptionHandler methods the six controllers declare.
+ *               the BMS symbolic maps require, and the 50 executable
+ *               @ExceptionHandler methods the eight controllers declare.
  * Source      : app/data/ASCII/** (the nine fixtures, 626 rows)
  *               + app/jcl/DUSRSECJ.jcl (the ten inline SYSUT1 users)
  *               + app/cpy-bms/** (the seventeen symbolic maps)
  *               + app/csd/CARDDEMO.CSD (the seventeen sourced transactions the
- *                 six controllers expose)
+ *                 eight controllers expose)
  *               @ 7756d89
  * ****************************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -36,6 +36,8 @@ package com.cardemo.unit.infrastructure;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardemo.controller.AccountController;
+import com.cardemo.controller.AdminController;
+import com.cardemo.controller.AuthController;
 import com.cardemo.controller.BillingController;
 import com.cardemo.controller.CardController;
 import com.cardemo.controller.MenuController;
@@ -61,7 +63,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 
 /**
  * Three counts that the review corrected, held as gates rather than as sentences.
@@ -81,12 +88,16 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
  *   <li><strong>17 data transfer objects.</strong> The plan's own table said 16 while its by-name
  *       enumeration listed 17. {@code SignOnResponse} is the payload the smaller count omitted, and it has
  *       no BMS symbolic map because CICS returned identity in the COMMAREA rather than on a screen.
- *   <li><strong>37 executable {@code @ExceptionHandler} methods.</strong> Neither 36 nor the raw-token 40 a
- *       naive grep reports - the token also appears in Javadoc prose, which is why this counts ANNOTATED
- *       METHODS through reflection instead of matching text.
+ *   <li><strong>50 executable {@code @ExceptionHandler} methods across eight controllers.</strong> Counted as
+ *       ANNOTATED METHODS through reflection rather than by matching text, because the token also appears in
+ *       Javadoc prose on these classes and a naive grep therefore overcounts. The figure was 37 while the
+ *       surface was six controllers; the sign-on and user-administration controllers add 6 and 7. A review
+ *       recorded that this census had gone stale at six, so the controller set is now
+ *       <em>discovered from the package directory</em> and cross-checked against the enumeration below,
+ *       which makes a ninth controller a failure here rather than an omission.
  *   </ul>
  */
-@DisplayName("Counted claims, held as gates: 636 seed rows, 17 DTOs, 37 exception handlers")
+@DisplayName("Counted claims, held as gates: 636 seed rows, 17 DTOs, 50 exception handlers")
 final class InventoryCountGateTest {
 
     /** An {@code INSERT INTO <table>} statement at the start of a line. */
@@ -105,8 +116,24 @@ final class InventoryCountGateTest {
     /** The corrected data-transfer-object count. */
     private static final int EXPECTED_DTO_COUNT = 26;
 
-    /** The corrected executable exception-handler count. */
-    private static final int EXPECTED_HANDLER_COUNT = 37;
+    /**
+     * The corrected executable exception-handler count, across all eight controllers.
+     *
+     * <p>Derived rather than remembered: the six-controller surface declared 37, and the sign-on and
+     * user-administration controllers add 6 and 7 respectively. The per-controller split below is what makes
+     * the total impossible to reach by two compensating errors, and it is why this constant is stated as a
+     * total <em>and</em> broken out.
+     */
+    private static final int EXPECTED_HANDLER_COUNT = 50;
+
+    /**
+     * The route total the eight controllers publish between them.
+     *
+     * <p>One route per sourced CICS transaction in {@code app/csd/CARDDEMO.CSD}. The CSD defines eighteen
+     * transactions, but {@code CDV1} fronts {@code COCRDSEC}, whose source is absent from the repository, so
+     * no endpoint is invented for it and the translated total is seventeen.
+     */
+    private static final int EXPECTED_ROUTE_COUNT = 17;
 
     /** Per-table seed row counts, in the order the migration inserts them. */
     private static final Map<String, Integer> EXPECTED_ROWS_PER_TABLE = expectedRowsPerTable();
@@ -115,13 +142,19 @@ final class InventoryCountGateTest {
     private static final Path ROOT = repositoryRoot();
 
     /**
-     * The six controllers, each paired with the number of handlers it declares.
+     * The eight controllers, each paired with the number of handlers it declares.
+     *
+     * <p>All eight are enumerated, so a controller added to {@code com.cardemo.controller} without a row here
+     * fails {@link ControllerInventory#everyControllerIsEnumerated()} rather than escaping the census. That
+     * gate is what stopped this map from silently staying at six.
      *
      * @return one entry per controller
      */
     private static Map<Class<?>, Integer> expectedHandlersPerController() {
         final Map<Class<?>, Integer> expected = new LinkedHashMap<>();
         expected.put(AccountController.class, 8);
+        expected.put(AdminController.class, 7);
+        expected.put(AuthController.class, 6);
         expected.put(BillingController.class, 7);
         expected.put(CardController.class, 7);
         expected.put(MenuController.class, 3);
@@ -327,12 +360,12 @@ final class InventoryCountGateTest {
 
     /** F38 - the executable exception-handler inventory. */
     @Nested
-    @DisplayName("37 executable @ExceptionHandler methods, neither 36 nor the raw-token 40")
+    @DisplayName("50 executable @ExceptionHandler methods across the eight controllers")
     final class ExceptionHandlerCount {
 
         @Test
-        @DisplayName("the six controllers declare exactly 37 annotated methods in total")
-        void theSixControllersDeclareThirtySevenHandlers() {
+        @DisplayName("the eight controllers declare exactly 50 annotated methods in total")
+        void theEightControllersDeclareFiftyHandlers() {
             final long total = expectedHandlersPerController().keySet().stream()
                     .mapToLong(InventoryCountGateTest::handlerCount)
                     .sum();
@@ -378,6 +411,211 @@ final class InventoryCountGateTest {
                             .isNotEqualTo(void.class);
                 }
             }
+        }
+    }
+
+    /**
+     * The controller census itself, made mechanical so it cannot go stale again.
+     *
+     * <p><strong>Why this group exists.</strong> A review found the enumeration above frozen at six
+     * controllers after the surface had grown to eight, which meant the handler total was measured against a
+     * subset and two whole controllers escaped every count in this class without any test failing. A
+     * hand-maintained list can only ever fail that way silently. Reading the controller package from disk and
+     * comparing it against the enumeration turns the same omission into a failure that names the missing
+     * class.
+     *
+     * <p>The directory is the authority for <em>which</em> controllers exist, and reflection is the authority
+     * for what each one declares; neither is derived from prose.
+     */
+    @Nested
+    @DisplayName("the controller census is discovered, not remembered")
+    final class ControllerInventory {
+
+        @Test
+        @DisplayName("every controller in the package is enumerated, so none can escape the census")
+        void everyControllerIsEnumerated() {
+            final List<String> onDisk = controllerSimpleNamesOnDisk();
+            final List<String> enumerated = expectedHandlersPerController().keySet().stream()
+                    .map(Class::getSimpleName)
+                    .sorted()
+                    .toList();
+
+            assertThat(enumerated)
+                    .as("the enumeration in this class must name exactly the controllers "
+                            + "src/main/java/com/cardemo/controller holds. A controller present on disk but "
+                            + "absent here contributes nothing to any count in this class, and nothing fails "
+                            + "- which is precisely how this census went stale at six")
+                    .containsExactlyElementsOf(onDisk);
+        }
+
+        @Test
+        @DisplayName("the eight controllers publish seventeen routes, one per sourced CSD transaction")
+        void theEightControllersPublishSeventeenRoutes() {
+            final Map<String, Long> perController = new LinkedHashMap<>();
+            for (final Class<?> controller : expectedHandlersPerController().keySet()) {
+                perController.put(controller.getSimpleName(), routeCount(controller));
+            }
+
+            assertThat(perController.values().stream().mapToLong(Long::longValue).sum())
+                    .as("the seventeen sourced transactions of app/csd/CARDDEMO.CSD each became exactly one "
+                            + "route, so the total is a translated inventory rather than a target. Per "
+                            + "controller: %s", perController)
+                    .isEqualTo(EXPECTED_ROUTE_COUNT);
+        }
+    }
+
+    /**
+     * Lists the controller classes the package directory holds, by simple name, sorted.
+     *
+     * <p>{@code package-info.java} is excluded because it declares no type. Every remaining source file in
+     * that package is a controller by construction: the package documentation states that the package holds
+     * only {@code @RestController} classes, and {@link ControllerInventory#everyControllerIsEnumerated()}
+     * would fail if that ever stopped being true.
+     *
+     * @return the controller simple names, sorted so the comparison is order-independent
+     */
+    private static List<String> controllerSimpleNamesOnDisk() {
+        final Path directory = ROOT.resolve("src/main/java/com/cardemo/controller");
+        try (Stream<Path> sources = Files.list(directory)) {
+            return sources
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.endsWith(".java"))
+                    .filter(name -> !"package-info.java".equals(name))
+                    .map(name -> name.substring(0, name.length() - ".java".length()))
+                    .sorted()
+                    .toList();
+        } catch (final IOException cause) {
+            throw new UncheckedIOException("Cannot list " + directory, cause);
+        }
+    }
+
+    /**
+     * Counts the request-mapped methods of a controller: those carrying an HTTP verb mapping.
+     *
+     * <p>All five verb annotations are tested, {@code DELETE} included. Omitting it would undercount the
+     * user-administration surface by one and make the seventeen-route total unreachable, which is the same
+     * class of defect as a stale enumeration.
+     *
+     * @param controller the controller class
+     * @return the number of routes it publishes
+     */
+    private static long routeCount(final Class<?> controller) {
+        return Arrays.stream(controller.getDeclaredMethods())
+                .filter(method -> method.isAnnotationPresent(GetMapping.class)
+                        || method.isAnnotationPresent(PostMapping.class)
+                        || method.isAnnotationPresent(PutMapping.class)
+                        || method.isAnnotationPresent(DeleteMapping.class)
+                        || method.isAnnotationPresent(PatchMapping.class))
+                .count();
+    }
+
+    /**
+     * The per-package counts the root and bootstrap documents quote must equal what is on disk (M-09, M-10).
+     *
+     * <p>These three findings were all the same failure: a count written by hand, correct when written, then
+     * overtaken by the work while the file that carried it was not revisited. Correcting the numbers fixes the
+     * instance; this group is what stops the class of defect recurring, because a package that gains or loses a
+     * type now fails the build until the documents that count it are updated in the same change.
+     */
+    @Nested
+    @DisplayName("M-09, M-10: the documented per-package counts equal the measured ones")
+    class DocumentedPackageCounts {
+
+        /**
+         * Counts the types a package directory declares, excluding its package document.
+         *
+         * @param relativePackagePath the package directory, relative to the repository root
+         * @return how many {@code .java} files other than {@code package-info.java} it holds
+         */
+        private long typesIn(final String relativePackagePath) {
+            final Path directory = ROOT.resolve(relativePackagePath);
+            try (Stream<Path> entries = Files.list(directory)) {
+                return entries
+                        .filter(entry -> entry.getFileName().toString().endsWith(".java"))
+                        .filter(entry -> !"package-info.java".equals(entry.getFileName().toString()))
+                        .count();
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot list " + directory, cause);
+            }
+        }
+
+        @Test
+        @DisplayName("the controller layer really is the 8 controllers and 17 operations both documents claim")
+        void theControllerLayerMatchesItsDocumentedShape() {
+            assertThat(typesIn("src/main/java/com/cardemo/controller"))
+                    .as("both CardDemoApplication and the root package document state 8; an earlier revision "
+                            + "of each said 6 of 8 after all eight had been authored")
+                    .isEqualTo(8L);
+
+            long operations = 0L;
+            final Path directory = ROOT.resolve("src/main/java/com/cardemo/controller");
+            try (Stream<Path> entries = Files.list(directory)) {
+                for (final Path controller : entries.filter(entry -> entry.getFileName().toString()
+                        .endsWith("Controller.java")).toList()) {
+                    operations += Files.readAllLines(controller, StandardCharsets.UTF_8).stream()
+                            .map(String::strip)
+                            .filter(line -> line.equals("@GetMapping") || line.startsWith("@GetMapping(")
+                                    || line.equals("@PostMapping") || line.startsWith("@PostMapping(")
+                                    || line.equals("@PutMapping") || line.startsWith("@PutMapping(")
+                                    || line.equals("@DeleteMapping") || line.startsWith("@DeleteMapping(")
+                                    || line.equals("@PatchMapping") || line.startsWith("@PatchMapping("))
+                            .count();
+                }
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot count operations under " + directory, cause);
+            }
+
+            assertThat(operations)
+                    .as("one operation per sourced CICS transaction of app/csd/CARDDEMO.CSD; an earlier "
+                            + "revision of both documents said 12 of a target 17")
+                    .isEqualTo(17L);
+        }
+
+        @Test
+        @DisplayName("the batch leaves really are 3 jobs, 5 processors, 6 readers and 3 writers")
+        void theBatchLeavesMatchTheirDocumentedShape() {
+            // Stated as present/target in both documents, so the PRESENT figure is what disk must agree with.
+            // Three jobs and one reader remain to be authored, and both documents now say exactly that.
+            assertThat(typesIn("src/main/java/com/cardemo/batch/jobs")).isEqualTo(3L);
+            assertThat(typesIn("src/main/java/com/cardemo/batch/processors")).isEqualTo(5L);
+            assertThat(typesIn("src/main/java/com/cardemo/batch/readers")).isEqualTo(6L);
+            assertThat(typesIn("src/main/java/com/cardemo/batch/writers")).isEqualTo(3L);
+        }
+
+        @Test
+        @DisplayName("neither document restates a whole-tree file total, which is what went stale first")
+        void noWholeTreeFileTotalIsRestated() {
+            // The remedy for a figure that cannot be kept correct is to stop quoting it. A total changes with
+            // every file added anywhere in the tree, so it went stale faster than anything else in either
+            // document. Both now name the command instead.
+            // Matched on the CLAIM form, not on the digits: both documents legitimately recount the figures
+            // they used to publish, in the finding notes that record why they stopped. What must not reappear
+            // is a total asserted in the present tense as the state of the tree.
+            assertThat(lines("src/main/java/com/cardemo/CardDemoApplication.java"))
+                    .noneMatch(line -> line.contains("the tree holds")
+                            || line.contains("production classes including this entry point"));
+            assertThat(lines("src/main/java/com/cardemo/package-info.java"))
+                    .noneMatch(line -> line.contains("for this tree is")
+                            || line.contains("giving 118 production classes"));
+        }
+
+        @Test
+        @DisplayName("M-11: the admin service document claims no absence that has since ended")
+        void theAdminServiceDocumentClaimsNoEndedAbsence() {
+            final Path adminDocument =
+                    ROOT.resolve("src/main/java/com/cardemo/service/admin/package-info.java");
+            assertThat(adminDocument).exists();
+            assertThat(ROOT.resolve("src/main/java/com/cardemo/controller/AdminController.java")).exists();
+            assertThat(ROOT.resolve("src/test/java/com/cardemo/unit/service/UserDeleteServiceTest.java"))
+                    .exists();
+
+            // The document may DESCRIBE the corrected claim, which is why the match is on the assertion form
+            // rather than on the words appearing anywhere: an absence must not be stated in the present tense
+            // once it has ended.
+            assertThat(lines("src/main/java/com/cardemo/service/admin/package-info.java"))
+                    .noneMatch(line -> line.contains("{@code AdminController} is planned and")
+                            || line.contains("{@code AdminController} is not.")
+                            || line.contains("has no test class of"));
         }
     }
 }

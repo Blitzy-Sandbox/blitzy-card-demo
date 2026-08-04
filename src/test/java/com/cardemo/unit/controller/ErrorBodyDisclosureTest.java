@@ -3,7 +3,7 @@
  * Program     : ErrorBodyDisclosureTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
- * Function    : Drives every @ExceptionHandler of all six controllers with
+ * Function    : Drives every @ExceptionHandler of all eight controllers with
  *               an exception carrying distinctive internal values and proves
  *               that no logical file name, I/O verb, expanded file status,
  *               constraint, relation, record key, abend code or return code
@@ -38,6 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 import com.cardemo.controller.AccountController;
+import com.cardemo.controller.AdminController;
+import com.cardemo.controller.AuthController;
 import com.cardemo.controller.BillingController;
 import com.cardemo.controller.CardController;
 import com.cardemo.controller.MenuController;
@@ -56,6 +58,11 @@ import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.account.AccountUpdateService;
 import com.cardemo.service.account.AccountViewService;
+import com.cardemo.service.admin.UserAddService;
+import com.cardemo.service.admin.UserDeleteService;
+import com.cardemo.service.admin.UserListService;
+import com.cardemo.service.admin.UserUpdateService;
+import com.cardemo.service.auth.AuthenticationService;
 import com.cardemo.service.billing.BillPaymentService;
 import com.cardemo.service.card.CardDetailService;
 import com.cardemo.service.card.CardListService;
@@ -93,7 +100,7 @@ import org.springframework.http.ResponseEntity;
  * a request for an account that does not exist returned the verb, the alternate-index path name and the
  * legacy status in {@code detail}.
  *
- * <p>These tests drive every {@code @ExceptionHandler} of all six controllers with an exception carrying
+ * <p>These tests drive every {@code @ExceptionHandler} of all eight controllers with an exception carrying
  * distinctive internal values, and assert three things of each body: that no internal value appears in any
  * part of it, that the stable error code and the correlation identifier do appear, and that the legacy
  * screen literals the AAP requires are still relayed where their provenance makes that safe.
@@ -126,6 +133,13 @@ class ErrorBodyDisclosureTest {
     /** An abend culprit program name, equally distinctive. */
     private static final String SECRET_CULPRIT = "ZZCOACTUP";
 
+    /**
+     * The legacy duplicate-identifier caption of {@code app/cbl/COUSR01C.cbl:L263}, relayed byte for byte by
+     * the user-administration duplicate arm. The source's own spelling - "exist", not "exists" - is preserved
+     * because the parity comparison is made on text.
+     */
+    private static final String USER_ID_TAKEN_CAPTION = "User ID already exist...";
+
     /** An abend reason, equally distinctive. */
     private static final String SECRET_REASON = "ZZUNEXPECTEDFILESTATUS";
 
@@ -148,13 +162,16 @@ class ErrorBodyDisclosureTest {
     }
 
     /**
-     * Builds the six controllers over mocked services. None is invoked: only the handlers are driven.
+     * Builds the eight controllers over mocked services. None is invoked: only the handlers are driven.
      *
-     * @return the six controllers, never {@code null}
+     * @return the eight controllers, never {@code null}
      */
     private static Controllers controllers() {
         return new Controllers(
                 new AccountController(mock(AccountViewService.class), mock(AccountUpdateService.class)),
+                new AdminController(mock(UserListService.class), mock(UserAddService.class),
+                        mock(UserUpdateService.class), mock(UserDeleteService.class)),
+                new AuthController(mock(AuthenticationService.class)),
                 new BillingController(mock(BillPaymentService.class)),
                 new CardController(mock(CardListService.class), mock(CardDetailService.class),
                         mock(CardUpdateService.class), mock(SnapshotTokenService.class)),
@@ -165,17 +182,20 @@ class ErrorBodyDisclosureTest {
     }
 
     /**
-     * The six controllers under test.
+     * The eight controllers under test.
      *
      * @param account the account resource group
+     * @param admin the user-administration resource group
+     * @param auth the sign-on resource group
      * @param billing the bill-payment resource group
      * @param card the card resource group
      * @param menu the menu resource group
      * @param report the report-submission resource group
      * @param transaction the transaction resource group
      */
-    private record Controllers(AccountController account, BillingController billing, CardController card,
-            MenuController menu, ReportController report, TransactionController transaction) {
+    private record Controllers(AccountController account, AdminController admin, AuthController auth,
+            BillingController billing, CardController card, MenuController menu, ReportController report,
+            TransactionController transaction) {
     }
 
     /**
@@ -188,7 +208,7 @@ class ErrorBodyDisclosureTest {
     }
 
     /**
-     * Drives every {@code @ExceptionHandler} of all six controllers with a fully populated exception.
+     * Drives every {@code @ExceptionHandler} of all eight controllers with a fully populated exception.
      *
      * @return one answer per handler, never {@code null} and never empty
      */
@@ -202,6 +222,13 @@ class ErrorBodyDisclosureTest {
                 new RecordNotFoundException(SECRET_MESSAGE, SECRET_FILE, SECRET_KEY);
         final DuplicateRecordException collision =
                 new DuplicateRecordException(SECRET_MESSAGE, SECRET_FILE, SECRET_KEY);
+        // The user-administration duplicate arm relays its message, because that message is the legacy screen
+        // caption of app/cbl/COUSR01C.cbl:L263 - "exist", not "exists" - and the parity comparison is made on
+        // text. It is therefore driven with the caption its service actually raises, exactly as the validation
+        // arms are, while its logical file and colliding key remain the internal sentinels: those two are what
+        // must not reach a body, and the sweep below proves they do not.
+        final DuplicateRecordException captionedCollision =
+                new DuplicateRecordException(USER_ID_TAKEN_CAPTION, SECRET_FILE, SECRET_KEY);
         final FileUnavailableException unavailable =
                 new FileUnavailableException(SECRET_MESSAGE, SECRET_FILE, new IllegalStateException("x"));
         final FileAccessException accessFailure =
@@ -225,6 +252,25 @@ class ErrorBodyDisclosureTest {
         answers.add(new Answer("Account.ioFailure", group.account().handleFileAccessFailure(accessFailure)));
         answers.add(new Answer("Account.abend", group.account().handleAbend(abend)));
         answers.add(new Answer("Account.typed", group.account().handleTypedFailure(typed)));
+
+        answers.add(new Answer("Admin.validation", group.admin().handleValidationFailure(rejection)));
+        answers.add(new Answer("Admin.notFound", group.admin().handleRecordNotFound(absent)));
+        answers.add(new Answer("Admin.duplicate",
+                group.admin().handleDuplicateRecord(captionedCollision)));
+        answers.add(new Answer("Admin.unavailable", group.admin().handleFileUnavailable(unavailable)));
+        answers.add(new Answer("Admin.ioFailure", group.admin().handleFileAccessFailure(accessFailure)));
+        answers.add(new Answer("Admin.abend", group.admin().handleAbend(abend)));
+        answers.add(new Answer("Admin.typed", group.admin().handleTypedFailure(typed)));
+
+        // The sign-on handlers are swept here for the same reason as every other: an unauthenticated caller
+        // is the one who reaches them, so a disclosed dataset name, file status or culprit program would be
+        // the cheapest reconnaissance on the whole surface.
+        answers.add(new Answer("Auth.validation", group.auth().handleValidationFailure(rejection)));
+        answers.add(new Answer("Auth.notFound", group.auth().handleRecordNotFound(absent)));
+        answers.add(new Answer("Auth.unavailable", group.auth().handleFileUnavailable(unavailable)));
+        answers.add(new Answer("Auth.ioFailure", group.auth().handleFileAccessFailure(accessFailure)));
+        answers.add(new Answer("Auth.abend", group.auth().handleAbend(abend)));
+        answers.add(new Answer("Auth.typed", group.auth().handleTypedFailure(typed)));
 
         answers.add(new Answer("Billing.validation", group.billing().handleValidationFailure(rejection)));
         answers.add(new Answer("Billing.notFound", group.billing().handleRecordNotFound(absent)));
@@ -366,11 +412,15 @@ class ErrorBodyDisclosureTest {
         @Test
         @DisplayName("Every handler of every controller is exercised")
         void everyHandlerIsCovered() {
-            // Executable @ExceptionHandler methods: Account 8, Billing 7, Card 7, Menu 3, Report 5,
-            // Transaction 7 - thirty-seven, the review's corrected count. Thirty-six are driven here;
+            // Executable @ExceptionHandler methods: Account 8, Admin 7, Auth 6, Billing 7, Card 7, Menu 3,
+            // Report 5, Transaction 7 - fifty across the eight controllers. Forty-nine are driven here;
             // Report's queue-failure arm is driven separately below, because it is the one handler whose
             // detail is a relayed legacy literal and it is asserted against that literal.
-            assertThat(everyHandlerAnswer()).hasSize(36);
+            //
+            // A review found this suite frozen at six controllers, so the sign-on and user-administration
+            // handlers were swept by nothing. Both are now driven, and the sign-on ones matter most of the
+            // eight: an unauthenticated caller is the only caller who reaches them.
+            assertThat(everyHandlerAnswer()).hasSize(49);
         }
     }
 
@@ -400,6 +450,24 @@ class ErrorBodyDisclosureTest {
 
             assertThat(answer.getBody().getDetail()).isEqualTo("Could not lock account record for update");
             assertThat(answer.getBody().getProperties()).containsEntry("changeAction", "L");
+        }
+
+        @Test
+        @DisplayName("The user-administration duplicate arm still relays the COUSR01C.cbl:L263 caption")
+        void theDuplicateUserLiteralIsRelayed() {
+            final ResponseEntity<ProblemDetail> answer = controllers().admin().handleDuplicateRecord(
+                    new DuplicateRecordException(USER_ID_TAKEN_CAPTION, SECRET_FILE, SECRET_KEY));
+
+            assertThat(answer.getBody().getDetail()).isEqualTo(USER_ID_TAKEN_CAPTION);
+            assertThat(answer.getBody().getProperties())
+                    .containsEntry("errorCode", "CARDDEMO-DUPLICATE-RECORD")
+                    .containsEntry("correlationId", CORRELATION_ID);
+            // The caption reaches the wire; the dataset and the colliding identifier do not. The identifier is
+            // the caller's own, but publishing it back turns the 409 into an enumeration oracle for anyone who
+            // can reach the route.
+            assertThat(renderedBody(answer.getBody()))
+                    .doesNotContain(SECRET_FILE)
+                    .doesNotContain(SECRET_KEY);
         }
 
         @Test

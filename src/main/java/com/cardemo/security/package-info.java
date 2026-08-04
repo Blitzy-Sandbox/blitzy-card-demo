@@ -94,7 +94,7 @@
  * exactly five claims and no more: issuer, subject, issued-at, expires-at, and the single role claim named by
  * its {@code ROLE_CLAIM_NAME} constant.
  *
- * <h3>The three classes</h3>
+ * <h3>The four classes</h3>
  *
  * <p>One responsibility each, with no overlap:
  *
@@ -102,8 +102,8 @@
  *   <li>{@link JwtTokenProvider} - <strong>issuance and claim reading</strong>. Signs a token for an
  *       already-authenticated sign-on and reads the two claims back out. It owns the claim contract: the
  *       constants {@code ROLE_CLAIM_NAME}, {@code ADMIN_AUTHORITY} and {@code USER_AUTHORITY} are declared
- *       here once and consumed everywhere else, which is what keeps the three readers from drifting apart.
- *       It validates its own configuration on construction and refuses to start on a weak or absent signing
+ *       here once and consumed everywhere else, which is what keeps the readers from drifting apart. It
+ *       validates its own configuration on construction and refuses to start on a weak or absent signing
  *       key.</li>
  *   <li>{@link CardDemoUserDetailsService} - <strong>credential load and verify</strong>. Reads one
  *       {@code user_security} row by its eight-character key and verifies the presented password against the
@@ -113,6 +113,13 @@
  *   <li>{@link JwtAuthenticationFilter} - <strong>per-request authentication</strong>. Extracts a bearer
  *       credential, verifies it, and populates a request-local security context. It performs
  *       <strong>no database read</strong>.</li>
+ *   <li>{@link SnapshotTokenService} - <strong>carriage of the as-displayed record</strong>. The legacy
+ *       conversation kept the displayed row in its own half of the COMMAREA so that
+ *       {@code 9700-CHECK-CHANGE-IN-REC} at {@code app/cbl/COACTUPC.cbl:L669-L756} could compare the live row
+ *       against it field by field. Transformation Rule 7 leaves no server-side session to carry it and
+ *       re-reading the row would compare it against itself, so this component seals the snapshot into an
+ *       authenticated, encrypted, expiring opaque string bound to one operation and one record - which keeps
+ *       the protected fields unreadable, the guard untamperable and the token unreplayable.</li>
  *   </ul>
  *
  * <h3>Upper-case both, trim neither</h3>
@@ -135,9 +142,8 @@
  * one place, {@code com.cardemo.service.auth.AuthenticationService} must <strong>delegate</strong> to it and
  * must never re-apply the folding itself; a second fold would be harmless today and wrong the moment the
  * rule changes. Second, the citation is {@code :L223} and not {@code :L222} - the latter is the
- * {@code WHEN 0} selector of the {@code EVALUATE WS-RESP-CD} that begins at {@code :L221}. That is a
- * The locator is cited from direct inspection of the source and recorded here so it is
- * not reintroduced.
+ * {@code WHEN 0} selector of the {@code EVALUATE WS-RESP-CD} that begins at {@code :L221}, not the comparison
+ * itself. The locator is taken from direct inspection of the source.
  *
  * <h3>No per-request database read</h3>
  *
@@ -164,6 +170,11 @@
  *   <li>the authorisation rules for the seventeen sourced transactions;</li>
  *   <li>the {@code STATELESS} session policy and the disabling of CSRF state.</li>
  * </ul>
+ *
+ * <p>The one identity concern that is <em>not</em> configuration lives here: the {@code ROLE_CLAIM_NAME}
+ * claim is converted into a granted authority by {@link JwtAuthenticationFilter} itself rather than by a
+ * Spring authorities converter, so the claim name is reached through {@link JwtTokenProvider}'s constant on
+ * both sides and cannot drift.
  *
  * <p>This package declares no {@code @Bean} method of any kind and duplicates none of the above. Defining a
  * second {@code JwtDecoder} or {@code PasswordEncoder} here is a defect, not a
@@ -219,25 +230,13 @@
  *   <li><strong>Build and verify</strong> - {@code ./mvnw clean verify}. The wrapper is the canonical entry
  *       point because it pins the build tool itself, so the build does not depend on what happens to be
  *       installed. {@code ./mvnw -B -ntp clean compile} is the faster loop while editing.</li>
- *   <li><strong>Toolchain</strong> - Java 25 with {@code maven.compiler.release} set to 25 and
- *       <strong>no preview features</strong>, Maven 3.9.11, and the parent
- *       {@code org.springframework.boot:spring-boot-starter-parent:3.5.11}.
- *       {@code maven-enforcer-plugin:3.5.0} floors both, so a wrong toolchain fails the build rather than
- *       producing a subtly different artefact. This package was compiled and its documentation rendered
- *       against OpenJDK 25.0.3 and Maven 3.9.11.</li>
- *   <li><strong>Zero-warning gate</strong> - {@code maven-compiler-plugin:3.14.1} runs with
- *       {@code -Xlint:all} and {@code -Werror}. A raw type, an unchecked cast, a use of a deprecated API, a
- *       switch fall-through or a dangling documentation comment is a <strong>hard build failure</strong>, not
- *       a warning to triage later. An <em>unused import</em> is not: {@code javac} 25 publishes no
- *       {@code unused} lint key, so that prohibition is review-enforced, and malformed Javadoc is covered
- *       only by the separate explicit doclint command because no Javadoc plugin is bound in
- *       {@code pom.xml}. This is also why this file declares no nullability annotation: no JSR-305 and no
- *       JSpecify artefact is on the classpath, and the Spring alternatives carry deprecation risk that the
- *       gate would turn fatal.</li>
- *   <li><strong>Coverage gate</strong> - {@code jacoco-maven-plugin:0.8.12} enforces a merged line-coverage
- *       floor of <strong>80%</strong> at {@code verify}, with no exclusions. Tests for this package live under
- *       {@code src/test/java/com/cardemo/unit} and the integration tiers beside it -
- *       <strong>never inside this package</strong>, which contains production classes only.</li>
+ *   <li><strong>Toolchain and gates</strong> - Java 25, Maven 3.9.11 and the
+ *       {@code spring-boot-starter-parent:3.5.11} parent, all floored by the enforcer, with
+ *       {@code -Xlint:all} and {@code -Werror} in force. Two consequences bind this package: no nullability
+ *       annotation may be declared here, because no JSR-305 or JSpecify artefact is on the classpath and the
+ *       Spring alternatives carry deprecation risk the gate turns fatal; and tests for this package live
+ *       under {@code src/test/java/com/cardemo/unit} and the integration tiers beside it, <strong>never
+ *       inside this package</strong>, which contains production classes only.</li>
  *   <li><strong>Test signing keys</strong> - a test must use a <strong>generated or injected</strong> signing
  *       key. Committing one, even a throwaway, puts a usable key in version control and is treated as a
  *       secret leak.</li>
@@ -287,13 +286,11 @@
  *   <li>The session policy is {@code STATELESS} and CSRF state is disabled, both owned by
  *       {@code com.cardemo.config.SecurityConfig}.</li>
  *   <li>{@code spring.security.oauth2.resourceserver.jwt.jwk-set-uri} and its
- *       {@code public-key-location} sibling are <strong>deliberately not set</strong>. The decoder is a
- *       symmetric HMAC decoder built in Java from the signing key, so either property would be configuration
- *       that nothing reads - dead configuration, which clause B forbids as surely as it forbids dead
- *       code.</li>
- *   <li>Configuration reaches this package through <strong>Spring property binding only</strong>. Nothing in
- *       it reads an environment variable or a system property directly, so behaviour is determined by the
- *       resolved configuration rather than by ambient process state, and a test can supply configuration
+ *       {@code public-key-location} sibling are <strong>deliberately not set</strong>: the decoder is a
+ *       symmetric HMAC decoder built in Java from the signing key, so either property would be dead
+ *       configuration.</li>
+ *   <li>Configuration reaches this package through <strong>Spring property binding only</strong>, never by
+ *       reading an environment variable or system property directly, so a test can supply configuration
  *       without mutating the process it runs in.</li>
  *   <li>The signing key is environment-indirected in <strong>all four profiles</strong> -
  *       {@code application.yml}, {@code application-local.yml}, {@code application-test.yml} and
@@ -417,9 +414,9 @@
  * specific consequence:
  *
  * <ul>
- *   <li>This package contains <strong>exactly four</strong> {@code .java} files:
- *       {@link JwtTokenProvider}, {@link CardDemoUserDetailsService}, {@link JwtAuthenticationFilter} and this
- *       file. A fifth would breach the agreed directory shape.</li>
+ *   <li>This package contains <strong>exactly five</strong> {@code .java} files:
+ *       {@link JwtTokenProvider}, {@link CardDemoUserDetailsService}, {@link JwtAuthenticationFilter},
+ *       {@link SnapshotTokenService} and this file. A sixth would breach the agreed directory shape.</li>
  *   <li>This file declares <strong>no imports, no annotations and no code</strong> - no class, interface,
  *       enum, record, field or method. A package documentation file that declares anything is no longer only
  *       documentation.</li>

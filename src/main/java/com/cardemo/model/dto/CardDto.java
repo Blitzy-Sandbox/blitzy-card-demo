@@ -77,15 +77,14 @@ import java.util.Locale;
  * {@link CardListRow} enforces the absence structurally: its constructor rejects a non-null
  * selector type on row 1 rather than merely documenting that none is expected.
  *
- * <p>Two further observations close this point. First, the output-overlay fields
- * {@code CRDSTP2C}, {@code CRDSTP2P}, {@code CRDSTP2H}, {@code CRDSTP2V} and {@code CRDSTP2O} that
- * appear from {@code app/cpy-bms/COCRDLI.CPY:376} onward lie inside the
- * {@code 01 CCRDLIAO REDEFINES CCRDLIAI.} overlay that starts at line 289; overlay fields are not
- * part of the input-field budget and are not modelled here. Second, a search for {@code CRDSTP}
- * across {@code app/cbl} returns <b>no matches at all</b>: the selector-type fields are declared on
- * the mapset and are never read or written by any program in the corpus. The field set is vestigial,
- * which is why its row 1 member was never declared in the first place. This is a <b>preserved source
- * characteristic, not a defect</b>, and it is reproduced rather than repaired.
+ * <p>Two observations close this point. The {@code CRDSTP2C}, {@code CRDSTP2P}, {@code CRDSTP2H},
+ * {@code CRDSTP2V} and {@code CRDSTP2O} names appearing from {@code app/cpy-bms/COCRDLI.CPY:376}
+ * onward lie inside the {@code 01 CCRDLIAO REDEFINES CCRDLIAI.} overlay that starts at line 289;
+ * overlay fields are not part of the input-field budget and are not modelled here. And a search for
+ * {@code CRDSTP} across {@code app/cbl} returns <b>no matches at all</b> - the selector-type fields
+ * are declared on the mapset and never read or written by any program - so the field set is
+ * vestigial, which is why its row 1 member was never declared. That is a preserved source
+ * characteristic, reproduced rather than repaired.
  *
  * <p><b>DISTINCTION 4 - the card-detail map has no expiry day at all.</b> A token search for
  * {@code EXPDAY} across {@code app/cpy-bms/COCRDSL.CPY} returns zero occurrences; the member runs
@@ -147,14 +146,12 @@ import java.util.Locale;
  * <p><b>Page size.</b> The card list shows seven rows per page. The anchor is
  * {@code 05 WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7.} at {@code app/cbl/COCRDLIC.cbl:177-178},
  * published here as {@link #CARD_LIST_PAGE_SIZE} and corroborated three times over inside the same
- * program: {@code WS-EDIT-SELECT-FLAGS PIC X(7)} at {@code app/cbl/COCRDLIC.cbl:72}, its redefinition
- * {@code WS-EDIT-SELECT PIC X(1) OCCURS 7 TIMES} at {@code app/cbl/COCRDLIC.cbl:75-76}, and
- * {@code WS-EDIT-SELECT-ERRORS OCCURS 7 TIMES} at {@code app/cbl/COCRDLIC.cbl:86} - as well as by
- * the seven row groups on the map itself. <b>Seven is the only page size that may appear in this
- * type.</b> The transaction list and the user list both page by ten, evidenced by the row table at
- * {@code app/cbl/COUSR00C.cbl:57} and the paging fields at {@code app/cbl/COTRN00C.cbl:65}, and the
- * transaction report's twenty-lines-per-page is a batch report-line count and not a page size at
- * all; none of those figures is represented here, and each belongs to its own type.
+ * program - {@code WS-EDIT-SELECT-FLAGS PIC X(7)} at {@code app/cbl/COCRDLIC.cbl:72}, its
+ * redefinition {@code WS-EDIT-SELECT PIC X(1) OCCURS 7 TIMES} at {@code :L75-L76} and
+ * {@code WS-EDIT-SELECT-ERRORS OCCURS 7 TIMES} at {@code :L86} - as well as by the seven row groups
+ * on the map itself. <b>Seven is the only page size that may appear in this type.</b> The transaction
+ * and user lists page by ten and the transaction report's twenty lines per page is a batch
+ * report-line count rather than a page size; each belongs to its own type.
  *
  * <p><b>Card numbers, identifiers and expiry components are all {@code String}.</b> The card number
  * is alphanumeric in the record of authority: {@code app/cpy/CVACT02Y.cpy:5} declares
@@ -172,10 +169,9 @@ import java.util.Locale;
  * {@code app/cbl/COCRDSLC.cbl:480} and {@code MOVE CARD-EXPIRY-YEAR TO EXPYEARO} at
  * {@code app/cbl/COCRDSLC.cbl:482}, and the expiry comparison in the batch corpus is a string
  * comparison, so a date type would normalise away the representation the comparison depends on.
- * Neither card map declares a monetary field, so no decimal type is needed; the package-wide
- * prohibition on IEEE-754 binary approximate numeric types nevertheless holds, and this file declares
- * no such type anywhere - every member is a {@code String} apart from the structural row number, so a
- * plain substring search of this file for either forbidden type name returns nothing at all.
+ * Neither card map declares a monetary field, so no decimal type is needed, and every member is a
+ * {@code String} apart from the structural row number - the package-wide prohibition on IEEE-754
+ * binary approximate numeric types therefore has nothing here to bear on.
  *
  * <p><b>The card status code is a raw one-character {@code String}, not an enumeration.</b> It comes
  * from {@code CARD-ACTIVE-STATUS PIC X(01)} by way of
@@ -191,17 +187,14 @@ import java.util.Locale;
  * ({@code CRDNUM1I} through {@code CRDNUM7I}), for eight in total, alongside the cardholder name
  * ({@code CRDNAMEI PIC X(50)} at {@code app/cpy-bms/COCRDSL.CPY:72}), which is personal data.
  * <b>Neither this class nor {@link CardListRow} declares {@code toString}</b>, so both inherit the
- * {@code Object} rendering, which discloses a class name and an identity hash and no field value
- * whatsoever. That is also why this type is a class rather than a record: a record's generated
- * {@code toString} emits every component, so a record would have put all eight card numbers and the
- * cardholder name into any log line, stack trace or error page that rendered this payload, and would
- * have left the protection depending on an override that a later edit could remove. Declining the
- * record removes the hazard instead of guarding it. {@code src/main/resources/logback-spring.xml} does
- * stand behind that decision, with a masking decorator applied identically in every profile, but it is the
- * second line and not the first: declining the record is what keeps the values out of the rendering that a
- * mask would otherwise have to recognise.
- * This type carries no password, no hash, no token and no signing key, the card maps declare none,
- * and none may be added.
+ * {@code Object} rendering, which discloses a class name and an identity hash and no field value. That
+ * is also why this type is a class rather than a record: a record's generated {@code toString} emits
+ * every component, so a record would have put all eight card numbers and the cardholder name into any
+ * log line, stack trace or error page that rendered this payload, leaving the protection dependent on
+ * an override a later edit could remove. The masking decorator in
+ * {@code src/main/resources/logback-spring.xml} is the second line of defence, not the first. This
+ * type carries no password, hash, token or signing key, the card maps declare none, and none may be
+ * added.
  *
  * <p><b>Inputs, outputs and side effects.</b> This is a pure data holder and is primarily outbound.
  * It performs no filtering, no paging arithmetic, no mapping, no ordering and no comparison; the
@@ -212,11 +205,11 @@ import java.util.Locale;
  * configuration, and no environment variable or system property is consulted.
  *
  * <p><b>No value equality is published, deliberately.</b> Neither {@code equals} nor
- * {@code hashCode} is overridden, so instances compare by identity. This type is a transport
- * carrier, and the migration plan places every business comparison - notably the field-by-field
- * snapshot comparison of the account update path - in the service layer rather than in a payload.
- * Callers that need to compare two payloads compare the accessors they care about, which also keeps
- * a card number out of any incidental comparison. The omission is a decision, not an oversight.
+ * {@code hashCode} is overridden, so instances compare by identity. This type is a transport carrier;
+ * every business comparison - notably the field-by-field snapshot comparison of the account update
+ * path - belongs to the service layer rather than to a payload. Callers that need to compare two
+ * payloads compare the accessors they care about, which also keeps a card number out of any
+ * incidental comparison. The omission is a decision, not an oversight.
  *
  * <p><b>Three states stay distinct.</b> A screen field may be absent, may be blank, or may hold
  * {@code LOW-VALUES}, that is binary zeros, and the source treats those as different things:
@@ -240,19 +233,14 @@ import java.util.Locale;
  * substitute for inbound business validation, which this read-path payload deliberately does not
  * carry.
  *
- * <p><b>Three source facts a reader may look for:</b>
+ * <p><b>Two source facts a reader may look for:</b>
  * <ul>
- *   <li><b>The input-field census.</b> Plan prose states that the seventeen BMS symbolic maps declare
- *       460 input fields in total. Counting the {@code 02 &lt;name&gt;I PIC} declarations strictly
- *       inside each {@code 01 ...AI.} input group across all seventeen members of
- *       {@code app/cpy-bms} yields <b>441</b>. The two maps this type serves are unaffected and are
- *       exactly 15 and 45 as stated, so no code change follows from the difference; it is recorded
- *       only so that a reader recounting the maps is not misled.</li>
  *   <li><b>Input group names.</b> The two input groups are named {@code 01 CCRDSLAI.} and
  *       {@code 01 CCRDLIAI.}, both at line 17 of their members, following the BMS map names
  *       {@code CCRDSLA} and {@code CCRDLIA} declared as {@code LIT-THISMAP} at
- *       {@code app/cbl/COCRDSLC.cbl:169-170} and {@code app/cbl/COCRDLIC.cbl:185-186}. Some prose
- *       elsewhere names them after the mapsets instead. The names above are the on-disk ones.</li>
+ *       {@code app/cbl/COCRDSLC.cbl:169-170} and {@code app/cbl/COCRDLIC.cbl:185-186}. Those are the
+ *       group names to search for on disk; the mapset names are {@code COCRDSL} and
+ *       {@code COCRDLI}.</li>
  *   <li><b>A preserved source characteristic, not a defect.</b> The absent {@code CRDSTP1I} described
  *       above is a property of the system of record, reproduced faithfully. It is recorded here so
  *       that it is not mistaken for an omission in this file and repaired by a later edit.</li>

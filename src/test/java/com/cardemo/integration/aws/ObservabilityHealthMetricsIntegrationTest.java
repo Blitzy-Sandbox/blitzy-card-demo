@@ -86,7 +86,9 @@ import org.springframework.boot.actuate.health.HealthEndpoint;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.actuate.health.Status;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.Environment;
+import org.springframework.core.env.PropertySource;
 import org.springframework.messaging.Message;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -157,6 +159,27 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *       <strong>Low, preserved:</strong> {@code app/jcl/OPENFIL.jcl:1} reads
  *       {@code //OEPNFIL JOB 'Open files in CICS'} - the job name transposes the E and the P relative to
  *       its member name, while {@code app/jcl/CLOSEFIL.jcl:1} is correct. It is never repaired.</dd>
+ *   <dt>The two cycle accumulators, which fix the shape of the amount instrument</dt>
+ *   <dd>{@code app/cbl/CBTRN02C.cbl:547} is {@code ADD DALYTRAN-AMT TO ACCT-CURR-BAL}; {@code :548} is
+ *       {@code IF DALYTRAN-AMT >= 0}; {@code :549} adds the amount to {@code ACCT-CURR-CYC-CREDIT} and
+ *       {@code :551} adds it, <em>unchanged and therefore negative</em>, to {@code ACCT-CURR-CYC-DEBIT}.
+ *       The source keeps <strong>two</strong> accumulators partitioned on exactly that predicate, and
+ *       {@code :406} subtracts the debit accumulator in the over-limit formula precisely because it holds
+ *       negative values. No absolute value is taken anywhere on this path, and
+ *       {@code app/data/ASCII/dailytran.txt} genuinely carries both {@code &#123;} and {@code &#125;}
+ *       overpunch signs, so the stream really is signed. The amount instrument mirrors that decomposition:
+ *       it is <strong>one metric name published as two counter series</strong>, tagged
+ *       {@code sign=credit} and {@code sign=debit}, and the signed total is recovered as
+ *       {@code credit - debit}. Two independent constraints force that shape rather than a single number.
+ *       Micrometer's {@code Counter.increment(double)} silently discards a non-positive amount, so a plain
+ *       counter would drop every debit; and the Prometheus client <em>rejects a negative counter value at
+ *       scrape time</em>, raising {@code IllegalArgumentException} from the render and failing the whole
+ *       {@code /actuator/prometheus} response - taking the other eight series down with it - so a single
+ *       signed counter is not merely lossy but fatal. Reading exact
+ *       {@link java.math.BigDecimal} accumulators through a
+ *       {@link io.micrometer.core.instrument.FunctionCounter} satisfies both: nothing is discarded, no
+ *       series can go negative, every series is a counter, and the one conversion out of decimal happens
+ *       on the scrape thread.</dd>
  * </dl>
  *
  * <h2>2. How to build, run and test</h2>
@@ -221,7 +244,7 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  * <dl>
  *   <dt>No container runtime</dt>
  *   <dd>Every test here fails at context refresh. Start the daemon and re-run; do not report a pass.</dd>
- *   <dt>The Testcontainers 2.0.3 coordinate trap - <strong>Blocker</strong></dt>
+ *   <dt>The Testcontainers 2.0.3 coordinate trap</dt>
  *   <dd>The root build pins Testcontainers to exactly 2.0.3 through a <em>managed-version property
  *       override</em> and never a second BOM import, because Spring Boot 3.5.11 already imports the
  *       Testcontainers BOM at a 1.x version and a competing import resolves in an order-dependent way that
@@ -229,7 +252,7 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *       {@code testcontainers}, {@code testcontainers-postgresql}, {@code testcontainers-localstack} and
  *       {@code testcontainers-junit-jupiter}; the bare {@code postgresql}, {@code localstack} and
  *       {@code junit-jupiter} identifiers under that group <em>do not exist</em> at 2.0.3 and fail
- *       resolution outright. Remediation is two-part and both parts are required: override the managed
+ *       resolution outright. The remedy is two-part and both parts are required: override the managed
  *       version <em>and</em> use only prefixed coordinates. Overriding without renaming resolves
  *       non-existent artefacts; renaming without overriding resolves the wrong version. The build file is
  *       root-owned and is not edited from here.</dd>
@@ -257,36 +280,36 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *   <dd>Order-dependent and will fail when run after another class that moved the same series.</dd>
  *   <dt>An absent signing key - <strong>High</strong> against the test profile, owned elsewhere</dt>
  *   <dd>The key is defaultless and fails fast, which is correct. The inherited harness registers a
- *       recognisably test-only value for this tier, so the context refreshes; reported, never patched.</dd>
+ *       ephemeral, generated value for this tier, so the context refreshes without any committed key
+ *       material; reported, never patched.</dd>
  * </dl>
  *
- * <h2>Findings that this class records rather than corrects</h2>
+ * <h2>What this class pins about the instrument set and the readiness probe</h2>
  *
  * <dl>
- *   <dt>The fourth instrument is a gauge, not a counter - <strong>Medium</strong></dt>
- *   <dd>The plan for this class specifies four instruments all of type counter and no
- *       {@code java.math.BigDecimal} accumulator. The authored production code publishes the
- *       transaction-amount series as a <strong>gauge over an exact {@code BigDecimal} accumulator</strong>,
- *       and it is right to: Micrometer's counter ignores a non-positive increment, so a counter would
- *       silently discard every debit - which would itself violate the binding requirement that a negative
- *       amount move the total <em>downward</em>. {@code app/cbl/CBTRN02C.cbl:548-552} adds a negative
- *       amount to the current-cycle <em>debit</em> accumulator, which is precisely why the over-limit
- *       formula subtracts it, so signed amounts are the contract and no absolute value may be taken
- *       anywhere. The two requirements cannot both be met by a monotonic counter. This class asserts the
- *       contract that exists - exactly four names, a bounded and closed tag set, no timer, no distribution
- *       summary, no long task timer, no fifth series - plus the signed-total behaviour, and records the
- *       type divergence here. Remediation for whoever owns the plan text: restate the contract as four
- *       <em>named series</em> rather than four counters. The series is a <strong>telemetry mirror, not the
- *       authoritative financial total</strong>; where it disagrees with the database, the database is
- *       right.</dd>
- *   <dt>The readiness health-check lives in the image, not the compose file - <strong>Low</strong></dt>
- *   <dd>The plan attributes it to the compose file; the health-check is at {@code Dockerfile:564}, and the
- *       compose file health-checks only its own database and emulator services. The path asserted here is
- *       the one actually probed.</dd>
- *   <dt>This leaf holds three files, not the six the plan names - <strong>Low</strong></dt>
- *   <dd>A prior change consolidated the planned bucket, generation-key, queue and correlation classes into
- *       a single emulator class. Renaming or splitting a sibling is out of scope here. Remediation for
- *       whoever owns the roster: reconcile the plan's file list with the tree.</dd>
+ *   <dt>The fourth instrument is a pair of sign-tagged counters, not a gauge</dt>
+ *   <dd>All four named series are counters. The transaction-amount total is the one that could not be a
+ *       plain incrementing counter - Micrometer's {@code Counter.increment} ignores a non-positive amount,
+ *       and {@code app/cbl/CBTRN02C.cbl:548-552} adds a negative amount to the current-cycle
+ *       <em>debit</em> accumulator, which is precisely why the over-limit formula subtracts it, so signed
+ *       amounts are the contract and no absolute value may be taken anywhere. It is carried instead as two
+ *       {@code FunctionCounter} series over exact {@code BigDecimal} accumulators, tagged
+ *       {@code sign=credit} and {@code sign=debit}, partitioned on the same {@code >= 0} predicate the
+ *       source uses; the signed total a dashboard reports is their difference. A gauge was the earlier
+ *       answer and was wrong for a reason no test could see: the Prometheus client strips the reserved
+ *       {@code _total} suffix from a gauge, so the series rendered as {@code carddemo_transaction_amount}
+ *       while every dashboard queried {@code carddemo_transaction_amount_total} and got an empty panel with
+ *       no error. What this class asserts is therefore the contract as built: exactly four names, a bounded
+ *       and closed tag set, no gauge, no distribution summary, no long task timer, no fifth series, plus the
+ *       signed-total behaviour. The series is a <strong>telemetry mirror, not the authoritative financial
+ *       total</strong>; where it disagrees with the database, the database is right.</dd>
+ *   <dt>The readiness health-check lives in the image, not the compose file</dt>
+ *   <dd>The probed path is the one at {@code Dockerfile:564}; the compose file health-checks only its own
+ *       database and emulator services. The path asserted here is the one actually probed.</dd>
+ *   <dt>This leaf holds three files, not the six a sibling roster names</dt>
+ *   <dd>An earlier change consolidated the bucket, generation-key, queue and correlation classes the roster
+ *       lists into a single emulator class. Renaming or splitting a sibling is out of scope here; the roster
+ *       is what needs reconciling with the tree.</dd>
  * </dl>
  *
  * <h2>Mandatory disclosures - information that is genuinely {@code Not available}</h2>
@@ -358,10 +381,21 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
      *
      * <p>A closed allow-list rather than an open deny-list, because only an allow-list fails when a new tag
      * is added. The two ambient keys are the common tags every series inherits, and both are single-valued
-     * constants; the other two are the bounded dimensions of the rejected and authentication series.
+     * constants; the other three are the bounded dimensions of the rejected, authentication and
+     * transaction-amount series.
+     *
+     * <p>{@code sign} is admitted deliberately, and its cardinality is closed at exactly TWO by
+     * construction rather than by convention: the value is derived from {@link java.math.BigDecimal#signum()}
+     * through a single two-way branch, so only {@code credit} and {@code debit} can ever be emitted. It exists
+     * because the amount instrument is a counter and a counter cannot carry a negative value - Prometheus
+     * rejects the entire scrape response if one appears - while the source genuinely accumulates both signs:
+     * {@code app/cbl/CBTRN02C.cbl:L548-L552} adds a non-negative amount to the cycle CREDIT and a negative one
+     * to the cycle DEBIT, and {@code app/data/ASCII/dailytran.txt} carries both overpunch signs. Splitting one
+     * signed number into two monotonic series is what preserves that sign information without a fifth
+     * instrument, so this is a new DIMENSION on the fourth instrument and not a fifth metric.
      */
     private static final Set<String> ALLOWED_TAG_KEYS =
-            Set.of("application", "component", "rejectcode", "outcome");
+            Set.of("application", "component", "rejectcode", "outcome", "sign");
 
     /**
      * Tag keys that would make a series unbounded, normalised and enumerated explicitly.
@@ -385,7 +419,7 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
      * with <strong>no separator</strong>, and the literal already contains the placeholder text, so the
      * rendered line carries the stray placeholder <em>and</em> the four digits. That is a
      * <strong>preserved legacy quirk and is never repaired</strong>, and no masking rule may touch it:
-     * reformatting, wrapping, truncating, re-rendering or masking it would be a <strong>Blocker</strong>.
+     * reformatting, wrapping, truncating, re-rendering or masking it breaks parity.
      */
     private static final String STATUS_LITERAL = "FILE STATUS IS: NNNN0023";
 
@@ -592,6 +626,73 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
             }
         }
         return moved;
+    }
+
+    /**
+     * The distinct application series names a single facade call moves.
+     *
+     * <p>Identity by behaviour rather than by literal name: a metric that has been renamed still moves when
+     * its own code path runs, so this discovers what the producer actually publishes instead of asserting a
+     * string the producer chose. Expressed as a delta for the same reason {@link #movementSince(Map)} is.
+     *
+     * @param facadeCall the single facade call whose effect is being attributed; must not be {@code null}
+     * @return the distinct series names that moved, never {@code null}
+     */
+    private Set<String> namesMovedBy(final Runnable facadeCall) {
+        final Map<Meter.Id, BigDecimal> before = snapshot();
+        facadeCall.run();
+        final Set<String> names = new TreeSet<>();
+        for (final Meter.Id id : movementSince(before).keySet()) {
+            names.add(id.getName());
+        }
+        return names;
+    }
+
+    /**
+     * The union of several discovered name sets, as one ordered set.
+     *
+     * @param sets the sets to combine; must not be {@code null} and must hold no {@code null}
+     * @return the union in name order, never {@code null}
+     */
+    @SafeVarargs
+    private static Set<String> concat(final Set<String>... sets) {
+        final Set<String> combined = new TreeSet<>();
+        for (final Set<String> set : sets) {
+            combined.addAll(set);
+        }
+        return combined;
+    }
+
+    /**
+     * Recovers the signed net movement of the transaction-amount instrument from a movement map.
+     *
+     * <p>The instrument is two counter series, {@code sign=credit} and {@code sign=debit}, and the signed
+     * total a dashboard reports is their difference. This is the same expression the Grafana panel uses, so
+     * asserting through it asserts what an operator actually sees rather than an internal field.
+     *
+     * <p>Both series carry magnitudes, so both deltas are non-negative and the sign of the result comes
+     * entirely from which side moved further. A series absent from the map contributes zero, which is
+     * correct: absent means unmoved.
+     *
+     * <p>Side effects: none. Error modes: none - a map containing no amount series yields
+     * {@link BigDecimal#ZERO}, which is the accurate answer for "the amount did not move".
+     *
+     * @param moved a movement map from {@link #movementSince(Map)}; must not be {@code null}
+     * @return {@code credit - debit} as an exact decimal, never {@code null}
+     */
+    private static BigDecimal signedNetMovement(final Map<Meter.Id, BigDecimal> moved) {
+        BigDecimal net = BigDecimal.ZERO;
+        for (final Map.Entry<Meter.Id, BigDecimal> entry : moved.entrySet()) {
+            if (!MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL.equals(entry.getKey().getName())) {
+                continue;
+            }
+            if (MetricsConfig.SIGN_DEBIT.equals(entry.getKey().getTag(MetricsConfig.TAG_SIGN))) {
+                net = net.subtract(entry.getValue());
+            } else {
+                net = net.add(entry.getValue());
+            }
+        }
+        return net;
     }
 
     /**
@@ -811,6 +912,35 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
     }
 
     /**
+     * The raw value a property is <em>declared</em> with, read straight from the property sources so that no
+     * placeholder is resolved.
+     *
+     * <p>{@code Environment.getProperty} is strict: it throws
+     * {@code PlaceholderResolutionException} when a value contains a {@code ${...}} reference that the
+     * current environment cannot satisfy, and {@code containsProperty} returns {@code true} for such a key
+     * without resolving it. Several keys in this application are declared as defaultless environment-variable
+     * references on purpose, so that a missing setting fails loudly at startup rather than falling back to a
+     * silent default. Asserting on the declared text is therefore the only way to prove the indirection
+     * exists without making the assertion depend on which variables the developer happens to have exported.
+     *
+     * @param key the property name; must not be {@code null}
+     * @return the first declared value found, unresolved, or {@code null} when no source declares the key
+     */
+    private String declaredWithoutResolution(final String key) {
+        assertThat(environment)
+                .as("the injected environment must be the configurable implementation, because the raw "
+                        + "declared value of a key is only reachable through its property sources")
+                .isInstanceOf(ConfigurableEnvironment.class);
+        for (final PropertySource<?> source : ((ConfigurableEnvironment) environment).getPropertySources()) {
+            final Object declared = source.getProperty(key);
+            if (declared != null) {
+                return declared.toString();
+            }
+        }
+        return null;
+    }
+
+    /**
      * The include list a probe group is configured with, as declared rather than as resolved.
      *
      * @param group the group name; must not be {@code null}
@@ -899,23 +1029,32 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
     }
 
     /**
-     * The bounded-instrument contract: four named series, no fifth, and no unbounded dimension.
+     * The instrument contract: four required named series, no fifth, and no unbounded dimension.
      *
-     * <p>Every assertion in here is discovered by prefix. None names a metric.
+     * <p>Every assertion in here is discovered by prefix or by behaviour. None names a metric.
+     *
+     * <p><strong>Timers are complementary and additive, not substitutes.</strong> The contract this group
+     * enforces is that the four required identities are all present, each published through exactly one
+     * instrument of the only type that can carry its values. It deliberately does <em>not</em> forbid a
+     * timer, a distribution summary or a long-task timer: latency instrumentation neither replaces one of the
+     * four nor reduces their number. What it does forbid is a fifth <em>named series</em> under the
+     * application prefix, which would be an unowned dashboard panel, and any unbounded tag dimension on any
+     * instrument at all - a timer included.
      */
     @Nested
-    @DisplayName("the instrument set is bounded at four named series with no unbounded dimension")
+    @DisplayName("the instrument set is four required named series, with additive timers permitted and no "
+            + "unbounded dimension")
     class InstrumentSetIsBounded {
 
         @Test
-        @DisplayName("exactly four series names carry the application prefix - a fifth is a Blocker")
+        @DisplayName("exactly four series names carry the application prefix, and a fifth is forbidden")
         void exactlyFourSeriesNamesExist() {
             final Set<String> names = applicationMeterNames();
 
             assertThat(names)
                     .as("the observability contract fixes FOUR named series - records processed, records "
                             + "rejected, authentication attempts and total transaction amount. A fifth "
-                            + "instrument is a Blocker: it is unbudgeted cardinality on every scrape and "
+                            + "instrument is forbidden: it is unbudgeted cardinality on every scrape and "
                             + "an unowned panel on the dashboard. Discovered by the '%s' prefix rather "
                             + "than by literal name, because the names are the producer's choice; the "
                             + "actual set found was %s", METRIC_PREFIX, names)
@@ -923,28 +1062,108 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
         }
 
         @Test
-        @DisplayName("no timer, distribution summary or long task timer carries the application prefix")
-        void noLatencyOrDistributionInstrumentExists() {
-            final Set<String> offenders = new TreeSet<>();
+        @DisplayName("all four required identities are present, each moved through its own code path, and "
+                + "each published through exactly one instrument")
+        void allFourRequiredIdentitiesArePresent() {
+            final Set<String> processed = namesMovedBy(() -> metricsConfig.countRecordProcessed());
+            final Set<String> rejected = namesMovedBy(
+                    () -> metricsConfig.countRecordRejected(RejectCode.OVERLIMIT_TRANSACTION));
+            final Set<String> attempts = namesMovedBy(() -> metricsConfig
+                    .countAuthenticationAttempt(MetricsConfig.AuthenticationOutcome.SUCCESS));
+            final Set<String> amount = namesMovedBy(
+                    () -> metricsConfig.countTransactionAmount(new BigDecimal("1.23")));
+
+            final Set<String> movedNames = new TreeSet<>();
+            movedNames.addAll(processed);
+            movedNames.addAll(rejected);
+            movedNames.addAll(attempts);
+            movedNames.addAll(amount);
+
+            assertThat(movedNames)
+                    .as("the four required identities are records processed, records rejected, "
+                            + "authentication attempts and total transaction amount. Each is discovered by "
+                            + "moving its own code path rather than by a literal name, so a renamed metric "
+                            + "cannot pass by matching a string and a missing one cannot pass at all. "
+                            + "Names moved: %s", movedNames)
+                    .hasSize(4);
+
+            final Map<String, Set<Meter.Type>> typesByName = new LinkedHashMap<>();
+            for (final Meter meter : applicationMeters()) {
+                if (movedNames.contains(meter.getId().getName())) {
+                    typesByName.computeIfAbsent(meter.getId().getName(), name -> new TreeSet<>())
+                            .add(meter.getId().getType());
+                }
+            }
+            assertThat(typesByName.keySet())
+                    .as("every moved identity must still be resolvable in the registry")
+                    .isEqualTo(movedNames);
+            for (final Map.Entry<String, Set<Meter.Type>> entry : typesByName.entrySet()) {
+                assertThat(entry.getValue())
+                        .as("identity '%s' must be published through exactly ONE instrument type; two types "
+                                + "under one name means two producers disagreeing, and Prometheus rejects "
+                                + "one metric name carrying two shapes", entry.getKey())
+                        .hasSize(1);
+            }
+
+            for (final String eventCount : new TreeSet<>(concat(processed, rejected, attempts))) {
+                assertThat(typesByName.get(eventCount).iterator().next())
+                        .as("identity '%s' is a monotonic event count, so it is a COUNTER", eventCount)
+                        .isEqualTo(Meter.Type.COUNTER);
+            }
+            assertThat(typesByName.get(amount.iterator().next()).iterator().next())
+                    .as("the signed transaction-amount total is a COUNTER like the other three, and the two "
+                            + "hazards that decided it are measured rather than assumed. Micrometer's "
+                            + "INCREMENTING counter ignores a non-positive increment, so an increment-backed "
+                            + "total would silently discard every debit; and the Prometheus client rejects a "
+                            + "negative counter AT SCRAPE TIME with 'counters cannot have a negative value', "
+                            + "which would take EVERY series off /actuator/prometheus rather than just this "
+                            + "one. app/cbl/CBTRN02C.cbl:548-552 adds a NEGATIVE amount to the current-cycle "
+                            + "DEBIT accumulator, which is exactly why the over-limit formula subtracts it, "
+                            + "so a signed total is the contract and no absolute value may be taken "
+                            + "anywhere. Both are satisfied by partitioning on that same predicate into a "
+                            + "credit and a debit FunctionCounter over exact BigDecimal accumulators, whose "
+                            + "difference is the net - which also keeps the reserved _total suffix a gauge "
+                            + "would have been stripped of")
+                    .isEqualTo(Meter.Type.COUNTER);
+        }
+
+        @Test
+        @DisplayName("latency instrumentation is additive: it neither replaces one of the four series nor "
+                + "reduces their number, and it may not borrow one of their names")
+        void latencyInstrumentationIsAdditiveRatherThanForbidden() {
+            final Set<String> requiredSeries = applicationMeterNames();
+            final Map<String, Meter.Type> latencyInstruments = new LinkedHashMap<>();
             for (final Meter meter : applicationMeters()) {
                 final Meter.Type type = meter.getId().getType();
                 if (type == Meter.Type.TIMER || type == Meter.Type.DISTRIBUTION_SUMMARY
                         || type == Meter.Type.LONG_TASK_TIMER) {
-                    offenders.add(meter.getId().getName() + " (" + type + ")");
+                    latencyInstruments.put(meter.getId().getName(), type);
                 }
             }
 
-            assertThat(offenders)
-                    .as("a timer, a distribution summary or a long task timer would publish a bucket set "
-                            + "and quantiles nobody budgeted for, and the corpus publishes no service "
-                            + "level for any of them to be measured against - the performance gate records "
-                            + "a measured baseline instead of asserting a threshold. Offenders: %s",
-                            offenders)
-                    .isEmpty();
+            assertThat(requiredSeries)
+                    .as("the four named series stand whatever latency instrumentation is also present - "
+                            + "timers are complementary and additive, never substitutes, so their presence "
+                            + "is permitted and their absence is not required. This assertion is what "
+                            + "stops a timer from being counted as one of the four, and what stops the "
+                            + "suite from forbidding one. Latency instruments observed: %s",
+                            latencyInstruments)
+                    .hasSize(4);
+            // An empty latency set is a legitimate state, not a pass by vacuity: the contract permits these
+            // instruments without requiring them. The disjointness is therefore asserted per observed
+            // instrument rather than through a bulk assertion that rejects an empty argument.
+            for (final Map.Entry<String, Meter.Type> latency : latencyInstruments.entrySet()) {
+                assertThat(requiredSeries)
+                        .as("latency instrument '%s' (%s) must not borrow one of the four required series "
+                                + "names: Prometheus rejects one metric name carrying two instrument "
+                                + "shapes, so a shared name would make that identity unscrapeable",
+                                latency.getKey(), latency.getValue())
+                        .doesNotContain(latency.getKey());
+            }
         }
 
         @Test
-        @DisplayName("each series is a counter, except the signed amount which must be a gauge")
+        @DisplayName("every series is a counter - four names, no gauge, no timer, no summary")
         void everySeriesUsesTheOnlyInstrumentThatCanCarryItsValues() {
             final Map<String, Set<Meter.Type>> typesByName = new LinkedHashMap<>();
             for (final Meter meter : applicationMeters()) {
@@ -958,8 +1177,10 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                                 + "under one name means two producers disagreeing", entry.getKey())
                         .hasSize(1);
                 assertThat(entry.getValue().iterator().next())
-                        .as("series '%s' must be a counter or a gauge and nothing else", entry.getKey())
-                        .isIn(Meter.Type.COUNTER, Meter.Type.GAUGE);
+                        .as("series '%s' must be a COUNTER. AAP section 0.7.7 names four counters, and a "
+                                + "Prometheus gauge additionally loses the _total suffix from its rendered "
+                                + "name, which silently empties any dashboard querying it", entry.getKey())
+                        .isEqualTo(Meter.Type.COUNTER);
             }
 
             final long counters = typesByName.values().stream()
@@ -968,18 +1189,19 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                     .filter(types -> types.contains(Meter.Type.GAUGE)).count();
 
             assertThat(counters)
-                    .as("three of the four series are monotonic event counts, so three counters")
-                    .isEqualTo(3L);
+                    .as("all four series are counters, including the amount total: it reaches that through "
+                            + "a FunctionCounter over an exact BigDecimal accumulator rather than through "
+                            + "Counter.increment(double), which would discard every debit")
+                    .isEqualTo(4L);
             assertThat(gauges)
-                    .as("exactly ONE series - the signed transaction-amount total - must be a gauge, and "
-                            + "it cannot be anything else. Micrometer's counter IGNORES a non-positive "
-                            + "increment, so a counter would silently discard every debit; and "
-                            + "app/cbl/CBTRN02C.cbl:548-552 adds a NEGATIVE amount to the current-cycle "
-                            + "DEBIT accumulator, which is exactly why the over-limit formula subtracts "
-                            + "it. Signed amounts are therefore the contract, and no absolute value may be "
-                            + "taken anywhere. Recorded as a Medium divergence from a plan that specified "
-                            + "four counters; the plan cannot be satisfied without discarding debits")
-                    .isEqualTo(1L);
+                    .as("NO gauge. The amount total was one, and a gauge cannot carry it: the Prometheus "
+                            + "client strips the reserved _total suffix from a gauge, so the series rendered "
+                            + "as carddemo_transaction_amount while every dashboard and every operator "
+                            + "queried carddemo_transaction_amount_total and got an empty panel with no "
+                            + "error. The sign problem a gauge was chosen to solve is solved instead by "
+                            + "partitioning on the same IF DALYTRAN-AMT >= 0 predicate that "
+                            + "app/cbl/CBTRN02C.cbl:548-552 uses for its own two cycle accumulators")
+                    .isZero();
         }
 
         @Test
@@ -1002,7 +1224,7 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                     .as("no series may be dimensioned by an account, card, customer, transaction, user, "
                             + "correlation, trace, span, timestamp, object-key, message or job identity, "
                             + "nor by a network address. Each such value is unbounded, so each would turn "
-                            + "one series into millions - a Blocker on cost and on cardinality alike, and "
+                            + "one series into millions - ruinous on cost and on cardinality alike, and "
                             + "an identity leak into telemetry besides")
                     .doesNotContainAnyElementsOf(FORBIDDEN_TAG_KEYS);
         }
@@ -1231,8 +1453,8 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
         }
 
         @Test
-        @DisplayName("a negative amount is accepted and moves the total DOWNWARD, with no absolute value")
-        void aNegativeAmountMovesTheTotalDownward() {
+        @DisplayName("a negative amount is reported on the debit series and lowers the signed net")
+        void aNegativeAmountMovesTheSignedNetDownward() {
             final BigDecimal debit = new BigDecimal("-1234.56");
             final Map<Meter.Id, BigDecimal> before = snapshot();
 
@@ -1241,28 +1463,40 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
             final Map<Meter.Id, BigDecimal> moved = movementSince(before);
             assertThat(moved)
                     .as("a debit must be reported, not dropped. This is the single most commonly botched "
-                            + "assertion in this area: Micrometer's counter ignores a non-positive "
-                            + "increment, so a counter-backed total would move by ZERO here and the "
-                            + "series would silently equal the sum of the credits alone. Moved: %s", moved)
+                            + "assertion in this area: Micrometer's Counter.increment ignores a "
+                            + "non-positive amount, so an increment-backed total would move by ZERO here "
+                            + "and the series would silently equal the sum of the credits alone. Moved: %s",
+                            moved)
                     .hasSize(1);
 
             final Map.Entry<Meter.Id, BigDecimal> entry = moved.entrySet().iterator().next();
-            assertThat(entry.getKey().getType())
-                    .as("only a gauge can fall, so the signed total is a gauge")
-                    .isEqualTo(Meter.Type.GAUGE);
+            assertThat(entry.getKey().getName())
+                    .as("the amount instrument, not some other series")
+                    .isEqualTo(MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL);
+            assertThat(entry.getKey().getTag(MetricsConfig.TAG_SIGN))
+                    .as("app/cbl/CBTRN02C.cbl:551 sends a negative amount to ACCT-CURR-CYC-DEBIT, so this "
+                            + "is the debit series and not the credit one")
+                    .isEqualTo(MetricsConfig.SIGN_DEBIT);
             assertThat(entry.getValue())
-                    .as("the delta must be the amount ITSELF, sign intact. app/cbl/CBTRN02C.cbl:548-552 "
-                            + "adds a negative amount to the current-cycle DEBIT accumulator, which is "
-                            + "precisely why the over-limit formula subtracts that accumulator; "
-                            + "normalising the sign anywhere on this path would break that arithmetic")
-                    .isEqualByComparingTo(debit);
-            assertThat(entry.getValue().signum())
-                    .as("downward, not upward")
+                    .as("the debit series carries the MAGNITUDE, which is what keeps a counter legal: the "
+                            + "Prometheus client refuses a negative counter value at scrape time and fails "
+                            + "the entire response when it meets one. The sign is not lost - it is carried "
+                            + "by which of the two series moved")
+                    .isEqualByComparingTo(debit.negate());
+            assertThat(signedNetMovement(moved).signum())
+                    .as("the signed net, credit minus debit, moves DOWNWARD - which is the property a "
+                            + "discarded debit would destroy")
                     .isEqualTo(-1);
+            assertThat(signedNetMovement(moved))
+                    .as("and by exactly the amount itself, sign intact. app/cbl/CBTRN02C.cbl:406 subtracts "
+                            + "the debit accumulator in the over-limit formula precisely because it holds "
+                            + "negative values; normalising the sign anywhere on this path would break "
+                            + "that arithmetic")
+                    .isEqualByComparingTo(debit);
         }
 
         @Test
-        @DisplayName("a credit and an equal debit cancel exactly, which no absolute value could do")
+        @DisplayName("a credit and an equal debit cancel exactly in the signed net")
         void aCreditAndAnEqualDebitCancelExactly() {
             final BigDecimal amount = new BigDecimal("980.25");
             final Map<Meter.Id, BigDecimal> before = snapshot();
@@ -1270,16 +1504,27 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
             metricsConfig.countTransactionAmount(amount);
             metricsConfig.countTransactionAmount(amount.negate());
 
-            assertThat(movementSince(before))
-                    .as("posting an amount and then its negation must leave the total EXACTLY where it "
-                            + "started. This is the assertion an absolute value cannot survive: with "
-                            + "abs() applied the second call would ADD again and the total would end at "
-                            + "twice the amount instead of back at zero movement. It also demonstrates "
-                            + "exact decimal accumulation - a floating-point accumulator would leave a "
-                            + "residue here. The series is a telemetry MIRROR, never the authoritative "
-                            + "financial total; where it disagrees with the database, the database is "
-                            + "right")
-                    .isEmpty();
+            final Map<Meter.Id, BigDecimal> moved = movementSince(before);
+            assertThat(moved)
+                    .as("both series move, because each amount is routed by its own sign exactly as "
+                            + "app/cbl/CBTRN02C.cbl:548-552 routes into its two cycle accumulators. Two "
+                            + "series moving is the mechanism, not a defect. Moved: %s", moved)
+                    .hasSize(2);
+            assertThat(moved.values())
+                    .as("neither series may fall: a monotonic counter that decreased would be a reset to "
+                            + "every Prometheus consumer, and rate() over it would read as a restart")
+                    .allSatisfy(delta -> assertThat(delta.signum()).isEqualTo(1));
+
+            assertThat(signedNetMovement(moved))
+                    .as("posting an amount and then its negation must leave the SIGNED NET exactly where "
+                            + "it started. This is the assertion an absolute value cannot survive: with "
+                            + "abs() applied the second call would land on the credit series again and the "
+                            + "net would end at twice the amount instead of back at zero. It also "
+                            + "demonstrates exact decimal accumulation - a floating-point accumulator "
+                            + "would leave a residue here. The series is a telemetry MIRROR, never the "
+                            + "authoritative financial total; where it disagrees with the database, the "
+                            + "database is right")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
         }
 
         @Test
@@ -1307,9 +1552,11 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
 
             assertThat(movementSince(before))
                     .as("zero is a legitimate amount and a legitimate no-op: it must neither be refused "
-                            + "as invalid nor move the total. The boundary is asserted because "
+                            + "as invalid nor move either series. The boundary is asserted because "
                             + "app/data/ASCII/dailytran.txt carries an overpunch sign of +0 on records "
-                            + "whose amount decodes to zero")
+                            + "whose amount decodes to zero. Zero routes to the CREDIT series, because "
+                            + "app/cbl/CBTRN02C.cbl:548 tests IF DALYTRAN-AMT >= 0 and zero satisfies it - "
+                            + "and adding zero moves nothing, so no movement is observable either way")
                     .isEmpty();
         }
     }
@@ -1365,15 +1612,46 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                     .isEqualTo(new TreeSet<>(EXPOSED_ENDPOINTS));
         }
 
+        /**
+         * F-S06. Exposure and access are different decisions, and this test asserts both halves.
+         *
+         * <p>{@code health} and {@code info} answer an ANONYMOUS caller, because the container image's
+         * {@code HEALTHCHECK} probes {@code /actuator/health/readiness} with no credential and a rule
+         * requiring one would report a permanently unhealthy container.
+         *
+         * <p>{@code prometheus} REFUSES an anonymous caller. It is exposed - it exists, and the exposure
+         * assertion above still lists it - but it is governed by
+         * {@code com.cardemo.config.SecurityConfig#metricsScrapeFilterChain}, which requires HTTP Basic
+         * credentials carrying the {@code SCRAPE} authority. The scrape body renders BUSINESS series, so
+         * anonymous reachability was a disclosure rather than a convenience.
+         *
+         * <p><strong>Why no authenticated scrape is attempted here.</strong> The test profile configures no
+         * scrape credential, so the chain holds zero principals and fails CLOSED - which is precisely the
+         * property being asserted. The authenticated-success half is proved at the unit tier, against a real
+         * filter chain, by {@code SecurityConfigTest#metricsScrapeAdmitsTheConfiguredPrincipal}. Registering
+         * a credential here would require a {@code @DynamicPropertySource}, which this class documents that
+         * it deliberately does not declare.
+         *
+         * @throws Exception if the mock layer cannot dispatch
+         */
         @Test
-        @DisplayName("all three exposed endpoints answer")
+        @DisplayName("health and info answer anonymously; the metrics scrape refuses an anonymous caller")
         void allThreeExposedEndpointsAnswer() throws Exception {
-            for (final String id : new TreeSet<>(EXPOSED_ENDPOINTS)) {
+            for (final String id : new String[] {"health", "info"}) {
                 assertThat(get("/" + id).getResponse().getStatus())
-                        .as("exposed endpoint '%s' must answer; the readiness probe, the build identity "
-                                + "and the scrape target are all load-bearing outside the application", id)
+                        .as("exposed endpoint '%s' must answer anonymously; the readiness probe and the "
+                                + "build identity are both load-bearing outside the application and are "
+                                + "requested without a credential", id)
                         .isEqualTo(200);
             }
+
+            assertThat(get("/prometheus").getResponse().getStatus())
+                    .as("the metrics scrape must NOT answer anonymously. It renders business series - "
+                            + "transaction volumes, reject counts tagged by reject code and authentication "
+                            + "attempt counts - so an anonymous 200 here would be a disclosure contract. "
+                            + "With no credential configured the chain fails CLOSED, which is the direction "
+                            + "that loses metrics visibly rather than publishing them silently")
+                    .isEqualTo(401);
         }
 
         @Test
@@ -1454,25 +1732,51 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                             + "Rendered: %s", METRIC_PREFIX, renderedInRegistry)
                     .hasSize(4);
 
-            final String overHttp = getBody("/prometheus");
-            assertThat(renderedSeriesNames(overHttp))
-                    .as("and they must survive the HTTP path too, which is what a scraper actually reads. "
-                            + "For context, not asserted here: the provisioned scrape configuration polls "
-                            + "every fifteen seconds, and the dashboard is provisioned alongside it; both "
-                            + "files are root-owned and neither is created, modified or read from here")
-                    .isEqualTo(renderedInRegistry);
+            // F-S06. The four series must render, and they must NOT be anonymously readable over HTTP.
+            // Before remediation this assertion read the body anonymously and required it to equal the
+            // registry's - which made anonymous disclosure of business series a required contract. The
+            // registry assertion above still proves the series survive export; what is asserted here is
+            // that reaching them needs a credential. observability/prometheus.yml now carries the matching
+            // basic_auth block, and the credentialled read is proved at the unit tier by
+            // SecurityConfigTest#metricsScrapeAdmitsTheConfiguredPrincipal.
+            final MvcResult anonymousScrape = get("/prometheus");
+            assertThat(anonymousScrape.getResponse().getStatus())
+                    .as("business series must not be readable without a credential")
+                    .isEqualTo(401);
+            assertThat(renderedSeriesNames(anonymousScrape.getResponse().getContentAsString()))
+                    .as("and the refused response must carry no series at all, not merely a non-200 code - "
+                            + "a body that still rendered them would leak exactly what the refusal exists "
+                            + "to withhold")
+                    .isEmpty();
         }
 
         @Test
-        @DisplayName("tracing is configured explicitly, and the test profile exports no span")
+        @DisplayName("tracing is configured explicitly, baggage is off, and the test profile exports no span")
         void tracingIsConfiguredExplicitly() {
             assertThat(environment.getProperty("management.tracing.sampling.probability"))
                     .as("a sampling probability left to the default is a silent decision; it is stated")
                     .isNotBlank();
-            assertThat(environment.getProperty("management.otlp.tracing.endpoint"))
+
+            // F-S12. Spring Boot 3.5.11 leaves baggage propagation ENABLED by default while the managed
+            // BOM resolves OpenTelemetry 1.49.0 - the version carrying CVE-2026-45292, an unbounded-growth
+            // exposure in baggage context propagation. Nothing in this application calls the baggage API:
+            // the correlation identifier travels as an explicit header handled by CorrelationIdFilter and as
+            // an MDC entry. Disabling propagation therefore removes the exposed surface at zero functional
+            // cost, and is the AAP-consistent remediation because section 0.8.4 forbids bumping a pinned
+            // version unilaterally. Read as the resolved property rather than as yml text, so a profile
+            // that re-enabled it would fail here.
+            assertThat(environment.getProperty("management.tracing.baggage.enabled", Boolean.class))
+                    .as("baggage propagation must be explicitly disabled, not left at the framework default")
+                    .isFalse();
+            assertThat(declaredWithoutResolution("management.otlp.tracing.endpoint"))
                     .as("the collector address is indirected through configuration and is never a literal "
-                            + "in any source file")
-                    .isNotBlank();
+                            + "in any source file, so the DECLARED value must be exactly the "
+                            + "environment-variable reference. It is read without placeholder resolution "
+                            + "on purpose: the reference carries no default, this tier exports no "
+                            + "collector variable, and Environment.getProperty is strict - resolving it "
+                            + "here would make the assertion pass or fail on the developer's shell rather "
+                            + "than on the configuration under test")
+                    .isEqualTo("${OTEL_EXPORTER_OTLP_ENDPOINT}");
             assertThat(environment.getProperty("spring.autoconfigure.exclude"))
                     .as("the test profile DELIBERATELY neutralises span export by excluding the OTLP "
                             + "tracing auto-configuration, so this tier needs no collector. That is why "
@@ -1601,8 +1905,8 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                     HealthIndicators.SQS_HEALTH_COMPONENT_NAME)) {
                 assertThat(registeredIndicator(key).getClass().getName())
                         .as("the plural type name is deliberate: ONE configuration type declares several "
-                                + "contributors. A separate top-level file per contributor would be a "
-                                + "Blocker against the four-file budget of that package, which holds the "
+                                + "contributors. A separate top-level file per contributor would breach "
+                                + "the four-file budget of that package, which holds the "
                                 + "instrument configuration, the correlation filter, this type and the "
                                 + "package documentation - and nothing else. Component '%s'", key)
                         .startsWith(HealthIndicators.class.getName());
@@ -1878,8 +2182,8 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                 assertThat(endpoint)
                         .as("and it must not name the live service. There is NO fallback and NO credential "
                                 + "default anywhere on this path: an unreachable emulator must report down, "
-                                + "never fail over. A live endpoint or credential reaching this tier would "
-                                + "be a Blocker. The literal host name is assembled rather than written so "
+                                + "never fail over. A live endpoint or credential reaching this tier is "
+                                + "forbidden. The literal host name is assembled rather than written so "
                                 + "that no source file in this tree contains it")
                         .doesNotContain(liveServiceInfix);
             }
@@ -1908,8 +2212,8 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                             + "identifier with NO separator - so the placeholder text and the four "
                             + "characters of the status field run together. The stray placeholder is a "
                             + "PRESERVED LEGACY QUIRK and is never repaired. No masking rule may touch it "
-                            + "and nothing may reformat, wrap, re-render, truncate or escape it away: "
-                            + "doing so is a Blocker, because the boundary comparison is byte-for-byte "
+                            + "and nothing may reformat, wrap, re-render, truncate or escape it away, "
+                            + "because the boundary comparison is byte-for-byte "
                             + "against the legacy baseline and a differently formatted status is a diff")
                     .contains(STATUS_LITERAL);
             assertThat(encoded)

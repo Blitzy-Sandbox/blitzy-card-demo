@@ -148,24 +148,24 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>Common failure modes</h2>
  *
- * <p>Each is classified by the severity a review would assign it.</p>
+ * <p>Each is a property a plausible tidy-up would break.</p>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - treating a blank confirmation as invalid. It is its own {@code WHEN}
+ *   <li>treating a blank confirmation as invalid. It is its own {@code WHEN}
  *       branch, raises no error, and is the initial-display path.</li>
- *   <li><strong>Blocker</strong> - inventing a payment-amount field, or modelling the confirmation as a
+ *   <li>inventing a payment-amount field, or modelling the confirmation as a
  *       boolean. The payment is always the entire balance, and the gate has four states.</li>
- *   <li><strong>Blocker</strong> - altering a message literal, or letting a card number reach a
+ *   <li>altering a message literal, or letting a card number reach a
  *       rendering.</li>
- *   <li><strong>High</strong> - sharing a balance formatter or a header abstraction with the account
+ *   <li>sharing a balance formatter or a header abstraction with the account
  *       payloads. Fourteen characters here against fifteen there, eight against nine.</li>
- *   <li><strong>High</strong> - writing the zero-balance guard as {@code <} rather than {@code <=}, so a
+ *   <li>writing the zero-balance guard as {@code <} rather than {@code <=}, so a
  *       balance of exactly zero is paid instead of refused.</li>
- *   <li><strong>High</strong> - repairing the twelve-character amount mask, widening the error line to
+ *   <li>repairing the twelve-character amount mask, widening the error line to
  *       eighty, or holding a timestamp in a temporal type.</li>
- *   <li><strong>Medium</strong> - spelling the daily-transaction fixture {@code dalytran.txt}. It is
+ *   <li>spelling the daily-transaction fixture {@code dalytran.txt}. It is
  *       {@code dailytran.txt}, spelled in full, even though the legacy DD name is {@code DALYTRAN}.</li>
- *   <li><strong>Medium</strong> - an unused import or a raw type, which fails the build outright because
+ *   <li>an unused import or a raw type, which fails the build outright because
  *       {@code -Xlint:all -Werror} with {@code failOnWarning} reaches test compilation.</li>
  * </ul>
  */
@@ -415,8 +415,8 @@ final class BillPaymentRequestTest {
      * <p>The algorithm is inherently racy: two concurrent payments read the same maximum and compute the
      * same successor. It is retained exactly as written, because parity is the contract - a database
      * sequence would generate different values and a collision is meant to surface as a duplicate-key
-     * failure from the primary key, which is what the source's own duplicate handling did. Recorded as a
-     * preserved quirk in {@code DECISION_LOG.md}.</p>
+     * failure from the primary key, which is what the source's own duplicate handling did. It is owed
+     * an entry in the planned {@code DECISION_LOG.md}.</p>
      *
      * @param highestOnFile the identifier the browse returned, or {@code null} for the end-of-file case
      * @return the next identifier, sixteen characters and zero padded so leading zeros survive
@@ -1278,7 +1278,7 @@ final class BillPaymentRequestTest {
                             + "212-217 is racy exactly as written. It is kept, because a database "
                             + "sequence would generate different values and break the parity baseline; "
                             + "the collision is meant to surface as a duplicate-key failure from the "
-                            + "primary key. Recorded as a preserved quirk in DECISION_LOG.md")
+                            + "primary key. Owed an entry in the planned DECISION_LOG.md")
                     .isEqualTo(first);
         }
 

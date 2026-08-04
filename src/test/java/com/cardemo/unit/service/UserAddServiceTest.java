@@ -78,6 +78,8 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.QueryTimeoutException;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.cardemo.exception.CardDemoException;
@@ -261,10 +263,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <ul>
  *   <li><strong>The HTTP-level authorisation rule.</strong> It is declared by
  *       {@code com.cardemo.config.SecurityConfig}, which restricts {@code /api/admin/**} to the
- *       administrator role and sets a stateless session policy - but exercising it needs a controller,
- *       and {@code com.cardemo.controller.AdminController} is not present in the tree, so no slice test
- *       can drive this service through that mapping and none is attempted from this pure-JVM tier.
- *       What <em>is</em> asserted here are the structural
+ *       administrator role and sets a stateless session policy. That rule is <em>out of scope for this
+ *       class</em> rather than unavailable: it is driven through {@code com.cardemo.controller.AdminController},
+ *       which publishes the four {@code /api/admin/users} routes, and it is asserted by
+ *       {@code com.cardemo.unit.controller.AdminControllerTest} and by
+ *       {@code com.cardemo.unit.config.SecurityConfigTest}. Duplicating it from this pure-JVM service tier
+ *       would put the same claim in two places. What <em>is</em> asserted here are the structural
  *       preconditions without which no administrator-only rule could hold: this bean carries no authorisation
  *       annotation and so cannot self-authorise, takes no authentication or security-context collaborator
  *       and so cannot read or forge a role, and retains no state between calls.</li>
@@ -2387,11 +2391,12 @@ class UserAddServiceTest {
         @DisplayName("the bean carries no self-authorisation annotation, so the rule lives in one place")
         void theBeanDoesNotAuthoriseItself() {
             // The HTTP-level rule that places this service behind /api/admin/** is declared by
-            // SecurityConfig, together with the stateless session policy; neither can be exercised from this
-            // tier, because driving them needs a controller and AdminController is not present in the tree.
-            // What IS assertable is the structural precondition - the bean neither grants nor
-            // assumes authority, so the single enforcement point stays external and cannot be contradicted
-            // from here. This test records that boundary rather than guessing at the rule.
+            // SecurityConfig, together with the stateless session policy; neither is exercised from this
+            // tier, because driving them needs the controller. AdminController owns those four routes and
+            // com.cardemo.unit.controller.AdminControllerTest asserts the administrator-only outcomes, so
+            // repeating them here would duplicate the claim. What IS assertable here is the structural
+            // precondition - the bean neither grants nor assumes authority, so the single enforcement point
+            // stays external and cannot be contradicted from here. This test records that boundary.
             final Set<String> present = new LinkedHashSet<>();
             Arrays.stream(UserAddService.class.getAnnotations())
                     .map(annotation -> annotation.annotationType().getSimpleName())
@@ -2420,15 +2425,32 @@ class UserAddServiceTest {
         @DisplayName("the store is reached only through the typed repository, never through a query string")
         void theStoreIsReachedThroughTypedMethodsOnly() {
             // Clause D, "no shell injection" applied to persistence: the identifier is untrusted input that
-            // reaches a keyed write, so it must travel as a bound parameter. Every method the repository
-            // declares is a derived query - no hand-written statement exists for a value to be spliced into.
+            // reaches a keyed write, so it must travel as a bound parameter. No native query exists at all, and
+            // the one JPQL query the interface declares - the pessimistic read the update and delete paths use,
+            // which reproduces EXEC CICS READ ... UPDATE - binds every value it takes through @Param. What is
+            // refused is a statement that interpolates: no concatenation operator and no format placeholder may
+            // appear inside a query string, because that is where splicing begins.
             assertThat(Arrays.stream(UserSecurityRepository.class.getDeclaredMethods())
                     .flatMap(method -> Arrays.stream(method.getAnnotations()))
                     .map(annotation -> annotation.annotationType().getSimpleName())
                     .collect(Collectors.toList()))
-                    .as("a derived finder binds its parameters; a @Query string is where splicing begins")
-                    .doesNotContain("Query")
+                    .as("a native query bypasses JPQL parameter binding entirely and is never acceptable here")
                     .doesNotContain("NativeQuery");
+            for (final Method declared : UserSecurityRepository.class.getDeclaredMethods()) {
+                final Query query = declared.getAnnotation(Query.class);
+                if (query == null) {
+                    continue;
+                }
+                assertThat(query.value())
+                        .as("query text is authored, never assembled: '%s'", query.value())
+                        .doesNotContain("+")
+                        .doesNotContain("%s")
+                        .contains(":");
+                assertThat(Arrays.stream(declared.getParameters())
+                        .allMatch(parameter -> parameter.isAnnotationPresent(Param.class)))
+                        .as("every argument of a JPQL finder must be a named bound parameter")
+                        .isTrue();
+            }
 
             addSuccessfully(FIRST_NAME, LAST_NAME, NEW_USER_ID, TYPE_USER);
 

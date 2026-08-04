@@ -143,10 +143,11 @@
  *       environment loaded with {@code set -a; . ./.env; set +a}, because {@code JWT_SIGNING_KEY} has no default and
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service}.
- *       <strong>Not available, measured 3 August 2026:</strong> {@code AuthenticationService} has no test class
- *       and is not referenced anywhere under {@code src/test/java}, so this package contributes
- *       <strong>zero</strong> covered lines and no coverage figure quoted anywhere is evidence about it. The
- *       required assertions are: both the identifier and the password upper-cased; a lower-case credential
+ *       <strong>Measured 4 August 2026:</strong> {@code AuthenticationServiceTest} covers this service and
+ *       {@code AuthControllerTest} covers the sign-on endpoint that delegates to it, so the package is
+ *       exercised by name. <strong>An earlier revision recorded this service as having no test class and
+ *       contributing zero covered lines</strong>; that was true when written and is withdrawn here. The
+ *       assertions it named as required are the ones now made: both the identifier and the password upper-cased; a lower-case credential
  *       accepted; a wrong password and an unknown user indistinguishable to the caller; the two authorities
  *       routing to their respective menus; each of the ten seeded users authenticating against its BCrypt
  *       digest; and no credential, digest or token appearing in any message or log event.</li>

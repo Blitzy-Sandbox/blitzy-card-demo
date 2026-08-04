@@ -324,10 +324,17 @@ public record UserUpdateRequest(
     /**
      * Returns a rendering that is safe to place in a log record or an exception message.
      *
-     * @return a rendering containing only the user identifier and the originating program name
+     * <p>That claim was previously false and is now true. Both fields are declared {@code String} and both
+     * arrive from a JSON request body, so a caller controlled their bytes and a CR or LF in either forged log
+     * records - while this very sentence asserted the rendering was safe. Both are passed through
+     * {@link ApiMasking#forDiagnostics(String)}, which escapes every control character to its own code point.
+     *
+     * @return a rendering containing only the user identifier and the originating program name, with every
+     *     control character escaped
      */
     @Override
     public String toString() {
-        return "UserUpdateRequest[userId=" + userId + ", programName=" + programName + "]";
+        return "UserUpdateRequest[userId=" + ApiMasking.forDiagnostics(userId)
+                + ", programName=" + ApiMasking.forDiagnostics(programName) + "]";
     }
 }

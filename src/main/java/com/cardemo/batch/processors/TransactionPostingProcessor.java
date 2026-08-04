@@ -198,15 +198,19 @@ import com.cardemo.service.shared.FileStatusMapper;
  * rearrangement, no folding into a single comparison and <b>no absolute value anywhere in the posting
  * path</b>.
  * <p>
- * A width note worth recording. {@code WS-TEMP-BAL} is {@code PIC S9(09)V99}, that is
- * {@code NUMERIC(11,2)} at {@code app/cbl/CBTRN02C.cbl:L187}, while both operands it is computed from are
- * {@code PIC S9(10)V99}, that is {@code NUMERIC(12,2)}, at {@code app/cpy/CVACT01Y.cpy:L13-L14}. <b>The
- * COMPUTE target is one digit narrower than its operands</b>, so the legacy program can silently truncate
- * the high-order digit of an intermediate above 999,999,999.99 and then compare the truncated value
- * against the credit limit. {@link BigDecimal} has no fixed width and cannot truncate, so the Java form is
- * strictly safer than the source at that boundary. No record in
- * {@code app/data/ASCII/dailytran.txt} reaches it, so the difference is unobservable against the parity
- * fixture; it is recorded rather than relied upon.
+ * The destination's width is part of the comparison. {@code WS-TEMP-BAL} is {@code PIC S9(09)V99}, that is
+ * {@code NUMERIC(11,2)} at {@code app/cbl/CBTRN02C.cbl:L187}, while both cycle accumulators it is computed
+ * from are {@code PIC S9(10)V99}, that is {@code NUMERIC(12,2)}, at {@code app/cpy/CVACT01Y.cpy:L13-L14}.
+ * <b>The COMPUTE target is one integer digit narrower than its operands</b>, and the {@code COMPUTE} carries
+ * no {@code ON SIZE ERROR} clause, so an intermediate at or above 1,000,000,000.00 is stored with its
+ * high-order digits discarded and its sign kept, and {@code :L407} then compares the credit limit against
+ * <b>that</b> value rather than against the arithmetic result. Because truncation always reduces the
+ * magnitude, it decides outcomes: a transaction unbounded arithmetic would reject with code 102 can be
+ * accepted by the source. The narrowing is therefore applied here, in
+ * {@code narrowToWsTempBalPicture}, and asserted at the boundary by
+ * {@code TransactionPostingProcessorTest}. It is not left to {@code app/data/ASCII/dailytran.txt} to
+ * exercise: no record in that fixture reaches the boundary, which is a fact about the sample and not about
+ * the contract.
  *
  * <h2>The scoped '00' OR '23' leniency</h2>
  * <p>
@@ -478,6 +482,26 @@ public class TransactionPostingProcessor
      * {@code PIC S9(09)V99} and {@code PIC S9(10)V99}.
      */
     private static final int MONEY_SCALE = 2;
+
+    /**
+     * Scale of {@code WS-TEMP-BAL}: the {@code V99} of {@code PIC S9(09)V99} at
+     * {@code app/cbl/CBTRN02C.cbl:L187}.
+     *
+     * <p>Numerically equal to {@link #MONEY_SCALE} and deliberately declared separately: this one is the
+     * scale of a <em>work field</em> whose picture also bounds its integer part, and conflating the two would
+     * make {@link #TEMP_BAL_INTEGER_MODULUS} look as though it applied to every monetary field, which it does
+     * not.
+     */
+    private static final int TEMP_BAL_SCALE = 2;
+
+    /**
+     * Ten raised to the nine integer digits of {@code WS-TEMP-BAL PIC S9(09)V99}, that is 1,000,000,000.
+     *
+     * <p>The modulus that keeps exactly the digits the field can hold. Its operands are one digit wider -
+     * {@code PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy:L13-L14} - which is what makes the narrowing
+     * observable rather than theoretical. See {@code narrowToWsTempBalPicture}.
+     */
+    private static final BigDecimal TEMP_BAL_INTEGER_MODULUS = BigDecimal.TEN.pow(9);
 
     /**
      * The trailing literal of {@code MOVE '0000' TO DB2-REST} at {@code app/cbl/CBTRN02C.cbl:L701}, filling
@@ -1113,15 +1137,17 @@ public class TransactionPostingProcessor
         RejectCode failReason = null;
 
         // :L403-L405 COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT
-        // Transcribed in source order. No rearrangement, no absolute value. WS-TEMP-BAL is PIC S9(09)V99,
-        // one digit narrower than its PIC S9(10)V99 operands, so the source can truncate here and this
-        // BigDecimal form cannot; the Java result is strictly safer at that boundary.
+        // Transcribed in source order. No rearrangement, no absolute value. The result is then narrowed to
+        // the destination's own picture, because WS-TEMP-BAL is PIC S9(09)V99 - one integer digit narrower
+        // than its PIC S9(10)V99 operands - and the comparison at :L407 reads the NARROWED value. See
+        // narrowToWsTempBalPicture for why that is parity rather than a defect faithfully copied.
         BigDecimal currentCycleCredit = requireMoney(account.getCurrentCycleCredit(),
                 "ACCT-CURR-CYC-CREDIT", RELATION_ACCOUNT);
         BigDecimal currentCycleDebit = requireMoney(account.getCurrentCycleDebit(),
                 "ACCT-CURR-CYC-DEBIT", RELATION_ACCOUNT);
         BigDecimal amount = transactionAmount(item);
-        BigDecimal tempBal = currentCycleCredit.subtract(currentCycleDebit).add(amount);
+        BigDecimal tempBal = narrowToWsTempBalPicture(
+                currentCycleCredit.subtract(currentCycleDebit).add(amount));
 
         // :L407 IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL
         BigDecimal creditLimit = requireMoney(account.getCreditLimit(), "ACCT-CREDIT-LIMIT",
@@ -1156,6 +1182,58 @@ public class TransactionPostingProcessor
         return failReason == null
                 ? ValidationOutcome.validated(crossReference, account)
                 : ValidationOutcome.rejected(failReason);
+    }
+
+    /**
+     * Narrows a computed temporary balance to the picture of {@code WS-TEMP-BAL}, {@code PIC S9(09)V99}.
+     *
+     * <p><b>Finding, severity High - remediated by this method.</b> The over-limit test at
+     * {@code app/cbl/CBTRN02C.cbl:L407} does not compare the credit limit against the arithmetic result of
+     * {@code :L403-L405}. It compares it against <b>whatever that result became once stored in
+     * {@code WS-TEMP-BAL}</b>, and that field is declared {@code PIC S9(09)V99} at {@code :L187} - nine
+     * integer digits - while both cycle accumulators it is computed from are {@code PIC S9(10)V99} at
+     * {@code app/cpy/CVACT01Y.cpy:L13-L14} and {@code DALYTRAN-AMT} is {@code PIC S9(09)V99}. The
+     * destination is one integer digit narrower than its operands, so an intermediate at or above
+     * 1,000,000,000.00 does not fit. The {@code COMPUTE} carries <b>no {@code ON SIZE ERROR} clause</b>, so
+     * IBM Enterprise COBOL stores the low-order digits and discards the high-order ones, keeping the sign of
+     * the computed result, and execution continues with no diagnostic of any kind.
+     *
+     * <p><b>Why this is parity and not a copied defect.</b> The truncation is not incidental to the outcome:
+     * it makes the compared value <em>smaller in magnitude</em>, so a transaction that unbounded arithmetic
+     * would reject with code 102 can be accepted by the source, and an account whose accumulators straddle
+     * the boundary is classified differently by the two implementations. An unbounded {@link BigDecimal}
+     * therefore does not merely differ in an unreachable corner - it changes which records post. This code
+     * previously omitted the narrowing and documented the omission as "strictly safer than the source"
+     * because no record in {@code app/data/ASCII/dailytran.txt} reaches the boundary. That reasoning is not
+     * available here: behavioural parity is the contract, the fixture is a sample rather than the domain, and
+     * "safer" is a behaviour change by another name. The narrowing is applied, and the boundary is asserted
+     * by {@code TransactionPostingProcessorTest} rather than left to the fixture to exercise.
+     *
+     * <p><b>The arithmetic.</b> The value is first taken to the destination's scale of two, truncating toward
+     * zero, which is what a {@code COMPUTE} without {@code ROUNDED} does. Its magnitude is then reduced
+     * modulo 10<sup>9</sup>, which keeps exactly the nine low-order integer digits the picture can hold, and
+     * the computed sign is reapplied. Worked example: 9,999,999,999.99 becomes 999,999,999.99, the leading
+     * nine being the digit the field cannot hold; 1,000,000,000.00 becomes 0.00, every retained digit being
+     * zero; and -9,999,999,999.99 becomes -999,999,999.99, because {@code S9} keeps the sign.
+     *
+     * <p>Side effects: none. Pure function of its argument.
+     *
+     * @param computed the arithmetic result of {@code :L403-L405}, never {@code null}
+     * @return the value as {@code WS-TEMP-BAL} would hold it, at scale two, never {@code null}
+     */
+    private static BigDecimal narrowToWsTempBalPicture(final BigDecimal computed) {
+        // A COMPUTE without ROUNDED truncates toward zero, which is RoundingMode.DOWN. The operands are all
+        // scale 2, so this is ordinarily a no-op; it is stated rather than assumed, because the destination's
+        // scale is part of its picture and not a property of whatever reached this method.
+        final BigDecimal atDestinationScale = computed.setScale(TEMP_BAL_SCALE, RoundingMode.DOWN);
+        final BigDecimal magnitude = atDestinationScale.abs();
+        if (magnitude.compareTo(TEMP_BAL_INTEGER_MODULUS) < 0) {
+            // It fits, so the field holds it unchanged. This is the path every record in the parity fixture
+            // takes, which is precisely why the other path needs its own test rather than a fixture run.
+            return atDestinationScale;
+        }
+        final BigDecimal retained = magnitude.remainder(TEMP_BAL_INTEGER_MODULUS);
+        return atDestinationScale.signum() < 0 ? retained.negate() : retained;
     }
 
     /**

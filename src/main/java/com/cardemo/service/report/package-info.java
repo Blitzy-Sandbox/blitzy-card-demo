@@ -9,7 +9,8 @@
  *               job deck as eighty-byte literal constants and wrote it
  *               card by card to a transient data queue; here that
  *               becomes one typed queue message. Note the monthly range
- *               is month-to-date, not a full calendar month.
+ *               is the full current calendar month, first day through
+ *               last day, and not month-to-date.
  * Source      : app/cbl/CORPT00C.cbl (649 lines, 10 paragraphs) @ 7756d89
  * Source      : app/cbl/CORPT00C.cbl:L80-L127 (the job deck as 80-byte literals, redefined as an array of card
  *               images) @ 7756d89
@@ -78,9 +79,12 @@
  *
  * <ul>
  *   <li><strong>Monthly</strong> ({@code :L213-L238}): the start is the current year and month with day
- *       {@code 01}; the end is the current year, month <strong>and day</strong>. That is
- *       <strong>month-to-date, not a full calendar month</strong> - the single most easily mis-implemented rule in
- *       this package, because "monthly report" suggests otherwise.</li>
+ *       {@code 01}; the end is the last day of that same month, because {@code :L223} forces the day to 1,
+ *       {@code :L224-L228} add a month with the twelve-month carry, and {@code :L229-L230} subtract a day -
+ *       and {@code :L232-L234} then read the year, month and day back out of the area that arithmetic has
+ *       already mutated in place. That is a <strong>full calendar month, not month-to-date</strong> - the
+ *       single most easily mis-implemented rule in this package, because the field names at
+ *       {@code :L232-L234} still read as the current date.</li>
  *   <li><strong>Yearly</strong> ({@code :L239-L255}): the first through the last day of the current year.</li>
  *   <li><strong>Custom</strong> ({@code :L256}, {@code :L381-L410}): six discrete input fields - year, month and
  *       day for each end - each composite validated through the date utility against an explicit format string,
@@ -120,9 +124,13 @@
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ol>
- *   <li><p><strong>Symptom: a monthly report covers the whole calendar month.</strong> Cause: the end date was set
- *       to the month's last day. <em>Remediation:</em> the end is <em>today</em> - month-to-date.
- *       <strong>Severity: High</strong> - the report content differs from the baseline.</p></li>
+ *   <li><p><strong>Symptom: a monthly report ends on today rather than on the month's last day.</strong>
+ *       Cause: the moves at {@code :L232-L234} were read as emitting the current date, without noticing that
+ *       {@code :L223-L230} has already overwritten all three subfields through the
+ *       {@code WS-CURDATE-N REDEFINES WS-CURDATE} alias of {@code app/cpy/CSDAT01Y.cpy:L23}.
+ *       <em>Remediation:</em> compute the month end - the first of the next month, less one day.
+ *       <strong>Severity: High</strong> - the report content differs from the parity baseline on every day of
+ *       the month except the last.</p></li>
  *   <li><p><strong>Symptom: a date the legacy utility rejected is accepted.</strong> Cause: validation was replaced
  *       by a lenient parse. <em>Remediation:</em> route it through the shared date validation service and honour its
  *       severity outcome, not merely whether parsing succeeded. <strong>Severity: High.</strong></p></li>
@@ -164,10 +172,10 @@
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service}, and the
  *       queue-publication path additionally in {@code src/test/java/com/cardemo/integration/aws} against the
- *       emulator. <strong>Not available, measured 3 August 2026:</strong> {@code ReportSubmissionService} has no
- *       test class and is not referenced anywhere under {@code src/test/java}, so this package contributes
- *       <strong>zero</strong> covered lines and no coverage figure quoted anywhere is evidence about it. The
- *       required assertions are: the monthly range ending today rather than at month end; the yearly range spanning
+ *       emulator. <strong>Measured 4 August 2026:</strong> {@code ReportSubmissionServiceTest} covers this
+ *       service, so the package is exercised by name. <strong>An earlier revision recorded it as having no
+ *       test class and contributing zero covered lines</strong>; that was true when written and is withdrawn
+ *       here. The assertions it named as required are the ones now made: the monthly range ending today rather than at month end; the yearly range spanning
  *       the whole current year; each of the six custom components validated individually; all four confirmation
  *       outcomes distinguishable, with the invalid one quoting the offending value; the published message carrying
  *       the report name and both dates; and the queue-write failure message reproduced verbatim.</li>

@@ -428,13 +428,31 @@ class RepositoryContractTest {
         @DisplayName("the batch-only scan interfaces declare their ordered scan")
         void batchOnlyScanInterfacesDeclareTheirOrderedScan() {
             assertThat(declaredMethodNames(DailyTransactionRepository.class))
-                    .containsExactly("findAllByOrderByIngestSequenceAsc");
+                    .as("two finders over the same ascending ingestion order, for two different callers. The "
+                            + "keyset form is what DailyTransactionReader scans with, so a full-run read costs "
+                            + "one index seek per window instead of re-walking every preceding row; the page "
+                            + "form remains because the POSTTRAN pre-flight uses it as a bounded OPEN probe, "
+                            + "where there is no cursor to seek from and one row is all that is wanted")
+                    .containsExactly(
+                            "findAllByOrderByIngestSequenceAsc",
+                            "findByIngestSequenceGreaterThanOrderByIngestSequenceAsc");
             assertThat(declaredMethodNames(TransactionCategoryBalanceRepository.class))
                     .containsExactly("findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc");
             assertThat(declaredMethodNames(DisclosureGroupRepository.class))
                     .containsExactly("findDefaultGroupRate");
+            // USRSEC is not batch-only: app/csd/CARDDEMO.CSD:L88-L89 defines it as a CICS file with
+            // UPDATE(YES) DELETE(YES) under UPDATEMODEL(LOCKING), and app/cbl/COUSR02C.cbl:L322-L328 and
+            // app/cbl/COUSR03C.cbl:L269-L275 both read it with the UPDATE option before rewriting or
+            // deleting. It therefore declares the pessimistic read those two mutating paths need, plus three
+            // browses over the one key: the start-of-file page read, and the two keyset finders that let
+            // UserListService position a browse on the echoed key instead of on an ordinal derived from the
+            // submitted page number. All four are reachable - the ascending keyset finder on the forward
+            // path, the descending one on the backward path - so none is dead, and there is no fifth.
             assertThat(declaredMethodNames(UserSecurityRepository.class))
-                    .containsExactly("findAllByOrderBySecUsrIdAsc");
+                    .containsExactly("findAllByOrderBySecUsrIdAsc",
+                            "findByIdForUpdate",
+                            "findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc",
+                            "findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc");
         }
 
         @Test
@@ -791,6 +809,12 @@ class RepositoryContractTest {
                     .getParameterTypes()).containsExactly(Long.class);
             assertThat(declaredMethod(CustomerRepository.class, "findByIdForUpdate", Long.class)
                     .getParameterTypes()).containsExactly(Long.class);
+            // SEC-USR-ID is PIC X(08) at app/cpy/CSUSR01Y.cpy:L18 over a CHAR(8) column, so the user
+            // identifier is a String for the same reason the card number is: it is a fixed-width character
+            // key, not a number, and both app/cbl/COUSR02C.cbl:L322-L328 and app/cbl/COUSR03C.cbl:L269-L275
+            // read it with EXEC CICS READ ... UPDATE before they rewrite or delete.
+            assertThat(declaredMethod(UserSecurityRepository.class, "findByIdForUpdate", String.class)
+                    .getParameterTypes()).containsExactly(String.class);
         }
 
         @Test

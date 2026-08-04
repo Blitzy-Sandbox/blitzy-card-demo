@@ -59,7 +59,10 @@ import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.S3Operations;
+import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -297,12 +300,36 @@ class WriterIntegrationContractTest {
      * @return the writer; never {@code null}
      */
     private RejectWriter rejectWriter(S3Operations objectStorage, StepExecution execution) {
+        stubStreamedWrites(objectStorage);
         return new RejectWriter(objectStorage,
                 metrics,
                 new FileStatusMapper(),
                 OUTPUT_BUCKET,
                 CONFIGURED_REJECT_PREFIX,
                 execution);
+    }
+
+    /**
+     * Stubs an object-store mock so that a streamed write lands in a buffer instead of returning {@code null}.
+     *
+     * <p>{@link RejectWriter} writes one {@code (+1)} generation as one stream - finding H-04 - so it reaches
+     * the store through {@code createResource} rather than {@code upload}. A mock that does not answer that call
+     * hands the writer a {@code null} resource, which the writer correctly reports as a physical write failure;
+     * stubbing it is what lets these contract assertions exercise the success path.
+     *
+     * @param objectStorage the mock to stub, never {@code null}
+     * @return the buffer every streamed write lands in, never {@code null}
+     */
+    private static ByteArrayOutputStream stubStreamedWrites(S3Operations objectStorage) {
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        S3Resource resource = mock(S3Resource.class);
+        try {
+            when(resource.getOutputStream()).thenReturn((OutputStream) sink);
+        } catch (java.io.IOException impossible) {
+            throw new IllegalStateException("stubbing cannot fail", impossible);
+        }
+        when(objectStorage.createResource(anyString(), anyString())).thenReturn(resource);
+        return sink;
     }
 
     // ====================================================================================================
@@ -498,7 +525,7 @@ class WriterIntegrationContractTest {
         }
 
         @Test
-        @DisplayName("RejectWriter publishes its ordered generation into the JobExecution context too")
+        @DisplayName("H-04: RejectWriter publishes ONE generation entry however many chunks it wrote")
         void rejectWriterPublishesOrderedKeys() throws Exception {
             StepExecution rejectExecution = stepExecution(9L);
             RejectWriter rejects = rejectWriter(mock(S3Operations.class), rejectExecution);
@@ -507,13 +534,16 @@ class WriterIntegrationContractTest {
                     new RejectWriter.RejectedTransaction(dailyTransaction("FIRST"), RejectCode.INVALID_CARD_NUMBER))));
             rejects.write(new Chunk<>(List.of(
                     new RejectWriter.RejectedTransaction(dailyTransaction("SECOND"), RejectCode.INVALID_CARD_NUMBER))));
+            rejects.close();
 
             ExecutionContext jobContext = rejectExecution.getJobExecution().getExecutionContext();
-            assertThat(jobContext.getLong(RejectWriter.REJECT_OBJECT_KEYS_COUNT_ENTRY)).isEqualTo(2L);
-            List<String> keys = List.of(
-                    jobContext.getString(RejectWriter.rejectObjectKeysIndexEntry(0)),
-                    jobContext.getString(RejectWriter.rejectObjectKeysIndexEntry(1)));
-            assertThat(keys).doesNotHaveDuplicates().isSorted();
+            assertThat(jobContext.getLong(RejectWriter.REJECT_OBJECT_KEYS_COUNT_ENTRY))
+                    .as("app/jcl/POSTTRAN.jcl:L38 names ONE dataset, AWS.M2.CARDDEMO.DALYREJS(+1), so two "
+                            + "chunks are two appends to one generation and not two generations")
+                    .isEqualTo(1L);
+            assertThat(jobContext.getString(RejectWriter.rejectObjectKeysIndexEntry(0)))
+                    .isEqualTo(rejectExecution.getExecutionContext()
+                            .getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY));
         }
 
         @Test
@@ -541,6 +571,7 @@ class WriterIntegrationContractTest {
             RejectWriter writer = rejectWriter(mock(S3Operations.class), execution);
             writer.write(new Chunk<>(List.of(
                     new RejectWriter.RejectedTransaction(dailyTransaction("ONE"), RejectCode.INVALID_CARD_NUMBER))));
+            writer.close();
 
             String key = execution.getExecutionContext()
                     .getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY);
@@ -555,14 +586,17 @@ class WriterIntegrationContractTest {
         void trailingSeparatorIsNormalised() throws Exception {
             StepExecution bare = stepExecution(5L);
             StepExecution slashed = stepExecution(5L);
-            new RejectWriter(mock(S3Operations.class), metrics, new FileStatusMapper(),
-                    OUTPUT_BUCKET, CONFIGURED_REJECT_PREFIX, bare)
-                    .write(new Chunk<>(List.of(new RejectWriter.RejectedTransaction(
-                            dailyTransaction("ONE"), RejectCode.INVALID_CARD_NUMBER))));
-            new RejectWriter(mock(S3Operations.class), metrics, new FileStatusMapper(),
-                    OUTPUT_BUCKET, CONFIGURED_REJECT_PREFIX + "/", slashed)
-                    .write(new Chunk<>(List.of(new RejectWriter.RejectedTransaction(
-                            dailyTransaction("ONE"), RejectCode.INVALID_CARD_NUMBER))));
+            RejectWriter bareWriter = rejectWriter(mock(S3Operations.class), bare);
+            bareWriter.write(new Chunk<>(List.of(new RejectWriter.RejectedTransaction(
+                    dailyTransaction("ONE"), RejectCode.INVALID_CARD_NUMBER))));
+            bareWriter.close();
+            S3Operations slashedStorage = mock(S3Operations.class);
+            stubStreamedWrites(slashedStorage);
+            RejectWriter slashedWriter = new RejectWriter(slashedStorage, metrics, new FileStatusMapper(),
+                    OUTPUT_BUCKET, CONFIGURED_REJECT_PREFIX + "/", slashed);
+            slashedWriter.write(new Chunk<>(List.of(new RejectWriter.RejectedTransaction(
+                    dailyTransaction("ONE"), RejectCode.INVALID_CARD_NUMBER))));
+            slashedWriter.close();
 
             assertThat(bare.getExecutionContext().getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY))
                     .isEqualTo(slashed.getExecutionContext()
@@ -590,20 +624,26 @@ class WriterIntegrationContractTest {
         }
 
         @Test
-        @DisplayName("the reject sequence component is 19 digits, so lexical order tracks numeric order")
+        @DisplayName("both reject key identifiers are 19 digits, so lexical order tracks numeric order")
         void rejectSequenceCoversItsDomain() throws Exception {
-            // M-05. Six digits would number the millionth object "1000000", which sorts BEFORE "999999" and
+            // M-05. Six digits would render the millionth identifier "1000000", which sorts BEFORE "999999" and
             // breaks the equivalence that lets (0) resolve to the newest object. Asserted by driving the writer
-            // and measuring the rendered component rather than by reading the format constant.
+            // and measuring the rendered components rather than by reading the format constant. Since H-04 the
+            // key carries exactly two identifiers - the job instance in the prefix and the job execution in the
+            // object name - and no per-chunk sequence, because one generation is one object.
             StepExecution execution = stepExecution(6L);
             RejectWriter writer = rejectWriter(mock(S3Operations.class), execution);
             writer.write(new Chunk<>(List.of(
                     new RejectWriter.RejectedTransaction(dailyTransaction("ONE"), RejectCode.INVALID_CARD_NUMBER))));
+            writer.close();
 
             String key = execution.getExecutionContext()
                     .getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY);
-            String sequence = key.substring(key.lastIndexOf('-') + 1, key.lastIndexOf('.'));
-            assertThat(sequence).hasSize(19).containsOnlyDigits();
+            String relative = key.substring(CONFIGURED_REJECT_PREFIX.length() + 1);
+            String instance = relative.substring(0, relative.indexOf('/'));
+            String objectName = relative.substring(relative.indexOf('/') + 1, relative.lastIndexOf('.'));
+            assertThat(instance).hasSize(19).containsOnlyDigits();
+            assertThat(objectName).hasSize(19).containsOnlyDigits();
         }
 
         /**
@@ -831,11 +871,18 @@ class WriterIntegrationContractTest {
         }
 
         @Test
-        @DisplayName("the signed amount total is a SUM: a debit lowers it, never raises it")
+        @DisplayName("the amount total has a real caller and its two series recover the signed sum")
         void signedAmountTotalHasARealCaller() throws Exception {
-            // H-09's completion. The Phase-3 gauge needed a caller; this proves it has one AND that the caller
-            // does not normalise a sign. app/cbl/CBTRN02C.cbl:L547-L552 adds a negative amount to the cycle
-            // debit accumulator, so a signed stream is the contract, not an accident.
+            // H-09's completion. The instrument needed a caller; this proves it has one AND that the caller
+            // does not normalise a sign. app/cbl/CBTRN02C.cbl:L547-L552 tests IF DALYTRAN-AMT >= 0 and adds a
+            // negative amount to ACCT-CURR-CYC-DEBIT, so a signed stream is the contract, not an accident.
+            //
+            // The instrument is two FunctionCounter series tagged by sign rather than one signed number,
+            // because the Prometheus client refuses a negative counter value AT SCRAPE TIME and fails the
+            // whole /actuator/prometheus response when it meets one - which would take the other eight series
+            // down with it. Partitioning on the same >= 0 predicate the COBOL uses keeps every series
+            // non-negative while discarding nothing, and the signed sum stays exactly recoverable as
+            // credit - debit.
             TransactionRepository repository = mock(TransactionRepository.class);
             when(repository.saveAllAndFlush(any())).thenAnswer(invocation -> List.of());
             TransactionWriter writer = transactionWriter(repository, mock(S3Operations.class));
@@ -845,10 +892,25 @@ class WriterIntegrationContractTest {
                     transaction(TRANSACTION_ID, CREDIT_AMOUNT),
                     transaction(SECOND_TRANSACTION_ID, DEBIT_AMOUNT))));
 
-            // 30.00 + (-12.34) = 17.66. Under a monotonic counter the debit would have been discarded and this
-            // would read 30.00, which is precisely the defect the gauge replaced.
-            assertThat(meterRegistry.get(MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL).gauge().value())
-                    .isEqualTo(17.66d);
+            double credit = amountSeries(MetricsConfig.SIGN_CREDIT);
+            double debit = amountSeries(MetricsConfig.SIGN_DEBIT);
+
+            assertThat(credit).as("the >= 0 branch").isEqualTo(30.00d);
+            assertThat(debit).as("the ELSE branch, carrying the magnitude of -12.34").isEqualTo(12.34d);
+            // 30.00 - 12.34 = 17.66. Had the debit been discarded - which Counter.increment(double) does
+            // silently for a non-positive amount - this would read 30.00, which is the defect being guarded.
+            assertThat(credit - debit).as("the signed sum, exactly recoverable").isEqualTo(17.66d);
+        }
+
+        /**
+         * Reads one sign-tagged series of the transaction amount total as the scrape does.
+         *
+         * @param sign the {@link MetricsConfig#TAG_SIGN} value naming the series, never {@code null}
+         * @return the accumulated value of that series
+         */
+        private double amountSeries(final String sign) {
+            return meterRegistry.get(MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL)
+                    .tag(MetricsConfig.TAG_SIGN, sign).functionCounter().count();
         }
 
         @Test

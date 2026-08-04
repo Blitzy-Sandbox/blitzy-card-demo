@@ -169,10 +169,15 @@ class HealthIndicatorsTest {
      * Answers a fully reachable, correctly provisioned report queue.
      *
      * <p>Resolving the URL is necessary but not sufficient. The queue replaces the {@code JOBS} transient
-     * data queue, whose ordering the batch bridge depends on, so the probe also reads the two FIFO
-     * attributes and requires both to be {@code true}. A happy path must answer that read as well, and
-     * only those two attributes are requested: an unqualified request would return the queue ARN and
-     * every policy document with it.
+     * data queue, whose ordering the batch bridge depends on, so the probe also reads two attributes - and
+     * it treats them differently. {@code FifoQueue} must be {@code true} and gates the verdict, because that
+     * ordering does not exist without it and it is immutable once the queue is created.
+     * {@code ContentBasedDeduplication} is answered as {@code false} here because that is how the queue is
+     * provisioned, but per finding H-08 it is published as a detail rather than required: an explicit
+     * {@code MessageDeduplicationId} accompanies every submission and takes precedence over the body hash,
+     * so an enabled hash impairs nothing and must not fail readiness. A happy path must answer that read as
+     * well, and only those two attributes are requested: an unqualified request would return the queue ARN
+     * and every policy document with it.
      */
     private void sqsAnswers() {
         when(this.sqsAsyncClient.getQueueUrl(any(GetQueueUrlRequest.class)))
@@ -181,7 +186,7 @@ class HealthIndicatorsTest {
         when(this.sqsAsyncClient.getQueueAttributes(any(GetQueueAttributesRequest.class)))
                 .thenReturn(CompletableFuture.completedFuture(GetQueueAttributesResponse.builder()
                         .attributes(Map.of(QueueAttributeName.FIFO_QUEUE, "true",
-                                QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "true"))
+                                QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "false"))
                         .build()));
     }
 

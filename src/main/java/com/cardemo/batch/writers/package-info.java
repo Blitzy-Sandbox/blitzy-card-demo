@@ -153,10 +153,15 @@
  *   <li><strong>Test.</strong> {@code StatementWriterDeliveryTest} covers the delivery contract and the payload
  *       parity of the statement outputs; {@code BatchWriterScopeIsolationTest} covers the scoping and
  *       per-execution key derivation of both the transaction and statement writers.
- *       <strong>Not available, measured 3 August 2026:</strong> no test class covers
- *       {@code RejectWriter}, and no <em>geometry</em> suite covers the 350-byte transaction image, so no
- *       coverage figure quoted anywhere is evidence about either. The strongest available assertion, and the one
- *       owed, is a byte-identical round trip of every record of {@code app/data/ASCII/dailytran.txt}, whose
+ *       <strong>Measured 4 August 2026:</strong> every writer in this package has a test class of its own -
+ *       {@code RejectWriterTest} for the 430-byte reject record, {@code TransactionWriterTest} and
+ *       {@code TransactionWriterStepContractTest} for the transaction image, and
+ *       {@code StatementWriterTest}, {@code StatementWriterContractTest} and
+ *       {@code StatementWriterOutputContractTest} for the two statement outputs. <strong>An earlier revision
+ *       of this document recorded no test class for {@code RejectWriter} and no geometry suite for the
+ *       350-byte transaction image</strong>; that statement was true when written and is withdrawn here. The
+ *       strongest assertion it named as owed is a byte-identical round trip of every record of
+ *       {@code app/data/ASCII/dailytran.txt}, whose
  *       staging layout {@code app/cpy/CVTRA06Y.cpy} is field-for-field the same 350-byte geometry as
  *       {@code app/cpy/CVTRA05Y.cpy}. Note when writing it that the fixture is 105,300 bytes of 300 records at a
  *       <strong>351</strong>-byte stride - 350 data bytes plus a line feed - so a 350-byte read misaligns after

@@ -48,6 +48,9 @@ import java.util.Optional;
 
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.S3Object;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
@@ -58,6 +61,9 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Component;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.FatalProcessingException;
@@ -111,8 +117,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * posting job specifies {@code RECFM=F} at {@code app/jcl/POSTTRAN.jcl:L36}, fixed and unblocked. Blocking
  * is a physical grouping of records on the volume and changes no record's bytes, so it has no counterpart
  * in an object stream; the asymmetry is recorded rather than homogenised, and the record length is what
- * carries across. <i>Severity Low. Remediation:</i> cite both record formats where either is quoted and
- * carry only the record length into Java; do not "harmonise" the two declarations, because the difference is
+ * carries across. Cite both record formats wherever either is quoted and carry only the record length into
+ * Java; do not "harmonise" the two declarations, because the difference is
  * in the source and a reviewer comparing them needs to find it recorded rather than erased.
  *
  * <p><b>The member declares an internal procedure name that is not its own.</b>
@@ -120,8 +126,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code app/proc/REPROC.prc:L1} - although the member is named {@code TRANREPT}. A z/OS
  * {@code EXEC PROC=} resolves the <b>member</b> name, not the internal one, and
  * {@code EXEC PROC=TRANREPT} occurs exactly once in the corpus, inside the embedded job deck of the report
- * submission program at {@code app/cbl/CORPT00C.cbl:L94}. <i>Severity Low. Remediation:</i> document the
- * discrepancy, as here, and rename neither - the member name is what an invocation resolves and the internal
+ * submission program at {@code app/cbl/CORPT00C.cbl:L94}. The discrepancy is documented here and neither name
+ * is changed - the member name is what an invocation resolves and the internal
  * name is what the member declares, so "correcting" either would break a citation and change nothing that
  * executes. {@value #ABEND_CULPRIT} is used as the abend culprit for exactly this reason.
  *
@@ -175,8 +181,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code CH} - character - symbol declared at {@code :L40}, compared against the character literals
  * {@code C'2022-01-01'} and {@code C'2022-07-06'} at {@code :L41-L42}. A temporal round trip would change
  * which rows that comparison admits, so the text form is load-bearing rather than incidental.
- * <i>Severity Blocker if violated.</i> A blank stamp survives as exactly 26 spaces - not {@code null}, not
- * empty, not trimmed and not an epoch.
+ * A blank stamp survives as exactly 26 spaces - not {@code null}, not empty, not trimmed and not an
+ * epoch.
  *
  * <p><b>What this reader does not own.</b> The ascending card-number ordering of
  * {@code SORT FIELDS=(TRAN-CARD-NUM,A)} ({@code app/proc/TRANREPT.prc:L44}) and the inclusive date filter
@@ -185,8 +191,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * line of {@code :L76} is emitted by that processor's own output path. This class supplies the stream they
  * consume. <b>No external sort process is spawned by anything in this file</b>: DFSORT becomes a
  * {@link java.util.Comparator} and {@code IDCAMS REPRO} becomes a bulk load, and neither invokes a shell.
- * There is no {@code Runtime.exec} and no {@code ProcessBuilder} anywhere here. <i>Severity Blocker if
- * violated.</i>
+ * There is no {@code Runtime.exec} and no {@code ProcessBuilder} anywhere here.
  *
  * <h3>Generation semantics, and the one thing that must not be got wrong</h3>
  * A relative generation reference becomes an object key under a monotonically increasing prefix over a
@@ -207,7 +212,6 @@ import com.cardemo.service.shared.FileStatusMapper;
  * and {@link #read()} never resolves anything. Re-resolving mid-job produces a reader that passes in
  * isolation and <b>races in the pipeline</b>, because a concurrent job's newer generation would be picked
  * up between two steps of this one and the report would describe a backup nobody took.
- * <i>Severity Blocker if violated.</i>
  *
  * <p><b>Record length is preserved byte-exactly at the object-storage boundary: 350 characters per
  * record.</b> No re-blocking, no re-encoding, no trimming and no padding.
@@ -222,32 +226,28 @@ import com.cardemo.service.shared.FileStatusMapper;
  * so nothing the legacy system would have kept is discarded - and it is recorded at
  * {@code src/main/resources/application.yml} as {@code carddemo.aws.s3.gdg-retention-generations: 10}.
  * <b>This is the only legacy inconsistency the migration resolves</b>; every other one is preserved and
- * cited. <i>Severity Medium. Remediation:</i> keep the single value in configuration where both locators and
- * the choice are recorded together, and do not act on it from code - this class enforces no retention,
+ * cited. The single value lives in configuration, where both locators and the choice are recorded together,
+ * and no code acts on it - this class enforces no retention,
  * because object versioning supersedes generation counting and a reader that deleted generations would be a
  * writer.
  *
- * <p><b>Two further findings about the surrounding evidence.</b> The alternate-index path
+ * <p><b>Two constraints the surrounding evidence imposes.</b> The alternate-index path
  * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.PATH} ({@code app/catlg/LISTCAT.txt:L3663}) has <b>no
  * {@code DEFINE FILE} in {@code app/csd/CARDDEMO.CSD}</b>, which is the evidence that the
  * processing-timestamp finder is batch-only rather than an online access path; only the base cluster
  * {@code TRANSACT} is defined to CICS, and the two {@code DEFINE FILE} entries that do name an
- * {@code AIX.PATH} dataset are {@code CARDAIX} and {@code CXACAIX}. <i>Severity Low. Remediation:</i> leave
- * the processing-timestamp finder out of the online authorisation surface; exposing it would invent an access
- * path the CSD never defined. And {@code app/jcl/TRANIDX.jcl:L25-L27} declares {@code KEYS(26 304)} with its
- * path at {@code :L42-L44}, so it defines the <b>{@code TRANSACT}</b> alternate index and not a card index,
- * which other project documents mis-map to the card repository. <i>Severity Medium. Remediation:</i> the
- * owners of those documents correct the mapping to {@code TransactionRepository}; it is not corrected from
- * here, because editing another artefact's evidence from this file would put the same claim in two places.
- * Neither index is used by this reader.
+ * {@code AIX.PATH} dataset are {@code CARDAIX} and {@code CXACAIX}. The finder therefore stays out of the
+ * online authorisation surface, because exposing it would invent an access path the CSD never defined. And
+ * {@code app/jcl/TRANIDX.jcl:L25-L27} declares {@code KEYS(26 304)} with its path at {@code :L42-L44}, so it
+ * defines the <b>{@code TRANSACT}</b> alternate index and not a card index - which is why it is cited here
+ * for the transaction repository and nowhere for the card one. Neither index is used by this reader.
  *
  * <h2>How to run, build and test</h2>
  * The bean is {@code @StepScope}, so one instance exists per step execution and nothing runs at application
  * start: every profile sets {@code spring.batch.job.enabled: false}. The {@code Job} and {@code Step} that
- * drive it are declared by {@link com.cardemo.config.BatchConfig}, which is authored, and are launched by
- * the planned {@code com.cardemo.batch.jobs.TransactionReportJob} through
- * the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. Neither job class exists at this
- * commit, which is a statement about sequencing rather than about this reader.
+ * drive it are declared by {@link com.cardemo.config.BatchConfig} and are launched by the planned
+ * {@code com.cardemo.batch.jobs.TransactionReportJob} through the planned
+ * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}.
  *
  * <p>Build and static gates, from the repository root:
  * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The compiler runs at
@@ -303,8 +303,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li>{@code spring.jpa.hibernate.ddl-auto: validate} and {@code spring.jpa.open-in-view: false} hold in
  *       every profile, so the mapping is verified against the Flyway schema and no lazy load escapes the
  *       step.</li>
- *   <li>The emulator endpoint override exists only in the {@code local} and {@code test} profiles, so
- *       <b>no live-cloud path is structurally reachable</b> and no credential is handled here.</li>
+ *   <li>The emulator endpoint override is declared in all four profiles - bound to a bare
+ *       {@code ${AWS_ENDPOINT_URL}} with no default in the base, {@code test} and {@code prod} profiles, so an
+ *       unset variable fails the context at startup, and defaulted to the LocalStack edge only in
+ *       {@code application-local.yml} - so <b>no live-cloud path is structurally reachable</b> and no
+ *       credential is handled here. An earlier revision of this item said the override existed only in the
+ *       {@code local} and {@code test} profiles; that is withdrawn.</li>
  * </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
@@ -317,8 +321,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><b>An absent generation is a failure, not an empty read.</b> It is reported as file status
  *       {@code '35'} and abends, because {@code app/proc/TRANREPT.prc} creates the generation at
  *       {@code :L27-L31} before reading it at {@code :L36-L37}: if it is missing, the pipeline ran out of
- *       order and reporting on stale data would be worse than failing. <i>Remediation:</i> run the backup
- *       step first, or invoke this reader standalone against a bucket that already holds a generation.</li>
+ *       order and reporting on stale data would be worse than failing. Run the backup step first, or invoke
+ *       this reader standalone against a bucket that already holds a generation.</li>
  *   <li><b>Any other status abends.</b> A status that is neither {@code '00'} nor {@code '10'} renders
  *       {@code FILE STATUS IS: NNNN} followed by four characters - status {@code '23'} renders exactly
  *       {@code FILE STATUS IS: NNNN0023}, because the {@code NNNN} is part of the fixed 20-character
@@ -331,9 +335,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@link DataIntegrityException} naming the row number and the offending byte position, never the
  *       character and never the record.</li>
  *   <li><b>Reading a different generation than the step before it wrote</b> means the object key was
- *       re-resolved instead of carried forward, and it is the single most likely defect in this class. The
- *       resolved key is logged on open and checkpointed by {@link #update(ExecutionContext)} precisely so
- *       that this is diagnosable from one log line. <i>Remediation:</i> confirm the writing step promotes
+ *       re-resolved instead of carried forward, and it is the single most likely defect in this class.
+ *       <i>How to tell, without the key appearing in a log line:</i> generation resolution emits exactly one
+ *       of three mutually exclusive events - carried forward from the execution context, carried forward
+ *       from a prior step, or resolved by the standalone {@code (0)} semantic - so the third of those
+ *       appearing inside a pipeline run <b>is</b> the symptom. The key itself is checkpointed by
+ *       {@link #update(ExecutionContext)} and is readable from the job repository, which is where a value
+ *       that identifies a backup belongs. Confirm the writing step promotes
  *       {@value #CONTEXT_KEY_GENERATION_OBJECT_KEY} to the job execution context.</li>
  *   <li><b>Amounts appearing positive where negatives are expected</b> means a normalisation pass was
  *       wrongly introduced. There is none here: no absolute value, no sign stripping and no unconditional
@@ -348,6 +356,33 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       configuration applied, which is a validation-time dependency rather than a code one. The retention
  *       value is recorded as intent above; nothing in this file acts on it.</li>
  * </ul>
+ *
+ * <h2>Log hygiene: what this class will not name</h2>
+ *
+ * <p><b>Finding, severity Medium, resolved - CWE-532 and CWE-200.</b> Seven {@code INFO} emissions named
+ * either a generation object key or the checkpointed transaction identifier. A generation key identifies one
+ * concrete backup of the transaction cluster and the run that produced it; the checkpointed identifier is a
+ * business record key. Both were published at a level enabled in every deployment, so both travelled
+ * wherever the log stream travels - aggregated, retained and replicated well outside the boundary that
+ * protects the row. Neither is named any longer:
+ *
+ * <ul>
+ *   <li><b>Generation keys</b> are reduced to a {@linkplain #generationPresenceMarker(String) two-valued
+ *       marker} on open and close, to the <em>name of the context entry</em> they were carried forward under,
+ *       and - where the identity genuinely matters, in the standalone {@code (0)} resolution - to
+ *       {@linkplain #resolvedGenerationCount an ordinal out of a count}. The key is passed to object storage
+ *       and checkpointed to the job repository, and to nothing else.</li>
+ *   <li><b>The checkpointed transaction identifier</b> is reported as {@code present} or {@code absent}. The
+ *       record count is the restart position; the identifier only corroborates it.</li>
+ *   <li><b>No record field</b> reaches any event: the length, overpunch and timestamp diagnostics name a row
+ *       number and a byte position and never the content, as the troubleshooting entries above already
+ *       state.</li>
+ *   </ul>
+ *
+ * <p>What remains is the logical dataset name, the physical dataset name, the configured prefix, the
+ * selected source, the row and record counts, the generation count, the rendered {@code FILE STATUS} and the
+ * verbatim error literals - every one a property of the run rather than of anybody's account. The assertion
+ * that holds this is {@code src/test/java/com/cardemo/unit/batch/BatchLogHygieneTest.java}.
  *
  * <p><b>Thread safety.</b> Not thread safe, and not required to be: the {@code step} scope gives each step
  * execution its own instance and Spring Batch drives a reader from one thread per step. Every mutable field
@@ -393,7 +428,16 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * {@code app/proc/TRANREPT.prc:L21 STEP01R} as its origin, so the fallback and the declared value
      * cannot disagree.
      */
-    public static final String DEFAULT_GENERATION_PREFIX = "gdg/transact-bkup";
+    public static final String DEFAULT_GENERATION_PREFIX = "gdg/transact-bkup/";
+
+    /**
+     * The key separator that terminates a generation prefix.
+     *
+     * <p>Object storage has no directories; the slash is a naming convention. It matters here because a prefix
+     * match is a plain string match, so the separator is what makes {@value #DEFAULT_GENERATION_PREFIX} name a
+     * segment rather than merely a run of leading characters.
+     */
+    private static final String KEY_SEPARATOR = "/";
 
     /** The property that selects the input path, quoted in diagnostics so an operator can find it. */
     private static final String PROPERTY_SOURCE = "carddemo.batch.transaction-backup-reader.source";
@@ -628,6 +672,15 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      */
     private static final int STREAM_BUFFER_CHARS = 32 * (RECORD_LENGTH + 1);
 
+    /**
+     * The object-store key length limit, in characters, and therefore the bound a carried key must satisfy.
+     * <p>
+     * Stated rather than assumed: an object key may be up to 1024 UTF-8 bytes, so a value past that cannot name
+     * an object and is refused before it reaches a request or a log line. See
+     * {@link #requireKeyWithinGeneration(String, String)}.
+     */
+    private static final int MAX_OBJECT_KEY_LENGTH = 1024;
+
     // ----------------------------------------------------------------------------------------------------
     // Trailing-sign overpunch table for app/cpy/CVTRA05Y.cpy. The sign of a zoned-decimal field is carried
     // by its LAST character, which encodes both the sign and the final digit. THIS CLASS IS THE CANONICAL
@@ -722,11 +775,10 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * {@code '0'} to mean "no further subcode available from this layer". The underlying detail is never
      * discarded: it travels as the cause of the thrown exception.
      * <p>
-     * <b>Finding, severity Low.</b> The specific z/OS VSAM subcode a given failure would have produced on
-     * the mainframe is <b>Not available</b>. <i>Prerequisite:</i> a z/OS VSAM trace of the failing
-     * condition, which cannot be obtained because mainframe-runtime reproduction is out of scope.
-     * <i>Remediation:</i> if a byte-exact subcode is ever required, add the translation at the
-     * {@link FileStatusMapper} layer, where the status vocabulary already lives, and not in this reader.
+     * The specific z/OS VSAM subcode a given failure would have produced on the mainframe cannot be
+     * established from this repository, because mainframe-runtime reproduction is out of scope. Should a
+     * byte-exact subcode ever be required, the translation belongs at the {@link FileStatusMapper} layer,
+     * where the status vocabulary already lives, and not in this reader.
      */
     private static final String STATUS_PHYSICAL_IO_ERROR =
             String.valueOf(FileStatus.IO_ERROR_FIRST_BYTE) + NUMERIC_SUBCODE_NONE;
@@ -816,12 +868,28 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * The object-store access point, supplied as the {@code S3Operations} interface by
      * {@code com.cardemo.config.AwsConfig}.
      * <p>
-     * No client is constructed here and no credential is handled here; the emulator endpoint override
-     * exists only in the {@code local} and {@code test} profiles, so no live-cloud path is structurally
-     * reachable. Only {@code listObjects}, {@code objectExists} and {@code download} are called, all three
-     * read-only.
+     * No client is constructed here and no credential is handled here; the emulator endpoint override is
+     * declared in all four profiles - required with no default in the base, {@code test} and {@code prod}
+     * profiles, and defaulted to the LocalStack edge only in {@code application-local.yml} - so no live-cloud
+     * path is structurally reachable. Only {@code listObjects}, {@code objectExists} and {@code download} are
+     * called, all three read-only.
      */
     private final S3Operations objectStorage;
+
+    /**
+     * The object-store client, held for exactly one purpose: paging a listing.
+     * <p>
+     * {@code S3Operations.listObjects} issues one {@code ListObjectsV2} call and returns that single page, so
+     * once a generation base held more keys than one page carries, "the lexicographically greatest key" was
+     * computed over an arbitrary subset and the current generation resolved <b>stale</b> - a wrong answer that
+     * looks exactly like a right one. This client's paginator walks every page, which is what makes the
+     * {@code (0)} semantic correct at any scale.
+     * <p>
+     * It is injected, never constructed; no endpoint and no credential is read here. It is used read-only, for
+     * {@code listObjectsV2Paginator} and nothing else - every read and existence probe still goes through
+     * {@code S3Operations}.
+     */
+    private final S3Client objectStoreClient;
 
     /**
      * The central {@code FILE STATUS} translator. Consumed rather than re-implemented: it already renders
@@ -884,6 +952,19 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      */
     private String resolvedGenerationObjectKey;
 
+    /**
+     * How many generations the listing held when the standalone {@code (0)} semantic resolved one.
+     * <p>
+     * This is the <b>log-safe</b> identity of the selected generation, and it is what a diagnostic names
+     * instead of the key. Because keys are written under a monotonically increasing prefix and the
+     * {@code (0)} semantic takes the lexicographically greatest, the selected generation is always the last
+     * of the listing - so "generation <i>n</i> of <i>n</i>" both identifies the selection and states how
+     * many exist, which is the datum that distinguishes "the backup step ran once" from "it has run
+     * fifty times". Zero on every path that does not perform a listing, namely the {@code repository} path
+     * and both carry-forward paths.
+     */
+    private int resolvedGenerationCount;
+
     /** Rows of the page currently buffered on the {@code repository} path. */
     private List<Transaction> pageBuffer = List.of();
 
@@ -937,6 +1018,12 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * @param transactionRepository the transaction-table access point; must not be {@code null}
      * @param objectStorage the object-store access point supplied by {@code com.cardemo.config.AwsConfig};
      *     must not be {@code null}
+     * @param objectStoreClient the object-store client, used <strong>only</strong> to page a listing.
+     *     {@code S3Operations} exposes a single-page {@code listObjects} - one {@code ListObjectsV2} call
+     *     returning at most one page - so resolving the current generation through it stopped being correct
+     *     once a prefix held more keys than one page returns. That is finding H-07, severity High, and this
+     *     parameter is its remediation: the client offers the paginator the operations interface does not.
+     *     Every other access still goes through {@code S3Operations}. Must not be {@code null}
      * @param fileStatusMapper the shared {@code FILE STATUS} translator; must not be {@code null}
      * @param configuredSource the input selector from {@value #PROPERTY_SOURCE}, one of
      *     {@code repository} or {@code object-storage}, case-insensitive and accepting either a hyphen or an
@@ -958,6 +1045,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     public TransactionBackupReader(
             final TransactionRepository transactionRepository,
             final S3Operations objectStorage,
+            final S3Client objectStoreClient,
             final FileStatusMapper fileStatusMapper,
             @Value("${" + PROPERTY_SOURCE + ":repository}") final String configuredSource,
             @Value("${" + PROPERTY_PAGE_SIZE + ":" + DEFAULT_PAGE_SIZE + "}") final int pageSize,
@@ -973,6 +1061,8 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         this.transactionRepository =
                 Objects.requireNonNull(transactionRepository, "transactionRepository must not be null");
         this.objectStorage = Objects.requireNonNull(objectStorage, "objectStorage must not be null");
+        this.objectStoreClient =
+                Objects.requireNonNull(objectStoreClient, "objectStoreClient must not be null");
         this.fileStatusMapper =
                 Objects.requireNonNull(fileStatusMapper, "fileStatusMapper must not be null");
         this.inputSource = requireInputSource(configuredSource);
@@ -1158,12 +1248,13 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      */
     @Override
     public void close() {
-        final String closedGenerationKey = resolvedGenerationObjectKey;
+        // Captured before the close, which clears the field. Reduced to a present-or-absent marker rather
+        // than the key itself: see the class documentation's log-hygiene section.
+        final String closedGeneration = generationPresenceMarker(resolvedGenerationObjectKey);
         closeBackupGeneration();
 
-        LOG.info("{} closed; dataset={} source={} generationObjectKey={} recordsRead={}",
-                LOGICAL_FILE, DATASET_NAME, inputSource,
-                closedGenerationKey == null ? "n/a" : closedGenerationKey, Long.valueOf(recordsRead));
+        LOG.info("{} closed; dataset={} source={} generation={} recordsRead={}",
+                LOGICAL_FILE, DATASET_NAME, inputSource, closedGeneration, Long.valueOf(recordsRead));
     }
 
     /**
@@ -1200,7 +1291,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     /**
      * Resolves the concrete generation object key, once, in a fixed precedence.
      * <p>
-     * <b>Severity Blocker if this order is changed.</b> A relative generation reference is resolved once per
+     * <b>This order must not be changed.</b> A relative generation reference is resolved once per
      * job on z/OS and then held: {@code app/proc/TRANREPT.prc:L31} creates
      * {@code AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)} in {@code STEP01R} and {@code :L37} reads
      * {@code AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)} in {@code STEP05R} - the same spelling, the same generation.
@@ -1220,8 +1311,8 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      *       {@code STEP01R}-writes-then-{@code STEP05R}-reads case and the normal pipeline path.</li>
      *   <li><b>A lexical-greatest listing.</b> Only when neither of the above supplied a key, which is the
      *       documented standalone-invocation case: the {@code (0)} rather than the {@code (+1)} semantic. It
-     *       is a listing and a {@link Comparator#naturalOrder()} maximum - <b>no external process is
-     *       spawned, here or anywhere in this file</b>.</li>
+     *       is a listing and a maximum taken in {@link Comparator#naturalOrder()} order - <b>no external
+     *       process is spawned, here or anywhere in this file</b>.</li>
      * </ol>
      *
      * @param executionContext the step execution context, or {@code null} outside a step
@@ -1242,22 +1333,30 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
             final String checkpointed = blankToNull(
                     executionContext.getString(CONTEXT_KEY_GENERATION_OBJECT_KEY, ""));
             if (checkpointed != null) {
-                LOG.info("{} generation carried forward from the execution context: '{}'",
-                        LOGICAL_FILE, checkpointed);
-                return checkpointed;
+                // Validated BEFORE it is read from, not after: a value already read from is a redirected
+                // read, and this validator is what forecloses that. The key itself is not named in the
+                // emission - the context entry it arrived under is the diagnostic, and the key is readable
+                // from the job repository, which is where a value identifying a backup belongs.
+                final String verified = requireKeyWithinGeneration(checkpointed, "this step's own checkpoint");
+                LOG.info("{} generation carried forward from the execution context under '{}'",
+                        LOGICAL_FILE, CONTEXT_KEY_GENERATION_OBJECT_KEY);
+                return verified;
             }
         }
 
         if (promotedGenerationObjectKey != null) {
-            LOG.info("{} generation carried forward from a prior step under '{}': '{}'",
-                    LOGICAL_FILE, CONTEXT_KEY_GENERATION_OBJECT_KEY, promotedGenerationObjectKey);
-            return promotedGenerationObjectKey;
+            final String verified = requireKeyWithinGeneration(promotedGenerationObjectKey,
+                    "the job execution context entry " + CONTEXT_KEY_GENERATION_OBJECT_KEY);
+            LOG.info("{} generation carried forward from a prior step under '{}'",
+                    LOGICAL_FILE, CONTEXT_KEY_GENERATION_OBJECT_KEY);
+            return verified;
         }
 
         final String latest = resolveLatestGenerationObjectKey();
         LOG.info("{} no generation was promoted by a prior step, so the standalone (0) semantic applies; "
-                        + "resolved the lexicographically greatest key under prefix '{}': '{}'",
-                LOGICAL_FILE, generationPrefix, latest);
+                        + "resolved generation {} of {} under prefix '{}'",
+                LOGICAL_FILE, Integer.valueOf(resolvedGenerationCount),
+                Integer.valueOf(resolvedGenerationCount), generationPrefix);
         return latest;
     }
 
@@ -1266,9 +1365,16 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * the {@code (0)} - current generation - semantic.
      * <p>
      * Keys are written under a monotonically increasing prefix, so lexical order and generation order
-     * coincide and the greatest key is the current generation. The maximum is taken with
-     * {@link Comparator#naturalOrder()} over the listing; <b>no sort utility is invoked and no process is
-     * spawned</b>.
+     * coincide and the greatest key is the current generation. The maximum is taken in
+     * {@link Comparator#naturalOrder()} order in one pass over the listing, which also counts the
+     * generations so the diagnostic can name the selected one by ordinal rather than by key; <b>no sort
+     * utility is invoked and no process is spawned</b>.
+     * <p>
+     * <b>The listing is paged.</b> Finding H-07, severity High, RESOLVED: an earlier revision called
+     * {@code S3Operations.listObjects}, which issues one {@code ListObjectsV2} request and returns only that
+     * page. Past one page of keys under the base the maximum was therefore taken over an arbitrary subset, so
+     * "the current generation" silently resolved to a stale one and the report was produced from an old backup
+     * while looking entirely healthy. Every page is now walked.
      * <p>
      * <b>An absent generation is a failure, not an empty read, and the distinction is deliberate.</b>
      * {@code app/proc/TRANREPT.prc} creates the generation at {@code :L27-L31} and only then reads it at
@@ -1283,9 +1389,36 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * @throws FatalProcessingException if the listing is empty, or if the object store rejects the listing
      */
     private String resolveLatestGenerationObjectKey() {
-        List<S3Resource> generations;
+        Optional<String> greatest;
+        int observedGenerations = 0;
         try {
-            generations = objectStorage.listObjects(outputBucket, generationPrefix);
+            // EVERY page, not the first. objectStoreClient exists for this call alone; see its field
+            // documentation for the finding it resolves. The paginator issues one request per page and streams
+            // the results, so the greatest key below is computed over the complete key set at any scale while
+            // peak memory stays one page rather than one listing.
+            //
+            // Iterated rather than reduced by a stream because two values are wanted from one pass: the
+            // greatest key, and how many generations the listing held. The count is what lets the caller name
+            // the selected generation by ORDINAL instead of by key, which is the whole reason no emission on
+            // this path carries the key itself. Collecting the keys first to count them would reintroduce the
+            // unbounded listing this method exists to avoid, and a second listing call would be a second
+            // request against a set that can change between the two.
+            String greatestKey = null;
+            for (final S3Object listed : objectStoreClient.listObjectsV2Paginator(ListObjectsV2Request.builder()
+                            .bucket(outputBucket)
+                            .prefix(generationPrefix)
+                            .build())
+                    .contents()) {
+                final String key = listed.key();
+                if (key == null || key.isBlank() || key.endsWith("/")) {
+                    continue;
+                }
+                observedGenerations++;
+                if (greatestKey == null || key.compareTo(greatestKey) > 0) {
+                    greatestKey = key;
+                }
+            }
+            greatest = Optional.ofNullable(greatestKey);
         } catch (RuntimeException failure) {
             // Nothing is swallowed: the throwable is translated into the status vocabulary and then travels
             // as the cause of the abend.
@@ -1295,10 +1428,9 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
             throw abendException(ERROR_OPENING_MESSAGE, OPERATION_OPEN, failure);
         }
 
-        final Optional<String> greatest = generations.stream()
-                .map(TransactionBackupReader::objectKeyOf)
-                .filter(key -> key != null && !key.isBlank() && !key.endsWith("/"))
-                .max(Comparator.naturalOrder());
+        // Keys are written under a monotonically increasing prefix, so the greatest key is the last generation
+        // and its one-based ordinal is the count of generations that exist.
+        resolvedGenerationCount = observedGenerations;
 
         if (greatest.isEmpty()) {
             ioStatus = STATUS_FILE_UNAVAILABLE;
@@ -1316,18 +1448,106 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     }
 
     /**
-     * Extracts the object key from a listing entry.
+     * Confines a carried generation key to this reader's own generation namespace before it is logged or read.
      * <p>
-     * The key is taken from the entry's {@code Location}, which carries the full object name including every
-     * prefix segment, rather than from its file name, which carries only the last segment and would collide
-     * across generations. A pure function of its argument.
+     * <b>Finding M-11, severity Medium, RESOLVED.</b> A key arriving from an execution context is
+     * <em>untrusted input</em>: the batch metadata tables are writable by anything holding the datasource, and
+     * the promoted value is injected straight from {@code jobExecutionContext}. An earlier revision took it
+     * verbatim, logged it and read it, so a substituted value could redirect this step's read to any other
+     * object in the same bucket - the report generations, the statement work objects or another base's backups -
+     * and the report would be produced from that content without a word of complaint. Worse, the value reached a
+     * log line unfiltered, so a carriage return in it could forge a log entry.
+     * <p>
+     * Five conditions, all necessary, checked before anything is emitted or read:
+     * <ol>
+     *   <li>non-blank, because a blank key names the bucket rather than an object;</li>
+     *   <li>no longer than {@value #MAX_OBJECT_KEY_LENGTH} characters, the object-store key limit, so an
+     *       unbounded value cannot be carried into a request or a log;</li>
+     *   <li>every character printable ASCII, which is what forecloses the log-forging newline and any control
+     *       byte;</li>
+     *   <li>the configured generation prefix is a genuine prefix of it, and it contains no {@code ..} or
+     *       {@code //} segment - together, exact membership of this base's namespace;</li>
+     *   <li>it does not end in a separator, because that names a prefix and not an object.</li>
+     * </ol>
+     * Each rejection abends with file status {@code '35'} - the dataset is not available - rather than reading
+     * something else, because reading the wrong generation is worse than failing.
      *
-     * @param resource a listing entry; must not be {@code null}
-     * @return the object key, or {@code null} when the entry carries no location, which a well-formed
-     *     listing does not produce and which is therefore filtered rather than trusted
+     * @param key the carried key; must not be {@code null}
+     * @param origin where the key came from, named in the failure so an operator knows which entry to correct
+     * @return {@code key} unchanged, never {@code null}
+     * @throws FatalProcessingException if any condition fails
      */
-    private static String objectKeyOf(final S3Resource resource) {
-        return resource.getLocation() == null ? null : resource.getLocation().getObject();
+    private String requireKeyWithinGeneration(final String key, final String origin) {
+        String rejection = null;
+        if (key == null || key.isBlank()) {
+            rejection = "is blank";
+        } else if (key.length() > MAX_OBJECT_KEY_LENGTH) {
+            rejection = "is " + key.length() + " characters, past the " + MAX_OBJECT_KEY_LENGTH
+                    + "-character object-key limit";
+        } else if (!isPrintableAscii(key)) {
+            rejection = "carries a character outside printable ASCII";
+        } else if (!key.startsWith(generationPrefix)) {
+            rejection = "does not begin with the configured generation prefix";
+        } else if (key.contains("..") || key.contains("//")) {
+            rejection = "carries a '..' or '//' segment, so it does not name one object inside the prefix";
+        } else if (key.endsWith("/")) {
+            rejection = "ends with a separator, so it names a prefix rather than an object";
+        }
+        if (rejection == null) {
+            return key;
+        }
+        ioStatus = STATUS_FILE_UNAVAILABLE;
+        LOG.error(ERROR_OPENING_MESSAGE);
+        LOG.error(displayIoStatus(ioStatus));
+        // The rejected value is deliberately absent from the message: it failed validation, so it is exactly
+        // the value that must not be echoed. The entry that carried it is named instead, which is what an
+        // operator needs in order to correct it.
+        throw abendException(String.format(Locale.ROOT,
+                "%s: the %s generation key carried by %s %s, so it is not a member of the '%s' namespace this "
+                        + "step is configured to read. app/proc/TRANREPT.prc:L31 writes the generation and :L37 "
+                        + "reads that same generation; reading anything else would report on data this job "
+                        + "never backed up",
+                ERROR_OPENING_MESSAGE, DATASET_NAME, origin, rejection, generationPrefix),
+                OPERATION_OPEN, null);
+    }
+
+    /**
+     * Reports whether every character of a value is printable ASCII, space through tilde.
+     * <p>
+     * A pure function of its argument. Used to foreclose control bytes in a value that reaches an
+     * object-store request, and in one that reaches an abend message naming the rejection.
+     *
+     * @param value the value to inspect; must not be {@code null}
+     * @return {@code true} when every character is in the range 0x20 to 0x7E inclusive
+     */
+    private static boolean isPrintableAscii(final String value) {
+        for (int index = 0; index < value.length(); index++) {
+            final char character = value.charAt(index);
+            if (character < ' ' || character > '~') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Renders a resolved generation key as the log-safe marker {@code resolved} or {@code n/a}.
+     *
+     * <p><strong>Finding, severity Medium, resolved - CWE-532 and CWE-200.</strong> The open and close
+     * emissions named the resolved generation object key in full. A generation key identifies one concrete
+     * backup of the transaction cluster and the run that produced it, and because it is the same key for
+     * every record of a run, naming it once names it for the whole run. It is passed to object storage and
+     * to nothing else. What a diagnostic needs is whether a generation was in play at all - which
+     * distinguishes the {@code object-storage} path from the {@code repository} path, and a successful
+     * resolution from a failed one - and that is a two-valued fact, so a two-valued marker states it
+     * exactly. Where the selected generation's identity genuinely matters, the standalone {@code (0)}
+     * resolution reports it as {@linkplain #resolvedGenerationCount an ordinal out of a count} instead.
+     *
+     * @param generationObjectKey the resolved key, or {@code null} when none was resolved
+     * @return {@code "resolved"} when a generation is in play, {@code "n/a"} otherwise, never {@code null}
+     */
+    private static String generationPresenceMarker(final String generationObjectKey) {
+        return generationObjectKey == null ? "n/a" : "resolved";
     }
 
     // ====================================================================================================
@@ -1376,9 +1596,9 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         if (applResult == FileStatusMapper.APPL_AOK) {
             // IF APPL-AOK CONTINUE (:L244-L245)
             fileOpen = true;
-            LOG.info("{} opened; dataset={} source={} generationObjectKey={}",
+            LOG.info("{} opened; dataset={} source={} generation={}",
                     LOGICAL_FILE, DATASET_NAME, inputSource,
-                    resolvedGenerationObjectKey == null ? "n/a" : resolvedGenerationObjectKey);
+                    generationPresenceMarker(resolvedGenerationObjectKey));
         } else {
             // ELSE DISPLAY ... / MOVE status TO IO-STATUS / PERFORM 9910-DISPLAY-IO-STATUS /
             // PERFORM 9999-ABEND-PROGRAM (:L247-L250)
@@ -1407,15 +1627,14 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      */
     private String openInputSource() throws IOException {
         if (inputSource == InputSource.REPOSITORY) {
-            final long stored = transactionRepository.count();
-            if (stored == 0L) {
-                // An empty relation is a successful, complete run and not a fault. Stated explicitly so an
-                // operator is never left to infer it from silence.
-                LOG.info("{} source relation is empty; the read will complete with a record count of 0",
-                        LOGICAL_FILE);
-            } else {
-                LOG.info("{} source relation holds {} rows", LOGICAL_FILE, Long.valueOf(stored));
-            }
+            // M-07: no count() here. An exact count is a full scan of the relation this reader is about to
+            // walk in bounded windows anyway, and it was issued only to be logged - so the scan bought a log
+            // line and nothing else. Reachability is established by the first bounded fetch, which has to
+            // happen regardless, and emptiness is reported at the end of the run from the emitted-row
+            // counter, where it is a fact rather than a prediction. An operator is told either way; see the
+            // end-of-run summary.
+            LOG.info("{} source relation opened; the first bounded window establishes whether it holds rows",
+                    LOGICAL_FILE);
             return STATUS_SUCCESS;
         }
 
@@ -1464,8 +1683,8 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
             LOG.error(displayIoStatus(ioStatus));
             throw abendException(ERROR_READING_MESSAGE, OPERATION_OPEN, failure);
         }
-        LOG.info("{} resumed: skipped {} records already emitted from generation '{}'",
-                LOGICAL_FILE, Long.valueOf(recordsRead), resolvedGenerationObjectKey);
+        LOG.info("{} resumed: skipped {} records already emitted from the resolved generation",
+                LOGICAL_FILE, Long.valueOf(recordsRead));
     }
 
     // ====================================================================================================
@@ -1699,12 +1918,12 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         if (filled != RECORD_LENGTH) {
             throw new DataIntegrityException(String.format(Locale.ROOT,
                     "%s record %d is %d characters but app/cpy/CVTRA05Y.cpy:L2 declares RECLN = %d and "
-                            + "app/proc/TRANREPT.prc:L29 declares DCB=(LRECL=%d,RECFM=FB,BLKSIZE=0); "
-                            + "generation '%s' in bucket '%s' is truncated at that record and no field "
+                            + "app/proc/TRANREPT.prc:L29 declares DCB=(LRECL=%d,RECFM=FB,BLKSIZE=0); the "
+                            + "resolved generation in bucket '%s' is truncated at that record and no field "
                             + "offset after character %d can be trusted",
                     LOGICAL_FILE, Long.valueOf(recordsRead + 1L), Integer.valueOf(filled),
                     Integer.valueOf(RECORD_LENGTH), Integer.valueOf(RECORD_LENGTH),
-                    resolvedGenerationObjectKey, outputBucket, Integer.valueOf(filled)),
+                    outputBucket, Integer.valueOf(filled)),
                     LOGICAL_FILE, DATASET_NAME);
         }
 
@@ -1771,10 +1990,10 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
             lastSkippedImage = readFixedWidthImage();
             if (lastSkippedImage == null) {
                 throw new FileAccessException(String.format(Locale.ROOT,
-                        "%s restart cannot resume: generation '%s' in bucket '%s' holds only %d records but "
-                                + "the execution context reports %d already emitted, so this is not the "
-                                + "generation the previous run read",
-                        LOGICAL_FILE, resolvedGenerationObjectKey, outputBucket, Long.valueOf(skipped),
+                        "%s restart cannot resume: the resolved generation in bucket '%s' holds only %d "
+                                + "records but the execution context reports %d already emitted, so this is "
+                                + "not the generation the previous run read",
+                        LOGICAL_FILE, outputBucket, Long.valueOf(skipped),
                         Long.valueOf(alreadyEmitted)),
                         STATUS_FILE_UNAVAILABLE, LOGICAL_FILE, OPERATION_OPEN);
             }
@@ -1788,10 +2007,10 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
                 "TRAN-ID", alreadyEmitted);
         if (!observed.equals(expectedLastTransactionId)) {
             throw new DataIntegrityException(String.format(Locale.ROOT,
-                    "%s restart cannot resume: record %d of generation '%s' in bucket '%s' does not carry "
-                            + "the TRAN-ID the execution context checkpointed, so the generation changed "
-                            + "between runs and resuming would skip or repeat records",
-                    LOGICAL_FILE, Long.valueOf(alreadyEmitted), resolvedGenerationObjectKey, outputBucket),
+                    "%s restart cannot resume: record %d of the resolved generation in bucket '%s' does "
+                            + "not carry the TRAN-ID the execution context checkpointed, so the generation "
+                            + "changed between runs and resuming would skip or repeat records",
+                    LOGICAL_FILE, Long.valueOf(alreadyEmitted), outputBucket),
                     CONTEXT_KEY_LAST_TRANSACTION_ID, DATASET_NAME);
         }
     }
@@ -1940,15 +2159,15 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * digit. Accordingly this method is applied at bytes 133-143 and nowhere else: it never scans, never
      * searches and never replaces.
      * <p>
-     * <b>Worked decodes, all measured.</b> For this exact eleven-character geometry:
-     * {@code 0000005047G} is {@code 504.77}, {@code 0000009190}<code>&#125;</code> is {@code -919.00}, and
-     * {@code 0000000678H} is {@code 67.88}. For sibling geometries:
-     * {@code app/data/ASCII/acctdata.txt:L1} holds {@code 00000001940}<code>&#123;</code> at bytes 13-24 for
-     * {@code +194.00}, {@code 00000020200}<code>&#123;</code> at 25-36 for {@code +2020.00} and
-     * {@code 00000010200}<code>&#123;</code> at 37-48 for {@code +1020.00};
-     * {@code app/data/ASCII/tcatbal.txt:L1} ends {@code 0000000000}<code>&#123;</code>; and
-     * {@code app/data/ASCII/discgrp.txt:L18} reads {@code DEFAULT   01000100150}<code>&#123;</code>, whose
-     * six-character {@code S9(04)V99} tail decodes to {@code +15.00}.
+     * <b>How a decode resolves.</b> For this exact eleven-character {@code S9(09)V99} geometry the first ten
+     * characters are digits and the eleventh carries both the sign and the final digit, so
+     * {@code dddddddddd} followed by {@code G} yields a positive value whose last digit is 7,
+     * {@code dddddddddd} followed by <code>&#125;</code> yields a negative value whose last digit is 0, and
+     * {@code dddddddddd} followed by {@code H} yields a positive value whose last digit is 8. The implied
+     * decimal point sits two digits from the right in every case. The sibling geometries decode on the same
+     * rule at their own widths: twelve characters for the {@code S9(10)V99} money fields of
+     * {@code app/data/ASCII/acctdata.txt}, eleven for {@code app/data/ASCII/tcatbal.txt}, and six for the
+     * {@code S9(04)V99} rate tail of {@code app/data/ASCII/discgrp.txt}.
      * <p>
      * <b>No normalisation of any kind is applied.</b> There is no absolute value, no sign stripping and no
      * unconditional negation: the sign is applied if and only if the terminal character encodes one. Negative
@@ -2325,9 +2544,11 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         // beginning rather than seeking to a key that was never recorded.
         pageKeyTransactionId = lastTransactionId;
 
-        LOG.info("Resuming {} read after {} records; source={} lastTransactionId={}",
+        // The checkpointed transaction identifier is reported as present or absent, never by value: the
+        // record count above IS the restart position, and the identifier only corroborates it.
+        LOG.info("Resuming {} read after {} records; source={} checkpointedKey={}",
                 LOGICAL_FILE, Long.valueOf(recordsRead), inputSource,
-                lastTransactionId == null ? "none" : lastTransactionId);
+                lastTransactionId == null ? "absent" : "present");
     }
 
     /**
@@ -2401,7 +2622,14 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
                             + "generation of a different base; the default is '%s'",
                     PROPERTY_GENERATION_PREFIX, DATASET_NAME, DEFAULT_GENERATION_PREFIX));
         }
-        return configured.strip();
+        final String stripped = configured.strip();
+
+        // L-04: object storage has no directories, so a prefix match is a plain string match. Without a
+        // trailing separator 'gdg/transact-bkup' also matches 'gdg/transact-bkup-shadow', and a generation of
+        // that unrelated base could be selected as the greatest key - silently reporting on the wrong data.
+        // Exactly one separator is appended, so a value that already ends in one is not doubled into a key
+        // segment with an empty name.
+        return stripped.endsWith(KEY_SEPARATOR) ? stripped : stripped + KEY_SEPARATOR;
     }
 
     /**

@@ -41,8 +41,10 @@
  */
 package com.cardemo.config;
 
+import com.fasterxml.jackson.core.StreamReadConstraints;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.List;
 import java.util.Locale;
 
 import org.slf4j.Logger;
@@ -52,6 +54,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.format.FormatterRegistry;
 import org.springframework.format.Printer;
+import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.converter.json.AbstractJackson2HttpMessageConverter;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import com.cardemo.exception.ValidationException;
@@ -60,8 +64,9 @@ import com.cardemo.exception.ValidationException;
  * Web-layer configuration: the request-binding half of the CICS-to-REST substitution.
  *
  * <p><b>What it does.</b> It publishes exactly three singleton beans, contributes exactly those same three
- * objects as registrations to the Spring MVC conversion service, and overrides exactly one method,
- * {@link #addFormatters(FormatterRegistry)}. All three reproduce COBOL behaviour that has no Spring default
+ * objects as registrations to the Spring MVC conversion service, and overrides exactly two methods,
+ * {@link #addFormatters(FormatterRegistry)} and
+ * {@link #extendMessageConverters(List)}. All three reproduce COBOL behaviour that has no Spring default
  * equivalent:</p>
  * <ul>
  *   <li><b>Numeric converter 1 of 2</b> - {@link StrictIdentifierConverter}, the digits-only parser standing
@@ -312,6 +317,61 @@ public class WebConfig implements WebMvcConfigurer {
      * navigation intent name the parameter identically on the wire and in their refusals.
      */
     public static final String NAVIGATION_ACTION_PARAMETER = "action";
+
+    /**
+     * The deepest nesting a request body may declare, namely 8.
+     *
+     * <p>The deepest structure any request type in this application declares is three: the request object, one
+     * of its two snapshot groups, and that group's leaf fields. {@code AccountUpdateRequest} and
+     * {@code CardUpdateRequest} are both that shape. Eight therefore admits every legitimate document with
+     * more than double the margin, while refusing the thousands-deep document whose only purpose is to turn
+     * parsing into recursion. Jackson's own default is 1000, which no body here comes within two orders of
+     * magnitude of needing.
+     */
+    public static final int MAX_JSON_NESTING_DEPTH = 8;
+
+    /**
+     * The longest single string value a request body may carry, namely 4096 characters.
+     *
+     * <p>The widest field any symbolic map in {@code app/cpy-bms} declares is 80 characters, so no legitimate
+     * value approaches this. The margin is deliberate: a value between 80 and 4096 must be refused by the
+     * field's own {@code @Size} constraint, which reports WHICH field was wrong in the shape the
+     * {@code app/cpy/CSSETATY.cpy} error-marker contract requires. A parser limit set near the field widths
+     * would pre-empt that report with an opaque parse failure, so this bound exists to stop the pathological
+     * case only and leaves the field contract to do the field-level work.
+     */
+    public static final int MAX_JSON_STRING_LENGTH = 4096;
+
+    /**
+     * The longest numeric token a request body may carry, namely 64 characters.
+     *
+     * <p>The largest number any field contract admits is the 16-digit identifier of
+     * {@link #IDENTIFIER_MAX_DIGITS} and the {@code PIC S9(9)V99} amount, which is 12 characters with its sign
+     * and point. 64 is far beyond both and well below the length at which decoding a numeric literal becomes
+     * the expensive operation - the concern being a token long enough to make {@code BigDecimal} conversion
+     * itself the attack, which is why the bound is on the token and not on the value.
+     */
+    public static final int MAX_JSON_NUMBER_LENGTH = 64;
+
+    /**
+     * The longest property name a request body may carry, namely 256 characters.
+     *
+     * <p>The longest name any DTO declares is well under 40 characters. The bound matters even though
+     * {@code spring.jackson.deserialization.fail-on-unknown-properties} is true and an unrecognised property
+     * is therefore refused: the name is read and buffered BEFORE it can be compared against the known set, so
+     * without this an unknown property could be arbitrarily long and still allocate before being rejected.
+     */
+    public static final int MAX_JSON_NAME_LENGTH = 256;
+
+    /**
+     * The greatest total document length the parser will accept, namely 16384 bytes.
+     *
+     * <p>Deliberately equal to the request-body bound enforced by the filter in {@code SecurityConfig}, so the
+     * two agree rather than leaving a window in which one permits what the other refuses. It is not redundant
+     * with that filter: this one also governs bodies that reach the parser by another route, and it makes the
+     * limit visible to a reader of this class rather than only to a reader of the security configuration.
+     */
+    public static final int MAX_JSON_DOCUMENT_LENGTH = 16384;
 
     /**
      * Logger for this configuration. A {@code static final} holder, so no mutable static state exists here.
@@ -593,6 +653,61 @@ public class WebConfig implements WebMvcConfigurer {
                         + "and 1 edited-amount printer on mask {}, all three being the published singleton "
                         + "beans rather than private copies",
                 AMOUNT_EDITED_MASK);
+    }
+
+    /**
+     * Bounds what the JSON parser will accept from a request body, at the parser rather than at the type.
+     *
+     * <p><strong>Finding, severity High - remediated here, together with the request-body bound in
+     * {@code SecurityConfig}.</strong> The two are complementary and neither substitutes for the other. That
+     * one caps how many BYTES a caller may make this application read; this one caps what a document of legal
+     * size may ask the parser to DO. A 16 KB body is not large, and it is still ample room for a nesting depth
+     * of thousands - and it is depth, not size, that turns parsing into recursion deep enough to exhaust the
+     * stack. A body bound alone would leave that open; parser constraints alone would leave an unbounded read
+     * open.
+     *
+     * <p>These limits cannot be expressed as properties. Spring Boot exposes much of Jackson through
+     * {@code spring.jackson.*}, but {@link StreamReadConstraints} is a property of the underlying
+     * {@code JsonFactory} and has no property binding, which is why this is configured in code.
+     *
+     * <p>Every value below is derived from the field contracts of {@code app/cpy-bms}, not chosen for
+     * roundness; the reasoning for each is on its constant. The converters are reached through the list Spring
+     * hands over, so the constraints apply to the very {@code ObjectMapper} that binds
+     * {@code @RequestBody} - configuring a mapper of our own would leave the one actually in use untouched.
+     *
+     * <p>Side effects: mutates the parser factory of the JSON converters in the list Spring owns, once, during
+     * context refresh. Performs no input or output and starts no thread.
+     *
+     * @param converters the message converters Spring has already assembled; never null
+     */
+    @Override
+    public void extendMessageConverters(final List<HttpMessageConverter<?>> converters) {
+
+        final StreamReadConstraints constraints = StreamReadConstraints.builder()
+                .maxNestingDepth(MAX_JSON_NESTING_DEPTH)
+                .maxStringLength(MAX_JSON_STRING_LENGTH)
+                .maxNumberLength(MAX_JSON_NUMBER_LENGTH)
+                .maxNameLength(MAX_JSON_NAME_LENGTH)
+                .maxDocumentLength(MAX_JSON_DOCUMENT_LENGTH)
+                .build();
+
+        int constrained = 0;
+        for (final HttpMessageConverter<?> converter : converters) {
+            if (converter instanceof AbstractJackson2HttpMessageConverter jacksonConverter) {
+                jacksonConverter.getObjectMapper().getFactory().setStreamReadConstraints(constraints);
+                constrained++;
+            }
+        }
+
+        LOGGER.debug(
+                "Applied JSON stream-read constraints to {} Jackson converter(s): nesting depth {}, string "
+                        + "length {}, number length {}, name length {}, document length {}",
+                constrained,
+                MAX_JSON_NESTING_DEPTH,
+                MAX_JSON_STRING_LENGTH,
+                MAX_JSON_NUMBER_LENGTH,
+                MAX_JSON_NAME_LENGTH,
+                MAX_JSON_DOCUMENT_LENGTH);
     }
 
     /**

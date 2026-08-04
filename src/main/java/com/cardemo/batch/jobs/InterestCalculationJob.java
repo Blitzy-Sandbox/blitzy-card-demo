@@ -81,7 +81,6 @@ import com.cardemo.model.entity.TransactionCategoryBalance;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.model.enums.TransactionSource;
 import com.cardemo.observability.CorrelationIdFilter;
-import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.DisclosureGroupRepository;
@@ -142,20 +141,25 @@ import io.awspring.cloud.s3.S3Operations;
  * updated</strong>: its accumulated interest is never added to {@code ACCT-CURR-BAL} and its two cycle
  * counters are never reset. Because {@code app/cbl/CBTRN02C.cbl:L403}-{@code :L405} computes the
  * over-limit test by subtracting the cycle-debit accumulator, that one account's over-limit arithmetic
- * behaves differently on the following posting cycle - in the planned
- * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which is named by the migration plan and is
- * not authored at this commit, this job being the only one {@code batch/jobs} holds. That is the behaviour
+ * behaves differently on the following posting cycle - in
+ * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which <strong>is authored</strong>, so the
+ * consequence is observable rather than hypothetical. An earlier revision of this paragraph described that
+ * job as unauthored and this one as the only job {@code batch/jobs} holds; both statements are withdrawn.
+ * The package now holds <strong>three of its six target jobs</strong> - this one,
+ * {@code DailyTransactionPostingJob} and {@code StatementGenerationJob} - and what remains outstanding is
+ * {@code CombineTransactionsJob}, {@code TransactionReportJob} and the planned
+ * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. The lost final flush is the behaviour
  * of the system of record and it is reproduced exactly.
  * {@code InterestCalculationProcessor.updateAccountAtEndOfFile()} retains the branch as a marked,
  * unreachable no-op so the paragraph map stays provable - it lives there, with the rest of the
  * {@code :L185}-{@code :L232} loop body it belongs to, rather than being duplicated here.
  * <strong>No final flush is implemented and none may be added.</strong>
  *
- * <p><b>The Agent Action Plan is wrong here.</b> &sect;0.7.3.3 states that "when the loop detects end
- * of file it performs the account update one final time". That claim does not hold against the source
- * and this class contradicts it deliberately. Severity: <b>Blocker</b>, because a well-meaning
- * implementation of the asserted flush would post one extra account update per run and reset counters
- * the source leaves standing.
+ * <p><b>Where the variance against the specification prose is recorded.</b> The reading above is derived
+ * from the frozen corpus and differs from what the specification prose describes. That variance is
+ * disclosed exactly once, with its severity and its remediation, in the register carried by the
+ * documentation of the {@code com.cardemo} root package; it is deliberately not restated here, because a
+ * second copy of a correction is what lets the two drift apart.
  *
  * <p><b>Proof by contrast - three programs, three structures.</b> The same visual idiom appears twice
  * more in the corpus with different reachability, which is exactly why it had to be read from disk
@@ -286,10 +290,14 @@ import io.awspring.cloud.s3.S3Operations;
  * later job or step reads back exactly what this run created and <strong>never re-resolves "latest"
  * mid-pipeline.</strong>
  *
- * <p>Side effects beyond that object: the previous account's row is rewritten on each control break by
- * the processor, and {@link MetricsConfig#countRecordProcessed()} is advanced once per emitted record.
- * No message is published, no client is constructed, nothing is read from the process environment, and
- * the transaction table is not touched.
+ * <p>Side effects beyond that object: the previous account's row is rewritten on each control break by the
+ * processor. <strong>No application counter is advanced.</strong> The four instruments
+ * {@code com.cardemo.observability.MetricsConfig} owns are untouched here - the records-processed counter
+ * reproduces {@code DISPLAY 'TRANSACTIONS PROCESSED :'} at {@code app/cbl/CBTRN02C.cbl:L227}, a counter
+ * {@code CBACT04C} does not have, over a population this job does not read - and this job's own volume is
+ * published by Spring Batch as {@code spring.batch.item.write} and {@code spring.batch.step}. No message is
+ * published, no client is constructed, nothing is read from the process environment, and the transaction table
+ * is not touched.
  *
  * <h2>Error modes and troubleshooting</h2>
  *
@@ -412,9 +420,10 @@ import io.awspring.cloud.s3.S3Operations;
  * {@link InterestCalculationProcessor} because both sit inside the loop body it owns:
  * {@code computeFees()}, which is empty but <em>reachable</em> in the source
  * ({@code :L518}-{@code :L520}, performed at {@code :L216}), and
- * {@code updateAccountAtEndOfFile()}, which is <em>unreachable</em> ({@code :L219}-{@code :L220}).
- * They are documented from here because a reader of the <em>job</em> is who needs warning that no final
- * flush exists; they are not re-declared here, because a second never-invoked copy of a method the
+ * {@code updateAccountAtEndOfFile()}, which reproduces the end-of-data arm at
+ * {@code :L219}-{@code :L220} that the source reaches only through {@code :L196}.
+ * They are documented from here because a reader of the <em>job</em> is who needs to know which flush the
+ * source reaches; they are not re-declared here, because a second never-invoked copy of a method the
  * processor already owns would be the very dead code and duplication clauses B and C forbid. Severity
  * of that placement decision: <b>Low</b>, owed an entry in the planned {@code DECISION_LOG.md}.
  *
@@ -1057,14 +1066,6 @@ public class InterestCalculationJob {
      */
     private final FileStatusMapper fileStatusMapper;
 
-    /**
-     * The owner of the four - and only four - batch counters. This class advances exactly one of them,
-     * {@code carddemo.batch.records.processed}, once per emitted record, replacing the end-of-run
-     * {@code DISPLAY} counters that the corpus uses for the same purpose. <b>No fifth instrument, no
-     * timer, no gauge and no high-cardinality tag is registered anywhere in this file.</b>
-     */
-    private final MetricsConfig metricsConfig;
-
     /** The job name, from {@code carddemo.batch.jobs.intcalc.name}. */
     private final String jobName;
 
@@ -1116,7 +1117,6 @@ public class InterestCalculationJob {
      * @param transactionWriter consulted only for the 350-byte record geometry, never for its writes
      * @param s3Operations the object-storage gateway standing in for the {@code SYSTRAN} generations
      * @param fileStatusMapper the single {@code FILE STATUS} translation
-     * @param metricsConfig the owner of the four batch counters
      * @param jobName the job name, defaulting to {@value #DEFAULT_JOB_NAME}
      * @param chunkSize the commit interval, defaulting to {@value #DEFAULT_CHUNK_SIZE}
      * @param batchOutputBucket the versioned output bucket; required, so a missing value fails startup
@@ -1132,7 +1132,6 @@ public class InterestCalculationJob {
             final TransactionWriter transactionWriter,
             final S3Operations s3Operations,
             final FileStatusMapper fileStatusMapper,
-            final MetricsConfig metricsConfig,
             @Value("${carddemo.batch.jobs.intcalc.name:" + DEFAULT_JOB_NAME + "}") final String jobName,
             @Value("${carddemo.batch.intcalc.chunk-size:${carddemo.batch.chunk-size:"
                     + DEFAULT_CHUNK_SIZE + "}}") final int chunkSize,
@@ -1152,7 +1151,6 @@ public class InterestCalculationJob {
         this.transactionWriter = requireCollaborator(transactionWriter, "transactionWriter");
         this.s3Operations = requireCollaborator(s3Operations, "s3Operations");
         this.fileStatusMapper = requireCollaborator(fileStatusMapper, "fileStatusMapper");
-        this.metricsConfig = requireCollaborator(metricsConfig, "metricsConfig");
         this.jobName = requireText(jobName, "carddemo.batch.jobs.intcalc.name");
         this.chunkSize = requirePositive(chunkSize, "carddemo.batch.intcalc.chunk-size");
         this.batchOutputBucket = requireText(batchOutputBucket, "carddemo.aws.s3.batch-output-bucket");
@@ -2275,11 +2273,13 @@ public class InterestCalculationJob {
 
             publishGeneration(jobExecution, jobInstanceId, objectKey);
 
-            // Replaces the end-of-run DISPLAY counters of the corpus with the one counter this job is
-            // entitled to advance. One increment per record, so the metric counts records and not chunks.
-            for (int record = 0; record < recordCount; record++) {
-                metricsConfig.countRecordProcessed();
-            }
+            // The records-processed counter is deliberately NOT advanced here. It reproduces
+            // DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT at app/cbl/CBTRN02C.cbl:L227 - a counter
+            // that CBACT04C does not have and never emitted, and one that counts the daily transaction records
+            // POSTTRAN read rather than the interest transactions this job generates. Feeding both populations
+            // into one untagged series produced a total belonging to no single job and decomposable by no query.
+            // This job's own volume is published by Spring Batch as spring.batch.item.write and
+            // spring.batch.step, per step and per job, so nothing is lost by not double-counting it here.
 
             LOG.debug("{} wrote {} records ({} bytes) to {}", DD_TRANSACT,
                     Integer.valueOf(recordCount), Integer.valueOf(payload.length), objectKey);

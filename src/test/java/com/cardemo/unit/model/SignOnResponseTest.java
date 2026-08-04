@@ -75,6 +75,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Unit suite for {@link SignOnResponse}, the token bearing reply that replaces the COMMAREA
@@ -1707,4 +1709,76 @@ final class SignOnResponseTest {
                 .withMessage("SignOnResponse declares no accessor named noSuchAccessor")
                 .withCauseInstanceOf(NoSuchMethodException.class);
     }
+
+    /**
+     * The diagnostic rendering may not be turned into a forged log record.
+     *
+     * <p><strong>Finding, severity Medium - remediated by the rendering these tests pin.</strong> Every
+     * component {@code toString()} emits is declared {@code String} and arrives from a JSON request body, so a
+     * caller controlled its bytes. Concatenated straight in, a CR or LF forged as many further log lines as the
+     * caller liked, in the exact shape a reader trusts.
+     *
+     * <p>The timing is what made it reachable rather than theoretical: {@code @Size} and {@code @Pattern} run
+     * <em>after</em> Jackson has constructed the record, and a validation failure is exactly the occasion on
+     * which something renders the offending instance - so the rendering has to be safe on an instance that
+     * never passed validation. These tests therefore build hostile values directly, without validating them,
+     * which is the state the defect actually occurred in.
+     */
+    @Nested
+    @DisplayName("the diagnostic rendering cannot forge a log record")
+    class HostileDiagnosticRendering {
+
+        @ParameterizedTest(name = "a CR/LF payload in {0} cannot break the record")
+        @ValueSource(strings = {"userId", "userType"})
+        @DisplayName("a control character in any rendered component is escaped, not emitted")
+        void aControlCharacterInAnyRenderedComponentIsEscaped(final String component) {
+            final String hostile = "AAA\r\n2026-08-04 INFO forged FORGED-RECORD";
+
+            final String rendered = baselineWith(component, hostile).toString();
+
+            assertThat(rendered)
+                    .as("the raw terminators must be gone, or the rendering is one log record per attacker "
+                            + "newline rather than one per event")
+                    .doesNotContain("\r")
+                    .doesNotContain("\n");
+            assertThat(rendered.lines().count())
+                    .as("and the whole rendering must remain exactly one line")
+                    .isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("the escaped payload is still legible, so the evidence survives neutralisation")
+        void theEscapedPayloadRemainsLegible() {
+            final String rendered = baselineWith("userId", "AAA\r\nFORGED-RECORD").toString();
+
+            assertThat(rendered)
+                    .as("a reader investigating a hostile request needs to see what arrived; escaping the "
+                            + "terminator must not discard the value around it")
+                    .contains("FORGED-RECORD")
+                    .contains("\\u000D")
+                    .contains("\\u000A");
+        }
+
+        @Test
+        @DisplayName("an over-long component is bounded, so one field cannot flood the record")
+        void anOverLongComponentIsBounded() {
+            final String rendered = baselineWith("userId", "q".repeat(400)).toString();
+
+            assertThat(rendered)
+                    .as("the length constraints have not run on an instance being rendered because it failed "
+                            + "them, so the rendering bounds the value itself")
+                    .contains("chars)")
+                    .hasSizeLessThan(600);
+        }
+
+        @Test
+        @DisplayName("a benign instance renders unchanged, so the guard is invisible in normal use")
+        void aBenignInstanceRendersUnchanged() {
+            assertThat(baseline().toString())
+                    .as("neutralisation must not alter what an ordinary log record says")
+                    .doesNotContain("chars)")
+                    .doesNotContain("\\u");
+        }
+    }
+
 }

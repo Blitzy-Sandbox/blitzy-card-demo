@@ -82,11 +82,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * <h2>What it does</h2>
  *
  * <p>It proves the persistence contract of {@code user_security}, the table that replaces the VSAM cluster
- * {@code AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS}. Five things are asserted and nothing else is: that the ten
+ * {@code AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS}. Six things are asserted and nothing else is: that the ten
  * seeded credentials are stored only as BCrypt digests at the pinned strength, that the user class travels
  * to the column as a single character through an attribute converter, that the table's shape is exactly the
- * shape the migrations declare, that each of its constraints is genuinely enforced by the engine, and that
- * the legacy user-list browse order and page size survive as an ordered paged finder.
+ * shape the migrations declare, that each of its constraints is genuinely enforced by the engine, that the
+ * legacy user-list browse order and page size survive as an ordered paged finder, and that the locked read
+ * replacing {@code EXEC CICS READ ... UPDATE} genuinely takes a row lock in the engine rather than merely
+ * carrying an annotation.
  *
  * <h3>The field contract, from the frozen source</h3>
  *
@@ -104,15 +106,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <p>{@code 8 + 20 + 20 + 8 + 1 + 23 = 80}, the catalogued length. The trailing item is a
  * <strong>named</strong> filler, which is unusual in this corpus - every other record layout uses an
- * anonymous {@code FILLER} - and is recorded here as a <strong>Low</strong>-severity source anomaly. A name
+ * anonymous {@code FILLER} - and is recorded here as a source anomaly. A name
  * does not make it data: it is not mapped to a column, and this class asserts that the table has exactly
  * five columns and that no {@code sec_usr_filler} column exists.
  *
- * <h3>A citation correction, and a citation refinement</h3>
+ * <h3>Where this file takes the geometry from, and why those locators</h3>
  *
- * <p><strong>Severity Medium.</strong> The Agent Action Plan states at section 0.2.1.6 that {@code USRSEC}
- * "is defined in JCL rather than catalogued here". That is <strong>wrong</strong>, and the correction
- * matters because it changes which artefact is authoritative for the geometry. The cluster is catalogued:
+ * <p>The {@code USRSEC} cluster is catalogued as well as defined in JCL, and the catalogue is what this file
+ * reads, because it carries the geometry directly:
  * {@code app/catlg/LISTCAT.txt:3846} reads {@code CLUSTER ------- AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS}, and
  * its geometry is at {@code :3883}, {@code KEYLEN-----------------8     AVGLRECL--------------80}. The
  * width is therefore doubly grounded, because {@code app/jcl/DUSRSECJ.jcl:64-66} independently declares
@@ -122,8 +123,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * has no alternate index at all, and {@code :3888} reports {@code REC-TOTAL 10}, the physical row count
  * that the seed reproduces.
  *
- * <p><strong>Severity Low.</strong> A folder-level requirement cites "L3881, L3913" for the geometry.
- * Those two lines are both {@code CLUSTER--AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS} <em>back-references</em>,
+ * <p>Two nearby lines, {@code :3881} and {@code :3913}, are the wrong place to read that geometry from.
+ * Both are {@code CLUSTER--AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS} <em>back-references</em>,
  * emitted inside the {@code DATA} component listing that begins at {@code :3873} and the {@code INDEX}
  * component listing that begins at {@code :3906}. They name the cluster; they do not carry the key length
  * or the record length. The correct pair is {@code :3846} and {@code :3883}, which is what this file cites.
@@ -143,7 +144,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * is referred to only as <em>the single shared literal plaintext value recorded at
  * {@code app/jcl/DUSRSECJ.jcl:35-44}</em> - not in code, not in a comment, not in Javadoc, not in a
  * variable name, not in an assertion description, and not spelled out obliquely. Writing it would be a
- * <strong>Blocker</strong> under Rule 1 Clause D, which names {@code tests} explicitly.
+ * forbidden under Rule 1 Clause D, which names {@code tests} explicitly.
  *
  * <p>That prohibition rules out the assertion a reader might expect. A "the stored value does not equal the
  * plaintext" check would require writing the plaintext in order to compare against it, and writing it
@@ -176,13 +177,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * <p>{@link UserSecurity} maps it with a nested {@code AttributeConverter}, not with an enumerated mapping,
  * and this class asserts the stored character directly because that is the only assertion able to catch the
  * mistake. A string-enumerated mapping would try to write {@code ADMIN} and {@code USER} into a
- * {@code CHAR(1)}; an ordinal one would write {@code 0} and {@code 1}. Either is a <strong>Blocker</strong>.
+ * {@code CHAR(1)}; an ordinal one would write {@code 0} and {@code 1}. Either breaks parity.
  *
  * <h3>Zero foreign keys, no index, no version column</h3>
  *
  * <p>None of the migration's ten foreign keys touches this table, in either direction. In the source a user
  * is not linked to an account, a card or a customer, so inventing such a link would be a
- * <strong>Blocker</strong>. The three non-unique B-tree indexes that replace the catalogue's three
+ * The three non-unique B-tree indexes that replace the catalogue's three
  * alternate indexes are all on other tables, and this cluster has no alternate index to replace. The
  * {@code version} column exists on exactly four tables and this is not one of them; the ten inline card
  * images carry no counter, so there is nothing for optimistic locking to reproduce.
@@ -192,9 +193,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * <p>{@code app/cbl/COUSR03C.cbl} deletes a user without ever comparing the target identifier against the
  * signed-on one: a census of that 359-line program finds <strong>zero</strong> occurrences of
  * {@code CDEMO-USER-ID}, and the delete is issued unconditionally at {@code :307}. A signed-on
- * administrator can therefore delete their own row. That is a preserved legacy quirk, owed a row in the
- * planned {@code TRACEABILITY_MATRIX.md} and an entry in the planned {@code DECISION_LOG.md}, and adding
- * the guard would be a behaviour change and is forbidden. Accordingly this class asserts only that deleting
+ * administrator can therefore delete their own row. That is a preserved legacy quirk, and adding the guard
+ * would be a behaviour change and is forbidden. Accordingly this class asserts only that deleting
  * an existing row succeeds, and never that a self-delete is refused.
  *
  * <h2>How to run, build and test</h2>
@@ -252,7 +252,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       reads. Its value is ten, from {@code app/cbl/COUSR00C.cbl:57}, and it is injected rather than
  *       written as a literal so that the page size under test is the one the production service receives.</li>
  *   <li><strong>BCrypt strength exactly 10</strong> is the pinned work factor and is asserted, not assumed.
- *       It is never lowered to make this class run faster; that would be a <strong>Blocker</strong>.</li>
+ *       It is never lowered to make this class run faster; that would break parity.</li>
  *   <li><strong>The {@code CHAR} blank-pad policy, stated once and applied throughout.</strong> A
  *       {@code CHAR(n)} column returns its value blank-padded to {@code n} and is never trimmed, so
  *       {@code sec_usr_fname} and {@code sec_usr_lname} come back as twenty characters and the eight-character
@@ -261,8 +261,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       because PostgreSQL's own {@code length()} and text coercion silently strip trailing blanks from a
  *       fixed-width value and would have suggested the opposite.</li>
  *   <li><strong>The token signing key</strong> resolves from the environment with no default and fails fast
- *       in every profile. No signing-key literal appears here; the harness registers a synthetic value for
- *       context startup, and this class issues no token and asserts nothing about one.</li>
+ *       in every profile. No signing-key literal appears here or in the harness; the harness generates an
+ *       ephemeral key per context for startup, and this class issues no token and asserts nothing about
+ *       one.</li>
  *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
@@ -271,7 +272,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *   <li><em>Every test fails to start with a container or Docker error.</em> There is no reachable Docker
  *       socket. State the blocker rather than reporting an untested pass.</li>
  *   <li><em>A Testcontainers artefact fails to resolve, or the wrong major version resolves.</em> This is
- *       the <strong>Blocker</strong>-severity trap of the migration and its remedy has two halves that are
+ *       the most consequential trap of the migration and its remedy has two halves that are
  *       both required. Pin the version by <em>overriding the property the Spring Boot parent manages</em>,
  *       never by importing a second bill of materials, because two competing imports resolve in an
  *       ordering-dependent way that can silently select the parent-managed 1.x line; and use only the
@@ -287,9 +288,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       compares type codes, so a {@code CHAR(1)} under a converter to {@code String} must match exactly and
  *       {@code VARCHAR(60)} must not be declared as {@code CHAR(60)} on the entity. <strong>The fix is
  *       upstream</strong>, in {@code V1__create_schema.sql} or in the mapping; never widen a column to
- *       silence it and never patch this test. Severity <strong>Medium</strong>.</li>
+ *       silence it and never patch this test.</li>
  *   <li><em>The stored user class reads {@code ADMIN} or {@code 0} instead of {@code A}.</em> An enumerated
- *       mapping has replaced the converter. That is the <strong>Blocker</strong> the raw-character
+ *       mapping has replaced the converter. That is the defect the raw-character
  *       assertions in this class exist to catch.</li>
  *   <li><em>A fixture cannot be found for this table.</em> None exists, and none may be created; see the
  *       third disclosure below.</li>
@@ -353,11 +354,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * particular no plaintext candidate is ever constructed to verify a digest, and {@link UserSecurity} is not
  * a security principal - it implements no user-details contract, and this class references none.
  *
- * <h2>Three corrections established by measurement</h2>
+ * <h2>Three shapes this file reads off the destination contract</h2>
  *
- * <p>Each was found by reading the destination contract rather than the requirement text, and each would
- * have produced code that did not compile or an assertion that could not hold. All three are
- * <strong>Medium</strong>. First, the entity's name properties are {@code secUsrFname} and
+ * <p>Each was taken from the code it asserts against rather than from prose, because assuming any of them
+ * would have produced code that did not compile or an assertion that could not hold.
+ * First, the entity's name properties are {@code secUsrFname} and
  * {@code secUsrLname}, not {@code firstName} and {@code lastName}. Second, the paged finder returns a
  * {@code Slice} and not a {@code Page}, so a total-element count cannot come from it and is taken instead
  * from the inherited page-returning finder and from {@code count()}. Third, the migration's three index
@@ -578,6 +579,37 @@ final class UserSecurityRepositoryTest extends AbstractRepositoryIntegrationTest
         return jdbcTemplate.queryForList(
                 "SELECT indexname FROM pg_indexes"
                         + " WHERE schemaname = current_schema() AND tablename = ? ORDER BY indexname",
+                String.class, "user_security");
+    }
+
+    /**
+     * Returns the distinct relation-level lock modes the <em>current</em> transaction holds on
+     * {@code user_security}, read from the engine's own lock table.
+     *
+     * <p>This is what makes the locked read observable rather than merely asserted. PostgreSQL takes
+     * {@code AccessShareLock} on a table for a plain {@code SELECT} and {@code RowShareLock} for a
+     * {@code SELECT ... FOR UPDATE}; the two are distinct entries, so the presence of the second is direct
+     * evidence that {@code FOR UPDATE} reached the engine. A test that only checked the returned row would
+     * pass against a finder carrying no lock annotation at all, which is precisely the defect this group
+     * exists to catch.
+     *
+     * <p>Three properties make the read deterministic. It is scoped to {@code pg_backend_pid()}, so a lock
+     * held by a sibling container connection cannot satisfy it. It reads only {@code locktype = 'relation'},
+     * so the transient {@code tuple} entry a <em>waiting</em> transaction would show cannot appear and no
+     * second connection is needed. And it runs on the same connection the repository used, which holds
+     * because this harness's transaction manager derives its {@code DataSource} from the entity-manager
+     * factory - the same sharing every raw catalogue read in this class already relies on.
+     *
+     * @return the distinct lock modes in name order, empty when this transaction holds none, never
+     *         {@code null}
+     */
+    private List<String> relationLockModesHeldByThisTransaction() {
+        return jdbcTemplate.queryForList(
+                "SELECT DISTINCT l.mode FROM pg_locks l"
+                        + " JOIN pg_class rel ON rel.oid = l.relation"
+                        + " JOIN pg_namespace ns ON ns.oid = rel.relnamespace"
+                        + " WHERE l.pid = pg_backend_pid() AND l.locktype = 'relation'"
+                        + " AND ns.nspname = current_schema() AND rel.relname = ? ORDER BY l.mode",
                 String.class, "user_security");
     }
 
@@ -829,7 +861,7 @@ final class UserSecurityRepositoryTest extends AbstractRepositoryIntegrationTest
      * the mapping would pass whichever mapping were in place, because the same mechanism that wrote the value
      * reads it: a string-enumerated mapping would write {@code ADMIN} and read {@code ADMIN} back quite
      * happily. Only the raw value can tell {@code A} from {@code ADMIN} and from {@code 0}, so only the raw
-     * value can catch the <strong>Blocker</strong>.
+     * value can catch the defect.
      */
     @Nested
     @DisplayName("the user class converts to a single character, never to a constant name or an ordinal")
@@ -912,7 +944,7 @@ final class UserSecurityRepositoryTest extends AbstractRepositoryIntegrationTest
 
             assertThat(columns)
                     .as("SEC-USR-FILLER PIC X(23) at app/cpy/CSUSR01Y.cpy:23 is a NAMED filler, which is "
-                            + "unusual in this corpus and is recorded as a Low-severity source anomaly. A "
+                            + "unusual in this corpus and is recorded as a source anomaly. A "
                             + "name does not make it data: its only function is to pad the record to the "
                             + "catalogued 80 bytes, so it is deliberately unmapped")
                     .doesNotContain("sec_usr_filler");
@@ -990,7 +1022,7 @@ final class UserSecurityRepositoryTest extends AbstractRepositoryIntegrationTest
             assertThat(outboundForeignKeyCount())
                     .as("none of the migration's ten foreign keys is declared on this table. In the source a "
                             + "user is not linked to an account, a card or a customer, so inventing such a "
-                            + "link would be a Blocker")
+                            + "link would break parity")
                     .isZero();
             assertThat(inboundForeignKeyCount())
                     .as("and none points at it either, which is the direction that is easier to introduce by "
@@ -1295,17 +1327,152 @@ final class UserSecurityRepositoryTest extends AbstractRepositoryIntegrationTest
     }
 
     /**
+     * The locked read that replaces {@code EXEC CICS READ ... UPDATE} on both mutating paths.
+     *
+     * <p>{@code app/cbl/COUSR02C.cbl} reads the row at {@code :322} with {@code UPDATE} at {@code :328} and
+     * rewrites it at {@code :360}; {@code app/cbl/COUSR03C.cbl} does the same at {@code :269}, {@code :275}
+     * and deletes at {@code :307}. In both the row is held from the read until the unit of work ends, and the
+     * queue is served by {@code UPDATEMODEL(LOCKING)} at {@code app/csd/CARDDEMO.CSD:88-89}.
+     * {@link UserSecurityRepository#findByIdForUpdate(String)} is the Java form of that read, and this group
+     * is the only place the mechanism is observable end to end.
+     *
+     * <p>Why this group cannot be replaced by a unit test. A unit test can assert that the annotation is
+     * present, and one does; it cannot assert that the provider renders {@code for update} for
+     * <em>this</em> entity, that the statement parses, or that the engine actually takes the lock. A
+     * {@code @Lock} query that is well formed at the mapping level still fails at run time when the entity
+     * carries a mapping the dialect cannot lock, so the annotation and its effect are two separate claims
+     * and both are asserted - the second one here, against a real engine.
+     *
+     * <p>Lock <em>contention</em> is deliberately not demonstrated, exactly as the sibling account and
+     * customer groups decline to demonstrate it. A second connection blocking on the first would make the
+     * outcome a race and the assertion non-deterministic; the engine's own lock table answers the question
+     * that matters without one.
+     *
+     * <p>This group adds no version column and asserts none. The table has none, the schema-shape group
+     * above asserts it has none, and a pessimistic lock is what makes that absence sound: the row cannot be
+     * read by a second writer between this transaction's read and its write, so there is no window for the
+     * lost update a version column would otherwise be needed to detect.
+     */
+    @Nested
+    @DisplayName("the locked read that replaces READ ... UPDATE on the mutating paths")
+    class LockedReadForUpdate {
+
+        @Test
+        @DisplayName("the locked read returns the row, managed, with every field identical to the plain read")
+        void theLockedReadReturnsTheRowManaged() {
+            // Ordered deliberately: the locked read runs first, so the instance in the persistence context
+            // is the one it produced. A plain read afterwards is answered from the identity map, and only a
+            // managed instance can be returned that way - which is what proves the locked read attached it.
+            final Optional<UserSecurity> locked = userSecurityRepository.findByIdForUpdate("ADMIN001");
+
+            assertThat(locked)
+                    .as("the read at app/cbl/COUSR02C.cbl:322-328 finds the row before it rewrites it, so "
+                            + "the locked form must resolve the same seeded identifier the plain finder does")
+                    .isPresent();
+
+            final UserSecurity lockedUser = locked.orElseThrow();
+            assertThat(lockedUser.getSecUsrId()).isEqualTo("ADMIN001");
+            assertThat(lockedUser.getSecUsrFname())
+                    .as("the lock changes when the row may be written, never what it contains, so the "
+                            + "CHAR(20) blank padding is returned exactly as the plain read returns it")
+                    .isEqualTo(blankPadded("MARGARET", 20));
+            assertThat(lockedUser.getSecUsrType()).isEqualTo(UserType.ADMIN);
+            assertThat(userSecurityRepository.findById("ADMIN001").orElseThrow())
+                    .as("the same persistence context returns the identical instance, which it can only do "
+                            + "for a managed entity - so the locked read attached it rather than returning a "
+                            + "detached projection the update path could not then rewrite")
+                    .isSameAs(lockedUser);
+        }
+
+        @Test
+        @DisplayName("the engine records a RowShareLock, which only SELECT ... FOR UPDATE takes")
+        void theEngineRecordsARowShareLock() {
+            userSecurityRepository.findByIdForUpdate("ADMIN002");
+
+            assertThat(relationLockModesHeldByThisTransaction())
+                    .as("PostgreSQL takes ROW SHARE on the table for SELECT ... FOR UPDATE and ACCESS SHARE "
+                            + "for a plain SELECT. The RowShareLock entry is therefore direct evidence that "
+                            + "the FOR UPDATE clause reached the engine, which no assertion on the returned "
+                            + "row could establish")
+                    .contains("RowShareLock");
+        }
+
+        @Test
+        @DisplayName("a plain read records no RowShareLock, so the assertion above is a real oracle")
+        void aPlainReadRecordsNoRowShareLock() {
+            userSecurityRepository.findById("ADMIN002");
+
+            assertThat(relationLockModesHeldByThisTransaction())
+                    .as("the control for the test above. Without it, a lock table that reported "
+                            + "RowShareLock for every read - or a query that matched too loosely - would let "
+                            + "the positive assertion pass against a finder carrying no lock at all")
+                    .doesNotContain("RowShareLock")
+                    .as("and the plain read is genuinely observable, so the negative result above is the "
+                            + "absence of a lock rather than the absence of a working query")
+                    .contains("AccessShareLock");
+        }
+
+        @Test
+        @DisplayName("the locked read is what the update path rewrites through, in one unit of work")
+        void theLockedReadIsWhatTheUpdatePathRewritesThrough() {
+            final UserSecurity held = userSecurityRepository.findByIdForUpdate("USER0001").orElseThrow();
+            held.setSecUsrFname(blankPadded("LAWRENCED", 20));
+            userSecurityRepository.saveAndFlush(held);
+            flushAndClear();
+
+            assertThat(userSecurityRepository.findById("USER0001").orElseThrow().getSecUsrFname())
+                    .as("app/cbl/COUSR02C.cbl rewrites at :360 the very record it read for update at :322, "
+                            + "so the locked instance must be the one the rewrite carries; the surrounding "
+                            + "transaction rolls back, so the seed is intact for every sibling test")
+                    .isEqualTo(blankPadded("LAWRENCED", 20));
+            assertThat(relationLockModesHeldByThisTransaction())
+                    .as("and the lock is still held after the write, because it is released at the end of "
+                            + "the unit of work rather than at the end of the statement - which is the whole "
+                            + "point of holding it from the read")
+                    .contains("RowShareLock");
+        }
+
+        @Test
+        @DisplayName("the locked read is what the delete path removes, in one unit of work")
+        void theLockedReadIsWhatTheDeletePathRemoves() {
+            final UserSecurity held = userSecurityRepository.findByIdForUpdate("USER0002").orElseThrow();
+            userSecurityRepository.delete(held);
+            userSecurityRepository.flush();
+            flushAndClear();
+
+            assertThat(userSecurityRepository.existsById("USER0002"))
+                    .as("app/cbl/COUSR03C.cbl deletes at :307 the record it read for update at :269, and no "
+                            + "self-delete guard exists there or here - the absence is a preserved legacy "
+                            + "quirk and adding one would be a behaviour change")
+                    .isFalse();
+            assertThat(userSecurityRepository.count())
+                    .as("the row count falls by exactly one; the surrounding transaction rolls back, so the "
+                            + "seed is intact for every sibling test")
+                    .isEqualTo(9L);
+        }
+
+        @Test
+        @DisplayName("the locked read on an absent identifier resolves to empty rather than throwing")
+        void theLockedReadOnAnAbsentIdentifierResolvesToEmpty() {
+            assertThat(userSecurityRepository.findByIdForUpdate("NOSUCHID"))
+                    .as("a locked read of a row that does not exist has nothing to lock. The source treats "
+                            + "the same case as a control path - app/cbl/COUSR02C.cbl reports 'User ID NOT "
+                            + "found' rather than abending - so the absence is reported, never raised")
+                    .isEmpty();
+        }
+    }
+
+    /**
      * Deletion, and the guard the source does not have.
      *
      * <p>{@code app/cbl/COUSR03C.cbl} never compares the target identifier against the signed-on one: a
      * census of that 359-line program finds <strong>zero</strong> occurrences of {@code CDEMO-USER-ID}, and
      * the delete at {@code :307} is unconditional. A signed-on administrator can therefore delete their own
-     * row. That is a preserved legacy quirk, owed a row in the planned {@code TRACEABILITY_MATRIX.md} and an
-     * entry in the planned {@code DECISION_LOG.md}.
+     * row. That is a preserved legacy quirk, cited to its locator rather than repaired.
      *
      * <p>This group therefore asserts only that a delete of an existing row succeeds. <strong>It does not
      * assert that a self-delete is refused, and no such guard may be added</strong> - adding one would be a
-     * behaviour change and a <strong>Blocker</strong>. The repository is guard-free by construction, having
+     * behaviour change and is forbidden. The repository is guard-free by construction, having
      * no notion of who is signed on, so there is nothing here to weaken; the prohibition is recorded so that
      * a later reader does not mistake the absence of the assertion for an oversight.
      */

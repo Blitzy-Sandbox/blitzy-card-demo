@@ -107,6 +107,22 @@ class DemoUserSeedGateContractTest {
             "ADMIN001", "ADMIN002", "ADMIN003", "ADMIN004", "ADMIN005",
             "USER0001", "USER0002", "USER0003", "USER0004", "USER0005");
 
+    /** The compose topology, whose port publishes decide who can reach the seeded principals. */
+    private static final Path COMPOSE_FILE = Path.of("docker-compose.yml");
+
+    /** The single variable every compose publish binds its host interface from. */
+    private static final String BIND_VARIABLE = "CARDDEMO_BIND_ADDRESS";
+
+    /**
+     * Matches a compose port publish and captures the whole mapping.
+     *
+     * <p>A publish is a sequence item whose value is a quoted {@code host:container} mapping. Comment lines
+     * are excluded by requiring the {@code - "} form, which is how every mapping in the file is written and
+     * how none of its prose is.
+     */
+    private static final Pattern PORT_PUBLISH =
+            Pattern.compile("^\\s*-\\s*\"([^\"]*:[0-9]+)\"\\s*$", Pattern.MULTILINE);
+
     /**
      * Matches the placeholder declaration and captures the value, tolerating any indentation.
      *
@@ -277,9 +293,121 @@ class DemoUserSeedGateContractTest {
         }
     }
 
+    /**
+     * Where the seeded principals can be reached from.
+     *
+     * <p>The gate above decides <em>whether</em> the demonstration principals exist. It says nothing about who
+     * can reach them, and on its own it is not sufficient: the compose topology activates the {@code local}
+     * profile, which opens that gate, so the ten principals - five of them administrators, sharing one
+     * plaintext recorded in the frozen {@code app/jcl/DUSRSECJ.jcl} - do exist in that topology by design. That
+     * is the right decision for a demonstration corpus and it is the reason the remaining control has to be
+     * reachability.
+     *
+     * <p><strong>Finding, severity High - remediated by the assertions below.</strong> Every publish in
+     * {@code docker-compose.yml} was written as a bare {@code "host:container"} mapping with no host address.
+     * Docker binds such a mapping to <em>every</em> interface, so {@code docker compose up} put the
+     * administrator sign-on surface, an unauthenticated cloud emulator, an unauthenticated metrics API and the
+     * Grafana login on the LAN of whatever machine ran it. Hashing the seeded credentials does not help - the
+     * input is published in this repository, so a digest is not a secret - and neither does the seed gate,
+     * because the profile that opens it is precisely the profile this topology runs.
+     *
+     * <p>The remedy is a single variable, defaulting closed, in the host-address position of every mapping.
+     * One variable rather than eight because the surface should widen or narrow as one deliberate act; a
+     * default rather than a required value because forgetting it must fail safe; and asserted here rather than
+     * documented in a comment because a default that nothing checks is a default that regresses. These
+     * assertions are the enforcement: an all-interfaces publish reintroduced anywhere in the file fails this
+     * class, and the failure names the mapping.
+     */
     @Nested
-    @DisplayName("F13 - the card verification value is absent from the operational target")
-    class VerificationValueAbsent {
+    @DisplayName("F1 - the seeded principals are reachable from loopback only, by default")
+    class SeedExposure {
+
+        @Test
+        @DisplayName("every published port binds the host interface from the loopback-defaulted variable")
+        void everyPublishedPortIsLoopbackBound() throws IOException {
+            final List<String> mappings = PORT_PUBLISH.matcher(fileAt(COMPOSE_FILE))
+                    .results()
+                    .map(match -> match.group(1))
+                    .toList();
+
+            assertThat(mappings)
+                    .as("the scan must find the topology's publishes, so a silent empty pass is impossible: "
+                            + "app, postgres, localstack, the Jaeger UI and its OTLP/HTTP receiver, "
+                            + "Prometheus and Grafana")
+                    .hasSize(7);
+
+            assertThat(mappings)
+                    .as("""
+                        and each one binds its host interface from ${%s:-127.0.0.1}. A mapping written as \
+                        "8080:8080" is not a narrower version of this - it is the all-interfaces publish, \
+                        because Docker treats an absent host address as 0.0.0.0.""", BIND_VARIABLE)
+                    .allSatisfy(mapping -> assertThat(mapping)
+                            .startsWith("${" + BIND_VARIABLE + ":-127.0.0.1}:"));
+        }
+
+        @Test
+        @DisplayName("the default is loopback, and no committed file overrides it to all interfaces")
+        void theCommittedDefaultIsLoopback() throws IOException {
+            assertThat(fileAt(Path.of(".env.example")))
+                    .as("the template documents the control and ships it closed, so a developer who copies "
+                            + "the template unedited gets the safe binding")
+                    .contains(BIND_VARIABLE + "=127.0.0.1");
+
+            assertThat(fileAt(COMPOSE_FILE))
+                    .as("and nothing in the topology defaults it open. An all-interfaces bind stays possible "
+                            + "- it is one deliberate environment variable - but it is never the default and "
+                            + "never committed.")
+                    .doesNotContain(BIND_VARIABLE + ":-0.0.0.0")
+                    .doesNotContain(BIND_VARIABLE + ":-::")
+                    .doesNotContain(BIND_VARIABLE + ":-}");
+        }
+
+        @Test
+        @DisplayName("the topology that opens the seed gate is the one that binds to loopback")
+        void theProfileThatOpensTheGateIsTheOneBoundToLoopback() throws IOException {
+            final String compose = fileAt(COMPOSE_FILE);
+
+            assertThat(compose)
+                    .as("the app service runs the local profile, which is an OPEN_PROFILES member - this is "
+                            + "the coexistence the binding exists to make safe, and pinning it here is what "
+                            + "keeps the two facts connected rather than each true in isolation")
+                    .contains("SPRING_PROFILES_ACTIVE: local");
+            assertThat(gateValueOf(profile("application-local.yml")))
+                    .as("so the demonstration principals really are present in this topology")
+                    .isEqualTo("true");
+            assertThat(compose)
+                    .as("and the port that serves them is loopback-bound")
+                    .contains("\"${" + BIND_VARIABLE + ":-127.0.0.1}:${SERVER_PORT:-8080}:8080\"");
+        }
+
+        @Test
+        @DisplayName("no unauthenticated administrative route is armed on the observability stack")
+        void noUnauthenticatedAdministrativeRouteIsArmed() throws IOException {
+            // Comment lines are excluded, and that distinction is the point rather than a convenience: the
+            // topology explains at length why the flag is absent, and the word appearing in that explanation
+            // must not read as the flag being set. What is asserted is that no line PASSES it to the process.
+            final List<String> effectiveLines = fileAt(COMPOSE_FILE).lines()
+                    .filter(line -> !line.stripLeading().startsWith("#"))
+                    .toList();
+
+            assertThat(effectiveLines)
+                    .as("the scan must see the topology's real directives, so an empty pass is impossible")
+                    .anySatisfy(line -> assertThat(line).contains("--storage.tsdb.retention.time"));
+
+            assertThat(effectiveLines)
+                    .as("""
+                        and none of them arms the lifecycle API. --web.enable-lifecycle arms POST /-/reload \
+                        AND POST /-/quit, and Prometheus authenticates neither: any client reaching the port \
+                        could discard the series or stop the process. `docker compose restart prometheus` \
+                        re-reads the mounted configuration, so the convenience the flag bought is available \
+                        without handing an availability control to the network.""")
+                    .noneSatisfy(line -> assertThat(line).contains("--web.enable-lifecycle"));
+        }
+    }
+
+    @Nested
+    @DisplayName("F13 - the card verification value is persisted and has no read path")
+    class VerificationValueConfined {
 
         /**
          * Whether a name mentions a card verification value in any of its usual spellings.
@@ -327,19 +455,31 @@ class DemoUserSeedGateContractTest {
         }
 
         @Test
-        @DisplayName("the schema declares no verification column on any table")
-        void theSchemaDeclaresNoVerificationColumn() throws IOException {
+        @DisplayName("the schema declares the verification column on the card table and nowhere else")
+        void theSchemaDeclaresTheVerificationColumnOnCardOnly() throws IOException {
             assertThat(verificationIdentifierLines(SCHEMA_MIGRATION))
-                    .as("no uncommented line of the baseline may declare a verification column")
-                    .isEmpty();
+                    .as("app/cpy/CVACT02Y.cpy:L7 declares CARD-CVV-CD PIC 9(03) inside the authoritative "
+                            + "150-byte record, so exactly one line of the baseline declares the column and "
+                            + "it is the CHAR(3) NOT NULL declaration on the card table. Nothing else in the "
+                            + "eleven tables may name a verification value: the field belongs to CARDDATA "
+                            + "alone")
+                    .singleElement()
+                    .satisfies(line -> {
+                        assertThat(line).contains("card_cvv_cd");
+                        assertThat(line).contains("CHAR(3)");
+                        assertThat(line).contains("NOT NULL");
+                    });
         }
 
         @Test
-        @DisplayName("the seed supplies no verification value for any of the fifty cards")
-        void theSeedSuppliesNoVerificationValue() throws IOException {
+        @DisplayName("the seed supplies the verification value for the fifty cards and for no other table")
+        void theSeedSuppliesTheVerificationValueForCardsOnly() throws IOException {
             assertThat(verificationIdentifierLines(SEED_MIGRATION))
-                    .as("no uncommented line of the seed may name a verification column")
-                    .isEmpty();
+                    .as("exactly one uncommented line of the seed names the column, and it is the card "
+                            + "insert's column list; the values themselves are positional literals, so no "
+                            + "further line mentions it")
+                    .singleElement()
+                    .satisfies(line -> assertThat(line).contains("card_cvv_cd"));
         }
 
         /**
@@ -365,20 +505,40 @@ class DemoUserSeedGateContractTest {
         }
 
         /**
-         * Neither the entity nor any type in the update request graph declares a verification value.
+         * The entity persists the value and publishes no route by which it can be read back, and no type in
+         * the update request graph carries it at all.
          *
-         * <p>Asserted structurally across the whole graph rather than by planting a specimen value and
-         * checking it does not appear. Since the field no longer exists there is no value to plant, so a
-         * value-based assertion would pass unconditionally; absence of the member is both the stronger
-         * property and the one a future change would have to break to regress.
+         * <p>The two halves are different properties and both matter. On the entity the column exists,
+         * because {@code app/cpy/CVACT02Y.cpy:L7} places the field inside the authoritative record and
+         * dropping it would lose three bytes of the field contract; what is withheld is the read path, so no
+         * method returns the value and the one method that names it returns a boolean. On the request graph
+         * the field is absent outright, because {@code app/cbl/COCRDUPC.cbl} never assigns
+         * {@code CCUP-NEW-CVV-CD} - the legacy update path had no input source for it - and none of the
+         * seventeen BMS symbolic maps carries it, so no screen ever accepted one.
          */
         @Test
-        @DisplayName("no entity field, accessor or request component declares a verification value")
-        void noJavaMemberDeclaresAVerificationValue() {
+        @DisplayName("the entity persists it with no read path, and no request component declares it")
+        void theEntityPersistsItPrivatelyAndNoRequestComponentDeclaresIt() {
             assertThat(Card.class.getDeclaredFields())
-                    .noneMatch(field -> mentionsVerificationValue(field.getName()));
-            assertThat(Card.class.getDeclaredMethods())
-                    .noneMatch(method -> mentionsVerificationValue(method.getName()));
+                    .as("exactly one field carries the value")
+                    .filteredOn(field -> mentionsVerificationValue(field.getName())
+                            && !java.lang.reflect.Modifier.isStatic(field.getModifiers()))
+                    .singleElement()
+                    .satisfies(field -> {
+                        assertThat(field.getType()).isEqualTo(String.class);
+                        assertThat(java.lang.reflect.Modifier.isPrivate(field.getModifiers())).isTrue();
+                    });
+            assertThat(Card.class.getMethods())
+                    .as("and no method returns it: the only method naming it answers a boolean question")
+                    .filteredOn(method -> mentionsVerificationValue(method.getName()))
+                    .allSatisfy(method ->
+                            assertThat(method.getReturnType()).isEqualTo(boolean.class));
+            assertThat(Card.class.getMethods())
+                    .as("in particular there is no bean-style accessor for it")
+                    .noneMatch(method -> {
+                        final String lower = method.getName().toLowerCase(Locale.ROOT);
+                        return lower.equals("getcvvcode") || lower.equals("setcvvcode");
+                    });
             assertThat(List.of(CardUpdateRequest.class, CardUpdateRequest.CardDetails.class,
                     CardUpdateRequest.CardData.class, CardUpdateRequest.ExpiraionDate.class))
                     .allSatisfy(type -> {
@@ -393,10 +553,10 @@ class DemoUserSeedGateContractTest {
         /**
          * The frozen copybook geometry is untouched, the removal being a target-side decision only.
          *
-         * <p>{@code app/cpy/CVACT02Y.cpy} remains the reference of record and still declares
-         * {@code CARD-CVV-CD}. The migration is additive and {@code app/} is frozen, so the copybook must
-         * still carry the field even though the operational target does not. Asserting this keeps the two
-         * claims from being confused: the value is not persisted, and the reference is not edited.
+         * <p>{@code app/cpy/CVACT02Y.cpy} remains the reference of record and declares
+         * {@code CARD-CVV-CD}. The migration is additive and {@code app/} is frozen, so the copybook is the
+         * authority the schema is derived from rather than something the schema may contradict. Asserting it
+         * keeps the derivation honest: the column exists because the copybook declares it.
          */
         @Test
         @DisplayName("the frozen copybook still declares the field, app/ being untouched")

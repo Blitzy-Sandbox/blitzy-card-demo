@@ -46,7 +46,6 @@ import com.cardemo.model.dto.CardUpdateRequest;
 import com.cardemo.model.dto.CardUpdateRequest.CardData;
 import com.cardemo.model.dto.CardUpdateRequest.CardDetails;
 import com.cardemo.model.dto.CardUpdateRequest.ExpiraionDate;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.ConstraintViolation;
@@ -530,7 +529,7 @@ final class CardUpdateRequestApiContractTest {
                 + "violation path naming every level")
         void anOverWideLeafIsReportedWithItsFullPath() {
             final CardUpdateRequest request = requestWithSnapshots(
-                    new CardDetails(null, null, 
+                    new CardDetails(null, null,
                             new CardData(null, new ExpiraionDate("20266", null, null), null)),
                     null);
 
@@ -709,7 +708,7 @@ final class CardUpdateRequestApiContractTest {
         @Test
         @DisplayName("the group rendering omits the card number, and declares no verification value")
         void theGroupRenderingIsRedacted() {
-            final CardDetails snapshot = new CardDetails("00000000001", "4111111111111111", 
+            final CardDetails snapshot = new CardDetails("00000000001", "4111111111111111",
                     new CardData("JANE DOE", new ExpiraionDate("2026", "11", "30"), "Y"));
 
             assertThat(snapshot.toString())

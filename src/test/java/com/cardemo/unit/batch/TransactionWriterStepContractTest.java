@@ -8,7 +8,7 @@
  *               the step execution its object keys depend on is captured
  *               before the first write, and that a write without it fails
  *               with an actionable wiring message.
- * Source      : app/cbl/CBTRN02C.cbl:L2900 (2900-WRITE-TRANSACTION-FILE)
+ * Source      : app/cbl/CBTRN02C.cbl:L562 (2900-WRITE-TRANSACTION-FILE)
  *               app/cpy/CVTRA05Y.cpy       (350-byte record)
  *               app/jcl/DEFGDGB.jcl        (GDG generation keys) @ 7756d89
  * ******************************************************************

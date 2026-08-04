@@ -94,6 +94,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.QueryTimeoutException;
+import org.springframework.data.jpa.repository.Lock;
 
 import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.RecordNotFoundException;
@@ -105,6 +106,8 @@ import com.cardemo.repository.UserSecurityRepository;
 import com.cardemo.service.admin.UserDeleteService;
 import com.cardemo.service.admin.UserDeleteService.AttentionIdentifier;
 import com.cardemo.service.shared.FileStatusMapper;
+
+import jakarta.persistence.LockModeType;
 
 /**
  * The unit suite for {@link UserDeleteService}, the Java replacement for {@code app/cbl/COUSR03C.cbl} - the
@@ -191,40 +194,42 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       imported.</li>
  *   </ul>
  *
- * <h2>Findings carried by this suite, by severity</h2>
+ * <h2>Invariants this suite pins, and the source behaviour behind each</h2>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - the delete attempted after a failed read. {@code :190-191} performs
+ *   <li><strong>The delete never follows a failed read.</strong> {@code :190-191} performs
  *       {@code READ-USER-SEC-FILE} and then {@code DELETE-USER-SEC-FILE} with no intervening error test,
  *       while the delete verb at {@code :307-311} carries neither {@code RIDFLD} nor {@code KEYLENGTH} and so
  *       acts on whatever the read positioned. When the read failed, nothing was positioned and the outcome
- *       has no definition. Remediation: the single transactional method raises on the failed lookup, so the
- *       undefined branch cannot be entered - a labelled deviation, asserted here by proving that no delete is
- *       ever issued after a failed read. Also Blocker: letting a non-administrator reach this service,
+ *       has no definition. The single transactional method raises on the failed lookup, so the undefined
+ *       branch cannot be entered - a deliberate deviation, asserted here by proving that no delete is ever
+ *       issued after a failed read. Equally guarded against: letting a non-administrator reach this service,
  *       asserting a seeded password in plaintext, and building the identifier into a query by
  *       concatenation.</li>
- *   <li><strong>High</strong> - adding the self-delete guard the source lacks; adding a confirmation field
- *       the screen lacks; sharing an action dispatch with the update service, which would make the exit key
- *       destroy the record; correcting the wrong-verb literal at {@code :332}; and composing the success
- *       sentence from the cleared input rather than from the record, which loses the identifier.
- *       Remediation for each is to restore the source's behaviour exactly; every one has a test below whose
- *       failure names it.</li>
- *   <li><strong>Medium</strong> - reading the {@code CONTINUE} at {@code :282} as terminating its branch,
- *       which would drop the prompt of {@code :283} and the second send; inventing a duplicate-record arm on
- *       a verb that names no key; and taking a pessimistic lock, since {@code UPDATE} at {@code :275} held
- *       the row across a terminal conversation and has no stateless counterpart. Medium too, and disclosed
- *       rather than repaired: the severity channel. A colour is set on two of six outcomes only,
- *       {@code DFHNEUTR} at {@code :285} and {@code DFHGREEN} at {@code :317}, and the response record
- *       declares no colour component at all, so the discriminator that replaces it is the typed failure plus
- *       the distinct literal. Remediation, should a severity component ever be added: set it on every
- *       outcome, because a Java field left unset would be indistinguishable from a defect.</li>
- *   <li><strong>Low</strong> - the space before the ellipsis in {@code :283} and {@code :320} but not in
- *       {@code :289}, {@code :296} or {@code :332}; the write-only flag of {@code :45-47} set once at
- *       {@code :85} and never tested; the vestigial pagination block of {@code :51-57} on a single-record
- *       screen; the redundant blank at {@code :316}, which {@code :356} had already applied; the two trailing
- *       spaces inside the dataset literal at {@code :39}; and {@code CLEAR-CURRENT-SCREEN} at {@code :341},
- *       a paragraph whose whole body is two performs. Each is preserved with its locator, and each is
- *       carried forward for the planned {@code DECISION_LOG.md} rather than deleted.</li>
+ *   <li><strong>Nothing the source lacks is added, and nothing it has is corrected.</strong> No self-delete
+ *       guard, no confirmation field the screen lacks, no action dispatch shared with the update service
+ *       (which would make the exit key destroy the record), no correction of the wrong-verb literal at
+ *       {@code :332}, and no success sentence composed from the cleared input rather than from the record,
+ *       which would lose the identifier. Each has a test below whose failure names it.</li>
+ *   <li><strong>Control flow is read as written.</strong> The {@code CONTINUE} at {@code :282} does not
+ *       terminate its branch, so the prompt of {@code :283} and the second send both stand; no
+ *       duplicate-record arm is invented on a verb that names no key; and no pessimistic lock is taken, since
+ *       {@code UPDATE} at {@code :275} held the row across a terminal conversation and has no stateless
+ *       counterpart.</li>
+ *   <li><strong>The colour channel has no Java counterpart, and that is disclosed rather than
+ *       reproduced.</strong> A colour is set on two of six outcomes only - {@code DFHNEUTR} at {@code :285}
+ *       and {@code DFHGREEN} at {@code :317} - and the response record declares no colour component at all,
+ *       so the discriminator that replaces it is the typed failure plus the distinct literal. Were such a
+ *       component ever added it would have to be set on every outcome, because a Java field left unset would
+ *       be indistinguishable from a defect.</li>
+ *   <li><strong>Legacy inconsistencies are preserved with their locators.</strong> The space before the
+ *       ellipsis in {@code :283} and {@code :320} but not in {@code :289}, {@code :296} or {@code :332}; the
+ *       write-only flag of {@code :45-47} set once at {@code :85} and never tested; the vestigial pagination
+ *       block of {@code :51-57} on a single-record screen; the redundant blank at {@code :316}, which
+ *       {@code :356} had already applied; the two trailing spaces inside the dataset literal at {@code :39};
+ *       and {@code CLEAR-CURRENT-SCREEN} at {@code :341}, a paragraph whose whole body is two performs. Each
+ *       is preserved because {@code app/} is frozen and the parity comparison measures exactly these
+ *       details.</li>
  *   </ul>
  *
  * <h2>Not available</h2>
@@ -258,30 +263,30 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <ul>
  *   <li><strong>The build fails on an unused import.</strong> {@code -Xlint:all -Werror} reaches test
- *       compilation. Remedy: remove the import, never the assertion. This suite deliberately imports neither
+ *       compilation. Remove the import, never the assertion. This suite deliberately imports neither
  *       the fixed-clock helper nor the fixture loader of the sibling model package, because nothing on this
  *       path consults a clock it does not own or reads a fixture.</li>
- *   <li><strong>A self-deletion test fails.</strong> Someone added the guard. Remedy: remove it; the
+ *   <li><strong>A self-deletion test fails.</strong> Someone added the guard. Remove it; the
  *       corpus-evidence group re-runs the zero-occurrence grep on every build and will name the file and the
  *       symbol.</li>
  *   <li><strong>An unconfirmed delete succeeds, or a confirmation field appears on the contract.</strong> The
  *       first means the stateless stand-in for the second key press was dropped; the second means a gate the
- *       screen never had was invented. Remedy: the flag stands in for {@code :121-122} being a distinct
+ *       screen never had was invented. The flag stands in for {@code :121-122} being a distinct
  *       interaction from the read of {@code :283}, and the contract stays at eleven fields.</li>
  *   <li><strong>A delete failure reports the verb "Delete".</strong> The literal at {@code :332} was
- *       corrected. Remedy: revert it to {@code "Unable to Update User..."} exactly; the corrected form must
+ *       corrected. Revert it to {@code "Unable to Update User..."} exactly; the corrected form must
  *       not appear anywhere in the tree, and the corpus-evidence group asserts that it does not appear in the
  *       source either.</li>
  *   <li><strong>The exit key deletes.</strong> A dispatch was shared with the update service, where
- *       {@code app/cbl/COUSR02C.cbl}:112 genuinely does save on that key. Remedy: keep the two dispatches
+ *       {@code app/cbl/COUSR02C.cbl}:112 genuinely does save on that key. Keep the two dispatches
  *       apart; they are inverses and the inversion is the point.</li>
  *   <li><strong>The successful lookup sends once.</strong> The {@code CONTINUE} at {@code :282} was read as
- *       terminating its branch. Remedy: let {@code :283-286} run, then let {@code :168} run again.</li>
+ *       terminating its branch. Let {@code :283-286} run, then let {@code :168} run again.</li>
  *   <li><strong>The success sentence reads "User  has been deleted ...".</strong> The response model was
- *       cleared before the sentence was composed, or the identifier was taken from the cleared input. Remedy:
- *       compose from the record field, as {@code :319} does.</li>
+ *       cleared before the sentence was composed, or the identifier was taken from the cleared input.
+ *       Compose from the record field, as {@code :319} does.</li>
  *   <li><strong>A duplicate-record outcome appears on the delete path.</strong> It was invented: the verb
- *       names no key, and the evaluation at {@code :313-336} has three arms. Remedy: remove it.</li>
+ *       names no key, and the evaluation at {@code :313-336} has three arms. Remove it.</li>
  *   <li><strong>A fixture cannot be found.</strong> The daily transaction fixture is spelled
  *       {@code dailytran.txt} in full, never {@code dalytran.txt}, however the mainframe dataset was named.
  *       Nothing in this suite reads it; the trap is recorded because the tier's other suites do.</li>
@@ -652,7 +657,7 @@ class UserDeleteServiceTest {
      * @param row the row the store holds; must not be {@code null}
      */
     private void arrangeStoredRow(final UserSecurity row) {
-        when(this.userSecurityRepository.findById(row.getSecUsrId())).thenReturn(Optional.of(row));
+        when(this.userSecurityRepository.findByIdForUpdate(row.getSecUsrId())).thenReturn(Optional.of(row));
     }
 
     /**
@@ -661,7 +666,7 @@ class UserDeleteServiceTest {
      * @param userId the key the caller offers; must not be {@code null}
      */
     private void arrangeNoSuchRow(final String userId) {
-        when(this.userSecurityRepository.findById(userId)).thenReturn(Optional.empty());
+        when(this.userSecurityRepository.findByIdForUpdate(userId)).thenReturn(Optional.empty());
     }
 
     /**
@@ -1058,7 +1063,7 @@ class UserDeleteServiceTest {
 
     // =====================================================================================================
     // 2. The read and the delete are sequential and unguarded at :190-191, and the verb at :307-311 names
-    //    no key. The transaction boundary closes the undefined branch - a labelled deviation.
+    //    no key. The transaction boundary closes the undefined branch, a deliberate deviation.
     // =====================================================================================================
 
     /**
@@ -1072,8 +1077,8 @@ class UserDeleteServiceTest {
      * <p>The Java resolution is parity of observable outcome rather than of an unsafe mechanism: one
      * {@code rollbackFor = Exception.class} method, in which the lookup either yields a record or raises, so
      * the delete cannot run against a failed lookup and nothing partial can survive. Every defined branch is
-     * unchanged; only the undefined one becomes unreachable. A labelled deviation, carried forward for the
-     * planned {@code DECISION_LOG.md} with the two locators above.
+     * unchanged; only the undefined one becomes unreachable - a deliberate deviation, stated here with the
+     * two locators above so it cannot drift away from the code it governs.
      */
     @Nested
     @DisplayName("2. The unguarded read-then-delete of :190-191, closed by the transaction boundary")
@@ -1095,7 +1100,7 @@ class UserDeleteServiceTest {
                         assertThat(absent.recordKey()).contains(USER_ID);
                     });
 
-            verify(userSecurityRepository).findById(USER_ID);
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             verify(userSecurityRepository, never()).delete(any(UserSecurity.class));
             verify(userSecurityRepository, never()).flush();
             verifyNoMoreInteractions(userSecurityRepository);
@@ -1105,7 +1110,7 @@ class UserDeleteServiceTest {
         @DisplayName("a hard lookup failure propagates its typed failure and NO delete is ever issued")
         void aHardLookupFailureIssuesNoDelete() {
             final QueryTimeoutException timedOut = new QueryTimeoutException("the read did not answer");
-            when(userSecurityRepository.findById(USER_ID)).thenThrow(timedOut);
+            when(userSecurityRepository.findByIdForUpdate(USER_ID)).thenThrow(timedOut);
 
             assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.deleteUser(USER_ID, true))
@@ -1116,7 +1121,7 @@ class UserDeleteServiceTest {
                                 .isSameAs(timedOut);
                     });
 
-            verify(userSecurityRepository).findById(USER_ID);
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             verify(userSecurityRepository, never()).delete(any(UserSecurity.class));
             verify(userSecurityRepository, never()).flush();
             verifyNoMoreInteractions(userSecurityRepository);
@@ -1349,7 +1354,7 @@ class UserDeleteServiceTest {
 
             service.submitScreen(AttentionIdentifier.PF5, submittedScreen(USER_ID), true);
 
-            verify(userSecurityRepository).findById(USER_ID);
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             verify(userSecurityRepository).delete(row);
             verify(userSecurityRepository).flush();
             verifyNoMoreInteractions(userSecurityRepository);
@@ -1362,7 +1367,7 @@ class UserDeleteServiceTest {
 
             service.submitScreen(AttentionIdentifier.ENTER, submittedScreen(USER_ID), false);
 
-            verify(userSecurityRepository).findById(USER_ID);
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             verify(userSecurityRepository, never()).delete(any(UserSecurity.class));
             verify(userSecurityRepository, never()).flush();
             verifyNoMoreInteractions(userSecurityRepository);
@@ -1590,33 +1595,38 @@ class UserDeleteServiceTest {
         }
 
         @Test
-        @DisplayName("the lookup takes no pessimistic lock: one keyed read and nothing else")
-        void theLookupTakesNoPessimisticLock() {
+        @DisplayName("the read holds the row for update, which is what EXEC CICS READ ... UPDATE did")
+        void theReadHoldsTheRowForUpdate() throws NoSuchMethodException {
             arrangeStoredRow(standardUserRow());
 
             service.lookupUser(USER_ID);
 
-            verify(userSecurityRepository).findById(USER_ID);
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             verifyNoMoreInteractions(userSecurityRepository);
-            assertThat(Arrays.stream(UserSecurityRepository.class.getDeclaredMethods())
-                    .map(Method::getName)
-                    .toList())
-                    .as("UPDATE at :275 held the row from the read to the delete across a terminal "
-                            + "conversation, under UPDATEMODEL(LOCKING). Nothing holds a lock across "
-                            + "requests here and the store declares no locking finder - a labelled "
-                            + "deviation, and the reason the delete re-reads inside its own transaction")
-                    .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("lock"))
-                    .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("forupdate"));
-            for (final Method declared : UserSecurityRepository.class.getDeclaredMethods()) {
-                assertThat(annotationNames(declared.getAnnotations())).doesNotContain("Lock");
-            }
+
+            // UPDATE at :275 held the row from the read to the delete, under UPDATEMODEL(LOCKING) at
+            // app/csd/CARDDEMO.CSD:88. The conversational half of that span has no counterpart on a stateless
+            // surface, but the half inside one request does, and it is now taken: the read goes through a
+            // pessimistic write finder rather than the unlocked findById. This assertion used to demand the
+            // OPPOSITE - that no locking finder existed - which encoded the very lost-update defect that made
+            // two concurrent administrators able to discard one another's change (Medium severity).
+            final Method lockingFinder =
+                    UserSecurityRepository.class.getDeclaredMethod("findByIdForUpdate", String.class);
+            assertThat(annotationNames(lockingFinder.getAnnotations()))
+                    .as("the finder the delete reads through must carry the lock declaration itself; a "
+                            + "@Transactional method alone acquires nothing")
+                    .contains("Lock");
+            assertThat(lockingFinder.getAnnotation(Lock.class).value())
+                    .as("PESSIMISTIC_WRITE is the mode EXEC CICS READ ... UPDATE corresponds to. A read "
+                            + "lock would let a second reader in and reintroduce the interleaving")
+                    .isEqualTo(LockModeType.PESSIMISTIC_WRITE);
         }
 
         @Test
         @DisplayName("a hard lookup failure carries the dataset of :270 and the verb of :269 into the failure")
         void aHardLookupFailureCarriesTheDatasetAndTheVerb() throws ReflectiveOperationException {
             final QueryTimeoutException timedOut = new QueryTimeoutException("the read did not answer");
-            when(userSecurityRepository.findById(USER_ID)).thenThrow(timedOut);
+            when(userSecurityRepository.findByIdForUpdate(USER_ID)).thenThrow(timedOut);
 
             final CardDemoException failure = assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.lookupUser(USER_ID))
@@ -1634,7 +1644,7 @@ class UserDeleteServiceTest {
         void anUnclassifiableReadStatusKeepsTheLookupLiteral() {
             final QueryTimeoutException timedOut = new QueryTimeoutException("the read did not answer");
             final UserDeleteService withSilentMapper = serviceOver(silentMapper());
-            when(userSecurityRepository.findById(USER_ID)).thenThrow(timedOut);
+            when(userSecurityRepository.findByIdForUpdate(USER_ID)).thenThrow(timedOut);
 
             assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> withSilentMapper.lookupUser(USER_ID))
@@ -1654,7 +1664,7 @@ class UserDeleteServiceTest {
         void theCodesOfTheLiveDisplayReachTheFailureContext() {
             final FileStatusMapper watched = mock(FileStatusMapper.class);
             final QueryTimeoutException timedOut = new QueryTimeoutException("the read did not answer");
-            when(userSecurityRepository.findById(USER_ID)).thenThrow(timedOut);
+            when(userSecurityRepository.findByIdForUpdate(USER_ID)).thenThrow(timedOut);
             final ArgumentCaptor<String> status = ArgumentCaptor.forClass(String.class);
             final ArgumentCaptor<String> file = ArgumentCaptor.forClass(String.class);
             final ArgumentCaptor<String> operation = ArgumentCaptor.forClass(String.class);
@@ -1748,7 +1758,7 @@ class UserDeleteServiceTest {
         void theSentenceStopsAtTheRecordKeysFirstBlank() {
             final UserSecurity padded =
                     storedRow(PADDED_USER_ID, STORED_FIRST_NAME, STORED_LAST_NAME, UserType.USER);
-            when(userSecurityRepository.findById(UNPADDED_USER_ID)).thenReturn(Optional.of(padded));
+            when(userSecurityRepository.findByIdForUpdate(UNPADDED_USER_ID)).thenReturn(Optional.of(padded));
 
             final UserSecurityDto.UserDeleteScreen screen = service.deleteUser(UNPADDED_USER_ID, true);
 
@@ -1968,7 +1978,7 @@ class UserDeleteServiceTest {
 
             final UserSecurityDto.UserDeleteScreen screen = service.openScreen(USER_ID);
 
-            verify(userSecurityRepository).findById(USER_ID);
+            verify(userSecurityRepository).findByIdForUpdate(USER_ID);
             assertThat(screen.userIdInput())
                     .as(":101-102 moves CDEMO-CU03-USR-SELECTED onto USRIDINI")
                     .isEqualTo(USER_ID);
@@ -2241,7 +2251,7 @@ class UserDeleteServiceTest {
             assertThatExceptionOfType(RecordNotFoundException.class)
                     .isThrownBy(() -> service.deleteUser(SHORT_USER_ID, true));
 
-            verify(userSecurityRepository).findById(key.capture());
+            verify(userSecurityRepository).findByIdForUpdate(key.capture());
             assertThat(key.getValue())
                     .as("emptiness is the only validation, so a short key is not padded, trimmed or "
                             + "rewritten on its way to the store")
@@ -2258,7 +2268,7 @@ class UserDeleteServiceTest {
             assertThatExceptionOfType(RecordNotFoundException.class)
                     .isThrownBy(() -> service.deleteUser(HOSTILE_USER_ID, true));
 
-            verify(userSecurityRepository).findById(key.capture());
+            verify(userSecurityRepository).findByIdForUpdate(key.capture());
             assertThat(key.getValue())
                     .as("the identifier is untrusted input reaching a keyed read and then a removal, which "
                             + "is the highest-consequence injection surface in this package. It arrives at "

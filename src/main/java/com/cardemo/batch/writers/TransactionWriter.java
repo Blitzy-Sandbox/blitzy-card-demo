@@ -42,7 +42,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
-import org.springframework.batch.core.annotation.BeforeStep;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
@@ -52,6 +51,8 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
@@ -141,9 +142,12 @@ import io.awspring.cloud.s3.S3Operations;
  * </ul>
  *
  * <p>No endpoint, region or credential is read here, and no process environment variable is consulted
- * directly - every value arrives through the injected configuration. The LocalStack endpoint override exists
- * only in the {@code local} and {@code test} profiles, so no live cloud path is structurally reachable from
- * this class.
+ * directly - every value arrives through the injected configuration. The endpoint override is declared in all
+ * four profiles: the base, {@code test} and {@code prod} profiles bind it to a bare
+ * {@code ${AWS_ENDPOINT_URL}} with no default, so an unset variable fails the context at startup, and only
+ * {@code application-local.yml} defaults it to the LocalStack edge. No live cloud path is therefore
+ * structurally reachable from this class. An earlier revision of this sentence said the override existed only
+ * in the {@code local} and {@code test} profiles; that is withdrawn.
  *
  * <h2>Object keys and generation-data-group translation</h2>
  *
@@ -274,12 +278,14 @@ import io.awspring.cloud.s3.S3Operations;
  * labels plus {@code Z-GET-DB2-FORMAT-TIMESTAMP} at {@code app/cbl/CBTRN02C.cbl:L692}. The 27th candidate is
  * {@code FILE-CONTROL.} at {@code app/cbl/CBTRN02C.cbl:L28}, an environment-division header rather than a
  * paragraph. The banner above states the verified figure.</li>
- * <li><strong>Only the records-processed counter is incremented.</strong> Adding to a
- * total-transaction-amount counter is not reachable, because the amount-taking counter overload accepts only
- * an approximate binary primitive and converting a monetary {@code BigDecimal} into one is forbidden outright
- * for financial fields and checked by the security gate. Transaction value is exposed
- * through the relation, which holds it exactly as {@code NUMERIC(11,2)}, rather than through an
- * approximate-arithmetic meter.</li>
+ * <li><strong>Two series are advanced from here, and neither converts a monetary value.</strong> The
+ * records-processed counter takes a count. The transaction-amount instrument takes the {@code BigDecimal}
+ * itself: {@link MetricsConfig#countTransactionAmount} accumulates exactly and converts to a primitive once,
+ * on the scrape thread, so no approximate binary value is ever produced here. Micrometer's
+ * {@code Counter.increment(double)} overload - the one that would have required such a conversion, and that
+ * silently discards a non-positive amount - is not reachable from this class at all. The authoritative
+ * transaction value remains the relation's {@code NUMERIC(11,2)} column; the meter is a telemetry
+ * mirror.</li>
  * <li><strong>Which item of a batched flush collided cannot be determined</strong> from any portable field of
  * Spring's exception; a driver-independent accessor for the violated key would be needed. Until one exists,
  * the exception names the exact
@@ -604,6 +610,12 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      */
     private static final String OBJECT_STORE_IO_STATUS = FileStatus.IO_ERROR_FIRST_BYTE + "0";
 
+    /**
+     * The one key separator, which {@link #KEY_TEMPLATE} writes and {@link #requireObjectPrefix(String)}
+     * therefore strips from the configured prefix so that no key carries an empty segment.
+     */
+    private static final String KEY_SEPARATOR = "/";
+
     /** The base-name segment of every emitted object key, appended after the configured prefix. */
     private static final String OBJECT_BASE_NAME = "transact";
 
@@ -790,7 +802,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
         this.fileStatusMapper = requireCollaborator(fileStatusMapper, "fileStatusMapper");
         this.metrics = requireCollaborator(metrics, "metrics");
         this.outputBucket = requireConfigured(outputBucket, "carddemo.aws.s3.batch-output-bucket");
-        this.objectPrefix = requireConfigured(objectPrefix, "carddemo.aws.s3.transaction-object-prefix");
+        this.objectPrefix = requireObjectPrefix(objectPrefix);
     }
 
     /**
@@ -840,10 +852,11 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * half-written batch behind. Only one chunk's worth of bytes is ever held - chunk size multiplied by 350 -
      * so the whole output is never materialised.</li>
      * <li><strong>Insert the rows</strong>, flushing inside this frame.</li>
-     * <li><strong>Emit the object</strong>, under the guard reproduced from
-     * {@code app/cbl/CBTRN02C.cbl:L562-L579}.</li>
-     * <li><strong>Publish the created key</strong> into the step execution context.</li>
-     * <li><strong>Report the records</strong> on the two instruments this path owns.</li>
+     * <li><strong>Wait for the commit</strong>, and only then emit the object under the guard reproduced from
+     * {@code app/cbl/CBTRN02C.cbl:L562-L579}, publish the created key into the two execution contexts, and
+     * report the records on the two instruments this path owns. All three are deferred to
+     * {@code afterCommit}, so a transaction that rolls back leaves no object, no published key and no counter
+     * movement behind - see {@link #promoteAfterCommit(StepExecution, long, byte[], List)}.</li>
      * </ol>
      *
      * <p>Side effects: one row per item, one object per call, two counter increments per item, and one
@@ -873,13 +886,82 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
         byte[] payload = composePayload(items);
 
         persistChunk(items);
+        promoteAfterCommit(execution, ordinal, payload, items);
+    }
+
+    /**
+     * Defers the object write, the key publication and the two counters until the surrounding transaction has
+     * committed, and abandons all three if it rolls back.
+     *
+     * <p><strong>Finding, severity High - remediated here.</strong> These three effects used to run inline,
+     * immediately after {@code saveAllAndFlush}. A flush is not a commit, so the object existed in the bucket,
+     * the key was published into the execution contexts and both counters had moved <em>before</em> the chunk
+     * transaction reached its commit point. Any failure between the two - the commit itself, a later listener,
+     * a constraint checked at commit time - left an object naming rows that had been rolled back, an execution
+     * context advertising a generation that described nothing, and counters claiming work that never landed.
+     * There was no compensating action anywhere, so the divergence was permanent.
+     *
+     * <p>The remedy publishes nothing before the commit rather than publishing early and compensating
+     * afterwards. The composed payload is a byte array already held on the stack, so holding it until
+     * {@code afterCommit} costs one chunk's worth of bytes - the same peak this method already had - and
+     * removes the orphan window entirely: on rollback the callback is simply not invoked, and because nothing
+     * was ever written there is nothing to delete. Compensation by deletion would have been the weaker design,
+     * since a delete can itself fail and would leave exactly the state it was meant to prevent.
+     *
+     * <p>An upload that fails <em>after</em> the commit throws from the synchronization callback, which Spring
+     * propagates out of the commit, so the step still fails and the failure is still attributed to this writer.
+     * The database rows survive that failure, which is the source's own behaviour: on the mainframe the
+     * transaction-file write of {@code app/cbl/CBTRN02C.cbl:L562}-{@code :L579} is a separate commit that
+     * follows the category-balance and account updates, so a failure there leaves those two applied.
+     *
+     * <p><strong>The no-transaction case is handled explicitly rather than assumed away.</strong> A unit test
+     * that calls {@link #write(Chunk)} directly runs with no transaction synchronization active, and so does a
+     * caller that wires this writer outside a chunk-oriented step. In that case there is no commit to wait
+     * for, so the three effects run inline exactly as they used to; the behaviour under a real step is the
+     * deferred one, and the difference is the presence of a transaction rather than a mode this class chooses.
+     *
+     * <p>Side effects: registers one transaction synchronization, or performs the publication inline.
+     *
+     * @param execution the captured step execution, supplying the job instance and the context to publish into
+     * @param ordinal the zero-based index of the chunk's first record within the step
+     * @param payload the concatenated fixed-width records to emit once the rows are durable
+     * @param items the transactions the counters describe
+     */
+    private void promoteAfterCommit(StepExecution execution, long ordinal, byte[] payload,
+                                    List<? extends Transaction> items) {
+
+        int reported = items.size();
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            publishDurableOutput(execution, ordinal, payload, items, reported);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                publishDurableOutput(execution, ordinal, payload, items, reported);
+            }
+        });
+    }
+
+    /**
+     * Emits the object, publishes its key and moves the two counters, in that order.
+     *
+     * <p>Called once the rows are durable - from {@code afterCommit}, or inline when no transaction is active.
+     * The ordering is the same one the source has: {@code app/cbl/CBTRN02C.cbl:L226} counts after the write
+     * rather than before it, so neither instrument can claim work an abandoned write did not do.
+     *
+     * @param execution the captured step execution
+     * @param ordinal the zero-based index of the chunk's first record within the step
+     * @param payload the concatenated fixed-width records
+     * @param items the transactions the amount counter reads
+     * @param reported how many records the processed counter is advanced by
+     */
+    private void publishDurableOutput(StepExecution execution, long ordinal, byte[] payload,
+                                      List<? extends Transaction> items, int reported) {
+
         String objectKey = writeTransactionFile(payload, execution, ordinal);
         publishObjectKey(execution, objectKey);
-
-        // Reported only after the row and the object are both durable, so neither instrument can claim work
-        // that a failure abandoned. The order matters for the same reason the legacy program counts after the
-        // write at app/cbl/CBTRN02C.cbl:L226 rather than before it.
-        metrics.countRecordsProcessed(items.size());
+        metrics.countRecordsProcessed(reported);
         countTransactionAmounts(items);
     }
 
@@ -1298,16 +1380,23 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * value</b>: {@code app/cbl/CBTRN02C.cbl:L547-L552} adds a negative amount to the cycle <em>debit</em>
      * accumulator, so the debit accumulator legitimately holds negative values, and
      * {@code app/data/ASCII/dailytran.txt} carries both the <code>&#123;</code> and <code>&#125;</code>
-     * overpunch characters, which decode to {@code +0} and {@code -0}. A signed stream reported through a
-     * monotonic counter would discard every debit; the instrument is a gauge over an exact accumulator for that
-     * reason, and this method must not normalise a sign on its way there.
+     * overpunch characters, which decode to {@code +0} and {@code -0}. A signed stream pushed through
+     * {@code Counter.increment(double)} would discard every debit, so the instrument instead exposes
+     * <b>two {@code FunctionCounter} series over exact accumulators</b>, tagged {@code sign=credit} and
+     * {@code sign=debit}, partitioned on the same {@code >= 0} predicate the source uses at
+     * {@code app/cbl/CBTRN02C.cbl:L548}. Two series rather than one signed number because a Prometheus
+     * counter may not carry a negative value: the client rejects one at <em>scrape</em> time and fails the
+     * whole response, which would take the other series down with it. This method must not normalise a sign
+     * on its way there - the routing is {@code MetricsConfig}'s, and the signed total is recovered as
+     * {@code credit - debit}.
      *
      * <p>Reported per record rather than per chunk sum, deliberately. Summing here would be exact - these are
      * {@code BigDecimal} values - but it would move the arithmetic that produces the reported figure out of the
      * one class that owns monetary accumulation, and the amounts are already in hand one at a time. The
      * accumulator does the adding.
      *
-     * <p>Side effects: advances {@link MetricsConfig#METRIC_TRANSACTION_AMOUNT_TOTAL}. No I/O and no logging.
+     * <p>Side effects: advances one of the two sign-tagged series of
+     * {@link MetricsConfig#METRIC_TRANSACTION_AMOUNT_TOTAL} per item. No I/O and no logging.
      *
      * @param items the chunk just written, never {@code null}
      */
@@ -1748,6 +1837,38 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     private static String requireConfigured(String value, String property) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(property + " must be configured with a non-blank value");
+        }
+        return value;
+    }
+
+    /**
+     * Validates the configured key prefix and strips any trailing separator from it.
+     *
+     * <p>{@link #KEY_TEMPLATE} writes the separator itself, so a prefix that arrives already ending in one
+     * would compose a key carrying an empty segment - {@code base//0000...} rather than {@code base/0000...}.
+     * That is not a cosmetic difference. Object storage has no directories, so the key is the whole name: the
+     * consuming reader validates that the generation key it is handed names exactly one object inside the
+     * configured namespace and refuses a {@code //} segment, so a doubled separator here is a key the reader
+     * is right to reject. The two sides therefore agree by construction: whichever form the prefix is
+     * supplied in, the composed key is identical.
+     *
+     * <p>The reader normalises in the opposite direction - it <em>appends</em> exactly one separator, because
+     * it matches the prefix as a plain string and needs the boundary to keep {@code gdg/transact-bkup} from
+     * also matching {@code gdg/transact-bkup-shadow}. Both rules exist for the same reason and neither
+     * doubles: one owns the boundary in a match, the other owns it in a composition.
+     *
+     * @param configured the configured prefix
+     * @return the prefix with no trailing separator, never {@code null} and never blank
+     * @throws IllegalArgumentException if the value is absent, blank, or nothing but separators
+     */
+    private static String requireObjectPrefix(String configured) {
+        String value = requireConfigured(configured, "carddemo.aws.s3.transaction-object-prefix").strip();
+        while (value.endsWith(KEY_SEPARATOR)) {
+            value = value.substring(0, value.length() - KEY_SEPARATOR.length());
+        }
+        if (value.isEmpty()) {
+            throw new IllegalArgumentException("carddemo.aws.s3.transaction-object-prefix must name a "
+                    + "prefix, but was only separators");
         }
         return value;
     }

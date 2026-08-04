@@ -98,14 +98,14 @@ import org.junit.jupiter.params.provider.ValueSource;
  * record, comparing the live record against the OLD group. Six properties are pinned here that a
  * plausible tidy-up would silently break.</p>
  *
- * <p><strong>The payload is immutable.</strong> An earlier revision exposed 139 setters, so a value
- * could be rewritten between validation and the snapshot comparison. A concurrency guard that can
+ * <p><strong>The payload is immutable.</strong> Exposing setters over the 139 properties would let a
+ * value be rewritten between validation and the snapshot comparison, and a concurrency guard that can
  * be rewritten after it is validated is not a guard. Every field must be {@code final}, no setter
  * may exist, and each type must be reachable through exactly one all-arguments creator.</p>
  *
- * <p><strong>Validation cascades into both snapshot groups.</strong> An earlier revision left
- * {@code oldDetails} without a cascade and without one width contract, arguing that the OLD group
- * declares no {@code 88}-level condition name. A {@code PIC} clause is itself a contract, and under
+ * <p><strong>Validation cascades into both snapshot groups.</strong> Leaving {@code oldDetails}
+ * uncascaded on the grounds that the OLD group declares no {@code 88}-level condition name would leave
+ * the guard's own operand unvalidated. A {@code PIC} clause is itself a contract, and under
  * statelessness the group arrives from the client rather than from {@code 9000-READ-DATA}
  * ({@code app/cbl/COACTUPC.cbl:3610}), so it is the untrusted operand of the concurrency guard.</p>
  *
@@ -133,8 +133,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * strict one, because otherwise a derived view submitted as though it were a member would be
  * silently discarded - which looks like acceptance.</p>
  *
- * <p><strong>The date-of-birth offsets are asymmetric, and that is the highest-severity property
- * in the whole payload.</strong> {@code 9700-CHECK-CHANGE-IN-REC} compares the live customer date
+ * <p><strong>The date-of-birth offsets are asymmetric, and no other property in the payload is
+ * as easy to get wrong.</strong> {@code 9700-CHECK-CHANGE-IN-REC} compares the live customer date
  * against the snapshot date at <em>different offsets on each side</em>
  * ({@code app/cbl/COACTUPC.cbl:4174-4179}): the live value is {@code CUST-DOB-YYYY-MM-DD PIC X(10)}
  * ({@code app/cpy/CVCUS01Y.cpy:19}), dash-separated, so its parts sit at 1, 6 and 9, while the
@@ -852,8 +852,8 @@ final class AccountUpdateRequestTest {
                     .map(Method::getName)
                     .filter(name -> name.startsWith("set"))
                     .toList())
-                    .as("an earlier revision exposed 139 setters across these three types, so a "
-                            + "value could be rewritten after validation and before the snapshot "
+                    .as("a setter on any of the 139 properties of these three types would let a "
+                            + "value be rewritten after validation and before the snapshot "
                             + "comparison")
                     .isEmpty();
         }
@@ -954,8 +954,8 @@ final class AccountUpdateRequestTest {
             final Set<ConstraintViolation<AccountUpdateRequest>> violations =
                     VALIDATOR.validate(payload);
             assertThat(violations)
-                    .as("an earlier revision produced zero violations here, because oldDetails "
-                            + "carried neither a cascade nor a single width contract")
+                    .as("without a cascade and a width contract on oldDetails this payload would "
+                            + "produce zero violations, leaving the guard's own operand unvalidated")
                     .isNotEmpty();
             assertThat(violations.stream()
                     .map(violation -> violation.getPropertyPath().toString())

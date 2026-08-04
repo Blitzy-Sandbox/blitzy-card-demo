@@ -65,18 +65,17 @@ import org.springframework.context.annotation.Configuration;
  * <p>This class has <strong>no legacy counterpart</strong>. Rule 1 Clause A requires
  * <em>"Observability: structured logs, meaningful errors, and measurable behavior (metrics/tracing where
  * relevant)."</em> and that single bullet is the sole warrant for the layer this class fronts. Verified at
- * {@code 7756d89}, the entire 19,254-line corpus across the 28 programs of {@code app/cbl} contains
- * <strong>322 {@code DISPLAY} statements and nothing else resembling instrumentation</strong>, plus the four
- * character status renderer {@code 9910-DISPLAY-IO-STATUS} at {@code app/cbl/CBTRN02C.cbl:L714-L727}. A
- * repository-wide search of {@code app/} for the words prometheus, micrometer, opentelemetry, healthcheck and
- * actuator returns nothing. There is no metric, no trace, no health probe, no logging framework, no service
- * level agreement and no service level objective anywhere in the source. Every capability described below is
+ * {@code 7756d89}, the entire 19,254-line corpus across the 28 programs of {@code app/cbl} instruments
+ * itself with <strong>{@code DISPLAY} to SYSOUT and nothing else</strong>, plus the four-character status
+ * renderer {@code 9910-DISPLAY-IO-STATUS} at {@code app/cbl/CBTRN02C.cbl:L714-L727}. A repository-wide
+ * search of {@code app/} for the words prometheus, micrometer, opentelemetry, healthcheck and actuator
+ * returns nothing. There is no metric, no trace, no health probe, no logging framework, no service level
+ * agreement and no service level objective anywhere in the source. Every capability described below is
  * therefore new, designed explicitly rather than derived.
  *
- * <p>Counting the census requires a case-insensitive match. Twenty-six programs use a lowercase
+ * <p>Any census of that corpus must match case-insensitively: twenty-six programs use a lowercase
  * {@code .cbl} extension and two - {@code app/cbl/CBSTM03A.CBL} and {@code app/cbl/CBSTM03B.CBL} - use an
- * uppercase one, so a {@code *.cbl} glob sees only 18,100 lines and 289 {@code DISPLAY} statements. The
- * figures above are the case-insensitive ones.
+ * uppercase one, so a {@code *.cbl} glob silently sees only 18,100 of the 19,254 lines.
  *
  * <h2>Registration and wiring only, and exactly one bean</h2>
  *
@@ -101,22 +100,28 @@ import org.springframework.context.annotation.Configuration;
  * because nothing further is unowned: the meter registry, the Prometheus scrape endpoint, the tracer and its
  * exporter are auto-configured from the properties listed below; the common metric tags, the actuator
  * exposure list, the health group composition and the sampling probability are all set in
- * {@code src/main/resources/application.yml}; and the three observability classes register themselves.
+ * {@code src/main/resources/application.yml}; and the four observability classes register themselves - the
+ * correlation filter, the metric registrar, the health indicators and
+ * {@code com.cardemo.observability.TemplatedUriObservationConvention}, which Boot's
+ * {@code WebMvcObservationAutoConfiguration} picks up through an {@code ObjectProvider} and which therefore
+ * needs no {@code @Bean} method here.
  * Adding a bean that restated any of those would be duplication under Rule 1 Clause C and dead
  * configuration under Clause B.
  *
- * <h2>The binding duplicate-bean rule</h2>
+ * <h2>The binding registration-ownership rule</h2>
  *
- * <p>{@code com.cardemo.observability.MetricsConfig} is the plan-designated definition site for the four
- * counter beans, and this class must not re-declare them. The remedy is fixed so that every maintainer
- * resolves a collision the same way, and is stated here verbatim:
+ * <p>{@code com.cardemo.observability.MetricsConfig} is the designated registration site for the four
+ * application instruments - four counters, the amount one partitioned by sign - and this class must not
+ * register any of them.
+ * MetricsConfig registers them directly on the {@code MeterRegistry} and exposes an increment facade
+ * instead of publishing them as beans, precisely so that the facade is the only path to an instrument. The
+ * remedy for a collision is fixed so that every maintainer resolves it the same way:
  *
- * <blockquote>If the application fails at startup with a duplicate bean definition for any of the four
- * counters, the correct remedy is to remove the duplicate from {@code ObservabilityConfig}, NOT from
- * {@code MetricsConfig}, because {@code MetricsConfig} is the AAP-designated definition site.</blockquote>
+ * <blockquote>If the application fails at startup with a duplicate definition for anything the
+ * observability package owns, remove the duplicate from {@code ObservabilityConfig}, NOT from the class in
+ * {@code com.cardemo.observability} that owns it.</blockquote>
  *
- * <p>The same direction applies to the filter and the health contributors: remove the duplicate from here,
- * never from the class in {@code com.cardemo.observability} that owns it.
+ * <p>That direction applies equally to the correlation filter and the health contributors.
  * {@code spring.main.allow-bean-definition-overriding} is {@code false} at
  * {@code application.yml:505}, so a collision throws {@code BeanDefinitionOverrideException} during context
  * refresh rather than silently shadowing one definition with the other. That is the desired behaviour: an
@@ -150,9 +155,12 @@ import org.springframework.context.annotation.Configuration;
  *       override.</li>
  * </ul>
  *
- * <h2>Exactly four named instruments</h2>
+ * <h2>Exactly four named instruments, all four of them counters</h2>
  *
- * <p>The layer publishes four instruments and no fifth. Their names and tag keys live on
+ * <p>The layer publishes four instruments and no fifth. The fourth reports a signed running total that can
+ * fall as well as rise, and it stays a counter by being partitioned on the source's own sign predicate into
+ * a credit and a debit series of magnitudes whose difference is the net - which also keeps the reserved
+ * {@code _total} suffix a Prometheus gauge would have stripped. Their names and tag keys live on
  * {@code MetricsConfig}; their provenance is recorded here because it is the reason each one exists.
  *
  * <ol>
@@ -169,10 +177,16 @@ import org.springframework.context.annotation.Configuration;
  *       {@code app/cbl/COSGN00C.cbl} (260 lines): the password comparison at {@code :L223}, the wrong
  *       password path at {@code :L241-L246}, {@code WHEN 13} for a user that does not exist at
  *       {@code :L247-L251}, and {@code WHEN OTHER} at {@code :L252-L256}.</li>
- *   <li><strong>Total transaction amount.</strong> From the accumulations in
+ *   <li><strong>Total transaction amount - the gauge.</strong> From the accumulations in
  *       {@code 2800-UPDATE-ACCOUNT-REC} at {@code app/cbl/CBTRN02C.cbl:L545-L560}, where the amount is
  *       added to the balance and then to the cycle credit when it is non-negative and to the cycle debit
- *       otherwise, at {@code :L547-L552}.</li>
+ *       otherwise, at {@code :L547-L552}. This one instrument publishes <strong>two series</strong>, tagged
+ *       {@code sign=credit} and {@code sign=debit}, mirroring those two accumulators and partitioned on the
+ *       same {@code IF DALYTRAN-AMT >= 0} predicate. That is a dimension of the fourth instrument, not a
+ *       fifth instrument: the contract fixes four <em>names</em>, and the rejected series has been tagged
+ *       from the outset on identical terms. Two series rather than one signed number because a Prometheus
+ *       counter may not carry a negative value - the client rejects one at <em>scrape</em> time and fails
+ *       the entire response - while the amounts are genuinely signed and no sign may be normalised.</li>
  * </ol>
  *
  * <p><strong>Cardinality is bounded by construction, which is a performance control as much as a hygiene
@@ -183,11 +197,15 @@ import org.springframework.context.annotation.Configuration;
  * path, no reject record is written, and the value is cleared on the next iteration at {@code :L208}. It
  * exists as a constant because the assignment is real code on a reachable path.
  *
+ * The sign tag draws from the two-valued partition above and cannot grow either, because the routing is a
+ * {@code signum()} test and not a caller-supplied label.
+ *
  * <p>No high-cardinality tag is registered anywhere in this layer. Specifically excluded as tag values:
  * account, customer, card, transaction and user identifiers, usernames, session, correlation and trace
  * identifiers, network addresses, request paths with a variable substituted, exception messages, file status
  * strings, object keys, message identifiers and job execution identifiers. Unbounded tags are the classic
- * metrics-cardinality explosion, so this is a Blocker-severity constraint rather than a preference.
+ * metrics-cardinality explosion, so this is a hard constraint rather than a preference: one such tag can
+ * multiply the series count without bound and take the registry and the scrape down with it.
  *
  * <p>The timers the framework auto-configures - HTTP server requests, batch job executions, connection pool
  * and JVM meters - are auto-configuration output and <strong>not</strong> additional named instruments. They
@@ -248,10 +266,11 @@ import org.springframework.context.annotation.Configuration;
  * <p>The sampling probability is likewise explicit in the property files rather than left to an implicit
  * default, and is not overridden here.
  *
- * <p><strong>Not available (1 of 3), severity Medium.</strong> The identifier commonly cited as the
- * mainframe's thread of request identity, {@code EIBTRNID}, <strong>does not occur anywhere in this
- * repository</strong>: it has zero occurrences at {@code 7756d89}, and the complete exec-interface-block
- * census in {@code app/cbl} is {@code EIBCALEN} with 49 occurrences and {@code EIBAID} with 16. No
+ * <p><strong>The mainframe identifier this replaces cannot be cited, because it is not there.</strong> The
+ * identifier commonly named as the mainframe's thread of request identity, {@code EIBTRNID},
+ * <strong>does not occur anywhere in this repository</strong>: it has zero occurrences at {@code 7756d89},
+ * and the complete exec-interface-block census in {@code app/cbl} is {@code EIBCALEN} with 49 occurrences
+ * and {@code EIBAID} with 16. No
  * line-level citation for it can therefore be given, and none is fabricated. What is needed to describe the
  * legacy per-transaction identity instead is already available and is what this class cites:
  * {@code app/csd/CARDDEMO.CSD} for the transaction inventory, {@code app/cbl/COSGN00C.cbl:L37}
@@ -267,7 +286,7 @@ import org.springframework.context.annotation.Configuration;
  * and {@code USRSEC} - at {@code :L26-L30} of each member. <strong>They have no Java analogue other than the
  * health indicators.</strong>
  *
- * <p><strong>Severity Low, recorded rather than corrected:</strong> that five-file list is a strict subset of
+ * <p><strong>Recorded rather than corrected:</strong> that five-file list is a strict subset of
  * the eight files the region defines in {@code app/csd/CARDDEMO.CSD} - {@code ACCTDAT} at {@code :L1},
  * {@code CARDAIX} at {@code :L13}, {@code CARDDAT} at {@code :L25}, {@code CCXREF} at {@code :L37},
  * {@code CUSTDAT} at {@code :L50}, {@code CXACAIX} at {@code :L63}, {@code TRANSACT} at {@code :L76} and
@@ -340,15 +359,16 @@ import org.springframework.context.annotation.Configuration;
  * every instant reaches PostgreSQL as UTC whatever zone this clock carries - the provider converts. What the
  * zone decides is the <em>rendered text</em> that the parity gate diffs.
  *
- * <p><strong>Severity Medium, disclosed rather than silently reconciled.</strong> The base profile pins
+ * <p><strong>The clock zone and the parity baseline must be made to agree, and this class cannot do it
+ * alone.</strong> The base profile pins
  * {@value #KEY_CLOCK_ZONE} to {@code UTC} through {@code zone: ${CARDDEMO_TIME_ZONE:UTC}} at
  * {@code application.yml:987}. A deployment that inherits that default therefore runs the clock in UTC, not
  * in the host's civil zone, so rendered dates and times will differ from a baseline captured under a
  * non-UTC zone by the host's offset. This class cannot resolve the discrepancy by itself:
- * {@code application.yml} is owned elsewhere and is bound, never redeclared. The remediation, for whoever
- * owns the parity baseline, is to decide the zone once and make the two agree - either export
- * {@code CARDDEMO_TIME_ZONE} with the zone the baseline was captured under, or re-capture the baseline under
- * UTC. Both the property and the resolved zone are reported on the startup line this class emits, so the
+ * {@code application.yml} is owned elsewhere and is bound, never redeclared. Whoever owns the parity
+ * baseline decides the zone once and makes the two agree - either by exporting
+ * {@code CARDDEMO_TIME_ZONE} with the zone the baseline was captured under, or by re-capturing the baseline
+ * under UTC. Both the property and the resolved zone are reported on the startup line this class emits, so the
  * effective value never has to be guessed at.
  *
  * <h2>How to run, build and test</h2>
@@ -356,8 +376,10 @@ import org.springframework.context.annotation.Configuration;
  * <p>Compile with {@code ./mvnw -B -ntp clean compile}: the compiler runs {@code -Xlint:all} with
  * {@code -Werror} and {@code failOnWarning}, so any warning fails the build, and the Javadoc gate runs with
  * {@code failOnWarnings} too, so an undocumented public member fails it as well. Run the unit suite with
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true test} and the full gate with the same options and
- * {@code verify}, which additionally enforces the coverage floor. Start the application with
+ * {@code ./mvnw -B -ntp -Ddependency-check.skip=true test}. Adding {@code verify} to those same options
+ * additionally enforces the coverage floor but is <strong>fast local verification rather than the full
+ * gate</strong>, because the skip suppresses the vulnerability scan; the full gate is
+ * {@code ./mvnw -B -ntp clean verify}, online and with nothing skipped. Start the application with
  * {@code java -jar target/carddemo-1.0.0.jar} once the variables in {@code .env.example} are exported. Tests
  * for this class live in {@code src/test/java/com/cardemo/unit/config/} and never in this package; every
  * branch below is reachable by calling the bean method directly, with no container, because the one property
@@ -366,10 +388,10 @@ import org.springframework.context.annotation.Configuration;
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <dl>
- *   <dt>Startup fails with a duplicate bean definition for one of the four counters</dt>
- *   <dd>Remove the duplicate from this class, never from {@code MetricsConfig} - the verbatim rule above.
- *       The same direction applies to the correlation filter and the health contributors. Severity
- *       High.</dd>
+ *   <dt>Startup fails with a duplicate definition for something the observability package owns</dt>
+ *   <dd>Remove the duplicate from this class, never from the owning class in
+ *       {@code com.cardemo.observability} - the verbatim rule above. That covers the four instruments, the
+ *       correlation filter and the health contributors alike.</dd>
  *   <dt>Startup fails with an unsatisfied constructor parameter of type {@code java.time.Clock}</dt>
  *   <dd>This class was not scanned. It sits in {@code com.cardemo.config}, below the {@code com.cardemo} root
  *       that the application scans, so the usual cause is a sliced test importing only some configuration
@@ -394,7 +416,7 @@ import org.springframework.context.annotation.Configuration;
  *       design, so absent spans there are expected and {@code traceId} and {@code spanId} still reach
  *       MDC.</dd>
  *   <dt>A log line has empty {@code traceId}, {@code spanId} or {@code correlationId}</dt>
- *   <dd>MDC key drift, severity High. The keys are owned by {@code CorrelationIdFilter} and are exactly
+ *   <dd>MDC key drift. The keys are owned by {@code CorrelationIdFilter} and are exactly
  *       {@code correlationId}, {@code traceId} and {@code spanId}; a re-spelled or additional key produces an
  *       unpopulated field and no error. Batch events additionally carry {@code jobInstanceId}, contributed by
  *       {@code BatchConfig}, so its absence on an HTTP event is correct.</dd>
@@ -403,15 +425,15 @@ import org.springframework.context.annotation.Configuration;
  *       database, object store and queue precisely so that traffic is withheld until they answer; the
  *       initialisation script is idempotent, so a repeated stack cycle converges rather than failing.</dd>
  *   <dt>Rendered dates or times differ from the baseline by a whole number of hours</dt>
- *   <dd>A zone mismatch, severity Medium - see the disclosure above. Compare the zone on this class's startup
+ *   <dd>A zone mismatch - see the note above. Compare the zone on this class's startup
  *       line against the zone the baseline was captured under. Do not switch this bean to
  *       {@link Clock#systemUTC()} to compensate: that changes every rendering rather than aligning one.</dd>
  * </dl>
  *
- * <h2>Two further disclosures</h2>
+ * <h2>Two boundaries this class cannot report on</h2>
  *
- * <p><strong>Not available (2 of 3), severity Medium - the root observability provisioning.</strong> The
- * scrape configuration, the Grafana datasource definition and the dashboard JSON are owned by the repository
+ * <p><strong>The root observability provisioning is not owned here.</strong> The scrape configuration, the
+ * Grafana datasource definition and the dashboard JSON are owned by the repository
  * root rather than by this class, so their content is <strong>deliberately not restated here</strong> and is
  * not something this class can report on. Their locations are {@code observability/prometheus.yml},
  * {@code observability/grafana/provisioning/datasources/} and {@code observability/grafana/dashboards/}; all
@@ -420,7 +442,7 @@ import org.springframework.context.annotation.Configuration;
  * demonstrate a <em>populated</em> dashboard is a container runtime with an accessible socket, the compose
  * stack up, and batch or sign-on traffic to move the counters.
  *
- * <p><strong>Not available (3 of 3), severity Medium - no service level objective exists.</strong> The corpus
+ * <p><strong>No service level objective exists to reproduce.</strong> The corpus
  * publishes no service level agreement, no service level objective, no latency target and no throughput
  * target; there is nothing in 19,254 lines to reproduce. The performance gate therefore records a
  * <strong>measured baseline, not a target</strong>. No threshold, no alert rule and no service level may be

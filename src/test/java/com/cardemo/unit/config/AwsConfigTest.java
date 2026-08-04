@@ -34,6 +34,7 @@
 package com.cardemo.unit.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -41,6 +42,10 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.cardemo.config.AwsConfig;
 import com.cardemo.observability.CorrelationIdFilter;
 import io.awspring.cloud.sns.core.TopicArnResolver;
@@ -56,6 +61,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.boot.ApplicationRunner;
 import software.amazon.awssdk.arns.Arn;
@@ -163,13 +169,12 @@ class AwsConfigTest {
             "http://localhost:4566",
             "https://localhost:4566",
             "http://127.0.0.1:4566",
-            "http://127.10.20.30:4566",
             "http://[::1]:4566",
             "http://localstack:4566",
             "http://carddemo-localstack:4566",
             "http://localhost.localstack.cloud:4566",
         })
-        @DisplayName("accepts the loopback range and the emulator's own documented host names")
+        @DisplayName("accepts the two loopback literals and the emulator's own documented host names")
         void acceptsEmulatorEndpoints(final String endpoint) {
             assertThat(withS3Endpoint(endpoint)).isNotNull();
         }
@@ -194,6 +199,13 @@ class AwsConfigTest {
             "http://carddemo-batch-output.s3.localhost.localstack.cloud:4566",
             // A DNS name that merely begins with the loopback literal, which a prefix test would admit.
             "http://127.0.0.1.attacker.example:4566",
+            // A loopback address that is not 127.0.0.1. It was accepted here, by a pattern matching the whole
+            // of 127.0.0.0/8 on the reasoning that Testcontainers might publish onto any of that range. It does
+            // not: the harness registers whatever LOCALSTACK.getEndpoint() reports, which is localhost, and this
+            // literal appeared nowhere else in the repository. Accepting it made the Java allowlist a strict
+            // superset of the one localstack-init/init-aws.sh applies - the drift this class's parity test now
+            // forbids - so the range pattern is gone and the two sides name the same five hosts.
+            "http://127.10.20.30:4566",
         })
         @DisplayName("refuses every host outside the allow-list, including the metadata address")
         void refusesLiveEndpoints(final String endpoint) {
@@ -324,11 +336,25 @@ class AwsConfigTest {
         }
 
         @Test
-        @DisplayName("the startup verifier accepts a FIFO queue with content-based deduplication")
+        @DisplayName("the startup verifier accepts a FIFO queue with content-based deduplication off")
         void verifierAcceptsCompliantQueue() throws Exception {
             SqsAsyncClient client = stubbedQueue(Map.of(
                     QueueAttributeName.FIFO_QUEUE.toString(), "true",
-                    QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "true"));
+                    QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "false"));
+
+            ApplicationRunner verifier = compliantConfig().cardDemoFifoQueueContractVerifier(client);
+
+            verifier.run(null);
+
+            verify(client).getQueueAttributes(any(GetQueueAttributesRequest.class));
+        }
+
+        @Test
+        @DisplayName("the startup verifier accepts a FIFO queue that omits the deduplication attribute")
+        void verifierAcceptsOmittedDeduplicationAttribute() throws Exception {
+            // Omission is how the service says false, so it must satisfy the requirement rather than fail it.
+            SqsAsyncClient client = stubbedQueue(Map.of(
+                    QueueAttributeName.FIFO_QUEUE.toString(), "true"));
 
             ApplicationRunner verifier = compliantConfig().cardDemoFifoQueueContractVerifier(client);
 
@@ -342,7 +368,7 @@ class AwsConfigTest {
         void verifierRefusesStandardQueue() {
             SqsAsyncClient client = stubbedQueue(Map.of(
                     QueueAttributeName.FIFO_QUEUE.toString(), "false",
-                    QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "true"));
+                    QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "false"));
 
             ApplicationRunner verifier = compliantConfig().cardDemoFifoQueueContractVerifier(client);
 
@@ -354,16 +380,50 @@ class AwsConfigTest {
         }
 
         @Test
-        @DisplayName("the startup verifier refuses a FIFO queue without content-based deduplication")
-        void verifierRefusesMissingDeduplication() {
+        @DisplayName("the startup verifier warns about content-based deduplication but still starts")
+        void verifierWarnsAboutContentBasedDeduplicationWithoutRefusingToStart() throws Exception {
+            // Finding H-08, severity High. The original defect was the reverse of this: the verifier REQUIRED
+            // the attribute to be true and refused a queue that omitted it, while content-based deduplication
+            // hashes the message body - and a report body is just the report name plus two dates, so two
+            // legitimate submissions of the same period collapsed inside the five-minute window where
+            // DISPOSITION(MOD) at app/csd/CARDDEMO.CSD:503 appended both.
+            //
+            // The fix is on the send path, not here: ReportSubmissionService mints an explicit
+            // MessageDeduplicationId per submission, and an explicit identifier takes precedence over the body
+            // hash, so both submissions arrive even while this attribute is enabled. Startup therefore must NOT
+            // refuse - an intermediate revision made it refuse, and that took every ApplicationContext down over
+            // a mutable attribute this process does not own, including tiers that never publish a report.
+            // FifoQueue is asserted instead because it is immutable from creation; this one is provisioned by
+            // localstack-init/init-aws.sh and re-read continuously by HealthIndicators.
             SqsAsyncClient client = stubbedQueue(Map.of(
-                    QueueAttributeName.FIFO_QUEUE.toString(), "true"));
+                    QueueAttributeName.FIFO_QUEUE.toString(), "true",
+                    QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "true"));
 
-            ApplicationRunner verifier = compliantConfig().cardDemoFifoQueueContractVerifier(client);
+            Logger verifierLogger = (Logger) LoggerFactory.getLogger(AwsConfig.class);
+            ListAppender<ILoggingEvent> captured = new ListAppender<>();
+            captured.start();
+            verifierLogger.addAppender(captured);
+            try {
+                ApplicationRunner verifier = compliantConfig().cardDemoFifoQueueContractVerifier(client);
 
-            assertThatThrownBy(() -> verifier.run(null))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("ContentBasedDeduplication");
+                assertThatNoException()
+                        .as("an enabled content hash must not abort startup: the explicit deduplication "
+                                + "identifier on every send already guarantees the append parity")
+                        .isThrownBy(() -> verifier.run(null));
+            } finally {
+                verifierLogger.detachAppender(captured);
+                captured.stop();
+            }
+
+            assertThat(captured.list)
+                    .as("the drift is still reported, and at WARN so it is not lost among the informational "
+                            + "startup lines")
+                    .anySatisfy(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                        assertThat(event.getFormattedMessage())
+                                .contains(QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString())
+                                .contains("localstack-init/init-aws.sh");
+                    });
         }
 
         @Test

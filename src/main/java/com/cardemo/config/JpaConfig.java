@@ -45,517 +45,172 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Persistence-layer configuration for the CardDemo modular monolith, and the single written record of the
- * relational substrate contract that replaced the VSAM catalogue.
- *
- * <p>Two distinct jobs live here, and separating them is the point of the class. The first is
- * <strong>executable</strong>: one bean that proves, at startup and before any request or batch step runs,
- * that the mechanisms which enforce field-contract parity are actually armed. The second is
- * <strong>documentary</strong>: the decisions that bind every entity, migration and repository in the tree
- * are recorded below with the catalogue, copybook, job-control and program locators that establish them, so
- * a reader never has to reverse-engineer a precision or a column type from the generated schema.
+ * Persistence-layer configuration: the startup guard that proves the mechanisms enforcing field-contract
+ * parity are actually armed before any request or batch step runs.
  *
  * <h2>What it does</h2>
  *
  * <p>It declares exactly one bean, {@link #persistenceContractGuard()}, which invokes
  * {@link #verifyPersistenceContract()} during context refresh. That method asserts nine configuration
- * invariants and throws {@link IllegalStateException} on the first violation, so a misconfigured
- * application refuses to start rather than starting and quietly reshaping the schema.
+ * invariants and throws {@link IllegalStateException} on the first violation, so a misconfigured application
+ * refuses to start rather than starting and quietly reshaping the schema.
  *
  * <p>The guard exists because the enforcement mechanism it protects is itself only a property.
- * {@code spring.jpa.hibernate.ddl-auto} is set to {@code validate} in the base profile, and that single
- * value is what turns a divergence between an entity mapping and the migration-owned schema into a
- * deterministic startup failure. Nothing in the framework prevents a profile, an environment override or a
- * command-line argument from changing it to {@code update} or {@code create}, at which point the mapping
- * silently becomes authoritative over the copybook-derived column widths and parity is lost without a
- * single error being reported. The same argument applies to {@code spring.flyway.clean-disabled}, whose own
- * declaration site carries the comment that it is destructive and must stay true in every profile including
- * test. A guard that verifies the guard is therefore not ceremony; it is the only thing standing between an
- * override and a silent loss of the field contract.
+ * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in the base profile, and that single value is
+ * what turns a divergence between an entity mapping and the migration-owned schema into a deterministic
+ * startup failure. Nothing in the framework stops a profile, an environment override or a command-line
+ * argument from changing it to {@code update} or {@code create}, at which point the mapping silently becomes
+ * authoritative over the copybook-derived column widths and parity is lost with no error reported. The same
+ * argument applies to {@code spring.flyway.clean-disabled}, which is destructive when false and must stay
+ * true in every profile including test.
  *
  * <h2>What it deliberately does not declare</h2>
  *
- * <p>Each omission below is a decision with a reason, not an oversight. Rule 1 Clause B forbids dead code,
- * and configuration that has no effect is dead code that merely looks authoritative.
+ * <p>Each omission is a decision, because configuration that has no effect is dead code that merely looks
+ * authoritative.
  *
  * <ul>
  *   <li><strong>No {@code @EnableJpaRepositories}, {@code @EntityScan} or
- *       {@code @EnableTransactionManagement}.</strong> The entities sit in
- *       {@code com.cardemo.model.entity} and the repositories in {@code com.cardemo.repository}, both
- *       beneath the {@code com.cardemo} base package that {@code com.cardemo.CardDemoApplication}
- *       establishes. Auto-configuration discovers both without help, so each of those annotations would
- *       restate a default and none would change a single resolved bean.</li>
- *   <li><strong>No physical naming strategy bean.</strong> A naming strategy only ever resolves
- *       <em>implicit</em> names, and there are none: all eleven entities name their table with
- *       {@code @Table(name = ...)} and every persistent field names its column with
- *       {@code @Column(name = ...)}. The names are copybook-derived and are stated explicitly precisely so
- *       that no strategy sits between the copybook and the column. Installing one would be inert on today's
- *       mappings and would silently start deriving names the day someone omitted a {@code @Column}.</li>
+ *       {@code @EnableTransactionManagement}.</strong> The entities sit in {@code com.cardemo.model.entity}
+ *       and the repositories in {@code com.cardemo.repository}, both beneath the {@code com.cardemo} base
+ *       package that {@code com.cardemo.CardDemoApplication} establishes, so auto-configuration discovers
+ *       both and each annotation would restate a default without changing a resolved bean.</li>
+ *   <li><strong>No physical naming strategy bean.</strong> A naming strategy resolves only <em>implicit</em>
+ *       names, and there are none: all eleven entities name their table with {@code @Table(name = ...)} and
+ *       every persistent field names its column with {@code @Column(name = ...)}, precisely so that nothing
+ *       sits between the copybook and the column. One would be inert today and would start deriving names
+ *       the day a {@code @Column} was omitted.</li>
  *   <li><strong>No second data source, entity manager factory, transaction manager or transaction
- *       template.</strong> Auto-configuration supplies all four from the resolved properties. A second one
- *       would introduce an ambiguity that has to be resolved with a primary marker, for no gain.</li>
- *   <li><strong>No schema, table, index, constraint or key definition of any kind.</strong> The schema is
- *       owned by {@code src/main/resources/db/migration} and by nothing else. Restating a column type here
- *       would create a second place to change it, which is the duplication Rule 1 Clause C prohibits. The
- *       precisions recorded below are cited as <em>documentation of</em> that schema, never as a definition
- *       of it.</li>
+ *       template.</strong> Auto-configuration supplies all four from the resolved properties; a second would
+ *       add an ambiguity needing a primary marker, for no gain.</li>
+ *   <li><strong>No schema, table, index, constraint or key definition.</strong> The schema is owned by
+ *       {@code src/main/resources/db/migration} and by nothing else; the column widths and precisions derive
+ *       from the copybooks in {@code app/cpy} and the catalogued key and record lengths in
+ *       {@code app/catlg/LISTCAT.txt}. Restating any of it here would create a second place to change it.</li>
  *   <li><strong>No fourth migration.</strong> Exactly three exist. The Spring Batch metadata tables come
- *       from the framework's own schema script by way of
- *       {@code spring.batch.jdbc.initialize-schema}, and adding them as a migration would break the
- *       validation gate that counts eleven tables in the first migration.</li>
- *   <li><strong>No clock, no object-store client, no security filter chain, no observability registry and
- *       no web binding.</strong> Those belong to the sibling configuration classes of this package. This
- *       one is scoped to persistence.</li>
+ *       from the framework's own schema script by way of {@code spring.batch.jdbc.initialize-schema}, so
+ *       adding them as a migration would break the gate that counts eleven tables in the first one.</li>
+ *   <li><strong>No clock, object-store client, security filter chain, observability registry or web
+ *       binding.</strong> Those belong to the sibling configuration classes; this one is scoped to
+ *       persistence.</li>
  *   </ul>
- *
- * <h2>The ten base clusters this schema replaces</h2>
- *
- * <p>{@code app/catlg/LISTCAT.txt} is 3,956 lines and is the authoritative physical specification. It
- * catalogues exactly ten base clusters, each introduced by a {@code 0CLUSTER} header, and the key length
- * and average record length of each is the origin of the corresponding primary key and column budget. The
- * locators are the cluster header line, then the attribute line carrying {@code KEYLEN} and
- * {@code AVGLRECL}:
- *
- * <ul>
- *   <li>{@code ACCTDATA} header :L22, key 11 / record 300 :L59 - the account row</li>
- *   <li>{@code CARDDATA} header :L164, key 16 / record 150 :L202 - the card row</li>
- *   <li>{@code CARDXREF} header :L365, key 16 / record 50 :L403 - the card cross-reference row</li>
- *   <li>{@code CUSTDATA} header :L595, key 9 / record 500 :L632 - the customer row</li>
- *   <li>{@code DISCGRP} header :L859, key 16 / record 50 :L896 - the disclosure group row</li>
- *   <li>{@code TCATBALF} header :L1334, key 17 / record 50 :L1371 - the transaction category balance row,
- *       whose key length of 17 is the eleven-digit account identifier plus the two-character type code plus
- *       the four-digit category code</li>
- *   <li>{@code TRANCATG} header :L1440, key 6 / record 60 :L1475 - the transaction category row</li>
- *   <li>{@code TRANSACT} header :L3555, key 16 / record 350 :L3593 - the transaction row</li>
- *   <li>{@code TRANTYPE} header :L3742, key 2 / record 60 :L3779 - the transaction type row</li>
- *   <li>{@code USRSEC} header :L3846, key 8 / record 80 :L3883, with the same 80 restated as the maximum
- *       record length on the following line :L3884 - the user security row</li>
- *   </ul>
- *
- * <p>Three of the ten carry independent job-control corroboration in the members named on this file's
- * banner: {@code app/jcl/ACCTFILE.jcl:L40-L41} declares {@code KEYS(11 0)} and
- * {@code RECORDSIZE(300 300)}, {@code app/jcl/TCATBALF.jcl:L40-L41} declares {@code KEYS(17 0)} and
- * {@code RECORDSIZE(50 50)}, and {@code app/jcl/DISCGRP.jcl:L40-L41} declares {@code KEYS(16 0)} and
- * {@code RECORDSIZE(50 50)}. Each agrees with the catalogue exactly, which is what makes the catalogue
- * usable as a specification rather than a report.
- *
- * <p>{@code USRSEC} is attested twice, and both attestations agree. It is catalogued at
- * {@code app/catlg/LISTCAT.txt:L3846} with {@code KEYLEN 8} and {@code AVGLRECL 80} at
- * {@code :L3883-L3884}, and it is also defined in job control at {@code app/jcl/DUSRSECJ.jcl:L64-L68},
- * which issues a cluster definition for {@code AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS} with {@code KEYS(8,0)},
- * {@code RECORDSIZE(80,80)}, {@code REUSE} and {@code INDEXED}. The eight-character key and eighty-byte
- * record are therefore doubly attested rather than inferred.
- *
- * <h2>The three alternate indexes and their three paths</h2>
- *
- * <p>The catalogue records exactly three alternate indexes, each introduced by a {@code 0AIX} header, and
- * exactly three matching paths, each introduced by a {@code 0PATH} header. Three, not two. Each alternate
- * index becomes one non-unique index in the second migration, and the {@code AXRKP} value is the byte
- * offset of the alternate key within the base record, which is what identifies the column:
- *
- * <ul>
- *   <li>{@code CARDDATA.VSAM.AIX} :L254 - {@code KEYLEN 11} :L281, {@code RKP 5} :L282,
- *       <strong>{@code AXRKP 16}</strong> :L283. The alternate key sits at byte 16 of the 150-byte card
- *       record, which is the account identifier, so this becomes the card-by-account finder.</li>
- *   <li>{@code CARDXREF.VSAM.AIX} :L455 - {@code KEYLEN 11} :L482, {@code RKP 5} :L485,
- *       <strong>{@code AXRKP 25}</strong> :L486. This becomes the cross-reference-by-account finder.
- *       Narrative elsewhere gives a different offset for this one; 25 is what the catalogue says, and
- *       {@code :L486} is the line that says it. The catalogue governs.</li>
- *   <li>{@code TRANSACT.VSAM.AIX} :L3645 - {@code KEYLEN 26} :L3674, {@code RKP 5} :L3675,
- *       <strong>{@code AXRKP 304}</strong> :L3676. Offset 304 with a key length of 26 is the processing
- *       timestamp, which occupies bytes 305 to 330 of the 350-byte transaction record under the offset map
- *       recorded further below, so this becomes the processing-timestamp finder.</li>
- *   </ul>
- *
- * <p>The paths are {@code CARDDATA.VSAM.AIX.PATH} :L150, {@code CARDXREF.VSAM.AIX.PATH} :L351 and
- * {@code TRANSACT.VSAM.AIX.PATH} :L3541. That the batch tier really consumed a path, rather than merely
- * having one defined, is corroborated at {@code app/jcl/INTCALC.jcl:L31-L32}: the interest job declares
- * {@code XREFFIL1} onto {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH} while {@code XREFFILE} on the two
- * preceding lines is already allocated to the base cluster. One job, one cluster, two allocations - the
- * second reached through the alternate-index path. That is the access pattern a secondary index has to
- * serve.
- *
- * <p>All three alternate indexes are marked {@code NONUNIQKEY} in the catalogue, so all three become
- * <strong>non-unique</strong> indexes. Exactly three exist and a fourth is not added anywhere: an index the
- * catalogue does not attest would be an invention, and the second migration's own census asserts the count.
- *
- * <h2>Numeric precision is bound to the source PIC clauses</h2>
- *
- * <p>Three distinct precisions occur, and they are not interchangeable. Each is read directly from the
- * picture clause of the field it carries, because a widened column accepts a value the legacy system would
- * have truncated and a narrowed one rejects a value the legacy system stored:
- *
- * <dl>
- *   <dt>The five account money fields, {@code NUMERIC(12,2)}</dt>
- *   <dd>{@code ACCT-CURR-BAL}, {@code ACCT-CREDIT-LIMIT} and {@code ACCT-CASH-CREDIT-LIMIT} at
- *       {@code app/cpy/CVACT01Y.cpy:L7-L9}, then {@code ACCT-CURR-CYC-CREDIT} and
- *       {@code ACCT-CURR-CYC-DEBIT} at {@code :L13-L14}, are each {@code PIC S9(10)V99}. Ten integer digits
- *       plus two decimal digits is a total precision of twelve at a scale of two.</dd>
- *   <dt>The transaction amount and the category balance, {@code NUMERIC(11,2)} and <em>not</em> 12,2</dt>
- *   <dd>{@code TRAN-AMT} at {@code app/cpy/CVTRA05Y.cpy:L10} and {@code TRAN-CAT-BAL} at
- *       {@code app/cpy/CVTRA01Y.cpy:L9} are both {@code PIC S9(09)V99}. Nine integer digits, not ten, so
- *       eleven and two. Reusing the account precision here would be the single easiest error to make in
- *       this schema and the hardest to notice, because every realistic test value fits comfortably in
- *       both.</dd>
- *   <dt>The disclosure interest rate, {@code NUMERIC(6,2)}</dt>
- *   <dd>{@code DIS-INT-RATE} at {@code app/cpy/CVTRA02Y.cpy:L9} is {@code PIC S9(04)V99} - four integer
- *       digits and two decimals. It is the only field in the corpus at this precision.</dd>
- *   </dl>
- *
- * <p>Every one of those fields is a {@code java.math.BigDecimal} in Java and a {@code NUMERIC} column in
- * the schema. <strong>No binary IEEE-754 type appears in any financial field anywhere in the tree</strong>,
- * which a validation gate asserts by inspection. Rounding is {@code RoundingMode.HALF_EVEN} throughout, and
- * value equality is tested with {@code compareTo} and never with {@code equals}, because
- * {@code BigDecimal.equals} is scale-sensitive and reports a two-scale and a one-scale representation of the
- * same quantity as different.
- *
- * <p>The enforcement mechanism for all of this is {@code spring.jpa.hibernate.ddl-auto} at {@code validate},
- * and it matters to be exact about how much of the contract that mechanism actually covers. On every start
- * the provider compares the mapped columns against the migrated schema and refuses to build the entity
- * manager factory when a mapped table or column is absent, or when a column's type differs. The check is
- * deterministic and runs before the first request, which is why {@link #verifyPersistenceContract()} asserts
- * that the property still holds the value {@code validate}.
- *
- * <p>Concretely, all eleven entity mappings validate against the migrated schema; changing
- * {@code tran_orig_ts} on the transaction table from a fixed-width to a variable-width character type is
- * rejected, and dropping {@code tran_amt} outright is rejected.
- *
- * <h3>What validate does not cover</h3>
- *
- * <p><strong>Numeric precision and scale are not checked.</strong> Widening {@code tran_amt} from eleven
- * digits to twelve while leaving the entity mapping untouched is <em>accepted</em>: the provider's schema
- * validator compares a column's type, not its declared precision, so the three precisions above are
- * <strong>not</strong> machine-enforced at startup.
- *
- * <p>That has a consequence worth stating plainly. A precision divergence would not announce itself at
- * startup. It would
- * surface later and far more quietly, as a rounding difference or as an overflow on a value the copybook
- * field can represent and the column cannot - which is precisely the class of silent parity defect this
- * migration exists to avoid. Three controls carry that weight in place of the provider: the migration DDL is
- * the single source of truth for every column's precision; each entity declares its precision and scale
- * explicitly beside the PIC clause it derives from; and the parity tests compare computed money values
- * against the frozen fixtures. The residual risk is disclosed here rather than absorbed.
- *
- * <h2>The two 26-byte timestamp columns are character data, and must stay so</h2>
- *
- * <p>{@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS} are declared {@code PIC X(26)} at
- * {@code app/cpy/CVTRA05Y.cpy:L16-L17}, and {@code TRNX-ORIG-TS} and {@code TRNX-PROC-TS} likewise at
- * {@code app/cpy/COSTM01.CPY:L34-L35} - note the uppercase extension and that the member is
- * {@code COSTM01}, not {@code COSTM01Y}. They are mapped to {@code java.lang.String} over a 26-character
- * fixed-width column, and <strong>to no temporal type</strong>: not a date-time, not a timestamp, not a
- * point-on-the-timeline and not a zoned or offset variant of any of those.
- *
- * <p>The reason is that three mutually incompatible producers write into that one field, so no single parse
- * can round-trip all three:
- *
- * <ol>
- *   <li>The batch generator emits <strong>centisecond</strong> precision followed by four literal zero
- *       digits - two fraction digits, not three and not nine - in a form that separates the date from the
- *       time with a hyphen and the time components with dots, giving
- *       {@code yyyy-MM-dd-HH.mm.ss.SS0000}. {@code app/cbl/CBTRN02C.cbl:L159-L174} declares
- *       {@code DB2-FORMAT-TS PIC X(26)} with the fraction split into {@code DB2-MIL PIC 9(002)} and
- *       {@code DB2-REST PIC X(04)}, and {@code :L700-L701} moves {@code COB-MIL} into the two-digit field
- *       and the literal {@code '0000'} into the four-character remainder.</li>
- *   <li>The online generator emits a space between date and time, colons between the time components, and
- *       six zero digits of sub-second text.</li>
- *   <li><strong>The posting job passes bytes straight through, unvalidated.</strong>
- *       {@code app/cbl/CBTRN02C.cbl:L436} moves the incoming daily-transaction originating timestamp into
- *       the transaction record verbatim. Whatever 26 bytes arrived in the input file are what get stored,
- *       whether or not they parse as a moment in time at all.</li>
- *   </ol>
- *
- * <p>Mapping the column to a temporal type would force normalisation at the boundary, and normalisation is
- * exactly what parity forbids: the four trailing zero digits of form one are compared byte for byte against
- * the legacy baseline, and a temporal type would render them from whatever precision it happened to keep.
- * The standing instruction is therefore to leave these columns as fixed-width character data, and to let the
- * only interpretation happen where a specific consumer needs it, on a value it has already validated.
- *
- * <p>The offset map of the 350-byte transaction record, one-based, is what makes that fixed-width boundary
- * reproducible. Derived field by field from {@code app/cpy/CVTRA05Y.cpy}: identifier 1-16, type 17-18,
- * category 19-22, source 23-32, description 33-132, amount 133-143, merchant identifier 144-152, merchant
- * name 153-202, merchant city 203-252, merchant postcode 253-262, card number 263-278, originating
- * timestamp 279-304, processing timestamp 305-330, filler 331-350. Two of those offsets are independently
- * corroborated by the sort symbol definitions at {@code app/proc/TRANREPT.prc:L39-L40}, which declare the
- * card number at offset 263 for 16 zoned-decimal characters and the processing date at offset 305 for 10
- * characters. The second of those also explains the alternate-index offset of 304 recorded above: a
- * zero-based relative key position of 304 is the one-based byte 305.
- *
- * <h2>Two-layer optimistic concurrency - a version column alone is insufficient</h2>
- *
- * <p>This is the one place in the migration where the obvious mechanical translation is wrong. The
- * comparison itself belongs to {@code com.cardemo.service.account.AccountUpdateService}; the decision that
- * both layers are required belongs here, because it is a property of the substrate.
- *
- * <p>{@code 9700-CHECK-CHANGE-IN-REC} at {@code app/cbl/COACTUPC.cbl:L4109-L4195} compares the freshly read
- * record against a snapshot captured when the screen was first populated. The snapshot lives in
- * {@code ACUP-OLD-DETAILS} at {@code :L669-L756}, alongside {@code ACUP-NEW-DETAILS} at {@code :L757}. On
- * any mismatch the paragraph sets a data-was-changed condition and abandons the write, at
- * {@code :L4143-L4144} for the account block and {@code :L4189-L4190} for the customer block.
- *
- * <p>A version column detects <em>that</em> a row changed. The source detects <em>which business fields</em>
- * changed, and in what representation. The two guarantees are genuinely different, and the difference is
- * observable: a concurrent write that sets a field and then restores its original value passes the legacy
- * check and fails a version check. <strong>Both layers are therefore mandatory and neither substitutes for
- * the other.</strong> Because the target is stateless the snapshot cannot live on the server between
- * requests, which is why {@code com.cardemo.model.dto.AccountUpdateRequest} carries both the old and the new
- * detail groups in the request body.
- *
- * <p>The store-level layer is a version column on exactly four entities - {@code com.cardemo.model.entity.Account},
- * {@code com.cardemo.model.entity.Card}, {@code com.cardemo.model.entity.Customer} and
- * {@code com.cardemo.model.entity.Transaction} - matching the four version columns the first migration
- * creates. {@code com.cardemo.model.entity.TransactionCategoryBalance} carries none, and
- * {@code com.cardemo.model.entity.UserSecurity} carries none.
- *
- * <p>Three characteristics of the business-level comparison are each easy to translate wrongly, and all
- * three are verified rather than assumed:
- *
- * <ul>
- *   <li><strong>Dates are compared as three separate substrings, never as whole strings.</strong> The open
- *       date at {@code :L4127-L4129}, the expiry date at {@code :L4131-L4133} and the reissue date at
- *       {@code :L4135-L4137} are each compared by year, then month, then day, against discrete snapshot
- *       fields. The expiry field name is misspelled in the copybook at
- *       {@code app/cpy/CVACT01Y.cpy:L11}; the misspelling is part of the field contract and is preserved.</li>
- *   <li><strong>Case handling is deliberately asymmetric.</strong> The account group identifier is compared
- *       through a lower-casing function on both sides at {@code :L4139-L4140}, and it is the only field
- *       treated that way. The customer first, middle and last names at {@code :L4152-L4157}, the three
- *       address lines at {@code :L4158-L4163}, the state code at {@code :L4164}, the country code at
- *       {@code :L4166} and the government-issued identifier at {@code :L4172} are compared through an
- *       upper-casing function on both sides. The postal code at {@code :L4168}, both telephone numbers at
- *       {@code :L4169-L4170}, the social security number at {@code :L4171}, the funds-transfer account
- *       identifier at {@code :L4181}, the primary-holder indicator at {@code :L4183} and the credit score
- *       at {@code :L4186} are compared with no case function at all. Normalising in either direction
- *       changes which updates are accepted.</li>
- *   <li><strong>The date-of-birth comparison uses different offsets on each side.</strong> The live
- *       customer record holds a separated date, so its components begin at offsets 1, 6 and 9. The snapshot
- *       holds the same date without separators, so its components begin at 1, 5 and 7. The source compares
- *       1 against 1, 6 against 5 and 9 against 7, at {@code :L4174-L4179}, and the snapshot is populated
- *       component-wise at {@code :L3857-L3859}. The whole-string alternative is present in the source as a
- *       commented-out line at {@code :L3856}, which is direct evidence that the author considered and
- *       rejected it. <strong>A naive whole-string comparison reports a change on every single request</strong>,
- *       making the endpoint permanently unusable.</li>
- *   </ul>
- *
- * <p>The comparison is cited by locator rather than by a flat field count, because no single count fits
- * both blocks. The account block spans {@code :L4115-L4140} and compares <em>ten fields</em> rendered as
- * <em>sixteen</em> conjoined clauses, three of the ten being dates compared component-wise; the customer
- * block at {@code :L4152-L4186} compares seventeen fields as nineteen clauses.
- *
- * <h2>The transaction boundary and the asymmetric rollback</h2>
- *
- * <p>The standard boundary for a write path in this application is a service method annotated
- * {@code @Transactional(rollbackFor = Exception.class)}, scoped so that the source's asymmetric rollback is
- * reproduced automatically, with no conditional logic anywhere in Java.
- *
- * <p>{@code 9600-WRITE-PROCESSING} in {@code app/cbl/COACTUPC.cbl} rewrites the account and then the
- * customer, and handles the two failures differently:
- *
- * <ul>
- *   <li>The account rewrite failure branch at {@code :L4076-L4081} sets the locked-but-update-failed
- *       condition at {@code :L4079} and transfers to the exit at {@code :L4080}, <strong>with no
- *       rollback</strong>.</li>
- *   <li>The customer rewrite failure branch at {@code :L4095-L4102} sets the <em>same</em> condition at
- *       {@code :L4098}, then issues an explicit synchronisation-point rollback at {@code :L4099-L4101}, and
- *       only then transfers to the same exit at {@code :L4102}.</li>
- *   <li>That exit label is {@code 9600-WRITE-PROCESSING-EXIT} at {@code :L4104-L4105}.</li>
- * </ul>
- *
- * <p><strong>The asymmetry is correct and must not be tidied away.</strong> At the account-rewrite failure
- * point nothing has yet been written inside the unit of work, so the transaction monitor releases the
- * read-for-update locks at task end without any explicit action being needed. At the customer-rewrite
- * failure point the account rewrite has already occurred inside that same unit of work, so an explicit
- * backout is the only way to avoid leaving a half-applied update behind.
- *
- * <p>A single Java transactional method reproduces <em>both</em> branches automatically, because each
- * failure path returns or throws before the commit point: the first has nothing to undo and undoes nothing,
- * the second has the account write to undo and the boundary undoes it. This is recorded in the project
- * decision log as a <strong>mechanism substitution, not a behaviour change</strong>, for a specific reason.
- * A reviewer reading the two sources side by side will see a rollback statement in the source with no
- * literal counterpart in the Java, and without that entry the natural conclusion is that something was
- * lost. The counterpart is the transaction boundary itself, and the behaviour to verify is that a failed
- * customer write leaves the account row unchanged.
- *
- * <p>Four outcome conditions are declared at {@code app/cbl/COACTUPC.cbl:L517-L523} - account lock failure,
- * customer lock failure, data changed before update, and locked but update failed - with a fifth marker at
- * {@code :L667}. Each is distinguishable at the interface layer, because collapsing them into one conflict
- * response would discard information the legacy screen displayed.
- *
- * <h2>Why a modular monolith and not microservices</h2>
- *
- * <p>Atomicity decides it. Two units of work in the source span more than one dataset, and neither can be
- * split across a service boundary without replacing a transaction with a compensating action, which changes
- * failure semantics and therefore forfeits parity:
- *
- * <ul>
- *   <li>The account update writes an account row and a customer row in one unit of work, at
- *       {@code app/cbl/COACTUPC.cbl:L4098-L4102}.</li>
- *   <li>The daily posting routine at {@code app/cbl/CBTRN02C.cbl:L424-L465} performs a
- *       transaction-category-balance upsert at {@code :L440}, an account update at {@code :L441} and a
- *       transaction insert at {@code :L442}, which the Java target commits together.</li>
- *   </ul>
- *
- * <p>Hence one deployable artefact, one data source, one transaction manager.
- *
- * <p><strong>One labelled deviation, not parity.</strong> The source performs those three posting writes as
- * three independent commits. Reject code 109 is assigned on the account-rewrite
- * failure path at {@code app/cbl/CBTRN02C.cbl:L556-L558}, but that path lies inside the already-validated
- * posting routine, so no reject record is written, the reject count is not incremented, execution continues
- * to the transaction write, and the value is cleared on the next iteration at {@code :L208}. The legacy
- * outcome is therefore an orphaned category-balance row and an orphaned transaction row against an account
- * that was never updated. Collapsing the three commits into one atomic Java transaction closes that hazard
- * as a side effect. That is a genuine behavioural improvement rather than parity, and it is disclosed here
- * as a deviation rather than presented as equivalence.
  *
  * <h2>Key configuration and defaults</h2>
  *
- * <p>Every key below is <strong>owned by</strong> {@code src/main/resources/application.yml} and its profile
- * siblings. This class reads them and asserts them; it defines none of them, and changing a value here would
- * be impossible by design because no value is written here. The "framework default" column matters: in six of
- * the nine cases the value this application needs is <em>not</em> the framework's default, which is precisely
- * why an override is dangerous and why the guard exists.
+ * <p>Every key is <strong>owned by</strong> {@code src/main/resources/application.yml} and its profile
+ * siblings. This class reads and asserts them and defines none of them, so no value can be changed here. In
+ * six of the nine cases the value this application needs is <em>not</em> the framework default, which is why
+ * an override is dangerous and why the guard exists.
  *
  * <dl>
- *   <dt>{@code spring.jpa.hibernate.ddl-auto} - required value {@code validate}</dt>
- *   <dd>Asserted. The migrations own the schema; {@code validate} is what turns a missing table, a missing
- *       column or a changed column type into a startup failure. It does <em>not</em> cover numeric precision
- *       or scale, for the measured reason given above. {@code create}, {@code create-drop} and
- *       {@code update} are each forbidden, because each would let the provider reshape a table away from the
- *       copybook record layouts silently.</dd>
- *   <dt>{@code spring.jpa.open-in-view} - required value {@code false}</dt>
- *   <dd>Asserted. The framework default is {@code true}, which would hold a connection open for the whole
- *       request and hide lazy access behind the view layer.</dd>
- *   <dt>{@code spring.jpa.show-sql} - required value {@code false}</dt>
- *   <dd>Asserted. Statement and bind-parameter logging would expose the customer social security number and
- *       the stored password hashes of the ten seeded users. Rule 1 Clause D admits no secrets in logs. The
- *       provider's own statement and bind loggers are additionally held at warning level by the logging
- *       configuration, so raising the provider package to debug during an investigation still cannot print
- *       a bound value.</dd>
- *   <dt>{@code spring.jpa.properties.hibernate.jdbc.time_zone} - required value {@code UTC}</dt>
- *   <dd>Asserted. Sessions run in coordinated universal time so that a server's local zone can never shift
- *       a stored value. This affects genuine temporal columns only; it has no bearing on the two 26-byte
- *       character timestamp columns discussed above, which is worth stating because the key's name suggests
- *       otherwise.</dd>
- *   <dt>{@code spring.flyway.enabled} - required value {@code true}</dt>
- *   <dd>Asserted. With migration disabled there is no schema at all, and {@code validate} would then fail
- *       with a confusing missing-table diagnostic instead of the real cause.</dd>
- *   <dt>{@code spring.flyway.baseline-on-migrate} - required value {@code false}</dt>
- *   <dd>Asserted. Baselining would silently adopt an unknown pre-existing schema as the starting point,
- *       which defeats the entire field-contract argument.</dd>
- *   <dt>{@code spring.flyway.validate-on-migrate} - required value {@code true}</dt>
- *   <dd>Asserted. Detects a checksum change to an already-applied migration, which is the signal that
- *       someone edited history rather than adding to it.</dd>
- *   <dt>{@code spring.flyway.clean-disabled} - required value {@code true}</dt>
- *   <dd>Asserted. The operation it disables destroys every object in the schema. Its declaration site
- *       carries the standing instruction that it must remain enabled in every profile, test included.</dd>
- *   <dt>{@code spring.flyway.out-of-order} - required value {@code false}</dt>
- *   <dd>Asserted. Ordered application is load-bearing: the third migration seeds rows that rely on the
- *       indexes the second one creates.</dd>
- *   <dt>{@code spring.flyway.locations} - value {@code classpath:db/migration}</dt>
- *   <dd><strong>Documented but deliberately not asserted.</strong> It is a list-typed property, so its YAML
- *       shape may legitimately be a scalar or a sequence, and a scalar-only assertion would fail a
- *       perfectly valid sequence form. Asserting it would introduce a false-positive class into a guard
- *       whose whole value is that it never cries wolf. The related invariant - that exactly three
- *       migrations exist, no more - is asserted by the project's gate verification test, which can count
- *       classpath resources rather than inspect a single property.</dd>
- *   <dt>{@code spring.batch.jdbc.initialize-schema} - value {@code never} in the base and production
- *       profiles, {@code always} in the local and test profiles</dt>
- *   <dd><strong>Documented but deliberately not asserted</strong>, because it is legitimately
- *       profile-dependent and no single value is correct everywhere. It is recorded here because it is the
- *       reason there is no fourth migration: the batch metadata tables come from the framework's own schema
- *       script, so the migration set stays at three and the eleven-table count in the first migration
- *       stays provable.</dd>
+ *   <dt>{@code spring.jpa.hibernate.ddl-auto} - required {@code validate}</dt>
+ *   <dd>Turns a missing table, a missing column or a changed column type into a startup failure. It does
+ *       <em>not</em> cover numeric precision or scale. {@code create}, {@code create-drop} and
+ *       {@code update} are each forbidden: every one lets the provider reshape a table away from the
+ *       copybook record layout silently.</dd>
+ *   <dt>{@code spring.jpa.open-in-view} - required {@code false}</dt>
+ *   <dd>The framework default is {@code true}, which holds a connection open for the whole request and hides
+ *       lazy access behind the view layer.</dd>
+ *   <dt>{@code spring.jpa.show-sql} - required {@code false}</dt>
+ *   <dd>Statement and bind-parameter logging would expose the customer social security number and the stored
+ *       password hashes of the seeded users. The provider's statement and bind loggers are additionally held
+ *       at warning level, so raising the provider package to debug still cannot print a bound value.</dd>
+ *   <dt>{@code spring.jpa.properties.hibernate.jdbc.time_zone} - required {@code UTC}</dt>
+ *   <dd>Sessions run in coordinated universal time so a server's local zone can never shift a stored value.
+ *       This affects genuine temporal columns only; the two 26-byte timestamp columns are {@code CHAR} data
+ *       carried as text, which the key's name misleadingly suggests otherwise about.</dd>
+ *   <dt>{@code spring.flyway.enabled} - required {@code true}</dt>
+ *   <dd>With migration disabled there is no schema at all, and {@code validate} then fails with a confusing
+ *       missing-table diagnostic instead of the real cause.</dd>
+ *   <dt>{@code spring.flyway.baseline-on-migrate} - required {@code false}</dt>
+ *   <dd>Baselining would silently adopt an unknown pre-existing schema as the starting point, which defeats
+ *       the field-contract argument entirely.</dd>
+ *   <dt>{@code spring.flyway.validate-on-migrate} - required {@code true}</dt>
+ *   <dd>Detects a checksum change to an already-applied migration - the signal that history was edited
+ *       rather than appended to.</dd>
+ *   <dt>{@code spring.flyway.clean-disabled} - required {@code true}</dt>
+ *   <dd>The operation it disables destroys every object in the schema, in every profile including test.</dd>
+ *   <dt>{@code spring.flyway.out-of-order} - required {@code false}</dt>
+ *   <dd>Ordered application is load-bearing: the third migration seeds rows that rely on the indexes the
+ *       second creates.</dd>
+ *   <dt>{@code spring.flyway.locations} and {@code spring.batch.jdbc.initialize-schema}</dt>
+ *   <dd><strong>Documented, deliberately not asserted.</strong> The first is list-typed, so its YAML shape
+ *       may legitimately be a scalar or a sequence and a scalar-only assertion would reject a valid
+ *       sequence. The second is legitimately profile-dependent - {@code never} in the base and production
+ *       profiles, {@code always} in local and test - so no single value is correct everywhere. Asserting
+ *       either would put a false-positive class into a guard whose whole value is that it never cries
+ *       wolf.</dd>
  *   </dl>
  *
- * <p>Related settings that are owned elsewhere and are not this class's to police: statement batching and
- * insert and update ordering on the provider, the migration history table name and encoding, the transaction
- * isolation used when the batch metadata tables are created, and the fact that jobs do not auto-launch on
- * startup. The data-source coordinates are supplied entirely through environment-indirected properties; no
- * connection string, user name or password is written, logged or quoted anywhere in this class.
+ * <p>Owned elsewhere and not this class's to police: statement batching and insert/update ordering on the
+ * provider, the migration history table name and encoding, the isolation used when the batch metadata tables
+ * are created, and the fact that jobs do not auto-launch. The data-source coordinates arrive entirely through
+ * environment-indirected properties; no connection string, user name or password is written, logged or quoted
+ * anywhere in this class.
  *
  * <h2>How to build, run and test</h2>
  *
- * <p>All commands run from the repository root and use the version-pinned wrapper, so no preinstalled build
- * tool is assumed. No command below contains an absolute host path.
- *
  * <ul>
- *   <li>Compile: {@code ./mvnw -B -ntp clean compile}. The compiler runs with all lint categories enabled
- *       and warnings escalated to errors, so a warning introduced here fails the build.</li>
- *   <li>Unit suite: {@code ./mvnw -B -ntp test}. The behaviour of {@link #verifyPersistenceContract()} is
- *       unit-testable without a container and without a Spring context: construct this class directly with
- *       the nine string arguments and invoke the method.</li>
- *   <li>Full verification: {@code ./mvnw -B -ntp clean verify}, which additionally runs the integration
- *       tier and the coverage and vulnerability gates.</li>
- *   <li>Runtime dependencies: {@code docker compose up -d} brings up the database and the remaining local
- *       services. The migrations run on first boot and take ownership of an empty schema, so the database
- *       must not be pre-migrated by hand - a hand-applied schema produces a checksum mismatch the moment a
- *       migration changes, and the disabled clean operation deliberately leaves no quick way out.</li>
+ *   <li>Compile: {@code ./mvnw -B -ntp clean compile}. All lint categories are enabled and warnings are
+ *       escalated to errors.</li>
+ *   <li>Unit suite: {@code ./mvnw -B -ntp test}. {@link #verifyPersistenceContract()} is unit-testable with
+ *       no container and no Spring context: construct this class with the nine string arguments and invoke
+ *       it.</li>
+ *   <li>Full verification: {@code ./mvnw -B -ntp clean verify}, which adds the integration tier and the
+ *       coverage and vulnerability gates.</li>
+ *   <li>Runtime dependencies: {@code docker compose up -d}. The migrations take ownership of an empty
+ *       schema on first boot, so the database must not be pre-migrated by hand.</li>
  *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <dl>
  *   <dt>Startup fails with a message from {@link #verifyPersistenceContract()} naming a property</dt>
- *   <dd>The named property has been overridden to a value the persistence contract forbids. The message
- *       states the key, the value found and the value required. Restore the required value rather than
- *       relaxing the guard: every one of the nine exists to stop a specific silent failure, each documented
- *       above. If the value came from an environment override or a command-line argument, that override is
- *       the defect.</dd>
- *   <dt>Startup fails with a message that a property is not configured</dt>
- *   <dd>The base configuration file was not on the classpath, or the key was removed from it. This is most
- *       often a narrowly sliced test that loaded a property source without the base profile. Loading the
- *       base configuration, or supplying the key explicitly in the slice, resolves it.</dd>
- *   <dt>The provider reports a missing table, a missing column, or a wrong column type at startup</dt>
- *   <dd>This is the validate mechanism working as designed: an entity mapping and the migrated schema have
- *       diverged. Decide which of the two is wrong by reading the copybook the field derives from, then fix
- *       that one. <strong>Never switch the mapping mode to update or create to make the message go
- *       away</strong> - that hides the divergence and lets the provider rewrite the column away from the
- *       record layout.</dd>
- *   <dt>A money value rounds or overflows unexpectedly, and startup reported nothing at all</dt>
- *   <dd>Suspect a precision or scale divergence, which the validate pass is measured not to catch. Almost
- *       always it is one of the three precisions above applied to the wrong field; check first whether an
- *       eleven-and-two field has been given the twelve-and-two of the account money columns. That is the
- *       most common instance and the hardest to see in a test, because ordinary values fit in both and only
- *       a boundary value separates them. Compare the entity's declared precision against the column in the
+ *   <dd>That property was overridden to a value the contract forbids. The message states the key, the value
+ *       found and the value required. Restore the required value rather than relaxing the guard; if the value
+ *       came from an environment override or a command-line argument, that override is the defect.</dd>
+ *   <dt>Startup fails saying a property is not configured</dt>
+ *   <dd>The base configuration file was not on the classpath, or the key was removed from it - most often a
+ *       narrowly sliced test that loaded a property source without the base profile.</dd>
+ *   <dt>The provider reports a missing table, missing column or wrong column type at startup</dt>
+ *   <dd>The validate mechanism working as designed: an entity mapping and the migrated schema have diverged.
+ *       Decide which is wrong by reading the copybook the field derives from, then fix that one.
+ *       <strong>Never switch the mapping mode to update or create to make the message go away.</strong></dd>
+ *   <dt>A money value rounds or overflows unexpectedly and startup reported nothing</dt>
+ *   <dd>Suspect a precision or scale divergence, which validate does not catch. The common instance is an
+ *       eleven-and-two field given the twelve-and-two of the account money columns; ordinary values fit in
+ *       both and only a boundary value separates them. Compare the entity's declared precision against the
  *       schema migration and against the PIC clause in the copybook, in that order.</dd>
  *   <dt>Migration fails with a checksum mismatch</dt>
- *   <dd>An already-applied migration was edited. Migrations are append-only once applied. Revert the edit
- *       and add a new migration, or recreate the database from empty in a disposable local environment.</dd>
+ *   <dd>An already-applied migration was edited. Migrations are append-only once applied: revert the edit and
+ *       add a new one, or recreate the database from empty in a disposable local environment.</dd>
  *   <dt>An update silently does nothing, or reports a conflict on every attempt</dt>
- *   <dd>The business-level snapshot comparison, not the version column. Check the three characteristics
- *       recorded above: component-wise date comparison, the deliberate case asymmetry, and the
- *       date-of-birth offsets. A conflict on <em>every</em> request is the signature of a whole-string
- *       date-of-birth comparison.</dd>
+ *   <dd>The business-level snapshot comparison rather than the version column - both layers are required, and
+ *       the comparison is owned by {@code com.cardemo.service.account.AccountUpdateService}. A conflict on
+ *       <em>every</em> request is the signature of a whole-string date-of-birth comparison where the source
+ *       compares components at differing offsets.</dd>
  *   </dl>
  *
  * <h2>Deferred hardening and residual risk</h2>
  *
- * <p>Disclosed rather than silently absorbed, as Rule 1 Clause A requires of a tradeoff. None of these is
- * implemented, and none is a defect - each is a scoped-out decision with a stated consequence:
- *
- * <ul>
- *   <li><strong>Connection-pool tuning.</strong> The pool ships at its own defaults, resolved through the
- *       parent dependency management. Sizing it needs a measured concurrency profile, and the consequence of
- *       leaving it is that pool exhaustion under an unmeasured load would present as request latency rather
- *       than as an error.</li>
- *   <li><strong>Table partitioning.</strong> The transaction table grows without bound. Partitioning needs a
- *       retention policy that the source does not state.</li>
- *   <li><strong>Read replicas.</strong> One data source serves reads and writes, which the single-transaction
- *       atomicity argument above makes the simplest correct arrangement.</li>
- *   <li><strong>Encryption at rest for personally identifiable data.</strong> The customer row carries a
- *       social security number and a date of birth in clear columns, mirroring the source layout. Column
- *       encryption would change the stored representation and therefore the parity comparison, so it is a
- *       deliberate deferral and not an oversight.</li>
- *   </ul>
+ * <p>Disclosed rather than silently absorbed. None is implemented and none is a defect - each is a scoped-out
+ * decision with a stated consequence: <strong>connection-pool tuning</strong> (the pool ships at its
+ * defaults; exhaustion under an unmeasured load would present as latency rather than an error),
+ * <strong>table partitioning</strong> (the transaction table grows without bound, and partitioning needs a
+ * retention policy the source does not state), <strong>read replicas</strong> (one data source serves reads
+ * and writes, which is the simplest arrangement that keeps the single-transaction atomicity the source
+ * requires), and <strong>encryption at rest for personally identifiable data</strong> (the customer row
+ * carries a social security number and a date of birth in clear columns, mirroring the source layout;
+ * column encryption would change the stored representation and therefore the parity comparison).
  *
  * <p><strong>No performance target is asserted.</strong> The source corpus publishes no service-level
  * objective for throughput, latency or concurrency, so none is stated here and none may be invented; the
  * project records a measured baseline instead.
  *
- * <p>One further catalogue entry is deliberately not modelled. {@code app/jcl/DEFCUST.jcl:L35-L38} defines an
- * orphan cluster {@code AWS.CUSTDATA.CLUSTER} with {@code KEYS(10 0)} and {@code RECORDSIZE(500 500)} that
- * <strong>no program opens</strong>, and the same member's earlier step pairs it with a deletion of a
- * differently named cluster at {@code :L25}. The customer row derives from the catalogued {@code CUSTDATA}
- * cluster, key 9 and record 500, not from this one, so its absence from the schema is a decision rather than
- * an omission.
+ * <p>One catalogue entry is deliberately not modelled: {@code app/jcl/DEFCUST.jcl:L35-L38} defines an orphan
+ * cluster {@code AWS.CUSTDATA.CLUSTER} with {@code KEYS(10 0)} and {@code RECORDSIZE(500 500)} that
+ * <strong>no program opens</strong>. The customer row derives from the catalogued {@code CUSTDATA} cluster,
+ * key 9 and record 500, so this one's absence from the schema is a decision rather than an omission.
  */
 @Configuration
 public class JpaConfig {

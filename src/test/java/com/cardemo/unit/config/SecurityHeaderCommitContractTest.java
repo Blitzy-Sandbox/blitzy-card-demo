@@ -50,8 +50,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Base64;
 import org.apache.catalina.Context;
 import org.apache.catalina.startup.Tomcat;
 import org.apache.tomcat.util.descriptor.web.FilterDef;
@@ -130,8 +132,8 @@ import org.springframework.web.context.support.AnnotationConfigWebApplicationCon
 @DisplayName("Default security headers survive an application-committed response (finding F3)")
 class SecurityHeaderCommitContractTest {
 
-    /** Signing key for the probe context. Test-only material, never a real secret. */
-    private static final String KEY = "adhoc-validation-key-material-not-a-real-secret-0123456789";
+    /** Signing key for the probe context, generated per run so no key material is committed. */
+    private static final String KEY = ephemeralSigningKey();
 
     /** Issuer claim; non-secret metadata. */
     private static final String ISSUER = "carddemo";
@@ -372,4 +374,28 @@ class SecurityHeaderCommitContractTest {
                     .isEqualTo(viaSetter.headers().firstValue(header[0]));
         }
     }
+
+    /**
+     * Generates a single-use signing key for this suite.
+     *
+     * <p>Rule 1 Clause D forbids secrets in code, in configuration and <em>in tests</em>, with no carve-out
+     * for material that happens to be synthetic: a literal key in a committed file is still committed key
+     * material, indexable and copyable into a deployment, and it teaches the pattern the clause exists to
+     * stop. Generating it removes the class of problem instead of declaring one instance of it harmless. The
+     * value exists only in memory for the lifetime of this class, and no assertion depends on its content -
+     * only on its being long enough for the algorithm to accept.
+     *
+     * <p>Thirty-two bytes of entropy is the HS256 minimum the token provider enforces; URL-safe unpadded
+     * encoding widens that to forty-three characters, so the length guard passes with room to spare. The
+     * negative paths in this class continue to use deliberately <em>invalid</em> literals - empty, blank and
+     * too short - because those are the inputs under test rather than key material.
+     *
+     * @return a freshly generated key, never {@code null}, never logged and never persisted
+     */
+    private static String ephemeralSigningKey() {
+        final byte[] keyMaterial = new byte[32];
+        new SecureRandom().nextBytes(keyMaterial);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
+    }
+
 }

@@ -63,6 +63,8 @@ import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -89,7 +91,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <p>Run with {@code ./mvnw -B clean verify}, which executes this class in the {@code integration-test}
  * phase. A reachable Docker daemon is a hard prerequisite: the parent starts a
- * digest-pinned PostgreSQL 16.10 container and applies the three Flyway migrations to it. Compile alone with
+ * digest-pinned PostgreSQL 16.14 container and applies the three Flyway migrations to it. Compile alone with
  * {@code ./mvnw -q test-compile}.
  *
  * <h2>Key configuration and defaults</h2>
@@ -563,4 +565,184 @@ class RepositorySchemaAndFinderIntegrationTest extends AbstractRepositoryIntegra
             assertThat(slice.hasNext()).as("300 seeded rows, 25 requested").isTrue();
         }
     }
+
+    /**
+     * The eleven business tables, supplied to the metadata matrix as one parameterized case each.
+     *
+     * <p>Delegates to {@link SchemaMetadataMatrix#businessTables()} rather than restating the list, so the
+     * set of tables asserted and the set of tables declared cannot diverge. Declared {@code static} because
+     * a {@code @MethodSource} factory must be, and on the outer class because a nested class may not hold
+     * one.
+     *
+     * @return the table names, never empty
+     */
+    static List<String> businessTables() {
+        return SchemaMetadataMatrix.businessTables();
+    }
+
+    /**
+     * The authoritative metadata contract for the whole schema, driven table by table.
+     *
+     * <p><strong>Finding, severity High, RESOLVED.</strong> This class previously asserted three metadata
+     * facts - that the eleven tables exist, that exactly three non-unique alternate indexes exist, and that
+     * exactly four tables carry a version column - and each of those is true and none of them is a contract.
+     * None could detect type-compatible drift: a widened {@code CHAR}, a lost decimal scale, a reordered
+     * composite key, a retargeted foreign key or a dropped check constraint would all have left this class,
+     * and the whole tier, green. For a migration whose contract is that every width comes from a frozen
+     * picture clause, that was the tier's largest blind spot.
+     *
+     * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet of every column,
+     * key, index and constraint once, and the parameterized test below drives it across all eleven tables.
+     * The three earlier assertions are kept rather than replaced - they say something the matrix does not,
+     * namely that the counts are three and four <em>schema-wide</em> - and every CRUD, finder, locking and
+     * composite-key test in this class remains a separate behavioural layer. A metadata contract and a
+     * behavioural contract fail for different reasons and reading which one broke is the point.
+     */
+    @Nested
+    @DisplayName("Metadata matrix: the complete column, key, index and constraint contract for all 11 tables")
+    class MetadataMatrix {
+
+        /**
+         * Every facet of one table's catalogue metadata matches its declared contract.
+         *
+         * <p>One case per table, so a failure names the table in the report rather than burying it in a loop.
+         * The assertions themselves live in {@link SchemaMetadataMatrix#assertTableMatches} so that the
+         * per-table repository tests hold the identical contract instead of a paraphrase of it.
+         *
+         * @param table the business table under test, supplied by {@link #businessTables()}
+         */
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("com.cardemo.integration.repository.RepositorySchemaAndFinderIntegrationTest"
+                + "#businessTables")
+        @DisplayName("every column, key, index and constraint matches the declared contract")
+        void everyFacetMatchesTheDeclaredContract(final String table) {
+            SchemaMetadataMatrix.assertTableMatches(jdbcTemplate, table);
+        }
+
+        /**
+         * The matrix covers the whole schema and nothing beyond it, so no table can be quietly exempted.
+         *
+         * <p>Without this, a twelfth table could be added with no contract and the parameterized test above
+         * would simply not run for it - a gap that produces no failure and no output, which is the worst
+         * shape a gap can take.
+         */
+        @Test
+        @DisplayName("the matrix declares a contract for exactly the eleven business tables, no more and no "
+                + "fewer")
+        void theMatrixCoversExactlyTheBusinessTables() {
+            List<String> declared = SchemaMetadataMatrix.businessTables();
+
+            List<String> present = jdbcTemplate.queryForList(
+                    "SELECT table_name FROM information_schema.tables "
+                            + "WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' "
+                            + "AND table_name NOT LIKE 'batch%' AND table_name <> 'flyway_schema_history' "
+                            + "ORDER BY table_name",
+                    String.class);
+
+            assertThat(declared)
+                    .as("the declared set and the live set must agree exactly: a table with no contract is "
+                            + "an unasserted table, and a contract with no table is a stale one")
+                    .containsExactlyInAnyOrderElementsOf(present);
+        }
+
+        /**
+         * The schema carries exactly eighty-seven business columns, every one of them {@code NOT NULL}.
+         *
+         * <p>The per-table assertion establishes that no column of <em>that</em> table is nullable; this one
+         * establishes the total, so a column dropped from one table cannot be balanced by one added to
+         * another. Eighty-eight is a measured figure, not a target: it became eighty-eight when
+         * {@code card_cvv_cd} was added, the {@code CARD-CVV-CD PIC 9(03)} of {@code app/cpy/CVACT02Y.cpy}
+         * having been absent from the schema while the copybook reserves three bytes for it.
+         */
+        @Test
+        @DisplayName("the eleven tables carry exactly 88 columns and not one of them is nullable")
+        void theSchemaCarriesEightyEightNotNullColumns() {
+            Long total = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM information_schema.columns c "
+                            + "JOIN information_schema.tables t ON t.table_name = c.table_name "
+                            + "AND t.table_schema = c.table_schema "
+                            + "WHERE c.table_schema = current_schema() AND t.table_type = 'BASE TABLE' "
+                            + "AND c.table_name NOT LIKE 'batch%' "
+                            + "AND c.table_name <> 'flyway_schema_history'",
+                    Long.class);
+
+            Long nullable = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM information_schema.columns c "
+                            + "JOIN information_schema.tables t ON t.table_name = c.table_name "
+                            + "AND t.table_schema = c.table_schema "
+                            + "WHERE c.table_schema = current_schema() AND t.table_type = 'BASE TABLE' "
+                            + "AND c.table_name NOT LIKE 'batch%' "
+                            + "AND c.table_name <> 'flyway_schema_history' AND c.is_nullable = 'YES'",
+                    Long.class);
+
+            assertThat(total)
+                    .as("the sum of the eleven per-table column contracts, asserted as a total so that a "
+                            + "column moved between tables cannot cancel out")
+                    .isEqualTo(88L);
+            assertThat(nullable)
+                    .as("a COBOL record has no absent field: a fixed-width field is spaces or zeros, never "
+                            + "nothing, so NOT NULL on every column is the field contract and not a "
+                            + "preference")
+                    .isZero();
+        }
+
+        /**
+         * The schema declares exactly ten foreign keys, named {@code fk01} through {@code fk10}.
+         *
+         * <p>The per-table contracts name each one; this asserts the census, so a key deleted from one table
+         * cannot be hidden by a key added to another.
+         */
+        @Test
+        @DisplayName("the schema declares exactly the ten named foreign keys fk01 through fk10")
+        void theSchemaDeclaresExactlyTenNamedForeignKeys() {
+            List<String> names = jdbcTemplate.queryForList(
+                    "SELECT con.conname FROM pg_constraint con "
+                            + "JOIN pg_class cl ON cl.oid = con.conrelid "
+                            + "WHERE con.contype = 'f' "
+                            + "AND cl.relnamespace = current_schema()::regnamespace "
+                            + "AND cl.relname NOT LIKE 'batch%' ORDER BY con.conname",
+                    String.class);
+
+            assertThat(names)
+                    .as("ten referential rules replace the ten the VSAM clusters had no way to declare")
+                    .containsExactly("fk01_card_account", "fk02_xref_customer", "fk03_xref_account",
+                            "fk04_transaction_card", "fk05_transaction_type", "fk06_transaction_category",
+                            "fk07_tcatbal_account", "fk08_tcatbal_category", "fk09_category_type",
+                            "fk10_discgrp_category");
+        }
+
+        /**
+         * The schema declares exactly five named check constraints and no unique constraint at all.
+         */
+        @Test
+        @DisplayName("the schema declares exactly five check constraints and zero unique constraints")
+        void theSchemaDeclaresFiveChecksAndNoUniqueConstraints() {
+            List<String> checks = jdbcTemplate.queryForList(
+                    "SELECT con.conname FROM pg_constraint con "
+                            + "JOIN pg_class cl ON cl.oid = con.conrelid "
+                            + "WHERE con.contype = 'c' "
+                            + "AND cl.relnamespace = current_schema()::regnamespace "
+                            + "AND cl.relname NOT LIKE 'batch%' "
+                            + "AND con.conname NOT LIKE '%\\_not\\_null' ORDER BY con.conname",
+                    String.class);
+
+            Long uniqueConstraints = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM information_schema.table_constraints "
+                            + "WHERE table_schema = current_schema() AND constraint_type = 'UNIQUE' "
+                            + "AND table_name NOT LIKE 'batch%'",
+                    Long.class);
+
+            assertThat(checks)
+                    .as("each one carries an 88-level value set from a copybook, so a lost constraint means "
+                            + "a value the source could never hold becomes storable")
+                    .containsExactly("ck_account_active_status", "ck_card_active_status",
+                            "ck_customer_pri_card_holder_ind", "ck_customer_ssn_numeric",
+                            "ck_user_security_type");
+            assertThat(uniqueConstraints)
+                    .as("a VSAM alternate key is non-unique, so a unique constraint anywhere here would "
+                            + "refuse rows the legacy system accepts")
+                    .isZero();
+        }
+    }
+
 }

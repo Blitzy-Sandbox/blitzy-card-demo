@@ -250,9 +250,9 @@ import com.cardemo.service.shared.ValidationLookupService;
  * <h2>6. Preserved-defect register</h2>
  *
  * <p>These are faults of the system of record. Behavioural parity is the contract of this migration, so each is
- * <strong>reproduced, not repaired</strong>. Each is tracked here, in {@code DECISION_LOG.md} and in the planned
- * {@code TRACEABILITY_MATRIX.md}, which is what distinguishes it from the untracked dead code Rule 1 Clause B
- * forbids.
+ * <strong>reproduced, not repaired</strong>. Each is tracked here, and is owed an entry in the planned
+ * {@code DECISION_LOG.md} and a row in the planned {@code TRACEABILITY_MATRIX.md}, which is what distinguishes
+ * it from the untracked dead code Rule 1 Clause B forbids.
  *
  * <ul>
  *   <li><strong>D1 - BLOCKER, correctness. A customer-lock failure is reported as success.</strong>

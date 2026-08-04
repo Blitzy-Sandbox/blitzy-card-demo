@@ -162,13 +162,16 @@ import org.springframework.stereotype.Repository;
  *   ----------------------------   -----   -------------   --------------   -------------------
  *   CARD-NUM             (:L5)     X(16)    1 - 16         cardNumber       card_num
  *   CARD-ACCT-ID         (:L6)     9(11)   17 - 27         accountId        card_acct_id
- *   CARD-CVV-CD          (:L7)     9(03)   28 - 30         NOT MODELLED     none
+ *   CARD-CVV-CD          (:L7)     9(03)   28 - 30         cvvCode *        card_cvv_cd
  *   CARD-EMBOSSED-NAME   (:L8)     X(50)   31 - 80         embossedName     card_embossed_name
  *   CARD-EXPIRAION-DATE  (:L9)     X(10)   81 - 90         expiraionDate    card_expiraion_date
  *   CARD-ACTIVE-STATUS  (:L10)     X(01)   91              activeStatus     card_active_status
  *   FILLER              (:L11)     X(59)   92 - 150        not modelled     none
  *
- *   16 + 11 + 50 + 10 + 1 = 88 persisted bytes, + 3 unpersisted CVV + 59 FILLER = 150, matching AVGLRECL 150
+ *   * cvvCode is persisted but has no read path: no accessor returns it, no projection selects
+ *     it and no derived query in this interface may reference it. See com.cardemo.model.entity.Card.
+ *
+ *   16 + 11 + 3 + 50 + 10 + 1 = 91 persisted bytes + 59 FILLER = 150, matching AVGLRECL 150
  *   at app/catlg/LISTCAT.txt:L202 and RECORDSIZE(150 150) at app/jcl/CARDFILE.jcl:L55. The
  *   fixture app/data/ASCII/carddata.txt is 7550 bytes over 50 rows of uniform 150-byte records.
  * </pre>

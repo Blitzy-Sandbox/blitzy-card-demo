@@ -152,25 +152,23 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       customer names.</li>
  * </ul>
  *
- * <h2>Findings this suite records, by severity</h2>
+ * <h2>Invariants this suite pins</h2>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - protected data reaching {@code toString}, and a global rather than
- *       position-aware overpunch substitution, which would rewrite the leading {@code A} of the seeded
- *       postal code {@code A000000000} into a sign. Both are asserted against.</li>
- *   <li><strong>High</strong> - a shared header or balance abstraction, a numeric type for
- *       {@code ACCTSIDI}, a credit-score range or state-membership constraint, a snapshot group leaking
- *       into this read projection, or collapsing blank into absent. Each is asserted against.</li>
- *   <li><strong>Medium</strong> - two figures in the plan of record are wrong. The corpus contributes 441
- *       input fields across the seventeen maps, not 460, and {@code COACTVW} contributes 37, not 36.
- *       Remediation: use 441 and 37; the root cause of the second is the expanded picture at
- *       {@code app/cpy-bms/COACTVW.CPY:60}. Both figures are asserted here so the corrected values are
- *       machine-checked rather than merely written down.</li>
- *   <li><strong>Low</strong> - being a record, {@code AccountDto} inherits value-based {@code equals} and
- *       {@code hashCode} over all 37 components, protected ones included. Neither returns a rendering, so
- *       neither is a disclosure surface, and narrowing them would break the equality-to-hash contract that
- *       collection membership depends on. No remediation is requested; the behaviour is asserted so that
- *       the reasoning is recorded rather than assumed.</li>
+ *   <li>Protected data must not reach {@code toString}, and overpunch decoding must be position aware rather
+ *       than global - a global substitution would rewrite the leading {@code A} of the seeded postal code
+ *       {@code A000000000} into a sign. Both are asserted against.</li>
+ *   <li>No shared header or balance abstraction, no numeric type for {@code ACCTSIDI}, no credit-score range
+ *       or state-membership constraint, no snapshot group leaking into this read projection, and no
+ *       collapsing of blank into absent. Each is asserted against.</li>
+ *   <li>The field census is measured, not transcribed: the corpus contributes 441 input fields across the
+ *       seventeen maps and {@code COACTVW} contributes 37, the extra one being the expanded picture at
+ *       {@code app/cpy-bms/COACTVW.CPY:60} that a {@code PIC X(} census misses. Both figures are asserted
+ *       here so they stay machine-checked rather than written down.</li>
+ *   <li>Being a record, {@code AccountDto} inherits value-based {@code equals} and {@code hashCode} over all
+ *       37 components, protected ones included. Neither returns a rendering, so neither is a disclosure
+ *       surface, and narrowing them would break the equality-to-hash contract that collection membership
+ *       depends on. The behaviour is asserted so the reasoning stays evidenced rather than assumed.</li>
  * </ul>
  *
  * <p>Where evidence does not exist, none is invented. No relational schema is asserted anywhere in this
@@ -200,10 +198,11 @@ final class AccountDtoTest {
             "COUSR03");
 
     /**
-     * The input-field census across all seventeen maps.
+     * The input-field census across all seventeen maps, as the parser measures it from the frozen copybooks.
      *
-     * <p>Recorded here because the plan of record states 460 and its own per-map table sums to 440, so
-     * neither figure can be right. The census is 441, and it is asserted rather than asserted about.
+     * <p>Held as a constant so the measurement has one expected value in one place. It is the sum of the
+     * per-map counts the parser reports, and every one of those counts is itself derived from
+     * {@code app/cpy-bms/**} rather than transcribed, so this figure moves only if a copybook does.
      */
     private static final int CORPUS_INPUT_FIELD_COUNT = 441;
 
@@ -526,7 +525,10 @@ final class AccountDtoTest {
         @DisplayName("FIELD_COUNT is the copybook's own input-field count")
         void fieldCountMatchesTheCopybook() {
             assertThat(AccountDto.FIELD_COUNT)
-                    .as("app/cpy-bms/COACTVW.CPY input fields, 36 X-pictured plus ACCTSIDI at line 60")
+                    .as("app/cpy-bms/COACTVW.CPY input fields as the parser measures them: 36 with a "
+                            + "parenthesised picture plus ACCTSIDI at line 60, whose picture is expanded. "
+                            + "The record's own component count is compared against this below, so a "
+                            + "missing field and an extra field both fail")
                     .isEqualTo(COACTVW.inputFieldCount())
                     .isEqualTo(37);
         }
@@ -606,8 +608,9 @@ final class AccountDtoTest {
         }
 
         @Test
-        @DisplayName("dropping that one field is what yields 36, and 36 is wrong")
-        void thirtySixWouldBeTheParenthesisedCountOnly() {
+        @DisplayName("exactly one of the fields carries an expanded picture, which is what a parenthesised "
+                + "picture census cannot see")
+        void oneFieldCarriesAnExpandedPicture() {
             final long parenthesised = FIELDS.stream()
                     .filter(field -> field.picture().startsWith("PIC X("))
                     .count();
@@ -615,12 +618,16 @@ final class AccountDtoTest {
             assertThat(parenthesised)
                     .as("a PIC [X9]( census sees only the parenthesised pictures")
                     .isEqualTo(36L);
-            assertThat(parenthesised + 1).isEqualTo(AccountDto.FIELD_COUNT);
+            assertThat(parenthesised + 1)
+                    .as("and the field it cannot see is ACCTSIDI at app/cpy-bms/COACTVW.CPY:60, whose "
+                            + "picture is written out as PIC 99999999999. Naming the difference is what "
+                            + "makes the two counts reconcilable instead of merely different")
+                    .isEqualTo(AccountDto.FIELD_COUNT);
         }
 
         @Test
-        @DisplayName("the corpus contributes 441 input fields across the seventeen maps, not 460")
-        void theCorpusCensusIsFourHundredAndFortyOne() {
+        @DisplayName("the corpus census is the sum of the seventeen per-map counts the parser measures")
+        void theCorpusCensusIsTheSumOfTheSeventeenPerMapCounts() {
             assertThat(ALL_MAPS).hasSize(17);
             final int census = ALL_MAPS.stream()
                     .map(BmsSymbolicMap::of)
@@ -628,9 +635,9 @@ final class AccountDtoTest {
                     .sum();
 
             assertThat(census)
-                    .as("the corrected corpus census; the plan of record states 460 and its table sums to 440")
-                    .isEqualTo(CORPUS_INPUT_FIELD_COUNT)
-                    .isNotEqualTo(460);
+                    .as("measured from app/cpy-bms/** rather than transcribed, so a copybook change moves "
+                            + "the census and a transcription error cannot hide in it")
+                    .isEqualTo(CORPUS_INPUT_FIELD_COUNT);
         }
 
         @Test
@@ -1721,7 +1728,7 @@ final class AccountDtoTest {
         @Test
         @DisplayName("equality is value-based and neither equality nor hashing can render a value")
         void equalityIsValueBasedAndCannotRender() throws NoSuchMethodException {
-            // Recorded as a Low finding rather than remediated. Being a record, AccountDto compares all 37
+            // Being a record, AccountDto compares all 37
             // components, protected ones included; that is value semantics, and narrowing it would break
             // the equality-to-hash contract collection membership depends on. Neither method returns a
             // rendering, so neither is a disclosure surface - toString is, and it withholds.

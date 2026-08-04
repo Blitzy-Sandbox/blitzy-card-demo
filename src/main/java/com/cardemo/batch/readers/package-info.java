@@ -159,13 +159,16 @@
  *       asserts that this package's account reader resolves its parity logger by the shared tree name, and
  *       {@code AccountReaderTest}, {@code CardReaderTest}, {@code CardCrossReferenceReaderTest} and
  *       {@code CustomerReaderTest} cover the four verification readers.
- *       <strong>Not available, measured 3 August 2026:</strong> the daily transaction reader has no test class
- *       of its own, so no coverage figure quoted anywhere is evidence about it. The required assertions are:
- *       the fixed-width rendering matching the copybook offsets; the 49-hyphen rule being neither 48 nor 50; the
- *       eleven labels at exactly 25 characters with the colon in column 25; a status of {@code '10'} ending the
- *       scan without an exception; a {@code '9x'} status abending with code 999 and return code 12; the
- *       four-character status rendering; and that no card number, verification value or social security number
- *       appears on any channel.</li>
+ *       <strong>Measured 4 August 2026:</strong> both input readers now have a test class of their own -
+ *       {@code DailyTransactionReaderTest} and {@code TransactionBackupReaderTest} - so every reader in this
+ *       package is covered by name. <strong>An earlier revision of this document recorded the daily
+ *       transaction reader as having no test class</strong>; that statement was true when written and is
+ *       withdrawn here. The assertions it listed as owed are the ones those classes now make: the fixed-width
+ *       rendering matching the copybook offsets; the 49-hyphen rule being neither 48 nor 50; the eleven labels
+ *       at exactly 25 characters with the colon in column 25; a status of {@code '10'} ending the scan without
+ *       an exception; a {@code '9x'} status abending with code 999 and return code 12; the four-character
+ *       status rendering; and that no card number, verification value or social security number appears on any
+ *       channel.</li>
  *   <li><strong>Coverage.</strong> JaCoCo enforces an 80 percent LINE floor on the merged bundle at
  *       {@code verify} with {@code haltOnFailure} and no exclusions for this package. This file is documentation
  *       only and contributes no executable lines.</li>

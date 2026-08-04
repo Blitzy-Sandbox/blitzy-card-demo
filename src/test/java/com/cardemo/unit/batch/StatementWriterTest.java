@@ -49,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.cardemo.batch.processors.StatementProcessor;
 import com.cardemo.batch.writers.StatementWriter;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
@@ -76,7 +77,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -160,13 +160,21 @@ class StatementWriterTest {
     private static final String MONTH = "2022-07";
 
     private S3Template s3Template;
+
+    /**
+     * The registry the four application series are registered against.
+     *
+     * <p>The writer holds no meter owner and no registry of its own, so nothing it does can reach this. It is
+     * here to prove exactly that: a test registers the series through {@link MetricsConfig}, drives the
+     * writer, and reads the series back unchanged.
+     */
     private MeterRegistry meterRegistry;
 
     /**
-     * The sole registrar of the four application counters. The writer counts through this collaborator, so
-     * the registry above is read only to assert what was registered under it.
+     * The writer under test. It registers and advances no instrument: {@code MetricsConfig} is the sole
+     * registrar of the four application counters and is not a collaborator of this class, so there is no
+     * registry to read here. {@code StatementWriterContractTest.InstrumentOwnership} asserts that absence.
      */
-    private MetricsConfig metricsConfig;
     private StatementWriter writer;
 
     private ListAppender<ILoggingEvent> appender;
@@ -177,8 +185,7 @@ class StatementWriterTest {
     void buildWriterAndCaptureLogs() {
         s3Template = Mockito.mock(S3Template.class);
         meterRegistry = new SimpleMeterRegistry();
-        metricsConfig = new MetricsConfig(meterRegistry);
-        writer = new StatementWriter(s3Template, metricsConfig, new FileStatusMapper(), FIXED_CLOCK, BUCKET);
+        writer = new StatementWriter(s3Template, new FileStatusMapper(), FIXED_CLOCK, BUCKET);
 
         logger = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(StatementWriter.class);
         originalLevel = logger.getLevel();
@@ -229,6 +236,21 @@ class StatementWriterTest {
     /** @return the canonical transaction: identifier 1, 100.00, a short description. */
     private static StatementTransaction transaction() {
         return transaction("0000000000000001", "100.00", "COFFEE AND CAKE");
+    }
+
+    /**
+     * Builds one composed statement, as the processor hands it to the {@code ItemWriter} contract.
+     *
+     * <p>Both line lists are already at their declared widths - {@value StatementTransaction#STATEMENT_TEXT_RECORD_LENGTH}
+     * for {@code STMTFILE} and {@value StatementTransaction#STATEMENT_HTML_RECORD_LENGTH} for {@code HTMLFILE},
+     * per {@code app/jcl/CREASTMT.JCL:STEP040} - so the writer pads nothing and rejects nothing.
+     *
+     * @return one statement for the canonical account
+     */
+    private static StatementProcessor.Statement statement() {
+        return new StatementProcessor.Statement(ACCOUNT_ID, new BigDecimal("100.00"),
+                List.of("A".repeat(StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH)),
+                List.of("B".repeat(StatementTransaction.STATEMENT_HTML_RECORD_LENGTH)));
     }
 
     /**
@@ -336,10 +358,14 @@ class StatementWriterTest {
         return appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
     }
 
-    /** @return the value of the processed-records counter. */
+    /**
+     * Reads the untagged processed-records series, citing the owner's symbol rather than retyping the name.
+     *
+     * @return the counter's value, or {@code 0.0} when the series has never been registered
+     */
     private double processedCount() {
         io.micrometer.core.instrument.Counter counter =
-                meterRegistry.find("carddemo.batch.records.processed").counter();
+                meterRegistry.find(MetricsConfig.METRIC_RECORDS_PROCESSED).counter();
         return counter == null ? 0.0d : counter.count();
     }
 
@@ -373,7 +399,7 @@ class StatementWriterTest {
         @DisplayName("a null store is refused by name")
         void aNullStoreIsRefused() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new StatementWriter(null, metricsConfig, new FileStatusMapper(),
+                    .isThrownBy(() -> new StatementWriter(null, new FileStatusMapper(),
                             FIXED_CLOCK, BUCKET))
                     .withMessage("objectStorage must not be null");
         }
@@ -382,17 +408,38 @@ class StatementWriterTest {
         @DisplayName("a null status mapper is refused by name")
         void aNullStatusMapperIsRefused() {
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new StatementWriter(s3Template, metricsConfig, null, FIXED_CLOCK, BUCKET))
+                    .isThrownBy(() -> new StatementWriter(s3Template, null, FIXED_CLOCK, BUCKET))
                     .withMessage("fileStatusMapper must not be null");
         }
 
         @Test
-        @DisplayName("a null meter registry is refused by name")
-        void aNullMeterRegistryIsRefused() {
+        @DisplayName("no meter owner and no registry is taken at all, so no series can be advanced here")
+        void noMeterOwnerIsTakenAtAll() {
+            // This writer used to take MetricsConfig and advance the untagged records-processed counter once per
+            // statement. That counter's unit is one record a batch step handled - the WS-TRANSACTION-COUNT
+            // analogue of app/cbl/CBTRN02C.cbl:L206 - and a statement is an aggregate over transactions that an
+            // earlier posting run already counted, so each increment added the same underlying work to the
+            // series a second time under a second meaning. Since the series carries no tag, no query can
+            // separate the two afterwards.
+            //
+            // Withholding the collaborator, rather than merely not calling it, is what makes that permanent.
+            assertThat(StatementWriter.class.getDeclaredConstructors())
+                    .singleElement()
+                    .satisfies(constructor -> assertThat(constructor.getParameterTypes())
+                            .doesNotContain(MetricsConfig.class)
+                            .doesNotContain(MeterRegistry.class)
+                            .doesNotContain(io.micrometer.core.instrument.Counter.class)
+                            .hasSize(4));
+        }
+
+        @Test
+        @DisplayName("a null clock is refused by name")
+        void aNullClockIsRefused() {
+            // There is no meter-owner argument to refuse: this writer reports no series, so it takes no
+            // MetricsConfig. The clock is the collaborator that took its constructor position.
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new StatementWriter(s3Template, null, new FileStatusMapper(),
-                            FIXED_CLOCK, BUCKET))
-                    .withMessage("metricsConfig must not be null");
+                    .isThrownBy(() -> new StatementWriter(s3Template, new FileStatusMapper(), null, BUCKET))
+                    .withMessage("clock must not be null");
         }
 
         @Test
@@ -405,7 +452,7 @@ class StatementWriterTest {
             // environment variable rather than the parameter, because the reader of a startup failure is an
             // operator who has to set a value, not a caller who passed one.
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new StatementWriter(s3Template, metricsConfig,
+                    .isThrownBy(() -> new StatementWriter(s3Template,
                             new FileStatusMapper(), FIXED_CLOCK, null))
                     .withMessageContaining("CARDDEMO_S3_STATEMENTS_BUCKET");
         }
@@ -415,7 +462,7 @@ class StatementWriterTest {
         @DisplayName("a blank bucket is refused rather than defaulted")
         void aBlankBucketIsRefused(final String bucket) {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new StatementWriter(s3Template, metricsConfig,
+                    .isThrownBy(() -> new StatementWriter(s3Template,
                             new FileStatusMapper(), FIXED_CLOCK, bucket))
                     .withMessageContaining("CARDDEMO_S3_STATEMENTS_BUCKET");
         }
@@ -447,6 +494,25 @@ class StatementWriterTest {
                                 .isEqualTo("no statement is open; call openStatementOutputs before "
                                         + "emitting a record");
                     });
+        }
+
+        @Test
+        @DisplayName("a persisted statement leaves the processed-records counter exactly where it was")
+        void aPersistedStatementMovesNoCounter() throws Exception {
+            // The owner registers the four series eagerly against the shared registry, so the counter below
+            // exists before anything is written. One increment stands for one DALYTRAN record that the daily
+            // posting run genuinely handled - the only unit this untagged series carries.
+            MetricsConfig owner = new MetricsConfig(meterRegistry);
+            owner.countRecordProcessed();
+
+            writer.write(new Chunk<>(List.of(statement())));
+
+            // Finding H-09, severity High, RESOLVED: the two statement objects were emitted (asserted by the
+            // key and geometry groups below) and the counter still reports the one real record. Before the
+            // fix this read 2.0, conflating a rendering of already-counted transactions with the records
+            // themselves and inflating sum(carddemo_batch_records_processed_total) on every statement run.
+            assertThat(processedCount()).isEqualTo(1.0d);
+            assertThat(uploadedKeys()).hasSize(2);
         }
 
         @Test

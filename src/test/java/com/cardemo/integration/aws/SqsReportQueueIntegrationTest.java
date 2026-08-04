@@ -71,6 +71,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -142,9 +143,8 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *       {@code FILLER-3} at {@code :117} - each group also totalling eighty bytes. Fourteen plus three is
  *       seventeen, so the deck is 1,360 bytes. {@code 02 JOB-DATA-2 REDEFINES JOB-DATA-1.} at {@code :126}
  *       overlays it with {@code 05 JOB-LINES OCCURS 1000 TIMES PIC X(80).} at {@code :127}.
- *       <strong>Severity: Medium, documentation only.</strong> The plan's transformation narrative and this
- *       package's own requirement note both say eighteen. Remediation: read the count as seventeen and cite
- *       {@code :79-127}; the production service already encodes seventeen, so no code is affected.</li>
+ *       The count is read off {@code :79-127} directly, which is where a secondary description is easy to
+ *       miscount, and the production service encodes seventeen.</li>
  *   <li><strong>Each date was injected TWICE, and collapses to ONE field.</strong>
  *       {@code PARM-START-DATE-1 PIC X(10)} at {@code :106} sits on the sort-symbol card and
  *       {@code PARM-START-DATE-2 PIC X(10)} at {@code :118} on the date-parameter card;
@@ -166,8 +166,8 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *   <li><strong>The paragraph name is misspelt and the misspelling is preserved.</strong>
  *       {@code app/cbl/CORPT00C.cbl:515} declares {@code WIRTE-JOBSUB-TDQ.} with the {@code RI}
  *       transposed, and {@code :507} performs it under the same spelling. It is never corrected in a
- *       citation: the traceability matrix is checked mechanically against paragraph labels, and a tidied
- *       label breaks that check while looking better.</li>
+ *       citation, because a citation has to name the label the source actually declares; a tidied label looks
+ *       better and no longer resolves.</li>
  *   <li><strong>The write spans {@code :517-523}, and the failure arm has two byte-exact contracts.</strong>
  *       The verb is {@code EXEC CICS WRITEQ TD QUEUE('JOBS') FROM(JCL-RECORD)
  *       LENGTH(LENGTH OF JCL-RECORD) RESP(WS-RESP-CD) RESP2(WS-REAS-CD) END-EXEC.} - six lines, not four.
@@ -188,12 +188,10 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *       passes twelve; {@code :229-230} compute
  *       {@code FUNCTION DATE-OF-INTEGER(FUNCTION INTEGER-OF-DATE(WS-CURDATE-N) - 1)}, the first of the
  *       <em>next</em> month less one day, which is the <strong>last day of the current month</strong>; and
- *       {@code :232-234} read the already-mutated fields back out. <strong>Severity: Blocker.</strong> The
- *       plan's special-analysis section describes the range as month-to-date, and the sibling planning note
- *       for the report request type repeats that error; both are wrong. A month-to-date implementation
- *       agrees with the source on exactly one day per month and diverges silently on the rest.
- *       Remediation: derive the end date as the last day of the start date's month, which the production
- *       service already does. Asserted for a 31-day month, a 30-day month, a 28-day February, a 29-day leap
+ *       {@code :232-234} read the already-mutated fields back out. A month-to-date reading of the same
+ *       paragraph would agree with the source on exactly one day per month and diverge silently on the rest,
+ *       which is why the end date is derived as the last day of the start date's month - exactly what the
+ *       production service does. Asserted for a 31-day month, a 30-day month, a 28-day February, a 29-day leap
  *       February and December - the only branch that increments the year - all off the pinned clock, in
  *       {@link ThePeriodResolution}.</li>
  * </ol>
@@ -220,17 +218,15 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * silently never runs, both plugins report success and the build stays green. That is the worst failure mode
  * available here, so this file's path and name must not be changed and no sub-package may be introduced
  * beneath it. After any build, confirm the Failsafe report names this class; a Surefire report naming it, or
- * neither naming it, is a <strong>Blocker</strong>.
+ * neither naming it, means the class has been mis-located and must be moved back.
  *
  * <p><strong>A reachable container runtime is a hard prerequisite.</strong> The harness starts a
  * PostgreSQL 16 container and a LocalStack container eagerly, and there is no in-memory substitute: an
  * in-memory queue would not exercise first-in-first-out ordering or content-based deduplication, which are
  * the two properties this class exists to prove. Where no daemon or socket is reachable the correct report
- * is that the gate is <em>blocked</em>, never an untested pass. The provisioned environment supplies a
- * working daemon and both images are already in its cache, and host {@code java}, {@code javac} and
- * {@code mvn} are all present - an earlier note claiming they were absent, and that Maven had to run inside
- * a container, is stale and withdrawn. Severity of that stale note: <strong>Low</strong>; it produced a
- * wrong instruction and no wrong artefact.
+ * is that the gate is <em>blocked</em>, never an untested pass. The prerequisites are a working daemon with
+ * both images available plus host {@code java}, {@code javac} and Maven on the path, which is what lets
+ * {@code ./mvnw} run directly.
  *
  * <h2>3. Key configuration and defaults</h2>
  *
@@ -252,12 +248,17 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *       message group comes from {@code carddemo.aws.sqs.report-message-group-id}. All three keys were read
  *       from the configuration that binds them rather than guessed, and <strong>no divergence was
  *       found</strong> between them and the migration's stated contract.</li>
- *   <li><strong>Deduplication is content-based and that is the production choice.</strong> The application
- *       configuration verifies at startup that the provisioned queue reports both the first-in-first-out
- *       attribute and content-based deduplication, and the publishing service sets no deduplication
- *       identifier of its own - the source had no idempotency key and inventing one would be inventing a
- *       guard it lacks. This class asserts the mechanism production actually uses and does not impose the
- *       other one.</li>
+ *   <li><strong>Deduplication is per-submission and explicit; content-based deduplication is not the
+ *       production choice.</strong> Finding H-08, severity High. This paragraph previously said the reverse -
+ *       that startup required content-based deduplication and that the publisher deliberately set no
+ *       identifier, because the source has no idempotency key. The conclusion did not follow from the
+ *       premise: a report body is one report name and two dates, so hashing it collapses two legitimate
+ *       submissions of the same period, while {@code DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)} appended
+ *       both. The publishing service therefore mints a fresh {@code MessageDeduplicationId} per submission,
+ *       which is how the queue is told <em>not</em> to key on the body, and an explicit identifier takes
+ *       precedence over the hash regardless of the queue's own attribute. Startup reads that attribute and
+ *       reports it but does not refuse to start over it, because it is mutable and the send path does not
+ *       depend on it; provisioning is what sets it, and this class asserts the provisioned value.</li>
  *   <li><strong>Every queue this class publishes to for delivery assertions is its own.</strong> Each such
  *       test provisions a first-in-first-out queue whose name is scoped to this class and to the test's
  *       role, and the harness deletes it afterwards. That is not merely tidiness: content-based
@@ -275,7 +276,7 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * <p><strong>Least privilege.</strong> Every call reaches the emulator container and nothing else. There is
  * no live account, no live credential and no live endpoint on any path from here, and none could be added
  * without failing the application's own startup guard. A live endpoint or credential reaching a code path
- * in this tier would be a <strong>Blocker</strong>. No secret, token, signing key, password or personally
+ * in this tier is forbidden outright. No secret, token, signing key, password or personally
  * identifiable value appears in this file, in its comments or in any assertion message.
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
@@ -285,8 +286,8 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *   <dd>No reachable container runtime. Start one; do not skip the class. A green build obtained by having
  *       no daemon is worse than a red one.</dd>
  *   <dt>A dependency under {@code org.testcontainers} fails to resolve</dt>
- *   <dd>The container-library 2.0.3 coordinate trap, and the highest-severity build hazard of the
- *       migration: <strong>Blocker</strong>. Only the prefixed module coordinates exist at that release -
+ *   <dd>The container-library 2.0.3 coordinate trap, the build hazard of this migration most likely to
+ *       stop a build outright. Only the prefixed module coordinates exist at that release -
  *       {@code testcontainers}, {@code testcontainers-postgresql}, {@code testcontainers-localstack} and
  *       {@code testcontainers-junit-jupiter}. The bare {@code postgresql}, {@code localstack} and
  *       {@code junit-jupiter} identifiers under that group <strong>do not exist</strong> there and fail
@@ -316,11 +317,11 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *       to the same queue inside the deduplication window; provision a queue for the test rather than
  *       sharing one.</dd>
  *   <dt>Context startup aborts naming the token signing key</dt>
- *   <dd>Severity: <strong>High</strong>, and the defect is not in this file. The base configuration maps
+ *   <dd>The cause is not in this file. The base configuration maps
  *       the signing key to an environment variable with no default so that nothing can boot with a key an
  *       attacker already knows, and the {@code test} profile - owned elsewhere - supplies no test value, so
- *       the context refresh aborts before any test runs. Remediation, for the owner of that file: supply a
- *       recognisably non-production test value in the {@code test} profile. Until then the harness
+ *       the context refresh aborts before any test runs. The fix belongs with the owner of that file: a
+ *       recognisably non-production test value in the {@code test} profile. Until it lands the harness
  *       registers one itself. <strong>It is reported here, never patched from here.</strong></dd>
  * </dl>
  *
@@ -344,7 +345,7 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *       <em>What is needed:</em> a legacy program that handles that status, or a stated requirement that
  *       the Java tier introduce the path as new behaviour.</li>
  *   <li><strong>A source locator for the CICS transaction-identifier field is Not available.</strong>
- *       Severity: <strong>Medium</strong>. A repository-wide search for it at the anchor commit returns zero
+ *       A repository-wide search for it returns zero
  *       occurrences; the complete exchange-interface-block census in the corpus is the communication-area
  *       length field and the attention-identifier field only. It is supplied by the transaction monitor
  *       rather than by this corpus, so <strong>no {@code app/...} line reference for it may be
@@ -481,8 +482,7 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
      * {@code MOVE 'Unable to Write TDQ (JOBS)...' TO WS-MESSAGE}, {@code app/cbl/CORPT00C.cbl:531}.
      *
      * <p>Byte for byte, three trailing periods and the parenthesised queue name included. Altering it in any
-     * way is a <strong>Blocker</strong>, so it is asserted with exact equality and never with a containment
-     * check.
+     * way breaks parity, so it is asserted with exact equality and never with a containment check.
      */
     private final String unableToWriteTdq = "Unable to Write TDQ (JOBS)...";
 
@@ -499,25 +499,67 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     // =================================================================================================
 
     /**
-     * Drains the shared application queue after each test, best effort and bounded.
+     * Drains the shared application queue after each test, bounded, and fails if anything survives the drain.
      *
      * <p>Only one test publishes to that queue, and it asserts the publisher's own outcome rather than
-     * delivery, so nothing here depends on the drain having found anything. It exists so that a message this
-     * class published cannot be observed by a sibling class that counts what is on the queue.
+     * delivery, so nothing here depends on the drain having found anything on the first attempt. It exists so
+     * that a message this class published cannot be observed by a sibling class that counts what is on the
+     * queue.
      *
-     * <p><strong>Side effects.</strong> Deletes messages from the shared queue. <strong>Error modes.</strong>
-     * A failure propagates with its cause intact rather than being swallowed; there is no empty catch block
-     * anywhere in this class. This runs before the harness's own cleanup, which is what removes the queues
-     * this class created.
+     * <p><strong>Side effects.</strong> Deletes messages from the shared queue. This runs before the
+     * harness's own cleanup, which is what removes the queues this class created; the shared queue itself is
+     * never deleted.
+     *
+     * <p><strong>Error modes.</strong> A service failure propagates with its cause intact rather than being
+     * swallowed; there is no empty catch block anywhere in this class. A drain that <em>exhausts its budget
+     * while messages are still arriving</em> now <strong>fails the test</strong>, reporting the queue name,
+     * the budget spent, the total removed and the identifier and group of everything the final look found.
+     * Returning quietly was the earlier behaviour and it was wrong in the one case that matters: a drain
+     * whose budget is too small for what the test published is cross-test contamination waiting to happen,
+     * it surfaces later as an inexplicable count in a sibling class, and the evidence needed to diagnose it -
+     * which queue, which message, which group - exists only here. The budget is deliberately not raised to
+     * paper over it; the failure message carries the numbers so the decision is made on evidence.
+     *
+     * <p>Note what the failure does <em>not</em> mean: the surviving messages are removed by the same call
+     * that observes them, so the queue is left clean either way and the next test is unaffected. The failure
+     * reports that this class's own budget was inadequate, which is a defect in this class and is stated as
+     * such rather than as a leak that persists.
+     *
+     * @throws IllegalStateException if the bounded budget is spent while messages are still arriving
      */
     @AfterEach
     void drainTheSharedReportQueue() {
         final String queueUrl = queueUrlOf(reportQueueName());
+        int removed = 0;
         for (int attempt = 0; attempt < this.receiveAttempts; attempt++) {
-            if (receiveAndDelete(queueUrl, this.maxReceiveBatch, this.emptyReceiveWait).isEmpty()) {
+            final List<Message> drained =
+                    receiveAndDelete(queueUrl, this.maxReceiveBatch, this.emptyReceiveWait);
+            if (drained.isEmpty()) {
                 return;
             }
+            removed += drained.size();
         }
+
+        // Budget spent and the previous attempt still returned messages. One more bounded look decides
+        // whether the queue is now empty - in which case the last batch simply landed on the final attempt
+        // and there is nothing wrong - or whether something is still there and must be reported.
+        final List<Message> surviving =
+                receiveAndDelete(queueUrl, this.maxReceiveBatch, this.emptyReceiveWait);
+        if (surviving.isEmpty()) {
+            return;
+        }
+
+        final String identifiers = surviving.stream()
+                .map(message -> message.messageId() + " (group "
+                        + message.attributes().get(MessageSystemAttributeName.MESSAGE_GROUP_ID) + ')')
+                .collect(Collectors.joining(", "));
+        throw new IllegalStateException("The shared report queue '" + reportQueueName() + "' still held "
+                + surviving.size() + " message(s) once the bounded drain budget of " + this.receiveAttempts
+                + " attempts was spent; " + (removed + surviving.size())
+                + " were removed in total, the surviving ones included, so the next test does start clean. "
+                + "The budget was nonetheless insufficient for what this test published, which is the defect: "
+                + "raise it deliberately or publish less, rather than leaving the outcome to timing. "
+                + "Removed on the final look: " + identifiers + '.');
     }
 
     // =================================================================================================
@@ -725,21 +767,30 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     }
 
     /**
-     * Sends one body to a queue under an explicit message group, through the injected client.
+     * Sends one body to a queue under an explicit message group and an explicit deduplication identifier.
      *
-     * <p>No deduplication identifier is supplied, because the production publisher supplies none either: the
-     * queue's content-based deduplication is the mechanism the migration chose, and imposing an explicit
-     * identifier here would test a mechanism production does not use.
+     * <p>An identifier is <strong>required</strong>, not optional: the queues this class provisions carry
+     * {@code ContentBasedDeduplication=false}, exactly as the production queue does since finding H-08, and SQS
+     * rejects a send to such a queue that supplies none. That is the same contract the production publisher
+     * meets by minting one per submission, so the mechanism under test here is the mechanism production uses.
+     *
+     * <p>The identifier is a caller-chosen token rather than a generated one, because the interesting cases are
+     * precisely the ones where the caller controls whether two sends share an identity: two submissions differ,
+     * and a transport retry does not.
      *
      * @param queueUrl the queue to publish to
      * @param body the body to publish
      * @param messageGroupId the group every message in the test shares
+     * @param deduplicationId the identity of this send; equal values are collapsed by the queue
      */
-    private void sendUnderGroup(final String queueUrl, final String body, final String messageGroupId) {
+    private void sendUnderGroup(final String queueUrl, final String body, final String messageGroupId,
+            final String deduplicationId) {
+
         awaitCall(sqsAsyncClient().sendMessage(SendMessageRequest.builder()
                         .queueUrl(queueUrl)
                         .messageBody(body)
                         .messageGroupId(messageGroupId)
+                        .messageDeduplicationId(deduplicationId)
                         .build()),
                 "publish a body to the queue at " + queueUrl);
     }
@@ -904,8 +955,8 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
                 .isEqualTo(firstOfMonth.toString());
         assertThat(published.endDate())
                 .as("app/cbl/CORPT00C.cbl:223-234 force the day to 1, add a month, roll the year past twelve, "
-                        + "subtract a day and read the mutated fields back: the LAST DAY of the CURRENT "
-                        + "month, never month to date")
+                        + "subtract a day and read the mutated fields back, which lands on the LAST DAY of "
+                        + "the CURRENT month")
                 .isEqualTo(expectedEnd)
                 .isEqualTo(firstOfMonth.plusMonths(1L).minusDays(1L).toString());
         assertThat(LocalDate.parse(published.endDate()).getDayOfMonth())
@@ -989,17 +1040,21 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
         }
 
         /**
-         * The configured queue reports both attributes the migration relies on.
+         * The configured queue reports both attributes the migration relies on, and they differ.
          *
          * <p>The first-in-first-out attribute is what reproduces {@code DISPOSITION(MOD)}. The deduplication
-         * attribute is asserted because <em>content-based</em> deduplication is the mechanism the production
-         * configuration actually chose - the publishing service sets no deduplication identifier, since the
-         * eighty-byte record had no field for one and the source had no idempotency key. Asserting the other
-         * mechanism instead would test something production does not do.
+         * attribute must be <strong>off</strong>: finding H-08, severity High. The body of a report message is
+         * the report name and two dates, so content-based deduplication - which hashes the body - collapses two
+         * legitimate submissions of the same period inside its five-minute window. The transient data queue
+         * appended every write and {@code app/cbl/CORPT00C.cbl:L515-L523} carries no idempotency key at all, so
+         * collapsing them is a behaviour change and an invisible one: the second submission is accepted, logged
+         * as published, and then discarded by the queue. The publisher supplies an explicit
+         * {@code MessageDeduplicationId} per submission instead, which the attribute being off is what makes
+         * mandatory.
          */
         @Test
-        @DisplayName("the configured report queue is FIFO with content-based deduplication")
-        void theConfiguredReportQueueIsFifoWithContentBasedDeduplication() {
+        @DisplayName("the configured report queue is FIFO with content-based deduplication OFF")
+        void theConfiguredReportQueueIsFifoWithoutContentBasedDeduplication() {
             final Map<QueueAttributeName, String> attributes = awaitCall(
                     sqsAsyncClient().getQueueAttributes(GetQueueAttributesRequest.builder()
                             .queueUrl(queueUrlOf(reportQueueName()))
@@ -1012,11 +1067,13 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
                     .as("DISPOSITION(MOD) at app/csd/CARDDEMO.CSD:503 is a strictly sequential append to one "
                             + "stream, so the replacement must be a FIFO queue and not a standard one")
                     .isEqualTo("true");
+            // The service omits the attribute when it is off, and omission is how it says false, so both
+            // renderings are accepted; what must never appear is "true".
             assertThat(attributes.get(QueueAttributeName.CONTENT_BASED_DEDUPLICATION))
-                    .as("content-based deduplication is the mechanism the production configuration verifies "
-                            + "at startup, and the publisher therefore supplies no deduplication identifier "
-                            + "of its own")
-                    .isEqualTo("true");
+                    .as("body-keyed deduplication would collapse two legitimate submissions of the same "
+                            + "period, which DISPOSITION(MOD) delivered twice; the publisher supplies an "
+                            + "explicit MessageDeduplicationId instead (finding H-08)")
+                    .isIn(null, "false");
         }
 
         /**
@@ -1047,8 +1104,8 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
          * these three in any order and the test would pass intermittently, which is the failure mode the
          * explicit ordering assertion removes.
          *
-         * <p>The three bodies differ, so content-based deduplication cannot suppress any of them; that the
-         * deduplication key is keyed on the body and not on the group is the subject of the next test.
+         * <p>Each send carries its own deduplication identifier, so nothing can be suppressed here whatever the
+         * bodies are; the deduplication contract itself is the subject of the next test.
          */
         @Test
         @DisplayName("three messages sent in order under one group id are received in exactly that order")
@@ -1059,8 +1116,9 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
                     new JobSubmissionMessage(reportNameMonthly, "2022-02-01", "2022-02-28"),
                     new JobSubmissionMessage(reportNameMonthly, "2022-03-01", "2022-03-31"));
 
-            for (final JobSubmissionMessage message : sent) {
-                sendUnderGroup(queueUrl, bodyOf(message), reportMessageGroupId);
+            for (int index = 0; index < sent.size(); index++) {
+                sendUnderGroup(queueUrl, bodyOf(sent.get(index)), reportMessageGroupId,
+                        "ordering-" + index);
             }
 
             final List<Message> delivered = receiveUpTo(queueUrl, sent.size());
@@ -1079,47 +1137,55 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
         }
 
         /**
-         * Deduplication suppresses a repeat of the same message and nothing else.
+         * Two identical submissions are both delivered, and a transport retry of one is not.
          *
-         * <p>Both halves are needed and neither is sufficient alone. Sending the same logical message twice
-         * and receiving one proves deduplication is active; sending a genuinely different message afterwards
-         * and receiving it proves the key is <strong>not over-broad</strong> - that is, that it is keyed on
-         * the body rather than on the queue or the message group, which would silently discard every
-         * subsequent submission. Rule 1 Clause B asks for boundary conditions to be validated, and the
-         * boundary here is the edge of the deduplication key.
+         * <p><strong>Finding H-08, severity High. This test asserted the opposite and locked the defect in
+         * place.</strong> It previously sent the same body twice, received one message, and recorded that as
+         * correct behaviour on the reasoning that content-based deduplication is keyed on the body. The legacy
+         * contract is the reverse: {@code DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)} appends, and
+         * {@code app/cbl/CORPT00C.cbl:L515-L523} writes unconditionally, so an operator who re-submitted the
+         * same period got two entries in the reader. A test that asserts suppression is worse than no test,
+         * because it makes the loss look intended.
          *
-         * <p>They are one test rather than two on purpose: the negative half is only meaningful in sequence
-         * with the positive half, on the same queue, inside the same deduplication window.
+         * <p>Both halves are still needed and neither is sufficient alone. Two identical submissions carrying
+         * <em>distinct</em> deduplication identifiers - which is what the publisher mints per submission -
+         * must both arrive, proving no body-keyed collapse remains. And a repeat carrying the <em>same</em>
+         * identifier, which is what a transport-level retry of one submission looks like on the wire, must
+         * arrive once, proving the queue still collapses the one duplicate that would be an artefact of this
+         * implementation rather than of the caller's intent.
+         *
+         * <p>They are one test rather than two on purpose: the second half is only meaningful in sequence with
+         * the first, on the same queue, inside the same deduplication window.
          */
         @Test
-        @DisplayName("an identical message is delivered once and a different one is still delivered")
-        void anIdenticalMessageIsDeliveredOnceAndADifferentOneIsStillDelivered() {
+        @DisplayName("two identical submissions are both delivered; a retried identifier is delivered once")
+        void identicalSubmissionsAreBothDeliveredAndARetriedIdentifierIsNot() {
             final String queueUrl = provisionScopedFifoQueue("dedup");
-            final JobSubmissionMessage first =
+            final JobSubmissionMessage submission =
                     new JobSubmissionMessage(reportNameYearly, "2022-01-01", "2022-12-31");
-            final JobSubmissionMessage second =
-                    new JobSubmissionMessage(reportNameYearly, "2023-01-01", "2023-12-31");
 
-            sendUnderGroup(queueUrl, bodyOf(first), reportMessageGroupId);
-            sendUnderGroup(queueUrl, bodyOf(first), reportMessageGroupId);
+            sendUnderGroup(queueUrl, bodyOf(submission), reportMessageGroupId, "submission-one");
+            sendUnderGroup(queueUrl, bodyOf(submission), reportMessageGroupId, "submission-two");
 
-            final List<Message> afterDuplicate = receiveUpTo(queueUrl, 2);
-            assertThat(afterDuplicate)
-                    .as("the same body published twice inside the deduplication window is delivered once; "
-                            + "content-based deduplication is keyed on the body, and its identifier is "
-                            + "derived from the body rather than supplied by the publisher")
-                    .hasSize(1);
-            assertThat(jobSubmissionMessageFrom(afterDuplicate.get(0).body())).isEqualTo(first);
+            final List<Message> bothSubmissions = receiveUpTo(queueUrl, 2);
+            assertThat(bothSubmissions)
+                    .as("the same period submitted twice must be delivered twice, because DISPOSITION(MOD) at "
+                            + "app/csd/CARDDEMO.CSD:503 appends and app/cbl/CORPT00C.cbl:515 writes with no "
+                            + "idempotency key; body-keyed collapse would lose the second in silence")
+                    .hasSize(2);
+            assertThat(bothSubmissions)
+                    .allSatisfy(message ->
+                            assertThat(jobSubmissionMessageFrom(message.body())).isEqualTo(submission));
 
-            sendUnderGroup(queueUrl, bodyOf(second), reportMessageGroupId);
+            // The same identifier again: this is a transport retry of one submission, not a second submission.
+            sendUnderGroup(queueUrl, bodyOf(submission), reportMessageGroupId, "submission-two");
 
-            final List<Message> afterDifferent = receiveUpTo(queueUrl, 1);
-            assertThat(afterDifferent)
-                    .as("a genuinely different body is still delivered, which proves the deduplication key is "
-                            + "not over-broad: were it keyed on the queue or the group, every later "
-                            + "submission would be discarded in silence")
-                    .hasSize(1);
-            assertThat(jobSubmissionMessageFrom(afterDifferent.get(0).body())).isEqualTo(second);
+            final List<Message> afterRetry = receiveUpTo(queueUrl, 1);
+            assertThat(afterRetry)
+                    .as("a repeat carrying the identifier already used is the shape of a transport retry, and "
+                            + "the queue collapses it - so the client's bounded retry strategy cannot turn one "
+                            + "submission into two")
+                    .isEmpty();
         }
     }
 
@@ -1235,10 +1301,10 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
          * No job-control text reaches the queue and no job deck reaches the file system.
          *
          * <p>The seventeen cards collapse into one typed message. Building the deck as text and publishing
-         * it, or writing it to disk and handing it to a process, would be a <strong>Blocker</strong>: it
+         * it, or writing it to disk and handing it to a process, is forbidden: it
          * would reproduce the mainframe's submission mechanism rather than replace it, and it is the failure
          * this test is here to exclude. The publisher spawns no process and evaluates no script, which is the
-         * same prohibition that discharges the plan's invariant that no external sort process is spawned.
+         * same prohibition that discharges the migration invariant that no external sort process is spawned.
          *
          * <p>The negative file check names the artefacts a submission would have produced. Failsafe pins the
          * forked working directory to the project base directory, so a relative check is well defined.
@@ -1315,7 +1381,7 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
 
     // =================================================================================================
     // 3. The reporting period. Three arms, first match wins, and a monthly range that is the FULL
-    //    calendar month - the one place where the plan's own description of the source is wrong.
+    //    calendar month, taken from :229-230 rather than from any secondary description.
     // =================================================================================================
 
     /** The three reporting periods the screen offers, and the order in which they are decided. */
@@ -1335,32 +1401,31 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
         }
 
         /**
-         * Monthly is the full current calendar month, and demonstrably not month to date.
+         * Monthly is the full current calendar month, measured over the real queue boundary.
          *
-         * <p>The pinned clock sits on the tenth of a thirty-day month, so month to date would end on the
-         * tenth and the full month ends on the thirtieth. The two are therefore distinguishable on this
-         * instant, which is why the negative assertion is worth making explicitly: it is the assertion that
-         * a month-to-date implementation fails.
+         * <p>The pinned clock sits on the tenth of a thirty-day month, so the start and the end of the
+         * period are distinguishable from one another and from today on this instant, which is what makes
+         * the range assertion below decisive rather than coincidental.
          */
         @Test
-        @DisplayName("monthly is the full current calendar month and not month to date")
-        void monthlyIsTheFullCalendarMonthAndNotMonthToDate() {
+        @DisplayName("monthly runs from the first day of the current month to its last day")
+        void monthlyIsTheFullCalendarMonth() {
             final String queueUrl = provisionScopedFifoQueue("monthly-context");
             final JobSubmissionMessage published = submitAndReceiveOne(
                     serviceOn(clock(), queueNameOf(queueUrl)), confirmedMonthlyForm(), queueUrl);
 
             assertThat(published.reportName()).isEqualTo(reportNameMonthly);
-            assertThat(published.startDate()).isEqualTo(FIXED_DATE.withDayOfMonth(1).toString());
+            assertThat(published.startDate())
+                    .as("app/cbl/CORPT00C.cbl:217-219 assemble the current year and month with a day of 01")
+                    .isEqualTo(FIXED_DATE.withDayOfMonth(1).toString());
             assertThat(published.endDate())
                     .as("app/cbl/CORPT00C.cbl:229-230 computes the first of the NEXT month less one day, "
-                            + "which is the last day of THIS month")
+                            + "and :232-234 read that value back out of the redefined date area, so the "
+                            + "period ends on the last day of THIS month")
                     .isEqualTo(FIXED_DATE.withDayOfMonth(1).plusMonths(1L).minusDays(1L).toString());
-            assertThat(published.endDate())
-                    .as("month to date would end on the pinned day. It does not, because :223 moves 1 into "
-                            + "the day field and discards today's day before the arithmetic begins. The "
-                            + "plan's description of this range as month-to-date is a Blocker-severity error "
-                            + "in the plan, not in the code")
-                    .isNotEqualTo(FIXED_DATE.toString());
+            assertThat(LocalDate.parse(published.endDate()).getDayOfMonth())
+                    .as("the end date is the month's last day, so its day of month equals the month length")
+                    .isEqualTo(FIXED_DATE.lengthOfMonth());
         }
 
         /** A thirty-one day month, where the last day is the thirty-first. */
@@ -1679,9 +1744,8 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
          *
          * <p><strong>The literal is asserted with exact equality and never with a containment check.</strong>
          * {@code app/cbl/CORPT00C.cbl:531} moves {@code Unable to Write TDQ (JOBS)...} into the message, with
-         * three trailing periods and the queue name in parentheses. Altering it in any way is a
-         * <strong>Blocker</strong>, and a containment check would not notice a fourth period or a missing
-         * parenthesis.
+         * three trailing periods and the queue name in parentheses. Altering it in any way breaks parity,
+         * and a containment check would not notice a fourth period or a missing parenthesis.
          *
          * <p><strong>What the failure carries, and what it deliberately does not.</strong> It names the
          * logical queue and the operation {@code WRITEQ TD}, because the source states both at
@@ -1865,7 +1929,7 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
                         .isGreaterThanOrEqualTo(' ');
             }
 
-            sendUnderGroup(queueUrl, body, reportMessageGroupId);
+            sendUnderGroup(queueUrl, body, reportMessageGroupId, "hostile-round-trip");
             final List<Message> delivered = receiveUpTo(queueUrl, 1);
 
             assertThat(delivered).hasSize(1);

@@ -110,10 +110,19 @@ import java.util.Objects;
  * {@code PERFORM UNTIL} is test before unless {@code WITH TEST AFTER} is written and it is not written
  * there. The branch is unreachable, so for the last account in key order the interest is never added to
  * the balance, the two cycle accumulators are never zeroed, and no rewrite occurs - all three being
- * effects of {@code 1050-UPDATE-ACCOUNT} at {@code :L350-L370}. The Java flush must still happen, driven
- * by the end of data condition rather than by translating that dead {@code ELSE}, and that is a labelled
- * deviation from source behaviour rather than parity. See the fuller treatment on
- * {@code com.cardemo.repository.TransactionCategoryBalanceRepository}, which states the same constraint.
+ * effects of {@code 1050-UPDATE-ACCOUNT} at {@code :L350-L370}.
+ *
+ * <p><strong>Java therefore performs no final flush either, and none may be added.</strong> An earlier
+ * revision of this paragraph went on to say the Java flush must still happen, driven by the end of data
+ * condition, as a labelled deviation from source behaviour; that instruction is withdrawn. It contradicted
+ * the parity mandate - the loss is a deterministic arithmetic outcome rather than a corruption hazard, so
+ * the boundary is carried across exactly as the source gets it wrong - and following it would post interest
+ * the frozen system never posts.
+ * {@code com.cardemo.batch.processors.InterestCalculationProcessor} retains the branch as
+ * {@code updateAccountAtEndOfFile()}, an explicitly marked no-op called from nowhere, so the paragraph map
+ * stays provable. See the fuller treatment on
+ * {@code com.cardemo.repository.TransactionCategoryBalanceRepository}, which now states the same
+ * constraint.
  *
  * <p>That break is correct <em>only</em> because {@code TRANCAT-ACCT-ID} is the leading component.
  * Reordering the declarations, for instance alphabetising them to {@code catCd}, {@code accountId},

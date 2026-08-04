@@ -23,17 +23,16 @@
 # *                in flight. The same corpus offers nothing else: even the
 # *                interest calculator app/cbl/CBACT04C.cbl reports only
 # *                through DISPLAY.
-# * Scrapes      : /actuator/prometheus. That endpoint publishes the counters
-# *                declared by
-# *                src/main/java/com/cardemo/observability/MetricsConfig.java
-# *                together with the composite health surface owned by
-# *                src/main/java/com/cardemo/observability/HealthIndicators.java,
-# *                which replaces the CICS file-availability jobs
-# *                app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl. Those two
-# *                members drove `CEMT SET FIL(...) OPE` and `... CLO` through
-# *                SDSF for five files (app/jcl/OPENFIL.jcl:L26-L30); this file
-# *                only samples the replacement health surface and performs no
-# *                probing of its own.
+# * Scrapes      : /actuator/prometheus only. That endpoint publishes the
+# *                Micrometer exposition - the four instruments declared by
+# *                src/main/java/com/cardemo/observability/MetricsConfig.java,
+# *                four counters, the amount one partitioned by sign - plus the
+# *                JVM, HTTP, Hibernate
+# *                and Spring Batch meters the framework contributes. It does
+# *                NOT publish health: the composite readiness surface owned by
+# *                src/main/java/com/cardemo/observability/HealthIndicators.java
+# *                is served at /actuator/health and is not scraped here. This
+# *                file performs no probing of its own.
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -54,27 +53,25 @@
 # ============================================================================
 # WHAT THIS FILE DOES
 # ============================================================================
-# One Prometheus server, one scrape job, one target. Every 15 seconds
-# Prometheus issues GET /actuator/prometheus against the running CardDemo
-# application and stores the exposition it returns. Grafana renders those
-# series through observability/grafana/provisioning/datasources/datasource.yml,
-# which declares the same 15s as its datasource timeInterval.
+# One Prometheus server, one scrape job, one target: every 15 seconds it issues
+# GET /actuator/prometheus against the running CardDemo application and stores
+# the exposition. Grafana renders those series through
+# observability/grafana/provisioning/datasources/datasource.yml, which declares
+# the same 15s as its datasource timeInterval.
 #
 # Ownership boundary - four responsibilities, no overlap:
-#   * MetricsConfig.java DEFINES the measurements; their names are its own
-#     constants. HealthIndicators.java DEFINES the readiness components.
-#   * src/main/resources/application.yml REGISTERS and EXPOSES them on the
-#     actuator surface, through management.endpoints.web.exposure.include.
-#   * THIS FILE SCRAPES that surface. It therefore names no measurement at all.
-#     A scrape configuration that enumerated names would duplicate
-#     MetricsConfig.java and go stale the moment one of its constants changed,
-#     so there is no allow-list, no deny-list and no metric_relabel_configs.
+#   * MetricsConfig.java DEFINES the four application instruments and owns their
+#     names as its own constants; HealthIndicators.java DEFINES the readiness
+#     components, served at /actuator/health.
+#   * src/main/resources/application.yml EXPOSES the actuator endpoints, through
+#     management.endpoints.web.exposure.include.
+#   * THIS FILE SCRAPES that surface and therefore names no measurement at all.
+#     Enumerating names here would duplicate MetricsConfig.java and go stale the
+#     moment one of its constants changed, so there is no allow-list, no
+#     deny-list and no metric_relabel_configs. No `management.*` key is restated
+#     here either - those belong to application.yml alone.
 #   * observability/grafana/dashboards/carddemo-dashboard.json DISPLAYS the
 #     result.
-# For the same reason no `management.*` property is restated here: those keys
-# belong exclusively to src/main/resources/application.yml. A scrape
-# configuration is in any case inert until the endpoint answers - the target
-# simply reports DOWN until it does.
 #
 # ============================================================================
 # HOW TO RUN AND VALIDATE
@@ -84,93 +81,119 @@
 #                  -v "$PWD/observability:/etc/prometheus:ro" \
 #                  <the prom/prometheus image pinned in docker-compose.yml> \
 #                  check config /etc/prometheus/prometheus.yml
-#              --entrypoint is required: the image's entrypoint is the server
-#              binary, so passing `promtool` as an argument reaches the server
-#              and is rejected as an unexpected argument.
-#              Must exit 0 and print SUCCESS with no warning. Always use the
-#              pinned image rather than a locally installed promtool, so the
-#              validation matches the binary that will read the file.
-#   Targets    curl -fsS http://localhost:9090/api/v1/targets
-#              The carddemo-app target must report health "up", scrapeUrl
+#              --entrypoint is required: the image entrypoint is the server
+#              binary, so `promtool` passed as an argument is rejected. Must
+#              exit 0 and print SUCCESS with no warning, and must use the pinned
+#              image so the check matches the binary that reads the file.
+#   Targets    curl -fsS http://localhost:9090/api/v1/targets - the carddemo-app
+#              target must report health "up", scrapeUrl
 #              http://app:8080/actuator/prometheus and scrapeInterval 15s.
 #   Served     curl -fsS http://localhost:9090/api/v1/status/config
 #              Confirms the read-only mount resolved to this file.
-#   Reload     the prometheus service runs with --web.enable-lifecycle, so
-#              curl -X POST http://localhost:9090/-/reload applies an edit
-#              without restarting the container.
-#   Port       the published port is ${PROMETHEUS_PORT:-9090} and the Compose
-#              project name is suffixed by CLONE_INDEX, so parallel stacks do
-#              not contend for 9090. Substitute accordingly.
+#   Reload     docker compose restart prometheus
+#              THERE IS NO HTTP RELOAD ROUTE. --web.enable-lifecycle is not
+#              passed, because it also publishes an unauthenticated
+#              POST /-/quit, and Prometheus authenticates NEITHER route - so the
+#              flag would hand "discard the series" and "stop the process" to
+#              any client that can reach the port. Restarting the service is
+#              the supported way to apply an edit. The named volume keeps the
+#              series across a restart, so nothing is lost.
+#   Port       the published port is ${PROMETHEUS_PORT:-9090}, bound to
+#              ${CARDDEMO_BIND_ADDRESS:-127.0.0.1} rather than to every
+#              interface, and the Compose project name is suffixed by
+#              CLONE_INDEX, so parallel stacks do not contend for 9090.
+#              Substitute accordingly. The curl commands above therefore work
+#              from the host itself; from another machine they do not, by
+#              design.
 #
 # ============================================================================
 # KEY CONFIGURATION AND DEFAULTS
 # ============================================================================
-#   * scrape_interval 15s. Fixed by the migration plan and matched by the
-#     Grafana datasource timeInterval; the two must stay in step.
-#   * scrape_timeout 10s, strictly below the interval - see the note on the key
-#     itself.
+#   * scrape_interval 15s, matched by the Grafana datasource timeInterval; the
+#     two must stay in step or every rate() window on the dashboard misaligns.
+#   * scrape_timeout 10s, strictly below the interval - Prometheus rejects a
+#     configuration whose timeout is greater than or equal to its interval.
 #   * One job, job_name carddemo-app. Treat it as a published name: it labels
-#     every stored series and any future query may select on it.
-#   * One target, app:8080 - the Compose service and the port it listens on
-#     inside the network; see the note on the target itself.
-#   * metrics_path /actuator/prometheus. The base path comes from
-#     management.endpoints.web.base-path and the endpoint is one of the three
-#     that management.endpoints.web.exposure.include permits, alongside health
-#     and info. Exposure is never `*`, so there is no /actuator/metrics and no
-#     /metrics to scrape, and the configuration-bearing endpoints are absent by
-#     construction and are deliberately not requested here.
-#   * Port 8080 from server.port, corroborated by the Dockerfile's EXPOSE. There
-#     is no separate management port in any profile, so the application and its
-#     actuator share one port.
-#   * scheme http. The scrape stays on the Compose bridge network; transport
-#     security is out of scope for the local topology, and this file carries no
-#     transport override and no authentication material of any kind.
-#   * Measurement names are NOT here - they are constants in
-#     MetricsConfig.java. Actuator settings are NOT here - they are in
-#     application.yml. Grafana settings are NOT here - they are in
-#     observability/grafana/**.
+#     every stored series.
+#   * One target, app:8080 - the Compose service and its CONTAINER port.
+#   * metrics_path /actuator/prometheus. Exposure is never `*`, so there is no
+#     /actuator/metrics and no /metrics to scrape, and the
+#     configuration-bearing endpoints are absent by construction.
+#   * scheme http. The scrape stays on the Compose bridge network; this file
+#     carries no transport override and no authentication material.
+#   * Measurement names live in MetricsConfig.java, actuator settings in
+#     application.yml, Grafana settings under observability/grafana/**.
 #
 # ============================================================================
 # COMMON FAILURE MODES AND TROUBLESHOOTING
 # ============================================================================
-#   * Target down, "connection refused". The application container is up but
-#     not yet serving, or it is still applying the Flyway migrations. Check
-#     `docker compose ps app` and confirm from inside this container with
-#     `docker compose exec prometheus wget -q -O- http://app:8080/actuator/prometheus | head -3`.
-#     Prometheus keeps retrying every 15s and recovers on its own once the
-#     endpoint answers, so no reload is needed.
-#   * Target down, "no such host" or a lookup failure. The `app` service is not
-#     on this network - typically because the stack was brought up for a subset
-#     of services, as `docker compose up -d prometheus` alone does. Bring the
-#     application up with `docker compose up -d --build app`, or start the whole
-#     stack with `docker compose up --build --wait`. Compose re-resolves the
-#     service name on every scrape, so the target recovers without a reload.
-#   * Running the application on the host instead of in the container - for
-#     example `SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run` - moves it
-#     off this network, and `app` then has nothing to resolve to. Reach a
-#     host-run process by pointing the target at host.docker.internal:8080 and
-#     giving the prometheus service `extra_hosts` of
-#     host.docker.internal:host-gateway in docker-compose.yml; both changes
-#     belong together, and both are reverted by returning to the containerised
-#     application, which is the committed topology.
+#   * Target down, "connection refused". The application container is up but not
+#     yet serving, or is still applying the Flyway migrations. Confirm from
+#     inside this container with `docker compose exec prometheus wget -q -O-
+#     http://app:8080/actuator/prometheus | head -3`. Prometheus retries every
+#     15s and recovers on its own, so no reload is needed.
+#   * Target down, "no such host". The `app` service is not on this network -
+#     typically because only a subset of services was started, as
+#     `docker compose up -d prometheus` alone does. Bring the application up
+#     with `docker compose up -d --build app`. Compose re-resolves the service
+#     name on every scrape, so the target recovers without a reload.
+#   * An application run on the HOST rather than in the container is off this
+#     network and `app` resolves to nothing. Reach it by pointing the target at
+#     host.docker.internal:8080 and giving the prometheus service `extra_hosts`
+#     of host.docker.internal:host-gateway; both changes belong together, and
+#     both are reverted by returning to the containerised application, which is
+#     the committed topology.
 #   * Target up but HTTP 404. The actuator exposure list no longer includes
 #     prometheus, or the base path moved. Both live in application.yml, not
 #     here; fix them there rather than changing metrics_path.
-#   * Target up but HTTP 401 or 403. The security filter chain is not
-#     permitting anonymous access to the endpoint. That is a SecurityConfig
-#     concern; this file sends no authentication material and must not.
-#   * Target up and healthy but a panel is empty. A counter that has never
-#     been incremented is ABSENT from the exposition, not zero, so its series
-#     does not exist until the application has actually processed work. Drive
-#     the relevant flow, then re-query. `up{job="carddemo-app"}` is the
+#   * Target up but HTTP 401. THE ENDPOINT REQUIRES A CREDENTIAL - it is no
+#     longer anonymous, and this file DOES now send authentication material.
+#     Check, in order: METRICS_SCRAPE_PASSWORD is set in the environment
+#     docker compose reads (an unset value aborts `up` with a named message, so
+#     a running stack means it was set to SOMETHING); the value the application
+#     received matches the one written to the password file - both come from
+#     that one variable, so a mismatch means the app container predates the
+#     current value and needs recreating, not restarting; and the user name
+#     below equals the application's METRICS_SCRAPE_USERNAME, which is a
+#     cross-file contract this file cannot interpolate. A 401 with everything
+#     matching means the application's scrape principal is unconfigured, in
+#     which case the chain is failing CLOSED by design and the application log
+#     will say so at startup.
+#   * Target up but HTTP 403. The credential authenticated but carries the
+#     wrong authority. The scrape principal must hold SCRAPE; see
+#     com.cardemo.config.SecurityConfig.
+#   * Target up and healthy but a CardDemo panel is empty. Do NOT conclude the
+#     counter has simply not been incremented yet. MetricsConfig registers all
+#     ten of its series EAGERLY at construction - one untagged processed
+#     counter, one per reject code (100/101/102/103/109), one per
+#     authentication outcome (success/failure) and one per amount sign
+#     (credit/debit), each amount series a strongly-referenced
+#     FunctionCounter over an exact accumulator - so every one of them is
+#     exposed at 0.0 before any
+#     transaction has been posted and before any sign-on has occurred. An
+#     empty carddemo_* panel therefore means a metric name, a tag value, a
+#     scrape target or a PromQL expression is wrong, never that the series is
+#     waiting to be born. Confirm with
+#     `curl -s http://app:8080/actuator/prometheus | grep '^carddemo_'`,
+#     which must list ten series. The general Micrometer rule - that a
+#     never-incremented meter is absent from the exposition rather than
+#     present at zero - is real but applies only to LAZILY registered meters,
+#     which is what a framework or third-party instrument resolved on first
+#     use will be; an earlier revision of this bullet applied it to the
+#     CardDemo series and was wrong. `up{job="carddemo-app"}` remains the
 #     control: if that returns 1, scraping is fine and the gap is upstream.
 #   * Prometheus refuses to start, complaining that a scrape timeout exceeds
 #     the scrape interval. Any scrape_timeout at or above scrape_interval is
 #     rejected at load. Keep it strictly below 15s.
 #   * An edit appears to have no effect. The mount is read-only and the file is
-#     read at start or on reload only. Either POST /-/reload or restart the
-#     service, and check /api/v1/status/config to see what the server actually
-#     holds.
+#     read AT START ONLY. `POST /-/reload` NO LONGER EXISTS: the
+#     --web.enable-lifecycle flag that published it has been removed from
+#     docker-compose.yml, because the same flag also publishes an
+#     unauthenticated `POST /-/quit` that lets anything able to reach port 9090
+#     terminate the monitoring stack (CVE-2026-42154 hardening, GHSA-8rm2-7qqf-34qm).
+#     Apply an edit with `docker compose restart prometheus` instead, and check
+#     /api/v1/status/config to see what the server actually holds. Do not
+#     restore the flag to make an edit apply a few seconds faster.
 
 global:
   # Fixed at 15 seconds. This is the cadence the migration plan specifies for
@@ -210,6 +233,39 @@ scrape_configs:
   - job_name: carddemo-app
     metrics_path: /actuator/prometheus
     scheme: http
+
+    # ------------------------------------------------------------------------
+    # Scrape credential - REQUIRED, because the target is no longer anonymous
+    # ------------------------------------------------------------------------
+    # /actuator/prometheus is governed by its own Spring Security filter chain,
+    # com.cardemo.config.SecurityConfig#metricsScrapeFilterChain, which requires
+    # HTTP Basic credentials carrying the SCRAPE authority. Without the block
+    # below every scrape is answered 401 and this target reports down. The three
+    # health and info endpoints remain anonymous and are deliberately NOT
+    # scraped here; they are probed by the container health check instead.
+    #
+    # THE USER NAME IS A LITERAL BY NECESSITY. As TROUBLESHOOTING above records,
+    # Prometheus performs no environment substitution on its configuration file,
+    # so this value cannot interpolate METRICS_SCRAPE_USERNAME. It is therefore
+    # a cross-file contract: docker-compose.yml must pass the application the
+    # SAME value in METRICS_SCRAPE_USERNAME, or the credential will not match. A
+    # user name is not a secret, so committing it costs nothing; the credential
+    # is what must never be committed.
+    #
+    # THE CREDENTIAL IS READ FROM A FILE, never inlined. `password_file` is the
+    # only mechanism that keeps the secret out of this checked-in file while
+    # still working without environment substitution. docker-compose.yml
+    # materialises the file from METRICS_SCRAPE_PASSWORD at container start and
+    # mounts it at the path below; .env.example documents both variables with no
+    # values. Rule 1 Clause D: no secrets in code, logs, tests or config.
+    #
+    # A trailing newline in the file WOULD BREAK the match: Prometheus sends the
+    # file's bytes verbatim. docker-compose.yml therefore writes it with printf
+    # and no newline rather than with echo.
+    basic_auth:
+      username: carddemo-metrics-scraper
+      password_file: /etc/prometheus/secrets/scrape-password
+
     static_configs:
       # One static target: the `app` service of the repository-root
       # docker-compose.yml, reached by service name over the Compose bridge
@@ -222,11 +278,8 @@ scrape_configs:
       # the network for exactly this reason and shifts only the published port
       # for parallel clones, because this literal cannot interpolate a
       # variable - Prometheus performs no environment substitution on its
-      # configuration file. An earlier revision targeted
-      # host.docker.internal:8080 because the topology then ran the substrate
-      # only and the application ran on the host; that indirection went with
-      # the extra_hosts entry it required when the application service was
-      # added. See TROUBLESHOOTING above for reaching a host-run process.
+      # configuration file. See TROUBLESHOOTING above for reaching an
+      # application run on the host rather than in the container.
       - targets:
           - app:8080
         labels:

@@ -43,6 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.cardemo.config.AwsConfig;
 import io.awspring.cloud.sqs.listener.QueueNotFoundStrategy;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -144,6 +145,24 @@ class AwsConfigSecurityGuardTest {
     /** The whole-call deadline the class under test must apply. See {@link #EXPECTED_ATTEMPT_DEADLINE}. */
     private static final Duration EXPECTED_CALL_DEADLINE = Duration.ofSeconds(30);
 
+    /**
+     * The per-attempt deadline the <em>notification</em> client must apply.
+     *
+     * <p>Finding M-08, severity Medium: the notification client no longer shares the data path's budget. See
+     * {@link #EXPECTED_NOTIFICATION_CALL_DEADLINE}.
+     */
+    private static final Duration EXPECTED_NOTIFICATION_ATTEMPT_DEADLINE = Duration.ofSeconds(2);
+
+    /**
+     * The whole-call deadline the <em>notification</em> client must apply.
+     *
+     * <p>Finding M-08, severity Medium. The one notification publish is synchronous on the request thread and
+     * is treated as non-fatal, so whatever bounds it bounds how long an <em>already successful</em> submission
+     * can be held open by a courtesy. Sharing the data path's {@link #EXPECTED_CALL_DEADLINE} - sized for a
+     * batch generation - meant an unreachable topic delayed a completed submission for that whole budget.
+     */
+    private static final Duration EXPECTED_NOTIFICATION_CALL_DEADLINE = Duration.ofSeconds(5);
+
     /** The attempt count the class under test must apply. */
     private static final int EXPECTED_MAX_ATTEMPTS = 3;
 
@@ -222,17 +241,36 @@ class AwsConfigSecurityGuardTest {
      * @param configuration the configuration read back off the builder after the customizer ran
      */
     private static void assertPolicyApplied(final ClientOverrideConfiguration configuration) {
+        assertPolicyApplied(configuration, EXPECTED_CALL_DEADLINE, EXPECTED_ATTEMPT_DEADLINE);
+    }
+
+    /**
+     * Asserts one client's resolved override configuration carries the whole policy at the deadlines expected
+     * of that client, and that nothing the library applied was lost.
+     *
+     * <p>The deadlines are parameters because the notification client carries its own, much shorter pair -
+     * finding M-08, severity Medium - while everything else about the policy is identical across all three
+     * clients. Splitting the assertion instead would have let the retry-mode and preservation checks drift
+     * between the data path and the notification path, which is the drift they exist to prevent.
+     *
+     * @param configuration the configuration read back off the builder after the customizer ran
+     * @param callDeadline the whole-call deadline this client must carry
+     * @param attemptDeadline the per-attempt deadline this client must carry
+     */
+    private static void assertPolicyApplied(final ClientOverrideConfiguration configuration,
+            final Duration callDeadline, final Duration attemptDeadline) {
+
         assertThat(configuration.apiCallAttemptTimeout())
                 .as("a per-attempt deadline is what stops one slow attempt from consuming the whole call "
-                        + "budget, and ten seconds is generous for payloads whose largest is the "
-                        + "105,300-byte daily-transaction fixture")
-                .contains(EXPECTED_ATTEMPT_DEADLINE);
+                        + "budget, and it is sized for the payloads this client carries - the largest on the "
+                        + "data path being the 105,300-byte daily-transaction fixture")
+                .contains(attemptDeadline);
 
         assertThat(configuration.apiCallTimeout())
                 .as("the whole-call deadline is the finding's actual remedy: the SDK bounds the retry COUNT "
                         + "and not elapsed time, so without this the wall-clock duration of a call is "
                         + "bounded by nothing the application controls")
-                .contains(EXPECTED_CALL_DEADLINE);
+                .contains(callDeadline);
 
         assertThat(configuration.retryMode())
                 .as("THE THREE RETRY SETTERS ARE MUTUALLY EXCLUSIVE - a mode, a strategy instance and a "
@@ -263,9 +301,9 @@ class AwsConfigSecurityGuardTest {
         assertThat(strategy.maxAttempts())
                 .as("three attempts - one initial plus two retries. Every operation this application "
                         + "performs is safe to retry: object writes are PutObject under a deterministic key, "
-                        + "and the report publish is a FIFO SendMessage against a queue provisioned "
-                        + "ContentBasedDeduplication=true at localstack-init/init-aws.sh:1261, so an "
-                        + "identical retried request collapses instead of duplicating a job")
+                        + "and the report publish is a FIFO SendMessage carrying an explicit "
+                        + "MessageDeduplicationId minted once per submission, so a retried request re-sends "
+                        + "that identifier and collapses instead of duplicating a job")
                 .isEqualTo(EXPECTED_MAX_ATTEMPTS);
 
         assertThat(configuration.headers())
@@ -417,7 +455,6 @@ class AwsConfigSecurityGuardTest {
             "http://localhost:4566",
             "http://localhost:4566/",
             "http://LOCALHOST:4566",
-            "http://localhost.:4566",
             "http://127.0.0.1:4566",
             "http://[::1]:4566",
             "http://localstack:4566",
@@ -468,7 +505,7 @@ class AwsConfigSecurityGuardTest {
 
         @Test
         @DisplayName("every host the script allows is accepted here, and no host is accepted only here")
-        void theTwoAllowlistsAgree() throws IOException {
+        void theTwoAllowlistsAgree() throws IOException, ReflectiveOperationException {
             final Set<String> scriptHosts = hostsDeclaredByScript(readInitScript());
 
             assertThat(scriptHosts)
@@ -488,6 +525,33 @@ class AwsConfigSecurityGuardTest {
                                 + "startup is diagnosed as a defect in the application", host)
                         .doesNotThrowAnyException();
             }
+
+            assertThat(javaAllowlist())
+                    .as("the reverse direction, which this test's name promised and its body used to omit - and "
+                            + "that omission is exactly how host.docker.internal came to be accepted by the "
+                            + "application while the provisioning script refused it. A host the application "
+                            + "accepts and the script does not is a configuration that starts and then fails to "
+                            + "provision, so the two sets must be equal rather than merely overlapping")
+                    .containsExactlyInAnyOrderElementsOf(scriptHosts);
+        }
+
+        /**
+         * Reads the Java allowlist as the running code holds it, rather than as the source spells it.
+         *
+         * <p>Reflection over the field, not a regular expression over {@code AwsConfig.java}: a text scan proves
+         * only what the file says, and the defect this test now guards against was a second set that the file also
+         * said. The compiled field is the set the guard actually consults.
+         *
+         * @return the hosts the application accepts by exact membership; the compose-name pattern is asserted
+         *         separately by {@link #theContainerNamePatternAgrees()}
+         * @throws ReflectiveOperationException if the field was renamed or removed, which fails the test rather
+         *                                      than silently passing it
+         */
+        @SuppressWarnings("unchecked")
+        private Set<String> javaAllowlist() throws ReflectiveOperationException {
+            final Field field = AwsConfig.class.getDeclaredField("ALLOWED_ENDPOINT_HOSTS");
+            field.setAccessible(true);
+            return (Set<String>) field.get(null);
         }
 
         @Test
@@ -505,6 +569,36 @@ class AwsConfigSecurityGuardTest {
                     .as("the two patterns must be spelled identically. A widened suffix rule on either "
                             + "side would admit a host the other refuses")
                     .isEqualTo("^carddemo-localstack(-[0-9]+)?$");
+        }
+
+        @Test
+        @DisplayName("the fully-qualified spelling of an allowlisted host is refused on both sides")
+        void aTrailingDotIsRefusedOnBothSides() throws IOException {
+            assertThat(readInitScript())
+                    .as("the script states the rule in its own words, so this is the script's decision being "
+                            + "mirrored rather than a Java-side invention")
+                    .contains("without a trailing dot");
+
+            assertThatThrownBy(() -> configWithEndpoint("http://localhost.:4566"))
+                    .as("the Java guard used to strip the trailing dot and accept this, which made it wider "
+                            + "than the script in the one direction nobody checks: the value starts the "
+                            + "application and then fails provisioning. Only bracket removal and lower-casing "
+                            + "are applied, because those are the only two reductions the script applies")
+                    .isInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        @DisplayName("the bracketed IPv6 spelling is accepted on both sides, because both unwrap it")
+        void bracketsAreUnwrappedOnBothSides() throws IOException {
+            assertThat(readInitScript())
+                    .as("the script unwraps the brackets before comparing, which is why its array carries the "
+                            + "bare ::1 and not both spellings - and why the Java set need not either")
+                    .contains("host=\"${host_port%%]*}\"");
+
+            assertThatCode(() -> configWithEndpoint("http://[::1]:4566"))
+                    .as("::1 is allowlisted by the script, and URI.getHost() reports the bracketed form, so a "
+                            + "guard that did not unwrap would refuse an address the provisioner accepts")
+                    .doesNotThrowAnyException();
         }
 
         @Test
@@ -714,19 +808,20 @@ class AwsConfigSecurityGuardTest {
         }
 
         @Test
-        @DisplayName("the notification client carries the whole policy")
+        @DisplayName("the notification client carries the whole policy at its own shorter budget")
         void theNotificationClientCarriesThePolicy() {
             final SnsClientBuilder builder = SnsClient.builder()
                     .overrideConfiguration(libraryConfiguration());
 
             validConfig().cardDemoSnsClientCustomizer(staticCredentials()).customize(builder);
 
-            assertPolicyApplied(builder.overrideConfiguration());
+            assertPolicyApplied(builder.overrideConfiguration(), EXPECTED_NOTIFICATION_CALL_DEADLINE,
+                    EXPECTED_NOTIFICATION_ATTEMPT_DEADLINE);
         }
 
         @Test
-        @DisplayName("the three clients carry the SAME policy, so no service is quietly laxer")
-        void allThreeCarryTheSamePolicy() {
+        @DisplayName("both data-path clients share one budget and the courtesy client is strictly shorter")
+        void theDataPathSharesOneBudgetAndTheCourtesyIsShorter() {
             final AwsConfig config = validConfig();
             final AwsCredentialsProvider credentials = staticCredentials();
 
@@ -739,16 +834,27 @@ class AwsConfigSecurityGuardTest {
             config.cardDemoSqsAsyncClientCustomizer(credentials).customize(sqs);
             config.cardDemoSnsClientCustomizer(credentials).customize(sns);
 
-            final List<Duration> callDeadlines = new ArrayList<>();
-            callDeadlines.add(s3.overrideConfiguration().apiCallTimeout().orElseThrow());
-            callDeadlines.add(sqs.overrideConfiguration().apiCallTimeout().orElseThrow());
-            callDeadlines.add(sns.overrideConfiguration().apiCallTimeout().orElseThrow());
+            final List<Duration> dataPathDeadlines = new ArrayList<>();
+            dataPathDeadlines.add(s3.overrideConfiguration().apiCallTimeout().orElseThrow());
+            dataPathDeadlines.add(sqs.overrideConfiguration().apiCallTimeout().orElseThrow());
 
-            assertThat(callDeadlines)
-                    .as("one policy expressed once, delegated to by all three customizers. Three beans "
-                            + "exist because the library types its customizer contracts per service, not "
-                            + "because the three services deserve different deadlines")
+            assertThat(dataPathDeadlines)
+                    .as("one policy expressed once for the two clients that carry parity-bearing data: "
+                            + "two beans exist because the library types its customizer contracts per "
+                            + "service, not because object storage and the queue deserve different deadlines")
                     .containsOnly(EXPECTED_CALL_DEADLINE);
+
+            // Finding M-08, severity Medium. The notification client is deliberately NOT on that budget. This
+            // is the one place the difference is asserted as a difference rather than as two literals: a
+            // courtesy publish on the request thread must be the FIRST thing to give up, never the last.
+            final Duration courtesyDeadline = sns.overrideConfiguration().apiCallTimeout().orElseThrow();
+            assertThat(courtesyDeadline)
+                    .as("the notification is non-fatal and synchronous on the request thread, so its budget "
+                            + "bounds how long an already-successful submission can be held open by "
+                            + "something that does not matter; it must be strictly shorter than the data "
+                            + "path's, not equal to it")
+                    .isEqualTo(EXPECTED_NOTIFICATION_CALL_DEADLINE)
+                    .isLessThan(EXPECTED_CALL_DEADLINE);
         }
 
         @Test

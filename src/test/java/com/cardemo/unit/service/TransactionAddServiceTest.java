@@ -205,52 +205,49 @@ import org.springframework.transaction.annotation.Transactional;
  *       this class, so the trap is recorded rather than encountered here.</li>
  *   </ul>
  *
- * <h2>5. Findings, by severity, with remediation</h2>
+ * <h2>5. What the source actually does, where a reading of it would go wrong</h2>
  *
- * <p>Three of these are corrections to the brief this class was written from. The COBOL corpus is the
- * authority, so where the two disagree the source governs and the divergence is recorded rather than
- * silently absorbed.</p>
+ * <p>Every statement below is measured against {@code app/cbl/COTRN02C.cbl}, which is the authority for this
+ * path.</p>
  *
  * <ul>
- *   <li><strong>Blocker - one numeric parser for both field classes.</strong> Evidence:
- *       {@code app/cbl/COTRN02C.cbl:204} and {@code :218} use {@code FUNCTION NUMVAL} while {@code :383} and
- *       {@code :456} use {@code FUNCTION NUMVAL-C}. Remediation: keep the two converters distinct and keep
- *       each behind its own guard, as {@link NumericParserContract} pins.</li>
- *   <li><strong>High - a generated or formatted timestamp on this path.</strong> Evidence: {@code :464-:465}
- *       are plain alphanumeric moves. Remediation: store the request text padded to twenty-six characters and
- *       hold no {@code Clock} on the bean, as {@link PassThroughTimestamps} pins.</li>
- *   <li><strong>High - a sequence or retry behind identifier generation.</strong> Evidence: {@code :444-:449}
- *       plus the {@code DUPKEY}/{@code DUPREC} branch at {@code :735-:736}. Remediation: retain the browse and
- *       let the primary key report the collision, as {@link IdentifierGeneration} pins.</li>
- *   <li><strong>Medium - the brief's claim that both date-format messages reposition the cursor to the
- *       processing-date field is not what the source does.</strong> Evidence: {@code :362} moves {@code -1}
- *       into {@code TORIGDTL} for {@code 'Orig Date should be in format YYYY-MM-DD'} and {@code :377} moves
- *       {@code -1} into {@code TPROCDTL} for {@code 'Proc Date should be in format YYYY-MM-DD'}. There is no
- *       copy-paste defect: each message repositions to its own field. Remediation: assert the source
- *       behaviour, which {@link PositionalDateGuards} does, and treat the brief's note as superseded.</li>
- *   <li><strong>Medium - the brief's expectation that {@code "1,234.56"} and {@code "$1234.56"} parse
- *       successfully as an amount is unreachable through this service.</strong> Evidence: the positional mask
- *       at {@code :339-:351} requires a sign at position one, eight digits at {@code (2:8)}, a point at
- *       position ten and two digits at {@code (11:2)}, and it runs before {@code FUNCTION NUMVAL-C} at
- *       {@code :383} ever sees the field. Remediation: assert that the guard rejects both spellings with
- *       {@code 'Amount should be in format -99999999.99'}, and leave the converter's currency tolerance to be
- *       asserted where that converter is declared rather than duplicating it here.</li>
- *   <li><strong>Medium - the eight versus nine digit truncation is not reachable from keyed input.</strong>
- *       Evidence: {@code TRNAMTI} is {@code PIC X(12)} at {@code app/cpy-bms/COTRN02.CPY:96}, so the mask
- *       admits at most eight integer digits. It is reachable on the PF5 prefill path, where {@code :481}
- *       moves a stored {@code TRAN-AMT S9(09)V99} straight into the edited field. Remediation: assert the
- *       truncation there, which {@link AmountDisplayMask} does.</li>
- *   <li><strong>Low - the second {@code FUNCTION NUMVAL-C} parse at {@code :456} is redundant.</strong> The
- *       value was already parsed at {@code :383}. It is retained rather than collapsed because collapsing it
- *       would break the paragraph map the coverage gate verifies. Remediation: none; the retention is
- *       tracked, and {@link PassThroughTimestamps} asserts both parses occur.</li>
- *   <li><strong>Low - {@code MOVE SPACES TO CSUTLDTC-RESULT} at {@code :392} rather than
+ *   <li><strong>Two numeric parsers, not one.</strong> {@code app/cbl/COTRN02C.cbl:204} and {@code :218} use
+ *       {@code FUNCTION NUMVAL} while {@code :383} and {@code :456} use {@code FUNCTION NUMVAL-C}, so the two
+ *       converters stay distinct and each stays behind its own guard, as {@link NumericParserContract}
+ *       pins.</li>
+ *   <li><strong>No generated or formatted timestamp on this path.</strong> {@code :464-:465} are plain
+ *       alphanumeric moves, so the request text is stored padded to twenty-six characters and the bean holds
+ *       no {@code Clock}, as {@link PassThroughTimestamps} pins.</li>
+ *   <li><strong>No sequence and no retry behind identifier generation.</strong> {@code :444-:449} plus the
+ *       {@code DUPKEY}/{@code DUPREC} branch at {@code :735-:736} mean the browse is retained and the primary
+ *       key reports the collision, as {@link IdentifierGeneration} pins.</li>
+ *   <li><strong>Each date-format message repositions to its own field.</strong> {@code :362} moves
+ *       {@code -1} into {@code TORIGDTL} for {@code 'Orig Date should be in format YYYY-MM-DD'} and
+ *       {@code :377} moves {@code -1} into {@code TPROCDTL} for
+ *       {@code 'Proc Date should be in format YYYY-MM-DD'}. There is no copy-paste defect here, and
+ *       {@link PositionalDateGuards} asserts the source behaviour.</li>
+ *   <li><strong>{@code "1,234.56"} and {@code "$1234.56"} are unreachable as amounts through this
+ *       service.</strong> The positional mask at {@code :339-:351} requires a sign at position one, eight
+ *       digits at {@code (2:8)}, a point at position ten and two digits at {@code (11:2)}, and it runs before
+ *       {@code FUNCTION NUMVAL-C} at {@code :383} ever sees the field. The guard rejects both spellings with
+ *       {@code 'Amount should be in format -99999999.99'}; the converter's currency tolerance is asserted
+ *       where that converter is declared rather than duplicated here.</li>
+ *   <li><strong>The eight-versus-nine digit truncation is not reachable from keyed input.</strong>
+ *       {@code TRNAMTI} is {@code PIC X(12)} at {@code app/cpy-bms/COTRN02.CPY:96}, so the mask admits at most
+ *       eight integer digits. It is reachable on the PF5 prefill path, where {@code :481} moves a stored
+ *       {@code TRAN-AMT S9(09)V99} straight into the edited field, and {@link AmountDisplayMask} asserts the
+ *       truncation there.</li>
+ *   <li><strong>The second {@code FUNCTION NUMVAL-C} parse at {@code :456} is redundant and retained.</strong>
+ *       The value was already parsed at {@code :383}; collapsing the two would break the paragraph map that
+ *       makes paragraph-level correspondence provable, and {@link PassThroughTimestamps} asserts both parses
+ *       occur.</li>
+ *   <li><strong>{@code MOVE SPACES TO CSUTLDTC-RESULT} at {@code :392} rather than
  *       {@code INITIALIZE}.</strong> The Java counterpart returns a fresh immutable result per call, which
- *       clears the buffer by construction. Remediation: none; asserted by independence of the two calls.</li>
- *   <li><strong>Low - a residue of branches that no reachable path can enter.</strong> They are the reason
- *       this class cannot drive its target to full line coverage, and each is intentional rather than
- *       missing: the stage-one defensive blanking of {@code VALIDATE-INPUT-DATA-FIELDS}, unreachable because
- *       every assignment of {@code 'Y'} to {@code WS-ERR-FLG} is immediately followed by
+ *       clears the buffer by construction; asserted by the independence of the two calls.</li>
+ *   <li><strong>A residue of branches that no reachable path can enter.</strong> They are the reason this
+ *       class cannot drive its target to full line coverage, and each is intentional rather than missing: the
+ *       stage-one defensive blanking of {@code VALIDATE-INPUT-DATA-FIELDS}, unreachable because every
+ *       assignment of {@code 'Y'} to {@code WS-ERR-FLG} is immediately followed by
  *       {@code PERFORM SEND-TRNADD-SCREEN}, which ends the task; the not-found and I/O arms of
  *       {@code STARTBR-TRANSACT-FILE} at {@code :655-:667}, unreachable because a browse over a keyed
  *       dataset positioned at {@code HIGH-VALUES} cannot itself fail in the target; the
@@ -259,10 +256,9 @@ import org.springframework.transaction.annotation.Transactional;
  *       ten-stage cascade admits nothing the {@code CVTRA05Y} contract rejects; the no-cause arms of the two
  *       failure factories, unreachable because every data-access failure carries its cause; and the
  *       out-of-range arms of the fixed-width character helpers, unreachable because every caller passes a
- *       value already taken to its declared width. Remediation: none. Deleting any of them would break the
- *       paragraph body correspondence the coverage gate verifies, and reaching them from a test would need
- *       reflection into private state, which would assert the test's own setup rather than the bean's
- *       behaviour.</li>
+ *       value already taken to its declared width. Deleting any of them would break the paragraph-body
+ *       correspondence, and reaching them from a test would need reflection into private state, which would
+ *       assert the test's own setup rather than the bean's behaviour.</li>
  *   </ul>
  *
  * <h2>6. Not available</h2>
@@ -510,9 +506,9 @@ final class TransactionAddServiceTest {
     /**
      * {@code TORIGDTL}, driven at {@code app/cbl/COTRN02C.cbl:286}, {@code :362} and {@code :404}.
      *
-     * <p>The brief this class was written from claims that the originating-date format failure repositions to
-     * the <em>processing</em>-date field as a copy-paste defect. It does not: {@code :362} names
-     * {@code TORIGDTL}. The source governs and the divergence is recorded in the class documentation.</p>
+     * <p>The originating-date format failure repositions to this field and not to the processing-date field:
+     * {@code :362} names {@code TORIGDTL}, and each of the two date messages repositions to its own
+     * field.</p>
      */
     private static final String CURSOR_ORIGINATING_DATE = "TORIGDTL";
 
@@ -580,7 +576,7 @@ final class TransactionAddServiceTest {
     /**
      * The eighteen paragraph labels of {@code app/cbl/COTRN02C.cbl}, in source order, each paired with the
      * private Java method that must reproduce it one for one. The list is the machine-checkable half of the
-     * traceability matrix: a consolidation anywhere in the bean makes it fail.
+     * paragraph correspondence: a consolidation anywhere in the bean makes it fail.
      */
     private static final List<String> PARAGRAPH_METHODS = List.of(
             "mainPara",                  // MAIN-PARA.                   :107
@@ -2456,7 +2452,7 @@ final class TransactionAddServiceTest {
     /**
      * {@code app/cbl/COTRN02C.cbl} is seven hundred and eighty three lines carrying eighteen paragraph
      * labels. Each label maps to exactly one private Java method and no label is consolidated with another,
-     * which is what makes the traceability matrix verifiable by inspection rather than by assertion.
+     * which is what makes the correspondence verifiable by inspection rather than by assertion.
      *
      * <p>The structural claims asserted here are the ones a later refactor would silently break: the
      * paragraph set, the privacy of the paragraph methods, the collaborator set, the absence of a clock and

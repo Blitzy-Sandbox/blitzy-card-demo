@@ -32,7 +32,9 @@
 package com.cardemo.unit.observability;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.cardemo.batch.processors.StatementProcessor;
 import com.cardemo.batch.writers.RejectWriter;
@@ -42,21 +44,34 @@ import com.cardemo.model.dto.StatementTransaction;
 import com.cardemo.model.entity.DailyTransaction;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.RejectCode;
-import com.cardemo.observability.MetricsConfig;
 import com.cardemo.observability.MetricsConfig.AuthenticationOutcome;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.S3Operations;
+import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.prometheusmetrics.PrometheusConfig;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -101,28 +116,32 @@ class MetricInstrumentOwnershipTest {
     class OwnershipIsStructural {
 
         @Test
-        @DisplayName("Constructing the facade registers all nine series eagerly and nothing else")
-        void theFacadeRegistersExactlyNineSeries() {
-            // One untagged processed counter, five reject-code series, two outcome series, one amount
-            // GAUGE. Eager registration is what makes a code that never occurs show as zero on the
-            // scrape endpoint rather than being absent from it.
+        @DisplayName("Constructing the facade registers all ten series eagerly, every one a counter")
+        void theFacadeRegistersExactlyTenCounterSeries() {
+            // One untagged processed counter, five reject-code series, two outcome series and two amount
+            // series - credit and debit. Eager registration is what makes a code that never occurs show as
+            // zero on the scrape endpoint rather than being absent from it.
             //
-            // The amount total is the one series that is not a counter, and deliberately so. A Micrometer
-            // Counter accumulates into a double, and money must never live in a binary floating-point field:
-            // the amount total is therefore a gauge reading an exact BigDecimal accumulator, converted once
-            // by the scrape thread at the reporting boundary. Asserting COUNTER for all nine would have
-            // required that violation, so the type is asserted per series instead.
-            assertThat(registry.getMeters()).hasSize(9);
-            assertThat(registry.getMeters()).allSatisfy(meter -> assertThat(meter.getId().getType())
-                    .isEqualTo(MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL.equals(meter.getId().getName())
-                            ? Meter.Type.GAUGE : Meter.Type.COUNTER));
+            // EVERY series is a COUNTER, which AAP section 0.7.7 requires by naming four counters. The amount
+            // total reached that through a FunctionCounter reading an exact BigDecimal accumulator rather than
+            // a Counter advanced by increment(double): money never lives in a binary floating-point field, and
+            // the single conversion happens at the scrape. Its two series exist because a Prometheus counter
+            // may not carry a negative value - the client rejects one at scrape time and fails the whole
+            // response - while the amounts are genuinely signed, so the instrument is partitioned on the same
+            // >= 0 predicate app/cbl/CBTRN02C.cbl:L548-L552 uses for its own credit and debit accumulators.
+            assertThat(registry.getMeters()).hasSize(10);
             assertThat(registry.getMeters())
-                    .as("exactly one gauge, and it is the amount total")
-                    .filteredOn(meter -> meter.getId().getType() == Meter.Type.GAUGE)
-                    .singleElement()
-                    .satisfies(meter -> assertThat(meter.getId().getName())
-                            .isEqualTo(MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL));
+                    .as("no gauge, no timer, no summary: four counters and nothing else")
+                    .allSatisfy(meter -> assertThat(meter.getId().getType()).isEqualTo(Meter.Type.COUNTER));
+            assertThat(registry.getMeters())
+                    .as("the amount total is exactly two series, one per sign")
+                    .filteredOn(meter -> MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL
+                            .equals(meter.getId().getName()))
+                    .hasSize(2)
+                    .extracting(meter -> meter.getId().getTag(MetricsConfig.TAG_SIGN))
+                    .containsExactlyInAnyOrder(MetricsConfig.SIGN_CREDIT, MetricsConfig.SIGN_DEBIT);
             assertThat(registry.getMeters().stream().map(meter -> meter.getId().getName()).distinct())
+                    .as("four names, which is the contract; the sign is a dimension, not a fifth instrument")
                     .containsExactlyInAnyOrder(
                             MetricsConfig.METRIC_RECORDS_PROCESSED,
                             MetricsConfig.METRIC_RECORDS_REJECTED,
@@ -145,13 +164,41 @@ class MetricInstrumentOwnershipTest {
         }
 
         @Test
-        @DisplayName("Every writer takes the facade instead")
-        void everyWriterTakesTheFacade() {
-            Stream.of(TransactionWriter.class, RejectWriter.class, StatementWriter.class)
+        @DisplayName("Every writer that reports a series takes the facade instead")
+        void everyReportingWriterTakesTheFacade() {
+            // TransactionWriter reports processed records and their amounts; RejectWriter reports rejections
+            // by code. StatementWriter is deliberately absent: it reports no series at all, so it takes no
+            // MetricsConfig either. It used to advance the records-processed counter once per statement, which
+            // mixed statements into a series that reproduces DISPLAY 'TRANSACTIONS PROCESSED :' at
+            // app/cbl/CBTRN02C.cbl:L227 - the daily transaction records POSTTRAN read. Holding an injected
+            // collaborator it never calls would be dead code, so the dependency went with the call.
+            Stream.of(TransactionWriter.class, RejectWriter.class)
                     .forEach(writer -> assertThat(writer.getDeclaredConstructors())
                             .as("%s constructors", writer.getSimpleName())
                             .anySatisfy(constructor -> assertThat(parameterTypes(constructor))
                                     .contains(MetricsConfig.class)));
+            assertThat(StatementWriter.class.getDeclaredConstructors())
+                    .as("StatementWriter reports no series, so it must hold no meter owner")
+                    .allSatisfy(constructor -> assertThat(parameterTypes(constructor))
+                            .doesNotContain(MetricsConfig.class));
+        }
+
+        @Test
+        @DisplayName("StatementWriter takes no meter owner at all, so it cannot advance any series")
+        void theStatementWriterHoldsNoMeterOwner() {
+            // Finding H-09, severity High, RESOLVED, asserted at the type level so it cannot silently
+            // regress. A statement is a rendering of transactions posted on an earlier run, so it shares no
+            // unit with any of the four instruments: not the DALYTRAN records-considered counter of
+            // app/cbl/CBTRN02C.cbl:L206, not the reject counter of :L214, not a sign-on attempt, and not a
+            // posted amount. Withholding the facade - not merely declining to call it - is what makes that
+            // permanent: a class that holds no meter owner and no registry cannot contaminate a series
+            // however it is edited later.
+            assertThat(StatementWriter.class.getDeclaredConstructors())
+                    .as("StatementWriter constructors")
+                    .allSatisfy(constructor -> assertThat(parameterTypes(constructor))
+                            .doesNotContain(MetricsConfig.class)
+                            .doesNotContain(MeterRegistry.class)
+                            .doesNotContain(Counter.class));
         }
 
         /**
@@ -206,16 +253,42 @@ class MetricInstrumentOwnershipTest {
         }
 
         @Test
-        @DisplayName("countTransactionAmount adds the reported amount with its sign intact")
-        void amountIsAddedWithItsSign() {
-            // SimpleMeterRegistry accepts a non-positive increment, which is why it is the registry to
-            // assert sign handling against; the Prometheus implementation would discard the negative one.
-            // No absolute value is taken anywhere, because app/cbl/CBTRN02C.cbl:L548-L552 adds negative
-            // amounts to the cycle debit accumulator.
+        @DisplayName("countTransactionAmount routes each amount by its sign and loses neither")
+        void amountIsRoutedByItsSign() {
+            // app/cbl/CBTRN02C.cbl:L548-L552 tests IF DALYTRAN-AMT >= 0 and accumulates into
+            // ACCT-CURR-CYC-CREDIT or ACCT-CURR-CYC-DEBIT accordingly. These two series are those two
+            // accumulators, so a negative amount is neither discarded nor allowed to make a counter negative.
             metrics.countTransactionAmount(new BigDecimal("125.75"));
             metrics.countTransactionAmount(new BigDecimal("-25.75"));
 
-            assertThat(amountTotal()).isEqualTo(100.0d);
+            assertThat(creditTotal()).as("the >= 0 branch").isEqualTo(125.75d);
+            assertThat(debitTotal()).as("the ELSE branch, carrying the magnitude").isEqualTo(25.75d);
+            assertThat(netAmountTotal()).as("the signed net is exactly recoverable").isEqualTo(100.0d);
+        }
+
+        @Test
+        @DisplayName("a zero amount is a credit, exactly as IF DALYTRAN-AMT >= 0 makes it")
+        void zeroIsACredit() {
+            metrics.countTransactionAmount(BigDecimal.ZERO);
+
+            assertThat(creditTotal()).isZero();
+            assertThat(debitTotal()).isZero();
+            assertThat(registry.get(MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL)
+                    .tag(MetricsConfig.TAG_SIGN, MetricsConfig.SIGN_CREDIT).functionCounter())
+                    .as("the credit series exists and was the one addressed")
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("neither amount series can go negative, which is what keeps a counter legal")
+        void neitherAmountSeriesGoesNegative() {
+            metrics.countTransactionAmount(new BigDecimal("-1000.00"));
+            metrics.countTransactionAmount(new BigDecimal("-0.01"));
+
+            assertThat(creditTotal()).isNotNegative();
+            assertThat(debitTotal()).isNotNegative().isEqualTo(1000.01d);
+            assertThat(netAmountTotal()).as("the net is negative, and that is carried by the difference")
+                    .isEqualTo(-1000.01d);
         }
     }
 
@@ -235,7 +308,9 @@ class MetricInstrumentOwnershipTest {
             writer.write(Chunk.of(postedTransaction("12.34"), postedTransaction("-2.34")));
 
             assertThat(count(MetricsConfig.METRIC_RECORDS_PROCESSED)).isEqualTo(2.0d);
-            assertThat(amountTotal()).isEqualTo(10.0d);
+            assertThat(creditTotal()).isEqualTo(12.34d);
+            assertThat(debitTotal()).isEqualTo(2.34d);
+            assertThat(netAmountTotal()).isEqualTo(10.0d);
         }
 
         @Test
@@ -249,13 +324,24 @@ class MetricInstrumentOwnershipTest {
             writer.write(Chunk.of());
 
             assertThat(count(MetricsConfig.METRIC_RECORDS_PROCESSED)).isZero();
-            assertThat(amountTotal()).isZero();
+            assertThat(creditTotal()).isZero();
+            assertThat(debitTotal()).isZero();
         }
 
         @Test
         @DisplayName("RejectWriter reports the rejection under its own reject code, and nothing else")
         void theRejectWriterReportsItsOwnSeries() {
-            RejectWriter writer = new RejectWriter(mock(S3Operations.class), metrics, new FileStatusMapper(),
+            S3Operations objectStorage = mock(S3Operations.class);
+            // The reject writer streams into ONE (+1) generation object, so its store call is createResource
+            // rather than upload; see the H-04 note on RejectWriter.
+            S3Resource resource = mock(S3Resource.class);
+            try {
+                when(resource.getOutputStream()).thenReturn((OutputStream) new ByteArrayOutputStream());
+            } catch (java.io.IOException impossible) {
+                throw new IllegalStateException("stubbing cannot fail", impossible);
+            }
+            when(objectStorage.createResource(anyString(), anyString())).thenReturn(resource);
+            RejectWriter writer = new RejectWriter(objectStorage, metrics, new FileStatusMapper(),
                     "carddemo-batch-output", "gdg/dalyrejs", null);
 
             writer.writeReject(stagedTransaction(), RejectCode.ACCOUNT_RECORD_NOT_FOUND);
@@ -268,21 +354,28 @@ class MetricInstrumentOwnershipTest {
         }
 
         @Test
-        @DisplayName("StatementWriter reports one processed record per persisted statement")
-        void theStatementWriterReportsProcessedRecords() throws Exception {
-            StatementWriter writer = new StatementWriter(mock(S3Operations.class), metrics,
+        @DisplayName("StatementWriter reports its volume through its own accessor and no application counter")
+        void theStatementWriterReportsNoApplicationSeries() throws Exception {
+            StatementWriter writer = new StatementWriter(mock(S3Operations.class),
                     new FileStatusMapper(), Clock.fixed(Instant.parse("2022-06-10T19:27:53.470Z"),
                             ZoneOffset.UTC), "carddemo-statements");
 
-            // Deliberately not pre-opened. StatementWriter.write opens, appends, closes and counts one
-            // statement at a time, reproducing the per-account OPEN/CLOSE pair at
-            // app/cbl/CBSTM03A.CBL:L293 and :L339; opening here would leave a statement open when write
-            // reached its own open, which the writer refuses because an unclosed statement means a lost one.
+            // Deliberately not pre-opened. StatementWriter.write opens, appends and closes one statement at a
+            // time, reproducing the per-account OPEN/CLOSE pair at app/cbl/CBSTM03A.CBL:L293 and :L339;
+            // opening here would leave a statement open when write reached its own open, which the writer
+            // refuses because an unclosed statement means a lost one.
             writer.write(Chunk.of(statement()));
 
-            // One count per account statement, not per emitted line: CBSTM03A displays a per-account total,
-            // and the two line streams below are one statement and therefore one processed record.
-            assertThat(count(MetricsConfig.METRIC_RECORDS_PROCESSED)).isEqualTo(1.0d);
+            // The statement IS counted - by statementsWritten(), which the statement job reads and publishes
+            // to its execution context - but NOT into carddemo.batch.records.processed. That series reproduces
+            // DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT at app/cbl/CBTRN02C.cbl:L227, whose
+            // population is the daily transaction records POSTTRAN read. A statement is not one of them, and
+            // summing two unrelated populations into one untagged series produced a figure belonging to no
+            // job and decomposable by no query.
+            assertThat(writer.statementsWritten()).isEqualTo(1L);
+            assertThat(count(MetricsConfig.METRIC_RECORDS_PROCESSED))
+                    .as("no application counter is advanced by this writer")
+                    .isZero();
         }
     }
 
@@ -297,19 +390,45 @@ class MetricInstrumentOwnershipTest {
     }
 
     /**
-     * Reads the current value of the transaction amount total.
+     * Reads the {@code credit} series of the transaction amount total.
      *
-     * <p>Read through {@link io.micrometer.core.instrument.Gauge} rather than
-     * {@link io.micrometer.core.instrument.Counter}, because a counter holds a {@code double} and the
-     * amount total must accumulate exactly. The registered gauge reads a {@link java.math.BigDecimal}
-     * accumulator and converts once, on the scrape, which is the only conversion out of decimal in the
-     * facade. Sign is preserved by that conversion, which is what {@code amountIsAddedWithItsSign} relies
-     * on.
+     * <p>Read as a {@link io.micrometer.core.instrument.FunctionCounter}, which is the type registered: it
+     * reads an exact {@link java.math.BigDecimal} accumulator and converts once, at the scrape, which is the
+     * only conversion out of decimal in the facade.
      *
-     * @return the accumulated signed total, {@code 0.0} if nothing has been added
+     * @return the accumulated credit total, {@code 0.0} if nothing has been added
      */
-    private double amountTotal() {
-        return registry.get(MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL).gauge().value();
+    private double creditTotal() {
+        return amountSeries(MetricsConfig.SIGN_CREDIT);
+    }
+
+    /**
+     * Reads the {@code debit} series of the transaction amount total, which carries magnitudes.
+     *
+     * @return the accumulated debit magnitude, {@code 0.0} if nothing has been added
+     */
+    private double debitTotal() {
+        return amountSeries(MetricsConfig.SIGN_DEBIT);
+    }
+
+    /**
+     * Derives the signed net exactly as a dashboard does, as {@code credit - debit}.
+     *
+     * @return the signed net total
+     */
+    private double netAmountTotal() {
+        return creditTotal() - debitTotal();
+    }
+
+    /**
+     * Reads one sign-tagged series of the transaction amount total.
+     *
+     * @param sign the value of {@link MetricsConfig#TAG_SIGN} identifying the series, never {@code null}
+     * @return the accumulated value of that series
+     */
+    private double amountSeries(final String sign) {
+        return registry.get(MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL)
+                .tag(MetricsConfig.TAG_SIGN, sign).functionCounter().count();
     }
 
     /**
@@ -360,5 +479,99 @@ class MetricInstrumentOwnershipTest {
         return new StatementProcessor.Statement("00000000001", new BigDecimal("12.34"),
                 List.of("A".repeat(StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH)),
                 List.of("B".repeat(StatementTransaction.STATEMENT_HTML_RECORD_LENGTH)));
+    }
+
+    // ====================================================================================================
+    // The rendered Prometheus names, measured against a real registry and matched to the dashboard queries.
+    // ====================================================================================================
+
+    @Nested
+    @DisplayName("The rendered series names are what the dashboard queries, measured and not reasoned about")
+    class RenderedNamesMatchTheDashboard {
+
+        /** The provisioned dashboard, the one consumer whose queries must resolve. */
+        private static final Path DASHBOARD =
+                Path.of("observability", "grafana", "dashboards", "carddemo-dashboard.json");
+
+        /**
+         * Scrapes a real Prometheus registry after every instrument has moved at least once.
+         *
+         * @return the scrape body, never {@code null}
+         */
+        private String scrapeAfterOneOfEach() {
+            final PrometheusMeterRegistry registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+            final MetricsConfig config = new MetricsConfig(registry);
+            config.countRecordProcessed();
+            config.countRecordRejected(RejectCode.OVERLIMIT_TRANSACTION);
+            config.countAuthenticationAttempt(AuthenticationOutcome.SUCCESS);
+            config.countTransactionAmount(new BigDecimal("12.34"));
+            return registry.scrape();
+        }
+
+        @Test
+        @DisplayName("the amount series renders WITH the _total suffix and a sign tag, which is what the "
+                + "dashboard queries")
+        void theAmountSeriesRendersWithTheTotalSuffix() {
+            final String scrape = scrapeAfterOneOfEach();
+
+            assertThat(scrape)
+                    .as("MEASURED, not inferred, and it is the reason the instrument is a counter. The "
+                            + "Prometheus client reserves the _total suffix for counters and STRIPS it from a "
+                            + "gauge, so an earlier gauge over one signed accumulator rendered as "
+                            + "carddemo_transaction_amount while every panel queried "
+                            + "carddemo_transaction_amount_total and got an empty result with no error")
+                    .contains("carddemo_transaction_amount_total")
+                    .contains("sign=\"credit\"");
+            assertThat(scrape)
+                    .as("a positive amount reaches the credit series at its own magnitude; the debit series "
+                            + "exists at 0.0 because both are registered eagerly")
+                    .contains("carddemo_transaction_amount_total{sign=\"credit\"} 12.34")
+                    .contains("carddemo_transaction_amount_total{sign=\"debit\"} 0.0");
+            assertThat(scrape)
+                    .as("and it really is a counter, which is what keeps the suffix. Monotonicity is not "
+                            + "violated by a signed stream because the sign partitions it: "
+                            + "app/cbl/CBTRN02C.cbl:L548-L552 adds a negative amount to the cycle DEBIT "
+                            + "accumulator, and this instrument keeps the same two accumulators of magnitudes")
+                    .contains("# TYPE carddemo_transaction_amount_total counter");
+        }
+
+        @Test
+        @DisplayName("all four series carry _total, so the suffix is uniform across the instrument set")
+        void allFourSeriesCarryTheTotalSuffix() {
+            final String scrape = scrapeAfterOneOfEach();
+
+            assertThat(scrape)
+                    .contains("carddemo_batch_records_processed_total")
+                    .contains("carddemo_batch_records_rejected_total")
+                    .contains("carddemo_auth_attempts_total")
+                    .contains("carddemo_transaction_amount_total");
+        }
+
+        @Test
+        @DisplayName("every carddemo series the dashboard queries exists in the scrape, so no panel can be "
+                + "silently empty")
+        void everyDashboardQueryResolvesToARenderedSeries() throws IOException {
+            final String scrape = scrapeAfterOneOfEach();
+            final String dashboard = Files.readString(DASHBOARD, StandardCharsets.UTF_8);
+
+            final Matcher queried = Pattern.compile("\"expr\"\\s*:\\s*\"([^\"]*)\"")
+                    .matcher(dashboard);
+            final Set<String> series = new LinkedHashSet<>();
+            while (queried.find()) {
+                final Matcher names = Pattern.compile("carddemo_[a-z0-9_]+").matcher(queried.group(1));
+                while (names.find()) {
+                    series.add(names.group());
+                }
+            }
+
+            assertThat(series)
+                    .as("the dashboard must query something, or this test would pass by asserting nothing")
+                    .isNotEmpty();
+            assertThat(series).allSatisfy(name -> assertThat(scrape)
+                    .as("the dashboard queries %s, which must be a series the registry actually renders. A "
+                            + "query naming a series that does not exist produces an EMPTY PANEL WITH NO "
+                            + "ERROR anywhere - the failure mode this test exists to make loud", name)
+                    .contains(name));
+        }
     }
 }

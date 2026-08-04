@@ -64,9 +64,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>Three things, and nothing else. It pages the security file in the file's own key order; it reports the
  * boundary conditions the source reports, with the source's exact message text; and it reports which row the
  * operator selected, together with the program the source would have transferred to, so that the caller can
- * navigate. It is to be surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
- * {@code /api/admin/*} - <strong>planned</strong>, that controller has not been authored yet, so this
- * service currently has no HTTP entry point. {@code com.cardemo.config.SecurityConfig} already restricts
+ * navigate. It is surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
+ * {@code /api/admin/*}, which is authored as of 4 August 2026; an earlier revision of this paragraph
+ * recorded that controller as planned and this service as having no HTTP entry point.
+ * {@code com.cardemo.config.SecurityConfig} restricts
  * {@code /api/admin/*} to the ADMIN role, so the rule is in place ahead of the route - the
  * {@code 'A'} against {@code 'U'} distinction of {@code CDEMO-USER-TYPE} at
  * {@code app/cpy/COCOM01Y.cpy}:27-28, surfaced as {@code com.cardemo.model.enums.UserType}.
@@ -225,28 +226,29 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       response.</li>
  *   </ul>
  *
- * <h2>Mechanism substitution: a keyed browse becomes ordinal positioning</h2>
+ * <h2>A keyed browse stays a keyed browse</h2>
  *
  * <p>{@code CDEMO-CU00-USRID-FIRST} and {@code CDEMO-CU00-USRID-LAST} at
  * {@code app/cbl/COUSR00C.cbl:68-69} are keyset cursors: the source repositions a VSAM browse on one of them
- * and walks. {@code com.cardemo.repository.UserSecurityRepository} publishes exactly one paged finder,
- * {@code findAllByOrderBySecUsrIdAsc(Pageable)}, and no range or keyset finder; query-by-example cannot
- * express a greater-than-or-equal predicate either. Positioning is therefore by <em>ordinal</em> within that
- * same ascending total order, derived by arithmetic from the page number the request carries.
- *
- * <p>What that preserves: the order, the window each key press selects, the page arithmetic including its
- * floor of 1, the next-page flag and its one-record lookahead, every boundary message, and the cursors
- * themselves, which are still reported on {@code PageResponse} so the caller's view stays checkable.
- *
- * <p>What it costs, stated plainly rather than absorbed: a user identifier typed into
- * {@code USRIDINI} gates the browse exactly as the source's equal-only {@code STARTBR} does - it must exist,
- * or the request is a not-found - but it does not <em>reposition</em> the window, which comes from the page
- * number. Ordinal positioning is also not robust to a concurrent insertion the way a keyset browse is.
- * Remedy, should the repository contract later admit it: add
+ * and walks. So does this service. {@code com.cardemo.repository.UserSecurityRepository} publishes
  * {@code findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(String, Pageable)} and
- * {@code findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(String, Pageable)} to
- * {@code UserSecurityRepository} and switch {@code startbrUserSecFile} to them; nothing else changes.
- * Owed an entry in the planned DECISION_LOG.md.
+ * {@code findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(String, Pageable)} for the two directions, plus
+ * {@code findAllByOrderBySecUsrIdAsc(Pageable)} for the start-of-file browse that has no key to anchor on.
+ *
+ * <p><strong>Finding H-08, severity High, RESOLVED.</strong> An earlier revision had only the paged finder and
+ * positioned by an <em>ordinal</em> derived by arithmetic from the submitted page number, validating the echoed
+ * key for existence but never positioning on it. Three behaviours followed that the source does not have: an
+ * insert or a delete ahead of the browse shifted every later page, so one page number returned different rows
+ * on successive requests; a caller whose echoed key and page number disagreed got the page number's rows; and
+ * a large page number produced a correspondingly large {@code OFFSET} scan. <i>Remediation, applied:</i> the
+ * echoed key is the position and the page number is display metadata. Ordinals survive only as offsets
+ * relative to the anchor, which is what a {@code READNEXT} and a {@code READPREV} are, and are bounded by a
+ * page plus two probe reads - so no read this service issues grows with the page number.
+ *
+ * <p>What is preserved: the order, the window each key press selects, the page arithmetic including its floor
+ * of 1 and its {@code PIC 9(08)} truncation on overflow, the next-page flag and its one-record lookahead,
+ * every boundary message, the equal-only gate on a typed identifier, and the cursors themselves, which are
+ * still reported on {@code PageResponse} so the caller's view stays checkable.
  *
  * <h2>Query budget</h2>
  *
@@ -561,6 +563,16 @@ public class UserListService {
     private static final long ORDINAL_PAST_END = -1L;
 
     /**
+     * Ordinals of backward headroom reserved beyond one page when a browse is anchored on a key.
+     *
+     * <p>Two, because a page walk performs one skip read before the page and one lookahead after it, and
+     * {@code fetchAtOrdinal} treats a negative ordinal as having run off an end of the file. Reserving a page
+     * plus these two guarantees a backward walk from the anchor never turns negative and so never reports a
+     * spurious end of file.
+     */
+    private static final int BROWSE_HEADROOM_PROBES = 2;
+
+    /**
      * The highest browse ordinal the paged finder can address. Spring Data expresses an offset as a page
      * index multiplied by a page size, both {@code int}, so an ordinal beyond this bound cannot be requested
      * at all and is reported as an end of file rather than allowed to overflow. No security file can hold
@@ -758,10 +770,9 @@ public class UserListService {
      * @return the assembled screen
      * @throws com.cardemo.exception.CardDemoException the first typed failure retained while the screen was
      *                                                built, rethrown here so that
-     *                                                {@code com.cardemo.controller.AdminController} - which
-     *                                                is planned rather than authored - can map it; there is
-     *                                                no {@code @ControllerAdvice} in the tree, so each
-     *                                                controller declares its own handlers
+     *                                                {@code com.cardemo.controller.AdminController} can map
+     *                                                it; there is no {@code @ControllerAdvice} in the tree,
+     *                                                so each controller declares its own handlers
      */
     private UserListScreen mainPara(final boolean commAreaPresent, final boolean reenter,
             final AttentionIdentifier aid, final UserListRequest request) {
@@ -920,7 +931,7 @@ public class UserListService {
         work.cursorField = CURSOR_FIELD_USER_ID_INPUT;             // :224 MOVE -1 TO USRIDINL
 
         work.pageNum = 0;                                          // :227 MOVE 0 TO CDEMO-CU00-PAGE-NUM
-        work.startOrdinal = 0L;                                    // page one begins at the first record
+        work.anchorOn(null, 0);                                    // page one begins at the first record
         processPageForward(work);                                  // :228
 
         if (!work.errFlgOn) {
@@ -958,8 +969,11 @@ public class UserListService {
         work.cursorField = CURSOR_FIELD_USER_ID_INPUT;              // :246 MOVE -1 TO USRIDINL
 
         if (work.pageNum > FIRST_PAGE_NUMBER) {                     // :248 IF CDEMO-CU00-PAGE-NUM > 1
-            // The first row of the displayed page sits at the head of that page's ordinal block.
-            work.startOrdinal = (long) (work.pageNum - 1) * pageSize;
+            // H-08: the echoed first key IS the position - it is the head of the displayed page - so the
+            // browse is anchored on it and the page number decides only whether there is a page to go back
+            // to. Deriving an ordinal from the page number instead made an insert or a delete ahead of the
+            // browse shift every later page.
+            work.anchorOn(work.startKey, pageSize + BROWSE_HEADROOM_PROBES);
             processPageBackward(work);                              // :249
         } else {
             work.message = ALREADY_AT_TOP_MESSAGE;                  // :250-252
@@ -1000,8 +1014,10 @@ public class UserListService {
         work.cursorField = CURSOR_FIELD_USER_ID_INPUT;              // :268 MOVE -1 TO USRIDINL
 
         if (work.nextPageAvailable) {                               // :270 IF NEXT-PAGE-YES
-            // The last row of the displayed page sits one before the head of the following ordinal block.
-            work.startOrdinal = (long) (work.pageNum - 1) * pageSize + work.submittedRowCount - 1;
+            // H-08: the echoed last key IS the position - it is the final row of the displayed page - so the
+            // browse is anchored on it and walks forward from there. The submitted row count no longer
+            // contributes to positioning, because the key already names the row it identified.
+            work.anchorOn(work.startKey, pageSize + BROWSE_HEADROOM_PROBES);
             processPageForward(work);                               // :271
         } else {
             work.message = ALREADY_AT_BOTTOM_MESSAGE;               // :272-274
@@ -1425,14 +1441,13 @@ public class UserListService {
      * {@code RecordNotFoundException} is <em>retained</em> and rethrown by the entry point rather than thrown
      * from here, which reproduces the source's control flow exactly while still reporting the failure.
      *
-     * <p><strong>Mechanism substitution: the browse becomes ordinal positioning.</strong> The repository
-     * publishes one finder, {@code findAllByOrderBySecUsrIdAsc(Pageable)}, so a key cannot be turned into a
-     * position by a range predicate. The key is therefore validated for existence with an indexed
-     * primary-key lookup and the window is positioned by the page arithmetic the caller supplied. A typed
-     * identifier consequently gates and is echoed but does not itself reposition the window. Severity:
-     * Medium. Remedy: add {@code findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(String, Pageable)} and
-     * {@code findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(String, Pageable)} to the repository and
-     * position this method with them. Owed an entry in the planned DECISION_LOG.md.
+     * <p><strong>The key is the position.</strong> The echoed cursor anchors the browse and the two keyset
+     * finders read from it, ascending on the forward path and descending on the backward one, which is what
+     * {@code STARTBR} followed by {@code READNEXT} or {@code READPREV} does. The key is still validated for
+     * existence with an indexed primary-key lookup first, because the source's {@code STARTBR} is equal-only
+     * and a key that does not exist is a not-found rather than a silent slide to the next higher key. The
+     * submitted page number no longer contributes to positioning at all - see the class documentation for the
+     * three behaviours that resolved.
      *
      * @param work the per-invocation work area; {@code work.startKey}, {@code work.startPastEnd} and
      *             {@code work.startOrdinal} describe the requested position
@@ -1682,14 +1697,8 @@ public class UserListService {
         }
 
         if (!work.windowContains(ordinal)) {
-            final int windowPageIndex = (int) (ordinal / pageSize);
             try {
-                // A Slice, not a Page: only the window content is consumed, so the count query a Page
-                // would issue alongside every window was pure waste. See the repository for the reasoning,
-                // including why a VSAM browse has no total to reproduce in the first place.
-                final Slice<UserSecurity> window = this.userSecurityRepository
-                        .findAllByOrderBySecUsrIdAsc(PageRequest.of(windowPageIndex, pageSize));
-                work.loadWindow((long) windowPageIndex * pageSize, pageSize, window.getContent());
+                loadWindowFor(work, ordinal);
             } catch (final DataAccessException failure) {
                 work.ioFailureCause = failure;
                 return recordResponse(work, CICS_RESP_IOERR, IO_STATUS_IO_ERROR);
@@ -1702,6 +1711,74 @@ public class UserListService {
         }
         work.currentRecord = record;
         return recordResponse(work, CICS_RESP_NORMAL, IO_STATUS_SUCCESS);
+    }
+
+    /**
+     * Loads the block of records covering one ordinal, positioning by key wherever the browse was keyed.
+     *
+     * <p><strong>Finding H-08, severity High, RESOLVED.</strong> This used to compute a page index from the
+     * ordinal and read {@code findAllByOrderBySecUsrIdAsc(PageRequest.of(pageIndex, pageSize))}, which is an
+     * {@code OFFSET} scan whose cost grows with the page number, and which returns whatever rows now occupy
+     * that offset rather than the rows the caller's key identified. A keyed browse now reads from the key.
+     *
+     * <p><strong>Why the read is bounded whichever direction it runs.</strong> Ordinals are relative to the
+     * anchor, and one invocation of this service reads at most a page plus its two probe reads, so the
+     * distance from the anchor to any requested ordinal is at most {@code pageSize + 2}. Both branches
+     * therefore fetch at most a little over two pages, whatever the size of the table and whatever page
+     * number the caller submitted.
+     *
+     * <ul>
+     *   <li><strong>At or after the anchor</strong> - read ascending from the anchor, inclusive, and base the
+     *       block at the anchor. A short read simply yields a shorter block, and an ordinal past its end is
+     *       reported as the end of file it is.</li>
+     *   <li><strong>Before the anchor</strong> - read descending from the anchor, inclusive, drop the anchor
+     *       row itself, and reverse what remains into ascending order. The block is based so that its last
+     *       row is the one immediately before the anchor, which keeps the alignment correct even when the
+     *       start of the file cut the read short. Running off the start of the file is then exactly an
+     *       ordinal the block does not cover.</li>
+     *   <li><strong>Unkeyed</strong> - {@code MOVE LOW-VALUES TO SEC-USR-ID} at
+     *       {@code app/cbl/COUSR00C.cbl:L219} and {@code :L240} positions at the start of the file, where
+     *       there is no key to anchor on. That browse alone still reads by page index, which costs nothing
+     *       because its ordinals begin at zero.</li>
+     * </ul>
+     *
+     * <p>A {@link Slice}, not a {@link org.springframework.data.domain.Page}, on every path: only the content
+     * is consumed, so the count query a page issues alongside every window was pure waste, and a VSAM browse
+     * has no total to reproduce in the first place.
+     *
+     * @param work    the per-invocation work area, whose browse window this method replaces
+     * @param ordinal the ordinal the loaded block must cover
+     * @throws DataAccessException if the store rejects the read; the caller translates it
+     */
+    private void loadWindowFor(final ScreenWorkArea work, final long ordinal) {
+        if (work.anchorKey == null) {
+            final int windowPageIndex = (int) (ordinal / pageSize);
+            final Slice<UserSecurity> window = this.userSecurityRepository
+                    .findAllByOrderBySecUsrIdAsc(PageRequest.of(windowPageIndex, pageSize));
+            work.loadWindow((long) windowPageIndex * pageSize, pageSize, window.getContent());
+            return;
+        }
+
+        if (ordinal >= work.anchorOrdinal) {
+            final int span = (int) (ordinal - work.anchorOrdinal) + pageSize;
+            final Slice<UserSecurity> forward = this.userSecurityRepository
+                    .findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(work.anchorKey,
+                            PageRequest.ofSize(span));
+            work.loadWindow(work.anchorOrdinal, span, forward.getContent());
+            return;
+        }
+
+        // One extra row is requested because the anchor row itself comes back first and is then dropped.
+        final int span = (int) (work.anchorOrdinal - ordinal) + pageSize;
+        final Slice<UserSecurity> backward = this.userSecurityRepository
+                .findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(work.anchorKey,
+                        PageRequest.ofSize(span + 1));
+        final List<UserSecurity> descending = backward.getContent();
+        final List<UserSecurity> ascending = new ArrayList<>(Math.max(descending.size() - 1, 0));
+        for (int index = descending.size() - 1; index >= 1; index--) {
+            ascending.add(descending.get(index));
+        }
+        work.loadWindow(work.anchorOrdinal - ascending.size(), Math.max(ascending.size(), 1), ascending);
     }
 
     /**
@@ -2171,6 +2248,16 @@ public class UserListService {
         /** The ordinal the caller's page arithmetic says the start key occupies. */
         private long startOrdinal;
 
+        /**
+         * The key the browse is positioned on, or {@code null} for a start-of-file browse.
+         *
+         * <p>H-08: this, and not the submitted page number, is what decides which rows a keyed browse returns.
+         */
+        private String anchorKey;
+
+        /** The ordinal assigned to {@link #anchorKey}; every other ordinal is relative to it. */
+        private long anchorOrdinal;
+
         /** {@code SEC-USR-ID} as {@code STARTBR} received it; {@code null} models {@code LOW-VALUES}. */
         private String startKey;
 
@@ -2323,6 +2410,23 @@ public class UserListService {
             this.windowBaseOrdinal = baseOrdinal;
             this.windowSpan = span;
             this.browseWindow = records;
+        }
+
+        /**
+         * Anchors the browse on a key, so that positioning depends on the key alone.
+         *
+         * <p>The anchor is given a non-zero ordinal purely so that a backward walk has room to run without the
+         * ordinals turning negative - {@code fetchAtOrdinal} treats a negative ordinal as having run off an end
+         * of the file. One invocation walks at most a page plus its two probe reads, so a page of headroom plus
+         * two is provably enough; the value itself has no meaning beyond that and is never displayed.
+         *
+         * @param key the key to position on; {@code null} leaves the browse at the start of the file
+         * @param headroom how many ordinals of backward room to reserve below the anchor
+         */
+        private void anchorOn(final String key, final int headroom) {
+            this.anchorKey = key;
+            this.anchorOrdinal = key == null ? 0L : headroom;
+            this.startOrdinal = this.anchorOrdinal;
         }
 
         /**

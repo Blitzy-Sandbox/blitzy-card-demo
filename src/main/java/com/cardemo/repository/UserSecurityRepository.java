@@ -29,12 +29,19 @@
  */
 package com.cardemo.repository;
 
-import com.cardemo.model.entity.UserSecurity;
+import java.util.Optional;
 
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+
+import com.cardemo.model.entity.UserSecurity;
+
+import jakarta.persistence.LockModeType;
 
 /**
  * User, credential and role data access: the relational replacement for the VSAM access verbs
@@ -47,11 +54,15 @@ import org.springframework.stereotype.Repository;
  * name {@code USRSEC} by five COBOL programs - one keyed {@code READ}, one {@code READ ... UPDATE}
  * plus {@code REWRITE}, one {@code WRITE}, one {@code DELETE}, and one
  * {@code STARTBR}/{@code READNEXT}/{@code READPREV}/{@code ENDBR} browse - with four methods
- * inherited from {@link JpaRepository} and exactly one declared method.
+ * inherited from {@link JpaRepository} and exactly two declared methods.
  *
- * <p>It declares one method and one only, {@link #findAllByOrderBySecUsrIdAsc(Pageable)}, because
- * that is the sole access path the inherited surface cannot express with the guarantee the source
- * requires. Everything else is inherited; nothing is redeclared. There is no implementation class,
+ * <p>It declares four methods and four only. Three are browses over the single key -
+ * {@link #findAllByOrderBySecUsrIdAsc(Pageable)} for the start-of-file read, and the two keyset finders
+ * that position a browse on a key rather than on an ordinal - and the fourth,
+ * {@link #findByIdForUpdate(String)}, is a read that holds the row for update. Those are the access paths
+ * the inherited surface cannot express with the guarantee the source requires: a key-ordered browse
+ * positioned by key, and a read that locks. Everything else is inherited; nothing is redeclared. There is
+ * no implementation class,
  * no custom-fragment interface, no {@code Specification} or criteria helper, no mapper and no DAO
  * wrapper: Spring Data supplies the implementation at runtime, and adding a hand-written one would
  * duplicate it. This interface holds no state, performs no validation, catches no exception, emits
@@ -401,4 +412,112 @@ public interface UserSecurityRepository extends JpaRepository<UserSecurity, Stri
      * page index lies past the end.
      */
     Slice<UserSecurity> findAllByOrderBySecUsrIdAsc(Pageable pageable);
+
+    /**
+     * Reads one user by identifier and holds the row for update until the enclosing transaction ends.
+     *
+     * <p>This is the Java form of {@code EXEC CICS READ ... UPDATE}, which is how <b>both</b> user-administration
+     * programs that mutate a row read it. {@code app/cbl/COUSR02C.cbl} reads at {@code :L322-L328} with the
+     * {@code UPDATE} option and rewrites at {@code :L360}; {@code app/cbl/COUSR03C.cbl} reads at
+     * {@code :L269-L275} with the same option and deletes at {@code :L307}. {@code app/csd/CARDDEMO.CSD:L88-L89}
+     * defines {@code USRSEC} with {@code UPDATEMODEL(LOCKING)}, so the option is not advisory: CICS held an
+     * exclusive lock on the record from the read until the task's unit of work ended, and no second task could
+     * read the same record for update in the meantime.
+     *
+     * <p><b>Why a pessimistic lock rather than a version column, severity MEDIUM.</b> Both mutating paths were
+     * a read followed by a write with <b>no</b> concurrency control of any kind between them: two administrators
+     * could each read the same row and the second write would silently discard the first, losing a role change,
+     * a name change or a password digest. Two remedies were available and the pessimistic one is the correct one
+     * here for two independent reasons.
+     * <ol>
+     *   <li><b>It is what the source does.</b> An optimistic version counter detects a collision after the fact
+     *       and asks the caller to retry; {@code READ ... UPDATE} prevents the collision from arising. The second
+     *       is the observable behaviour being reproduced.</li>
+     *   <li><b>A version column cannot be added.</b> {@code user_security} has no version column, by design and
+     *       by assertion: {@code V1__create_schema.sql} declares exactly five columns, {@code ddl-auto: validate}
+     *       makes any drift a startup failure, a repository integration test asserts the table's shape as
+     *       "five columns, one check, no key, no index, no version", and the migration set is fixed at three
+     *       members. Adding {@code @Version} would therefore require a fourth migration and would contradict
+     *       three separate contracts.</li>
+     * </ol>
+     *
+     * <p><b>Why this is safe to hold.</b> The lock is taken inside a transaction that performs one keyed read and
+     * at most one write, with no user think-time, no remote call and no second table between them - the
+     * conversation the source held it across has become a single request. No lock timeout hint is declared: on
+     * PostgreSQL a {@code jakarta.persistence.lock.timeout} of anything other than zero or the skip-locked
+     * sentinel has no {@code FOR UPDATE} spelling, so a positive value would read as configuration that is
+     * silently ignored, which Rule 1 Clause B forbids. The bound on the wait is the shortness of the transaction.
+     *
+     * <p><b>Why it is a {@code @Query} and not a derived finder, and why it is spelled
+     * {@code findByIdForUpdate}.</b> A derived name cannot express a lock - a suffix such as {@code AndLock}
+     * would be parsed as a property expression and fail at context refresh - so the selection is stated in JPQL
+     * and the annotation carries the mode. The name matches
+     * {@code com.cardemo.repository.AccountRepository#findByIdForUpdate} and
+     * {@code com.cardemo.repository.CardRepository#findByIdForUpdate} exactly, because those two are the same
+     * construct against the same source idiom and one spelling per fact is what Rule 1 Clause C asks for.
+     *
+     * <p>The plain {@code findById} inherited from {@link JpaRepository} remains the correct call for any read
+     * that does not precede a write - the user list, for instance, browses without locking, exactly as
+     * {@code app/cbl/COUSR00C.cbl} browses with {@code STARTBR} and {@code READNEXT} and no {@code UPDATE}
+     * option anywhere in its 695 lines.
+     *
+     * @param secUsrId the eight-character user identifier, {@code SEC-USR-ID PIC X(08)} at
+     * {@code app/cpy/CSUSR01Y.cpy:L18}; used exactly as supplied, because the column is {@code CHAR(8)} and
+     * normalising here would diverge from what the caller validated.
+     * @return the located user with its row locked for update, or empty when no row carries that identifier -
+     * which is {@code DFHRESP(NOTFND)} at {@code app/cbl/COUSR02C.cbl:L340} and at
+     * {@code app/cbl/COUSR03C.cbl:L287}, an ordinary outcome rather than a failure.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select u from UserSecurity u where u.secUsrId = :secUsrId")
+    Optional<UserSecurity> findByIdForUpdate(@Param("secUsrId") String secUsrId);
+
+    /**
+     * Reads forward from a user identifier, inclusive, in ascending key order.
+     *
+     * <p>This interface used to publish only the
+     * page-indexed finder above, so {@code UserListService} could check that an echoed key existed but could
+     * not position on it, and positioned by an ordinal derived from the submitted page number instead. Three
+     * consequences followed, all of them behaviour the source does not have: an insert or a delete ahead of
+     * the browse shifted every later page, so the same page number returned different rows; a caller that
+     * echoed a key inconsistent with its page number got the page number's rows and not the key's; and a
+     * large page number produced a correspondingly large {@code OFFSET} scan, because that is how a page
+     * index is executed.
+     *
+     * <p>This finder is the forward half of the remedy and reproduces {@code EXEC CICS STARTBR} followed by
+     * {@code READNEXT}: the browse is positioned by key and walks from there, which is an index seek whatever
+     * the key. {@code app/cbl/COUSR00C.cbl:L600}-{@code :L606} positions on {@code SEC-USR-ID} and never on
+     * an ordinal, because a VSAM browse has no ordinal to position on.
+     *
+     * <p>Inclusive rather than exclusive of the anchor, because {@code STARTBR} positions <em>at</em> the key
+     * and the first {@code READNEXT} returns that record.
+     *
+     * <p>A {@link Slice} rather than a {@link org.springframework.data.domain.Page}: the count query a page
+     * issues alongside every window answers a question a browse never asks, and the source has no total to
+     * reproduce.
+     *
+     * @param secUsrId the user identifier to position at, inclusive; must not be null.
+     * @param pageable the window size to apply; the page index should be zero, because the key is the
+     * position.
+     * @return a slice of users at or after {@code secUsrId} in ascending order, empty when no such user
+     * exists.
+     */
+    Slice<UserSecurity> findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(String secUsrId, Pageable pageable);
+
+    /**
+     * Reads backward from a user identifier, inclusive, in descending key order.
+     *
+     * <p>The backward half of the remedy described on
+     * {@link #findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(String, Pageable)}, reproducing
+     * {@code EXEC CICS STARTBR} followed by {@code READPREV} - the path {@code app/cbl/COUSR00C.cbl} takes on
+     * PF7. Descending order is the point: the caller consumes the rows in the order the browse produces them
+     * and reverses the window itself, exactly as a {@code READPREV} loop fills a screen from the bottom up.
+     *
+     * @param secUsrId the user identifier to position at, inclusive; must not be null.
+     * @param pageable the window size to apply; the page index should be zero, because the key is the
+     * position.
+     * @return a slice of users at or before {@code secUsrId} in descending order, empty when no such user
+     * exists.
+     */
+    Slice<UserSecurity> findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(String secUsrId, Pageable pageable);
 }

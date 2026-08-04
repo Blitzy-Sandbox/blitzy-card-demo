@@ -7,7 +7,8 @@
  *               and dual-format emission at 80 and 100 bytes.
  * Source      : app/jcl/CREASTMT.JCL (97 lines, 5 steps) +
  *               app/cbl/CBSTM03A.CBL (924 lines, 26 paragraphs) +
- *               app/cbl/CBSTM03B.CBL (230 lines, 15 labels) @ 7756d89
+ *               app/cbl/CBSTM03B.CBL (230 lines, 14 procedure
+ *               paragraphs) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -27,13 +28,16 @@
  */
 package com.cardemo.batch.jobs;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -80,7 +84,6 @@ import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.observability.CorrelationIdFilter;
-import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileService;
 import com.cardemo.service.shared.FileStatusMapper;
@@ -156,12 +159,19 @@ import io.awspring.cloud.s3.S3Resource;
  *       statements bucket.</li>
  *   <li>Execution-context entries recording the concrete object key each step created, so a later step
  *       re-reads <b>that key</b> rather than re-resolving "the latest object". See <i>Object storage</i>.</li>
- *   <li>One counter, already owned by {@link MetricsConfig}: records processed. It is incremented twice per
- *       run - once by the projection with the number of transaction records it projected, once by the emit
- *       step with the number of statements it wrote - because both are records this job processed. The
- *       transaction-amount counter is deliberately left alone: the posting job already counts these same
- *       amounts, and counting them again here would inflate the total rather than measure anything. This
- *       class registers no meter of its own and adds no tag.</li>
+ *   <li><strong>No application counter at all.</strong> Finding H-09, severity High, RESOLVED: an earlier
+ *       revision advanced the records-processed counter twice per run, once with the number of transaction rows
+ *       the projection read and once with the number of statements the emit step wrote, and
+ *       {@link com.cardemo.batch.writers.StatementWriter} advanced it a third time, once per statement. That
+ *       counter is the {@code WS-TRANSACTION-COUNT} analogue of {@code app/cbl/CBTRN02C.cbl:L206} and its unit
+ *       is daily transaction records: a statement is not one, the projected rows had already been counted when
+ *       they were posted, and the two statement-side figures double-counted each other - so a single metric
+ *       carried three incompatible units and its value meant nothing. None of the four counters
+ *       {@link com.cardemo.observability.MetricsConfig MetricsConfig} owns has this job's unit, so this job
+ *       advances none of them, registers no meter
+ *       of its own and adds no tag. What it publishes instead are its own execution-context entries -
+ *       {@link #STATEMENTS_EMITTED_CONTEXT_ENTRY} and {@link #WORK_RECORD_COUNT_CONTEXT_ENTRY} - alongside the
+ *       read and write counts Spring Batch records per step in its own metadata.</li>
  * </ul>
  *
  * <h2>How to run, build and test</h2>
@@ -183,6 +193,10 @@ import io.awspring.cloud.s3.S3Resource;
  *   <tr><td>{@code carddemo.batch.creastmt.chunk-size}</td>
  *       <td>{@code carddemo.batch.chunk-size}, then {@value #DEFAULT_CHUNK_SIZE}</td>
  *       <td>Commit interval of the emit step and window size of the projection read</td></tr>
+ *   <tr><td>{@code carddemo.batch.creastmt.max-work-records}</td>
+ *       <td>{@value #DEFAULT_MAX_WORK_RECORDS}</td>
+ *       <td>Ceiling on records the projection will write and the load will verify; the bounded refusal that
+ *           replaces an {@code OutOfMemoryError}. See {@link #DEFAULT_MAX_WORK_RECORDS}</td></tr>
  *   <tr><td>{@code carddemo.aws.s3.batch-output-bucket}</td><td>none - startup fails without it</td>
  *       <td>Receives the projected sequential object</td></tr>
  *   <tr><td>{@code carddemo.aws.s3.statements-bucket}</td><td>none - startup fails without it</td>
@@ -195,12 +209,33 @@ import io.awspring.cloud.s3.S3Resource;
  * {@code src/main/resources/application.yml} declares the buckets under
  * {@code carddemo.aws.s3.*}, and the environment variable behind the output bucket is
  * {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}. A sibling specification cites {@code carddemo.s3.*} without the
- * {@code aws} segment, and {@code CARDDEMO_S3_OUTPUT_BUCKET} without {@code BATCH}; both spellings are
- * wrong and would have failed property resolution at startup. Severity: <b>Medium</b>, remediated by
- * binding the names the configuration file actually declares. Recorded for the planned
- * {@code DECISION_LOG.md} under Rule 1 Clause F. No AWS client is constructed here, no bucket or endpoint
+ * {@code aws} segment, and {@code CARDDEMO_S3_OUTPUT_BUCKET} without {@code BATCH}; neither spelling
+ * resolves, so this class binds the names the configuration file actually declares. No AWS client is
+ * constructed here, no bucket or endpoint
  * is hardcoded, and no environment variable is read directly: every value arrives through property
  * binding, so a deployment can override it without touching code.
+ *
+ * <h2>Why the work dataset is a per-run object rather than an in-memory hold</h2>
+ *
+ * <p>AAP 0.5.2.2 dispositions the {@code TRXFL} work cluster in five words - <i>an in-job projection and
+ * sort; never persisted</i> - and it is the only row of that table given no durable target, which is
+ * consistent with the source: {@code DELDEF01} defines the cluster at {@code app/jcl/CREASTMT.JCL:L25} on
+ * every run and the job never catalogues it, which is why {@code app/catlg/LISTCAT.txt} counts ten clusters
+ * and none of them is this one. <b>That disposition is honoured here by lifetime, not by medium.</b> The
+ * projected sequence is written as one object per run, read back by {@code STEP020}, and deleted by the
+ * define step of the next run and by {@link StatementGenerationJobListener} at the end of this one, so it
+ * outlives its job execution no more than the legacy cluster outlived its job.
+ *
+ * <p>The alternative reading - hold the projected records in a job-scoped map and let the execution context
+ * carry only a handle - was considered and rejected on the finding recorded at
+ * {@link #DEFAULT_MAX_WORK_RECORDS}. It requires the whole sorted sequence to be resident at once, which is
+ * the unbounded materialisation that finding is about and that AAP 0.7.6.3 removes from this program by
+ * streaming; it also forfeits the {@value #DIGEST_ALGORITHM} identity proof between what {@code STEP010}
+ * wrote and what {@code STEP020} read, and leaves {@code STEP020} unrestartable once the process that ran
+ * {@code STEP010} has gone. Streaming through one object keeps peak memory at one record in both directions.
+ * The cost of that choice is stated plainly rather than hidden: the work object does reach the batch output
+ * bucket, and it is the delete-on-define and the release listener - not the absence of a write - that keep
+ * the dataset transient.
  *
  * <h2>The projection truncates two bytes - reproduced, not repaired</h2>
  *
@@ -218,19 +253,26 @@ import io.awspring.cloud.s3.S3Resource;
  * front - which is precisely the shape the projection produces, and precisely why the projection writes
  * output 1-16 from input 263-278. Its {@code TRNX-PROC-TS PIC X(26)} at {@code app/cpy/COSTM01.CPY:L35}
  * consequently receives 24 of its 26 bytes and its {@code FILLER PIC X(20)} at {@code :L36} receives
- * nothing at all. <b>A reviewer will read this as a defect in the Java code. It is not.</b> Severity if
- * <i>not</i> reproduced: <b>High</b>, because every statement then differs from the parity baseline in a
- * way no unit test would attribute to the projection. Remediation is to leave it exactly as it is; the
- * validation tier asserts the truncation so that a well-meant repair fails the build.
+ * nothing at all. <b>A reviewer will read this as a defect in the Java code. It is not.</b> Failing to
+ * reproduce it makes every statement differ from the parity baseline in a way no unit test would attribute
+ * to the projection, so it is left exactly as it is and the validation tier asserts the truncation, which
+ * makes a well-meant repair fail the build.
  *
  * <p>This is only representable because both timestamps are {@link String} over {@code CHAR(26)}. A temporal type
  * cannot hold a 24-of-26-byte fragment, so mapping either field to a date or date-time type would make the truncation
  * impossible to express - and would therefore make byte-exact statement output unreachable however carefully the rest
- * of the projection were written. Severity of a temporal mapping: <b>Blocker</b>, remediated by keeping both fields
- * as fixed-width text end to end, which is what {@link StatementTransaction} and
+ * of the projection were written. Both fields are therefore kept as fixed-width text end to end, which is what
+ * {@link StatementTransaction} and
  * {@link com.cardemo.model.entity.Transaction} already do. The batch producer's rendering is
- * {@code yyyy-MM-dd-HH.mm.ss.SS0000} - millisecond precision followed by four literal zeros, never nanosecond
- * precision.
+ * {@code yyyy-MM-dd-HH.mm.ss.SS0000} - <b>two digits of hundredths of a second, that is centiseconds,
+ * followed by four literal zeros</b>. An earlier revision of this sentence called that millisecond precision;
+ * it is withdrawn, because millisecond precision is three fraction digits and would make the value
+ * twenty-seven characters rather than twenty-six. The frozen source is unambiguous: {@code COB-MIL} is
+ * {@code PIC X(02)} over the sub-second field of {@code FUNCTION CURRENT-DATE}, which is hundredths
+ * ({@code app/cbl/CBTRN02C.cbl:L157}); it is moved into {@code DB2-MIL PIC 9(002)} ({@code :L173}) at
+ * {@code :L700}; and {@code MOVE '0000' TO DB2-REST} fills the {@code PIC X(04)} tail at {@code :L701}. The
+ * source's own format comment spells the whole value {@code EEEE-MM-DD-UU.MM.SS.HH0000} ({@code :L149}), the
+ * {@code HH} naming the hundredths. Nanosecond precision is wrong for the same reason, only further out.
  *
  * <h2>The self-modifying dispatch is an initialisation pipeline, not a dispatch table</h2>
  *
@@ -252,10 +294,10 @@ import io.awspring.cloud.s3.S3Resource;
  * an initialisation selector anywhere in this file</b>: that would model a variability which does not
  * exist, against Rule 1 Clause A's requirement of minimal complexity and explicit behaviour. The genuinely
  * varying DD-keyed strategy - {@code app/cbl/CBSTM03B.CBL}'s four datasets by six operations - lives in
- * {@link FileService}, where it belongs. For the planned {@code DECISION_LOG.md}: self-modifying code
- * eliminated by static flow analysis, observable order preserved.
+ * {@link FileService}, where it belongs. What happens here is self-modifying code eliminated by static flow
+ * analysis, with the observable order preserved.
  *
- * <h2>The 510-transaction ceiling is removed - a labelled deviation, not parity</h2>
+ * <h2>The 510-transaction ceiling is removed - a deliberate deviation, not parity</h2>
  *
  * <p>{@code app/cbl/CBSTM03A.CBL:L225}-{@code :L233} declares the resident table as 51 card entries of 10
  * transactions each - a hard maximum of <b>510 transactions per run</b> - and the building loop at
@@ -266,9 +308,8 @@ import io.awspring.cloud.s3.S3Resource;
  * <p><b>This is a deviation and is labelled as one.</b> Justified under Rule 1 Clause A - the tradeoff is
  * declared because it is needed: retaining a 510-record ceiling would retain a latent
  * truncation-and-corruption defect, and there is no parity argument for reproducing memory corruption.
- * Pretending the ceiling was preserved would be false; pretending its removal is invisible would be worse.
- * Owed to the planned {@code DECISION_LOG.md}, with the historical 510 limit recorded in the planned
- * {@code TRACEABILITY_MATRIX.md}.
+ * Pretending the ceiling was preserved would be false; pretending its removal is invisible would be worse,
+ * which is why the historical 510 limit is stated here.
  *
  * <h2>The early-exit lookup depends on the sort, so the sort is asserted</h2>
  *
@@ -299,7 +340,7 @@ import io.awspring.cloud.s3.S3Resource;
  * {@link FatalProcessingException} carrying abend code
  * {@value FatalProcessingException#BATCH_ABEND_CODE} and process return code
  * {@value FatalProcessingException#BATCH_RETURN_CODE}. That code is 999, the batch value; 9999 is the
- * distinct CICS online value and conflating the two would be a Blocker.
+ * distinct CICS online value, and conflating the two breaks parity.
  *
  * <p>File statuses are translated by {@link FileStatusMapper} on every I/O path: {@code '00'} continues, {@code '10'}
  * is end of file and is loop termination rather than an exception, {@code '22'}, {@code '23'} and {@code '35'} are
@@ -323,6 +364,13 @@ import io.awspring.cloud.s3.S3Resource;
  *       {@code RECORDSIZE(350 350)} at {@code app/jcl/CREASTMT.JCL:L32} is violated. Object storage input
  *       is untrusted and is validated before it is parsed, which is why this surfaces as a typed abend
  *       rather than a mis-parse.</li>
+ *   <li><b>Either step abends reporting a work-record cap.</b> The transaction relation, or the object one
+ *       run of it produced, holds more records than
+ *       {@code carddemo.batch.creastmt.max-work-records} allows. This is a deliberate bounded refusal and
+ *       <b>not</b> a defect: it is what this job reports instead of exhausting the heap. Raise the property
+ *       deliberately if the input is genuinely that large, having satisfied yourself that the deployment has
+ *       the object-storage and runtime budget for it; reduce the input otherwise. See
+ *       {@link #DEFAULT_MAX_WORK_RECORDS}.</li>
  *   <li><b>The emit step abends on an open.</b> One of the four datasets has no binding, or reported a
  *       status outside {@code '00'} and {@code '04'}. The abend names the DD and the return code.</li>
  *   <li><b>Steps 3, 4 and 5 are reported as skipped.</b> That is {@code COND=(0,NE)} doing its job; look
@@ -335,40 +383,40 @@ import io.awspring.cloud.s3.S3Resource;
  * <h2>Legacy defects logged rather than repaired</h2>
  *
  * <ol>
- *   <li><b>Medium.</b> {@code HTMLFILE} is pre-deleted at {@code LRECL=80} in {@code STEP030}
+ *   <li>{@code HTMLFILE} is pre-deleted at {@code LRECL=80} in {@code STEP030}
  *       ({@code app/jcl/CREASTMT.JCL:L69}) but allocated at {@code LRECL=100} in {@code STEP040}
  *       ({@code :L94}). <b>100 is correct</b>, independently confirmed by
  *       {@code 05 HTML-FIXED-LN PIC X(100)} at {@code app/cbl/CBSTM03A.CBL:L149} and by
  *       {@code 01 FD-HTMLFILE-REC PIC X(100)} at {@code :L47}. Markup is emitted at 100 bytes per line and
- *       the contradictory 80 is recorded, not honoured. Remediation in the source would be to correct
- *       {@code :L69}; the corpus is frozen, so it is logged instead.</li>
- *   <li><b>Low.</b> {@code app/jcl/CREASTMT.JCL:L90} is corrupted on disk, reading
+ *       the contradictory 80 is recorded, not honoured. Correcting {@code :L69} would mean editing a frozen
+ *       member, so it is logged instead.</li>
+ *   <li>{@code app/jcl/CREASTMT.JCL:L90} is corrupted on disk, reading
  *       {@code SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS} - two fragments of other DD statements
- *       overwritten into one line. Its intended content is <b>Not available</b> and cannot be recovered
- *       from the repository; recovering it would need the original member from the source control system
- *       that predates this corpus. The surrounding statement is complete enough that
+ *       overwritten into one line. Its intended content cannot be recovered from this repository; that would
+ *       need the original member from the source control system predating this corpus. The surrounding
+ *       statement is complete enough that
  *       {@code STMTFILE}'s {@code LRECL=80} at {@code :L89} is unambiguous, so nothing downstream depends
  *       on the missing text.</li>
- *   <li><b>Low.</b> {@code STMTFILE} at {@code :L72} omits the {@code UNIT=SYSDA} that {@code HTMLFILE}
+ *   <li>{@code STMTFILE} at {@code :L72} omits the {@code UNIT=SYSDA} that {@code HTMLFILE}
  *       carries at {@code :L68}, and the member ends at {@code :L97} with {@code //*} and no terminating
  *       {@code //} card. Neither has a Java counterpart - unit allocation and the end-of-deck card are
  *       both JES2 concepts - so both are recorded and nothing is normalised.</li>
  * </ol>
  *
- * <h2>Member casing and line endings - Blocker</h2>
+ * <h2>Member casing and line endings</h2>
  *
  * <p>Every {@code path:line} citation in this file was re-read from disk with carriage returns stripped, because
  * {@code app/jcl/CREASTMT.JCL}, {@code app/cbl/CBSTM03A.CBL}, {@code app/cbl/CBSTM03B.CBL} and
  * {@code app/cpy/COSTM01.CPY} all use CRLF line endings and all four have <b>uppercase</b> names. A case-sensitive
  * {@code *.jcl} or {@code *.cbl} glob omits every one of them, and since these are the sole sources for statement
- * generation the whole job disappears from scope. Severity: <b>Blocker</b>, remediated by spelling every member
- * exactly as it appears on disk and by stripping carriage returns before counting a line - which is also why the
+ * generation the whole job disappears from scope. Every member is therefore spelled exactly as it appears on
+ * disk and carriage returns are stripped before a line is counted - which is also why the
  * statement copybook is only ever cited as {@code app/cpy/COSTM01.CPY}: no Y-suffixed variant of that member exists
  * in the repository, so a citation carrying one would resolve to nothing.
  *
- * <h2>Citation corrections, all Low</h2>
+ * <h2>Citation precision</h2>
  *
- * <p>Three inherited citations proved wrong and are corrected: the redundant
+ * <p>Three locators are easy to get wrong by one line and are stated here exactly: the redundant
  * {@code MOVE 1 TO CR-JMP} is at {@code app/cbl/CBSTM03A.CBL:L324}, not {@code :L325} - {@code :L325} is
  * {@code MOVE ZERO TO WS-TOTAL-AMT}; {@code TRNX-REST} at {@code app/cpy/COSTM01.CPY:L24} is a group of <b>eleven
  * named sub-fields plus a 20-byte filler</b>, twelve entries summing to
@@ -456,6 +504,35 @@ public class StatementGenerationJob {
     /** Commit interval and read window, matching {@code carddemo.batch.chunk-size}. */
     static final int DEFAULT_CHUNK_SIZE = 100;
 
+    /**
+     * Largest number of {@value #WORK_CLUSTER_RECORD_LENGTH}-byte records {@code STEP010} will project and
+     * {@code STEP020} will verify, from {@code carddemo.batch.creastmt.max-work-records}.
+     *
+     * <p><strong>Finding, severity Medium, resolved - CWE-400, uncontrolled resource consumption.</strong> An
+     * earlier revision of {@code STEP010} accumulated the whole transaction relation in an
+     * {@code ArrayList<String>}, copied it into a {@code StringBuilder} sized
+     * {@code records.size() * 350}, encoded that into a {@code byte[]}, and then {@code STEP020} read the
+     * object back with {@code readAllBytes()} and decoded it into one more {@code String} - five whole-relation
+     * copies, of which three were live simultaneously. The relation is caller-driven and unbounded, so a
+     * cluster larger than the heap produced an {@code OutOfMemoryError}: an unrecoverable, undiagnosable abort
+     * that takes the whole job virtual machine with it rather than a step failure with a reason code.
+     *
+     * <p>The remedy has two halves and needs both. The pipeline now <em>streams</em>, so peak heap is one read
+     * window rather than one relation; and this cap makes the failure <em>bounded and diagnosable</em>, because
+     * a streamed pipeline still writes an unbounded object and still loops an unbounded number of times. The
+     * cap is checked against the relation's row count <strong>before the first record is projected</strong>,
+     * and again per record while streaming, so a relation that grows during the run cannot slip past the
+     * pre-flight check.
+     *
+     * <p><strong>Why this value.</strong> Five million records is 1.75 GB at
+     * {@value #WORK_CLUSTER_RECORD_LENGTH} bytes each - far beyond any run this system is sized for, and far
+     * below the point at which a streamed object becomes unmanageable. It is deliberately a ceiling that
+     * normal operation never approaches: a cap tight enough to be hit in practice would turn a safety guard
+     * into an operational limit. It is a property rather than a literal so that a deployment which genuinely
+     * needs a different ceiling can raise it without a rebuild.
+     */
+    static final int DEFAULT_MAX_WORK_RECORDS = 5_000_000;
+
     /** Key prefix standing in for the {@code AWS.M2.CARDDEMO.TRXFL} dataset names. */
     static final String DEFAULT_WORK_PREFIX = "work/trxfl";
 
@@ -513,8 +590,8 @@ public class StatementGenerationJob {
      *
      * <p>It disagrees with the {@value #HTML_RECORD_LENGTH} that {@code STEP040} allocates at {@code :L94}
      * and that {@code 05 HTML-FIXED-LN PIC X(100)} at {@code app/cbl/CBSTM03A.CBL:L149} confirms. Held as a
-     * named constant, and used by {@link #preDeleteHtmlOutput(ExecutionContext)} only to log the
-     * discrepancy, so the defect is visible in the code rather than silently dropped. Severity Medium.
+     * named constant, and used by {@link #preDeleteHtmlOutput()} only to log the
+     * discrepancy, so the defect is visible in the code rather than silently dropped.
      */
     private static final int HTMLFILE_PRE_DELETE_DECLARED_LENGTH = 80;
 
@@ -531,6 +608,42 @@ public class StatementGenerationJob {
     /** File name of the projected sequential object, after {@code AWS.M2.CARDDEMO.TRXFL.SEQ}. */
     private static final String WORK_OBJECT_NAME = "TRXFL.SEQ";
 
+    /**
+     * Logical name of a statement text object, taken from the {@code STMTFILE} DD name that
+     * {@code app/jcl/CREASTMT.JCL:L72} pre-deletes and {@code :L87} allocates.
+     *
+     * <p><strong>Finding, severity Medium, resolved - CWE-532 and CWE-200.</strong> A statement object key
+     * carries an account identifier and a statement month, because that is what makes statement objects
+     * addressable. Naming one in a failure diagnostic therefore discloses which account was billed in which
+     * month to every reader of the log stream - and a delete failure is precisely the moment an operator
+     * copies a log line into a ticket. The two sibling guard call sites in this class already pass
+     * {@link #WORK_OBJECT_NAME}, a logical dataset name, rather than a concrete key; the statement
+     * pre-delete now does the same, qualified by the object's
+     * {@linkplain #statementObjectReference(String, int) ordinal} within the list of keys the earlier attempt
+     * published, so the failing object is still identifiable from the execution context without the key
+     * appearing anywhere.
+     */
+    private static final String STATEMENT_TEXT_OBJECT_NAME = "STMTFILE";
+
+    /**
+     * Logical name of the statement markup object, taken from the {@code HTMLFILE} DD name that
+     * {@code app/jcl/CREASTMT.JCL:L67} pre-deletes and {@code :L92} allocates.
+     *
+     * <p>Named for the same reason as {@link #STATEMENT_TEXT_OBJECT_NAME}: the markup key is built from the
+     * same account and month segments as the text key, so it discloses the same thing and is treated
+     * identically.
+     */
+    private static final String STATEMENT_MARKUP_OBJECT_NAME = "HTMLFILE";
+
+    /**
+     * Trailing object name of a statement markup key, {@code app/jcl/CREASTMT.JCL:L92}.
+     *
+     * <p>It is the discriminator {@link #logicalNameOf(String)} uses, and it is written out here rather than
+     * read from {@code StatementWriter} because that class keeps its two object names private: a key shape is
+     * a contract between the writer and whatever enumerates the root, and this is the enumerating side of it.
+     */
+    private static final String MARKUP_OBJECT_SUFFIX = "STATEMNT.HTML";
+
     /** Zero-padded width of the monotonically increasing generation segment of a work object key. */
     private static final int GENERATION_WIDTH = 19;
 
@@ -546,8 +659,17 @@ public class StatementGenerationJob {
     // never re-resolved mid-job: a concurrent run would otherwise hand a step the wrong generation.
     // =================================================================================================
 
-    /** The key {@code STEP010} created, read back by {@code STEP020}. */
-    static final String WORK_OBJECT_KEY_CONTEXT_ENTRY = "carddemo.creastmt.work.objectKey";
+    /**
+     * The key {@code STEP010} created, read back by {@code STEP020} and by the {@code TRNXFILE} binding that
+     * {@code STEP040} reads through.
+     *
+     * <p>Public because it is the published handoff contract of this job rather than an internal detail: the
+     * {@code TRNXFILE} {@link com.cardemo.service.shared.FileService.Dataset} binding lives in
+     * {@code com.cardemo.config.BatchConfig}, a different package, and must take the concrete key from here.
+     * That indirection is the point of the entry - see the note above on why "the latest object" is never
+     * re-resolved mid-job.
+     */
+    public static final String WORK_OBJECT_KEY_CONTEXT_ENTRY = "carddemo.creastmt.work.objectKey";
 
     /** The record count {@code STEP010} emitted, checked by {@code STEP020}. */
     static final String WORK_RECORD_COUNT_CONTEXT_ENTRY = "carddemo.creastmt.work.recordCount";
@@ -557,6 +679,25 @@ public class StatementGenerationJob {
 
     /** The work-cluster geometry {@code DELDEF01} defined, rendered for the run log and for diagnostics. */
     static final String WORK_GEOMETRY_CONTEXT_ENTRY = "carddemo.creastmt.work.geometry";
+
+    /**
+     * Job execution context entry holding the {@value #DIGEST_ALGORITHM} digest of the exact bytes
+     * {@code STEP010} wrote, as lowercase hexadecimal.
+     *
+     * <p><strong>Finding H-06, severity High.</strong> This entry is the whole mechanism of its resolution.
+     * {@code app/jcl/CREASTMT.JCL} sorts the transaction cluster into a sequential dataset at {@code STEP010},
+     * loads it into the work cluster at {@code STEP020} and only then runs {@code CBSTM03A} at {@code STEP040} -
+     * so on the mainframe every one of those steps sees the same bytes, frozen at the sort. In this system
+     * {@code STEP040} reaches its transactions through the {@code TRNXFILE} DD, whose {@code FileService.Dataset}
+     * binding is declared by {@code com.cardemo.config.BatchConfig} over the live relation. That binding is a
+     * single-owner declaration and cannot be re-pointed from here without declaring a second bean for one DD, so
+     * the snapshot is enforced rather than substituted: {@code STEP010} publishes this digest,
+     * {@code STEP020} proves the object it loads still matches it, and {@code STEP040} proves the live source
+     * still projects to it before the first statement is built. The outcome is that {@code STEP040} either sees
+     * content byte-identical to the {@code STEP010} object or the job abends - it can never quietly build
+     * statements from data the sort never saw.
+     */
+    static final String WORK_OBJECT_DIGEST_CONTEXT_ENTRY = "carddemo.creastmt.work.digest";
 
     /** The generation ordinal {@code DELDEF01} reserved for this run's work object. */
     static final String WORK_GENERATION_CONTEXT_ENTRY = "carddemo.creastmt.work.generation";
@@ -649,6 +790,29 @@ public class StatementGenerationJob {
     /** Abend reason when the markup fragment table or the writer geometry contradicts the JCL. */
     private static final String REASON_OUTPUT_GEOMETRY = "OUTPUT GEOMETRY VIOLATION";
 
+    /** Abend reason for a source that moved between the sort and a step that depends on the sort's output. */
+    private static final String REASON_SNAPSHOT_DRIFTED = "WORK SNAPSHOT DRIFTED";
+
+    /**
+     * The digest algorithm the snapshot identity check uses.
+     *
+     * <p>It is a content check and not a security primitive - nothing here authenticates anything - but a
+     * collision-resistant algorithm is chosen anyway, because a weak one would make "identical" mean
+     * "indistinguishable by a weak function" and the whole point of finding H-06 is that similarity is not
+     * identity. It is a required algorithm on every conforming platform, so its availability needs no fallback.
+     */
+    private static final String DIGEST_ALGORITHM = "SHA-256";
+
+    /**
+     * Abend reason when the work relation or the projected object exceeds
+     * {@link #DEFAULT_MAX_WORK_RECORDS}.
+     *
+     * <p>A reason code rather than an {@code OutOfMemoryError}: this is the failure mode the cap exists to
+     * substitute for, so it travels the same abend path as every other step failure and carries the same
+     * return code.
+     */
+    private static final String REASON_WORK_RECORD_CAP_EXCEEDED = "WORK RECORD CAP EXCEEDED";
+
     /** The {@code '9x'} family status used when object storage fails, {@code FileStatus:IO_ERROR}. */
     private static final String OBJECT_STORE_IO_STATUS = FileStatus.IO_ERROR_FIRST_BYTE + "0";
 
@@ -716,14 +880,18 @@ public class StatementGenerationJob {
     /** Translates a file status into a typed exception on every I/O path. */
     private final FileStatusMapper fileStatusMapper;
 
-    /** The four counters the application owns. This class adds none. */
-    private final MetricsConfig metricsConfig;
-
     /** The registered job name, {@code carddemo.batch.jobs.creastmt.name}. */
     private final String jobName;
 
     /** Commit interval and read window, {@code carddemo.batch.creastmt.chunk-size}. */
     private final int chunkSize;
+
+    /**
+     * Ceiling on projected and verified records, {@code carddemo.batch.creastmt.max-work-records}.
+     *
+     * <p>See {@link #DEFAULT_MAX_WORK_RECORDS} for why the cap exists and why streaming alone is not enough.
+     */
+    private final int maxWorkRecords;
 
     /** Bucket receiving the projected sequential object, {@code carddemo.aws.s3.batch-output-bucket}. */
     private final String batchOutputBucket;
@@ -752,10 +920,12 @@ public class StatementGenerationJob {
      * @param statementWriter the {@code STMTFILE} and {@code HTMLFILE} emitter, never {@code null}
      * @param objectStorage the object-storage operations interface, never {@code null}
      * @param fileStatusMapper the file-status to exception translator, never {@code null}
-     * @param metricsConfig the owner of the four application counters, never {@code null}
      * @param jobName the registered job name; defaults to {@value #DEFAULT_JOB_NAME}, must not be blank
      * @param chunkSize the commit interval and read window; defaults to {@code carddemo.batch.chunk-size}
      *     and then to {@value #DEFAULT_CHUNK_SIZE}, must be positive
+     * @param maxWorkRecords the ceiling on projected and verified records from
+     *     {@code carddemo.batch.creastmt.max-work-records}; defaults to
+     *     {@value #DEFAULT_MAX_WORK_RECORDS} and must be positive
      * @param batchOutputBucket the bucket receiving the projected sequential object; no default, must not
      *     be blank
      * @param statementsBucket the bucket receiving both statement objects; no default, must not be blank
@@ -772,10 +942,11 @@ public class StatementGenerationJob {
             final StatementWriter statementWriter,
             final S3Operations objectStorage,
             final FileStatusMapper fileStatusMapper,
-            final MetricsConfig metricsConfig,
             @Value("${carddemo.batch.jobs.creastmt.name:" + DEFAULT_JOB_NAME + "}") final String jobName,
             @Value("${carddemo.batch.creastmt.chunk-size:${carddemo.batch.chunk-size:"
                     + DEFAULT_CHUNK_SIZE + "}}") final int chunkSize,
+            @Value("${carddemo.batch.creastmt.max-work-records:" + DEFAULT_MAX_WORK_RECORDS + "}")
+                    final int maxWorkRecords,
             @Value("${carddemo.aws.s3.batch-output-bucket}") final String batchOutputBucket,
             @Value("${carddemo.aws.s3.statements-bucket}") final String statementsBucket,
             @Value("${carddemo.aws.s3.work-prefixes.trxfl:" + DEFAULT_WORK_PREFIX + "}")
@@ -788,17 +959,19 @@ public class StatementGenerationJob {
         this.statementWriter = requireCollaborator(statementWriter, "statementWriter");
         this.objectStorage = requireCollaborator(objectStorage, "objectStorage");
         this.fileStatusMapper = requireCollaborator(fileStatusMapper, "fileStatusMapper");
-        this.metricsConfig = requireCollaborator(metricsConfig, "metricsConfig");
         this.jobName = requireText(jobName, "carddemo.batch.jobs.creastmt.name");
         this.chunkSize = requirePositive(chunkSize, "carddemo.batch.creastmt.chunk-size");
+        this.maxWorkRecords =
+                requirePositive(maxWorkRecords, "carddemo.batch.creastmt.max-work-records");
         this.batchOutputBucket = requireText(batchOutputBucket, "carddemo.aws.s3.batch-output-bucket");
         this.statementsBucket = requireText(statementsBucket, "carddemo.aws.s3.statements-bucket");
         this.workPrefix = normalisePrefix(
                 requireText(workPrefix, "carddemo.aws.s3.work-prefixes.trxfl"));
 
-        LOG.info("CREASTMT statement generation configured: job={} steps={} chunk={} "
+        LOG.info("CREASTMT statement generation configured: job={} steps={} chunk={} maxWorkRecords={} "
                         + "workCluster=KEYS({} 0)/RECORDSIZE({} {}) outputs={}B text and {}B markup",
                 this.jobName, Integer.valueOf(STEP_COUNT), Integer.valueOf(this.chunkSize),
+                Integer.valueOf(this.maxWorkRecords),
                 Integer.valueOf(WORK_CLUSTER_KEY_LENGTH), Integer.valueOf(WORK_CLUSTER_RECORD_LENGTH),
                 Integer.valueOf(WORK_CLUSTER_RECORD_LENGTH), Integer.valueOf(TEXT_RECORD_LENGTH),
                 Integer.valueOf(HTML_RECORD_LENGTH));
@@ -1122,15 +1295,21 @@ public class StatementGenerationJob {
         try {
             if (objectStorage.objectExists(batchOutputBucket, key)) {
                 objectStorage.deleteObject(batchOutputBucket, key);
-                LOG.info("DELDEF01 removed a work object left by an earlier attempt: {}", key);
+                LOG.info("DELDEF01 removed a work object left by an earlier attempt: {}",
+                        objectKeySurrogate(key));
             } else {
-                LOG.debug("DELDEF01 found no work object at {}; nothing to delete", key);
+                LOG.debug("DELDEF01 found no work object at {}; nothing to delete",
+                        objectKeySurrogate(key));
             }
         } catch (final RuntimeException deleteFailure) {
-            // Not swallowed: the cause is logged in full and the outcome is the source's own. See
-            // setMaxccZero() for why the step must not fail here.
-            LOG.warn("DELDEF01 could not delete the work object {}; app/jcl/CREASTMT.JCL:L28 discards "
-                    + "this condition code, so the step continues", key, deleteFailure);
+            // Not swallowed, and not logged in full either. Finding M-06, severity Medium: the throwable an
+            // object-store client raises carries the bucket, the key and often the request URL in its message,
+            // and a statement key embeds the account identifier. The classification an operator needs is the
+            // failure's type; the outcome is the source's own, so there is no exception to re-raise the cause on.
+            // See setMaxccZero() for why the step must not fail here.
+            LOG.warn("DELDEF01 could not delete the work object {} ({}); app/jcl/CREASTMT.JCL:L28 discards "
+                            + "this condition code, so the step continues",
+                    objectKeySurrogate(key), deleteFailure.getClass().getName());
         }
     }
 
@@ -1219,11 +1398,22 @@ public class StatementGenerationJob {
      * The body of {@code STEP010}: read {@code SORTIN} in sorted order, project every record, write one
      * {@code SORTOUT} object.
      *
-     * <p>The whole projected image is buffered before it is uploaded, because an object-storage {@code PUT}
-     * needs a complete body and a content length. Peak memory is therefore one object - the same
-     * materialisation the legacy step made to DASD at {@code :L48} - and it is bounded by the size of the
-     * transaction cluster rather than by anything this step chooses. This is unrelated to the resident-table
-     * ceiling discussed in the class documentation, which concerns the emit step and is genuinely streamed.
+     * <p><strong>Finding H-01, severity High, RESOLVED. Nothing is materialised.</strong> An earlier revision
+     * collected the whole projection into a {@code List<String>}, concatenated it into a {@code StringBuilder}
+     * and then encoded that into a {@code byte[]} - three copies of the entire transaction cluster resident at
+     * once, on a step whose input size is bounded by nothing this code chooses. Records are now written
+     * straight through to the object as each keyset window is read: peak memory is one window plus the
+     * object-store client's own part buffer, and the run is never held in the heap. The legacy step did
+     * materialise to DASD at {@code :L48}, and the object is still one object; what has changed is that the
+     * process no longer holds a second copy of it.
+     *
+     * <p>The count and the digest come back from the streaming write rather than from a collection's
+     * {@code size()}, which is what lets the count be published without retaining the records it counted.
+     *
+     * <p>The cap is applied here, <strong>before the first record is projected</strong>, against the
+     * relation's own row count. That is the "fail before allocation" half of the remedy: a relation too large
+     * to process is refused with a reason code while nothing has yet been allocated, instead of being
+     * discovered part-way through by the allocator.
      *
      * @return the projection and sort tasklet, never {@code null}
      */
@@ -1233,24 +1423,84 @@ public class StatementGenerationJob {
             final ExecutionContext jobContext = stepExecution.getJobExecution().getExecutionContext();
             final long generation = reserveWorkGeneration(stepExecution, jobContext);
 
-            final List<String> projected = sortAndProjectTransactions();
-            final String key = writeWorkObject(generation, projected);
+            requireWorkRelationWithinCap();
 
-            jobContext.putString(WORK_OBJECT_KEY_CONTEXT_ENTRY, key);
-            jobContext.putInt(WORK_RECORD_COUNT_CONTEXT_ENTRY, projected.size());
-            contribution.incrementWriteCount(projected.size());
-            metricsConfig.countRecordsProcessed(projected.size());
+            final ProjectionResult projection = streamProjectionIntoWorkObject(generation);
+
+            jobContext.putString(WORK_OBJECT_KEY_CONTEXT_ENTRY, projection.objectKey());
+            jobContext.putInt(WORK_RECORD_COUNT_CONTEXT_ENTRY, projection.recordCount());
+            jobContext.putString(WORK_OBJECT_DIGEST_CONTEXT_ENTRY, projection.digest());
+            contribution.incrementWriteCount(projection.recordCount());
             contribution.setExitStatus(ExitStatus.COMPLETED);
 
             LOG.info("STEP010 projected and sorted {} transaction records into {}",
-                    Integer.valueOf(projected.size()), key);
+                    Integer.valueOf(projection.recordCount()), objectKeySurrogate(projection.objectKey()));
             return RepeatStatus.FINISHED;
         };
     }
 
     /**
+     * What {@code STEP010} produced: the object it created, how many records it carries, and a digest of the
+     * exact bytes it wrote.
+     *
+     * <p>A record, so the handoff between the three steps that consume it is immutable. The digest is the
+     * mechanism of finding H-06: it is what lets {@code STEP020} prove the object it read is byte-identical to
+     * the one {@code STEP010} wrote, and lets {@code STEP040} prove the source has not moved underneath it.
+     *
+     * @param objectKey the concrete key created, never {@code null}
+     * @param recordCount how many {@value #WORK_CLUSTER_RECORD_LENGTH}-character records it holds
+     * @param digest the lowercase hexadecimal {@value #DIGEST_ALGORITHM} digest of the object's bytes
+     */
+    private record ProjectionResult(String objectKey, int recordCount, String digest) {
+    }
+
+    /**
+     * Refuses a transaction relation larger than {@link #maxWorkRecords} before anything is allocated.
+     *
+     * <p>One counting query, issued once per run. It is the cheapest possible form of the guard and the only
+     * form that can fail <em>before</em> allocation, which is precisely what distinguishes a bounded refusal
+     * from an {@code OutOfMemoryError}. The streaming producer re-checks the cap per record, so a relation
+     * that grows after this check still cannot exceed the ceiling - this check exists to make the common case
+     * fail early and clearly, not to be the only guard.
+     *
+     * @throws FatalProcessingException if the relation holds more than {@link #maxWorkRecords} rows
+     */
+    private void requireWorkRelationWithinCap() {
+        final long rows = transactionRepository.count();
+        if (rows > maxWorkRecords) {
+            throw abend(REASON_WORK_RECORD_CAP_EXCEEDED,
+                    "STEP010 refuses to project " + rows + " transaction records because "
+                            + "carddemo.batch.creastmt.max-work-records is " + maxWorkRecords
+                            + "; at " + WORK_CLUSTER_RECORD_LENGTH + " bytes per record per "
+                            + "RECORDSIZE(350 350) at app/jcl/CREASTMT.JCL:L32 that is more than the "
+                            + "ceiling this deployment is configured to handle. Raise the property "
+                            + "deliberately, or reduce the input", null);
+        }
+    }
+
+    /**
+     * Refuses a record count above {@link #maxWorkRecords}, wherever it is observed.
+     *
+     * <p>Applied per record on the write path and per record on the read path, so the ceiling holds even
+     * though {@link #requireWorkRelationWithinCap()} sampled the row count before the run began. A relation
+     * that grows mid-run, or an object left behind by a run configured with a larger ceiling, is refused with
+     * a reason code rather than allowed to consume the heap.
+     *
+     * @param observed the record count observed so far
+     * @throws FatalProcessingException if {@code observed} exceeds {@link #maxWorkRecords}
+     */
+    private void requireRecordCountWithinCap(final int observed) {
+        if (observed > maxWorkRecords) {
+            throw abend(REASON_WORK_RECORD_CAP_EXCEEDED,
+                    "The work object reached " + observed + " records, above the "
+                            + maxWorkRecords + " that carddemo.batch.creastmt.max-work-records allows; "
+                            + "the run is refused rather than allowed to exhaust the heap", null);
+        }
+    }
+
+    /**
      * {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at {@code app/jcl/CREASTMT.JCL:L53} together with
-     * {@code OUTREC FIELDS=(1:263,16,17:1,262,279:279,50)} at {@code :L54}.
+     * {@code OUTREC FIELDS=(1:263,16,17:1,262,279:279,50)} at {@code :L54}, as a lazy byte stream.
      *
      * <p>The ordering is delegated to {@link TransactionRepository#findStatementOrderAfter}, whose
      * {@code order by} clause is the two-key ascending sequence, and the projection to
@@ -1260,20 +1510,25 @@ public class StatementGenerationJob {
      *
      * <p>Every emitted record is checked against {@link #SORT_FIELDS_COMPARATOR} before it is accepted, so
      * the ascending precondition that {@code app/cbl/CBSTM03A.CBL:L419} relies on is proven for this run
-     * rather than assumed. An empty cluster yields an empty list and is handled explicitly: it produces an
-     * empty object rather than a failure, because {@code SORT} with an empty {@code SORTIN} allocates an
+     * rather than assumed. An empty cluster emits nothing to the sink and is handled explicitly: it produces
+     * an empty object rather than a failure, because {@code SORT} with an empty {@code SORTIN} allocates an
      * empty {@code SORTOUT} and does not fail the step.
      *
-     * @return the projected records, in sort order, each exactly {@value #WORK_CLUSTER_RECORD_LENGTH}
-     *     characters, never {@code null}
+     * <p><b>Bounded by construction.</b> Records are handed to the sink as they are projected and are never
+     * collected, so the live set is one window of {@link #chunkSize} rows plus the record currently being
+     * written - independent of how many rows the cluster holds.
+     *
+     * @param sink receives each projected record as it is produced; never {@code null}
+     * @return the number of records projected and the digest of their concatenation
      * @throws FatalProcessingException if the sequence descends, or if a projected record is not exactly
      *     {@value #WORK_CLUSTER_RECORD_LENGTH} characters
      */
-    private List<String> sortAndProjectTransactions() {
-        final List<String> projected = new ArrayList<>();
+    private ProjectedStream sortAndProjectTransactions(final RecordSink sink) {
+        final MessageDigest digest = newDigest();
         String positionCardNumber = "";
         String positionTransactionId = "";
         Transaction previous = null;
+        int projected = 0;
 
         for (;;) {
             final List<Transaction> window = transactionRepository.findStatementOrderAfter(
@@ -1283,7 +1538,14 @@ public class StatementGenerationJob {
             }
             for (final Transaction row : window) {
                 requireAscending(previous, row);
-                projected.add(requireWorkRecordWidth(StatementProcessor.projectBaseRecord(row)));
+                final String record =
+                        requireWorkRecordWidth(StatementProcessor.projectBaseRecord(row));
+                final byte[] encoded = record.getBytes(FIXED_WIDTH_CHARSET);
+                requireByteTransparency(encoded.length, record.length());
+                digest.update(encoded);
+                sink.accept(encoded);
+                projected++;
+                requireRecordCountWithinCap(projected);
                 previous = row;
             }
             final Transaction last = window.get(window.size() - 1);
@@ -1291,11 +1553,40 @@ public class StatementGenerationJob {
             positionTransactionId = last.getTransactionId() == null ? "" : last.getTransactionId();
         }
 
-        if (projected.isEmpty()) {
+        if (projected == 0) {
             LOG.info("STEP010 read an empty SORTIN, so SORTOUT is allocated empty; "
                     + "app/jcl/CREASTMT.JCL:L44 declares no COND, so the step still completes");
         }
-        return projected;
+        return new ProjectedStream(projected, hexDigest(digest));
+    }
+
+    /**
+     * How many records a streamed projection produced and the digest of their concatenation.
+     *
+     * @param recordCount the number of {@value #WORK_CLUSTER_RECORD_LENGTH}-character records produced
+     * @param digest the lowercase hexadecimal {@value #DIGEST_ALGORITHM} digest of the concatenated bytes
+     */
+    private record ProjectedStream(int recordCount, String digest) {
+    }
+
+    /**
+     * Receives one encoded record at a time, so the projection can be consumed without being collected.
+     *
+     * <p>Declared here rather than reusing a general-purpose consumer type because the implementations raise the
+     * project's typed failures, and a functional interface whose method declares no checked exception would
+     * force a wrapper at every call site for no benefit.
+     */
+    @FunctionalInterface
+    private interface RecordSink {
+
+        /**
+         * Consumes one encoded fixed-width record.
+         *
+         * @param encoded exactly {@value #WORK_CLUSTER_RECORD_LENGTH} bytes in
+         *     {@link StandardCharsets#ISO_8859_1}; never {@code null}
+         * @throws FatalProcessingException if the record cannot be consumed
+         */
+        void accept(byte[] encoded);
     }
 
     /**
@@ -1362,45 +1653,89 @@ public class StatementGenerationJob {
      * <p>Fixed and blocked means unblocked and undelimited at the object-storage boundary: records are
      * concatenated with no separator and a reader finds boundaries by counting
      * {@value #WORK_CLUSTER_RECORD_LENGTH} bytes at a time. Encoded in
-     * {@link StandardCharsets#ISO_8859_1} so one character is one byte and the object size is an exact
-     * multiple of the record length.
+     * {@link StandardCharsets#ISO_8859_1}, where one character is one byte, so the encoded length of the
+     * whole sequence is an exact multiple of the record length and a record carrying a character outside
+     * that range is caught here rather than producing a dataset whose size depends on its data.
+     *
+     * <p><strong>The write is streamed.</strong> The object-store resource's own output stream buffers to a
+     * bounded capacity and then switches to a multi-part upload, so an arbitrarily large projection becomes one
+     * object without the process ever holding it. No content length is declared, because the total is not known
+     * until the last record has been written; per-record framing is asserted instead, which is the stronger
+     * guarantee. This is the mechanism of finding H-01.
      *
      * @param generation the generation ordinal reserved for this run
-     * @param records the projected records in sort order, never {@code null}
-     * @return the concrete key created, never {@code null}
-     * @throws FatalProcessingException if object storage rejects the write
+     * @return the key created, the record count and the digest of the exact bytes written, never {@code null}
+     * @throws FatalProcessingException if object storage rejects the write, or if a record is not exactly
+     *     {@value #WORK_CLUSTER_RECORD_LENGTH} bytes
      */
-    private String writeWorkObject(final long generation, final List<String> records) {
+    private ProjectionResult streamProjectionIntoWorkObject(final long generation) {
         final String key = workObjectKey(generation);
-        final StringBuilder image = new StringBuilder(records.size() * WORK_CLUSTER_RECORD_LENGTH);
-        for (final String record : records) {
-            image.append(record);
-        }
-        final byte[] payload = image.toString().getBytes(FIXED_WIDTH_CHARSET);
-        if (payload.length != records.size() * WORK_CLUSTER_RECORD_LENGTH) {
-            throw abend(REASON_BAD_RECORD_LENGTH,
-                    "The encoded work object must be an exact multiple of "
-                            + WORK_CLUSTER_RECORD_LENGTH + " bytes but was " + payload.length, null);
-        }
 
         String ioStatus = OBJECT_STORE_IO_STATUS;
-        RuntimeException failure = null;
+        RuntimeException runtimeFailure = null;
+        IOException writeFailure = null;
+        ProjectedStream projected = null;
         try {
-            final ObjectMetadata metadata = ObjectMetadata.builder()
+            final S3Resource resource = objectStorage.createResource(batchOutputBucket, key);
+            resource.setObjectMetadata(ObjectMetadata.builder()
                     .contentType(WORK_OBJECT_CONTENT_TYPE)
-                    .contentLength(Long.valueOf(payload.length))
-                    .build();
-            // A ByteArrayInputStream holds no operating-system handle and its close() cannot raise, so it
-            // is not wrapped in a try-with-resources that would need a catch for an impossible failure.
-            objectStorage.upload(batchOutputBucket, key, new ByteArrayInputStream(payload), metadata);
+                    .build());
+            try (OutputStream sortout = resource.getOutputStream()) {
+                projected = sortAndProjectTransactions(encoded -> writeRecord(sortout, encoded));
+            }
             ioStatus = SUCCESS_STATUS;
         } catch (final CardDemoException alreadyTyped) {
             throw alreadyTyped;
+        } catch (final IOException cause) {
+            writeFailure = cause;
         } catch (final RuntimeException cause) {
-            failure = cause;
+            runtimeFailure = cause;
         }
-        guardObjectStore(ioStatus, WORK_OBJECT_NAME, "WRITE", failure);
-        return key;
+        guardObjectStore(ioStatus, WORK_OBJECT_NAME, "WRITE",
+                runtimeFailure != null ? runtimeFailure : writeFailure);
+        return new ProjectionResult(key, projected.recordCount(), projected.digest());
+    }
+
+    /**
+     * Writes one encoded record to the open {@code SORTOUT} stream.
+     *
+     * <p>{@code RECFM=FB} with the block size at {@code app/jcl/CREASTMT.JCL:L50} is fixed and undelimited at the
+     * object-storage boundary, so records are concatenated with no separator and nothing is appended here.
+     *
+     * <p>The checked failure is translated into the project's typed failure so that the sink's own signature
+     * stays free of it; the cause is preserved, so nothing is swallowed.
+     *
+     * @param sortout the open output stream, never {@code null}
+     * @param encoded the record's bytes, never {@code null}
+     * @throws FatalProcessingException if the stream rejects the record
+     */
+    private void writeRecord(final OutputStream sortout, final byte[] encoded) {
+        try {
+            sortout.write(encoded);
+        } catch (final IOException cause) {
+            throw abend(REASON_OBJECT_STORE_FAILED,
+                    "SORTOUT at app/jcl/CREASTMT.JCL:L48 rejected a "
+                            + WORK_CLUSTER_RECORD_LENGTH + "-byte record", cause);
+        }
+    }
+
+    /**
+     * Asserts that a record encoded to exactly as many bytes as it has characters.
+     *
+     * <p>That is what proves the charset stayed byte transparent: if it did not, some character encoded to more
+     * than one byte and every record boundary after it has moved. A pure function of its arguments.
+     *
+     * @param byteLength the encoded length
+     * @param characterLength the composed length
+     * @throws FatalProcessingException if the two differ
+     */
+    private void requireByteTransparency(final int byteLength, final int characterLength) {
+        if (byteLength != characterLength) {
+            throw abend(REASON_BAD_RECORD_LENGTH,
+                    "A projected record encoded to " + byteLength + " bytes from " + characterLength
+                            + " characters; the record charset must be byte transparent or every record "
+                            + "boundary after it has moved", null);
+        }
     }
 
     // =================================================================================================
@@ -1449,73 +1784,73 @@ public class StatementGenerationJob {
      * failed {@code REPRO} would have, instead of being discovered as corrupt statement output four steps
      * later.
      *
-     * <p>Object-storage content is treated as untrusted input: the length is validated before any record is
-     * parsed, and no deserialization of any kind is performed on it.
+     * <p>The scan itself is delegated to {@link #streamWorkObject(String)}, which walks the object one
+     * {@value #WORK_CLUSTER_RECORD_LENGTH}-byte record at a time and therefore holds nothing proportional to
+     * its size. Object-storage content is treated as untrusted input there: the geometry of each record is
+     * validated before anything is interpreted, and no deserialization of any kind is performed on it.
+     *
+     * <p><strong>The object is verified as a stream, one record at a time.</strong> An earlier revision read
+     * it whole with {@code readAllBytes()} and then decoded the whole array into a {@code String} - two more
+     * copies of a relation-sized image, on the read side of a pipeline whose write side had already made
+     * three. The verification needs no more than one record and its key at a time, so that is all it holds;
+     * see {@link #DEFAULT_MAX_WORK_RECORDS} for the finding.
      *
      * @param key the concrete key {@code STEP010} published, never {@code null}
      * @param jobContext the job execution context, consulted for the producer's record count
      * @return the number of records loaded
-     * @throws FatalProcessingException if the object cannot be read, is not a whole number of records, or
-     *     violates the key geometry or the key order
+     * @throws FatalProcessingException if the object cannot be read, is not a whole number of records,
+     *     violates the key geometry or the key order, or exceeds {@link #maxWorkRecords}
      */
     private int reproIntoWorkCluster(final String key, final ExecutionContext jobContext) {
-        final byte[] image = readWorkObject(key);
-        if (image.length % WORK_CLUSTER_RECORD_LENGTH != 0) {
-            throw abend(REASON_BAD_RECORD_LENGTH,
-                    "REPRO at app/jcl/CREASTMT.JCL:L61 loads fixed-length records, so " + key
-                            + " must be an exact multiple of " + WORK_CLUSTER_RECORD_LENGTH
-                            + " bytes but was " + image.length, null);
-        }
-
-        final String records = new String(image, FIXED_WIDTH_CHARSET);
-        final int recordCount = records.length() / WORK_CLUSTER_RECORD_LENGTH;
-        String previousKey = "";
-        for (int index = 0; index < recordCount; index++) {
-            final int from = index * WORK_CLUSTER_RECORD_LENGTH;
-            final String recordKey = records.substring(from, from + WORK_CLUSTER_KEY_LENGTH);
-            if (recordKey.compareTo(previousKey) < 0) {
-                throw abend(REASON_SORT_ORDER_VIOLATION,
-                        "The work cluster is INDEXED on a " + WORK_CLUSTER_KEY_LENGTH
-                                + "-byte key per KEYS(32 0) at app/jcl/CREASTMT.JCL:L30, so REPRO input "
-                                + "must ascend; record " + (index + 1) + " of " + recordCount
-                                + " descends", null);
-            }
-            previousKey = recordKey;
-        }
+        final LoadedObject loaded = streamWorkObject(key);
 
         final int produced = jobContext.containsKey(WORK_RECORD_COUNT_CONTEXT_ENTRY)
                 ? jobContext.getInt(WORK_RECORD_COUNT_CONTEXT_ENTRY)
-                : recordCount;
-        if (produced != recordCount) {
+                : loaded.recordCount();
+        if (produced != loaded.recordCount()) {
             throw abend(REASON_BAD_RECORD_LENGTH,
-                    "STEP010 published " + produced + " records but " + key + " holds " + recordCount
+                    "STEP010 published " + produced + " records but "
+                            + objectKeySurrogate(key) + " holds " + loaded.recordCount()
                             + "; REPRO must load every record its input carries", null);
         }
+        requirePublishedDigest(jobContext, loaded.digest(), key);
 
         LOG.info("STEP020 loaded {} records of {} bytes into the TRXFL work cluster from {} ({})",
-                Integer.valueOf(recordCount), Integer.valueOf(WORK_CLUSTER_RECORD_LENGTH), key,
+                Integer.valueOf(loaded.recordCount()), Integer.valueOf(WORK_CLUSTER_RECORD_LENGTH),
+                objectKeySurrogate(key),
                 jobContext.containsKey(WORK_GEOMETRY_CONTEXT_ENTRY)
                         ? jobContext.getString(WORK_GEOMETRY_CONTEXT_ENTRY)
                         : "geometry not published");
-        return recordCount;
+        return loaded.recordCount();
     }
 
     /**
-     * Reads back the projected object, {@code INFILE} at {@code app/jcl/CREASTMT.JCL:L58}.
+     * Reads back the projected object one record at a time, {@code INFILE} at
+     * {@code app/jcl/CREASTMT.JCL:L58}, validating geometry and key order as it goes.
+     *
+     * <p><strong>Finding H-01, severity High, RESOLVED.</strong> An earlier revision read the object with
+     * {@code readAllBytes} and then decoded the whole image into a {@code String} - two more copies of the entire
+     * cluster resident at once, on the step whose only job is to prove the object is loadable. The object is now
+     * consumed as a stream in exactly {@value #WORK_CLUSTER_RECORD_LENGTH}-byte records, so peak memory is one
+     * record.
+     *
+     * <p>Object-storage content is treated as untrusted input: a short final record is a truncated object and is
+     * refused, and no record is parsed before its full width has been read.
      *
      * @param key the concrete key to read, never {@code null}
-     * @return the object image, never {@code null}
-     * @throws FatalProcessingException if the object is absent or unreadable
+     * @return the record count and the digest of the exact bytes read, never {@code null}
+     * @throws FatalProcessingException if the object is absent or unreadable, is not a whole number of records,
+     *     or descends in key order
      */
-    private byte[] readWorkObject(final String key) {
+    private LoadedObject streamWorkObject(final String key) {
         String ioStatus = OBJECT_STORE_IO_STATUS;
         RuntimeException runtimeFailure = null;
         Exception readFailure = null;
-        byte[] image = new byte[0];
+        LoadedObject loaded = null;
         try {
             final S3Resource resource = objectStorage.download(batchOutputBucket, key);
             try (InputStream stream = resource.getInputStream()) {
-                image = stream.readAllBytes();
+                loaded = readFixedWidthRecords(stream, key);
             }
             ioStatus = SUCCESS_STATUS;
         } catch (final CardDemoException alreadyTyped) {
@@ -1527,7 +1862,99 @@ public class StatementGenerationJob {
         }
         guardObjectStore(ioStatus, WORK_OBJECT_NAME, "READ",
                 runtimeFailure != null ? runtimeFailure : readFailure);
-        return image;
+        return loaded;
+    }
+
+    /**
+     * Consumes an open stream as consecutive fixed-width records, asserting the ascending key order that
+     * {@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30} requires of {@code REPRO} input.
+     *
+     * @param stream the open object stream, never {@code null}
+     * @param key the key being read, named in a failure through its surrogate only
+     * @return the record count and the digest of every byte read
+     * @throws IOException if the stream fails
+     * @throws FatalProcessingException if the object is not a whole number of records or descends
+     */
+    private LoadedObject readFixedWidthRecords(final InputStream stream, final String key)
+            throws IOException {
+
+        final MessageDigest digest = newDigest();
+        final byte[] record = new byte[WORK_CLUSTER_RECORD_LENGTH];
+        String previousKey = "";
+        int recordCount = 0;
+
+        for (;;) {
+            final int filled = stream.readNBytes(record, 0, WORK_CLUSTER_RECORD_LENGTH);
+            if (filled == 0) {
+                break;
+            }
+            if (filled != WORK_CLUSTER_RECORD_LENGTH) {
+                throw abend(REASON_BAD_RECORD_LENGTH,
+                        "REPRO at app/jcl/CREASTMT.JCL:L61 loads fixed-length records, so "
+                                + objectKeySurrogate(key) + " must be an exact multiple of "
+                                + WORK_CLUSTER_RECORD_LENGTH + " bytes, but record " + (recordCount + 1)
+                                + " is " + filled + " bytes", null);
+            }
+            digest.update(record, 0, WORK_CLUSTER_RECORD_LENGTH);
+            recordCount++;
+            requireRecordCountWithinCap(recordCount);
+
+            final String recordKey =
+                    new String(record, 0, WORK_CLUSTER_KEY_LENGTH, FIXED_WIDTH_CHARSET);
+            if (recordKey.compareTo(previousKey) < 0) {
+                throw abend(REASON_SORT_ORDER_VIOLATION,
+                        "The work cluster is INDEXED on a " + WORK_CLUSTER_KEY_LENGTH
+                                + "-byte key per KEYS(32 0) at app/jcl/CREASTMT.JCL:L30, so REPRO input "
+                                + "must ascend; record " + recordCount + " descends", null);
+            }
+            previousKey = recordKey;
+        }
+        return new LoadedObject(recordCount, hexDigest(digest));
+    }
+
+    /**
+     * What {@code STEP020} read back: how many records the object holds and the digest of its bytes.
+     *
+     * @param recordCount the number of {@value #WORK_CLUSTER_RECORD_LENGTH}-byte records read
+     * @param digest the lowercase hexadecimal {@value #DIGEST_ALGORITHM} digest of every byte read
+     */
+    private record LoadedObject(int recordCount, String digest) {
+    }
+
+    /**
+     * Requires that the object just read is byte-identical to the one {@code STEP010} wrote.
+     *
+     * <p><strong>Finding H-06, severity High. This is the first half of its resolution.</strong> The earlier
+     * revision proved only that the object was a whole number of ascending records of the right width - which a
+     * different object of the same shape also satisfies. Comparing the digest {@code STEP010} published against
+     * the digest of the bytes actually read proves identity rather than similarity, which is what makes the
+     * projected object a genuine snapshot rather than a plausible one.
+     *
+     * <p>An absent published digest is tolerated only when {@code STEP010} did not run in this job execution -
+     * the standalone-step case - and is stated in the log rather than passed over.
+     *
+     * @param jobContext the job execution context, consulted for the published digest
+     * @param observed the digest of the bytes just read, never {@code null}
+     * @param key the key that was read, named through its surrogate only
+     * @throws FatalProcessingException if the two digests differ
+     */
+    private void requirePublishedDigest(final ExecutionContext jobContext, final String observed,
+            final String key) {
+
+        if (!jobContext.containsKey(WORK_OBJECT_DIGEST_CONTEXT_ENTRY)) {
+            LOG.info("STEP020 found no {} digest published by STEP010, so identity cannot be asserted for "
+                            + "this execution; geometry, count and key order have been verified",
+                    WORK_OBJECT_NAME);
+            return;
+        }
+        final String published = jobContext.getString(WORK_OBJECT_DIGEST_CONTEXT_ENTRY);
+        if (!published.equals(observed)) {
+            throw abend(REASON_SNAPSHOT_DRIFTED,
+                    "STEP020 read " + objectKeySurrogate(key) + " but its " + DIGEST_ALGORITHM
+                            + " digest is not the one STEP010 published; the object is not the snapshot this "
+                            + "job execution created, so REPRO at app/jcl/CREASTMT.JCL:L61 would load "
+                            + "content STEP010 never sorted", null);
+        }
     }
 
     // =================================================================================================
@@ -1543,16 +1970,17 @@ public class StatementGenerationJob {
         return (final StepContribution contribution, final ChunkContext chunkContext) -> {
             final ExecutionContext jobContext = chunkContext.getStepContext().getStepExecution()
                     .getJobExecution().getExecutionContext();
-            final List<String> stale = publishedStatementObjectKeys(jobContext);
 
-            final int removed = preDeleteHtmlOutput(jobContext) + preDeleteTextOutput(stale);
+            preDeleteHtmlOutput();
+            final int removed = preDeleteStatementOutput();
             clearPublishedStatementObjectKeys(jobContext);
 
             jobContext.putInt(PRE_DELETED_OBJECT_COUNT_CONTEXT_ENTRY, removed);
             contribution.setExitStatus(ExitStatus.COMPLETED);
-            LOG.info("STEP030 completed: {} statement objects from an earlier attempt removed. IEFBR14 "
-                            + "does nothing itself; the effect is the DISP=(MOD,DELETE,DELETE) of its two "
-                            + "DD statements at app/jcl/CREASTMT.JCL:L67 and :L72",
+            LOG.info("STEP030 completed: {} prior statement objects removed. IEFBR14 does nothing itself; "
+                            + "the effect is the DISP=(MOD,DELETE,DELETE) of its two DD statements at "
+                            + "app/jcl/CREASTMT.JCL:L67 and :L72, which delete the statement output so that "
+                            + "STEP040 allocates it new",
                     Integer.valueOf(removed));
             return RepeatStatus.FINISHED;
         };
@@ -1569,24 +1997,20 @@ public class StatementGenerationJob {
      * itself, by {@code 01 FD-HTMLFILE-REC PIC X(100)} at {@code app/cbl/CBSTM03A.CBL:L47} and
      * {@code 05 HTML-FIXED-LN PIC X(100)} at {@code :L149}. Because {@code IEFBR14} only deletes, the
      * declared length has no effect on the outcome, which is why the contradiction survived in the source
-     * undetected. Severity <b>Medium</b>; remediation in the source would be to correct {@code :L69}, but
-     * the corpus is frozen, so the discrepancy is recorded here and markup is emitted at
-     * {@value #HTML_RECORD_LENGTH}.
+     * undetected. Correcting {@code :L69} would mean editing a frozen member, so the discrepancy is recorded
+     * here and markup is emitted at {@value #HTML_RECORD_LENGTH}.
      *
-     * @param jobContext the job execution context, consulted for markup keys an earlier attempt published
-     * @return the number of markup objects removed, zero when none existed
+     * <p>Both DDs name objects under the same statement root, so both are removed by the single enumeration
+     * in {@link #preDeleteStatementOutput()} and this method records the declared-length discrepancy rather
+     * than performing a delete of its own. Splitting the deletion in two would have to enumerate the same
+     * prefix twice to find the same objects.
      */
-    private int preDeleteHtmlOutput(final ExecutionContext jobContext) {
+    private void preDeleteHtmlOutput() {
         LOG.debug("STEP030 pre-deletes HTMLFILE, declared LRECL={} at app/jcl/CREASTMT.JCL:L69 while "
                         + "STEP040 allocates the same dataset at LRECL={} at :L94; {} is correct per "
-                        + "app/cbl/CBSTM03A.CBL:L149. Legacy defect, logged not repaired, severity Medium",
+                        + "app/cbl/CBSTM03A.CBL:L149. Legacy defect, logged not repaired",
                 Integer.valueOf(HTMLFILE_PRE_DELETE_DECLARED_LENGTH),
                 Integer.valueOf(HTML_RECORD_LENGTH), Integer.valueOf(HTML_RECORD_LENGTH));
-
-        final String markupKey = jobContext.containsKey(StatementWriter.CONTEXT_KEY_HTML_OBJECT)
-                ? jobContext.getString(StatementWriter.CONTEXT_KEY_HTML_OBJECT)
-                : null;
-        return deleteStatementObjectIfPresent(markupKey);
     }
 
     /**
@@ -1594,28 +2018,91 @@ public class StatementGenerationJob {
      *
      * <p>It declares {@code DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB)} but <b>omits the {@code UNIT=SYSDA} that
      * its {@code HTMLFILE} sibling carries at {@code :L68}</b>. Unit allocation is a JES2 concept with no
-     * object-storage counterpart, so the omission changes nothing here; it is recorded as a <b>Low</b>
-     * finding rather than normalised, because normalising it would edit a frozen member. The member's other
-     * Low finding is at its very end: {@code :L97} is {@code //*} and there is no terminating {@code //}
-     * card, which JES2 tolerates and which likewise has no counterpart.
+     * object-storage counterpart, so the omission changes nothing here; it is recorded rather than
+     * normalised, because normalising it would edit a frozen member. The member's other oddity is at its very
+     * end: {@code :L97} is {@code //*} and there is no terminating {@code //} card, which JES2 tolerates and
+     * which likewise has no counterpart.
      *
-     * <p><b>Why the delete is scoped to keys this job instance published rather than to the whole
-     * prefix.</b> Statement keys carry an account, a month and a monotonically increasing generation
-     * segment, so a new run never collides with an old one and there is nothing to overwrite. The one case
-     * the source's delete genuinely protects against is a partial object left by a failed earlier attempt at
-     * the same outputs, and those keys are exactly the ones recorded in the execution context. Deleting the
-     * whole {@code statements} prefix instead would destroy every historical statement in the bucket, which
-     * the source - which named two datasets, not a family - never did.
+     * <p><b>Finding, severity High, RESOLVED. Why the delete enumerates the prefix rather than the execution
+     * context.</b> An earlier revision deleted only the keys recorded in the <em>current</em> job execution
+     * context. That context starts empty on every fresh execution, so on any run that was not a retry the
+     * step deleted nothing at all, and because the writer composes a monotonically increasing generation
+     * segment into each key, every previous run's objects survived under their own generation - indefinitely,
+     * and carrying customer statement data. That is the opposite of what this step is for. {@code IEFBR14}
+     * with {@code DISP=(MOD,DELETE,DELETE)} at {@code :L67} and {@code :L74} deletes the statement output
+     * unconditionally, and {@code STEP040} then allocates it new at {@code :L84} and {@code :L86}; the legacy
+     * job kept no history, because it named one {@code STMTFILE} and one {@code HTMLFILE}, not a family.
+     * Enumerating the statement root and deleting what is there reproduces that, and it is what makes the
+     * pre-delete a <em>pre</em>-delete: it happens before {@code STEP040} publishes anything, so the objects
+     * it removes are always the prior logical output and never this run's.
      *
-     * @param staleKeys keys an earlier attempt published, never {@code null}
-     * @return the number of text objects removed, zero when none existed
+     * <p><b>Bounded without a continuation token.</b> {@code S3Operations#listObjects} returns one page, so
+     * one call cannot be assumed to enumerate everything. Paging is achieved by deletion instead: each pass
+     * lists a page, deletes it, and lists again, and because every pass removes the objects it just listed,
+     * the set strictly shrinks and the loop terminates. Peak memory is one page of keys. A pass that lists
+     * objects but removes none would not shrink the set, so that case exits rather than spinning - it can
+     * only arise if a delete silently no-ops, which is a condition to leave rather than to loop on.
+     *
+     * @return the number of statement objects removed, zero when none existed
+     * @throws FatalProcessingException if object storage rejects the listing or a delete
      */
-    private int preDeleteTextOutput(final List<String> staleKeys) {
+    private int preDeleteStatementOutput() {
         int removed = 0;
-        for (final String key : staleKeys) {
-            removed += deleteStatementObjectIfPresent(key);
+        // The one-based position within the enumeration is what a diagnostic names instead of the key
+        // itself, because a statement key embeds an account identifier and a statement month.
+        int ordinal = 0;
+        for (;;) {
+            final List<String> page = listStatementObjectKeys();
+            if (page.isEmpty()) {
+                return removed;
+            }
+            int removedThisPass = 0;
+            for (final String key : page) {
+                ordinal++;
+                removedThisPass += deleteStatementObjectIfPresent(key,
+                        statementObjectReference(logicalNameOf(key), ordinal));
+            }
+            removed += removedThisPass;
+            if (removedThisPass == 0) {
+                LOG.warn("STEP030 listed {} statement objects under '{}' but removed none, so the "
+                                + "enumeration cannot make progress; leaving {} removed",
+                        Integer.valueOf(page.size()), StatementWriter.KEY_ROOT, Integer.valueOf(removed));
+                return removed;
+            }
         }
-        return removed;
+    }
+
+    /**
+     * Lists one page of statement object keys under the statement root.
+     *
+     * <p>Directory-marker entries - keys ending in the separator - are filtered out: object storage has no
+     * directories, so such a key is a naming artefact rather than a statement.
+     *
+     * @return the keys of one page, never {@code null} and possibly empty
+     * @throws FatalProcessingException if object storage rejects the listing
+     */
+    private List<String> listStatementObjectKeys() {
+        String ioStatus = OBJECT_STORE_IO_STATUS;
+        RuntimeException failure = null;
+        List<S3Resource> page = List.of();
+        try {
+            page = objectStorage.listObjects(statementsBucket, StatementWriter.KEY_ROOT);
+            ioStatus = SUCCESS_STATUS;
+        } catch (final CardDemoException alreadyTyped) {
+            throw alreadyTyped;
+        } catch (final RuntimeException cause) {
+            failure = cause;
+        }
+        guardObjectStore(ioStatus, StatementWriter.KEY_ROOT, "LIST", failure);
+
+        final List<String> keys = new ArrayList<>(page.size());
+        for (final S3Resource object : page) {
+            final String key = object.getLocation() == null ? null : object.getLocation().getObject();
+            if (key != null && !key.isBlank() && !key.endsWith(StatementWriter.KEY_SEPARATOR)) {
+                keys.add(key);
+            }
+        }
+        return keys;
     }
 
     /**
@@ -1626,11 +2113,18 @@ public class StatementGenerationJob {
      * cannot fail for absence. A {@code null} or blank key is treated as "nothing published" and handled
      * explicitly rather than reaching object storage.
      *
+     * <p><strong>The failure diagnostic names no key.</strong> A statement key carries an account
+     * identifier and a statement month, so it is passed to object storage and to nothing else: the guard
+     * receives {@link #statementObjectReference(String, int)} instead. See {@link #STATEMENT_TEXT_OBJECT_NAME} for
+     * the finding this closes.
+     *
      * @param key the key to remove, possibly {@code null} or blank
+     * @param reference the log-safe reference naming the object in any diagnostic, from
+     *     {@link #statementObjectReference(String, int)}; must not be {@code null}
      * @return {@code 1} if an object was removed, {@code 0} otherwise
      * @throws FatalProcessingException if object storage rejects the delete of an object it reports present
      */
-    private int deleteStatementObjectIfPresent(final String key) {
+    private int deleteStatementObjectIfPresent(final String key, final String reference) {
         if (key == null || key.isBlank()) {
             return 0;
         }
@@ -1648,48 +2142,59 @@ public class StatementGenerationJob {
         } catch (final RuntimeException cause) {
             failure = cause;
         }
-        guardObjectStore(ioStatus, key, "DELETE", failure);
+        guardObjectStore(ioStatus, reference, "DELETE", failure);
         return removed;
     }
 
     /**
-     * Collects the statement object keys a previous attempt of this job execution published, using the
-     * entries {@link StatementWriter} declares for exactly this purpose.
+     * Renders the log-safe reference for one statement output object: its logical DD name and its one-based
+     * ordinal within the published-key list.
      *
-     * <p>An absent count is the normal first-run case and yields an empty list rather than a failure.
+     * <p>This is what a failure diagnostic and a failure exception message name instead of a key. It is
+     * deterministic and correlatable - two lines about the same object read the same - while carrying
+     * neither the account identifier nor the statement month that the key itself carries. The bracketed
+     * ordinal deliberately reads like a subscript, because that is what it is: the position in the list the
+     * execution context holds under {@link StatementWriter#CONTEXT_KEY_OBJECT_KEYS_COUNT} for text, and the
+     * single markup entry under {@link StatementWriter#CONTEXT_KEY_HTML_OBJECT}.
      *
-     * @param jobContext the job execution context, never {@code null}
-     * @return the published keys, never {@code null} and possibly empty
+     * @param logicalName the DD name of the output, {@link #STATEMENT_TEXT_OBJECT_NAME} or
+     *     {@link #STATEMENT_MARKUP_OBJECT_NAME}; must not be {@code null}
+     * @param ordinal the one-based position within that output's published-key list
+     * @return the log-safe reference, never {@code null}
      */
-    private static List<String> publishedStatementObjectKeys(final ExecutionContext jobContext) {
-        if (!jobContext.containsKey(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT)) {
-            return List.of();
-        }
-        final int count = jobContext.getInt(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT);
-        final List<String> keys = new ArrayList<>(Math.max(count, 0));
-        for (int index = 0; index < count; index++) {
-            final String entry = StatementWriter.objectKeysIndexEntry(index);
-            if (jobContext.containsKey(entry)) {
-                keys.add(jobContext.getString(entry));
-            }
-        }
-        return keys;
+    private static String statementObjectReference(final String logicalName, final int ordinal) {
+        return logicalName + "[" + ordinal + "]";
     }
 
     /**
-     * Removes the published key entries once their objects have been deleted, so a retry cannot delete the
-     * same keys twice or mistake a previous attempt's output for its own.
+     * The DD name the object under {@code key} was written for.
+     *
+     * <p>{@code app/jcl/CREASTMT.JCL:L67} and {@code :L72} pre-delete two separate allocations, and the
+     * enumeration this serves returns both under one prefix, so a reference that named only the text DD would
+     * mis-attribute every markup object it removed. The decision is taken from the key's trailing object name,
+     * which is the only part of a statement key that carries no account identifier and no statement month -
+     * the two segments that make the key itself undisclosable.
+     *
+     * @param key the object key being removed; must not be {@code null}
+     * @return {@link #STATEMENT_MARKUP_OBJECT_NAME} for a markup object, otherwise
+     *     {@link #STATEMENT_TEXT_OBJECT_NAME}
+     */
+    private static String logicalNameOf(final String key) {
+        return key.endsWith(MARKUP_OBJECT_SUFFIX)
+                ? STATEMENT_MARKUP_OBJECT_NAME
+                : STATEMENT_TEXT_OBJECT_NAME;
+    }
+
+    /**
+     * Removes the statement-object bookkeeping entries once the prior output has been deleted, so a retry
+     * cannot mistake a previous attempt's tally for its own.
+     *
+     * <p>Only the bounded entries exist to clear: one count and the two step-scoped keys naming the latest
+     * pair. There is no per-object list to walk - see {@link StatementWriter#CONTEXT_KEY_OBJECT_KEYS_COUNT}.
      *
      * @param jobContext the job execution context, never {@code null}
      */
     private static void clearPublishedStatementObjectKeys(final ExecutionContext jobContext) {
-        if (!jobContext.containsKey(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT)) {
-            return;
-        }
-        final int count = jobContext.getInt(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT);
-        for (int index = 0; index < count; index++) {
-            jobContext.remove(StatementWriter.objectKeysIndexEntry(index));
-        }
         jobContext.remove(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT);
         jobContext.remove(StatementWriter.CONTEXT_KEY_TEXT_OBJECT);
         jobContext.remove(StatementWriter.CONTEXT_KEY_HTML_OBJECT);
@@ -1736,9 +2241,13 @@ public class StatementGenerationJob {
     //   :L905 9400-ACCTFILE-CLOSE       -> closeStatementRun().
     //   :L921 9999-ABEND-PROGRAM        -> abend().
     //
-    // app/cbl/CBSTM03B.CBL contributes 15 labels - 14 procedural plus FILE-CONTROL at :L30 - and every one
-    // of them belongs to FileService, which owns the four-dataset by six-operation matrix and the '00' or
-    // '04' leniency of the nine call sites. They are cited here and implemented there:
+    // app/cbl/CBSTM03B.CBL contributes 14 PROCEDURE DIVISION paragraph labels, and every one of them belongs
+    // to FileService, which owns the twelve implemented cells of the four-dataset by six-operation matrix -
+    // open, close and one read form per dataset; write and rewrite appear nowhere in the subprogram - and the
+    // '00' or '04' leniency of the nine call sites. FILE-CONTROL at :L30 is a fifteenth Area-A label and is
+    // NOT one of the fourteen: it sits in the ENVIRONMENT DIVISION at :L28 and is not a paragraph-to-method
+    // target, so 14 is the label figure and 15 is only the Area-A total. An earlier revision of this comment
+    // published 15 as the label count. The labels are cited here and implemented there:
     // PROCEDURE DIVISION USING at :L114, 0000-START at :L116, EVALUATE LK-M03B-DD at :L118, WHEN OTHER at
     // :L127 and GO TO 9999-GOBACK at :L128.
     // =================================================================================================
@@ -1808,8 +2317,8 @@ public class StatementGenerationJob {
     /**
      * {@code EXIT.}, {@code app/cbl/CBSTM03A.CBL:L816}.
      *
-     * <p><b>Intentional no-op, retained for control-flow parity. Unreachable in the source. Severity:
-     * Low.</b> {@code :L815} is {@code GO TO 1000-MAINLINE}, an unconditional branch, so control never
+     * <p><b>Intentional no-op, retained for control-flow parity. Unreachable in the source.</b>
+     * {@code :L815} is {@code GO TO 1000-MAINLINE}, an unconditional branch, so control never
      * reaches the {@code EXIT.} that follows it - unlike the {@code EXIT.} statements ending the other four
      * stage paragraphs, which are reachable fall-throughs. It is kept, rather than dropped, because the
      * paragraph map that the scope-coverage gate verifies is proven by inspection against all 26 labels, and
@@ -1818,8 +2327,7 @@ public class StatementGenerationJob {
      * <p>This is one of the two artefacts of this kind in this file - the other being the redundant
      * {@code MOVE 1 TO CR-JMP} at {@code :L324}, which lives with the mainline body in
      * {@link StatementProcessor} and is retained there. Rule 1 Clause B forbids <i>untracked</i> dead code;
-     * both are cited here, marked as intentional, and owed entries in the planned {@code DECISION_LOG.md}
-     * and {@code TRACEABILITY_MATRIX.md}, so neither is untracked.
+     * both are cited here and marked as intentional at their own declarations, so neither is untracked.
      */
     private void acctFileOpenExit() {
         LOG.trace("app/cbl/CBSTM03A.CBL:L816 EXIT - unreachable in the source because :L815 branches "
@@ -1997,8 +2505,20 @@ public class StatementGenerationJob {
         if (SUCCESS_STATUS.equals(ioStatus)) {
             return;
         }
+        // FileStatusMapper.displayIoStatus already returns the whole rendered line INCLUDING
+        // FileStatus.DISPLAY_MESSAGE_PREFIX, so prefixing it a second time produced
+        // "FILE STATUS IS: NNNNFILE STATUS IS: NNNN9048" - the four-character rendering that
+        // app/cbl/CBTRN02C.cbl:L714-L731 fixes as a contract, with the label doubled in front of it. The
+        // mapper owns the format; this call site only places it.
+        //
+        // The cause is deliberately NOT logged as a throwable here: an object-store failure carries the
+        // bucket, the key and often the request URL in its message and stack, and a statement key embeds the
+        // account identifier. Its type is the classification an operator needs, and the cause itself is
+        // preserved as the cause of the exception raised immediately below - so nothing is swallowed and the
+        // root cause still reaches whoever handles the failure.
         LOG.error("{} on {} reported {}{}", operation, logicalName,
-                FileStatus.DISPLAY_MESSAGE_PREFIX, fileStatusMapper.displayIoStatus(ioStatus), cause);
+                fileStatusMapper.displayIoStatus(ioStatus),
+                cause == null ? "" : " (cause: " + cause.getClass().getName() + ")");
         throw fileStatusMapper
                 .toException(ioStatus, logicalName, operation, cause)
                 .orElseGet(() -> abend(REASON_OBJECT_STORE_FAILED,
@@ -2026,11 +2546,109 @@ public class StatementGenerationJob {
     private FatalProcessingException abend(final String reason, final String detail,
             final Throwable cause) {
 
-        LOG.error("{}: {} - {}", MSG_ABENDING_PROGRAM, reason, detail, cause);
+        // The cause travels as the cause of the returned exception, so it is preserved in full; only its type
+        // is logged here, for the reason given on guardObjectStore. Finding M-06, severity Medium.
+        LOG.error("{}: {} - {}{}", MSG_ABENDING_PROGRAM, reason, detail,
+                cause == null ? "" : " (cause: " + cause.getClass().getName() + ")");
         if (cause == null) {
             return new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, reason, detail);
         }
         return new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, reason, detail, cause);
+    }
+
+    /**
+     * Proves that the live transaction source still projects to the object {@code STEP010} wrote, before
+     * {@code STEP040} builds its first statement.
+     *
+     * <p><strong>Finding H-06, severity High. This is the second half of its resolution</strong>; see
+     * {@link #WORK_OBJECT_DIGEST_CONTEXT_ENTRY} for why the check takes this form rather than re-pointing the
+     * {@code TRNXFILE} data path. The projection is re-derived by streaming - nothing is collected, so this costs
+     * one keyset pass and one record of memory, not a second copy of the cluster - and its digest is compared
+     * against the published one. A difference means a row was inserted, updated or deleted between the sort and
+     * this step, so the statements this step would emit are not the statements the sort described; that abends.
+     *
+     * <p>An absent published digest means {@code STEP010} did not run in this job execution, which is the
+     * standalone-step case. It is stated in the log and the step proceeds, because refusing would make the step
+     * unrunnable on its own; what it must never do is proceed <em>silently</em>.
+     *
+     * @param jobContext the job execution context, consulted for the published digest and record count
+     * @throws FatalProcessingException if the live source no longer projects to the published digest
+     */
+    private void requireSourceStillMatchesSnapshot(final ExecutionContext jobContext) {
+        if (!jobContext.containsKey(WORK_OBJECT_DIGEST_CONTEXT_ENTRY)) {
+            LOG.info("STEP040 found no {} digest published by STEP010, so it is running standalone against "
+                            + "the live relation; app/jcl/CREASTMT.JCL:L79 gates STEP040 on STEP010 in the "
+                            + "job stream, where the digest is always present",
+                    WORK_OBJECT_NAME);
+            return;
+        }
+        final String published = jobContext.getString(WORK_OBJECT_DIGEST_CONTEXT_ENTRY);
+        // The records are discarded as they are digested: this re-derives the projection, it does not rebuild it.
+        final ProjectedStream observed = sortAndProjectTransactions(encoded -> { });
+        if (!published.equals(observed.digest())) {
+            throw abend(REASON_SNAPSHOT_DRIFTED,
+                    "STEP040 must consume the projection STEP010 produced, but the source now projects to a "
+                            + "different " + DIGEST_ALGORITHM + " digest over " + observed.recordCount()
+                            + " records; the transaction relation changed after STEP010 sorted it, so the "
+                            + "statements built here would not be the statements SORTOUT at "
+                            + "app/jcl/CREASTMT.JCL:L48 describes", null);
+        }
+        LOG.info("STEP040 verified that the source still projects to the STEP010 snapshot over {} records",
+                Integer.valueOf(observed.recordCount()));
+    }
+
+    /**
+     * Creates a digest instance for one snapshot comparison.
+     *
+     * <p>A fresh instance per use, because {@link MessageDigest} is stateful and a shared one would make two
+     * concurrent steps interfere. The algorithm is required on every conforming platform, so an absence is a
+     * broken runtime rather than a condition to handle - it is reported as such rather than swallowed.
+     *
+     * @return a fresh digest, never {@code null}
+     */
+    private static MessageDigest newDigest() {
+        try {
+            return MessageDigest.getInstance(DIGEST_ALGORITHM);
+        } catch (final NoSuchAlgorithmException absent) {
+            throw new IllegalStateException(DIGEST_ALGORITHM
+                    + " is a required algorithm on every conforming Java platform, so its absence means the "
+                    + "runtime is not conforming", absent);
+        }
+    }
+
+    /**
+     * Renders a completed digest as lowercase hexadecimal.
+     *
+     * <p>A pure function of its argument, apart from finalising the digest it was given.
+     *
+     * @param digest the digest to finalise, never {@code null}
+     * @return the hexadecimal rendering, never {@code null}
+     */
+    private static String hexDigest(final MessageDigest digest) {
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    /**
+     * Renders any object key - work, text statement or markup statement - as a bounded surrogate for a
+     * diagnostic.
+     *
+     * <p><strong>Finding M-06, severity Medium.</strong> Statement keys embed the account identifier as a key
+     * segment, and this class logs keys on the pre-delete, the projection and the load paths. A log line needs
+     * enough to identify which object is meant and no more, so only the last segment is emitted and any
+     * {@code account=} segment is dropped with it. A {@code null} or blank key yields a constant rather than an
+     * exception, because a diagnostic path must not itself fail.
+     *
+     * <p>A pure function of its argument.
+     *
+     * @param key the object key, possibly {@code null}
+     * @return the surrogate rendering, never {@code null}
+     */
+    private static String objectKeySurrogate(final String key) {
+        if (key == null || key.isBlank()) {
+            return "(no key)";
+        }
+        final int lastSeparator = key.lastIndexOf('/');
+        return lastSeparator < 0 ? key : ".../" + key.substring(lastSeparator + 1);
     }
 
     /**
@@ -2056,7 +2674,7 @@ public class StatementGenerationJob {
      * Parks the diagnostic value this execution inherited for one key, so it can be put back afterwards.
      *
      * <p>Called before the key is overwritten. When nothing was inherited the parking entry is removed
-     * rather than left over from an earlier attempt of the same job instance, so a restart cannot resurrect
+     * rather than left over from a prior attempt of the same job instance, so a restart cannot resurrect
      * a stale value: {@link #unwindDiagnostic} then correctly removes the key instead of restoring one.
      *
      * @param jobContext the job execution context that holds the parked value, never {@code null}
@@ -2098,15 +2716,32 @@ public class StatementGenerationJob {
     }
 
     /**
-     * Maps a completed step onto the legacy return code that {@code COND=(0,NE)} tests.
+     * Maps the job so far onto the legacy return code that {@code COND=(0,NE)} tests.
+     *
+     * <p><b>Finding, severity High - remediated here: the code is cumulative.</b> This method previously
+     * inspected only the step execution handed to the decider, which is the <em>immediately preceding</em>
+     * step. That is not what the source tests. {@code COND=(0,NE)} written without a step name - as it is on
+     * {@code STEP020}, {@code STEP030} and {@code STEP040} of {@code app/jcl/CREASTMT.JCL:L56}, {@code :L66}
+     * and {@code :L79} - is evaluated against <b>every preceding step in the job</b>, and the step is
+     * bypassed if the test is true for any one of them. So a job whose sort failed but whose load happened to
+     * be skipped-and-recorded-clean would have re-opened the gate for the emission, which is precisely the
+     * case where the emission must not run: it would publish statements from a work cluster that was never
+     * loaded.
+     *
+     * <p>The remedy is to take the <b>worst</b> return code over every step execution recorded on the job,
+     * not the last one. Because 0 is clean and 4, 8 and 12 are progressively worse, the maximum is the
+     * cumulative code, and comparing that maximum against zero reproduces "every preceding step returned 0"
+     * exactly. The step execution argument is still consulted - it is included in the sweep and it is what
+     * {@link #containsAbend(JobExecution, StepExecution)} needs - but it no longer decides the outcome on its
+     * own.
      *
      * <p>Zero for a clean completion, 4 for a completion carrying rejects, 12 when the failure was an abend,
-     * and 8 for every other unsuccessful outcome. A {@code null} step execution - no step has run yet -
-     * reports zero, because a {@code COND} test against an unset condition code passes.
+     * and 8 for every other unsuccessful outcome. No steps at all - nothing has run yet - reports zero,
+     * because a {@code COND} test against an unset condition code passes.
      *
      * @param jobExecution the running job, never {@code null}
      * @param stepExecution the last completed step, possibly {@code null}
-     * @return one of 0, 4, 8 or 12
+     * @return one of 0, 4, 8 or 12: the worst code any step has reached
      */
     private static int legacyReturnCode(final JobExecution jobExecution,
             final StepExecution stepExecution) {
@@ -2114,6 +2749,28 @@ public class StatementGenerationJob {
         if (containsAbend(jobExecution, stepExecution)) {
             return RETURN_CODE_ABEND;
         }
+
+        int cumulative = RETURN_CODE_COMPLETED;
+        for (final StepExecution recorded : jobExecution.getStepExecutions()) {
+            cumulative = Math.max(cumulative, stepReturnCode(recorded));
+        }
+        // The decider's own argument is swept too. It is normally already among the job's step executions,
+        // but a decider can be handed a step the job has not yet recorded, and a gate that ignored it would
+        // open on the strength of an incomplete history.
+        return Math.max(cumulative, stepReturnCode(stepExecution));
+    }
+
+    /**
+     * Maps one step execution onto its legacy return code.
+     *
+     * <p>Extracted from {@link #legacyReturnCode(JobExecution, StepExecution)} so that the per-step mapping
+     * and the cumulative sweep over it are separately readable; the mapping itself is unchanged.
+     *
+     * @param stepExecution the step to classify, possibly {@code null}
+     * @return 0 for a clean completion or for {@code null}, 4 for completed-with-rejects, 12 for an abend
+     *     exit status and 8 for any other unsuccessful outcome
+     */
+    private static int stepReturnCode(final StepExecution stepExecution) {
         if (stepExecution == null) {
             return RETURN_CODE_COMPLETED;
         }
@@ -2197,6 +2854,8 @@ public class StatementGenerationJob {
         @Override
         public void beforeStep(final StepExecution stepExecution) {
             requireOutputGeometry();
+            requireSourceStillMatchesSnapshot(
+                    stepExecution.getJobExecution().getExecutionContext());
             initialiseStatementRun();
         }
 
@@ -2226,9 +2885,57 @@ public class StatementGenerationJob {
             final long emitted = statementWriter.statementsWritten();
             stepExecution.getJobExecution().getExecutionContext()
                     .putLong(STATEMENTS_EMITTED_CONTEXT_ENTRY, emitted);
-            metricsConfig.countRecordsProcessed((int) Math.min(emitted, Integer.MAX_VALUE));
+            // The statement count is published to the execution context and to the run log, and is
+            // deliberately NOT added to the records-processed counter. That counter reproduces
+            // DISPLAY 'TRANSACTIONS PROCESSED :' at app/cbl/CBTRN02C.cbl:L227, whose unit is the daily
+            // transaction records POSTTRAN read at :L206 - one program, one meaning. A statement is not one of
+            // those records, and the statement writer was incrementing the same series per statement as well,
+            // so a single untagged counter summed unrelated populations that no query could decompose again.
+            // Spring Batch already publishes this job's own volume as spring.batch.item.* and
+            // spring.batch.step, per step and per job, which is decomposable, so nothing is lost.
             emitStepGoback(emitted);
+            discardPartialOutputIfStepFailed(stepExecution, outcome);
             return outcome;
+        }
+
+        /**
+         * Removes every object this attempt created when the step did not complete.
+         *
+         * <p><b>Why this is safe to do wholesale.</b> {@code STEP030} has already emptied the statement root
+         * before this step published anything, so whatever is under it now was created by this attempt and by
+         * nothing else. Removing it is therefore precise, not indiscriminate - and it is what the source's
+         * {@code DISP=(NEW,CATLG,DELETE)} at {@code app/jcl/CREASTMT.JCL:L84} and {@code :L86} does on its
+         * own: the third disposition is the abnormal one, and it deletes the dataset the step was creating.
+         * A half-written statement is customer data that describes nothing, and leaving it behind for an
+         * operator to mistake for output is worse than leaving nothing behind.
+         *
+         * <p>A cleanup that itself fails is recorded and swallowed rather than raised. The step has already
+         * failed by this point, and replacing its failure with a housekeeping failure would hide the reason
+         * the run needs looking at.
+         *
+         * @param stepExecution the finished step, never {@code null}
+         * @param closeOutcome the status the close produced, or {@code null} when the close was clean
+         */
+        private void discardPartialOutputIfStepFailed(final StepExecution stepExecution,
+                final ExitStatus closeOutcome) {
+
+            final boolean failed = closeOutcome != null
+                    || stepExecution.getStatus().isUnsuccessful()
+                    || !stepExecution.getFailureExceptions().isEmpty();
+            if (!failed) {
+                return;
+            }
+            try {
+                final int discarded = preDeleteStatementOutput();
+                LOG.warn("STEP040 did not complete, so the {} statement objects it had created were "
+                                + "discarded; app/jcl/CREASTMT.JCL:L84 and :L86 declare "
+                                + "DISP=(NEW,CATLG,DELETE), whose abnormal disposition deletes the dataset "
+                                + "being created", Integer.valueOf(discarded));
+            } catch (final CardDemoException cleanupFailure) {
+                LOG.error("STEP040 could not discard the partial statement output it created; the step's own "
+                        + "failure is left as the step outcome", cleanupFailure);
+                stepExecution.addFailureException(cleanupFailure);
+            }
         }
     }
 
@@ -2351,7 +3058,7 @@ public class StatementGenerationJob {
          *
          * @param jobExecution the running job, never {@code null}
          * @param stepExecution the last completed step, possibly {@code null}
-         * @return {@link #GATE_RUN} when the preceding return code is zero, {@link #GATE_SKIP} otherwise
+         * @return {@link #GATE_RUN} when EVERY preceding step returned zero, {@link #GATE_SKIP} otherwise
          */
         @Override
         public FlowExecutionStatus decide(final JobExecution jobExecution,
@@ -2361,8 +3068,10 @@ public class StatementGenerationJob {
             if (returnCode == RETURN_CODE_COMPLETED) {
                 return new FlowExecutionStatus(GATE_RUN);
             }
-            LOG.warn("COND=(0,NE) suppressed {}: the preceding return code was {}", gatedStepName,
-                    Integer.valueOf(returnCode));
+            // "any preceding step", not "the preceding step": COND=(0,NE) without a step name is evaluated
+            // against every one of them, so the code reported here is the worst any step has reached.
+            LOG.warn("COND=(0,NE) suppressed {}: the worst return code reached by any preceding step was {}",
+                    gatedStepName, Integer.valueOf(returnCode));
             return new FlowExecutionStatus(GATE_SKIP);
         }
     }

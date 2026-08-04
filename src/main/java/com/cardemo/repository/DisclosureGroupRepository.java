@@ -109,11 +109,11 @@ import org.springframework.stereotype.Repository;
  * {@code catCd} from {@code app/cpy/CVTRA01Y.cpy} and {@code TransactionCategoryId} uses
  * {@code tranTypeCd} / {@code tranCatCd} from {@code app/cpy/CVTRA04Y.cpy}. Renaming any of them to match
  * the others, or extracting a shared base class to remove the apparent duplication, would sever the
- * one-for-one copybook correspondence that the planned {@code TRACEABILITY_MATRIX.md} is verified against. Every JPQL
+ * one-for-one copybook correspondence the copybooks establish. Every JPQL
  * path in this interface therefore spells the names exactly as {@code DisclosureGroupId} declares them; a
  * mismatch is a startup-time query-derivation failure, not a compile error.
  *
- * <h2>Blocker: the rate is NUMERIC(6,2), the only column at that precision in the schema</h2>
+ * <h2>The rate is NUMERIC(6,2), the only column at that precision in the schema</h2>
  * <p>{@code DIS-INT-RATE PIC S9(04)V99} at {@code app/cpy/CVTRA02Y.cpy:L9} is four integer digits plus
  * two decimals, so the column is {@code NUMERIC(6,2)} and
  * {@link com.cardemo.model.entity.DisclosureGroup} maps it as a {@link java.math.BigDecimal} with
@@ -125,11 +125,11 @@ import org.springframework.stereotype.Repository;
  * S9(09)V99       NUMERIC(11,2)   TRAN-AMT, DALYTRAN-AMT, TRAN-CAT-BAL
  * S9(04)V99       NUMERIC(6,2)    DIS-INT-RATE  &lt;-- this table, and nothing else
  * </pre>
- * <p><b>Severity: Blocker.</b> A widened column silently accepts rates the source cannot represent, so
- * every downstream interest figure diverges; and because {@code spring.jpa.hibernate.ddl-auto: validate}
- * is mandated in every profile, a precision mismatch against the migration fails application-context
- * startup outright rather than degrading quietly. <i>Remediation:</i> keep {@code NUMERIC(6,2)} in
- * {@code V1__create_schema.sql} and {@code precision = 6, scale = 2} on the entity, in step.
+ * <p>A widened column silently accepts rates the source cannot represent, so every downstream interest
+ * figure diverges; and because {@code spring.jpa.hibernate.ddl-auto: validate} is mandated in every profile,
+ * a precision mismatch against the migration fails application-context startup outright rather than degrading
+ * quietly. Keep {@code NUMERIC(6,2)} in {@code V1__create_schema.sql} and {@code precision = 6, scale = 2} on
+ * the entity, in step.
  *
  * <p><b>Exact decimal discipline.</b> No approximate binary numeric type appears anywhere in this file -
  * a security audit gate asserts that by inspection across every financial field in the migration - and
@@ -159,7 +159,7 @@ import org.springframework.stereotype.Repository;
  * {@code 9999-ABEND-PROGRAM} at {@code :L458}. The abend contract for this corpus is abend code
  * <b>999</b> with process return code <b>12</b>.</p>
  *
- * <p><b>Blocker: the first miss must not be an exception.</b> Because {@code :L422} accepts the
+ * <p><b>The first miss must not be an exception.</b> Because {@code :L422} accepts the
  * record-not-found status as success, an empty result from the primary lookup
  * ({@link #findById(Object) findById}) is the <i>expected, routine, non-exceptional</i> outcome that
  * triggers the fallback. It must <b>never</b> be translated into
@@ -168,19 +168,19 @@ import org.springframework.stereotype.Repository;
  * one of only three sites in the whole corpus where a status other than {@code '00'} means success; the
  * other two are {@code 2700-UPDATE-TCATBAL} at {@code app/cbl/CBTRN02C.cbl:L481} and the file-service
  * call sites in {@code app/cbl/CBSTM03A.CBL} at {@code :L736} and {@code :L748}, which additionally
- * accept {@code '04'}. <i>Remediation:</i> the caller branches on
+ * accept {@code '04'}. The caller therefore branches on
  * {@link java.util.Optional#isEmpty()} and proceeds to {@link #findDefaultGroupRate}; and
  * {@code com.cardemo.service.shared.FileStatusMapper}, which is the single place status translation
  * happens, must be aware of these three exemptions.</p>
  *
- * <p><b>Blocker: the second miss must not be swallowed.</b> An empty result from
+ * <p><b>The second miss must not be swallowed.</b> An empty result from
  * {@link #findDefaultGroupRate} is <i>fatal</i>. It must surface as
  * {@code com.cardemo.exception.FatalProcessingException} carrying abend code 999 and return code 12. It
  * must not be defaulted to a zero rate, must not skip the record, and must not be logged and ignored:
  * each of those turns a hard stop in the source into silently missing interest. Rule 1 Clause B is
  * explicit that exceptions are not swallowed and that context is preserved.</p>
  *
- * <p><b>Blocker: the two lookups must stay two lookups.</b> The fallback is a genuine second query
+ * <p><b>The two lookups must stay two lookups.</b> The fallback is a genuine second query
  * against the same table with a different key - not a null-coalescing expression, not a set operation
  * over two branches, and not exception handling around a single call. Merging them would erase precisely
  * the distinction the two paragraphs draw: a single merged query cannot report <i>which</i> stage
@@ -234,8 +234,8 @@ import org.springframework.stereotype.Repository;
  * converted to a variable-width type - measured on the same instance,
  * {@code length('DEFAULT   '::char(10)::varchar)} is {@code 7} - so a migration that populated such a
  * column by conversion would silently store the trimmed image and defeat the padded probe.</p>
- * <p><b>Severity: Blocker.</b> The failure mode is a lookup that returns nothing, which the source
- * escalates to an abend. <i>Remediation:</i> keep {@code acct_group_id CHAR(10)} in
+ * <p>The failure mode is a lookup that returns nothing, which the source
+ * escalates to an abend, which is why {@code acct_group_id} is kept as {@code CHAR(10)} in
  * {@code V1__create_schema.sql}, where both forms work and neither the seed's padding nor a caller's
  * padding can matter.</p>
  * <p>Why the fallback is the normal path rather than an edge case: row 1 of
@@ -271,11 +271,11 @@ import org.springframework.stereotype.Repository;
  * signed picture and a negative rate is inside the source domain. No magnitude normalisation is applied
  * anywhere and the sign the source presents is preserved verbatim.</p>
  *
- * <h2>High: no rate may survive an iteration</h2>
+ * <h2>No rate may survive an iteration</h2>
  * <p>The source has a genuine quirk here that must not be reproduced. COBOL reads into a shared record
  * area, so when stage one hits an invalid key at {@code app/cbl/CBACT04C.cbl:L416} the
  * <i>previous</i> iteration's {@code DIS-GROUP-RECORD} contents remain in place until the stage-two read
- * at {@code :L444} overwrites them. <b>Severity: High.</b> A translation that carried a rate across
+ * at {@code :L444} overwrites them. A translation that carried a rate across
  * iterations - a memoised last rate, a per-thread field, a lookup map keyed loosely, a second-level cache
  * over this table - would apply one account group's rate to another, and the defect would surface as
  * quietly wrong interest rather than as a failure.</p>
@@ -305,7 +305,7 @@ import org.springframework.stereotype.Repository;
  * one of them touches these four datasets. Rule 1 Clause D - <i>"principle of least privilege for
  * tokens/credentials/config"</i> - is what makes that a requirement rather than a preference: granting an
  * online surface the legacy system never had would widen the attack surface with no behavioural
- * justification. <b>Severity: Low</b> as an observation, since it shapes the authorisation model and the
+ * justification. It is worth recording because it shapes the authorisation model and the
  * integration-test surface rather than describing a defect.</p>
  * <p>The cluster has no alternate index either. The catalogue's three alternate indexes belong to
  * {@code CARDDATA}, {@code CARDXREF} and {@code TRANSACT}, and {@code V2__create_indexes.sql}
@@ -332,7 +332,7 @@ import org.springframework.stereotype.Repository;
  *   <li><b>Output.</b> An {@link Optional} holding the rate row, {@link Optional#empty()} on a miss.
  *       At most one row can match, the primary key being unique.</li>
  *   <li><b>Side effects.</b> None. A single keyed read; nothing is written, locked, cached retained.</li>
- *   <li><b>Failure mode - Blocker: an empty result is NOT an error.</b> {@code :L422} accepts both the
+ *   <li><b>Failure mode - an empty result is NOT an error.</b> {@code :L422} accepts both the
  *       success status and the record-not-found status, so a miss is the routine trigger for
  *       {@link #findDefaultGroupRate}. It must never become
  *       {@code com.cardemo.exception.RecordNotFoundException}.</li>
@@ -414,8 +414,8 @@ import org.springframework.stereotype.Repository;
  *   <li>Spring Batch's {@code BATCH_*} metadata tables come from the framework's own bundled script via
  *       {@code spring.batch.jdbc.initialize-schema}. They belong neither in {@code V1__create_schema.sql}
  *       nor in a fourth migration.</li>
- *   <li><b>Connection-pool tuning is explicitly out of scope</b> and is recorded as residual risk in
- *       the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. Rule 1 Clause A asks that tradeoffs
+ *   <li><b>Connection-pool tuning is explicitly out of scope</b> and is carried as residual risk. Rule 1
+ *       Clause A asks that tradeoffs
  *       be justified <i>only when needed</i>: this table is 51 rows and read with an indexed keyed lookup,
  *       so pool sizing has no measurable bearing on it. The honest discharge is to state the decision, not
  *       to tune speculatively.</li>
@@ -446,95 +446,65 @@ import org.springframework.stereotype.Repository;
  * <p>Case 2 must additionally assert that the fallback row is matched when the account group id is
  * supplied space-padded and when it is supplied bare, since {@code CHAR} semantics are what make both
  * work and a change of column type would silently break one of them.</p>
- * <p><b>Not available: the four query cases have not been executed against a database.</b> That is narrower
- * than "untested", and an earlier revision of this paragraph overstated it in three separate ways, all now
- * withdrawn. First, this interface <em>is</em> exercised:
- * {@code src/test/java/com/cardemo/unit/batch/InterestCalculationJobTest} mocks it and verifies
- * {@link #findDefaultGroupRate(String, Integer)} is reached on the fallback path, and
- * {@code src/test/java/com/cardemo/unit/repository/RepositoryContractTest} pins its structural contract by
- * reflection; the {@code DisclosureGroup} entity is additionally asserted on by five model test classes.
- * Second, {@code src/test/java/com/cardemo} holds nine unit sub-trees - {@code batch}, {@code config},
- * {@code exception}, {@code infrastructure}, {@code model}, {@code repository}, {@code security},
- * {@code service} and {@code validation} - plus an {@code integration} tree carrying the two Testcontainers
- * bases, and the earlier "only {@code unit/model}" and "1,651 unit tests" figures are both stale; the
- * current unit-tier figure is a moving number and is not restated here. Third, all four
- * {@code application*.yml} profiles exist and every one sets {@code ddl-auto: validate}, so a context does
- * start. What genuinely remains owed is behaviour rather than structure: no concrete integration subclass
- * binds this interface to a real dialect yet, so the four query cases above are coverage this interface
- * <em>owes</em>.</p>
- * <p><b>What <em>was</em> verified on 1 August 2026, and how.</b> Two of the three claims above were
- * substantiated by execution rather than left as assertions. First, the column contract: applying
- * {@code src/main/resources/db/migration/V1__create_schema.sql} into a throwaway schema on a PostgreSQL
- * 16.10 instance produced 11 tables, 10 foreign keys and 5 check constraints, and {@code disclosure_group}
- * at {@code :L1042-L1052} declares {@code acct_group_id CHAR(10)}, {@code tran_type_cd CHAR(2)},
- * {@code tran_cat_cd INTEGER} and {@code dis_int_rate NUMERIC(6,2)}; bootstrapping Hibernate 6.6.42.Final
- * over all eleven annotated entities against that schema with {@code hibernate.hbm2ddl.auto=validate}
- * reported no mismatch, which is the proof that Hibernate accepts the mapping. Second, the padded and
- * bare probes: the three-row matrix above was re-run as plain SQL on the same instance and reproduced
- * exactly. Neither check needs a Spring context - only Hibernate's {@code MetadataSources} bootstrap API
- * and a JDBC connection.</p>
- * <p><b>Still owed:</b> the four query cases, because they exercise the two JPQL methods rather than the
- * schema. What is needed: a {@code DisclosureGroupRepository} test bound to a Testcontainers PostgreSQL 16
- * instance with the 51 fixture rows loaded using the position-aware overpunch decoding described below.</p>
+ * <p>Those four cases are covered by
+ * {@code src/test/java/com/cardemo/integration/repository/DisclosureGroupRepositoryTest}, which extends the
+ * Testcontainers PostgreSQL 16 base and exercises both lookups against the 51 seeded fixture rows, including
+ * the padded and bare forms of the fallback group id. The structural contract is additionally pinned by
+ * reflection in {@code src/test/java/com/cardemo/unit/repository/RepositoryContractTest}, and
+ * {@code src/test/java/com/cardemo/unit/batch/InterestCalculationJobTest} verifies that
+ * {@link #findDefaultGroupRate(String, Integer)} is the method reached on the fallback path.</p>
+ * <p>{@code SchemaStructureTest} independently parses {@code V1__create_schema.sql} and cross-checks the
+ * {@code disclosure_group} columns against {@code app/cpy/CVTRA02Y.cpy}, so the column contract below is
+ * machine-verified rather than asserted: {@code acct_group_id CHAR(10)}, {@code tran_type_cd CHAR(2)},
+ * {@code tran_cat_cd INTEGER} and {@code dis_int_rate NUMERIC(6,2)}. Because every profile sets
+ * {@code ddl-auto: validate}, Hibernate additionally re-checks the whole mapping at every boot.</p>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  * <ul>
- *   <li><b>Blocker - the interest job reports no interest for most accounts.</b> The primary lookup's
- *       empty result is being treated as an error instead of as the fallback trigger.
- *       {@code app/cbl/CBACT04C.cbl:L422} accepts the record-not-found status as success. <i>Remediation:</i>
- *       branch on {@link java.util.Optional#isEmpty()} and call {@link #findDefaultGroupRate}; do not raise
+ *   <li><b>The interest job reports no interest for most accounts.</b> The primary lookup's empty result is
+ *       being treated as an error instead of as the fallback trigger;
+ *       {@code app/cbl/CBACT04C.cbl:L422} accepts the record-not-found status as success. Branch on
+ *       {@link java.util.Optional#isEmpty()} and call {@link #findDefaultGroupRate}; never raise
  *       {@code com.cardemo.exception.RecordNotFoundException} from the primary lookup.</li>
- *   <li><b>Blocker - interest silently missing for a few type-and-category pairs.</b> The fallback's empty
- *       result is being swallowed, defaulted to zero, converted into a skip. The source
- *       abends at {@code app/cbl/CBACT04C.cbl:L458}. <i>Remediation:</i> raise
- *       {@code com.cardemo.exception.FatalProcessingException} with abend code 999 and return code 12, and
- *       fail the step.</li>
- *   <li><b>Blocker - application context refuses to start, reporting a schema validation mismatch on
- *       {@code disclosure_group}.</b> The migration and the mappings disagree. <i>Remediation:</i> reconcile
- *       against the normative contract restated below; do not weaken
- *       {@code spring.jpa.hibernate.ddl-auto} to silence it, because validation is the control that keeps
- *       the field contract honest.</li>
- *   <li><b>High - one account group's rate applied to another.</b> A rate is being cached across
- *       iterations, reproducing the shared-record-area quirk described above. <i>Remediation:</i> resolve
- *       the rate per row; hold no rate in a field; introduce no cache over this table.</li>
- *   <li><b>High - the fallback lookup returns nothing although the row exists.</b> Either the group id
- *       column was relaxed from {@code CHAR(10)} to a variable-width type, so trailing-blank-insensitive
- *       comparison no longer applies, the three significant trailing blanks were trimmed out of the
- *       query literal. <i>Remediation:</i> restore {@code CHAR(10)} in the migration and restore the padded
- *       literal; verify with a keyed select against a real PostgreSQL 16 instance, not an in-memory
- *       substitute.</li>
- *   <li><b>Medium - interest figures differ from the legacy baseline in the last decimal place.</b> The
- *       formula was algebraically rewritten, the rounding mode is not
- *       {@code RoundingMode.HALF_EVEN}, the rate column was widened beyond
- *       {@code NUMERIC(6,2)}. <i>Remediation:</i> restore the single division by twelve hundred and the
- *       declared precision; compare rates with {@code compareTo}, never {@code equals}.</li>
- *   <li><b>Low - every account falls through to the fallback group.</b> Expected when the account rows
- *       carry a blank {@code ACCT-GROUP-ID}, as the first seeded account does. Not a defect.</li>
- *   <li><b>Low - {@code IllegalArgumentException} while building a key.</b>
+ *   <li><b>Interest silently missing for a few type-and-category pairs.</b> The fallback's empty result is
+ *       being swallowed, defaulted to zero or converted into a skip. The source abends at
+ *       {@code app/cbl/CBACT04C.cbl:L458}, so raise {@code com.cardemo.exception.FatalProcessingException}
+ *       with abend code 999 and return code 12 and fail the step.</li>
+ *   <li><b>The context refuses to start with a schema validation mismatch on
+ *       {@code disclosure_group}.</b> The migration and the mappings disagree. Reconcile against the
+ *       normative contract below; do not weaken {@code spring.jpa.hibernate.ddl-auto} to silence it, because
+ *       validation is the control that keeps the field contract honest.</li>
+ *   <li><b>One account group's rate applied to another.</b> A rate is being cached across iterations,
+ *       reproducing the shared-record-area quirk described above. Resolve the rate per row, hold no rate in a
+ *       field, and introduce no cache over this table.</li>
+ *   <li><b>The fallback lookup returns nothing although the row exists.</b> Either the group id column was
+ *       relaxed from {@code CHAR(10)} to a variable-width type, so trailing-blank-insensitive comparison no
+ *       longer applies, or the three significant trailing blanks were trimmed out of the query literal.
+ *       Restore both, and verify with a keyed select against a real PostgreSQL 16 instance rather than an
+ *       in-memory substitute.</li>
+ *   <li><b>Interest figures differ from the baseline in the last decimal place.</b> The formula was
+ *       algebraically rewritten, the rounding mode is not {@code RoundingMode.HALF_EVEN}, or the rate column
+ *       was widened beyond {@code NUMERIC(6,2)}. Restore the single division by twelve hundred and the
+ *       declared precision, and compare rates with {@code compareTo}, never {@code equals}.</li>
+ *   <li><b>Every account falls through to the fallback group.</b> Expected when the account rows carry a
+ *       blank {@code ACCT-GROUP-ID}, as the first seeded account does. Not a defect.</li>
+ *   <li><b>{@code IllegalArgumentException} while building a key.</b>
  *       {@link com.cardemo.model.key.DisclosureGroupId} validates its components against the source field
- *       widths and against the unsigned four-digit domain of {@code PIC 9(04)}; the message names the
- *       offending component. Note that it accepts a group id <i>shorter</i> than ten characters, so the
- *       bare fallback literal is a legal key value.</li>
+ *       widths and against the unsigned four-digit domain of {@code PIC 9(04)}, and the message names the
+ *       offending component. It accepts a group id <i>shorter</i> than ten characters, so the bare fallback
+ *       literal is a legal key value.</li>
  *   </ul>
  *
- * <h2>Information gaps, stated rather than guessed</h2>
- * <p>Rule 1 Clause F requires that missing information be declared instead of invented. Two gaps apply to
- * this interface.</p>
- *
- * <p><b>1. {@code V1__create_schema.sql} exists; {@code V2} and {@code V3} are planned and absent.</b>
- * An earlier revision recorded all three Flyway migrations as "Not available", and a later one narrowed that
- * to two; both are now withdrawn, because all three exist.
- * {@code src/main/resources/db/migration/V1__create_schema.sql} declares the
- * {@code disclosure_group} table, and the contract below has been reconciled against it — mechanically, by
- * {@code SchemaStructureTest}, which parses the DDL and cross-checks it against
- * {@code app/cpy/CVTRA02Y.cpy}. {@code V2__create_indexes.sql} declares three indexes and deliberately
- * none on this table, for the reason given above; {@code V1} itself declares no {@code CREATE INDEX} at all,
- * because indexes are {@code V2}'s responsibility rather than a gap. {@code V3__seed_data.sql} seeds
- * {@code disclosure_group} from {@code app/data/ASCII/discgrp.txt}, including the seventeen
- * {@code DEFAULT}-group rows that make the two-stage fallback below reachable and the zero-rate rows that
- * make case 4 distinguishable. Because
- * {@code spring.jpa.hibernate.ddl-auto: validate} is set in all four profiles, the contract below is
- * <b>normative</b> and a mismatch fails context startup rather than degrading gracefully:</p>
+ * <h2>The normative column contract</h2>
+ * <p>All three Flyway migrations exist. {@code src/main/resources/db/migration/V1__create_schema.sql}
+ * declares the {@code disclosure_group} table and {@code SchemaStructureTest} parses that DDL and
+ * cross-checks it against {@code app/cpy/CVTRA02Y.cpy}. {@code V2__create_indexes.sql} declares three
+ * indexes and deliberately none on this table, for the reason given above. {@code V3__seed_data.sql} seeds
+ * the table from {@code app/data/ASCII/discgrp.txt} - <b>51 rows of 50 bytes</b> - including the seventeen
+ * {@code DEFAULT}-group rows that make the two-stage fallback reachable and the zero-rate rows that make the
+ * zero-rate case distinguishable. Because {@code spring.jpa.hibernate.ddl-auto: validate} is set in all four
+ * profiles, this contract is <b>normative</b> and a mismatch fails context startup rather than degrading
+ * gracefully:</p>
  * <pre>
  * table disclosure_group
  *   acct_group_id  CHAR(10)      NOT NULL   -- part of PK; mapped by DisclosureGroupId
@@ -543,37 +513,30 @@ import org.springframework.stereotype.Repository;
  *   dis_int_rate   NUMERIC(6,2)  NOT NULL   -- mapped by DisclosureGroup
  *   PRIMARY KEY (acct_group_id, tran_type_cd, tran_cat_cd)   -- in this exact COBOL component order
  * </pre>
- * <p>{@code V1} creates exactly 11 tables with 10 foreign keys and 5 check constraints; {@code V2} creates
- * exactly three non-unique indexes, none of them on this table; {@code V3} seeds <b>51 rows of 50 bytes
- * each</b> from {@code app/data/ASCII/discgrp.txt} using <b>position-aware zoned-decimal overpunch
- * decoding driven by the picture clauses</b> - {@code &#123;} denotes {@code +0}, {@code A} through
- * {@code I} denote {@code +1} through {@code +9}, {@code &#125;} denotes {@code -0}, and {@code J} through
- * {@code R} denote {@code -1} through {@code -9}. It must <b>never</b> be a global text replacement,
- * because those same letters occur legitimately inside alphanumeric fields elsewhere in the fixture set.
- * No version column on this table, and no index beyond the primary key.</p>
- * <p><b>A Blocker if resolved the wrong way: the SQL type of {@code tran_cat_cd}.</b> Two derivations
- * disagree and the disagreement is recorded rather than hidden. Read straight from the picture clause,
- * {@code DIS-TRAN-CAT-CD PIC 9(04)} is four unsigned display digits, which suggests {@code NUMERIC(4)}.
- * But {@link com.cardemo.model.key.DisclosureGroupId} maps the component as an {@link Integer}, and that
- * class records a direct measurement against Hibernate ORM 6.6.42.Final and PostgreSQL 16.10 with schema
- * validation enabled: an {@code Integer} attribute validates against {@code INTEGER} and against
- * {@code BIGINT}, and <b>fails against both {@code NUMERIC(4)} and {@code SMALLINT}</b>. Since the key
- * class - not this interface - owns that column mapping, and since validation runs at every boot,
- * {@code INTEGER} is the type {@code V1} must declare for the context to start at all. <i>Remediation:</i>
- * declare {@code tran_cat_cd INTEGER NOT NULL}; anyone who prefers the narrower numeric spelling must
- * change the key class in step and say so, so that migration, key and entity stay paired. The value domain
- * is unaffected either way, since {@code PIC 9(04)} admits 0 through 9999.</p>
+ * <p>Seeding uses <b>position-aware zoned-decimal overpunch decoding driven by the picture clauses</b> -
+ * {@code &#123;} denotes {@code +0}, {@code A} through {@code I} denote {@code +1} through {@code +9},
+ * {@code &#125;} denotes {@code -0}, and {@code J} through {@code R} denote {@code -1} through {@code -9}.
+ * It must <b>never</b> be a global text replacement, because those same letters occur legitimately inside
+ * alphanumeric fields elsewhere in the fixture set. This table carries no version column and no index beyond
+ * the primary key.</p>
+ * <p><b>The SQL type of {@code tran_cat_cd} must be {@code INTEGER}, and the reason is not the picture
+ * clause.</b> Read straight from {@code DIS-TRAN-CAT-CD PIC 9(04)}, four unsigned display digits suggest
+ * {@code NUMERIC(4)}. But {@link com.cardemo.model.key.DisclosureGroupId} maps the component as an
+ * {@link Integer}, and an {@link Integer} attribute validates against {@code INTEGER} and {@code BIGINT}
+ * while <b>failing against both {@code NUMERIC(4)} and {@code SMALLINT}</b> under Hibernate with schema
+ * validation enabled. Since the key class owns that column mapping and validation runs at every boot,
+ * {@code INTEGER} is the type {@code V1} must declare for the context to start at all. Anyone who prefers
+ * the narrower numeric spelling must change the key class in step, so that migration, key and entity stay
+ * paired. The value domain is unaffected either way, since {@code PIC 9(04)} admits 0 through 9999.</p>
  *
- * <p><b>2. File status {@code '35'}, file unavailable, is "Not available" as a grounded source
- * construct.</b> It is specification-derived only, and this interface asserts nothing about it. The
- * evidence: the literal {@code '35'} occurs <b>zero</b> times anywhere in {@code app/cbl}, and the
- * CICS response-code census across the same tree is {@code NORMAL} 43, {@code NOTFND} 23,
- * {@code ENDFILE} 8, {@code DUPREC} 7, {@code DUPKEY} 3 and <b>{@code NOTOPEN} 0</b>. For contrast, the
- * statuses this file's own source program actually tests are {@code '00'} at seventeen sites and
- * {@code '23'} at exactly two - {@code app/cbl/CBACT04C.cbl:L422} and {@code :L436}, the two that define
- * the fallback. <i>What would be needed to ground it:</i> a source site that tests {@code '35'} or a CICS
- * {@code NOTOPEN} response. None exists, so {@code com.cardemo.exception.FileUnavailableException} has no
- * call site derived from this table and none is invented here.</p>
+ * <h2>File status {@code '35'} has no grounded site derived from this table</h2>
+ * <p>The literal {@code '35'} occurs <b>zero</b> times anywhere in {@code app/cbl}, and the CICS
+ * response-code census across the same tree is {@code NORMAL} 43, {@code NOTFND} 23, {@code ENDFILE} 8,
+ * {@code DUPREC} 7, {@code DUPKEY} 3 and <b>{@code NOTOPEN} 0</b>. For contrast, the statuses this file's own
+ * source program actually tests are {@code '00'} at seventeen sites and {@code '23'} at exactly two -
+ * {@code app/cbl/CBACT04C.cbl:L422} and {@code :L436}, the two that define the fallback. Accordingly
+ * {@code com.cardemo.exception.FileUnavailableException} has no call site derived from this table and none is
+ * invented here.</p>
  *
  * @see com.cardemo.model.entity.DisclosureGroup
  * @see com.cardemo.model.key.DisclosureGroupId

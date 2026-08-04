@@ -6,10 +6,11 @@
  * Type        : Java 25 / Spring Boot 3.5.11 package documentation
  *               (Service layer (user administration))
  * Function    : User administration over the USRSEC dataset: list,
- *               add and update. The delete boundary is absent and is
- *               declared so; note also that the source's delete
- *               program has NO self-delete guard, and none may be
- *               invented for it.
+ *               add, update and delete - all four boundaries are
+ *               authored and all four are reachable through
+ *               AdminController at /api/admin/*. Note that the
+ *               source's delete program has NO self-delete guard,
+ *               and none may be invented for it.
  * Source      : app/cbl/COUSR00C.cbl (695 lines, 16 paragraphs; user list, 10 rows per page at :L57) @ 7756d89
  * Source      : app/cbl/COUSR01C.cbl (299 lines, 9 paragraphs; user add) @ 7756d89
  * Source      : app/cbl/COUSR02C.cbl (414 lines, 11 paragraphs; user update) @ 7756d89
@@ -56,10 +57,17 @@
  *       self-delete guard described immediately below.</li>
  *   </ul>
  *
- * <p>Measured 3 August 2026, this package contains the four services above and no others, so the {@code CU}
- * leaf is complete. <strong>Not available: the REST adapter.</strong> {@code AdminController} is planned and
- * not yet authored, so nothing in this package is reachable over HTTP; nothing here may be read as a claim
- * that an administrative endpoint exists.
+ * <p>Measured 4 August 2026, this package contains the four services above and no others, so the {@code CU}
+ * leaf is complete. <strong>All four are reachable over HTTP.</strong> {@code AdminController} is authored and
+ * exposes four operations at {@code /api/admin/*}, one per service, restricted to the administrator role.
+ *
+ * <p>This document previously stated in three places
+ * that {@code AdminController} was planned and not yet authored, and in a fourth that
+ * {@code UserDeleteService} had no test class - all four untrue once the controller and
+ * {@code UserDeleteServiceTest} were written. The banner still described the delete boundary as absent while
+ * the bullet list above described the service in detail, so the document contradicted itself. The lesson taken
+ * is the one this correction applies: a document that records an absence must have every statement of that
+ * absence corrected in the same edit that ends it, because the statements are one claim written four times.
  *
  * <p>One property of the source survives in the delete path: <strong>{@code COUSR03C} has no self-delete
  * guard.</strong> It never compares the target user identifier against the signed-on identifier, so an
@@ -100,10 +108,11 @@
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ol>
- *   <li><p><strong>Symptom: a 404 from the user delete path.</strong> Cause: no REST adapter reaches it -
- *       {@code UserDeleteService} is authored, {@code AdminController} is not. <em>Remediation:</em> author the
- *       controller, and do not add a self-delete guard while doing so.
- *       <strong>Severity: High.</strong></p></li>
+ *   <li><p><strong>Symptom: a 404 from the user delete path.</strong> Cause: the identifier does not exist in
+ *       {@code USRSEC}. The adapter is authored, so a 404 is now the source's own
+ *       {@code 'User ID NOT found...'} outcome from {@code app/cbl/COUSR03C.cbl:L289} rather than a missing
+ *       endpoint. <em>Remediation:</em> confirm the identifier; do not add a self-delete guard, which the
+ *       source does not have. <strong>Severity: Low</strong> - this is a correct rejection, not a fault.</p></li>
  *   <li><p><strong>Symptom: a password digest is returned in a payload.</strong> Cause: the read model exposes
  *       the password field. <em>Remediation:</em> never return it, at any authority level. Rule 1 Clause D
  *       forbids it. <strong>Severity: Blocker.</strong></p></li>
@@ -140,10 +149,10 @@
  *       environment loaded with {@code set -a; . ./.env; set +a}, because {@code JWT_SIGNING_KEY} has no default and
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service}.
- *       {@code UserListServiceTest}, {@code UserAddServiceTest} and {@code UserUpdateServiceTest} exist.
- *       <strong>Not available, measured 3 August 2026:</strong> {@code UserDeleteService} has no test class of
- *       its own, so no coverage figure quoted anywhere is evidence about it. The required
- *       assertions across the package are: page size exactly 10 with forward and backward paging; the
+ *       Measured 4 August 2026, all four exist: {@code UserListServiceTest},
+ *       {@code UserAddServiceTest}, {@code UserUpdateServiceTest} and {@code UserDeleteServiceTest}, so every
+ *       service in this package carries coverage of its own and no coverage figure here is silently about
+ *       three services out of four. The required assertions across the package are: page size exactly 10 with forward and backward paging; the
  *       field-by-field validation order of the add path as written; a duplicate identifier surfacing as a
  *       duplicate-record outcome and performing no update; an update leaving unsent fields untouched; and no
  *       password or digest appearing in any payload, message or log event.</li>

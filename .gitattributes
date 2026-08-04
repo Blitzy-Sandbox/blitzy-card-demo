@@ -163,15 +163,15 @@ src/test/resources/**/*.txt  text eol=lf
 # ---- The SAME fixtures additionally need a narrow whitespace exemption, and
 # ---- the reason is that their trailing spaces are DATA, not sloppiness. A
 # ---- fixed-width record pads its short fields to width, so a record whose last
-# ---- field is short necessarily ends in spaces. Measured at this commit:
-# ---- acctdata.txt 50 records, carddata.txt 50, custdata.txt 50 and
-# ---- dailytran.txt 300 - 450 records in total - end in a space before the LF.
+# ---- field is short necessarily ends in spaces before the LF - which is the
+# ---- case for every record of acctdata.txt, carddata.txt, custdata.txt and
+# ---- dailytran.txt, whose widths the frozen copybooks in app/cpy fix.
 # ----
 # ---- With `whitespace` unspecified, git's default `blank-at-eol` rule reports
 # ---- every one of those as an error, so `git diff --check` exits non-zero and
 # ---- `git apply --whitespace=error` refuses the patch, on files that are
 # ---- byte-correct. The trap is what a contributor does next: the obvious fix
-# ---- is to strip the trailing spaces, which silently shortens 450 records and
+# ---- is to strip the trailing spaces, which silently shortens those records and
 # ---- breaks every offset a fixed-width reader computes. So the exemption is
 # ---- not a convenience - it removes the incentive to corrupt the data.
 # ----

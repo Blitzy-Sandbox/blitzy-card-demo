@@ -399,4 +399,86 @@ final class EnvironmentTemplateContractTest {
     private static Stream<String> supersedingNames() {
         return new TreeSet<>(new LinkedHashSet<>(SUPERSEDING_NAMES)).stream();
     }
+
+    /**
+     * Every port {@code docker-compose.yml} publishes is qualified with a host address (H-14).
+     */
+    @Nested
+    @DisplayName("H-14: every published compose port binds an explicit host address")
+    final class PublishedPortBinding {
+
+        /** The variable that decides the bind address, and its safe default. */
+        private static final String BIND_EXPRESSION = "${CARDDEMO_BIND_ADDRESS:-127.0.0.1}";
+
+        /**
+         * Matches a published port entry: a list item whose value is a quoted mapping. Long-form
+         * {@code host_ip}/{@code published} entries are not used in this file, so a mapping is the only shape
+         * a published port takes here.
+         */
+        private static final Pattern PUBLISHED_PORT =
+                Pattern.compile("^\\s*-\\s*\"([^\"]*:[^\"]*)\"\\s*$");
+
+        @Test
+        @DisplayName("no published port omits its host address, so none can bind every interface")
+        void everyPublishedPortNamesItsHostAddress() {
+            final List<String> unqualified = new ArrayList<>();
+            boolean inPorts = false;
+
+            for (final String line : lines("docker-compose.yml")) {
+                final String trimmed = line.strip();
+                if (trimmed.equals("ports:")) {
+                    inPorts = true;
+                    continue;
+                }
+                if (inPorts && !trimmed.isEmpty() && !trimmed.startsWith("#") && !trimmed.startsWith("-")) {
+                    // A sibling key at the service level ends the ports block.
+                    inPorts = false;
+                }
+                if (!inPorts) {
+                    continue;
+                }
+                final Matcher mapping = PUBLISHED_PORT.matcher(line);
+                if (mapping.matches() && !mapping.group(1).startsWith(BIND_EXPRESSION + ":")) {
+                    unqualified.add(trimmed);
+                }
+            }
+
+            assertThat(unqualified)
+                    .as("A mapping written as \"8080:8080\" binds 0.0.0.0, so it publishes the service to "
+                            + "anywhere that can route to the host. Every mapping in this file must begin "
+                            + BIND_EXPRESSION + ": so the stack is loopback-only unless an operator opts in "
+                            + "to remote exposure. Rule 1 clause D, least privilege for configuration.")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("every published port goes through the one bind expression, spelled identically")
+        void allPublishedPortsShareOneBindExpression() {
+            final long qualified = lines("docker-compose.yml").stream()
+                    .filter(line -> line.contains(BIND_EXPRESSION + ":"))
+                    .filter(line -> PUBLISHED_PORT.matcher(line).matches())
+                    .count();
+
+            // Seven mappings across six services: the application, PostgreSQL, the object-store emulator,
+            // the trace store's UI and its OTLP/HTTP receiver, Prometheus and Grafana. One spelling, so a
+            // change of default cannot reach only some of them.
+            //
+            // Seven and not eight because the trace store's OTLP/gRPC receiver is deliberately NOT published:
+            // the exporter this application is configured with speaks OTLP over HTTP, and the collector
+            // reaches the store over the compose network without either receiver being published at all. A
+            // port published for nothing is reach granted for nothing, which is the position Rule 1 clause D
+            // takes. Should a gRPC exporter ever be configured, publishing 4317 must add a mapping here
+            // rather than change this count silently.
+            assertThat(qualified).isEqualTo(7L);
+        }
+
+        @Test
+        @DisplayName("the variable is documented in .env.example with the loopback default")
+        void theBindAddressIsDocumented() {
+            assertThat(lines(".env.example"))
+                    .as("an operator has to be told the variable exists, what its default is, and what "
+                            + "setting it to 0.0.0.0 means, or the safe default is merely an obstacle")
+                    .anyMatch(line -> line.strip().equals("CARDDEMO_BIND_ADDRESS=127.0.0.1"));
+        }
+    }
 }

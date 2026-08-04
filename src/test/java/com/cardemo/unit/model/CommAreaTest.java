@@ -117,11 +117,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p><strong>The consequence is recorded here because it is a real, intentional deviation rather than an
  * oversight: the 160-byte total is NOT reconstructible from the Java type.</strong> The nine surviving
  * fields account for 121 bytes and the seven omitted leaf fields for the remaining 39. This class asserts
- * both figures and their sum, so the deviation is measured rather than merely described. The tracking
- * reference is {@code DECISION_LOG.md}, which records the mechanism substitution, and
- * {@code TRACEABILITY_MATRIX.md}, which carries the per-field row; that written tracking is what
- * distinguishes a documented omission from dead code under Rule 1 clause B, whose prohibition is on
- * artefacts carrying no tracking reference.
+ * both figures and their sum, so the deviation is measured rather than merely described. That measurement,
+ * together with the per-field account above, is the tracking Rule 1 clause B requires: what the clause
+ * prohibits is an artefact carrying no explanation at all, and every omitted field here is named, sized and
+ * asserted.
  *
  * <p>Why the re-entry flag in particular has no counterpart is worth stating, because it was not merely
  * vestigial - it gated behaviour. {@code app/cpy/CSSETATY.cpy} is a PROCEDURE DIVISION template resolved
@@ -190,38 +189,38 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       a lint warning - most often an unused import left behind by an edit, or a raw type. Note that a
  *       licence header written as {@code /**} rather than {@code /*} is also fatal here, because a doc
  *       comment that precedes no declaration raises the {@code dangling-doc-comments} lint. The compiler
- *       names the file and line; there is no way to run the suite until it is clean. Blocker while it
- *       stands, since nothing in the module can be verified.</li>
+ *       names the file and line; there is no way to run the suite until it is clean, so nothing in the
+ *       module can be verified while it stands.</li>
  *   <li><strong>Screen-state widths asserted as 8.</strong> {@code CDEMO-LAST-MAP} and
  *       {@code CDEMO-LAST-MAPSET} are {@code PIC X(7)} at {@code app/cpy/COCOM01Y.cpy:L43-L44}, not
- *       {@code X(8)}. Widening either to 8 unbalances the 160-byte total by two and is a High finding.</li>
+ *       {@code X(8)}. Widening either to 8 unbalances the 160-byte total by two.</li>
  *   <li><strong>The card number typed numerically.</strong> {@code CDEMO-CARD-NUM} is {@code PIC 9(16)},
  *       but {@code CARD-NUM} at {@code app/cpy/CVACT02Y.cpy:L5} and {@code TRAN-CARD-NUM} at
  *       {@code app/cpy/CVTRA05Y.cpy:L15} are both {@code PIC X(16)}. Five of the fifty card numbers in
  *       {@code app/data/ASCII/carddata.txt} begin with a zero, so a {@code long} or a
  *       {@code BigInteger} loses a significant digit on real fixture data and cannot write the value back
- *       into the fixed-width record it came from. High.</li>
+ *       into the fixed-width record it came from.</li>
  *   <li><strong>A card number or a customer name reaching {@link CommArea#toString()}.</strong> A record's
- *       inherited rendering prints every component, so the override is mandatory rather than cosmetic.
- *       Blocker.</li>
+ *       inherited rendering prints every component, so the override is mandatory rather than cosmetic and
+ *       its absence would disclose protected data on any log line.</li>
  *   <li><strong>The type treated as a live session carrier or a dispatch key.</strong>
  *       {@code app/cbl/COMEN01C.cbl:L153} transfers control to a program named by a COMMAREA field; the
- *       target replaces that with static URL routing, so no component may steer a request. High.</li>
+ *       target replaces that with static URL routing, so no component may steer a request.</li>
  *   <li><strong>Absent and blank collapsed into one state.</strong> The source distinguishes them:
  *       {@code app/cbl/COUSR02C.cbl:L113} tests {@code CDEMO-FROM-PROGRAM = SPACES OR LOW-VALUES}, and
- *       {@code app/cbl/COACTUPC.cbl:L505-L508} carries two different messages for the two conditions.
- *       Blocker.</li>
+ *       {@code app/cbl/COACTUPC.cbl:L505-L508} carries two different messages for the two conditions, so
+ *       collapsing them changes which message a caller sees.</li>
  *   <li><strong>A member census failing only under coverage instrumentation.</strong> The coverage agent
  *       adds a non-final static field and a static method whose names begin with a dollar sign, and -
  *       measured, not assumed - it does <em>not</em> mark the method synthetic. A census filtering only on
  *       {@code isSynthetic()} therefore passes on an uninstrumented class and fails on an instrumented
- *       one. {@link #isToolingAdded(String, boolean)} filters on both signals for exactly that reason.
- *       Medium: it fails loudly and misleads about the production type rather than hiding a defect.</li>
+ *       one. {@link #isToolingAdded(String, boolean)} filters on both signals for exactly that reason; the
+ *       symptom is a loud failure that misleads about the production type rather than a hidden defect.</li>
  *   <li><strong>A width assertion reading {@code null} from a record component.</strong>
  *       {@code jakarta.validation.constraints.Size} omits {@code RECORD_COMPONENT} from its targets, so
  *       the annotation is propagated to the backing field, the accessor and the constructor parameter but
- *       is absent from the component itself. Read it through {@link #declaredSize(String)}. Medium: the
- *       symptom is a failing assertion against a correct production type.</li>
+ *       is absent from the component itself. Read it through {@link #declaredSize(String)}, or the symptom
+ *       is a failing assertion against a correct production type.</li>
  * </ul>
  *
  * <h2>Deliberately not asserted, and why</h2>
@@ -892,7 +891,8 @@ final class CommAreaTest {
             final int reconstructible = liveLeaves().stream().mapToInt(Leaf::width).sum();
 
             assertThat(reconstructible)
-                    .as("the Java type reaches only %d of the %d source bytes; see DECISION_LOG.md",
+                    .as("the Java type reaches only %d of the %d source bytes, which the class "
+                            + "documentation explains field by field",
                             LIVE_BYTES, COMMAREA_TOTAL_BYTES)
                     .isLessThan(COMMAREA_TOTAL_BYTES)
                     .isEqualTo(LIVE_BYTES);
@@ -1985,4 +1985,76 @@ final class CommAreaTest {
                     .doesNotContain(Instant.class.getName(), Clock.class.getName());
         }
     }
+
+    /**
+     * The diagnostic rendering may not be turned into a forged log record.
+     *
+     * <p><strong>Finding, severity Medium - remediated by the rendering these tests pin.</strong> Every
+     * component {@code toString()} emits is declared {@code String} and arrives from a JSON request body, so a
+     * caller controlled its bytes. Concatenated straight in, a CR or LF forged as many further log lines as the
+     * caller liked, in the exact shape a reader trusts.
+     *
+     * <p>The timing is what made it reachable rather than theoretical: {@code @Size} and {@code @Pattern} run
+     * <em>after</em> Jackson has constructed the record, and a validation failure is exactly the occasion on
+     * which something renders the offending instance - so the rendering has to be safe on an instance that
+     * never passed validation. These tests therefore build hostile values directly, without validating them,
+     * which is the state the defect actually occurred in.
+     */
+    @Nested
+    @DisplayName("the diagnostic rendering cannot forge a log record")
+    class HostileDiagnosticRendering {
+
+        @ParameterizedTest(name = "a CR/LF payload in {0} cannot break the record")
+        @ValueSource(strings = {"userId", "userType", "accountStatus"})
+        @DisplayName("a control character in any rendered component is escaped, not emitted")
+        void aControlCharacterInAnyRenderedComponentIsEscaped(final String component) {
+            final String hostile = "AAA\r\n2026-08-04 INFO forged FORGED-RECORD";
+
+            final String rendered = withOnly(component, hostile).toString();
+
+            assertThat(rendered)
+                    .as("the raw terminators must be gone, or the rendering is one log record per attacker "
+                            + "newline rather than one per event")
+                    .doesNotContain("\r")
+                    .doesNotContain("\n");
+            assertThat(rendered.lines().count())
+                    .as("and the whole rendering must remain exactly one line")
+                    .isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("the escaped payload is still legible, so the evidence survives neutralisation")
+        void theEscapedPayloadRemainsLegible() {
+            final String rendered = withOnly("userId", "AAA\r\nFORGED-RECORD").toString();
+
+            assertThat(rendered)
+                    .as("a reader investigating a hostile request needs to see what arrived; escaping the "
+                            + "terminator must not discard the value around it")
+                    .contains("FORGED-RECORD")
+                    .contains("\\u000D")
+                    .contains("\\u000A");
+        }
+
+        @Test
+        @DisplayName("an over-long component is bounded, so one field cannot flood the record")
+        void anOverLongComponentIsBounded() {
+            final String rendered = withOnly("userId", "q".repeat(400)).toString();
+
+            assertThat(rendered)
+                    .as("the length constraints have not run on an instance being rendered because it failed "
+                            + "them, so the rendering bounds the value itself")
+                    .contains("chars)")
+                    .hasSizeLessThan(600);
+        }
+
+        @Test
+        @DisplayName("a benign instance renders unchanged, so the guard is invisible in normal use")
+        void aBenignInstanceRendersUnchanged() {
+            assertThat(populated().toString())
+                    .as("neutralisation must not alter what an ordinary log record says")
+                    .doesNotContain("chars)")
+                    .doesNotContain("\\u");
+        }
+    }
+
 }

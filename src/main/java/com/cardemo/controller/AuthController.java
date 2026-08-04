@@ -133,7 +133,7 @@ import jakarta.validation.Valid;
  *       by the framework's own converters and bean validation rather than by this class.</dd>
  *   <dt>{@code 401 Unauthorized}, {@code errorCode} {@value #ERROR_CODE_AUTHENTICATION}</dt>
  *   <dd>The credential did not verify. <strong>This single answer covers both an unknown identifier and a
- *       wrong password, deliberately and indistinguishably</strong> - see the labelled deviation below.
+ *       wrong password, deliberately and indistinguishably</strong> - see the user-enumeration section below.
  *       There is nothing to diagnose from the response, and that is the point. The only surviving trace of
  *       which condition occurred is the cause chain of the exception the service raises, which this class
  *       emits at {@code DEBUG} and nowhere else: raise the level for this logger to inspect it, and no
@@ -344,8 +344,8 @@ public class AuthController {
      * <p>Fixed rather than derived from the exception's message, which carries the legacy screen literal and
      * would therefore distinguish {@code 'Wrong Password. Try again ...'} at
      * {@code app/cbl/COSGN00C.cbl:L242-L243} from {@code 'User not found. Try again ...'} at {@code :L249}.
-     * Publishing that distinction is exactly the user-enumeration oracle the labelled deviation on the
-     * handler removes.
+     * Publishing that distinction is exactly the user-enumeration oracle the handler's documented
+     * deviation removes.
      */
     private static final String AUTHENTICATION_PROBLEM_DETAIL =
             "The user identifier or the password is incorrect.";
@@ -546,7 +546,7 @@ public class AuthController {
      * answers {@code 503}; an abend or an unclaimed typed failure answers {@code 500}. The class-level
      * documentation tabulates each with its legacy caption and the action to take.
      *
-     * <h4>Deliberate, labelled deviation - Medium - user-enumeration avoidance</h4>
+     * <h4>Deliberate deviation from the source - user-enumeration avoidance</h4>
      *
      * <p>The 3270 screen told the operator which half of the credential was wrong. It moved
      * {@code 'Wrong Password. Try again ...'} into the message field at
@@ -569,12 +569,11 @@ public class AuthController {
      * this class at {@code DEBUG} only, so an operator who raises the level for this logger can still tell an
      * unknown identifier from a rejected password while no caller can at any level. The root cause is
      * therefore preserved rather than swallowed, without putting a stack trace in {@code WARN} on every
-     * failed sign-on, which an unauthenticated caller could otherwise trigger at will.
-     * Classified <strong>Medium</strong>, and owed an entry in the planned {@code DECISION_LOG.md} under
-     * the sign-on user-enumeration entry. The decision itself is stated here, in the docstring of the file
-     * it governs, which is the one place it cannot drift away from the code.
+     * failed sign-on, which an unauthenticated caller could otherwise trigger at will. The decision is
+     * stated here, in the docstring of the file it governs, which is the one place it cannot drift away
+     * from the code.
      *
-     * <p>One <strong>Low</strong> asymmetry is worth recording beside it. The wrong-password branch at
+     * <p>One asymmetry in the source is worth recording beside it. The wrong-password branch at
      * {@code :L241-L246} never sets {@code WS-ERR-FLG}, while the not-found branch at {@code :L248} and the
      * catch-all branch at {@code :L253} both move {@code 'Y'} into it. In the source that flag gated only
      * the re-read at {@code :L138} within a single pass, so the omission changed nothing observable and is

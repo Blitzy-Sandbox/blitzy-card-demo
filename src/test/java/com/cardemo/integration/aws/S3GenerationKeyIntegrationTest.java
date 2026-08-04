@@ -39,6 +39,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
+import com.cardemo.batch.readers.TransactionBackupReader;
+import com.cardemo.batch.writers.RejectWriter;
+import com.cardemo.batch.writers.TransactionWriter;
+import com.cardemo.exception.FatalProcessingException;
+import com.cardemo.model.entity.DailyTransaction;
+import com.cardemo.model.entity.Transaction;
+import com.cardemo.model.enums.RejectCode;
+import com.cardemo.observability.MetricsConfig;
+import com.cardemo.repository.TransactionRepository;
+import com.cardemo.service.shared.FileStatusMapper;
+import io.awspring.cloud.s3.ObjectMetadata;
+import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
@@ -48,9 +60,16 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.item.Chunk;
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.test.MetaDataInstanceFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import software.amazon.awssdk.core.ResponseBytes;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
@@ -99,6 +118,41 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  * and numeric order coincide only while the ordinal is rendered at a fixed width with leading zeros:
  * unpadded, {@code "10"} sorts below {@code "9"}, so the tenth generation stops being the current one. That
  * padding is asserted directly, and so is the bound beyond which it stops holding.
+ *
+ * <p><strong>Both properties above are properties of the key <em>convention</em>, and establishing them is
+ * not the same thing as establishing that production implements it.</strong> The distinction is the subject
+ * of the finding below, and of the third group in this class.
+ *
+ * <dl>
+ *   <dt>The production handoff: a key composed by the writer, carried in a context, resolved by the reader</dt>
+ *   <dd><strong>Finding, severity High, RESOLVED.</strong> An earlier revision of this class established the
+ *       convention and nothing else: every key it asserted was one it had built itself, from
+ *       {@link AbstractAwsIntegrationTest#generationPrefix(String, int)} or from this class's own
+ *       {@code jobInstancePrefix}, and every resolution it asserted was
+ *       {@link AbstractAwsIntegrationTest#currentGenerationKey(String, String)} - a listing this class
+ *       performed. It imported no production writer and no production reader, so a regression in
+ *       {@code com.cardemo.batch.writers.TransactionWriter}'s key composition or in
+ *       {@code com.cardemo.batch.readers.TransactionBackupReader}'s resolution precedence could land with
+ *       every test in the class still green. That is false green: the emulator was being treated as the
+ *       implementation under test rather than as the external boundary.
+ *       <p><em>Remediation, applied:</em> {@code ProductionGenerationKeyHandoff} drives the production
+ *       writer, reads the concrete key back out of the {@code ExecutionContext} the writer published it into,
+ *       and hands <em>that exact key</em> to the production reader over the emulator. Nothing in that group
+ *       recomputes a key. It also covers the two precedence rules that only exist in production - a promoted
+ *       key outranking the lexicographically greatest one, and a checkpointed key outranking a promoted one -
+ *       and the absent-generation abend.
+ *       <p><em>Evidence that the false green is closed, by mutation:</em> pinning the writer's ordinal to a
+ *       constant, so two writes collide on one key, fails three of the seven handoff tests; deleting the
+ *       reader's promoted-key precedence arm fails one. In both cases <strong>every one of the thirty tests
+ *       that predate the group still passed</strong>, which is precisely the exposure the finding named.
+ *       <p>The two convention groups are kept rather than deleted, because the convention is a real
+ *       property and the boundary cases they cover - the padding bound, out-of-order writes, per-base
+ *       scoping, retention non-enforcement, the absent-bucket failure - are not reachable through the
+ *       production classes. What changed is that the harness helper is now <em>cross-checked against</em> the
+ *       production resolution instead of standing in for it: the handoff group asserts that
+ *       {@code currentGenerationKey} names the same key the production reader resolves, so the two cannot
+ *       drift apart silently.</dd>
+ * </dl>
  *
  * <p>The geometry half proves every width the corpus declares, each against its own locator, by writing a
  * synthetic payload and reading it back:
@@ -230,9 +284,9 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *       default, so that no deployment can boot with a key an attacker already knows, and
  *       {@code src/main/resources/application-test.yml} supplies no test value, so the context refresh
  *       aborts before any test runs. Remediation, for the owner of that file: supply a non-production test
- *       value in the {@code test} profile. Until it does, the harness registers a recognisably test-only one
- *       itself. It is reported here and <strong>never patched from here</strong>, and no real key is written
- *       anywhere.</dd>
+ *       value in the {@code test} profile. Until it does, the harness <em>generates</em> an ephemeral one per
+ *       context rather than declaring a literal, so nothing is committed. It is reported here and
+ *       <strong>never patched from here</strong>, and no key material is written anywhere.</dd>
  * </dl>
  *
  * <h2>Legacy defects reproduced or logged, never repaired</h2>
@@ -340,6 +394,43 @@ import software.amazon.awssdk.services.s3.model.S3Object;
 @DisplayName("S3 generation keys - GDG (+1)/(0) semantics and byte-exact record geometry")
 class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
 
+    /**
+     * The context's own status mapper, needed by the production writer under test.
+     *
+     * <p>Injected rather than constructed, so the writer is driven with the same collaborator the
+     * application wires. A hand-built mapper could translate a status the real one does not.
+     */
+    @Autowired
+    private FileStatusMapper fileStatusMapper;
+
+    /**
+     * The context's own metric registrar, needed by the production writer under test.
+     *
+     * <p>Injected for the same reason: {@code MetricsConfig} is the single registrar of the four named
+     * counters, and a second instance built here would register a second set on a registry nothing scrapes.
+     */
+    @Autowired
+    private MetricsConfig metricsConfig;
+
+    /**
+     * The reject generation prefix, bound from the same configuration key the writer binds.
+     *
+     * <p>The writer takes it as a constructor argument with no inline default, so a harness that invented a
+     * literal here could pass while the configured value was wrong. Binding the key proves the two agree.
+     */
+    @Value("${carddemo.aws.s3.gdg-prefixes.daly-rejs}")
+    private String configuredRejectGdgPrefix;
+
+    /**
+     * Width of the zero-padded identifier segments the production writer renders.
+     *
+     * <p>Nineteen digits, because that is the widest decimal a {@code long} identifier can present and
+     * padding to it is what makes the keys sort in numeric order as strings. This is the width the
+     * production writer uses, and it is stated here so that a change to either side fails this suite rather
+     * than silently reordering generations.
+     */
+    private final int productionIdentifierDigits = 19;
+
     // =================================================================================================
     // Named values. Instance fields, never static: Rule 1 Clause B forbids global mutable state, and the
     // harness permits no static field here beyond the two container holders it owns itself. Every one is
@@ -413,6 +504,61 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
      */
     private final int jobInstanceDigits = 10;
 
+    // =================================================================================================
+    // The production handoff. These are the collaborators and named values the ProductionGenerationKeyHandoff
+    // group needs so that a generation key is COMPOSED by the production writer and RESOLVED by the
+    // production reader, with the emulator as the external boundary rather than as the subject.
+    // =================================================================================================
+
+    /** The relation the writer inserts into; injected so the rows it creates can be removed again. */
+    @Autowired
+    private TransactionRepository transactionRepository;
+
+    /**
+     * Generation prefix handed to the production writer and reader for the handoff group.
+     *
+     * <p>{@code TransactionBackupReader.DEFAULT_GENERATION_PREFIX}, the {@code TRANSACT.BKUP} base of
+     * {@code app/proc/TRANREPT.prc:L27-L31}, so both ends of the handoff are configured with the value the
+     * pipeline actually uses. It is handed in as a constructor argument rather than read from the context's
+     * configuration, because the objects land in this class's own bucket and must not touch the shared one.
+     */
+    private final String handoffGenerationPrefix = TransactionBackupReader.DEFAULT_GENERATION_PREFIX;
+
+    /**
+     * Name of the execution-context entry the resolved generation key travels in.
+     *
+     * <p>{@code TransactionBackupReader} declares this constant privately, so there is no accessor to read it
+     * from and the literal has to be restated here. It is not left to drift: the handoff tests assert that
+     * {@code update(ExecutionContext)} writes the resolved key under <em>this</em> name and that seeding it
+     * under this name changes what {@code open(ExecutionContext)} resolves, so a production rename fails here
+     * rather than passing silently.
+     */
+    private final String generationObjectKeyContextEntry = "carddemo.gdg.transact-bkup.objectKey";
+
+    /**
+     * A card number the seed data actually holds, so the writer's insert satisfies {@code fk04_transaction_card}.
+     *
+     * <p>The first row of {@code app/data/ASCII/carddata.txt} as loaded by {@code V3__seed_data.sql}. A
+     * fabricated number would be refused by the constraint and the failure would look like a writer defect.
+     */
+    private final String seededCardNumber = "0500024453765740";
+
+    /** A transaction type the seed data holds, satisfying {@code fk05_transaction_type}. */
+    private final String seededTypeCode = "01";
+
+    /** A category the seed data holds for that type, satisfying {@code fk06_transaction_category}. */
+    private final int seededCategoryCode = 1;
+
+    /**
+     * Transaction identifiers this class inserted, so that {@link #removeTheRowsTheWriterInserted()} removes
+     * exactly those and nothing else.
+     *
+     * <p>The harness declares no class-level {@code @Transactional}, so nothing rolls back for us. Deleting by
+     * recorded identifier rather than truncating keeps this class from disturbing a sibling that shares the
+     * cached context.
+     */
+    private final List<String> insertedTransactionIds = new ArrayList<>();
+
     /**
      * Sole constructor, used by the JUnit Platform.
      *
@@ -446,7 +592,15 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
     }
 
     /**
-     * Builds the object key a generation write lands on.
+     * Builds the object key a generation write lands on, expressing the <em>convention</em>.
+     *
+     * <p><strong>This is not a stand-in for the production key builder and must never be read as one.</strong>
+     * It exists so that the boundary cases of the convention - the padding bound, an out-of-order write
+     * sequence, per-base scoping, retention non-enforcement - can be constructed directly, which the
+     * production writer cannot be made to do because it composes its own ordinal from the step's write count.
+     * The claim that production <em>implements</em> this convention is established separately and only by
+     * {@code ProductionGenerationKeyHandoff}, which asserts keys production produced and never one built
+     * here.
      *
      * @param generationBase the per-base key prefix
      * @param generation the generation ordinal, 0 through the harness's alignment bound
@@ -459,11 +613,16 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
     }
 
     /**
-     * Builds the job-instance-scoped prefix a generation write lands under.
+     * Builds the job-instance-scoped prefix a generation write lands under, expressing the <em>convention</em>.
      *
      * <p>The identifier is rendered zero-padded at a fixed width for exactly the reason the generation
      * ordinal is: unpadded, instance 10 would sort below instance 9 and the greatest key would stop being
      * the latest run.
+     *
+     * <p><strong>Not a stand-in for the production key builder</strong>, for the reason given on
+     * {@link #generationObjectKey(String, int, String)}. That production pads the job-instance identifier at
+     * all is proved in {@code ProductionGenerationKeyHandoff} by asserting that the writer's own successive
+     * keys sort in creation order, not by rebuilding one here and comparing.
      *
      * @param generationBase the per-base key prefix
      * @param jobInstanceId the job-instance identifier; must be non-negative
@@ -573,6 +732,127 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
         return packed;
     }
 
+    // =================================================================================================
+    // Production-handoff helpers. Each one WIRES a production collaborator or supplies data for it; not one
+    // of them re-implements a key rule, a prefix rule or a resolution rule. That distinction is the whole
+    // point of the group below: every key asserted there is a value production produced.
+    // =================================================================================================
+
+    /**
+     * Removes the rows the production writer inserted, exactly those, after each test.
+     *
+     * <p>The writer's contract is a relation insert <em>and</em> an object emission in one call, so exercising
+     * its key publication necessarily creates rows. The harness declares no class-level {@code @Transactional},
+     * so they are removed here by recorded identifier - never by truncation, which would disturb a sibling
+     * class sharing the cached context.
+     *
+     * <p><strong>Error modes.</strong> A row that is already gone is an accepted control path, because a test
+     * that failed before its insert leaves nothing to delete. Any other failure propagates, so a cleanup that
+     * cannot do its job fails loudly instead of leaving rows behind for whatever runs next.
+     */
+    @AfterEach
+    void removeTheRowsTheWriterInserted() {
+        if (insertedTransactionIds.isEmpty()) {
+            return;
+        }
+        final List<String> toRemove = List.copyOf(insertedTransactionIds);
+        insertedTransactionIds.clear();
+        transactionRepository.deleteAllById(toRemove);
+        transactionRepository.flush();
+    }
+
+    /**
+     * Builds the production writer, aimed at a bucket and prefix this class owns.
+     *
+     * <p>The constructor is public and takes its bucket and prefix as arguments, which is what makes this
+     * possible without touching the three shared buckets. Every collaborator is the context's own bean, so the
+     * key composition, the encoding and the emission are all production behaviour.
+     *
+     * @param bucket the bucket this class created and will destroy
+     * @return a writer wired exactly as the container wires it, never {@code null}
+     */
+    private TransactionWriter productionWriter(final String bucket) {
+        return new TransactionWriter(transactionRepository, s3Template(), fileStatusMapper, metricsConfig,
+                bucket, handoffGenerationPrefix);
+    }
+
+    /**
+     * Builds the production reader on its object-storage path, aimed at the same bucket and prefix.
+     *
+     * @param bucket the bucket this class created and will destroy
+     * @param promotedGenerationObjectKey the key a prior step promoted, or {@code null} to exercise the
+     *     standalone current-generation resolution
+     * @return a reader wired exactly as the container wires it, never {@code null}
+     */
+    private TransactionBackupReader productionReader(final String bucket,
+            final String promotedGenerationObjectKey) {
+
+        return new TransactionBackupReader(transactionRepository, s3Template(), s3Client(), fileStatusMapper,
+                "object-storage", TransactionBackupReader.DEFAULT_PAGE_SIZE, bucket, handoffGenerationPrefix,
+                promotedGenerationObjectKey);
+    }
+
+    /**
+     * Writes one transaction through the production writer and advances the step's write count.
+     *
+     * <p>The ordinal segment of the key is {@code StepExecution.getWriteCount()}, which the framework advances
+     * between chunks and which nothing advances here. Advancing it explicitly is therefore what makes two
+     * successive writes land on two distinct generations instead of overwriting one - the same thing the
+     * framework does, done visibly.
+     *
+     * <p><strong>Side effects.</strong> Inserts one row, records its identifier for teardown, and creates one
+     * object in the emulator.
+     *
+     * @param writer the production writer
+     * @param step the step execution the writer is running under
+     * @param posted the transaction to write
+     */
+    private void writeThrough(final TransactionWriter writer, final StepExecution step,
+            final Transaction posted) {
+
+        writer.beforeStep(step);
+        insertedTransactionIds.add(posted.getTransactionId());
+        try {
+            writer.write(new Chunk<>(List.of(posted)));
+        } catch (final RuntimeException failure) {
+            throw failure;
+        } catch (final Exception declaredByTheInterface) {
+            // ItemWriter.write declares Exception; every failure this writer raises is a com.cardemo runtime
+            // subtype, so this branch is unreachable in practice. It is wrapped rather than swallowed so the
+            // cause survives if that ever stops being true.
+            throw new IllegalStateException(
+                    "the production writer raised a checked exception, which its contract does not produce",
+                    declaredByTheInterface);
+        }
+        step.setWriteCount(step.getWriteCount() + 1L);
+    }
+
+    /**
+     * A sixteen-digit transaction identifier that increases with its ordinal.
+     *
+     * @param ordinal a small non-negative number distinguishing one record from another
+     * @return the identifier, exactly sixteen characters
+     */
+    private String handoffTransactionId(final int ordinal) {
+        return String.format(Locale.ROOT, "99000000000000%02d", ordinal);
+    }
+
+    /**
+     * A transaction whose foreign keys the seed data satisfies, so the insert the writer performs succeeds.
+     *
+     * <p>The two timestamps are the batch form {@code yyyy-MM-dd-HH.mm.ss.SS0000} that
+     * {@code app/cbl/CBTRN02C.cbl:L458} produces, with the four trailing zeros the source always emits.
+     *
+     * @param transactionId the sixteen-character identifier
+     * @return a fully populated transaction, never {@code null}
+     */
+    private Transaction handoffTransaction(final String transactionId) {
+        return new Transaction(transactionId, seededTypeCode, Integer.valueOf(seededCategoryCode),
+                "POS TERM", "A HANDOFF RECORD", new BigDecimal("123.45"), Long.valueOf(9L),
+                "MERCHANT NAME", "MERCHANT CITY", "12345", seededCardNumber,
+                "2022-06-10-19.27.53.000000", "2022-06-10-19.27.53.000000");
+    }
+
     /**
      * The next-generation half: {@code (+1)} writes a new object under a monotonically increasing prefix.
      *
@@ -581,6 +861,8 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
      * {@code app/proc/TRANREPT.prc:31,53,78}, which does the same for the transaction backup, the daily
      * extract and the report.
      */
+
+
     @Nested
     @DisplayName("(+1) - a next-generation write lands under a monotonically increasing prefix")
     class NextGenerationWrites {
@@ -1649,6 +1931,687 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
             assertThat(currentGenerationKey(bucket, reportGenerationBase))
                     .as("nor may a current-generation read on another base resolve it")
                     .isEmpty();
+        }
+    }
+
+    // =================================================================================================
+    // The production writer itself, driven end to end against the emulator.
+    //
+    // FINDING, SEVERITY HIGH - raised against this file and remediated here. Every generation assertion
+    // above was built on the harness's synthetic four-digit ordinal helper, so none of them touched the
+    // key the application actually writes. The production writer renders NINETEEN-digit zero-padded
+    // identifiers, which is a different width, a different composition and a different sort domain; a
+    // suite that only ever exercised the synthetic shape could not have failed on a defect in the real
+    // one. These tests construct the real writer, drive its real ItemStream lifecycle and assert against
+    // the key it produces.
+    //
+    // FINDING, SEVERITY MEDIUM - the unique reject-geometry assertions of a seventh AWS test that
+    // duplicated this suite through the batch tier's harness are migrated here and that file retired, so
+    // the tier starts one container set rather than two and the assertions live beside the generation
+    // semantics they depend on.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("the production writer - real 19-digit generation keys, byte-exact geometry")
+    class ProductionWriterGenerationKeys {
+
+        @Test
+        @DisplayName("the key is the configured prefix, a padded job instance, a padded execution and .dat")
+        void theProductionKeyCarriesNineteenDigitIdentifiers() {
+            final long jobInstanceId = 7001L;
+            final long jobExecutionId = 90011L;
+            final StepExecution stepExecution = stepExecutionFor(jobInstanceId, jobExecutionId);
+
+            final String objectKey = writeOneRejectGeneration(stepExecution, "0000000000000001",
+                    RejectCode.INVALID_CARD_NUMBER);
+
+            assertThat(objectKey)
+                    .as("the key must begin at the CONFIGURED prefix, not at a literal this test chose. "
+                            + "The writer binds the same key, so a mismatch here means the two disagree")
+                    .startsWith(configuredRejectGdgPrefix + "/")
+                    .endsWith(".dat");
+            assertThat(objectKey)
+                    .as("both identifiers are rendered zero-padded to %d digits. That padding is the whole "
+                            + "mechanism by which a lexicographic listing resolves the LATEST generation: "
+                            + "unpadded, execution 10 would sort below execution 9 and a current-generation "
+                            + "read would silently return a stale object",
+                            productionIdentifierDigits)
+                    .contains(padded(jobInstanceId))
+                    .contains(padded(jobExecutionId));
+            assertThat(objectKey)
+                    .as("and the composition is prefix / instance / execution.dat, in that order, so every "
+                            + "generation of one job instance groups under one listable prefix")
+                    .isEqualTo(instancePrefix(jobInstanceId)
+                            + padded(jobExecutionId) + ".dat");
+        }
+
+        @Test
+        @DisplayName("one run writes exactly ONE object, so a (0) read resolves the whole generation")
+        void oneRunWritesExactlyOneGenerationObject() {
+            final String bucket = batchOutputBucket();
+            final long jobInstanceId = 7002L;
+            final StepExecution stepExecution = stepExecutionFor(jobInstanceId, 90021L);
+
+            final RejectWriter writer = productionRejectWriter(stepExecution);
+            writer.open(stepExecution.getExecutionContext());
+            // Three separate chunks. A per-chunk object would produce three keys here, which is exactly
+            // the fragmentation that made a current-generation read resolve only the final part.
+            writer.writeReject(dailyTransaction("0000000000000001"), RejectCode.INVALID_CARD_NUMBER);
+            writer.update(stepExecution.getExecutionContext());
+            writer.writeReject(dailyTransaction("0000000000000002"), RejectCode.ACCOUNT_RECORD_NOT_FOUND);
+            writer.update(stepExecution.getExecutionContext());
+            writer.writeReject(dailyTransaction("0000000000000003"), RejectCode.OVERLIMIT_TRANSACTION);
+            writer.update(stepExecution.getExecutionContext());
+            writer.close();
+
+            final List<String> keys = keysUnder(bucket,
+                    instancePrefix(jobInstanceId));
+
+            assertThat(keys)
+                    .as("a GDG (+1) allocates ONE generation per run. Three chunks are three writes into "
+                            + "that one generation, not three generations, so a (0) reference resolves the "
+                            + "run's whole output rather than its last fragment")
+                    .hasSize(1);
+            assertThat(get(bucket, keys.get(0)))
+                    .as("and the single object holds all three records at %d bytes each",
+                            REJECT_RECORD_LENGTH)
+                    .hasSize(3 * REJECT_RECORD_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a reject record written through the production writer lands as exactly 430 bytes")
+        void aRejectRecordLandsAtItsDeclaredLength() {
+            final StepExecution stepExecution = stepExecutionFor(7003L, 90031L);
+
+            final String objectKey = writeOneRejectGeneration(stepExecution, "0000000000000001",
+                    RejectCode.INVALID_CARD_NUMBER);
+
+            assertThat(get(batchOutputBucket(), objectKey))
+                    .as("the length that matters for parity is the length of the object that actually "
+                            + "landed, after the SDK encoded and streamed it - not the length of the string "
+                            + "handed to the writer. app/jcl/POSTTRAN.jcl declares LRECL=430 and "
+                            + "app/cbl/CBTRN02C.cbl:L176-L182 composes it as 350 data bytes plus an "
+                            + "80-byte trailer")
+                    .hasSize(REJECT_RECORD_LENGTH);
+        }
+
+        @Test
+        @DisplayName("the stored trailer still reads reason-then-description after the round trip")
+        void theStoredTrailerPreservesItsFieldOrder() {
+            final StepExecution stepExecution = stepExecutionFor(7004L, 90041L);
+
+            final String objectKey = writeOneRejectGeneration(stepExecution, "0000000000000042",
+                    RejectCode.TRANSACTION_RECEIVED_AFTER_ACCT_EXPIRATION);
+
+            final String stored = new String(
+                    get(batchOutputBucket(), objectKey), StandardCharsets.ISO_8859_1);
+            final String trailer = stored.substring(TRANSACTION_RECORD_LENGTH);
+
+            assertThat(trailer)
+                    .as("the trailer is a four-digit reason followed by a 76-character description, in that "
+                            + "order. Reversed, it would still be 80 bytes and still round-trip, which is "
+                            + "why the order is asserted rather than only the length")
+                    .hasSize(REJECT_TRAILER_LENGTH)
+                    .startsWith(String.format(Locale.ROOT, "%04d",
+                            RejectCode.TRANSACTION_RECEIVED_AFTER_ACCT_EXPIRATION.getCode()));
+            assertThat(trailer.substring(REJECT_FAIL_REASON_LENGTH).strip())
+                    .as("and the description is the code's own literal, which app/cbl/CBTRN02C.cbl emits "
+                            + "verbatim and Gate 1 compares byte for byte")
+                    .isEqualTo(RejectCode.TRANSACTION_RECEIVED_AFTER_ACCT_EXPIRATION.getDescription());
+        }
+
+        @Test
+        @DisplayName("the writer publishes the prefix, the count and the exact key it wrote")
+        void theWriterPublishesItsGenerationContext() {
+            final long jobInstanceId = 7005L;
+            final StepExecution stepExecution = stepExecutionFor(jobInstanceId, 90051L);
+
+            final String objectKey = writeOneRejectGeneration(stepExecution, "0000000000000007",
+                    RejectCode.OVERLIMIT_TRANSACTION);
+
+            assertThat(stepExecution.getExecutionContext()
+                            .getString(RejectWriter.REJECT_GENERATION_PREFIX_CONTEXT_KEY))
+                    .as("the prefix is what makes the generation LISTABLE by a downstream step, so it is "
+                            + "published as well as the key")
+                    .isEqualTo(instancePrefix(jobInstanceId));
+            assertThat(stepExecution.getExecutionContext()
+                            .getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY))
+                    .as("and the key names the object PRECISELY, so a downstream step need not guess which "
+                            + "of several objects under the prefix is this run's")
+                    .isEqualTo(objectKey);
+            assertThat(stepExecution.getExecutionContext()
+                            .getLong(RejectWriter.REJECT_RECORD_COUNT_CONTEXT_KEY))
+                    .as("the count is WS-REJECT-COUNT, which app/cbl/CBTRN02C.cbl:L229-L231 uses to decide "
+                            + "return code 4, so it must be published even for a single record")
+                    .isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("a second execution of the same instance writes a distinct, greater generation")
+        void aRestartWritesItsOwnGeneration() {
+            final String bucket = batchOutputBucket();
+            final long jobInstanceId = 7006L;
+            final String firstKey = writeOneRejectGeneration(
+                    stepExecutionFor(jobInstanceId, 90061L), "0000000000000001",
+                    RejectCode.INVALID_CARD_NUMBER);
+
+            // A restart is a NEW job execution of the SAME job instance, which is why the instance segment
+            // is held constant here and only the execution segment moves.
+            final String restartedKey = writeOneRejectGeneration(
+                    stepExecutionFor(jobInstanceId, 90062L), "0000000000000002",
+                    RejectCode.ACCOUNT_RECORD_NOT_FOUND);
+
+            assertThat(restartedKey)
+                    .as("a restart must not overwrite the failed attempt's output. Reusing the key would "
+                            + "destroy the evidence of the first attempt, and a GDG never does that - each "
+                            + "attempt is its own generation")
+                    .isNotEqualTo(firstKey);
+            assertThat(restartedKey.compareTo(firstKey))
+                    .as("and the later execution must sort GREATER, because that ordering is how a (0) "
+                            + "reference identifies the current generation")
+                    .isPositive();
+            assertThat(keysUnder(bucket, instancePrefix(jobInstanceId)))
+                    .as("both generations remain present and grouped under the one job instance")
+                    .containsExactlyInAnyOrder(firstKey, restartedKey);
+            assertThat(currentGenerationKey(bucket,
+                            instancePrefix(jobInstanceId)))
+                    .as("and the current-generation read resolves the restart, not the first attempt")
+                    .contains(restartedKey);
+        }
+    }
+
+    /**
+     * Builds the production writer with the context's own collaborators.
+     *
+     * @param stepExecution the execution whose identifiers compose the generation key
+     * @return the writer, never {@code null}
+     */
+    private RejectWriter productionRejectWriter(final StepExecution stepExecution) {
+        return new RejectWriter(s3Template(), metricsConfig, fileStatusMapper,
+                batchOutputBucket(), configuredRejectGdgPrefix, stepExecution);
+    }
+
+    /**
+     * Drives one complete generation through the production writer: open, one write, update, close.
+     *
+     * <p>The full {@code ItemStream} lifecycle is used rather than a bare write, because the generation
+     * object is committed on {@code close} and the key is published there. A test that wrote without
+     * closing would observe neither.
+     *
+     * @param stepExecution the execution to write under
+     * @param transactionId the identifier of the rejected record
+     * @param rejectCode the outcome to record
+     * @return the published object key, never {@code null}
+     */
+    private String writeOneRejectGeneration(final StepExecution stepExecution, final String transactionId,
+            final RejectCode rejectCode) {
+
+        final RejectWriter writer = productionRejectWriter(stepExecution);
+        writer.open(stepExecution.getExecutionContext());
+        writer.writeReject(dailyTransaction(transactionId), rejectCode);
+        writer.update(stepExecution.getExecutionContext());
+        writer.close();
+        return stepExecution.getExecutionContext()
+                .getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY);
+    }
+
+    /**
+     * Renders an identifier the way the production writer renders it.
+     *
+     * @param identifier the identifier to render
+     * @return the zero-padded rendering, never {@code null}
+     */
+    private String padded(final long identifier) {
+        return String.format(Locale.ROOT, "%0" + productionIdentifierDigits + "d", identifier);
+    }
+
+    /**
+     * Builds a step execution with explicit identifiers, so each test owns its own generation key space.
+     *
+     * <p>The factory's no-argument form returns the <em>same</em> default instance and execution identifiers
+     * on every call, so two tests using it write to the same key and each observes the other's objects. That
+     * is not a hypothetical: it was observed here as a listing that found two objects where one was expected,
+     * and it would have been read as a defect in the writer rather than in the tests. Stating both
+     * identifiers per test makes the suite order-independent and makes each assertion about its own writes.
+     *
+     * @param jobInstanceId the instance identifier, distinct per test
+     * @param jobExecutionId the execution identifier, distinct per write
+     * @return a step execution carrying those identifiers, never {@code null}
+     */
+    private static StepExecution stepExecutionFor(final long jobInstanceId, final long jobExecutionId) {
+        return MetaDataInstanceFactory.createStepExecution(
+                MetaDataInstanceFactory.createJobExecution("posttran", jobInstanceId, jobExecutionId),
+                "rejectStep",
+                jobExecutionId);
+    }
+
+    /**
+     * Composes the job-instance prefix a generation lands under, exactly as the production writer does.
+     *
+     * <p>The separator is supplied here because the CONFIGURED prefix carries none - it is
+     * {@code gdg/dalyrejs}, and the writer appends {@code "/"} before the padded instance. That is worth
+     * stating rather than absorbing: a test that assumed a trailing separator in configuration would
+     * assemble a key one character different from the real one and fail for a reason that looks like a
+     * production defect.
+     *
+     * @param jobInstanceId the job instance whose generations group under this prefix
+     * @return the prefix, ending in a separator so a key can be appended directly
+     */
+    private String instancePrefix(final long jobInstanceId) {
+        return configuredRejectGdgPrefix + "/" + padded(jobInstanceId) + "/";
+    }
+
+    /**
+     * A rejected daily transaction, shaped as the 350-byte staging layout requires.
+     *
+     * @param id the transaction identifier
+     * @return the record, never {@code null}
+     */
+    private static DailyTransaction dailyTransaction(final String id) {
+        return new DailyTransaction(1L, id, "01", 5, "System", "Regular Sales Draft",
+                new BigDecimal("100.00"), 9L, "MERCHANT NAME", "MERCHANT CITY", "12345",
+                "4111111111111111", "2022-06-10-19.27.53.000000", "2022-06-10-19.27.53.000000");
+    }
+
+    @Nested
+    @DisplayName("the production handoff - the writer's own key, carried through a context, read by the "
+            + "production reader")
+    class ProductionGenerationKeyHandoff {
+
+        /** Sole constructor, used by the JUnit Platform. */
+        ProductionGenerationKeyHandoff() {
+            super();
+        }
+
+        /**
+         * The key the production writer publishes is the key the object actually landed under.
+         *
+         * <p>Nothing here re-derives a key. The prefix and bucket are configuration handed <em>to</em>
+         * {@link TransactionWriter}, the ordinal and the job-instance segment are composed by the writer, and
+         * the assertion reads the value the writer published rather than a value the test computed. That is
+         * the whole point: if the writer's key composition changes, this fails, whereas a test that rebuilds
+         * the key from the same rule would keep passing while production and test drifted together.
+         */
+        @Test
+        @DisplayName("the writer publishes the concrete key it created, and the object is there, 350 bytes")
+        void theWriterPublishesTheConcreteKeyItCreated() {
+            final String bucket = ownVersionedBucket("gdg");
+            final Transaction posted = handoffTransaction(handoffTransactionId(0));
+            final StepExecution step = MetaDataInstanceFactory.createStepExecution();
+            final TransactionWriter writer = productionWriter(bucket);
+
+            writeThrough(writer, step, posted);
+
+            final String published =
+                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+            assertThat(published)
+                    .as("the writer must publish the key it created under '%s'; without it a later step has "
+                            + "nothing to read and the (+1)-then-read handoff cannot happen at all",
+                            TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY)
+                    .isNotBlank()
+                    // The prefix constant is already separator-terminated, and the writer strips a trailing
+                    // separator before composing so that its own template supplies exactly one. Appending
+                    // another here would demand a doubled separator - the empty key segment the consuming
+                    // reader is right to refuse.
+                    .startsWith(handoffGenerationPrefix)
+                    .doesNotContain("//");
+
+            assertThat(keysUnder(bucket, handoffGenerationPrefix))
+                    .as("the object must exist at exactly the published key - not at a key the test derived")
+                    .containsExactly(published);
+            assertThat(get(bucket, published))
+                    .as("app/cpy/CVTRA05Y.cpy declares RECLN = 350, and the length that matters is the "
+                            + "length of the object that landed after the client encoded and streamed it")
+                    .hasSize(TRANSACTION_RECORD_LENGTH)
+                    .isEqualTo(writer.composeFixedWidthImage(posted)
+                            .getBytes(StandardCharsets.ISO_8859_1));
+        }
+
+        /**
+         * The ordered job-scoped generation the writer publishes is complete and in creation order.
+         *
+         * <p>{@code app/proc/TRANREPT.prc:L31} writes {@code (+1)} and {@code :L37} reads the same spelling,
+         * so a consumer needs the exact keys and not a count. Both the indexed entries and their count come
+         * from production; the test asserts they agree with what the object store holds.
+         */
+        @Test
+        @DisplayName("the ordered job-scoped generation lists every key the writer created, in order")
+        void theOrderedGenerationListsEveryKeyInCreationOrder() {
+            final String bucket = ownVersionedBucket("gdg");
+            final StepExecution step = MetaDataInstanceFactory.createStepExecution();
+            final TransactionWriter writer = productionWriter(bucket);
+
+            final List<String> created = new ArrayList<>();
+            for (int chunk = 0; chunk < multiRecordCount; chunk++) {
+                writeThrough(writer, step, handoffTransaction(handoffTransactionId(chunk)));
+                created.add(step.getExecutionContext()
+                        .getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY));
+            }
+
+            final ExecutionContext jobContext = step.getJobExecution().getExecutionContext();
+            assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_COUNT_ENTRY, -1L))
+                    .as("the count under '%s' must equal the number of objects created",
+                            TransactionWriter.OBJECT_KEYS_COUNT_ENTRY)
+                    .isEqualTo(multiRecordCount);
+
+            final List<String> promoted = new ArrayList<>();
+            for (int index = 0; index < multiRecordCount; index++) {
+                promoted.add(jobContext.getString(TransactionWriter.objectKeysIndexEntry(index)));
+            }
+            assertThat(promoted)
+                    .as("the indexed entries must reproduce creation order exactly, because a consumer reads "
+                            + "index 0 through count-1 rather than re-resolving 'the latest'")
+                    .containsExactlyElementsOf(created);
+            assertThat(promoted)
+                    .as("and creation order must agree with lexicographic order, which is what makes the "
+                            + "greatest key the current generation")
+                    .isSortedAccordingTo(Comparator.naturalOrder());
+            assertThat(keysUnder(bucket, handoffGenerationPrefix))
+                    .as("every published key must name an object that exists")
+                    .containsExactlyElementsOf(created);
+        }
+
+        /**
+         * The promoted key is what the production reader opens, and the record round-trips.
+         *
+         * <p>This closes the loop the class previously left open: the writer composes and publishes a key,
+         * the context carries it, and {@link TransactionBackupReader} - not a test helper - resolves and
+         * decodes it. LocalStack is the external boundary; both ends of the handoff are production code.
+         */
+        @Test
+        @DisplayName("the production reader opens the promoted key and decodes the record the writer wrote")
+        void theProductionReaderConsumesThePromotedKey() {
+            final String bucket = ownVersionedBucket("gdg");
+            final String transactionId = handoffTransactionId(0);
+            final Transaction posted = handoffTransaction(transactionId);
+            final StepExecution step = MetaDataInstanceFactory.createStepExecution();
+
+            writeThrough(productionWriter(bucket), step, posted);
+            final String promoted =
+                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+
+            final TransactionBackupReader reader = productionReader(bucket, promoted);
+            final ExecutionContext readerContext = new ExecutionContext();
+            reader.open(readerContext);
+            try {
+                final Transaction decoded = reader.read();
+
+                assertThat(decoded)
+                        .as("the reader must return the record the writer emitted, not null: a promoted key "
+                                + "that decodes to nothing is the silent-empty-report failure "
+                                + "app/proc/TRANREPT.prc:L27-L37 makes impossible on the mainframe")
+                        .isNotNull();
+                assertThat(decoded.getTransactionId().strip()).isEqualTo(transactionId);
+                assertThat(decoded.getCardNumber().strip()).isEqualTo(posted.getCardNumber().strip());
+                assertThat(decoded.getAmount())
+                        .as("a monetary value crosses the boundary as a decimal and is compared with "
+                                + "compareTo, never with equals")
+                        .usingComparator(BigDecimal::compareTo)
+                        .isEqualTo(posted.getAmount());
+                assertThat(reader.read())
+                        .as("one record was written, so the second read is a clean end of data - null, "
+                                + "which is the Spring Batch exhaustion signal and not an error")
+                        .isNull();
+                assertThat(reader.getRecordsRead())
+                        .as("exactly one record must be counted as read")
+                        .isEqualTo(1L);
+
+                reader.update(readerContext);
+                assertThat(readerContext.getString(generationObjectKeyContextEntry, ""))
+                        .as("the resolved generation must be checkpointed under '%s' so a restart resumes on "
+                                + "the identical generation rather than on whatever is newest by then",
+                                generationObjectKeyContextEntry)
+                        .isEqualTo(promoted);
+            } finally {
+                reader.close();
+            }
+        }
+
+        /**
+         * A promoted key outranks the lexicographically greatest one.
+         *
+         * <p><strong>The decisive test, and one that cannot be written without production code on both
+         * ends.</strong> The writer creates two generations; the <em>earlier</em> one is promoted. A reader
+         * that treated {@code (+1)} on the read side as "whatever is newest" would open the later key and
+         * pass every isolated test while racing in the pipeline. Only the promoted key may win.
+         */
+        @Test
+        @DisplayName("a promoted key outranks the lexicographically greatest, which is the precedence a "
+                + "concurrent producer would otherwise break")
+        void aPromotedKeyOutranksTheLexicalGreatest() {
+            final String bucket = ownVersionedBucket("gdg");
+            final String earlierId = handoffTransactionId(0);
+            final String laterId = handoffTransactionId(1);
+            final StepExecution step = MetaDataInstanceFactory.createStepExecution();
+            final TransactionWriter writer = productionWriter(bucket);
+
+            writeThrough(writer, step, handoffTransaction(earlierId));
+            final String earlierKey =
+                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+            writeThrough(writer, step, handoffTransaction(laterId));
+            final String laterKey =
+                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+
+            assertThat(earlierKey)
+                    .as("the two generations must be distinct and ordered, or the precedence below proves "
+                            + "nothing")
+                    .isLessThan(laterKey);
+
+            final TransactionBackupReader reader = productionReader(bucket, earlierKey);
+            reader.open(new ExecutionContext());
+            try {
+                assertThat(reader.read())
+                        .extracting(decoded -> decoded.getTransactionId().strip())
+                        .as("the reader must open the PROMOTED generation '%s'; resolving the greatest key "
+                                + "instead would have returned transaction %s and would have selected a "
+                                + "concurrent job's generation between two steps of this one",
+                                earlierKey, laterId)
+                        .isEqualTo(earlierId);
+            } finally {
+                reader.close();
+            }
+        }
+
+        /**
+         * A checkpointed key outranks a promoted one, so a restart cannot change generation mid-flight.
+         */
+        @Test
+        @DisplayName("a checkpointed key outranks a promoted one, so a restart resumes on the same "
+                + "generation")
+        void aCheckpointedKeyOutranksAPromotedKey() {
+            final String bucket = ownVersionedBucket("gdg");
+            final String checkpointedId = handoffTransactionId(0);
+            final String promotedId = handoffTransactionId(1);
+            final StepExecution step = MetaDataInstanceFactory.createStepExecution();
+            final TransactionWriter writer = productionWriter(bucket);
+
+            writeThrough(writer, step, handoffTransaction(checkpointedId));
+            final String checkpointedKey =
+                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+            writeThrough(writer, step, handoffTransaction(promotedId));
+            final String promotedKey =
+                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+
+            final ExecutionContext restarted = new ExecutionContext();
+            restarted.putString(generationObjectKeyContextEntry, checkpointedKey);
+
+            final TransactionBackupReader reader = productionReader(bucket, promotedKey);
+            reader.open(restarted);
+            try {
+                assertThat(reader.read())
+                        .extracting(decoded -> decoded.getTransactionId().strip())
+                        .as("the checkpointed generation must win over the promoted one; the alternative is "
+                                + "a restart that silently switches generation and double-counts or skips")
+                        .isEqualTo(checkpointedId);
+            } finally {
+                reader.close();
+            }
+        }
+
+        /**
+         * With nothing promoted and nothing checkpointed, the production reader resolves the current
+         * generation - and it resolves the key the production writer created.
+         *
+         * <p>This is the {@code (0)} semantic proved through production code on both ends rather than
+         * through a listing the test performed itself.
+         */
+        @Test
+        @DisplayName("with nothing promoted, the reader resolves the current generation - the greatest key "
+                + "the writer created")
+        void theStandaloneResolutionLandsOnTheWritersGreatestKey() {
+            final String bucket = ownVersionedBucket("gdg");
+            final String earlierId = handoffTransactionId(0);
+            final String latestId = handoffTransactionId(1);
+            final StepExecution step = MetaDataInstanceFactory.createStepExecution();
+            final TransactionWriter writer = productionWriter(bucket);
+
+            writeThrough(writer, step, handoffTransaction(earlierId));
+            writeThrough(writer, step, handoffTransaction(latestId));
+            final String greatestKey =
+                    step.getExecutionContext().getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY);
+
+            final TransactionBackupReader reader = productionReader(bucket, null);
+            final ExecutionContext readerContext = new ExecutionContext();
+            reader.open(readerContext);
+            try {
+                assertThat(reader.read())
+                        .extracting(decoded -> decoded.getTransactionId().strip())
+                        .as("the standalone (0) semantic must resolve the greatest key, which is the last "
+                                + "one the writer created")
+                        .isEqualTo(latestId);
+                reader.update(readerContext);
+                assertThat(readerContext.getString(generationObjectKeyContextEntry, ""))
+                        .as("and the key it resolved must be the one production published, never one the "
+                                + "test recomputed")
+                        .isEqualTo(greatestKey);
+            } finally {
+                reader.close();
+            }
+
+            assertThat(currentGenerationKey(bucket, handoffGenerationPrefix))
+                    .as("the harness helper is kept honest by being compared against the production "
+                            + "resolution rather than standing in for it: both must name the same key, so a "
+                            + "change to either side fails here instead of drifting silently")
+                    .contains(greatestKey);
+        }
+
+        /**
+         * A generation base with nothing under it fails loudly on open, through the production reader.
+         *
+         * <p>{@code app/proc/TRANREPT.prc:L27-L31} creates the generation before {@code :L36-L37} reads it,
+         * so an absent generation means the backup step did not run. Reporting on nothing would look like a
+         * quiet day's trading, so it is file status {@code '35'} and an abend rather than an empty read.
+         */
+        @Test
+        @DisplayName("an absent generation abends on open rather than reading zero records")
+        void anAbsentGenerationAbendsOnOpen() {
+            final String bucket = ownVersionedBucket("gdg");
+            final TransactionBackupReader reader = productionReader(bucket, null);
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> reader.open(new ExecutionContext()))
+                    .as("an empty generation base is a failure, not a zero-row read")
+                    .withMessageContaining(handoffGenerationPrefix)
+                    .withMessageContaining(bucket);
+
+            assertThat(keysUnder(bucket, handoffGenerationPrefix))
+                    .as("and nothing may have been created as a side effect of failing to resolve")
+                    .isEmpty();
+        }
+    }
+
+    /**
+     * Uploads whose body is produced lazily, and therefore declare no content length.
+     *
+     * <p><strong>Why this group exists.</strong> {@code CREASTMT STEP010} projects the transaction relation
+     * straight into the upload rather than collecting it first, so the body's size is not known until the last
+     * record has been produced and no {@code contentLength} can be declared. That is a real change in how the
+     * object-storage boundary is used - every other writer in this system hands over a {@code byte[]} whose
+     * length it knows - and a unit test over a mocked {@code S3Operations} cannot prove the store accepts it.
+     * These two tests are the ones that can, because they use the context's real template against the
+     * emulator.
+     *
+     * <p>The second test crosses the buffering threshold deliberately. Below it the transfer is a single
+     * {@code PutObject} and the absent length is trivially fine; above it the transfer becomes a multipart
+     * upload, which is the mechanism that makes peak memory independent of object size and therefore the
+     * mechanism the resource-consumption remedy actually rests on. Asserting only the small case would leave
+     * the load-bearing half untested.
+     */
+    @Nested
+    @DisplayName("streamed uploads that declare no content length, as the statement projection does")
+    class StreamedUploadWithoutContentLength {
+
+        /** Sole constructor, used by the JUnit Platform. */
+        StreamedUploadWithoutContentLength() {
+            super();
+        }
+
+        /**
+         * A short body with no declared length round-trips byte for byte.
+         */
+        @Test
+        @DisplayName("an upload with no declared content length round-trips byte for byte")
+        void anUploadWithNoDeclaredContentLengthRoundTripsByteForByte() {
+            final String bucket = ownVersionedBucket("streamed");
+            final String key = generationObjectKey(rejectGenerationBase, 0, "TRXFL.SEQ");
+            final byte[] written = fixedWidthRecords(3);
+
+            s3Template().upload(bucket, key, new ByteArrayInputStream(written),
+                    ObjectMetadata.builder().contentType("application/octet-stream").build());
+
+            assertThat(get(bucket, key))
+                    .as("the store determines the length as it transfers, so omitting it neither truncates "
+                            + "the body nor alters a byte of it - and trailing blanks are load bearing in a "
+                            + "350-byte fixed-width record")
+                    .isEqualTo(written);
+        }
+
+        /**
+         * A body larger than one buffered part round-trips byte for byte, which is the multipart path.
+         */
+        @Test
+        @DisplayName("a body larger than one buffered part round-trips byte for byte, as multipart")
+        void aBodyLargerThanOneBufferedPartRoundTripsByteForByte() {
+            final String bucket = ownVersionedBucket("streamed");
+            final String key = generationObjectKey(rejectGenerationBase, 1, "TRXFL.SEQ");
+            // 15,001 records of 350 bytes is 5,250,350 bytes: just over the 5 MB minimum part size, so the
+            // transfer must become multipart rather than a single PutObject.
+            final byte[] written = fixedWidthRecords(15_001);
+
+            s3Template().upload(bucket, key, new ByteArrayInputStream(written),
+                    ObjectMetadata.builder().contentType("application/octet-stream").build());
+
+            final byte[] read = get(bucket, key);
+            assertThat(read.length)
+                    .as("the reassembled object must be an exact multiple of the 350-byte record length "
+                            + "declared by RECORDSIZE(350 350) at app/jcl/CREASTMT.JCL:32, with no part "
+                            + "boundary artefact")
+                    .isEqualTo(written.length)
+                    .satisfies(length -> assertThat(length.intValue() % TRANSACTION_RECORD_LENGTH).isZero());
+            assertThat(read)
+                    .as("multipart reassembly must be byte-exact; a shifted part boundary would move every "
+                            + "field offset after it and corrupt the statement output silently")
+                    .isEqualTo(written);
+        }
+
+        /**
+         * Builds {@code count} synthetic 350-byte records whose content varies per record.
+         *
+         * <p>The content varies deliberately: a payload of repeated identical bytes would round-trip
+         * correctly even if a part boundary duplicated or dropped a whole record, so it could not detect the
+         * failure this test exists to detect.
+         *
+         * @param count how many records to build
+         * @return the concatenated bytes, exactly {@code count * 350} long
+         */
+        private byte[] fixedWidthRecords(final int count) {
+            final StringBuilder image = new StringBuilder(count * TRANSACTION_RECORD_LENGTH);
+            for (int index = 1; index <= count; index++) {
+                final String marker = String.format(Locale.ROOT, "RECORD-%016d", Integer.valueOf(index));
+                image.append(marker)
+                        .append(" ".repeat(TRANSACTION_RECORD_LENGTH - marker.length()));
+            }
+            return image.toString().getBytes(StandardCharsets.ISO_8859_1);
         }
     }
 }

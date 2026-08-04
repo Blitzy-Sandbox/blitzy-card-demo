@@ -111,8 +111,8 @@ public enum UserType {
      *
      * <p>Corroborated by the <strong>remaining five of the ten</strong> seeded records at
      * {@code app/jcl/DUSRSECJ.jcl:L35-L44} - the last five rows of the inline stream - each of which
-     * holds {@code 'U'} in the {@code SEC-USR-TYPE} byte. Their identifiers are likewise not reproduced;
-     * the synthetic stand-ins used here are {@code STDUSR01} through {@code STDUSR05}.
+     * holds {@code 'U'} in the {@code SEC-USR-TYPE} byte. Neither their identifiers nor the credential they
+     * share is reproduced in this class.
      *
      * <p>{@code app/cbl/COMEN01C.cbl:L136-L137} shows the legacy consumer of this distinction: a menu
      * option flagged for administrators is withheld when {@code CDEMO-USRTYP-USER} holds.

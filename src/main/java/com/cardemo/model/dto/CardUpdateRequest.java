@@ -27,9 +27,7 @@
 package com.cardemo.model.dto;
 
 import com.fasterxml.jackson.annotation.JsonAnySetter;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Null;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -464,12 +462,19 @@ public record CardUpdateRequest(
      * them here rather than delegating keeps this method's output bounded and removes any
      * possibility that a future change to a nested rendering widens what this one emits.</p>
      *
-     * @return a redacted rendering carrying only the account identifier and the program name
+     * <p>Every field below is passed through {@link ApiMasking#forDiagnostics(String)}. All of them are
+     * declared {@code String} and all arrive from a JSON request body, so a caller controls their bytes; a CR
+     * or LF concatenated straight in here would forge log records. The escaping also makes this rendering safe
+     * on an instance that failed validation, which is the usual reason something renders one - {@code @Size}
+     * runs after Jackson has already constructed the record.
+     *
+     * @return a redacted rendering carrying only the account identifier and the program name, and no
+     *     character that could terminate a log record
      */
     @Override
     public String toString() {
-        return "CardUpdateRequest[accountId=" + accountId
-                + ", programName=" + programName + "]";
+        return "CardUpdateRequest[accountId=" + ApiMasking.forDiagnostics(accountId)
+                + ", programName=" + ApiMasking.forDiagnostics(programName) + "]";
     }
 
     /**

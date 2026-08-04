@@ -124,7 +124,8 @@ import com.cardemo.service.account.AccountViewService;
  * repositories and the update operation writes two of them, so exercising either end to end needs the
  * PostgreSQL 16 service from {@code docker compose up -d} and the three Flyway migrations applied. The
  * verified invocation recorded at {@code docs/project-guide.md:424-425} is
- * {@code curl -s http://localhost:8080/api/accounts/00000000001 -H "Authorization: Bearer $TOKEN"}. The
+ * {@code curl -s http://localhost:8080/api/accounts/$ACCT_ID -H "Authorization: Bearer $TOKEN"}, where
+ * {@code ACCT_ID} is any eleven-digit account identifier present in the seeded schema. The
  * header is not optional decoration: {@code com.cardemo.config.SecurityConfig} makes
  * {@code GET /api/accounts/{accountId}} require either authority, and only {@code POST /api/auth/**} and
  * five Actuator paths are {@code permitAll}, so the same command without the header returns 401 rather than
@@ -177,8 +178,8 @@ import com.cardemo.service.account.AccountViewService;
  *     <td>{@code 200 OK}</td>
  *     <td>For the view, the thirty-seven-field account projection. For the update, the applied write
  *         together with the {@code ACUP-CHANGE-ACTION} marker the next turn must echo. <strong>Note
- *         that a 200 on the update does not by itself prove both records were written</strong>: see
- *         Blocker 5.2 in section 5, and read {@code errorMessage} on the body.</td>
+ *         that a 200 on the update does not by itself prove both records were written</strong>: see the
+ *         unreported customer lock in section 5, and read {@code errorMessage} on the body.</td>
  *   </tr>
  *   <tr>
  *     <td>{@code 400 Bad Request} with a problem detail</td>
@@ -268,11 +269,10 @@ import com.cardemo.service.account.AccountViewService;
  * <h2>5. Legacy provenance and the three traps</h2>
  *
  * <p>Three places in {@code app/cbl/COACTUPC.cbl} produce working code that behaves differently from
- * the source when translated the obvious way. Each is reproduced rather than repaired, each is labelled
- * with a severity per Rule 1 Clause F, and each is owed an entry in the planned {@code DECISION_LOG.md} and
- * {@code TRACEABILITY_MATRIX.md}.</p>
+ * the source when translated the obvious way. Each is reproduced rather than repaired, and each is
+ * called out below so that a later edit does not mistake it for a defect.</p>
  *
- * <p><strong>Trap 1 - Blocker 5.2: a customer lock failure is reported as success.</strong> The
+ * <p><strong>Trap 1 - a customer lock failure is reported as success.</strong> The
  * post-write dispatch at {@code app/cbl/COACTUPC.cbl:L2606-L2615} is an {@code EVALUATE TRUE} that
  * tests exactly three conditions - {@code COULD-NOT-LOCK-ACCT-FOR-UPDATE} at {@code :L2607-L2608},
  * {@code LOCKED-BUT-UPDATE-FAILED} at {@code :L2609-L2610} and
@@ -284,11 +284,11 @@ import com.cardemo.service.account.AccountViewService;
  * class reproduces that: the operation answers {@code 200 OK}. The outcome stays distinguishable in two
  * places that lose nothing - the {@code errorMessage} member of the returned result still carries the
  * verbatim literal {@code Could not lock customer record for update} from {@code :L519-L520}, and the
- * handler emits a {@code WARN} log line naming Blocker 5.2. It is <strong>not</strong> converted into a
+ * handler emits a {@code WARN} log line naming the unreported lock. It is <strong>not</strong> converted into a
  * {@code 409} or a {@code 500}: parity is the contract, and this is reproduced live behaviour rather
  * than dead code, so Rule 1 Clause B does not reach it.</p>
  *
- * <p><strong>Trap 2 - five distinguishable outcomes, and collapsing them is High.</strong>
+ * <p><strong>Trap 2 - five distinguishable outcomes, and collapsing them loses information.</strong>
  * {@code com.cardemo.exception.ConcurrentUpdateException} exposes exactly five, as a nested
  * {@code public enum Outcome}. Four are the message condition names declared at
  * {@code app/cbl/COACTUPC.cbl:L517-L524} and the fifth is a value of the change-action marker at
@@ -427,18 +427,16 @@ import com.cardemo.service.account.AccountViewService;
  * {@code app/cpy-bms/COBIL00.CPY:66} uses {@code CURBALI PIC X(14)}; and {@code COACTVW.CPY:54}
  * declares {@code CURTIMEI PIC X(8)} where {@code app/cpy-bms/COSGN00.CPY} uses {@code X(9)}. No field
  * is widened, narrowed, renamed, re-ordered or unified here, and no shared header helper and no unified
- * balance or time abstraction is introduced. The verified census is 441 input fields across the
- * seventeen symbolic maps with {@code COACTVW} contributing 37 - independently confirmed by
- * {@code com.cardemo.model.dto.AccountDto} declaring exactly 37 components - which supersedes the
- * figures of 460 and 36 carried by the specification and is owed an entry as discrepancy 1 in the
- * planned {@code DECISION_LOG.md}, severity Medium.</p>
+ * balance or time abstraction is introduced. {@code com.cardemo.model.dto.AccountDto} declares
+ * exactly 37 components, one per input field of the {@code 01 CACTVWAI} group, so the projection width
+ * is machine-checkable rather than asserted in prose.</p>
  *
  * <p>Every monetary value crossing this boundary is a fixed-scale decimal, never a binary floating-point
  * type, and equality on one is decided by {@code compareTo} and never by {@code equals}. The account
  * money fields are {@code PIC S9(10)V99}, so {@code NUMERIC(12,2)}, with {@code HALF_EVEN} rounding.
  * Timestamp members are carried as text and never as a temporal type, because {@code TRAN-ORIG-TS} and
  * {@code TRAN-PROC-TS} are {@code PIC X(26)} with three mutually incompatible producers; parsing or
- * reformatting one is Blocker 5.4 and does not happen here. Serialisation policy - no numeric
+ * reformatting one would destroy that parity and does not happen here. Serialisation policy - no numeric
  * timestamps, fail on unknown properties, no decimal-as-float - is configured centrally under
  * {@code src/main/resources} and is not overridden per controller.</p>
  *
@@ -465,7 +463,8 @@ public class AccountController {
     /**
      * The base path both operations are mounted under, and the whole path of the update operation. Fixed
      * by {@code docs/project-guide.md:161} and {@code :424-425}, which record the verified invocation
-     * {@code curl -s http://localhost:8080/api/accounts/00000000001 -H "Authorization: Bearer $TOKEN"}.
+     * {@code curl -s http://localhost:8080/api/accounts/$ACCT_ID -H "Authorization: Bearer $TOKEN"}, with
+     * {@code ACCT_ID} an eleven-digit account identifier from the seeded schema.
      * Both operations require a bearer token; neither is {@code permitAll}.
      */
     static final String BASE_PATH = "/api/accounts";
@@ -905,9 +904,9 @@ public class AccountController {
      *
      * <p><strong>The response is also the precondition for the update.</strong> It carries a sealed
      * as-displayed snapshot, published both as a body member and as the {@code ETag} header, and the
-     * matching {@code PUT} requires that value in {@code If-Match}. This is what closes the gap that
-     * {@code AccountUpdateService.fetchForUpdate} was previously unreachable: a client had no way to obtain
-     * a snapshot, and one it composed for itself would not be a precondition at all - the comparison at
+     * matching {@code PUT} requires that value in {@code If-Match}. This operation is the only way a
+     * client obtains a snapshot, and that is deliberate: one the client composed for itself would not be a
+     * precondition at all - the comparison at
      * {@code app/cbl/COACTUPC.cbl:L4109-L4193} would be answerable to the caller rather than to the record.
      * The snapshot is produced by the <em>update</em> service, because {@code ACUP-OLD-DETAILS} belongs to
      * {@code COACTUPC}, and it is sealed with authenticated encryption bound to this account and to a
@@ -995,9 +994,8 @@ public class AccountController {
      * the {@code CONTINUE} arm at {@code :L2620-L2621}, while an unrecognised value is rejected rather
      * than charitably read as a confirmation. The consequence of collapsing the legacy pseudo-conversation
      * into one operation is that the unconfirmed validation repaint is not a separate turn: field-level
-     * rejections surface on the confirmed request. That collapse is owed an entry in the planned
-     * {@code DECISION_LOG.md}, severity Low. Identity arrives only as the authenticated principal, never from the
-     * body.</p>
+     * rejections surface on the confirmed request. Identity arrives only as the authenticated principal,
+     * never from the body.</p>
      *
      * <p><strong>Outputs.</strong> {@code 200 OK} carrying {@code AccountUpdateResponse}, an API-native
      * body of four members: the account identifier echoed back, {@code changeAction} - the
@@ -1052,9 +1050,10 @@ public class AccountController {
      * refusal or for an outcome that names itself {@code COULD_NOT_LOCK_CUSTOMER} explicitly.
      * {@code 500} for {@code LOCKED_BUT_UPDATE_FAILED} and for an abend. {@code 400} for a field
      * rejection with the legacy literal relayed byte for byte. And - the trap that matters most - a
-     * {@code 200} does <strong>not</strong> by itself prove both records were written: per Trap 1 a
+     * {@code 200} does <strong>not</strong> by itself prove both records were written: per Trap 1 of the
+     * class documentation, a
      * customer lock failure is reported as success, so a client that needs certainty must read
-     * {@code errorMessage} on the body, and this method emits a {@code WARN} line naming Blocker 5.2
+     * {@code errorMessage} on the body, and this method emits a {@code WARN} line naming the unreported lock
      * whenever that happens.</p>
      *
      * @param request the symbolic map of {@code app/cpy-bms/COACTUP.CPY} carrying the {@code newDetails}
@@ -1323,7 +1322,7 @@ public class AccountController {
     }
 
     /**
-     * Records Blocker 5.2 whenever the update reports success while a customer lock actually failed.
+     * Records the unreported customer lock whenever the update reports success while the lock failed.
      *
      * <p>This is the observability half of Trap 1, and the only half there is: the status stays
      * {@code 200}, because {@code app/cbl/COACTUPC.cbl:L2606-L2615} never tests
@@ -1352,11 +1351,11 @@ public class AccountController {
         final String errorMessage = result.errorMessage();
         if (errorMessage != null && errorMessage.contains(CUSTOMER_LOCK_LITERAL)) {
             LOG.warn("Transaction {} program {} reports success with change action {} while the internal"
-                    + " outcome is {}. This is Blocker 5.2, reproduced deliberately:"
-                    + " app/cbl/COACTUPC.cbl:L2606-L2615 never tests the flag that"
+                    + " outcome is {}. This is the source's unreported customer lock, reproduced"
+                    + " deliberately: app/cbl/COACTUPC.cbl:L2606-L2615 never tests the flag that"
                     + " app/cbl/COACTUPC.cbl:L3934-L3942 sets, so a customer read-for-update failure"
                     + " falls through WHEN OTHER to ACUP-CHANGES-OKAYED-AND-DONE. Neither record was"
-                    + " written. See the planned DECISION_LOG.md.",
+                    + " written.",
                     UPDATE_TRANSACTION_ID, UPDATE_PROGRAM, result.changeAction(),
                     ConcurrentUpdateException.Outcome.COULD_NOT_LOCK_CUSTOMER);
         }

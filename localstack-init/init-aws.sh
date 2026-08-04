@@ -36,7 +36,7 @@
 #
 #   * 3 S3 buckets .......... input, output, statements
 #                             VERSIONING ON THE OUTPUT BUCKET ONLY
-#   * 1 SQS FIFO queue ...... FifoQueue=true, ContentBasedDeduplication=true
+#   * 1 SQS FIFO queue ...... FifoQueue=true, ContentBasedDeduplication=false
 #   * 1 SNS topic ........... notifications
 #   * 0 SNS subscriptions ... deliberately none; see the SNS section below
 #   * 0 S3 lifecycle rules .. deliberately none; GDG retention is documented,
@@ -50,7 +50,7 @@
 #
 #   3 S3 buckets ......... input, output, statements
 #                          VERSIONING ON THE OUTPUT BUCKET ONLY
-#   1 SQS FIFO queue ..... FifoQueue=true, ContentBasedDeduplication=true
+#   1 SQS FIFO queue ..... FifoQueue=true, ContentBasedDeduplication=false
 #   2 SNS topics ......... alerts, notifications
 #   0 SNS subscriptions .. deliberately none; see the SNS section below
 #
@@ -99,7 +99,8 @@
 #
 # Expected on a clean volume: 3 CardDemo buckets; Status=Enabled on the output
 # bucket and no versioning configuration on the other two; one queue whose name
-# ends in `.fifo` and no unsuffixed twin; FifoQueue=true; 1 topic,
+# ends in `.fifo` and no unsuffixed twin; FifoQueue=true with
+# ContentBasedDeduplication=false; 1 topic,
 # carddemo-notifications; an empty subscription list; and
 # `NoSuchLifecycleConfiguration` from every lifecycle read.
 #
@@ -720,21 +721,147 @@ readonly ALLOWED_ENDPOINT_HOSTS=(
 # broken in a way the allowlist is well placed to refuse outright.
 readonly ALLOWED_ENDPOINT_HOST_PATTERN='^carddemo-localstack(-[0-9]+)?$'
 
+# The longest endpoint value this guard will consider, in characters.
+#
+# A service endpoint is a scheme, a host and a port. The longest legal DNS name is
+# 253 characters, and everything else here is a handful, so 300 is generous by any
+# measure while bounding what a single diagnostic can be made to carry. Checked
+# BEFORE the value is scanned, so an oversized value is refused without being
+# examined character by character.
+readonly MAX_ENDPOINT_LENGTH=300
+
+# Every character a URI may legally contain, MINUS the backslash and the space.
+#
+# FINDING H-10, SEVERITY HIGH. Item 1 of the ENDPOINT VALIDATION contract above
+# has always said that no control character, whitespace or backslash may appear
+# anywhere in the value. NOTHING IMPLEMENTED IT. The structural checks below all
+# match on syntax, so a value carrying a carriage return and a line feed passed
+# straight through them and into a diagnostic - which is a log-forging primitive
+# (CWE-117): the attacker-supplied bytes end one log line and begin another that
+# an operator, or a log shipper, reads as the script's own output. A backslash was
+# equally unchecked, and a backslash is how a value that looks local resolves
+# elsewhere in some parsers (CWE-20).
+#
+# Expressed as a POSITIVE rule, because a denylist of dangerous bytes is exactly
+# the shape of guard this file has already been burned by once. The set is the
+# unreserved, reserved and percent characters of RFC 3986 plus the brackets an
+# IPv6 literal needs; a control byte, a space, a tab, a newline, a backslash and
+# any non-ASCII byte are all outside it and are therefore refused. It is anchored
+# and applies to the WHOLE value.
+#
+# BRACKET-EXPRESSION ORDERING IS LOAD-BEARING, and getting it wrong fails in the
+# direction that matters. Inside a POSIX bracket expression a backslash is an
+# ORDINARY CHARACTER, not an escape - so writing the brackets as `\[\]` would
+# both fail to escape them and quietly ADMIT the backslash this rule exists to
+# refuse. The literal `]` is therefore placed first, where the syntax reads it as
+# a member rather than as the terminator, `[` sits in the middle, `-` is last so
+# it cannot form a range, and no backslash appears at all.
+readonly ENDPOINT_CHARACTER_PATTERN=$'^[]A-Za-z0-9._~:/?#@!$&\'()*+,;=%[-]+$'
+
 # require_local_endpoint <url>
 #
 # Parses rather than pattern-matches, in the order a URL is actually defined, and
 # refuses anything it cannot account for. Every rejection is terminal: there is
 # no branch that accepts an unrecognised value.
+#
+# FINDING H-10, SEVERITY HIGH: NO REJECTION MESSAGE ECHOES THE SUPPLIED VALUE.
+# Every message below used to interpolate it, including the userinfo arm - so a
+# value of the form `http://key:secret@localhost:4566` was refused for embedding
+# credentials and then written to the log complete with them (CWE-532), while the
+# comment above claimed the opposite. The value is untrusted; that is the whole
+# reason it is being rejected, and reflecting it is not diagnostically necessary.
+# What an operator needs is WHICH check failed and WHAT to set, and both are still
+# stated in full. The one exception is deliberate: the allowlist arm names the
+# LOWERCASED HOST, because that is the single fact needed to fix the problem, it
+# is the form the guard actually judged, and by that point the value has passed
+# both the character rule and the userinfo refusal, so it can carry neither a
+# forged line nor a credential.
 require_local_endpoint() {
   local url="$1"
   local remainder scheme authority host_port host
+
+  # WHAT THIS FUNCTION MAY SAY WHEN IT REFUSES A VALUE, AND WHY THAT IS NARROW.
+  #
+  # Finding, severity High - raised against the previous revision of this
+  # function and remediated here. Every refusal below used to interpolate the
+  # rejected input into its message: the whole URL, and in places the authority,
+  # the path or the port on their own. Two things were wrong with that, and the
+  # second is the serious one.
+  #
+  #   * USERINFO. `http://user:password@host` is refused a few lines down
+  #     precisely BECAUSE it may carry a credential - and the refusal then wrote
+  #     that credential to stderr, where CI collects it and keeps it. The guard
+  #     recognised the secret and published it in the same breath. The header of
+  #     this file states that nothing here may ever emit a secret; this function
+  #     was the one place that broke the claim.
+  #   * CONTROL CHARACTERS. The value is attacker-influenced in the sense that
+  #     matters here - it comes from the environment - and a CR or LF inside it
+  #     ended up inside a log line. Every line this script writes begins
+  #     `[init-aws] <timestamp> <step>`, so an embedded newline forges as many
+  #     further lines as it likes, in the exact shape a reader trusts. The port
+  #     branch made this trivially reachable: an unparsable port is echoed, and
+  #     `http://localhost:4566\r\nFORGED` fails the port test.
+  #
+  # The remedy is that a refusal names the VARIABLE and a reason drawn from a
+  # closed set, and never the value. That keeps the message actionable - the
+  # reader knows which variable to look at and what property was violated - while
+  # making it impossible for input to reach the log at all. Every reason token is
+  # a literal in this source, so the set of bytes this function can emit is fixed
+  # at authoring time rather than determined at runtime. The remediation strings
+  # are literals for the same reason.
+  #
+  # The one value still echoed is the ACCEPTED host, on the success path, and it
+  # is echoed only after it has been proved equal to one of the five literals in
+  # ALLOWED_ENDPOINT_HOSTS or to match the anchored ALLOWED_ENDPOINT_HOST_PATTERN.
+  # A string proved to be a member of a closed literal set is no longer input, and
+  # naming which endpoint was admitted is the single most useful thing this
+  # function logs.
+
+  # Control characters first, before any parsing, so no later branch can be the
+  # thing that discovers them. Refusing here also means the parsing below never
+  # has to reason about them. A tab is included: it is not a line breaker, but it
+  # has no business in a URL and column-aligned output is how these lines are read.
+  if [[ "${url}" == *$'\n'* || "${url}" == *$'\r'* || "${url}" == *$'\t'* ]]; then
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+      'AWS_ENDPOINT_URL contains a control character [reason=CONTROL_CHARACTER]' \
+      'Set AWS_ENDPOINT_URL to a single-line scheme://host:port, for example http://localhost:4566.'
+  fi
+
+  # Scoped to this function, so the character ranges above are compared byte-wise
+  # rather than by a locale's collation. In a UTF-8 locale `[A-Za-z]` can admit
+  # accented letters, which would put a non-ASCII byte back inside the accepted
+  # set on a developer host that happens to be configured that way.
+  local LC_ALL=C
+
+  # Immediately after the control-character refusal above and before every
+  # structural test: the byte rule and the length bound. Order is the property
+  # that matters here - a check that runs after a diagnostic has already been
+  # produced protects nothing, and the structural checks are the ones whose
+  # messages used to name a component of the value.
+  if ((${#url} > MAX_ENDPOINT_LENGTH)); then
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
+      "the value is ${#url} characters, past the ${MAX_ENDPOINT_LENGTH}-character bound this guard accepts" \
+      'Set AWS_ENDPOINT_URL to a bare scheme://host:port, for example http://localhost:4566.'
+  fi
+  if [[ ! "${url}" =~ ${ENDPOINT_CHARACTER_PATTERN} ]]; then
+    # The offending byte is NOT named and NOT rendered. Naming it would mean
+    # emitting it, which is the injection this check exists to prevent.
+    #
+    # Composed into a local so the line stays within the 120-column limit
+    # .editorconfig sets for *.sh, without splitting `fail`'s 4 positional
+    # arguments (code, step, detail, remedy) across a 5th.
+    local byte_detail='the value carries a control character, whitespace, a backslash or a non-ASCII'
+    byte_detail="${byte_detail} byte, none of which a service endpoint may contain"
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' "${byte_detail}" \
+      'Set AWS_ENDPOINT_URL to a bare scheme://host:port, for example http://localhost:4566.'
+  fi
 
   case "${url}" in
     http://*) scheme='http'; remainder="${url#http://}" ;;
     https://*) scheme='https'; remainder="${url#https://}" ;;
     *)
       fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
-        "value '${url}' is not an http(s) URL" \
+        'AWS_ENDPOINT_URL is not an http(s) URL [reason=SCHEME_NOT_HTTP]' \
         'Set AWS_ENDPOINT_URL to the LocalStack edge, for example http://localhost:4566.'
       ;;
   esac
@@ -743,8 +870,9 @@ require_local_endpoint() {
   # vehicle for smuggling a second host past a naive matcher.
   case "${url}" in
     *'?'* | *'#'*)
-      fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
-        "value '${url}' carries a query or fragment component, which a service endpoint must not" \
+      local component_reason='AWS_ENDPOINT_URL carries a query or fragment component, '
+      component_reason+='which a service endpoint must not [reason=QUERY_OR_FRAGMENT]'
+      fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' "${component_reason}" \
         'Set AWS_ENDPOINT_URL to a bare scheme://host:port, for example http://localhost:4566.'
       ;;
   esac
@@ -757,22 +885,25 @@ require_local_endpoint() {
     local path="/${remainder#*/}"
     if [[ "${path}" != '/' ]]; then
       fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
-        "value '${url}' carries the path '${path}'; only a bare host[:port] is accepted" \
+        'AWS_ENDPOINT_URL carries the path component; only a bare host[:port] is accepted [reason=PATH_PRESENT]' \
         'Drop the path: the health probe appends /_localstack/health to this value itself.'
     fi
   fi
 
   # Userinfo. The host is what follows the last `@`, which is why a denylist over
-  # the whole string is unsound; here its mere presence is refused instead.
+  # the whole string is unsound; here its mere presence is refused instead. The
+  # message deliberately does not quote the value: this is the branch most likely
+  # to be holding a password.
   if [[ "${authority}" == *'@'* ]]; then
-    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
-      "value '${url}' embeds userinfo before the host, which is never required for the local edge" \
+    local userinfo_reason='AWS_ENDPOINT_URL embeds userinfo before the host, '
+    userinfo_reason+='which is never required for the local edge [reason=USERINFO_PRESENT]'
+    fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' "${userinfo_reason}" \
       'Remove the user:password@ prefix; the emulator needs no credentials.'
   fi
 
   if [[ "${authority}" == *'%'* ]]; then
     fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
-      "value '${url}' percent-encodes its authority, which this guard will not decode" \
+      'AWS_ENDPOINT_URL percent-encodes its authority, which this guard will not decode [reason=PERCENT_ENCODED]' \
       'Spell the host literally, for example http://localhost:4566.'
   fi
 
@@ -785,20 +916,20 @@ require_local_endpoint() {
     local after="${host_port#*]}"
     if [[ -n "${after}" && "${after}" != :* ]]; then
       fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
-        "value '${url}' has an unparsable IPv6 authority '${authority}'" \
+        'AWS_ENDPOINT_URL has an unparsable IPv6 authority [reason=IPV6_AUTHORITY]' \
         'Spell it as http://[::1]:4566.'
     fi
-    validate_endpoint_port "${url}" "${after#:}"
+    validate_endpoint_port "${after#:}"
   else
     host="${host_port%%:*}"
     if [[ "${host_port}" == *:* ]]; then
-      validate_endpoint_port "${url}" "${host_port#*:}"
+      validate_endpoint_port "${host_port#*:}"
     fi
   fi
 
   if [[ -z "${host}" ]]; then
     fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
-      "value '${url}' has an empty host" \
+      'AWS_ENDPOINT_URL has an empty host [reason=HOST_EMPTY]' \
       'Set AWS_ENDPOINT_URL to the LocalStack edge, for example http://localhost:4566.'
   fi
 
@@ -823,19 +954,25 @@ require_local_endpoint() {
   hint+=" ${ALLOWED_ENDPOINT_HOSTS[*]}, or the compose container name."
   hint+=' Live AWS is never used.'
   fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
-    "host '${host}' is not an allowlisted LocalStack endpoint (from '${url}')" \
+    'AWS_ENDPOINT_URL host is not an allowlisted LocalStack endpoint [reason=HOST_NOT_ALLOWLISTED]' \
     "${hint}"
 }
 
-# validate_endpoint_port <url> <port>
+# validate_endpoint_port <port>
 #
 # Kept separate only because it is reached from both the IPv6 and the IPv4 branch
 # above; inlining it twice is how the two would drift apart.
+#
+# It takes the port alone. It used to take the whole URL as well, purely so the
+# refusal could quote it, and that made this the most reachable log-injection site
+# in the script: an unparsable port is by definition a string that failed a strict
+# numeric test, so anything at all could be in it, and it went straight into a
+# line beginning `[init-aws]`. The port is not echoed either, for the same reason.
 validate_endpoint_port() {
-  local url="$1" port="$2"
+  local port="$1"
   if [[ ! "${port}" =~ ^(0|[1-9][0-9]*)$ ]] || ((10#${port} < 1 || 10#${port} > 65535)); then
     fail "${EXIT_CONFIG}" 'config:AWS_ENDPOINT_URL' \
-      "value '${url}' has an invalid port '${port}'" \
+      'AWS_ENDPOINT_URL has an invalid port [reason=PORT_INVALID]' \
       'Use a decimal port in 1-65535, for example 4566.'
   fi
 }
@@ -861,14 +998,13 @@ require_local_endpoint "${ENDPOINT_URL}"
 # remove capability without adding safety. THE ORDERING IS LOAD-BEARING: moving
 # this block above `require_local_endpoint` would reopen the hole.
 #
-# Two further least-privilege measures apply to the fallback specifically, both
-# because a developer host may carry real ambient AWS configuration that the
-# bundled wrapper never sees:
+# Two further least-privilege measures apply, because the host may carry real
+# ambient AWS configuration:
 #
 #   * AWS_EC2_METADATA_DISABLED=true stops the CLI probing an instance metadata
 #     service for credentials. On this host AWS_ACCESS_KEY_ID and
 #     AWS_SECRET_ACCESS_KEY are already present in the environment, so without
-#     this the fallback has a credential chain it has no business exercising.
+#     this there is a credential chain no path here has any business exercising.
 #   * AWS_PROFILE is cleared so a developer's named profile - which may carry a
 #     real account and, worse, its own region and endpoint settings - cannot
 #     influence the call.
@@ -876,15 +1012,26 @@ require_local_endpoint "${ENDPOINT_URL}"
 # Neither measure weakens the emulator path: LocalStack accepts any credential.
 # An array is used so the words can never be re-split by the shell.
 #
-# CREDENTIAL ISOLATION, and why it is mandatory on the fallback path. The plain
-# AWS CLI resolves credentials from a chain, and every link in that chain is
-# ambient: environment keys, a session token, a named profile, the shared
-# credentials and config files, a web-identity token, an assumed role, container
-# credentials and finally the EC2 instance metadata service. If any one of those
-# resolves to a REAL credential, every request this script issues is signed with
-# it. That is unacceptable even against a loopback endpoint, because a signed
-# request leaks the access key id and, through the metadata service, could mint a
-# fresh session before anything is provisioned.
+# CREDENTIAL ISOLATION, AND WHY IT APPLIES TO BOTH BRANCHES. FINDING M-10,
+# SEVERITY MEDIUM. This isolation used to be applied inside the `aws` arm only,
+# on the reasoning that the bundled wrapper needs no credential handling. The
+# wrapper needs no ENDPOINT handling - that is what it exists for - but it is a
+# thin front end over the very same AWS CLI and resolves credentials through the
+# very same chain. So on the `awslocal` path a real ambient credential was still
+# resolved and every request was still signed with it; the one path the project
+# documents as the normal way to run this script was the path with no isolation.
+#
+# The chain is ambient at every link: environment keys, a session token, a named
+# profile, the shared credentials and config files, a web-identity token, an
+# assumed role, container credentials and finally the EC2 instance metadata
+# service. If any one of them resolves to a REAL credential, every request this
+# script issues is signed with it. That is unacceptable even against a loopback
+# endpoint, because a signed request leaks the access key id and, through the
+# metadata service, could mint a fresh session before anything is provisioned.
+#
+# It is therefore invoked ONCE, UNCONDITIONALLY, ABOVE the branch - so no arm can
+# be added later that quietly inherits the ambient chain, which is exactly how the
+# gap arose.
 #
 # The remedy is to make the resolution deterministic instead of ambient: pin the
 # two well-known LocalStack placeholder values, pin the region already validated
@@ -917,11 +1064,13 @@ isolate_local_credentials() {
   unset AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
 }
 
+# Before the branch, so both arms are covered. See CREDENTIAL ISOLATION above.
+isolate_local_credentials
+
 if command -v awslocal >/dev/null; then
   readonly AWS_CLI=(awslocal)
-  readonly CLI_LABEL='awslocal (bundled, self-targeting)'
+  readonly CLI_LABEL='awslocal (bundled, self-targeting, credentials isolated to LocalStack placeholders)'
 elif command -v aws >/dev/null; then
-  isolate_local_credentials
   readonly AWS_CLI=(aws --endpoint-url "${ENDPOINT_URL}")
   readonly CLI_LABEL="aws --endpoint-url ${ENDPOINT_URL} (fallback, credentials isolated to LocalStack placeholders)"
 else
@@ -1252,13 +1401,28 @@ verify_no_lifecycle_rules() {
 
 # FifoQueue=true is MANDATORY - AWS rejects a `.fifo` name on a standard queue
 # and rejects a FIFO queue whose name lacks the suffix, so the physical name and
-# this attribute have to agree. ContentBasedDeduplication=true suits a report
-# message whose body (report name plus the two dates) is content-addressable; if
-# the publisher also supplies an explicit MessageDeduplicationId, that id takes
-# precedence and this attribute remains correct either way. Nothing further is
-# set: DeduplicationScope and FifoThroughputLimit are high-throughput-mode knobs
-# the application does not use.
-readonly QUEUE_ATTRIBUTES='FifoQueue=true,ContentBasedDeduplication=true'
+# this attribute have to agree.
+#
+# ContentBasedDeduplication=false: FINDING H-08, SEVERITY HIGH, RESOLVED. This
+# was provisioned as `true`, described as suiting a body that is
+# content-addressable. It is not: the body is the report name plus two dates, so
+# two legitimate submissions of the SAME period - exactly what an operator
+# re-submitting produces - hash identically and the second is silently dropped
+# inside the five-minute deduplication window. The legacy contract is the
+# opposite. `DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)` in app/csd/CARDDEMO.CSD
+# APPENDS, and app/cbl/CORPT00C.cbl:L515-L523 writes with no idempotency key at
+# all, so two identical writes produced two reader entries.
+#
+# With the attribute false, SQS REQUIRES an explicit MessageDeduplicationId on
+# every send, and com.cardemo.service.report.ReportSubmissionService generates a
+# fresh one per submission. So every distinct submission is delivered, while a
+# transport retry of one submission re-sends the same id and is collapsed.
+# com.cardemo.config.AwsConfig asserts both attributes at startup and refuses to
+# start against a queue that disagrees.
+#
+# Nothing further is set: DeduplicationScope and FifoThroughputLimit are
+# high-throughput-mode knobs the application does not use.
+readonly QUEUE_ATTRIBUTES='FifoQueue=true,ContentBasedDeduplication=false'
 
 create_queue() {
   local physical="$1"
@@ -1276,7 +1440,7 @@ create_queue() {
       # deduplication semantics different from what the publisher expects.
       fail "${EXIT_QUEUE}" "sqs:${physical}" \
         "exists with attributes differing from the required ${QUEUE_ATTRIBUTES}: ${result//$'\n'/ }" \
-        'Align the queue with the required attributes, or delete it and re-run (mind the 60s name-reuse window).'
+        'Re-run the hook: verify_queue converges a mutable difference, and an immutable one needs a delete.'
       ;;
     *QueueDeletedRecently* | *'You must wait'*)
       fail "${EXIT_QUEUE}" "sqs:${physical}" \
@@ -1334,20 +1498,49 @@ verify_queue() {
   # not the `QueueAlreadyExists` response - is what actually detects drift on a
   # pre-existing queue, because the check-then-create path above returns as soon
   # as get-queue-url succeeds and therefore never calls create-queue at all. A
-  # queue left over from an earlier configuration (for example with
-  # ContentBasedDeduplication=false) would otherwise be reported as an idempotent
-  # success while silently breaking the publisher's deduplication contract.
-  # Asserting on read-back mirrors the versioning check and holds regardless of
-  # whether the provider raises on differing attributes.
-  if [[ "${dedup_flag}" != 'true' ]]; then
-    # Composed into a local so the line stays within the 120-column limit
-    # .editorconfig sets for *.sh, without splitting `fail`'s 4 positional
-    # arguments (code, step, detail, remedy) across a 5th.
-    local drift_detail="ContentBasedDeduplication read back as '${dedup_flag}'"
-    drift_detail="${drift_detail} but must be 'true'"
-    drift_detail="${drift_detail} - the existing queue has drifted from ${QUEUE_ATTRIBUTES}"
-    fail "${EXIT_QUEUE}" "sqs:${physical}" "${drift_detail}" \
-      'Delete the queue and re-run so it is recreated with the required attributes (mind the 60s name-reuse window).'
+  # queue left over from an earlier configuration would otherwise be reported as
+  # an idempotent success while silently breaking the publisher's contract.
+  #
+  # Unlike FifoQueue, ContentBasedDeduplication is MUTABLE, so drift here is
+  # CONVERGED rather than merely reported. That matters for exactly the upgrade
+  # this revision is: every volume provisioned before finding H-08 carries
+  # `true`, and telling the operator to delete the queue and wait out the 60s
+  # name-reuse window would make an attribute change an outage. Converging keeps
+  # the script's contract - after a successful run the queue matches
+  # QUEUE_ATTRIBUTES - true on a long-lived volume as well as a clean one.
+  #
+  # An ABSENT attribute reads back as 'None' through `--output text`, and that is
+  # the service's own way of saying false, so it is accepted as compliant.
+  if [[ "${dedup_flag}" != 'false' && "${dedup_flag}" != 'None' && -n "${dedup_flag}" ]]; then
+    log "sqs:${physical}" \
+      "ContentBasedDeduplication read back as '${dedup_flag}'; converging to false (finding H-08)"
+    local converge=''
+    if ! converge="$("${AWS_CLI[@]}" sqs set-queue-attributes --queue-url "${url}" \
+      --attributes 'ContentBasedDeduplication=false' 2>&1)"; then
+      # Composed into a local so the line stays within the 120-column limit
+      # .editorconfig sets for *.sh, without splitting `fail`'s 4 positional
+      # arguments (code, step, detail, remedy) across a 5th.
+      local drift_detail="ContentBasedDeduplication is '${dedup_flag}' and could not be converged to 'false'"
+      drift_detail="${drift_detail}: ${converge//$'\n'/ }"
+      fail "${EXIT_QUEUE}" "sqs:${physical}" "${drift_detail}" \
+        'Set ContentBasedDeduplication=false with sqs set-queue-attributes, or delete the queue and re-run.'
+    fi
+    # Re-read rather than trusting the mutation: the assertion, not the call, is
+    # what this function exists to make.
+    if ! attributes="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+      --attribute-names ContentBasedDeduplication \
+      --query 'Attributes.ContentBasedDeduplication' --output text 2>&1)"; then
+      fail "${EXIT_QUEUE}" "sqs:${physical}" \
+        "get-queue-attributes failed after convergence: ${attributes//$'\n'/ }" \
+        'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+    fi
+    dedup_flag="${attributes}"
+    if [[ "${dedup_flag}" != 'false' && "${dedup_flag}" != 'None' && -n "${dedup_flag}" ]]; then
+      local unconverged="ContentBasedDeduplication still reads back as '${dedup_flag}' after convergence"
+      unconverged="${unconverged} - it must be 'false' so two identical submissions are both delivered"
+      fail "${EXIT_QUEUE}" "sqs:${physical}" "${unconverged}" \
+        'Delete the queue and re-run so it is recreated with the required attributes (mind the 60s window).'
+    fi
   fi
   log "sqs:${physical}" "verified FifoQueue=${fifo_flag} ContentBasedDeduplication=${dedup_flag} (URL withheld)"
 }

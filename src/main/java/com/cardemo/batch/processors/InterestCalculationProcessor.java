@@ -134,12 +134,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code :L219} and the {@code END-IF} at {@code :L221} all sit at column 16.
  * <strong>{@code :L220} can never execute.</strong>
  *
- * <p><b>Consequence.</b> The last account of the run is never updated: its accumulated interest is
- * never added to {@code ACCT-CURR-BAL} and its two cycle counters are never reset.
- * <strong>No final flush is implemented here, and the behaviour is not "fixed".</strong> The Agent
- * Action Plan states at &sect;0.7.3.3 that "when the loop detects end of file it performs the account
- * update one final time"; that claim is incorrect and this class corrects it.
- * {@link #updateAccountAtEndOfFile()} reproduces the {@code ELSE} arm and is marked unreachable.
+ * <p><b>Consequence.</b> The account still in progress when the browse ends keeps its pre-run
+ * {@code ACCT-CURR-BAL} and its un-reset cycle counters. That outcome is <strong>preserved rather than
+ * repaired</strong>, because parity with the frozen corpus is the acceptance contract and rewriting a
+ * business rule to be "more correct" is explicitly out of scope. The variance between this reading and the
+ * specification prose is disclosed once, with its severity and its remediation, in the register in
+ * {@code com.cardemo} - see the package documentation of the root package - and is not restated here.
+ * {@link #updateAccountAtEndOfFile()} reproduces the {@code ELSE} arm faithfully so that the paragraph map
+ * stays provable.
  *
  * <p><b>Proof by contrast.</b> The same idiom appears in {@code app/cbl/CBTRN03C.cbl} with the opposite
  * reachability. There the {@code IF END-OF-FILE = 'N'} at {@code :L179} is the <em>inner</em> test,
@@ -517,7 +519,7 @@ public class InterestCalculationProcessor
      *
      * <p><strong>Why it exists.</strong> {@code DISPLAY TRAN-CAT-BAL-RECORD} at
      * {@code app/cbl/CBACT04C.cbl:L193} reproduces the source's per-record SYSOUT dump, and that record
-     * carries {@code TRAN-CAT-BAL PIC S9(09)V99} at {@code app/cpy/CVTRA01Y.cpy:L15} together with the
+     * carries {@code TRAN-CAT-BAL PIC S9(09)V99} at {@code app/cpy/CVTRA01Y.cpy:L9} together with the
      * account identifier the balance belongs to. Emitting the pair through the class logger placed customer
      * financial data in the application's ordinary log stream, where the masking rules in
      * {@code src/main/resources/logback-spring.xml} could not reach it: masking matches labelled
@@ -1175,8 +1177,9 @@ public class InterestCalculationProcessor
      * {@code @Transactional} annotation is placed on this method: it is private, Spring's proxying cannot
      * intercept it, and the annotation would therefore be an unenforced claim.
      *
-     * <p>Invoked from exactly one place, the control-break arm at {@code :L196}. Per PARITY TRAP 1 it is
-     * <em>not</em> invoked at end of file, so the final account of a run is never updated.
+     * <p>Invoked from exactly one place on the reachable path, the control-break arm at {@code :L196}, and
+     * reproduced for the end-of-data branch by {@link #updateAccountAtEndOfFile()}. Per PARITY TRAP 1 the
+     * source reaches it from {@code :L196} alone.
      *
      * @throws FatalProcessingException if no account record is loaded, if the current balance is absent,
      *     or if the rewrite fails - the guard at {@code :L357} accepts {@code '00'} only and every other
@@ -1234,14 +1237,11 @@ public class InterestCalculationProcessor
      * ends and the outer {@code IF} is never re-evaluated with a {@code 'Y'} flag. The {@code ELSE} arm is
      * dead in the source.
      *
-     * <p><b>What that means behaviourally.</b> The last account of every run keeps its pre-run balance and
-     * its un-reset cycle counters: its accumulated interest is silently discarded. This is preserved, not
-     * repaired. Parity is the contract, and the discrepancy is disclosed here rather than corrected
-     * silently.
-     *
-     * <p><b>Correction to the Agent Action Plan.</b> &sect;0.7.3.3 states that when the loop detects end
-     * of file it performs the account update one final time. It does not. No final flush is implemented
-     * anywhere in this class.
+     * <p><b>What that means behaviourally.</b> The account still in progress when the browse ends keeps its
+     * pre-run balance and its un-reset cycle counters. That is preserved, not repaired: parity with the
+     * frozen corpus is the acceptance contract, and the variance between this reading and the specification
+     * prose is disclosed once - with its severity and its remediation - in the register carried by the
+     * documentation of the {@code com.cardemo} root package.
      *
      * <p><b>Proof by contrast, which is what makes this auditable rather than merely asserted.</b> The
      * identical idiom in {@code app/cbl/CBTRN03C.cbl} has the opposite reachability: there the

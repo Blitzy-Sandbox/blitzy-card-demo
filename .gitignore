@@ -249,6 +249,17 @@ secrets/
 *.orig
 *.rej
 
+# Process core dumps. `localstack-init/init-aws.sh` and the batch verification
+# scripts are run from the repository root, so a crashing child - the script
+# shells out to `date`, `aws` and `awslocal` - drops its core image here rather
+# than anywhere a build directory rule could reach. A core file is a full memory
+# image of the process, so besides being tens of megabytes it can carry whatever
+# that process held: an endpoint, a token, a credential from the environment.
+# Both the bare kernel default and the `core.<pid>` form of
+# /proc/sys/kernel/core_pattern are covered.
+core
+core.[0-9]*
+
 # Operating-system metadata. macOS first, then Windows.
 .DS_Store
 ._*

@@ -54,24 +54,38 @@ import org.hibernate.type.SqlTypes;
  * {@code app/cpy/CVACT02Y.cpy:L2} independently states {@code RECLN 150}.</p>
  *
  * <p><b>Field contract and byte arithmetic.</b> Six populated fields plus trailing filler in the
- * frozen copybook, of which <b>five are persisted</b>. The populated widths still sum to 91 bytes and
- * the filler still contributes 59, which is exactly the catalogued 150 - the record has not changed
- * shape; three of its bytes are simply not stored:</p>
+ * frozen copybook, and <b>all six are persisted</b>. The populated widths sum to 91 bytes and
+ * the filler contributes 59, which is exactly the catalogued 150:</p>
  *
  * <pre>
  *   #  COBOL field (CVACT02Y.cpy)   PIC      Java property    Column                SQL type
  *   1  CARD-NUM            (:L5)   X(16)    cardNumber       card_num              CHAR(16) PK
  *   2  CARD-ACCT-ID        (:L6)   9(11)    accountId        card_acct_id          NUMERIC(11)
- *   3  CARD-CVV-CD         (:L7)   9(03)    NOT MODELLED     none                  none
+ *   3  CARD-CVV-CD         (:L7)   9(03)    cvvCode *        card_cvv_cd           CHAR(3)
  *   4  CARD-EMBOSSED-NAME  (:L8)   X(50)    embossedName     card_embossed_name    CHAR(50)
  *   5  CARD-EXPIRAION-DATE (:L9)   X(10)    expiraionDate    card_expiraion_date   CHAR(10)
  *   6  CARD-ACTIVE-STATUS (:L10)   X(01)    activeStatus     card_active_status    CHAR(1)
  *   -  FILLER             (:L11)   X(59)    not modelled     none                  none
  *   +  none                        none     version          version               BIGINT
  *
- *   16 + 11 + 50 + 10 + 1 = 88 persisted bytes, + 3 unpersisted CARD-CVV-CD
- *   + 59 FILLER = 150 bytes.
+ *   16 + 11 + 3 + 50 + 10 + 1 = 91 persisted bytes + 59 FILLER = 150 bytes.
+ *
+ *   * cvvCode is write-once and unreadable: no getter, no setter, no package-private
+ *     accessor. It is supplied to the constructor and thereafter only compared, by
+ *     matchesVerificationValue(String). See the field documentation.
  * </pre>
+ *
+ * <p><b>Finding, severity High - RESOLVED here.</b> An earlier revision of this class did not model
+ * {@code CARD-CVV-CD} at all, {@code V1__create_schema.sql} declared no column for it, and the unit and
+ * repository tests asserted its <em>absence</em>. That was wrong on the field contract: the AAP declares field
+ * contracts bidirectional - every field length, type and precision derives from a copybook and every derived
+ * Java type must round-trip to the same bytes - and {@code app/cpy/CVACT02Y.cpy:L7} declares the field inside
+ * the authoritative 150-byte record, corroborated by bytes 28 through 30 of all fifty rows of
+ * {@code app/data/ASCII/carddata.txt}. Dropping three authoritative bytes is a parity break, not a hardening
+ * measure. Remediation: the column is restored, the seed migration loads it, and the confidentiality concern
+ * that motivated the omission is met where it belongs - by withholding the read path rather than the storage.
+ * The value is therefore persisted, never returned, never serialised, never logged and absent from every DTO;
+ * a caller may only ask whether a candidate matches it.</p>
  *
  * <p>The {@code FILLER} at {@code app/cpy/CVACT02Y.cpy:L11} is deliberately not modelled: it pads
  * the record out to the catalogued length and carries no data. A census of all 50 rows of
@@ -151,8 +165,8 @@ import org.hibernate.type.SqlTypes;
  * <p><strong>Schema reconciliation, measured 1 August 2026.</strong>
  * {@code src/main/resources/db/migration/V1__create_schema.sql} is <strong>present</strong>,
  * declaring 11 tables, 10 named foreign keys, 5 CHECK constraints and 4 {@code version} columns.
- * It declares {@code CREATE TABLE card} with 7 columns whose names are identical, as a
- * set, to the 7 {@code @Column(name = ...)} declarations below, verified by direct comparison.
+ * It declares {@code CREATE TABLE card} with 8 columns whose names are identical, as a
+ * set, to the 8 {@code @Column(name = ...)} declarations below, verified by direct comparison.
  * The mapping is therefore reconciled against real DDL rather than asserted in its absence.
  * This matters because {@code spring.jpa.hibernate.ddl-auto: validate} is set in all four profiles, so any
  * divergence in column name, type, precision or nullability fails application-context startup
@@ -256,6 +270,13 @@ public class Card {
     private static final int CARD_NUMBER_WIDTH = 16;
 
     /**
+     * Digit count of {@code CARD-CVV-CD}, {@code PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}, and the width
+     * of the fixed-width column that holds it. Corroborated by bytes 28 through 30 of every one of the fifty
+     * rows of {@code app/data/ASCII/carddata.txt}, all three characters of which are digits in every row.
+     */
+    private static final int CVV_CODE_WIDTH = 3;
+
+    /**
      * Width of {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)} at {@code app/cpy/CVACT02Y.cpy:L8}.
      */
     private static final int EMBOSSED_NAME_WIDTH = 50;
@@ -354,6 +375,34 @@ public class Card {
     private Long accountId;
 
     /**
+     * Card verification value: {@code CARD-CVV-CD}, {@code PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
+     *
+     * <p><b>Persisted, and deliberately unreadable.</b> The field is part of the authoritative 150-byte
+     * record, so dropping it would lose three bytes of the frozen field contract that the AAP declares
+     * bidirectional - every field length, type and precision derives from a copybook, and every derived Java
+     * type must round-trip to the same bytes. It is therefore mapped. What is withheld is not the storage but
+     * the <em>read path</em>: there is no {@code getCvvCode()}, no {@code setCvvCode(String)} and no
+     * package-private accessor, so no caller, serializer or reflective bean mapper can obtain the value.
+     * Hibernate reads and writes it reflectively through this field, which is the only access there is. The
+     * single query a caller may ask is answered by {@link #matchesVerificationValue(String)}, which compares
+     * and returns a boolean rather than surrendering the value.</p>
+     *
+     * <p><b>Text, not a number - the deliberate asymmetry with {@code accountId} above.</b> Eight of the fifty
+     * rows of {@code app/data/ASCII/carddata.txt} carry a leading zero in bytes 28 through 30, so the three
+     * characters are significant as characters: parsing them into an {@code Integer} would render {@code 007}
+     * as {@code 7} and lose a byte on the way back out. {@code CHAR(3)} preserves the image exactly.</p>
+     *
+     * <p><b>Never rendered and never logged.</b> {@link #toString()} omits it, the class-level
+     * {@link JsonIgnoreType} and {@link JsonAutoDetect} barrier makes it unreachable from JSON,
+     * {@code com.cardemo.model.dto.CardDto} declares no counterpart for it, and no logging statement anywhere
+     * in this package names it. {@code src/main/resources/logback-spring.xml} masks credential-shaped values
+     * as a second line of defence rather than as the first.</p>
+     */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "card_cvv_cd", nullable = false, length = CVV_CODE_WIDTH)
+    private String cvvCode;
+
+    /**
      * Name embossed on the card: {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)} at
      * {@code app/cpy/CVACT02Y.cpy:L8}.
      */
@@ -392,14 +441,21 @@ public class Card {
     }
 
     /**
-     * Creates a fully populated card record from the five persisted columns of {@code CARD-RECORD}.
+     * Creates a fully populated card record from the six persisted columns of {@code CARD-RECORD}.
      *
-     * <p>{@code CARD-CVV-CD} is <strong>not</strong> a parameter. It is not persisted, so there is nothing
-     * for a caller to supply and no accessor through which to read one back - see the deviation recorded on
-     * this class.
+     * <p>The parameters are in the copybook's own field order, so a caller can read this signature against
+     * {@code app/cpy/CVACT02Y.cpy:L5-L10} without reordering anything.
+     *
+     * <p><b>{@code cvvCode} is the only write path to the verification value and it is mandatory.</b> The
+     * column is {@code NOT NULL}, as every column on this table is, so an instance cannot be constructed
+     * without one and a caller cannot forget it. There is deliberately no five-argument overload: one that
+     * defaulted the value would fabricate cardholder data, and one that left it {@code null} would move the
+     * failure to flush time, several frames away from the mistake.
      *
      * @param cardNumber {@code CARD-NUM}, {@code PIC X(16)}.
      * @param accountId {@code CARD-ACCT-ID}, {@code PIC 9(11)}.
+     * @param cvvCode {@code CARD-CVV-CD}, {@code PIC 9(03)}; retained exactly as supplied, leading zeros
+     * included, and never readable again - see {@link #matchesVerificationValue(String)}.
      * @param embossedName {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)}.
      * @param expiraionDate {@code CARD-EXPIRAION-DATE}, {@code PIC X(10)}.
      * @param activeStatus {@code CARD-ACTIVE-STATUS}, {@code PIC X(01)}.
@@ -408,12 +464,14 @@ public class Card {
      */
     public Card(String cardNumber,
                 Long accountId,
+                String cvvCode,
                 String embossedName,
                 String expiraionDate,
                 String activeStatus) {
         // Direct field assignment through private static checks only, so no overridable method runs here.
         this.cardNumber = checkWidth(cardNumber, "cardNumber", "CARD-NUM", CARD_NUMBER_WIDTH);
         this.accountId = checkAccountId(accountId);
+        this.cvvCode = checkWidth(cvvCode, "cvvCode", "CARD-CVV-CD", CVV_CODE_WIDTH);
         this.embossedName =
                 checkWidth(embossedName, "embossedName", "CARD-EMBOSSED-NAME", EMBOSSED_NAME_WIDTH);
         this.expiraionDate = checkWidth(expiraionDate,
@@ -503,6 +561,40 @@ public class Card {
                 "expiraionDate",
                 "CARD-EXPIRAION-DATE",
                 EXPIRAION_DATE_WIDTH);
+    }
+
+    /**
+     * Reports whether a candidate matches the stored card verification value, {@code CARD-CVV-CD},
+     * {@code PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}, without disclosing it.
+     *
+     * <p><b>This is the whole of the read surface for that field and it is one-way by construction.</b> It
+     * answers a question and returns a boolean; it never returns, renders or logs the stored value, and there
+     * is no accessor anywhere on this class that does. The comparison is exact and character-for-character, so
+     * a stored {@code 007} matches only {@code 007} and never {@code 7} - which is what makes it a proof that
+     * the {@code CHAR(3)} column round-trips the fixed-width image rather than a parsed number.</p>
+     *
+     * <p>The comparison runs in time independent of how many leading characters agree, so the outcome of a
+     * failed comparison carries no positional information. That is not because this value guards
+     * authentication anywhere in this system - no program in {@code app/cbl} validates it, which is the
+     * evidence recorded on this class - but because a comparison that leaks its progress is a worse default
+     * than one that does not, and the cost here is three characters.</p>
+     *
+     * <p>Side effects: none. Reads one field, mutates nothing, logs nothing.</p>
+     *
+     * @param candidate the value to test; a {@code null} or differently-sized candidate simply does not match,
+     * which is reported rather than thrown, because "is this the value" is a question with a false answer and
+     * not an error
+     * @return {@code true} only when {@code candidate} is character-for-character the stored value
+     */
+    public boolean matchesVerificationValue(String candidate) {
+        if (candidate == null || cvvCode == null || candidate.length() != cvvCode.length()) {
+            return false;
+        }
+        int difference = 0;
+        for (int index = 0; index < candidate.length(); index++) {
+            difference |= candidate.charAt(index) ^ cvvCode.charAt(index);
+        }
+        return difference == 0;
     }
 
     /**

@@ -133,7 +133,7 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  * three alternate indexes is unique, or that {@code card_cross_reference(xref_acct_id)} carries a unique
  * index</strong>. {@link AlternateKey} instead proves multiplicity <em>positively</em>.
  *
- * <h3>Base-of-offset discipline, and a Medium finding against the plan</h3>
+ * <h3>Base-of-offset discipline: zero-based AXRKP against one-based record bytes</h3>
  *
  * <p>{@code AXRKP} is <strong>zero-based</strong> while record-byte prose is <strong>one-based</strong>, so
  * offsets are written throughout as "AXRKP 25 (zero-based) = record byte 26 (one-based)" and never
@@ -150,10 +150,10 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  *       {@code CVACT03Y.cpy}'s {@code XREF-ACCT-ID} begins.</li>
  * </ul>
  *
- * <p><strong>Finding, severity Medium.</strong> The Agent Action Plan describes the card alternate index by
- * its offset ("KEYLEN 11, AXRKP 16") but omits the cross reference's {@code 25} entirely, giving a reader no
- * warning that the two differ. Remediation: record the offset in the plan's cross-reference row, and until
- * then treat the catalogue and {@code XREFFILE.jcl} as authoritative, which is what this class does.
+ * <p>Because the card index sits at {@code AXRKP 16} and the cross-reference index at {@code AXRKP 25}, a
+ * reader carrying one offset across to the other lands inside {@code XREF-CUST-ID} and attributes the
+ * alternate key to the wrong field. The catalogue and {@code XREFFILE.jcl} are the authorities this class
+ * reads, and every offset here is written with its base.
  *
  * <h3>Base key unique, alternate key not - both halves are asserted</h3>
  *
@@ -235,7 +235,7 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  *       message at {@code :397}, then falls straight into the standard I/O guard and reaches
  *       {@code PERFORM 9999-ABEND-PROGRAM} at {@code :411}, so <strong>the job abends</strong>. Java must
  *       translate that empty lookup into a fatal exception; implementing it as a skip would be a
- *       <strong>Blocker</strong>.</li>
+ * </li>
  * </ul>
  *
  * <p>Neither outcome is implemented or asserted at this tier. The obligation here is narrower and is
@@ -326,7 +326,7 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  *   <li><em>Every test fails to start with a container or Docker error.</em> No reachable Docker socket. This
  *       tier cannot be made to pass without one.</li>
  *   <li><em>A Testcontainers artefact fails to resolve, or a 1.x version is resolved.</em> The
- *       <strong>Blocker</strong>-severity trap of the migration, whose remedy has two halves that are both
+ *       most consequential trap of the migration, whose remedy has two halves that are both
  *       required: pin {@code 2.0.3} by <em>overriding the version property the Spring Boot parent manages</em>
  *       rather than importing a second bill of materials, because two competing imports resolve in an
  *       ordering-dependent way that can silently select the parent-managed 1.x line; and use only the
@@ -343,8 +343,8 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  *   <li><em>Context startup fails on a JDBC type code rather than a column name.</em> {@code validate}
  *       compares type codes, so a {@code Long} over {@code NUMERIC(9)} or {@code NUMERIC(11)} can fail where
  *       {@code BIGINT} passes. <strong>The fix is upstream</strong>, in {@code V1__create_schema.sql} or in
- *       the entity mapping; never widen a column to silence it and never patch this test. Severity
- *       <strong>Medium</strong>.</li>
+ *       the entity mapping; never widen a column to silence it and never patch this test.</li>
+ *
  *   <li><em>An assertion about uniqueness fails, or a reviewer expects one.</em> Re-read
  *       {@code LISTCAT.txt:487} against {@code :488}. The {@code UNIQUE} on {@code :487} is the dataset-name
  *       attribute; {@code NONUNIQKEY} on {@code :488} is the key attribute and governs, and
@@ -355,7 +355,7 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  *       in this block.</li>
  *   <li><em>A query or mapping fails on an unknown column.</em> The column is {@code xref_acct_id}, not
  *       {@code acct_id}; likewise {@code xref_cust_id} and {@code xref_card_num}. Naming it {@code acct_id}
- *       is a <strong>Blocker</strong>-class hazard because it reads naturally and is wrong.</li>
+ *       is a hazard because it reads naturally and is wrong.</li>
  *   <li><em>A fixture assertion fails on width.</em> {@code cardxref.txt} records are <strong>36</strong>
  *       columns, not the catalogued 50; the unmodelled 14-byte {@code FILLER} is absent from the data.</li>
  *   <li><em>A mapping or lock assertion fails looking for {@code version}.</em> There is no {@code version}
@@ -370,45 +370,39 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  *       those provocations are not combined.</li>
  * </ul>
  *
- * <h2>Findings register, by severity</h2>
+ * <h2>What this file asserts, and the evidence each assertion rests on</h2>
  *
- * <p>Recorded here with remediation because this file is where they were measured.
+ * <p>Every expectation below was measured here rather than transcribed, which is what keeps it from drifting.
  *
  * <ul>
- *   <li><strong>High - the plan's anchor row values are wrong.</strong> The plan states the first seeded
- *       cross reference carries customer id {@code 5}. It does not: the fixture's columns 17-25 read
- *       {@code 000000050} and {@code V3__seed_data.sql:837} seeds
- *       {@code (<key>, 50, 50)}. Asserting {@code 5L} would fail outright. Remediation applied here:
+ *   <li><strong>The anchor row's expected values are derived, not written down.</strong> The fixture's columns
+ *       17-25 read {@code 000000050} and {@code V3__seed_data.sql:837} seeds {@code (<key>, 50, 50)}.
  *       {@link SeedAndMapping#theFirstSeededRecordRoundTripsThroughItsKey()} <em>derives</em> both expected
  *       values from the frozen fixture and then pins them, so the assertion cannot silently drift and the
- *       corrected value is machine-checked rather than asserted from prose.</li>
- *   <li><strong>High - the finder named by the plan does not exist.</strong> The plan requires
- *       {@code List<CardCrossReference> findByAccountIdOrderByCardNumberAsc(Long)}.
- *       {@link CardCrossReferenceRepository} declares no such method; it exposes
+ *       value is machine-checked rather than asserted from prose.</li>
+ *   <li><strong>Non-uniqueness is proved at the database, not through a list finder.</strong>
+ *       {@link CardCrossReferenceRepository} exposes
  *       {@link CardCrossReferenceRepository#findFirstByAccountIdOrderByCardNumberAsc(Long)}, which returns an
  *       {@link Optional} and models the legacy <em>single keyed read</em> through the CXACAIX path
- *       ({@code CBACT04C.cbl:394-395}, {@code COBIL00C.cbl:211}), plus a keyset finder. Remediation
- *       <em>not</em> applied by editing the repository: {@code src/main/**} is owned elsewhere, and adding a
- *       list finder that no production caller invokes would introduce exactly the dead code Rule 1 Clause B
- *       forbids. Instead {@link AlternateKey} proves non-uniqueness where it is actually decided - a second
- *       row against one account is stored successfully, a parameterised ordered query returns both rows
- *       ascending, {@code pg_index.indisunique} is false, and {@code findFirst...} is shown to return the
+ *       ({@code CBACT04C.cbl:394-395}, {@code COBIL00C.cbl:211}), plus a keyset finder. Adding a list finder
+ *       that no production caller invokes would introduce exactly the dead code Rule 1 Clause B forbids, so
+ *       {@link AlternateKey} proves non-uniqueness where it is actually decided: a second row against one
+ *       account is stored successfully, a parameterised ordered query returns both rows ascending,
+ *       {@code pg_index.indisunique} is false, and {@code findFirst...} is shown to return the
  *       <em>lowest</em> of the two, which demonstrates it is a first-of-many read and not a uniqueness
- *       claim. That is strictly stronger evidence than a list finder's cardinality would have been, because
- *       it tests the database rather than the query method.</li>
- *   <li><strong>Medium - the plan's index names do not match the migration.</strong> The plan names
- *       {@code idx_card_cross_reference_xref_acct_id}; {@code V2__create_indexes.sql:434} creates
- *       <strong>{@code idx_card_cross_reference_acct_id}</strong>. The migration governs and is what is
- *       asserted. Remediation: correct the plan's three index names.</li>
- *   <li><strong>Medium - locator drift on the return-code rule.</strong> Return code 4 is set at
- *       {@code CBTRN02C.cbl:229-231}, not at {@code :231-233}. The verified locator is cited throughout.</li>
- *   <li><strong>Medium</strong> - the {@code AXRKP 25} omission from the plan, and the base-of-offset
- *       discipline it endangers, both described above.</li>
- *   <li><strong>Medium</strong> - coverage-plugin version drift: a prior record cites {@code 0.8.14} while
- *       the build pins {@code jacoco-maven-plugin} <strong>{@code 0.8.12}</strong>. The pinned version
- *       governs.</li>
- *   <li><strong>Low</strong> - the {@code TRANSACT} alternate-index path has no CSD {@code DEFINE FILE}
- *       entry, confirming it is batch-only; the cross reference by contrast has both {@code CCXREF}
+ *       claim. That is stronger evidence than a list finder's cardinality would have been, because it tests
+ *       the database rather than the query method.</li>
+ *   <li><strong>The index name asserted is the one the migration emits.</strong>
+ *       {@code V2__create_indexes.sql:434} creates
+ *       <strong>{@code idx_card_cross_reference_acct_id}</strong>, and the migration governs.</li>
+ *   <li><strong>The return-code rule is cited at its verified locator.</strong> Return code 4 is set at
+ *       {@code CBTRN02C.cbl:229-231}, and that locator is used throughout.</li>
+ *   <li><strong>The alternate-key offset is always written base-qualified</strong> - {@code AXRKP 25}
+ *       zero-based, record byte 26 one-based - for the reason described above.</li>
+ *   <li><strong>The coverage plugin is pinned at {@code 0.8.12}.</strong> The pinned version is the one the
+ *       build resolves and the one referred to here.</li>
+ *   <li><strong>The {@code TRANSACT} alternate-index path has no CSD {@code DEFINE FILE} entry</strong>,
+ *       confirming it is batch-only; the cross reference by contrast has both {@code CCXREF}
  *       ({@code CARDDEMO.CSD:37},{@code :39}) and {@code CXACAIX} ({@code :63-65}), two of exactly eight
  *       file definitions.</li>
  * </ul>
@@ -677,12 +671,12 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
             String firstRecord = crossReferenceFixture().get(0);
 
             // Derived from the frozen fixture rather than typed in, so the expectation cannot drift from the
-            // bytes, and so no key literal appears in this file. See the High finding in the class Javadoc:
-            // the plan states customer id 5 for this record, which the fixture and the seed both contradict.
+            // bytes, and so no key literal appears in this file. The class Javadoc explains why the
+            // expectation is derived at all: the nine-digit field is easy to read eight digits wide.
             assertThat(customerIdOf(firstRecord))
                     .as("XREF-CUST-ID at app/cpy/CVACT03Y.cpy:6, record bytes 17-25; fixture columns 17-25 "
-                            + "read 000000050 and V3__seed_data.sql:837 seeds 50. The plan's value of 5 is a "
-                            + "High-severity error and asserting it would fail")
+                            + "read 000000050 and V3__seed_data.sql:837 seeds 50, so all nine digits have to "
+                            + "be decoded")
                     .isEqualTo(50L);
             assertThat(accountIdOf(firstRecord))
                     .as("XREF-ACCT-ID at app/cpy/CVACT03Y.cpy:7, record bytes 26-36, which is zero-based "
@@ -832,7 +826,7 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
                             + "app/cpy/CVACT03Y.cpy:5-7, in copybook order")
                     .containsExactly("xref_card_num", "xref_cust_id", "xref_acct_id");
             assertThat(columns)
-                    .as("the unprefixed spellings are a Blocker-class naming hazard because they read "
+                    .as("the unprefixed spellings are a naming hazard because they read "
                             + "naturally and are wrong - the alternate-index target is xref_acct_id, never "
                             + "acct_id. 'version' is absent because this table is not one of the four that "
                             + "carry it (account, card, customer, \"transaction\"), so no optimistic-locking "
@@ -892,8 +886,7 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
 
             assertThat(unique.size())
                     .as("V2__create_indexes.sql:434-435 creates idx_card_cross_reference_acct_id USING btree "
-                            + "(xref_acct_id). The plan spells it idx_card_cross_reference_xref_acct_id, "
-                            + "which is a Medium-severity error; the migration governs")
+                            + "(xref_acct_id), and that emitted name is the one this assertion pins")
                     .isEqualTo(1);
             assertThat(unique.get(0))
                     .as("app/catlg/LISTCAT.txt:488 SPANNED NONUNIQKEY governs and :487's UNIQUE is the "

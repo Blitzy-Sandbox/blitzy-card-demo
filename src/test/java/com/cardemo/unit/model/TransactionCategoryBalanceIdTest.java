@@ -97,7 +97,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>The component order is load bearing.</strong> {@code app/cbl/CBACT04C.cbl:L188-L222}
  *       browses this file sequentially in key order and breaks on a change of account at
  *       {@code :L194}. That is correct only because the account identifier leads.</li>
- *   <li><strong>A key is constructible for a row that does not yet exist.</strong>
+ *   <li><strong>A key is constructible for a row that is absent from the table.</strong>
  *       {@code app/cbl/CBTRN02C.cbl:L467} ({@code 2700-UPDATE-TCATBAL}) populates the key at
  *       {@code :L469-L471} before reading, and {@code :L481} accepts file status {@code '00'}
  *       <em>or</em> {@code '23'}, treating record not found as an accepted create path.</li>
@@ -205,15 +205,15 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       conflated. See section 5 below.</li>
  *   </ul>
  *
- * <h2>5. Findings, classified</h2>
+ * <h2>5. Contract invariants</h2>
  *
  * <ul>
- *   <li><strong>High - the two {@code TRAN-CAT-KEY} groups are distinct contracts.</strong>
+ *   <li><strong>the two {@code TRAN-CAT-KEY} groups are distinct contracts.</strong>
  *       {@code app/cpy/CVTRA01Y.cpy:L5} declares a 17 byte group of three fields prefixed
  *       {@code TRANCAT-}; {@code app/cpy/CVTRA04Y.cpy:L5} declares a 6 byte group of two fields
  *       prefixed {@code TRAN-}. The group names are byte identical. Conflating them - one shared base
  *       class, one shared abstract key, even one shared helper - would corrupt both mappings.
- *       Remediation: three independent value types, each with its own {@code equals} and
+ *       Instead: three independent value types, each with its own {@code equals} and
  *       {@code hashCode}, which is what this tree does. Rule 1 clause C's "avoid duplication" is
  *       satisfied rather than violated by that, because a few structurally similar lines across
  *       distinct value types is the correct outcome, not duplication.
@@ -223,16 +223,12 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       transaction_category (tran_type_cd, tran_cat_cd)}, so the trailing two components of this key
  *       <em>reference</em> the row that {@link TransactionCategoryId} identifies. Reference is not
  *       identity, and section 5 asserts the two types are unequal in both directions.</li>
- *   <li><strong>Medium - Hibernate compares JDBC type codes, not widths.</strong> A {@code Long}
+ *   <li><strong>Hibernate compares JDBC type codes, not widths.</strong> A {@code Long}
  *       mapped over {@code NUMERIC(11)} fails {@code validate} where {@code BIGINT} passes, and an
  *       {@code Integer} over {@code NUMERIC(4)} fails where {@code INTEGER} passes. Because
  *       {@code ddl-auto} is {@code validate} in every profile, the symptom is a refused context start
- *       rather than a runtime fault. Remediation: pair each Java type with the type code it validates
- *       against and let the migration own the SQL. When this plan was written the schema migration had
- *       no scheduled child task, so its concrete SQL types were recorded as
- *       <strong>{@code Not available}</strong> and none was invented. That reading is withdrawn: the
- *       types are present now and were measured rather than guessed, and
- *       {@code V1__create_schema.sql:L967-L978} declares
+ *       rather than a runtime fault. Instead: pair each Java type with the type code it validates
+ *       against and let the migration own the SQL. {@code V1__create_schema.sql:L967-L978} declares
  *       {@code acct_id BIGINT NOT NULL}, {@code tran_type_cd VARCHAR(2) NOT NULL} and
  *       {@code tran_cat_cd INTEGER NOT NULL}, closed by
  *       {@code CONSTRAINT pk_transaction_category_balance PRIMARY KEY (acct_id, tran_type_cd,
@@ -240,20 +236,20 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       file, because Hibernate sorts an embeddable's attributes alphabetically and would otherwise
  *       emit {@code (acct_id, tran_cat_cd, tran_type_cd)} if DDL were ever generated from the model.
  *       No SQL type is asserted here; that is the province of the schema structure suite.</li>
- *   <li><strong>Medium - {@code Serializable} is implemented for JPA identity only.</strong> Rule 1
+ *   <li><strong>{@code Serializable} is implemented for JPA identity only.</strong> Rule 1
  *       clause D names insecure deserialization among the risky patterns to flag, and a
  *       {@code Serializable} identifier is exactly where it lands. This type must never be
  *       deserialized from untrusted input: no {@code ObjectInputStream} over caller supplied bytes, no
  *       Java serialization based cache or message payload, and no custom {@code readObject} hook.
- *       Remediation and its proof: section 4 asserts that the identifier declares <em>no</em> custom
+ *       Instead, with its proof: section 4 asserts that the identifier declares <em>no</em> custom
  *       serialization hook at all, and this test deliberately performs no {@code readObject} of any
  *       kind, so the pattern is absent from the assertion surface rather than merely discouraged.</li>
- *   <li><strong>Low - a blank type code is accepted, and that is parity.</strong>
+ *   <li><strong>a blank type code is accepted, and that is parity.</strong>
  *       {@code TRANCAT-TYPE-CD} is {@code PIC X(02)}, a fixed width alphanumeric field in a language
  *       with no null, so an unset field holds two spaces and a blank type code is a value the legacy
  *       system can genuinely produce and key on. The identifier therefore rejects only null and a
  *       length other than two. Rejecting blanks would be a behaviour change, which the parity mandate
- *       forbids. Remediation: none in the identifier; referential integrity is enforced by
+ *       forbids. Instead: none in the identifier; referential integrity is enforced by
  *       {@code fk08_tcatbal_category}, which no blank pair can satisfy.</li>
  *   </ul>
  *
@@ -472,7 +468,7 @@ class TransactionCategoryBalanceIdTest {
                 .as("Surefire excludes **/integration/** and **/e2e/**, and Failsafe includes exactly "
                         + "those two trees. A class in neither set is collected by NEITHER plugin: the "
                         + "build stays green, both plugins report success, and the class silently never "
-                        + "runs. Severity if it moves: Blocker")
+                        + "runs.")
                 .doesNotContain("integration")
                 .doesNotContain("e2e");
 
@@ -794,7 +790,7 @@ class TransactionCategoryBalanceIdTest {
                             + "alphabetically as catCd, accountId, typeCd. Account 1 and account 2 each "
                             + "break more than once, so app/cbl/CBACT04C.cbl:L196 would flush a partial "
                             + "interest total and :L200 would reset the running sum mid account - "
-                            + "interest silently lost for whole accounts. Severity: High")
+                            + "interest silently lost for whole accounts.")
                     .hasSizeGreaterThan(3)
                     .contains(1L, 2L, 3L);
             assertThat(accountBreaks(browse).stream().distinct().count())
@@ -882,7 +878,7 @@ class TransactionCategoryBalanceIdTest {
     }
 
     // ==================================================================
-    // 3 - Freely constructible for a row that does not yet exist:
+    // 3 - Freely constructible for a row that is absent from the table:
     //     the upsert path of app/cbl/CBTRN02C.cbl:L467-L530.
     // ==================================================================
 
@@ -1057,8 +1053,8 @@ class TransactionCategoryBalanceIdTest {
                             + "deserialization among the risky patterns, and a custom readObject is where "
                             + "it becomes exploitable. This type must never be deserialized from untrusted "
                             + "input: no ObjectInputStream over caller supplied bytes, no Java "
-                            + "serialization based cache or message payload. Severity if one appears: "
-                            + "Medium, remediated by deleting the hook and using the constructor")
+                            + "serialization based cache or message payload. Should a hook ever "
+                            + "appear, delete it and use the constructor")
                     .isEmpty();
         }
 
@@ -1079,7 +1075,7 @@ class TransactionCategoryBalanceIdTest {
             assertThat(left.equals(right)).isTrue();
             assertThat(right.equals(left))
                     .as("an asymmetric equals does not fail cleanly: find, merge and dirty checking start "
-                            + "to misbehave as intermittent data errors. Severity: High")
+                            + "to misbehave as intermittent data errors.")
                     .isTrue();
         }
 
@@ -1141,7 +1137,7 @@ class TransactionCategoryBalanceIdTest {
             assertThat(firstSeededKey())
                     .as("a partial identity would merge the balances of two different categories, and "
                             + "app/cbl/CBTRN02C.cbl:L527 adds the transaction amount to whichever row the "
-                            + "key resolved. Severity: High")
+                            + "key resolved.")
                     .isNotEqualTo(new TransactionCategoryBalanceId(accountId, typeCd, catCd));
         }
 
@@ -1394,8 +1390,8 @@ class TransactionCategoryBalanceIdTest {
                     .isFalse();
             assertThat(categoryKey.equals(balanceKey))
                     .as("and so is the reverse direction, which is what makes the relation symmetric "
-                            + "rather than merely one sided. Severity if either direction returns true: "
-                            + "Medium, remediated by comparing getClass() rather than instanceof")
+                            + "rather than merely one sided. Either direction returning true means "
+                            + "instanceof crept in where getClass() belongs")
                     .isFalse();
         }
 
@@ -1537,7 +1533,7 @@ class TransactionCategoryBalanceIdTest {
                     .as("PIC X(02) is a fixed width alphanumeric field in a language with no null, so an "
                             + "unset TRANCAT-TYPE-CD holds two spaces and a blank type code is a value the "
                             + "source can genuinely produce and key on. Rejecting it would be a behaviour "
-                            + "change, which the parity mandate forbids. Severity: Low - referential "
+                            + "change, which the parity mandate forbids.referential "
                             + "integrity rests on fk08_tcatbal_category, which no blank pair can satisfy")
                     .doesNotThrowAnyException();
 
@@ -1639,9 +1635,9 @@ class TransactionCategoryBalanceIdTest {
                             + "value verbatim, which is right for a diagnostic and is safe here because "
                             + "the three components are an account identifier and two reference codes, "
                             + "none of them sensitive. Rule 1 clause D names tests explicitly, so the "
-                            + "obligation this creates is recorded as a Low finding - never route a "
+                            + "standing obligation is this: never route a "
                             + "credential, a hash, a cardholder datum or any other sensitive value through "
-                            + "a key component, because the guard will quote it. Remediation if a "
+                            + "a key component, because the guard will quote it. If a "
                             + "sensitive component is ever added: report the width alone and drop the echo")
                     .contains(synthetic)
                     .doesNotContain("$2a$")

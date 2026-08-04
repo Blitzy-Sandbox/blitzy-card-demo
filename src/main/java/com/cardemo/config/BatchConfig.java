@@ -45,18 +45,22 @@
  */
 package com.cardemo.config;
 
+import com.cardemo.batch.jobs.StatementGenerationJob;
 import com.cardemo.batch.processors.StatementProcessor;
 import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Customer;
-import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.CustomerRepository;
-import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileService;
+import io.awspring.cloud.s3.S3Operations;
+import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigDecimal;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
@@ -66,6 +70,11 @@ import java.util.Optional;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.scope.context.StepContext;
+import org.springframework.batch.core.scope.context.StepSynchronizationManager;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.data.domain.PageRequest;
 
 /**
@@ -193,6 +202,16 @@ public class BatchConfig {
     private static final String KEY_WINDOW_SIZE = "carddemo.batch.dataset-window-size";
 
     /**
+     * Structured logger, the sole diagnostic channel of this class.
+     *
+     * <p>Nothing here writes to the process output streams: the legacy {@code DISPLAY} statements this system
+     * replaces become log events so that they carry the trace, span and correlation identifiers the batch
+     * tier propagates. Used only by the {@code TRNXFILE} binding, which is the one binding whose input can be
+     * absent or truncated independently of the database.
+     */
+    private static final Logger LOG = LoggerFactory.getLogger(BatchConfig.class);
+
+    /**
      * The character-comparison origin for a keyset scan. The empty string precedes every non-empty key, so
      * a first window requested with it starts at the beginning of the sequence.
      */
@@ -209,6 +228,34 @@ public class BatchConfig {
 
     /** The {@code '23'} status a keyed read returns when the key is absent. */
     private static final String STATUS_RECORD_NOT_FOUND = FileStatus.RECORD_NOT_FOUND.code().orElseThrow();
+
+    /**
+     * File status {@code '35'}: the DD could not be opened.
+     *
+     * <p>Used by the {@code TRNXFILE} binding when the projected work object cannot be reached. {@code '35'}
+     * is precisely "the file is not available" in the status vocabulary, which is what an absent or unreadable
+     * work cluster is.
+     */
+    private static final String STATUS_FILE_UNAVAILABLE = FileStatus.FILE_UNAVAILABLE.code().orElseThrow();
+
+    /**
+     * A synthesised {@code '9x'} status for a physical failure against the object store.
+     *
+     * <p>The {@code '9'} first byte is the {@code FILE STATUS} family for a physical or logical I/O error, and
+     * the trailing {@code 0} completes the two-character token. It is the same token
+     * {@code StatementGenerationJob} synthesises for an object-store failure, so a diagnostic rendered from
+     * either place reads identically.
+     */
+    private static final String STATUS_PHYSICAL_IO_ERROR = FileStatus.IO_ERROR_FIRST_BYTE + "0";
+
+    /**
+     * Charset of the projected work object: one byte is one character, so a copybook offset is a Java index.
+     *
+     * <p>{@code ISO-8859-1} for the same reason {@code StatementGenerationJob} writes the object with it - a
+     * variable-width encoding would decode any byte above 0x7F to more than one character and shift every
+     * offset after it, and the platform default is not reproducible across hosts.
+     */
+    private static final Charset PROJECTED_RECORD_CHARSET = StandardCharsets.ISO_8859_1;
 
     /** Rows fetched per keyset window by the two sequential bindings. Always at least one. */
     private final int windowSize;
@@ -250,15 +297,22 @@ public class BatchConfig {
 
 
     /**
-     * The {@code TRNXFILE} binding: the sorted statement transaction stream of
-     * {@code app/jcl/CREASTMT.JCL:STEP010} and {@code STEP020}.
+     * The {@code TRNXFILE} binding: the projected work cluster of {@code app/jcl/CREASTMT.JCL:STEP010} and
+     * {@code STEP020}, which {@code STEP040} reads at {@code :L83}.
      *
-     * @param transactionRepository the {@code TRANSACT} cluster
+     * <p>It takes the object store rather than the {@code TRANSACT} repository, because the DD is bound to the
+     * projected work cluster and not to the sort's input - see {@link TrnxFileDataset} for the finding this
+     * resolves.
+     *
+     * @param objectStorage the object store holding the projected object
+     * @param workBucket the bucket the sort step writes the projected object to, the same property
+     *     {@code StatementGenerationJob} publishes it under
      * @return the sequential binding for {@link FileService.Dd#TRNXFILE}, never {@code null}
      */
     @Bean
-    public FileService.Dataset trnxFileDataset(final TransactionRepository transactionRepository) {
-        return new TrnxFileDataset(transactionRepository, windowSize);
+    public FileService.Dataset trnxFileDataset(final S3Operations objectStorage,
+            @Value("${carddemo.aws.s3.batch-output-bucket}") final String workBucket) {
+        return new TrnxFileDataset(objectStorage, workBucket);
     }
 
     /**
@@ -434,43 +488,53 @@ public class BatchConfig {
     /**
      * The sorted transaction stream that {@code CBSTM03A} reads through its {@code TRNXFILE} DD.
      *
-     * <p>Sequential, ascending by card number then transaction identifier, rendered through the same
-     * {@code OUTREC} projection the sort applies - which is why the record is produced by
-     * {@link StatementProcessor#projectBaseRecord(Transaction)} rather than assembled here. That method
-     * renders the 350-byte {@code app/cpy/CVTRA05Y.cpy} image and then applies the projection of
-     * {@code app/jcl/CREASTMT.JCL:L57}, which truncates two bytes of the processing timestamp and drops the
-     * trailing filler; reproducing that shape in a second place would invite the two copies to diverge.
+     * <p><b>Finding, severity Blocker - remediated by this class: the projected object is authoritative.</b>
+     * {@code app/jcl/CREASTMT.JCL:L83} binds {@code TRNXFILE} to
+     * {@code AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS} - the <em>work cluster</em> that {@code STEP010} projected and
+     * sorted at {@code :L44-L54} and that {@code STEP020} loaded at {@code :L56-L61}. It does <b>not</b> bind
+     * it to {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}, which is {@code STEP010}'s {@code SORTIN} at
+     * {@code :L45} and is not referenced by {@code STEP040} at all.
+     *
+     * <p>This binding previously re-queried the live transaction relation, ordered and projected per record,
+     * at emission time. Two things followed. The emission read a relation that could have changed since the
+     * sort, whereas the source reads a frozen copy - so {@code STEP010}'s ascending precondition, which
+     * {@code app/cbl/CBSTM03A.CBL:L419} relies on for its early-exit lookup, was re-established by a second
+     * query rather than inherited from the object it was proven against. And the same unindexed two-key
+     * ordering was paid for <em>twice</em> per run, once by the sort and again by the emission, which is the
+     * separate High finding about repeated re-sorting; reading the object pays it once, exactly as one
+     * {@code SORT} step does.
+     *
+     * <p>It now streams the object {@code STEP020} validated, taking the concrete key the sort published, so
+     * the record {@code STEP040} sees is byte-for-byte the record {@code STEP010} wrote - including the
+     * {@code OUTREC} projection's two-byte truncation of the processing timestamp and its dropped trailing
+     * filler, which are applied once, by the producer, and never recomputed here.
+     *
+     * <p>Records are read one at a time from an open stream rather than by materialising the object, so the
+     * heap cost is one record and not one run.
      */
     private static final class TrnxFileDataset implements FileService.Dataset {
 
-        /** The {@code TRANSACT} cluster. */
-        private final TransactionRepository transactionRepository;
+        /** The object store holding the projected work object. */
+        private final S3Operations objectStorage;
 
-        /** Rows fetched per keyset window. */
-        private final int windowSize;
+        /** The bucket the projected work object was written to. */
+        private final String workBucket;
 
-        /** The rows of the current window that have not been returned yet. */
-        private final Deque<Transaction> window = new ArrayDeque<>();
+        /** The open stream over the projected object, or {@code null} when the DD is closed. */
+        private InputStream records;
 
-        /** Card number of the last row returned, the first half of the keyset position. */
-        private String lastCardNumber = SCAN_ORIGIN;
-
-        /** Identifier of the last row returned, the second half of the keyset position. */
-        private String lastTransactionId = SCAN_ORIGIN;
-
-        /** Whether the underlying sequence has been exhausted, so no further query is issued. */
-        private boolean exhausted;
+        /** The key currently open, named in every read diagnostic so a failure identifies the object. */
+        private String openKey;
 
         /**
          * Creates the binding.
          *
-         * @param transactionRepository the {@code TRANSACT} cluster; must not be {@code null}
-         * @param windowSize rows per keyset window; already validated positive by the enclosing class
+         * @param objectStorage the object store; must not be {@code null}
+         * @param workBucket the bucket the projected object lives in; must not be {@code null}
          */
-        private TrnxFileDataset(final TransactionRepository transactionRepository, final int windowSize) {
-            this.transactionRepository = Objects.requireNonNull(transactionRepository,
-                    "transactionRepository must not be null");
-            this.windowSize = windowSize;
+        private TrnxFileDataset(final S3Operations objectStorage, final String workBucket) {
+            this.objectStorage = Objects.requireNonNull(objectStorage, "objectStorage must not be null");
+            this.workBucket = Objects.requireNonNull(workBucket, "workBucket must not be null");
         }
 
         @Override
@@ -478,42 +542,83 @@ public class BatchConfig {
             return FileService.Dd.TRNXFILE;
         }
 
+        /**
+         * Opens the projected object the sort step published.
+         *
+         * <p>The key is taken from the job execution context rather than resolved as "the latest object",
+         * because a concurrent run would otherwise be handed the wrong generation. It is read through the
+         * step scope holder rather than injected, because this binding is a singleton: {@code FileService}
+         * indexes every binding by {@link FileService.Dd} in its constructor, so a step-scoped proxy would be
+         * asked for its DD outside any step and fail at startup.
+         *
+         * @return {@link #STATUS_SUCCESS} when the object is open, {@link #STATUS_FILE_UNAVAILABLE} when the
+         *     handoff is absent or the object cannot be opened
+         */
         @Override
         public synchronized String openInput() {
-            window.clear();
-            lastCardNumber = SCAN_ORIGIN;
-            lastTransactionId = SCAN_ORIGIN;
-            exhausted = false;
-            return STATUS_SUCCESS;
+            closeQuietly();
+            final String key = publishedWorkObjectKey();
+            if (key == null) {
+                LOG.error("TRNXFILE cannot be opened: no step published {} into the job execution context, "
+                        + "so app/jcl/CREASTMT.JCL:L83's work cluster does not exist for this run",
+                        StatementGenerationJob.WORK_OBJECT_KEY_CONTEXT_ENTRY);
+                return STATUS_FILE_UNAVAILABLE;
+            }
+            try {
+                records = objectStorage.download(workBucket, key).getInputStream();
+                openKey = key;
+                return STATUS_SUCCESS;
+            } catch (final IOException | RuntimeException cause) {
+                LOG.error("TRNXFILE cannot be opened over the projected object: reason={}",
+                        cause.getClass().getSimpleName());
+                closeQuietly();
+                return STATUS_FILE_UNAVAILABLE;
+            }
         }
 
         @Override
         public synchronized String close() {
-            window.clear();
-            exhausted = true;
+            closeQuietly();
             return STATUS_SUCCESS;
         }
 
+        /**
+         * Returns the next projected record, or end of file.
+         *
+         * <p>A short final record is a truncated object and is reported as a physical error rather than
+         * treated as end of file: the DD declares fixed-length records, so a partial one means the producer
+         * or the transfer failed, and reading it as a whole record would slice every field from the wrong
+         * offset.
+         *
+         * @return the record, end of file, or a physical I/O error
+         */
         @Override
         public synchronized FileService.DatasetRead readNext() {
-            if (window.isEmpty() && !exhausted) {
-                final List<Transaction> next = transactionRepository.findStatementOrderAfter(
-                        lastCardNumber, lastTransactionId, PageRequest.ofSize(windowSize));
-                if (next.isEmpty()) {
-                    exhausted = true;
-                } else {
-                    window.addAll(next);
-                }
-            }
-            final Transaction row = window.pollFirst();
-            if (row == null) {
+            if (records == null) {
                 return FileService.DatasetRead.withoutRecord(STATUS_END_OF_FILE);
             }
-            lastCardNumber = fit(row.getCardNumber(), CARD_NUMBER_WIDTH);
-            lastTransactionId = row.getTransactionId();
-            final String projected = StatementProcessor.projectBaseRecord(row);
+            final int width = FileService.Dd.TRNXFILE.recordWidth();
+            final byte[] buffer = new byte[width];
+            final int read;
+            try {
+                read = records.readNBytes(buffer, 0, width);
+            } catch (final IOException cause) {
+                LOG.error("TRNXFILE read failed over projected object {}: reason={}", openKey,
+                        cause.getClass().getSimpleName());
+                return FileService.DatasetRead.withoutRecord(STATUS_PHYSICAL_IO_ERROR);
+            }
+            if (read == 0) {
+                return FileService.DatasetRead.withoutRecord(STATUS_END_OF_FILE);
+            }
+            if (read < width) {
+                LOG.error("TRNXFILE is truncated: the final record of projected object {} is {} bytes but "
+                        + "app/jcl/CREASTMT.JCL:L32 declares exactly {}", openKey, Integer.valueOf(read),
+                        Integer.valueOf(width));
+                return FileService.DatasetRead.withoutRecord(STATUS_PHYSICAL_IO_ERROR);
+            }
             return FileService.DatasetRead.of(STATUS_SUCCESS,
-                    requireRecordWidth(projected, FileService.Dd.TRNXFILE));
+                    requireRecordWidth(new String(buffer, PROJECTED_RECORD_CHARSET),
+                            FileService.Dd.TRNXFILE));
         }
 
         @Override
@@ -521,6 +626,39 @@ public class BatchConfig {
             throw new UnsupportedOperationException("TRNXFILE is opened for sequential access only; "
                     + "app/cbl/CBSTM03B.CBL:L61-L63 declares ORGANIZATION SEQUENTIAL for it, so a keyed "
                     + "read has no counterpart. The service refuses the operation before reaching here.");
+        }
+
+        /**
+         * Reads the concrete key the sort step published, from the job execution context of the running step.
+         *
+         * @return the key, or {@code null} when no step is in scope or none was published
+         */
+        private static String publishedWorkObjectKey() {
+            final StepContext stepContext = StepSynchronizationManager.getContext();
+            if (stepContext == null) {
+                return null;
+            }
+            final ExecutionContext jobContext = stepContext.getStepExecution().getJobExecution()
+                    .getExecutionContext();
+            return jobContext.containsKey(StatementGenerationJob.WORK_OBJECT_KEY_CONTEXT_ENTRY)
+                    ? jobContext.getString(StatementGenerationJob.WORK_OBJECT_KEY_CONTEXT_ENTRY)
+                    : null;
+        }
+
+        /** Closes the stream if one is open, discarding a close failure that nothing can act on. */
+        private void closeQuietly() {
+            final InputStream open = records;
+            records = null;
+            openKey = null;
+            if (open == null) {
+                return;
+            }
+            try {
+                open.close();
+            } catch (final IOException cause) {
+                LOG.warn("TRNXFILE stream did not close cleanly: reason={}",
+                        cause.getClass().getSimpleName());
+            }
         }
     }
 

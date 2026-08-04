@@ -95,7 +95,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * {@code app/jcl/TCATBALF.jcl} defines as {@code KEYS(17 0)} and {@code RECORDSIZE(50 50)}.
  *
  * <p><strong>The third key member is spelled {@code TRANCAT-CD}, not {@code TRANCAT-CAT-CD}</strong>
- * ({@code CVTRA01Y.cpy:L8}). Severity <strong>High</strong>, because the near-miss name is the one a reader
+ * ({@code CVTRA01Y.cpy:L8}). This matters, because the near-miss name is the one a reader
  * expects and citing it would make the traceability claim unverifiable.
  *
  * <h3>The {@code TRAN-CAT-KEY} name collision</h3>
@@ -105,7 +105,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * {@code CVTRA04Y.cpy:L5} is 6 bytes over two components and belongs to {@code transaction_category}.
  * {@link TransactionCategoryBalanceId} and {@code TransactionCategoryId} are consequently two distinct types
  * with no shared base class, no shared interface and no shared abstraction, and this test touches only the
- * former. Severity <strong>High</strong>.
+ * former.
  *
  * <p>The accessor spellings differ deliberately and are not harmonised.
  * {@link TransactionCategoryBalanceId} exposes {@code accountId}, {@code typeCd} and {@code catCd};
@@ -120,7 +120,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * {@code 'TCATBAL record not found for key : '} and sets the flag to {@code 'Y'}. The guard at
  * <strong>{@code :L481}</strong> then reads {@code IF TCATBALF-STATUS = '00' OR '23'}, so
  * <strong>file status {@code '23'} - record not found - is an accepted control path here, not an
- * error</strong>. Severity <strong>High</strong>. That tolerance exists at exactly three sites in the whole
+ * error</strong>. That tolerance exists at exactly three sites in the whole
  * corpus and nowhere else: this read; the disclosure-group first read at {@code app/cbl/CBACT04C.cbl:L422},
  * which likewise accepts {@code '00' OR '23'}; and the file-service call sites of {@code CBSTM03B}, which
  * accept {@code '00' OR '04'}. A blanket status-to-exception rule would abend all three, which is why
@@ -131,7 +131,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * the three key components and performs {@code ADD DALYTRAN-AMT TO TRAN-CAT-BAL} at {@code :L508} before its
  * {@code WRITE} at {@code :L510}; the update branch at {@code :L526-L542} performs the identical
  * {@code ADD} at {@code :L527} before its {@code REWRITE} at {@code :L528}.
- * <strong>Neither branch replaces the balance.</strong> Severity <strong>High</strong>. The tolerance for
+ * <strong>Neither branch replaces the balance.</strong> The tolerance for
  * {@code '23'} is confined to the initial read: the {@code WRITE} guard at {@code :L512} and the
  * {@code REWRITE} guard at {@code :L530} each accept {@code '00'} and nothing else.
  *
@@ -150,7 +150,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * and resetting the running total at {@code :L200}. That control break is correct only because the key leads
  * with the account identifier, so every row of one account is <em>contiguous</em> in key order. An unordered
  * read would fire the break mid-account and produce wrong interest for every account <em>with no error and
- * no diagnostic</em>, which is why the ordering assertion below is classified <strong>Blocker</strong>.
+ * no diagnostic</em>, which is why the ordering assertion below is critical.
  *
  * <h3>Boundaries: what is cited here and asserted elsewhere</h3>
  *
@@ -170,7 +170,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       <strong>this package carries no dead-code exemption whatsoever</strong>. Note in passing that
  *       {@code CBACT04C.cbl:219-220} is unreachable as written, being the {@code ELSE} of the
  *       {@code IF END-OF-FILE = 'N'} at {@code :189} inside the {@code PERFORM UNTIL END-OF-FILE = 'Y'} at
- *       {@code :188}. Severity <strong>Low</strong>, and a batch-tier parity question rather than one for
+ *       {@code :188}. This matters, and a batch-tier parity question rather than one for
  *       this seam.</li>
  *   <li>The reject engine, the exit code and the atomicity of the three posting writes.
  *       {@code CBTRN02C.cbl:2000-POST-TRANSACTION} at {@code :L424-L444} performs the category-balance
@@ -181,9 +181,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       the next iteration at {@code :L208}, is never consumed as a reject - and it is precisely the path
  *       that in the legacy system leaves an orphaned category-balance row alongside an orphaned transaction
  *       row, because those three writes committed separately. The Java transaction boundary closes that
- *       hazard as a deliberate labelled deviation, which is owed an entry in the planned
- *       {@code DECISION_LOG.md} - a document that does not exist at this commit, so the deviation is
- *       described here, in the docstring of a file it governs, where it cannot drift from the code. Cited,
+ *       hazard, which is a deliberate deviation rather than parity. It is described here, in the docstring of
+ *       a file it governs, where it cannot drift from the code. Cited,
  *       not tested: cross-write atomicity is {@code integration/batch}'s.</li>
  *   <li>The key class's own contract - equality, {@code hashCode}, the 17-byte width sum,
  *       {@code serialVersionUID}, and inequality against {@code TransactionCategoryId} - which is owned by
@@ -242,13 +241,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *   <li><strong>Money comparison policy: {@code compareTo}, never {@code equals}.</strong> PostgreSQL
  *       returns {@code NUMERIC(11,2)} at scale 2, so {@code new BigDecimal("0.00").equals(BigDecimal.ZERO)}
  *       is {@code false} while {@code compareTo} is {@code 0}. Every balance assertion below therefore uses
- *       {@code isEqualByComparingTo} or an explicit {@code compareTo}. Severity of the trap
- *       <strong>Medium</strong>. There is no {@code float} and no {@code double} anywhere in this file.</li>
+ *       {@code isEqualByComparingTo} or an explicit {@code compareTo}.
+ * There is no {@code float} and no {@code double} anywhere in this file.</li>
  *   <li><strong>The three precision tiers are distinct and this table is the middle one.</strong>
  *       {@code PIC S9(10)V99} maps to {@code NUMERIC(12,2)} (the five account money columns);
  *       <strong>{@code PIC S9(09)V99} maps to {@code NUMERIC(11,2)}</strong> - {@code TRAN-CAT-BAL} here,
  *       plus {@code TRAN-AMT} and {@code DALYTRAN-AMT}; and {@code PIC S9(04)V99} maps to
- *       {@code NUMERIC(6,2)} ({@code DIS-INT-RATE}). Using 12,2 here is a <strong>Blocker</strong>, and it
+ *       {@code NUMERIC(6,2)} ({@code DIS-INT-RATE}). Using 12,2 here is forbidden, and it
  *       is checked below against the live catalogue rather than asserted from the migration text.</li>
  *   <li><strong>Character width policy.</strong> {@code tran_type_cd} is
  *       <strong>{@code VARCHAR(2)}, not {@code CHAR(2)}</strong> - {@code V1__create_schema.sql:971}, with
@@ -268,7 +267,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *   <li><em>Everything fails to start with a Docker or container error.</em> No reachable Docker socket.
  *       State the blocker; do not assert an untested pass.</li>
  *   <li><em>A Testcontainers artefact will not resolve, or 1.x is resolved instead of 2.0.3.</em> The
- *       <strong>Blocker</strong>-severity trap of the migration, whose remedy has two halves that are both
+ *       most consequential trap of the migration, whose remedy has two halves that are both
  *       required: pin 2.0.3 by <em>overriding the parent-managed version property</em> rather than importing
  *       a second bill of materials, and use only the <em>prefixed</em> coordinates
  *       {@code testcontainers}, {@code testcontainers-postgresql}, {@code testcontainers-localstack} and
@@ -284,7 +283,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       passes, an {@code Integer} over {@code NUMERIC(4)} where {@code INTEGER} passes, and a
  *       {@code BigDecimal} must match {@code NUMERIC(11,2)} exactly. <strong>The fix is upstream</strong> in
  *       {@code V1__create_schema.sql} or in the entity or key class. Never widen a column to silence it and
- *       never patch this test. Severity <strong>Medium</strong>.</li>
+ *       never patch this test.</li>
  *   <li><em>A key does not resolve, or resolves the wrong row.</em> Almost always
  *       {@link TransactionCategoryBalanceId} confused with {@code TransactionCategoryId}, or
  *       {@code typeCd}/{@code catCd} written where {@code tranTypeCd}/{@code tranCatCd} was required or the
@@ -295,7 +294,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *   <li><em>Balances drift upward and never fall.</em> Absolute-value normalisation was applied somewhere on
  *       the posting path. {@code PIC S9(09)V99} is signed and negative amounts must reduce the balance;
  *       there is no {@code abs()} and no non-negative constraint anywhere, and adding either is a
- *       <strong>Blocker</strong>.</li>
+ * </li>
  *   <li><em>An update overwrote a balance instead of accumulating it.</em> Both legacy branches
  *       {@code ADD}; neither assigns. See {@code :L508} and {@code :L527}.</li>
  *   <li><em>"Record not found" was treated as an error.</em> {@code :L481} accepts {@code '00' OR '23'}. An
@@ -481,7 +480,7 @@ class TransactionCategoryBalanceRepositoryTest extends AbstractRepositoryIntegra
      * {@link TransactionCategoryBalanceId}'s <em>public all-components constructor</em>.
      *
      * <p>That constructor is what makes the create leg of the legacy upsert expressible at all: it builds an
-     * identifier for a row that <em>does not yet exist</em>, which is exactly the situation
+     * identifier for a row that <em>is not yet stored</em>, which is exactly the situation
      * {@code CBTRN02C.cbl:L505-L507} is in when it moves the three key components into a freshly initialised
      * record before its {@code WRITE}. The key type imposes no existence-dependent behaviour.
      *
@@ -696,12 +695,12 @@ class TransactionCategoryBalanceRepositoryTest extends AbstractRepositoryIntegra
     }
 
     /**
-     * The key-ordered browse. Classified <strong>Blocker</strong> because the interest job's account-level
+     * The key-ordered browse, critical because the interest job's account-level
      * control break at {@code app/cbl/CBACT04C.cbl:L194} is correct only while this ordering holds, and a
      * loss of ordering produces wrong interest silently.
      */
     @Nested
-    @DisplayName("The key-ordered browse the interest job's control break depends on (Blocker)")
+    @DisplayName("The key-ordered browse the interest job's control break depends on")
     class OrderedBrowse {
 
         @Test
@@ -965,7 +964,7 @@ class TransactionCategoryBalanceRepositoryTest extends AbstractRepositoryIntegra
      *
      * <p>{@code app/data/ASCII/dailytran.txt} carries genuinely negative amounts among its 300 records, so
      * the posting upsert legitimately drives a category balance negative. Any absolute-value normalisation,
-     * or any non-negative check constraint, is a <strong>Blocker</strong>.
+     * or any non-negative check constraint, is forbidden.
      */
     @Nested
     @DisplayName("The signed balance: PIC S9(09)V99 keeps its sign end to end")
@@ -1067,7 +1066,7 @@ class TransactionCategoryBalanceRepositoryTest extends AbstractRepositoryIntegra
             assertThat(column.get("data_type")).isEqualTo("numeric");
             assertThat(column.get("numeric_precision"))
                     .as("TRAN-CAT-BAL is PIC S9(09)V99 at app/cpy/CVTRA01Y.cpy:L9, so 9 + 2 = 11 digits; "
-                            + "using the account tier's 12 here would be a Blocker")
+                            + "using the account tier's 12 here would break parity")
                     .isEqualTo(11);
             assertThat(column.get("numeric_scale"))
                     .as("the V of PIC S9(09)V99 places two digits after the implied point")
@@ -1342,7 +1341,7 @@ class TransactionCategoryBalanceRepositoryTest extends AbstractRepositoryIntegra
      * of {@code tcatbal.txt}, {@code discgrp.txt}, {@code trancatg.txt} and {@code trantype.txt} is
      * <em>zero</em>-filled, whereas {@code acctdata.txt}, {@code custdata.txt}, {@code carddata.txt} and
      * {@code dailytran.txt} are <em>space</em>-filled - which is why {@code tcatbal.txt} has no trailing
-     * space run at all. Severity <strong>Low</strong>; the no-edit discipline is identical either way.
+     * space run at all. The no-edit discipline is identical either way.
      */
     @Nested
     @DisplayName("Corroboration against the frozen fixtures, read without copying or trimming")
@@ -1469,4 +1468,32 @@ class TransactionCategoryBalanceRepositoryTest extends AbstractRepositoryIntegra
                     });
         }
     }
+
+    /**
+     * The complete PostgreSQL metadata contract for the {@code transaction_category_balance} table.
+     *
+     * <p><strong>Finding, severity High, RESOLVED.</strong> This class asserted whichever columns its
+     * behavioural tests happened to touch, and every one of those assertions was true and none of them was a
+     * contract. A widened character column, a lost decimal scale, a reordered composite key, a retargeted
+     * foreign key or a dropped check constraint would all have left this class green - and Hibernate's
+     * {@code ddl-auto: validate} would not have caught any of them either, because it compares type
+     * <em>compatibility</em> and not geometry. For a migration whose contract is that every width comes from
+     * a frozen picture clause, that was the gap that mattered most.
+     *
+     * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet once and asserts
+     * the live catalogue against it by exact equality on ordered lists, so a missing facet and an extra facet
+     * both fail. Delegating rather than restating is deliberate: the shared schema test drives the identical
+     * contract over all eleven tables, and a paraphrase here could agree with the schema while disagreeing
+     * with the authority.
+     *
+     * <p>For {@code transaction_category_balance} that is four columns, the three-part composite key whose 17-character span is what makes an account-level control break work, the NUMERIC(11,2) balance, and fk07 and fk08 - every value measured from the schema the migrations
+     * produce and checked against {@code app/cpy/CVTRA01Y.cpy}, never transcribed from prose.
+     */
+    @Test
+    @DisplayName("the transaction category balance table matches the complete declared metadata contract: columns, types, "
+            + "widths, precision, scale, nullability, primary key, foreign keys, indexes and constraints")
+    void theTableMatchesTheCompleteMetadataContract() {
+        SchemaMetadataMatrix.assertTableMatches(jdbcTemplate, "transaction_category_balance");
+    }
+
 }

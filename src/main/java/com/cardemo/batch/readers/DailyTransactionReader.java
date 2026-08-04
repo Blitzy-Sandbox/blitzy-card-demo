@@ -176,8 +176,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@link com.cardemo.batch.writers.RejectWriter}; and the mainline together with
  * {@code 0200-XREFFILE-OPEN}, {@code 0400-ACCTFILE-OPEN}, {@code 0500-TCATBALF-OPEN},
  * {@code 9200-XREFFILE-CLOSE}, {@code 9400-ACCTFILE-CLOSE} and {@code 9500-TCATBALF-CLOSE} to
- * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which is <b>planned and not yet
- * authored</b> at the time of writing; {@code com.cardemo.config.BatchConfig} wires the step.
+ * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}; {@code com.cardemo.config.BatchConfig}
+ * wires the step.
  *
  * <p><b>Return code 4 is not this reader's decision.</b> {@code app/cbl/CBTRN02C.cbl:L229-L231}
  * reads {@code IF WS-REJECT-COUNT &gt; 0 / MOVE 4 TO RETURN-CODE / END-IF}, and there is no other
@@ -195,9 +195,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  * The bean is {@code @StepScope}, so one instance exists per step execution and nothing runs at
  * application start: every profile sets {@code spring.batch.job.enabled: false}. The {@code Job} and
  * {@code Step} that drive it are declared by {@code com.cardemo.config.BatchConfig}, which is
- * authored, and launched by the planned {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}
- * through the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. Neither job class
- * exists at this commit, which is a statement about sequencing rather than about this reader.
+ * authored, and launched by {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which
+ * <strong>is also authored</strong>. An earlier revision of this paragraph described that job as planned
+ * and said neither job class existed at this commit; that is withdrawn - the owning job is delivered, so
+ * this reader is reachable end to end from its own step. What is still planned is the name-driven entry
+ * point above it, the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which is a
+ * statement about sequencing rather than about this reader or its job.
  *
  * <p>Build and static gates, from the repository root:
  * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The compiler runs at
@@ -317,44 +320,61 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code 'ERROR CLOSING DALYTRAN FILE'} at {@code :L593} both carry.</li>
  * </ol>
  *
- * <h2>Findings, classified</h2>
+ * <h2>Log hygiene: what this class will not name</h2>
+ *
+ * <p>Three values are deliberately absent from every event this class emits, at every level, and each
+ * absence is a decision rather than an omission.
+ *
+ * <ol>
+ *   <li><b>The configured input object key.</b> The {@code fixed-width} path reads a date-partitioned key,
+ *       so the key carries a business date; and because it is the same key for every record in a run,
+ *       naming it once names it for the whole run. It is passed to object storage and to nothing else. An
+ *       operator who is entitled to it reads it from configuration, where it already is, rather than from
+ *       the log stream, where it would be aggregated, retained and replicated far more widely.</li>
+ *   <li><b>The checkpointed transaction identifier.</b> Reported as {@code present} or {@code absent}, never
+ *       by value. The record count is the restart position; the identifier only corroborates it, so naming
+ *       it would disclose a business record identifier and buy nothing.</li>
+ *   <li><b>Any field of any record.</b> The source emits no per-record dump on this path at all - both
+ *       {@code DISPLAY DALYTRAN-RECORD} statements are commented out in the corpus, as recorded above - so
+ *       there is no parity obligation to emit one, and none is emitted. That is why no masking question
+ *       arises here for the card number at bytes 263-278.</li>
+ * </ol>
+ *
+ * <p>What remains is the logical dataset name, the selected input source, the row and record counts, the
+ * rendered {@code FILE STATUS}, and the three verbatim error literals. Every one of those is a property of
+ * the run rather than of anybody's account, which is the line this class draws.
+ *
+ * <h2>Constraints on this translation</h2>
  * <ul>
- *   <li><b>Blocker</b> - mapping {@code transactionSource} to
- *       {@code com.cardemo.model.enums.TransactionSource}, or adding a third constant to it, breaks
- *       50 of the 300 Gate 1 rows. <i>Remediation:</i> keep the column a plain string, as here.</li>
- *   <li><b>Blocker</b> - treating {@code origTs} or {@code procTs} as a temporal type destroys
- *       parity, because the corpus has incompatible producers for a {@code PIC X(26)} stamp.
- *       <i>Remediation:</i> keep both as {@code String}, as here.</li>
- *   <li><b>High</b> - there is no catalogue entry for the DALYTRAN dataset, so its key length and
- *       catalogued record length are <b>Not available</b>. <i>Remediation:</i> state that, with the
- *       prerequisite, rather than inventing a value - as done above.</li>
- *   <li><b>High</b> - citing a DD {@code LRECL} for DALYTRAN would cite something that does not
- *       exist. <i>Remediation:</i> cite the copybook, the FD and the measured fixture, as done
- *       above.</li>
- *   <li><b>Medium</b> - the fixture is {@code dailytran.txt}, not {@code dalytran.txt}.
- *       <i>Remediation:</i> use the fixture's actual name in every test-resource path.</li>
- *   <li><b>Medium</b> - the three error literals are mutually inconsistent in the source.
- *       <i>Remediation:</i> reproduce them verbatim and document the inconsistency, as done
- *       above.</li>
- *   <li><b>Low</b> - {@code FD-CUST-DATA} names customer data inside a transaction FD.
- *       <i>Remediation:</i> cite as written; renaming would break the citation.</li>
- *   <li><b>Low</b> - {@code MOVE 8 TO  APPL-RESULT.} carries a double space, and the close idiom
- *       differs from the sibling readers'. <i>Remediation:</i> record the divergence; do not
- *       normalise.</li>
- *   <li><b>Low</b> - the batch timestamp producer emits hundredths plus four zeros, not
- *       milliseconds, evidenced at {@code app/cbl/CBTRN02C.cbl:L149-L174}. Other project documents
- *       say "millisecond precision" loosely. This reader produces no timestamp, so the distinction
- *       is documentation only. <i>Remediation:</i> the writer-side agent should read the source, not
- *       the prose.</li>
- *   <li><b>Low</b> - {@code src/main/java/com/cardemo/batch/readers/package-info.java} describes the
- *       package as holding readers "for the four read-only sequential scan programs", which this
- *       fifth class makes incomplete. <i>Remediation:</i> that file's owner extends its
- *       {@code Function} and {@code Source} lines; it is not edited from here, and no
- *       {@code package-info.java} is added by this class.</li>
- *   <li><b>Low</b> - the {@code repository} path resumes a restart by row ordinal rather than by
- *       key, because {@link DailyTransactionRepository} declares no keyset finder and none is added
- *       from here. See {@link #restoreRestartCursor(ExecutionContext)} for the exact consequence and
- *       the mitigating fact.</li>
+ *   <li>{@code transactionSource} stays a plain string. Mapping it to
+ *       {@code com.cardemo.model.enums.TransactionSource}, or adding a third constant to that enum, breaks
+ *       50 of the 300 fixture rows.</li>
+ *   <li>{@code origTs} and {@code procTs} stay {@code String}. Treating either as a temporal type destroys
+ *       parity, because the corpus has mutually incompatible producers for a {@code PIC X(26)} stamp.</li>
+ *   <li>There is no catalogue entry for the DALYTRAN dataset, so its key length and catalogued record length
+ *       cannot be cited from {@code app/catlg/LISTCAT.txt}, and no DD {@code LRECL} exists for it either.
+ *       The record geometry is therefore cited from the copybook, the FD and the measured fixture, as
+ *       above, rather than invented.</li>
+ *   <li>The fixture is {@code dailytran.txt}, not {@code dalytran.txt}; every test-resource path uses the
+ *       fixture's actual name even though the mainframe DD and dataset spell it {@code DALYTRAN}.</li>
+ *   <li>Three {@code INFO} emissions on this path once named the concrete input object key and the
+ *       checkpointed transaction identifier, publishing a date-partitioned key and a business record
+ *       identifier into a log stream enabled in every deployment. Both are excluded at source, for the
+ *       reasons given in the log-hygiene section above, and
+ *       {@code src/test/java/com/cardemo/unit/batch/BatchLogHygieneTest.java} holds that exclusion.</li>
+ *   <li>The three error literals are mutually inconsistent in the source. They are reproduced verbatim and
+ *       the inconsistency is documented above rather than harmonised.</li>
+ *   <li>{@code FD-CUST-DATA} names customer data inside a transaction FD, and {@code MOVE 8 TO  APPL-RESULT.}
+ *       carries a double space where the sibling readers do not. Both are cited as written; renaming or
+ *       normalising either would break the citation.</li>
+ *   <li>The batch timestamp producer emits hundredths plus four zeros rather than milliseconds, evidenced at
+ *       {@code app/cbl/CBTRN02C.cbl:L149-L174}. This reader produces no timestamp, so the distinction binds
+ *       the writer side rather than this class - which is why the citation is to the source and not to
+ *       prose.</li>
+ *   <li>The {@code repository} path resumes a restart by row ordinal rather than by key, because
+ *       {@link DailyTransactionRepository} declares no keyset finder and none is added from here. See
+ *       {@link #restoreRestartCursor(ExecutionContext)} for the exact consequence and the mitigating
+ *       fact.</li>
  * </ul>
  *
  * <p><b>Thread safety.</b> Not thread safe, and not required to be: the {@code step} scope gives
@@ -689,11 +709,10 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * set to {@code '0'} to mean &quot;no further subcode available from this layer&quot;. The
      * underlying detail is never discarded: it travels as the cause of the thrown exception.
      * <p>
-     * <b>Finding, severity Low.</b> The specific z/OS VSAM subcode a given failure would have produced
-     * on the mainframe is <b>Not available</b>. <i>Prerequisite:</i> a z/OS VSAM trace of the failing
-     * condition, which cannot be obtained here because mainframe-runtime reproduction is out of scope.
-     * <i>Remediation:</i> if a byte-exact subcode is ever required, add the translation at the
-     * {@link FileStatusMapper} layer, where the status vocabulary already lives, not in this reader.
+     * The specific z/OS VSAM subcode a given failure would have produced on the mainframe cannot be
+     * established from this repository, because mainframe-runtime reproduction is out of scope. Should a
+     * byte-exact subcode ever be required, the translation belongs at the {@link FileStatusMapper} layer,
+     * where the status vocabulary already lives, and not in this reader.
      */
     private static final String STATUS_PHYSICAL_IO_ERROR =
             String.valueOf(FileStatus.IO_ERROR_FIRST_BYTE) + NUMERIC_SUBCODE_NONE;
@@ -709,6 +728,17 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      */
     private static final String CONTEXT_KEY_LAST_TRANSACTION_ID =
             "DailyTransactionReader.lastTransactionId";
+
+    /**
+     * Execution-context key holding the {@code ingest_seq} of the most recently emitted staged row.
+     * <p>
+     * This is the keyset cursor a restarted run seeks past, and it is what makes the resume exact instead of
+     * arithmetic on a page size - see {@link #restoreRestartCursor(ExecutionContext)}. It is an ordinal and
+     * nothing more: no card number, no amount and no merchant detail ever reaches the context (Rule 1
+     * clause D1).
+     */
+    private static final String CONTEXT_KEY_LAST_INGEST_SEQUENCE =
+            "DailyTransactionReader.lastIngestSequence";
 
     /**
      * Where the 350-byte {@code DALYTRAN} records are read from.
@@ -728,8 +758,9 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
 
         /**
          * Read the staged rows from {@code daily_transaction} through
-         * {@link DailyTransactionRepository#findAllByOrderByIngestSequenceAsc(
-         * org.springframework.data.domain.Pageable)}, in ascending ingestion-ordinal order.
+         * {@link DailyTransactionRepository#findByIngestSequenceGreaterThanOrderByIngestSequenceAsc(
+         * long, org.springframework.data.domain.Pageable)}, in ascending ingestion-ordinal order,
+         * seeking past the rows already emitted rather than skipping over them.
          * <p>
          * The default. The rows arrive already decoded, because
          * {@code src/main/resources/db/migration/V3__seed_data.sql} performed the position-aware
@@ -764,9 +795,10 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     /**
      * The object-store access point, supplied as the {@code S3Operations} interface by
      * {@code com.cardemo.config.AwsConfig}. No client is constructed here and no credential is handled
-     * here; the emulator endpoint override exists only in the {@code local} and {@code test} profiles,
-     * so no live-cloud path is structurally reachable. Only {@code objectExists} and {@code download}
-     * are called, both read-only.
+     * here; the emulator endpoint override is declared in all four profiles - required with no default in
+     * the base, {@code test} and {@code prod} profiles, and defaulted to the LocalStack edge only in
+     * {@code application-local.yml} - so no live-cloud path is structurally reachable. Only
+     * {@code objectExists} and {@code download} are called, both read-only.
      */
     private final S3Operations objectStorage;
 
@@ -820,8 +852,21 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     /** Cursor into {@link #pageBuffer}; the next row to hand out. */
     private int pageBufferIndex;
 
-    /** The zero-based index of the next slice to request on the {@code repository} path. */
-    private int nextPageIndex;
+    /**
+     * The highest ingestion ordinal already emitted on the {@code repository} path; the keyset cursor.
+     * <p>
+     * <b>Finding, severity Medium - remediated by this field.</b> This replaces a page index. A page index
+     * makes the provider render {@code OFFSET}, so every refill re-walks and discards the rows already
+     * consumed, and a restart positioned by {@code ordinal / pageSize} is exact only while the relation is
+     * unchanged between runs. Holding the last ordinal instead makes each refill a seek to the point the read
+     * left off, and makes a resumed run land on the row after the last one it actually emitted.
+     * <p>
+     * Zero on a cold start, which is the value that starts from the beginning: {@code ingest_seq} is
+     * one-based, being the record's own position in the flat file, so no staged row can carry the ordinal
+     * zero. Advanced as each row is handed out rather than when a slice is buffered, so that a checkpoint
+     * taken part-way through a buffer names the last row genuinely emitted and never one merely fetched.
+     */
+    private long lastIngestSequence;
 
     /**
      * Whether a further slice may follow, as last reported by {@code Slice.hasNext()}.
@@ -830,12 +875,6 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * refill attempt reports end of file instead of issuing a query that is known to be empty.
      */
     private boolean moreSlicesAvailable = true;
-
-    /**
-     * Rows still to be skipped inside the first slice of a resumed run, so a restart lands on the row
-     * after the last one emitted. Zero on a cold start and cleared as soon as it has been applied.
-     */
-    private int withinPageSkip;
 
     /**
      * The character stream over the input object on the {@code fixed-width} path, held open between
@@ -939,9 +978,8 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         dailyTransactionRecord = null;
         pageBuffer = List.of();
         pageBufferIndex = 0;
-        nextPageIndex = 0;
+        lastIngestSequence = 0L;
         moreSlicesAvailable = true;
-        withinPageSkip = 0;
         recordStream = null;
         recordBuffer = null;
         recordsRead = 0L;
@@ -987,8 +1025,8 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * Annotating {@code readOnly = true} here would read as an enforced guarantee while enforcing
      * nothing, which Rule 1 clause A1 rules out. Read-only is guaranteed structurally instead: the only
      * repository call this class can reach is
-     * {@link DailyTransactionRepository#findAllByOrderByIngestSequenceAsc(
-     * org.springframework.data.domain.Pageable)} and the only object-store calls are
+     * {@link DailyTransactionRepository#findByIngestSequenceGreaterThanOrderByIngestSequenceAsc(
+     * long, org.springframework.data.domain.Pageable)} and the only object-store calls are
      * {@code objectExists} and {@code download}.
      *
      * @return the next staged transaction in file order, or {@code null} at end of data, which is the
@@ -1071,6 +1109,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
             return;
         }
         executionContext.putLong(CONTEXT_KEY_RECORDS_READ, recordsRead);
+        executionContext.putLong(CONTEXT_KEY_LAST_INGEST_SEQUENCE, lastIngestSequence);
         if (lastTransactionId != null) {
             executionContext.putString(CONTEXT_KEY_LAST_TRANSACTION_ID, lastTransactionId);
         }
@@ -1222,22 +1261,31 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * when it is exhausted.
      * <p>
      * <b>Ordering is the contract and it is fixed in the finder's name.</b>
-     * {@link DailyTransactionRepository#findAllByOrderByIngestSequenceAsc(
-     * org.springframework.data.domain.Pageable)} orders ascending by the ingestion ordinal, which is the
-     * primary key, so the order is both <em>faithful</em> - it is the order the flat file had, since the
+     * {@link DailyTransactionRepository#findByIngestSequenceGreaterThanOrderByIngestSequenceAsc(
+     * long, org.springframework.data.domain.Pageable)} orders ascending by the ingestion ordinal, which is
+     * the primary key, so the order is both <em>faithful</em> - it is the order the flat file had, since the
      * ordinal <em>is</em> the record's position in the file - and <em>total</em>, so slice boundaries are
      * stable and no row can be skipped or repeated across them. Ordering by {@code DALYTRAN-ID} would
      * forfeit both: that field is not unique and is only coincidentally the file order in the shipped
      * fixture. <b>No bare {@code findAll()} is called anywhere</b>, and no repository method is added
      * from here.
      * <p>
-     * <b>Why a slice and why the page index advances.</b> A whole-relation {@code List} would
-     * materialise every staged row into the heap at once, which is the opposite of what the source does;
-     * the repository deliberately offers no such form. A {@code Slice} rather than a {@code Page} avoids
-     * a counting query per chunk that nothing reads - the source keeps its own tally at
-     * {@code app/cbl/CBTRN02C.cbl:L206} and never asks the file how many records it holds. The page index
-     * is advanced until the slice reports that no further rows follow, which is the direct analogue of
-     * {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L202-L219}.
+     * <b>Finding, severity Medium - remediated here: the refill seeks rather than skips.</b> This loop
+     * requested {@code PageRequest.of(pageIndex, size)}, which the provider renders as {@code OFFSET}, so
+     * every refill made the store walk and discard all the rows already consumed - reading <em>n</em> rows in
+     * pages of <em>p</em> cost a quadratic number of row visits instead of a linear one, and the cost grew as
+     * the read progressed. It now passes {@link #lastIngestSequence}, the highest ordinal already emitted, and
+     * always asks for page zero of a size-bounded request: the store enters the primary-key index once, at the
+     * point the read left off. The bound on the buffer is unchanged, so the heap profile is unchanged; what
+     * changes is that the work per refill no longer depends on how far in the read has got.
+     * <p>
+     * <b>Why a slice and why the cursor advances.</b> A whole-relation {@code List} would materialise every
+     * staged row into the heap at once, which is the opposite of what the source does; the repository
+     * deliberately offers no such form. A {@code Slice} rather than a {@code Page} avoids a counting query per
+     * chunk that nothing reads - the source keeps its own tally at {@code app/cbl/CBTRN02C.cbl:L206} and never
+     * asks the file how many records it holds. The cursor is advanced until a slice reports that no further
+     * rows follow, which is the direct analogue of {@code PERFORM UNTIL END-OF-FILE = 'Y'} at
+     * {@code :L202-L219}.
      *
      * @return {@link #STATUS_SUCCESS}, {@link #STATUS_END_OF_FILE} or
      *     {@link #STATUS_PHYSICAL_IO_ERROR}
@@ -1252,16 +1300,16 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
                 return STATUS_END_OF_FILE;
             }
 
+            // Seek, not skip. The cursor is the highest ordinal already emitted, so the store enters the
+            // primary-key index once at that point instead of walking and discarding every row before it.
+            // A resumed run needs no separate within-slice adjustment at all: its cursor was restored from
+            // the checkpoint, so the first refill already begins after the last row genuinely emitted.
             final Slice<DailyTransaction> slice = dailyTransactionRepository
-                    .findAllByOrderByIngestSequenceAsc(PageRequest.of(nextPageIndex, pageSize));
+                    .findByIngestSequenceGreaterThanOrderByIngestSequenceAsc(
+                            lastIngestSequence, PageRequest.ofSize(pageSize));
             pageBuffer = slice.getContent();
             moreSlicesAvailable = slice.hasNext();
-            nextPageIndex++;
-
-            // Apply the resumed-run offset exactly once, then clear it, so a second refill in the same
-            // run cannot skip rows a second time.
-            pageBufferIndex = withinPageSkip;
-            withinPageSkip = 0;
+            pageBufferIndex = 0;
 
             if (pageBuffer.isEmpty()) {
                 // An empty first slice is an empty staging table: a successful run with a row count of
@@ -1282,6 +1330,11 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
             dailyTransactionRecord = null;
             return STATUS_PHYSICAL_IO_ERROR;
         }
+
+        // Advance the keyset cursor as the row is handed out, not when its slice was fetched, so that a
+        // checkpoint taken part-way through a buffer names the last row genuinely emitted. The ordinal is the
+        // primary key and every column of this relation is NOT NULL, so it cannot be absent here.
+        lastIngestSequence = next.getIngestSequence();
 
         dailyTransactionRecord = next;
         return STATUS_SUCCESS;
@@ -1363,12 +1416,12 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         if (filled != RECORD_LENGTH) {
             throw new DataIntegrityException(String.format(Locale.ROOT,
                     "%s record %d is %d characters but app/cpy/CVTRA06Y.cpy:L2 declares RECLN = %d and "
-                            + "app/cbl/CBTRN02C.cbl:L66-L69 declares X(16) + X(334); object '%s' in "
-                            + "bucket '%s' is truncated at that record and no field offset after byte %d "
-                            + "can be trusted",
+                            + "app/cbl/CBTRN02C.cbl:L66-L69 declares X(16) + X(334); the configured input "
+                            + "object in bucket '%s' is truncated at that record and no field offset after "
+                            + "byte %d can be trusted",
                     LOGICAL_FILE, Long.valueOf(recordsRead + 1L), Integer.valueOf(filled),
-                    Integer.valueOf(RECORD_LENGTH), objectKey, inputBucket, Integer.valueOf(filled)),
-                    LOGICAL_FILE, objectKey);
+                    Integer.valueOf(RECORD_LENGTH), inputBucket, Integer.valueOf(filled)),
+                    LOGICAL_FILE, inputBucket);
         }
 
         consumeRecordTerminator();
@@ -1438,10 +1491,10 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
             lastSkippedImage = readFixedWidthImage();
             if (lastSkippedImage == null) {
                 throw new FileAccessException(String.format(Locale.ROOT,
-                        "%s restart cannot resume: object '%s' in bucket '%s' holds only %d records but "
-                                + "the execution context reports %d already emitted, so the object is not "
-                                + "the one the previous run read",
-                        LOGICAL_FILE, objectKey, inputBucket, Long.valueOf(skipped),
+                        "%s restart cannot resume: the configured input object in bucket '%s' holds only "
+                                + "%d records but the execution context reports %d already emitted, so the "
+                                + "object is not the one the previous run read",
+                        LOGICAL_FILE, inputBucket, Long.valueOf(skipped),
                         Long.valueOf(alreadyEmitted)),
                         STATUS_FILE_UNAVAILABLE, LOGICAL_FILE, OPERATION_OPEN);
             }
@@ -1455,10 +1508,10 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
                 TRANSACTION_ID_END, "DALYTRAN-ID", alreadyEmitted);
         if (!observed.equals(expectedLastTransactionId)) {
             throw new DataIntegrityException(String.format(Locale.ROOT,
-                    "%s restart cannot resume: record %d of object '%s' in bucket '%s' does not carry "
-                            + "the DALYTRAN-ID the execution context checkpointed, so the object changed "
-                            + "between runs and resuming would skip or repeat records",
-                    LOGICAL_FILE, Long.valueOf(alreadyEmitted), objectKey, inputBucket),
+                    "%s restart cannot resume: record %d of the configured input object in bucket '%s' "
+                            + "does not carry the DALYTRAN-ID the execution context checkpointed, so the "
+                            + "object changed between runs and resuming would skip or repeat records",
+                    LOGICAL_FILE, Long.valueOf(alreadyEmitted), inputBucket),
                     CONTEXT_KEY_LAST_TRANSACTION_ID, LOGICAL_FILE);
         }
     }
@@ -1814,11 +1867,15 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * <b>Note the literal.</b> {@code 'ERROR OPENING DALYTRAN'} at {@code :L247} omits the word
      * {@code FILE} that the read and close literals carry. Reproduced verbatim; see parity structure 5.
      * <p>
-     * <b>What stands in for {@code OPEN INPUT}.</b> On the {@code repository} path, a single
-     * {@code count()} round trip, which is the cheapest call that proves the relation is reachable and
-     * which makes an empty staging table an explicit logged outcome rather than something inferred from
-     * an absence of rows. On the {@code fixed-width} path, an existence probe followed by opening a
-     * character stream over the object, with the charset applied once at that stream.
+     * <b>What stands in for {@code OPEN INPUT}.</b> On the {@code repository} path, one bounded seek for a
+     * single row past the reader's cursor, which is the cheapest statement that proves the relation is
+     * reachable and which makes "nothing to read" an explicit logged outcome rather than something inferred
+     * from an absence of rows. It is deliberately <em>not</em> a {@code count()}: an aggregate makes the store
+     * visit every staged row to answer a question nothing reads, and the source does not ask it either -
+     * {@code app/cbl/CBTRN02C.cbl} keeps its own tally at {@code :L206} and never interrogates the file for a
+     * total, which is reported instead at close from the counter the reader maintains. On the
+     * {@code fixed-width} path, an existence probe followed by opening a character stream over the object,
+     * with the charset applied once at that stream.
      * <p>
      * <b>Side effects.</b> One round trip or one object-store request; sets the open flag; allocates the
      * per-record buffer on the {@code fixed-width} path; writes one log event on success and two before
@@ -1855,8 +1912,11 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         if (applResult == FileStatusMapper.APPL_AOK) {
             // IF APPL-AOK CONTINUE  (:L244-L245)
             fileOpen = true;
-            LOG.info("{} opened; source={} objectKey={}", LOGICAL_FILE, inputSource,
-                    inputSource == InputSource.FIXED_WIDTH ? objectKey : "n/a");
+            // The configured object key is deliberately NOT named here. See the class documentation's
+            // log-hygiene section: the DALYTRAN input key is date partitioned, so it carries a business
+            // date, and the key is resolvable from configuration by anyone entitled to it without the log
+            // repeating it. The logical dataset and the selected source are what an operator needs.
+            LOG.info("{} opened; source={}", LOGICAL_FILE, inputSource);
         } else {
             // ELSE DISPLAY 'ERROR OPENING DALYTRAN' / MOVE DALYTRAN-STATUS TO IO-STATUS /
             // PERFORM 9910-DISPLAY-IO-STATUS / PERFORM 9999-ABEND-PROGRAM  (:L247-L250)
@@ -1884,14 +1944,32 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      */
     private String openInputSource() throws IOException {
         if (inputSource == InputSource.REPOSITORY) {
-            final long staged = dailyTransactionRepository.count();
-            if (staged == 0L) {
-                // An empty relation is a successful, complete run, not a fault. Stated explicitly so an
-                // operator is never left to infer it from silence (Rule 1 clause B2).
-                LOG.info("{} staging relation is empty; the read will complete with a record count of 0",
-                        LOGICAL_FILE);
+            // Finding, severity Medium, remediated here. This was a count(), which is a whole-relation
+            // aggregate: the store visits every staged row to answer it, and nothing needs the answer. The
+            // source does not ask either - app/cbl/CBTRN02C.cbl keeps its own tally at :L206 and never
+            // interrogates the file for a total. What OPEN INPUT has to establish is reachability, and the
+            // cheapest statement that establishes it is a bounded fetch of one row from the same index the
+            // read path uses. The emitted total is reported at close, from the counter the reader already
+            // maintains, so the figure an operator sees is now the number of records actually processed
+            // rather than a count taken before any of them were.
+            // The probe seeks from the reader's own cursor, which open() has already restored, so a resumed
+            // run asks "is anything left" rather than re-entering the index at the head of a relation whose
+            // first rows it has no further interest in. On a cold start the cursor is zero and this is a seek
+            // to the very first row.
+            final boolean anyRowRemains = !dailyTransactionRepository
+                    .findByIngestSequenceGreaterThanOrderByIngestSequenceAsc(
+                            lastIngestSequence, PageRequest.ofSize(1))
+                    .getContent()
+                    .isEmpty();
+            if (anyRowRemains) {
+                LOG.info("{} staging relation is reachable, with at least one row still to read past "
+                        + "ordinal {}", LOGICAL_FILE, Long.valueOf(lastIngestSequence));
             } else {
-                LOG.info("{} staging relation holds {} rows", LOGICAL_FILE, Long.valueOf(staged));
+                // Nothing left to read is a successful, complete run, not a fault. Stated explicitly so an
+                // operator is never left to infer it from silence (Rule 1 clause B2).
+                LOG.info("{} staging relation is reachable with nothing left to read past ordinal {}; the "
+                        + "read will complete without emitting a record", LOGICAL_FILE,
+                        Long.valueOf(lastIngestSequence));
             }
             return STATUS_SUCCESS;
         }
@@ -1944,8 +2022,8 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
             LOG.error(displayIoStatus(ioStatus));
             abendProgram(ERROR_READING_MESSAGE, OPERATION_OPEN, failure);
         }
-        LOG.info("{} resumed: skipped {} records already emitted from object '{}'",
-                LOGICAL_FILE, Long.valueOf(recordsRead), objectKey);
+        LOG.info("{} resumed: skipped {} records already emitted from the configured input object",
+                LOGICAL_FILE, Long.valueOf(recordsRead));
     }
 
     // ====================================================================================================
@@ -2127,26 +2205,30 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * unambiguous on both paths, and the checkpointed identifier is restored alongside it as the value
      * that proves a resumed run landed where it meant to.
      * <p>
-     * <b>Finding, severity Low: the {@code repository} path resumes by offset.</b> Positioning by
-     * {@code ordinal / pageSize} is exact only while the staging relation is unchanged between the two
-     * runs; a row inserted or deleted below the cursor would shift every offset after it, so a restart
-     * could silently re-emit or silently skip rows. <i>Mitigating fact:</i> nothing writes to
-     * {@code daily_transaction} during a posting run - the writers of this module target the transaction
-     * mirror and the reject generation, and {@code app/cbl/CBTRN02C.cbl} opens {@code DALYTRAN} for
-     * {@code INPUT} only at {@code :L238} - so the relation is stable across a restart of the same job
-     * instance. <i>Remediation:</i> a keyset finder such as
-     * {@code findByIngestSequenceGreaterThanOrderByIngestSequenceAsc} would make the resume exact, but
-     * {@link DailyTransactionRepository} declares no such method and none is added from here; that change
-     * belongs to the repository. The {@code fixed-width} path has no such exposure at all, because an
-     * object is immutable once written and {@link #skipAlreadyEmittedRecords(long, String)} verifies the
-     * landing record.
+     * <b>The {@code repository} path once resumed by offset, and no longer does.</b> It
+     * positioned itself at {@code ordinal / pageSize} with a within-page skip, which is exact only while the
+     * staging relation is unchanged between the two runs: a row inserted or deleted below the cursor shifts
+     * every offset after it, so a resumed run could silently re-emit or silently skip rows. It now restores
+     * {@link #lastIngestSequence} and seeks strictly past it through
+     * {@link DailyTransactionRepository#findByIngestSequenceGreaterThanOrderByIngestSequenceAsc(
+     * long, org.springframework.data.domain.Pageable)}, so a resumed run lands on the row after the last one
+     * it genuinely emitted whatever else has changed - and no page arithmetic is performed at all, which
+     * removes the overflow that arithmetic could suffer rather than merely reporting it. The
+     * {@code fixed-width} path never had this exposure, because an object is immutable once written and
+     * {@link #skipAlreadyEmittedRecords(long, String)} verifies the landing record.
+     * <p>
+     * <b>The checkpointed ordinal, and the fallback when it is absent.</b> The cursor is written to the
+     * context by {@link #update(ExecutionContext)} as the last emitted {@code ingest_seq}, which is what makes
+     * the resume exact. A context written before that entry existed carries only the emitted record count; in
+     * that case the count is used as the ordinal, which is correct because {@code ingest_seq} <em>is</em> the
+     * record's one-based position in the file, so the <em>k</em>-th row carries ordinal <em>k</em>. The
+     * fallback is therefore exact for a contiguously staged relation and degrades to re-reading rather than to
+     * skipping if it is ever not.
      * <p>
      * A non-positive checkpoint is ignored and the read starts from the beginning, which is the correct
      * reading of a checkpoint written before any record was emitted.
      *
      * @param executionContext the step execution context, already known to contain the record-count key
-     * @throws IllegalStateException if the checkpointed count is so large that its page index cannot be
-     *     represented, which is reported rather than allowed to overflow silently
      */
     private void restoreRestartCursor(final ExecutionContext executionContext) {
         final long checkpointed = executionContext.getLong(CONTEXT_KEY_RECORDS_READ, 0L);
@@ -2154,24 +2236,19 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
             return;
         }
 
-        final long resumePage = checkpointed / pageSize;
-        if (resumePage > Integer.MAX_VALUE) {
-            throw new IllegalStateException(String.format(Locale.ROOT,
-                    "%s restart context reports %d records already emitted, whose page index at a page "
-                            + "size of %d exceeds the maximum a page request can express",
-                    LOGICAL_FILE, Long.valueOf(checkpointed), Integer.valueOf(pageSize)));
-        }
-
         recordsRead = checkpointed;
         lastTransactionId = executionContext.containsKey(CONTEXT_KEY_LAST_TRANSACTION_ID)
                 ? executionContext.getString(CONTEXT_KEY_LAST_TRANSACTION_ID)
                 : null;
-        nextPageIndex = (int) resumePage;
-        withinPageSkip = (int) (checkpointed % pageSize);
+        lastIngestSequence = executionContext.getLong(CONTEXT_KEY_LAST_INGEST_SEQUENCE, checkpointed);
 
-        LOG.info("Resuming {} read after {} records; source={} lastTransactionId={}",
-                LOGICAL_FILE, Long.valueOf(recordsRead), inputSource,
-                lastTransactionId == null ? "none" : lastTransactionId);
+        // The checkpointed transaction identifier is reported as present or absent, never by value: the
+        // ingest ordinal below IS the restart position, and the identifier only corroborates it, so naming
+        // it would disclose a business record identifier for no diagnostic gain. The ordinal is a Java-side
+        // surrogate rather than a business key, so it is named in full.
+        LOG.info("Resuming {} read after {} records; source={} lastIngestSequence={} checkpointedKey={}",
+                LOGICAL_FILE, Long.valueOf(recordsRead), inputSource, Long.valueOf(lastIngestSequence),
+                lastTransactionId == null ? "absent" : "present");
     }
 
     /**

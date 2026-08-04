@@ -182,7 +182,7 @@ import com.cardemo.repository.TransactionTypeRepository;
  * container, the Spring context and the connection properties:
  *
  * <ul>
- *   <li>Profile {@code test}; PostgreSQL 16.10 pinned <em>by digest</em> rather than by tag, on Debian
+ *   <li>Profile {@code test}; PostgreSQL 16.14 pinned <em>by digest</em> rather than by tag, on Debian
  *       rather than Alpine so that glibc text collation - which the ordered reads depend on - matches
  *       what ships;</li>
  *   <li>the connection injected by {@code @ServiceConnection}, which is why no datasource literal
@@ -759,4 +759,32 @@ final class TransactionTypeRepositoryTest extends AbstractRepositoryIntegrationT
         }
         return unpadded + " ".repeat(typeDescriptionWidth - unpadded.length());
     }
+
+    /**
+     * The complete PostgreSQL metadata contract for the {@code transaction_type} table.
+     *
+     * <p><strong>Finding, severity High, RESOLVED.</strong> This class asserted whichever columns its
+     * behavioural tests happened to touch, and every one of those assertions was true and none of them was a
+     * contract. A widened character column, a lost decimal scale, a reordered composite key, a retargeted
+     * foreign key or a dropped check constraint would all have left this class green - and Hibernate's
+     * {@code ddl-auto: validate} would not have caught any of them either, because it compares type
+     * <em>compatibility</em> and not geometry. For a migration whose contract is that every width comes from
+     * a frozen picture clause, that was the gap that mattered most.
+     *
+     * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet once and asserts
+     * the live catalogue against it by exact equality on ordered lists, so a missing facet and an extra facet
+     * both fail. Delegating rather than restating is deliberate: the shared schema test drives the identical
+     * contract over all eleven tables, and a paraphrase here could agree with the schema while disagreeing
+     * with the authority.
+     *
+     * <p>For {@code transaction_type} that is two columns, the two-character key of the catalogue's KEYLEN 2, and no foreign key at all because it is a root reference table - every value measured from the schema the migrations
+     * produce and checked against {@code app/cpy/CVTRA03Y.cpy}, never transcribed from prose.
+     */
+    @Test
+    @DisplayName("the transaction type table matches the complete declared metadata contract: columns, types, "
+            + "widths, precision, scale, nullability, primary key, foreign keys, indexes and constraints")
+    void theTableMatchesTheCompleteMetadataContract() {
+        SchemaMetadataMatrix.assertTableMatches(jdbcTemplate, "transaction_type");
+    }
+
 }

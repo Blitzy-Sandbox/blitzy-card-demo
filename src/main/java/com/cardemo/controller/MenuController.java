@@ -242,13 +242,13 @@ import com.cardemo.service.menu.MainMenuService;
  * counterpart at all. {@code DFHAID}, {@code DFHBMSCA} and {@code DFHATTR} are supplied by the
  * transaction monitor, are absent from this repository, and are imported nowhere.</p>
  *
- * <h2>6. Deviations from the source, with severities</h2>
+ * <h2>6. Deviations from the source</h2>
  *
- * <p>Owed an entry in the planned {@code DECISION_LOG.md} under the entries named below. Nothing in this list is a
- * silent improvement.</p>
+ * <p>Each item below is a deliberate, labelled difference from the system of record. Nothing in this list
+ * is a silent improvement.</p>
  *
  * <ul>
- *   <li><strong>Medium - the administrator menu is role-gated, which the source program is not.</strong>
+ *   <li><strong>The administrator menu is role-gated, which the source program is not.</strong>
  *       {@code app/cbl/COADM01C.cbl} contains no user-type test anywhere: no
  *       {@code CDEMO-USRTYP-USER} predicate, no {@code CDEMO-ADMIN-OPT-USRTYPE} field - the option
  *       table at {@code app/cpy/COADM02Y.cpy:L45-L48} declares only a number, a caption and a program
@@ -259,17 +259,15 @@ import com.cardemo.service.menu.MainMenuService;
  *       four options this menu offers target {@code COUSR00C}, {@code COUSR01C}, {@code COUSR02C} and
  *       {@code COUSR03C} at {@code app/cpy/COADM02Y.cpy:L27}, {@code :L32}, {@code :L37} and
  *       {@code :L42} - the four user-administration programs that {@code SecurityConfig} restricts to
- *       the administrator role. The gate agrees with the central rule rather than competing with it.
- *       Decision log entry: <em>admin menu role gate</em>.</li>
- *   <li><strong>Low - the response carries the option payload only.</strong> Both menu services also
+ *       the administrator role. The gate agrees with the central rule rather than competing with it.</li>
+ *   <li><strong>The response carries the option payload only.</strong> Both menu services also
  *       compose the rendered 3270 option lines, each padded to the forty characters of
  *       {@code OPTN001I PIC X(40)}, and {@code MainMenuService} additionally resolves the sign-on
  *       program that {@code RETURN-TO-SIGNON-SCREEN} transferred to. Neither is surfaced: the padded
  *       lines are terminal rendering, and 3270 emulation is out of scope, while the sign-on program
  *       name is precisely the routing instruction this class must not emit. Both remain available on
- *       the service return values for a caller that has a legitimate need. Decision log entry:
- *       <em>menu payload without screen furniture</em>.</li>
- *   <li><strong>Low - option dispatch is not an endpoint.</strong> The selection contract of
+ *       the service return values for a caller that has a legitimate need.</li>
+ *   <li><strong>Option dispatch is not an endpoint.</strong> The selection contract of
  *       {@code PROCESS-ENTER-KEY}, at {@code app/cbl/COMEN01C.cbl:L115} and
  *       {@code app/cbl/COADM01C.cbl:L115}, is implemented in the two menu services and reached by URL
  *       navigation rather than by a server-side transfer. Consequently the option-input boundary
@@ -277,8 +275,7 @@ import com.cardemo.service.menu.MainMenuService;
  *       absent field, and a target program whose first five characters are {@code 'DUMMY'} at
  *       {@code app/cbl/COMEN01C.cbl:L146} and {@code app/cbl/COADM01C.cbl:L138} - are enforced there
  *       and not here. This class relays the resulting {@code ValidationException} byte for byte rather
- *       than restating those rules, because a second statement of them could drift from the first.
- *       Decision log entry: <em>URL navigation replaces XCTL dispatch</em>.</li>
+ *       than restating those rules, because a second statement of them could drift from the first.</li>
  *   </ul>
  *
  * <h2>7. The two coming-soon messages differ, and are not unified</h2>
@@ -303,15 +300,14 @@ import com.cardemo.service.menu.MainMenuService;
  *
  * <p><strong>The two must not be unified.</strong> Unifying them would change observable behaviour and
  * would breach the parity contract; the commented-out lines are not dead Java code, they are the
- * reason the two messages differ, and that difference is live behaviour. Decision log entry:
- * <em>divergent coming-soon messages preserved</em>.</p>
+ * reason the two messages differ, and that difference is live behaviour.</p>
  *
  * <h2>8. Scope statements</h2>
  *
  * <p>This class declares exactly two request-mapped operations. It exposes no developer, diagnostic or
- * debug endpoint: transaction {@code CDV1} fronts {@code COCRDSEC}, whose source is
- * <strong>Not available</strong> anywhere in this repository - the name occurs only in the two resource
- * definitions at {@code app/csd/CARDDEMO.CSD:L211} and {@code :L390} - so nothing is invented for it.
+ * debug endpoint: transaction {@code CDV1} fronts {@code COCRDSEC}, which has <strong>no source
+ * anywhere in this repository</strong> - the name occurs only in the two resource definitions at
+ * {@code app/csd/CARDDEMO.CSD:L211} and {@code :L390} - so nothing is invented for it.
  * Health, information and metrics endpoints belong to Actuator and are not aliased here. The four
  * batch-only datasets {@code TCATBALF}, {@code DISCGRP}, {@code TRANCATG} and {@code TRANTYPE} are
  * absent from the CSD's eight {@code DEFINE FILE} entries and get no surface here either.</p>

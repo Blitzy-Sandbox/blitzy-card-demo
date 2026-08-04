@@ -107,8 +107,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <p><strong>A foreign key on this table would make reject codes 100 and 101 unreachable.</strong> The row
  * would be refused at load time instead of being loaded and then rejected by the engine, which retires two
- * of the five reject outcomes and with them the reject record the job exists to produce. Severity
- * <strong>Blocker</strong>. {@link ZeroForeignKeyContract} therefore asserts the absence twice over: once
+ * of the five reject outcomes and with them the reject record the job exists to produce.
+ * {@link ZeroForeignKeyContract} therefore asserts the absence twice over: once
  * behaviourally, by persisting a row whose card number no {@code card} row and no
  * {@code card_cross_reference} row carries, and once by metadata sweep over {@code pg_constraint}.
  *
@@ -172,10 +172,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * companion at {@code app/jcl/TRANFILE.jcl:L70}. A catalogue line number quoted for this table would be
  * fabricated evidence, so none is quoted.
  *
- * <h3>Two divergences from the planned contract, resolved in favour of the built one</h3>
+ * <h3>Two shapes this file reads off the shipped contract</h3>
  *
  * <p>Both were measured against the shipped dependencies rather than assumed, and both change what an
- * assertion here may say. Severity <strong>Medium</strong>, since each would otherwise have produced a test
+ * assertion here may say. This matters, since each would otherwise have produced a test
  * that could not compile.
  *
  * <ol>
@@ -196,7 +196,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       result set bounded only by the size of the staging table would materialise every row at once, and
  *       there is deliberately no finder by card number, account, amount, source, timestamp or merchant,
  *       because the source performs no keyed lookup against this dataset. Requesting one would be a
- *       <strong>High</strong>-severity defect, so nothing below references a finder that is not declared.</li>
+ *       defect, so nothing below references a finder that is not declared.</li>
  *   </ol>
  *
  * <h2>How to run, build and test</h2>
@@ -251,8 +251,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       characters.</li>
  *   <li><strong>The fixture is read by its flat classpath name {@code dailytran.txt}</strong>, with the
  *       word "daily" spelled in full. The mainframe DD name and dataset spell it {@code DALYTRAN}, so the
- *       abbreviated spelling is the natural guess and no such resource can be resolved; severity
- *       <strong>Blocker</strong>, because the failure is a resource that never loads. Nothing here copies,
+ *       abbreviated spelling is the natural guess and no such resource can be resolved, so the whole class
+ *       fails on a resource that never loads. Nothing here copies,
  *       trims, normalises or edits a fixture.</li>
  *   </ul>
  *
@@ -262,7 +262,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *   <li><em>Every test fails to start with a container or Docker error.</em> There is no reachable Docker
  *       socket; see the prerequisite above.</li>
  *   <li><em>A Testcontainers artefact fails to resolve, or the wrong major version is selected.</em> The
- *       <strong>Blocker</strong>-severity trap of the whole migration, whose remedy has two halves that are
+ *       most consequential trap of the whole migration, whose remedy has two halves that are
  *       both required. Half one: pin Testcontainers to exactly {@code 2.0.3} by overriding the version
  *       property the Spring Boot parent manages, never by importing a second bill of materials, because two
  *       competing imports resolve in an ordering-dependent way that can silently select the parent-managed
@@ -279,31 +279,31 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       with {@code ddl-auto: validate}, which compares type codes, so a {@code Long} mapped over
  *       {@code NUMERIC(9)} can fail where {@code BIGINT} passes. <strong>The fix is upstream</strong>, in
  *       the schema migration or in the entity mapping. Never widen a column to silence it and never patch
- *       this test. Severity <strong>Medium</strong>.</li>
+ *       this test.</li>
  *   <li><em>A position-based read of the fixture returns the wrong field.</em> A trailing-whitespace
  *       cleanup has been applied to it. Every record ends with the 20-byte {@code FILLER}, the longest
  *       trailing run is 46 spaces, and trimming would collapse a 350-byte record to 304 and misalign every
  *       read after the first short row. The repository's editor configuration anticipates exactly this and
  *       turns its trailing-whitespace rule off for {@code src/test/resources/**.txt}, alongside the same
  *       carve-out for Markdown, so an editor honouring that file will leave a fixture alone - but a tool
- *       that ignores it, or a hand edit, still can. Severity <strong>High</strong>, because the damage is
+ *       that ignores it, or a hand edit, still can. This matters, because the damage is
  *       silent: the file still parses and only the column arithmetic is wrong.</li>
  *   <li><em>The source column will not bind, or an accepted value is refused.</em> It has been mapped to an
  *       enumerated type. {@code dalytran_source} is {@code CHAR(10)} text: the fixture carries only
  *       {@code POS TERM} on 250 rows and {@code OPERATOR} on 50, while the interest program writes the
- *       literal {@code System} at {@code app/cbl/CBACT04C.cbl:L484}. Severity
- *       <strong>Blocker</strong>.</li>
+ *       literal {@code System} at {@code app/cbl/CBACT04C.cbl:L484}.</li>
+ *
  *   <li><em>A timestamp will not parse.</em> It has been mapped as a temporal type. Both columns are
  *       {@code CHAR(26)} text and one of them is entirely blank on all 300 seeded rows; see
- *       {@link FieldContractRoundTrip}. Severity <strong>Blocker</strong>.</li>
+ *       {@link FieldContractRoundTrip}.</li>
  *   <li><em>An amount comes back positive when the fixture carried a debit.</em> An absolute value has been
- *       taken, or a non-negative constraint has been added. Both are <strong>Blocker</strong>-severity: 50
+ *       taken, or a non-negative constraint has been added. Both break parity: 50
  *       of the 300 seeded rows are negative, and {@code app/cbl/CBTRN02C.cbl:L547-L552} adds the amount to
  *       the current-cycle credit when it is non-negative and to the current-cycle <em>debit</em> otherwise,
  *       so the debit accumulator legitimately holds negative values - which is precisely why the over-limit
  *       formula at {@code :L403-L405} subtracts it. That formula is never algebraically rewritten.</li>
  *   <li><em>An amount comparison fails on two values that print the same.</em> {@link BigDecimal#equals}
- *       has been used where {@link BigDecimal#compareTo} was needed; severity <strong>Medium</strong>.</li>
+ *       has been used where {@link BigDecimal#compareTo} was needed.</li>
  *   <li><em>The seeded row count is not 300.</em> A row leaked from another test method. Isolation comes
  *       solely from the harness's per-method transactional rollback, which is why nothing here truncates,
  *       deletes, seeds by script or dirties the context.</li>
@@ -847,7 +847,7 @@ class DailyTransactionRepositoryTest extends AbstractRepositoryIntegrationTest {
 
             assertThat(foreignKeyCount("daily_transaction"))
                     .as("V1 declares ten foreign keys, fk01_card_account through fk10_discgrp_category, and "
-                            + "the staging table is party to none of them. Adding one is a Blocker: the "
+                            + "the staging table is party to none of them. Adding one is forbidden: the "
                             + "reject codes assigned at CBTRN02C.cbl:385 and :397 would never be reached")
                     .isZero();
         }
@@ -1061,7 +1061,7 @@ class DailyTransactionRepositoryTest extends AbstractRepositoryIntegrationTest {
     /**
      * The thirteen copybook fields: their types, their widths and their values across a round trip.
      *
-     * <p>Three mappings would each be a <strong>Blocker</strong> if made, and each is asserted against
+     * <p>Three mappings would each break parity if made, and each is asserted against
      * here: a temporal type on either timestamp, an enumerated type on the source, and any normalisation of
      * the amount's sign.
      */
@@ -1193,7 +1193,7 @@ class DailyTransactionRepositoryTest extends AbstractRepositoryIntegrationTest {
                             + "non-negative and to the current-cycle debit otherwise, so the debit "
                             + "accumulator legitimately holds negative values - which is exactly why the "
                             + "over-limit formula at :403-405 subtracts it. Taking an absolute value or "
-                            + "adding a non-negative constraint is a Blocker")
+                            + "adding a non-negative constraint is forbidden")
                     .isNegative()
                     .isEqualByComparingTo(new BigDecimal("-919.00"));
             assertThat(reloaded.compareTo(BigDecimal.ZERO))
@@ -1242,7 +1242,7 @@ class DailyTransactionRepositoryTest extends AbstractRepositoryIntegrationTest {
                     .getTransactionSource())
                     .as("and the literal app/cbl/CBACT04C.cbl:L484 writes for a generated interest "
                             + "transaction. Three producers, three unrelated values: mapping this column to "
-                            + "an enumerated type would refuse or mistranslate accepted input, a Blocker")
+                            + "an enumerated type would refuse or mistranslate accepted input, forbidden")
                     .isEqualTo(padTo("System", 10));
 
             assertThat(columnMetadata("daily_transaction", "dalytran_source"))
@@ -1264,7 +1264,7 @@ class DailyTransactionRepositoryTest extends AbstractRepositoryIntegrationTest {
             assertThat(dailyTransactionRepository.findById(ordinal).orElseThrow().getMerchantZip())
                     .as("the fixture's 300 records carry 300 distinct postal codes in mixed formats, five "
                             + "digits and hyphenated nine alike, and the last record carries this one. A "
-                            + "format constraint here would refuse real input: a Blocker")
+                            + "format constraint here would refuse real input: forbidden")
                     .isEqualTo("53200-7529")
                     .hasSize(10);
         }
@@ -1589,7 +1589,7 @@ class DailyTransactionRepositoryTest extends AbstractRepositoryIntegrationTest {
             assertThat(longestTrailingRun)
                     .as("the longest trailing run is 46 characters, so a trailing-whitespace cleanup would "
                             + "collapse a 350-character record to 304 and misalign every position-based read "
-                            + "after it. Severity High; no fixture is copied, trimmed or edited here")
+                            + "after it. No fixture is copied, trimmed or edited here")
                     .isEqualTo(46);
             assertThat(350 - longestTrailingRun).isEqualTo(304);
         }

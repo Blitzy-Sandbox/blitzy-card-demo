@@ -159,7 +159,7 @@ import org.springframework.stereotype.Component;
  *       role claim no longer routes, it only <em>authorises</em>.</li>
  *   </ul>
  *
- * <h2>The minimal claim set - a Blocker level constraint</h2>
+ * <h2>The minimal claim set, and why widening it is not an option</h2>
  *
  * <p><strong>A JWT is signed, not encrypted.</strong> Its payload is base64url and is readable by anyone who
  * holds the token, and tokens travel through proxies, access logs, browser storage and error reports. The
@@ -178,7 +178,7 @@ import org.springframework.stereotype.Component;
  *   </ol>
  *
  * <p>Five claims, no more. Enriching the token with a card number, an account identifier, a customer
- * identifier or a customer name is a <strong>Blocker</strong> under Rule 1 Clause D, which forbids secrets in
+ * identifier or a customer name is forbidden by Rule 1 Clause D, which admits no secrets in
  * code, logs, tests or configuration and requires least privilege for tokens: it would publish regulated data
  * to every party that ever sees the token, for the whole of its lifetime, with no way to retract it. A future
  * contributor reading this paragraph should treat the prohibition as absolute rather than as a default to be
@@ -193,7 +193,7 @@ import org.springframework.stereotype.Component;
  * for that reason. A private constant would keep the spelling in one place only <em>within this file</em>,
  * which is not where the hazard lives.
  *
- * <p>The hazard is worth naming precisely, because it is <strong>High</strong> severity and it fails
+ * <p>The hazard is worth naming precisely, because it fails
  * silently. If the claim name written here and the claim name read by {@code com.cardemo.config.SecurityConfig}
  * or {@code com.cardemo.security.JwtAuthenticationFilter} ever diverge, the token still verifies, no
  * exception is raised and nothing is logged; the authority set simply comes out empty and every authorised
@@ -212,7 +212,7 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li>the {@code JwtDecoder}. {@code com.cardemo.config.SecurityConfig} builds the symmetric HMAC decoder
  *       from the same signing key property. Defining a competing decoder bean here is a
- *       <strong>High</strong> severity defect: at best the context fails to refresh with a duplicate bean
+ *       a defect either way: at best the context fails to refresh with a duplicate bean
  *       definition, at worst two decoders disagree about the verification key. If such a failure is ever
  *       observed, the duplicate is removed from <em>this</em> file, because the configuration package is the
  *       designated decoder owner;</li>
@@ -265,17 +265,14 @@ import org.springframework.stereotype.Component;
  *   </tr>
  * </table>
  *
- * <p>Both of those spellings once differed from the mandated ones. This class first bound
- * {@code JWT_SECRET} and {@code carddemo.security.jwt.expiration-seconds} with a 3,600-second default,
- * because that is what {@code src/main/resources/application.yml} published at the time and binding anything
- * else would have been an unresolvable placeholder aborting every context refresh. The drift has since been
- * closed at its root: the published file now reads {@code ${JWT_SIGNING_KEY}} with no default and
- * {@code expiration-minutes: ${JWT_EXPIRATION_MINUTES:30}}, and the rename was carried through this class,
- * {@code com.cardemo.config.SecurityConfig}, the environment template, the container image documentation, the
- * build file, the vulnerability-scan suppressions and the unit test that asserts the variable name, in one
- * change. Severity of the original discrepancy: <strong>High</strong>, because the unit was not cosmetic -
- * 3,600 seconds is double the approved thirty-minute bearer window, and a bearer token cannot be revoked
- * before it expires.
+ * <p><strong>The lifetime unit is minutes, and the spelling is load-bearing.</strong>
+ * {@code src/main/resources/application.yml} publishes {@code ${JWT_SIGNING_KEY}} with no default and
+ * {@code expiration-minutes: ${JWT_EXPIRATION_MINUTES:30}}, and one spelling of each name is used by this
+ * class, {@code com.cardemo.config.SecurityConfig}, the environment template, the container image
+ * documentation, the build file, the vulnerability-scan suppressions and the unit test that asserts the
+ * variable name. A seconds-valued property bound to a minutes-valued field would read 3,600 as sixty hours
+ * rather than one, and a bearer token cannot be revoked before it expires - which is why the approved
+ * thirty-minute window is expressed in the same unit everywhere.
  *
  * <p>Note also that {@code src/main/resources} deliberately sets neither
  * {@code spring.security.oauth2.resourceserver.jwt.jwk-set-uri} nor the corresponding public key location,
@@ -301,79 +298,25 @@ import org.springframework.stereotype.Component;
  * expected and documented startup failure rather than a bug; the operator facing remedy is summarised for the
  * whole package in {@code package-info.java}.
  *
- * <p>This closes a <strong>High</strong> severity defect recorded against the previous migration attempt,
- * which hardcoded the signing key. <strong>High (closed).</strong> The token lifetime is likewise bounded
- * rather than trusted: a non positive value is rejected, and so is one above 1440 minutes, which is 24
- * hours, because Rule 1 Clause D's least privilege requirement is what makes "short lived" enforceable
- * instead of merely aspirational rather than a comment nobody checks.
+ * <p>The token lifetime is likewise bounded rather than trusted: a non-positive value is rejected, and so is
+ * one above 1440 minutes - 24 hours - because Rule 1 Clause D's least-privilege requirement is what makes
+ * "short lived" enforceable rather than aspirational.
  *
- * <h2>Not available</h2>
+ * <h2>The collaborators this class hands its constants to</h2>
  *
- * <p>Rule 1 Clause F requires that missing information be stated rather than guessed. At the time this class
- * was written {@code src/main/java/com/cardemo/config} did not exist, so the following are contracts asserted
- * from the specification and <strong>not</strong> verified against code:
+ * <p>This class mints and describes tokens; it validates none and declares no bean. Verification is wired in
+ * {@code com.cardemo.config.SecurityConfig}, which builds the symmetric HMAC {@code JwtDecoder} from
+ * {@code carddemo.security.jwt.signing-key} with {@code NimbusJwtDecoder}, publishes the
+ * {@code PasswordEncoder} as a {@code BCryptPasswordEncoder} at the configured strength, and sets
+ * {@code SessionCreationPolicy.STATELESS} so no server-side session state exists.
  *
- * <ul>
- *   <li>the construction of the symmetric HMAC {@code JwtDecoder} from
- *       {@code carddemo.security.jwt.signing-key};</li>
- *   <li>the converter configuration that turns the {@value #ROLE_CLAIM_NAME} claim into granted authorities -
- *       specifically, that the authorities claim name is set to {@value #ROLE_CLAIM_NAME} and the authority
- *       prefix to the empty string, so that the claim value is used verbatim rather than being prefixed a
- *       second time;</li>
- *   <li>the {@code PasswordEncoder} strength and the stateless session policy.</li>
- * </ul>
- *
- * <p>What is needed to confirm them: {@code src/main/java/com/cardemo/config/SecurityConfig.java}. Until it
- * exists, the constants on this class are the contract, and the collaborator is expected to bind to them.
- *
- * <h2>Severity register</h2>
- *
- * <p>Rule 1 Clause F requires findings to be classified. The ones that bear on this file are:
- *
- * <table>
- *   <caption>Severity of the failure modes this class is designed to prevent</caption>
- *   <tr><th>Severity</th><th>Finding</th><th>Status</th></tr>
- *   <tr>
- *     <td><strong>Blocker</strong></td>
- *     <td>Emitting any of the personally identifiable or card holder fields at
- *         {@code app/cpy/COCOM01Y.cpy:L33-L41} as a token claim</td>
- *     <td>Prevented: the claim set is fixed at five and is asserted by test</td>
- *   </tr>
- *   <tr>
- *     <td><strong>Blocker</strong></td>
- *     <td>A committed, defaulted or fallback signing key</td>
- *     <td>Prevented: the property carries no default and the constructor refuses four invalid shapes</td>
- *   </tr>
- *   <tr>
- *     <td><strong>High</strong></td>
- *     <td>The signing key hardcoded, as in the previous migration attempt</td>
- *     <td><strong>Closed</strong> by environment indirection plus fail-fast</td>
- *   </tr>
- *   <tr>
- *     <td><strong>High</strong></td>
- *     <td>Role claim name drift between this class and its two collaborators, which denies authorisation
- *         silently</td>
- *     <td>Mitigated: one public constant is the single spelling for the whole repository</td>
- *   </tr>
- *   <tr>
- *     <td><strong>High</strong></td>
- *     <td>A competing {@code JwtDecoder} bean defined in this class</td>
- *     <td>Prevented: no bean method is declared here at all</td>
- *   </tr>
- *   <tr>
- *     <td><strong>Medium</strong></td>
- *     <td>Two property spellings in this file's generation instructions that do not match the published
- *         {@code application.yml}</td>
- *     <td>Resolved in favour of the published file and recorded above</td>
- *   </tr>
- *   <tr>
- *     <td><strong>Low</strong></td>
- *     <td>A consumer reading the issuer through an accessor that coerces it to a {@code java.net.URL}, when
- *         the default issuer is an opaque identifier</td>
- *     <td>Documented under troubleshooting</td>
- *   </tr>
- * </table>
- *
+ * <p>The {@value #ROLE_CLAIM_NAME} claim is turned into a granted authority by
+ * {@link JwtAuthenticationFilter}, not by a Spring authorities converter, and the filter reaches the claim
+ * name through {@link #ROLE_CLAIM_NAME} rather than through a literal. That single constant is the only
+ * spelling in the repository, which is what prevents a silent authorisation denial: a drifted claim name
+ * produces an authenticated principal with no authority and a 403 with nothing logged to explain it.
+
+
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
@@ -421,7 +364,7 @@ public final class JwtTokenProvider {
      * this claim name and an empty authority prefix, and
      * {@code com.cardemo.security.JwtAuthenticationFilter} must read this claim name, both by referencing
      * this constant rather than a literal of their own. A divergence between the two spellings is a
-     * <strong>High</strong> severity defect that manifests as a silent authorisation denial with no error and
+     * defect that manifests as a silent authorisation denial with no error and
      * no log record.
      */
     public static final String ROLE_CLAIM_NAME = "role";
@@ -531,8 +474,8 @@ public final class JwtTokenProvider {
      * cannot securely sign a token.
      *
      * <p>Because this is a singleton bean, a refusal here aborts the context refresh and the application does
-     * not start. That is the intended behaviour and closes the <strong>High</strong> severity defect of the
-     * previous migration attempt, which hardcoded the key.
+     * not start. That is the intended behaviour: the key carries no committed default and no fallback, so an
+     * absent or unusable value must stop the process rather than be substituted for.
      *
      * <p>The key is consumed and discarded: it is encoded to UTF-8, handed to the signer, and the derived
      * byte array is then overwritten with zeroes. The raw {@code String} is never retained in a field, never

@@ -294,14 +294,18 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <ul>
  *   <li>An earlier revision of this bullet said that {@code batch/jobs/**},
  *       {@code batch/readers/**} and {@code batch/writers/**} are unplanned in this branch; that is no
- *       longer true and the claim is withdrawn. All three packages exist and are populated - one job,
- *       five readers and three writers. What remains absent are the three specific types this step
- *       needs: {@code batch/jobs/TransactionReportJob}, {@code batch/readers/TransactionBackupReader}
- *       and a report writer for the {@value #REPORT_LINE_LENGTH} character line, none of which is among
- *       the authored {@code RejectWriter}, {@code StatementWriter} and {@code TransactionWriter}. Until
- *       they are authored the concrete reader type, writer type and chunk size this processor runs under
- *       are <strong>Not available</strong>. Needed to close the gap: those three types, at which point
- *       the {@link ReportLines} carrier can be matched to the writer's item type.</li>
+ *       longer true and the claim is withdrawn. All three packages exist and are populated - three jobs,
+ *       <b>six</b> readers and three writers. <b>Finding, severity Low, remediated:</b> this bullet
+ *       previously reported five readers and named {@code batch/readers/TransactionBackupReader} among the
+ *       types that were still absent. Both statements were wrong - that reader is authored, and it is the
+ *       sixth - so the reader this step needs is present and only its wiring is outstanding. What remains
+ *       genuinely absent is {@code batch/jobs/TransactionReportJob} and a report writer for the
+ *       {@value #REPORT_LINE_LENGTH} character line, neither of which is among the authored
+ *       {@code RejectWriter}, {@code StatementWriter} and {@code TransactionWriter}. Until those two are
+ *       authored the concrete writer type and the chunk size this processor runs under are
+ *       <strong>Not available</strong>; the reader type is {@code TransactionBackupReader}. Needed to close
+ *       the gap: those two types, at which point the {@link ReportLines} carrier can be matched to the
+ *       writer's item type.</li>
  *   <li>An earlier revision of this bullet said that
  *       {@code src/main/java/com/cardemo/batch/package-info.java} does not exist; that is no longer true
  *       and the claim is withdrawn. That file is authored, and it documents this package group at package

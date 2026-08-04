@@ -578,11 +578,19 @@ public record TransactionAddRequest(
     /**
      * Returns a diagnostic rendering that deliberately omits every personally identifiable field.
      *
-     * @return a rendering containing only the account identifier and the originating program name
+     * <p>Every field below is passed through {@link ApiMasking#forDiagnostics(String)}. All of them are
+     * declared {@code String} and all arrive from a JSON request body, so a caller controls their bytes; a CR
+     * or LF concatenated straight in here would forge log records. The escaping also makes this rendering safe
+     * on an instance that failed validation, which is the usual reason something renders one - {@code @Size}
+     * runs after Jackson has already constructed the record.
+     *
+     * @return a rendering containing only the account identifier and the originating program name, and no
+     *     character that could terminate a log record
      */
     @Override
     public String toString() {
-        return "TransactionAddRequest[accountId=" + accountId + ", programName=" + programName + "]";
+        return "TransactionAddRequest[accountId=" + ApiMasking.forDiagnostics(accountId)
+                + ", programName=" + ApiMasking.forDiagnostics(programName) + "]";
     }
 
     /**

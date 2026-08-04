@@ -102,7 +102,7 @@ final class SchemaStructureTest {
      * through {@code cust_addr_line_3} and {@code cust_phone_num_1} and
      * {@code cust_phone_num_2}. A narrower {@code [a-z_]+} class cannot span those names and
      * dropped all five silently, which is what {@code theCensusIsNotVacuous} detected by
-     * reporting 81 columns where the migration declares 87.
+     * reporting 81 columns where the migration declares 88.
      */
     private static final String IDENTIFIER = "\"?[a-z_][a-z0-9_]*\"?";
 
@@ -585,10 +585,13 @@ final class SchemaStructureTest {
             for (final Table table : tables().values()) {
                 total += table.columns().size();
             }
-            // Eighty-seven, not eighty-eight: finding F13 removed the operational card_cvv_cd column
-            // from the card table. The count is asserted exactly so that a column appearing or
-            // disappearing anywhere in the baseline breaks this test rather than passing unnoticed.
-            assertThat(total).isEqualTo(87);
+            // Eighty-eight, restored from eighty-seven: card.card_cvv_cd is declared again, because
+            // app/cpy/CVACT02Y.cpy:L7 places CARD-CVV-CD PIC 9(03) inside the authoritative 150-byte
+            // record and dropping it lost three bytes of the field contract. Confidentiality is
+            // enforced in the mapping, which publishes no read path, rather than in the schema. The
+            // count is asserted exactly so that a column appearing or disappearing anywhere in the
+            // baseline breaks this test rather than passing unnoticed.
+            assertThat(total).isEqualTo(88);
         }
 
         @Test

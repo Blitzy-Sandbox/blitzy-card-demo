@@ -55,12 +55,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>
  * The four headings below are this file's discharge of <b>Rule 1 clause E</b>, which requires every
  * component to carry &quot;a short README or docstring&quot; covering what it does, how to run, build and
- * test it, its key configuration and defaults, and its common failure modes. Neither of the other two forms
- * is admissible here: a README and a {@code package-info.java} are both forbidden inside
- * {@code com.cardemo.batch.readers}, whose contents are fixed at the seven reader classes. Clause E is
- * therefore met through the <b>docstring branch</b> alone: no {@code package-info.java} exists under
- * {@code com.cardemo.batch} in this branch and none may be added, so there is no package-scope document one
- * level up to defer to.
+ * test it, its key configuration and defaults, and its common failure modes. The package-scope document
+ * {@code com.cardemo.batch.readers.package-info} states the contract the six readers share; the headings
+ * below cover what is specific to this one and do not repeat it.
  *
  * <h2>What it does</h2>
  * Streams every row of the {@code card} relation in ascending primary-key order and hands each one to the
@@ -79,17 +76,17 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@link CardRepository#findByCardNumberGreaterThanOrderByCardNumberAsc(String,
  * org.springframework.data.domain.Pageable)}.
  * <p>
- * <b>Finding, severity Low.</b> Other project documents quote &quot;3 / 1 / 3 / 14&quot; for
- * {@code OPEN} / {@code READ} / {@code CLOSE} / {@code DISPLAY} in this program. Those are lexical token
- * counts, not statement counts, and they were reproduced exactly by measurement at {@code 7756d89}: the token
+ * <b>The verb counts cited here are statement counts, not lexical token counts.</b> A lexical count of
+ * {@code OPEN} / {@code READ} / {@code CLOSE} / {@code DISPLAY} in this program yields 3 / 1 / 3 / 14,
+ * because the token
  * {@code OPEN} also occurs in the paragraph label {@code 0000-CARDFILE-OPEN} ({@code :L118}) and in
  * {@code PERFORM 0000-CARDFILE-OPEN} ({@code :L72}), giving 3; {@code CLOSE} likewise occurs in
  * {@code 9000-CARDFILE-CLOSE} ({@code :L136}) and its {@code PERFORM} ({@code :L83}), giving 3; and
  * {@code DISPLAY} occurs in the label {@code 9910-DISPLAY-IO-STATUS} ({@code :L161}) and in its three
  * {@code PERFORM} statements ({@code :L112}, {@code :L131}, {@code :L149}), which is 9 + 1 + 3 = 13.
- * <b>The fourteenth {@code DISPLAY} token is the commented-out statement at {@code :L96}</b>, so the quoted
- * figure of 14 is only reachable by counting comment lines. <i>Remediation:</i> cite the statement counts
- * above, which supersede the lexical figures. The load-bearing fact is identical either way:
+ * <b>The fourteenth {@code DISPLAY} token is the commented-out statement at {@code :L96}</b>, so the lexical
+ * figure of 14 is only reachable by counting comment lines. The statement counts are the ones cited above.
+ * The load-bearing fact is identical either way:
  * {@code WRITE}, {@code REWRITE} and {@code DELETE} are zero.
  *
  * <h3>Paragraph map, one Java member per COBOL paragraph, never consolidated</h3>
@@ -175,7 +172,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       value is carried byte-for-byte rather than reinterpreted through a date parser.</li>
  *   </ul>
  *
- * <h3>The one deliberate, labelled deviation: the legacy whole-record emission is not reproduced</h3>
+ * <h3>The one deliberate deviation: the legacy whole-record emission is not reproduced</h3>
  * {@code app/cbl/CBACT02C.cbl:L78} performs {@code DISPLAY CARD-RECORD}, which writes all 150 bytes of the
  * record to SYSOUT. Those bytes include the <b>16-character card number</b> at 1-based bytes 1-16 and the
  * <b>3-digit card verification value</b> at 1-based bytes 28-30 ({@code app/cpy/CVACT02Y.cpy:L5},
@@ -205,42 +202,52 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>
  * The masking rules in {@code src/main/resources/logback-spring.xml} govern whatever does reach a log
  * aggregator and are a backstop, not the primary defence: never emitting the value is the primary defence.
- * The deviation is owed an entry in the planned {@code DECISION_LOG.md}. <b>It changes what is emitted and is
- * labelled as such rather than presented as parity</b>, which is the distinction Rule 1 clause F requires.
+ * <b>The deviation changes what is emitted and is stated as such rather than presented as parity.</b>
  *
  * <h2>How to run, build and test</h2>
- * The owning {@code Job} and {@code Step} are <strong>planned and not authored at this commit</strong>.
- * The migration plan names {@code com.cardemo.config.BatchConfig} as their home and the planned
- * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} as their launcher. The home now exists and the
- * launcher does not: {@code com.cardemo.config} holds six classes and {@code com.cardemo.batch.jobs} holds
- * one,
- * {@code InterestCalculationJob}. What is already true is the property both will rely on -
+ * The read-only verification {@code Step} that would own this reader is <strong>planned and not authored at
+ * this commit</strong>, and that is now the whole of what is outstanding around it. An earlier revision of
+ * this paragraph named {@code com.cardemo.config.BatchConfig} as the home of every {@code Job} and
+ * {@code Step} and said {@code com.cardemo.batch.jobs} held one job, {@code InterestCalculationJob}; both
+ * statements are withdrawn. {@code com.cardemo.batch.jobs} now holds <strong>three of its six target
+ * jobs</strong> - {@code InterestCalculationJob}, {@code DailyTransactionPostingJob} and
+ * {@code StatementGenerationJob} - and <strong>each declares its own {@code Step} beans</strong>, while
+ * {@code BatchConfig} owns the dataset bindings and the record rendering rather than step topology. Still
+ * owed are this reader's verification step and the name-driven launcher above it, the planned
+ * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. What is already true is the property both will
+ * rely on -
  * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no
  * job runs at application startup and every job must be launched deliberately. This class carries
  * {@code @Component} and {@code @StepScope}, so the component scan registers a definition for it while no
- * instance is constructed until a step is executing; with no {@code Step} yet referencing it, none is
- * constructed at runtime today. The legacy standalone job is
+ * instance is constructed until a step is executing. The legacy standalone job is
  * {@code app/jcl/READCARD.jcl}, whose {@code STEP05} is {@code EXEC PGM=CBACT02C} at {@code :L22} with
  * {@code //CARDFILE DD} pointing at {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS} at {@code :L25-L26}.
  * <p>
- * Two build paths were verified in this environment; both are pinned and either may be used.
+ * Two build paths are available; both are pinned and either may be used. Each names a required
+ * <em>capability</em> rather than a dated reading of one host; dated measurements live in section 0.4.5.3 of
+ * {@code docs/technical-specifications.md}.
  * <ul>
- * <li><b>Host toolchain</b> &mdash; {@code ./mvnw -B -ntp clean compile}, then
- *     {@code ./mvnw -B -ntp test}. Verified present: OpenJDK 25.0.3 and Apache Maven 3.9.11.</li>
- * <li><b>Pinned container</b> &mdash; Docker Engine and {@code docker compose} are available, so the build
+ * <li><b>Host toolchain</b> &mdash; JDK 25 with {@code JAVA_HOME} set, then
+ *     {@code ./mvnw -B -ntp clean compile} and {@code ./mvnw -B -ntp test}. Maven 3.9.11 comes from the
+ *     pinned wrapper and {@code maven-enforcer-plugin} floors both.</li>
+ * <li><b>Pinned container</b> &mdash; given a reachable container daemon, the build
  *     can also run hermetically:
  *     {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -q -DskipTests compile}.
  *     </li>
  * </ul>
  * The compiler runs with {@code -Xlint:all -Werror} and {@code failOnWarning}, so the build fails on any
  * warning category {@code javac} 25 publishes. Coverage is gated by JaCoCo at an eighty percent line floor
- * with no package excluded. The tests that would cover this class belong in
- * {@code src/test/java/com/cardemo/unit/batch} for the status renderer, the guard logic and the
- * identifier-only projection, and in {@code src/test/java/com/cardemo/integration/batch} for the
- * Testcontainers PostgreSQL 16 scan. Neither is authored at this commit: {@code unit/batch} holds three
- * classes, none of which references this reader, and {@code integration/batch} holds one abstract
- * Testcontainers base with no concrete {@code *IT} beneath it. This class creates neither, because test
- * sources are outside the scope of the package it belongs to.
+ * with no package excluded. <strong>Both test tiers now cover this class.</strong> An earlier revision of this
+ * paragraph said neither was authored, that {@code unit/batch} held three classes none of which referenced this
+ * reader, and that {@code integration/batch} held one abstract Testcontainers base with no concrete subclass
+ * beneath it; every part of that is withdrawn. {@code src/test/java/com/cardemo/unit/batch} holds
+ * <strong>36</strong> sources and covers the status renderer, the guard logic and the identifier-only
+ * projection through {@code CardReaderTest}, {@code SequentialReaderContractTest},
+ * {@code SequentialReaderKeysetScanTest}, {@code ReaderSensitiveDataTest} and {@code BatchLogHygieneTest}.
+ * {@code src/test/java/com/cardemo/integration/batch} holds <strong>4</strong> sources - one abstract
+ * Testcontainers base and three concrete classes that execute under Failsafe against PostgreSQL 16 and
+ * LocalStack. This class still creates neither, because test sources are outside the scope of the package it
+ * belongs to.
  *
  * <h2>Key configs and defaults</h2>
  * <ul>
@@ -288,59 +295,48 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     {@code ERROR OPENING CARDFILE} followed by the rendered status, and abends. Check that the Flyway
  *     migrations have applied and that the datasource points at the intended database.</li>
  * <li><b>An account identifier appearing where a card number was expected is the intended behaviour</b>, not
- *     a defect: see the labelled deviation above. If a full card number is genuinely needed for an
+ *     a defect: see the deviation described above. If a full card number is genuinely needed for an
  *     investigation, read it from the authorised, audited {@code card} row rather than recovering it from a
  *     log line.</li>
  * </ul>
  *
- * <h2>Findings carried by this translation, by severity</h2>
+ * <h2>Deviations and preserved source behaviours</h2>
  * <ul>
- * <li><b>High</b> &mdash; reproducing {@code DISPLAY CARD-RECORD} ({@code :L78}) verbatim would emit a
- *     primary account number and a card verification value on every row. <i>Remediation, applied:</i> the
- *     identifier-only projection described above. This is the reason the deviation exists and is stated here
- *     so that a later reviewer does not &quot;restore parity&quot; by reinstating the full emission.</li>
- * <li><b>Medium</b> &mdash; the misspelling in {@code CARD-EXPIRAION-DATE} ({@code app/cpy/CVACT02Y.cpy:L9},
- *     missing the {@code T} of &quot;EXPIRATION&quot;) is retained deliberately, as
- *     {@link Card#getExpiraionDate()} over column {@code card_expiraion_date}. <i>Remediation:</i> do not
- *     rename it. It is a corpus-wide convention rather than an isolated slip &mdash; the account layout
- *     carries {@code ACCT-EXPIRAION-DATE} in the same shape &mdash; and correcting it in any one of the
- *     places it appears would break either the column contract, which fails schema validation at startup, or
- *     the traceability mapping.</li>
- * <li><b>Medium</b> &mdash; other project documents map {@code app/jcl/TRANIDX.jcl} to the card repository.
- *     Verified incorrect: {@code app/jcl/TRANIDX.jcl:L25-L27} defines
- *     {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX} with {@code KEYS(26 304)}, which is the <em>transaction</em>
- *     alternate index. <i>Remediation, applied:</i> the card alternate index is cited from
- *     {@code app/jcl/CARDFILE.jcl:L83-L88} and {@code app/catlg/LISTCAT.txt:L281-L285}, and
- *     {@code TRANIDX.jcl} is cited nowhere in this file. Owed an entry in the
- *     planned {@code DECISION_LOG.md}.</li>
- * <li><b>Medium, RESOLVED</b> &mdash; {@link #update(ExecutionContext)} used to checkpoint the card number of
- *     the last row read, which was the only place in this class where that value left its row. The defence for
- *     it was that the Spring Batch step execution context is transactional state persisted to
- *     {@code BATCH_STEP_EXECUTION_CONTEXT} in the same database and schema whose {@code card.card_num} column
- *     already holds the identical value as its primary key, under the same access control, and that it is
- *     none of the four surfaces Rule 1 clause D names - so no new trust boundary was crossed. That defence is
- *     true and insufficient: data minimisation asks a different question, and a full sixteen digit primary
- *     account number written into <em>generic framework metadata</em> leaves the one relation a cardholder-data
- *     boundary is drawn around and lands in a table governed by the framework's retention and access needs
- *     rather than by any cardholder-data policy. The anchor also verified nothing - it was written, restored
- *     and never compared. <i>Remediation, applied:</i> the checkpoint, the field and the restore are removed,
- *     and the row count alone is the cursor, which is provably sufficient because the ordering is fixed. The
- *     card number now never leaves its row anywhere in this class. See that method for the full rationale.</li>
- * <li><b>Low</b> &mdash; the lexical-versus-statement verb count divergence described above. No action beyond
- *     citing the statement counts.</li>
- * <li><b>Low</b> &mdash; the {@code '9x'} status family maps to
- *     {@code com.cardemo.exception.FileAccessException} in the shared status vocabulary, but this reader
- *     never raises it. That is measured, not an oversight: every failure branch in {@code CBACT02C} runs
- *     {@code DISPLAY} then {@code PERFORM 9910-DISPLAY-IO-STATUS} then
- *     {@code PERFORM 9999-ABEND-PROGRAM} ({@code :L110-L113}, {@code :L129-L132}, {@code :L147-L150}), so
- *     there is no path on which a non-normal status is anything but fatal. <i>Remediation:</i> none;
- *     introducing a non-fatal I/O outcome here would be a behaviour change.</li>
- * <li><b>Low</b> &mdash; the specific z/OS VSAM subcode a given JDBC failure would have produced on the
- *     mainframe is <b>Not available</b>. <i>Prerequisite:</i> a z/OS VSAM trace of the failing condition,
- *     which cannot be obtained here because mainframe-runtime reproduction is out of scope for this
- *     migration. <i>Remediation:</i> if a byte-exact subcode is ever required, add a SQLSTATE-to-subcode
- *     table at the {@link FileStatusMapper} layer, where the single definition of the status vocabulary
- *     already lives, rather than in this reader.</li>
+ * <li>Reproducing {@code DISPLAY CARD-RECORD} ({@code :L78}) verbatim would emit a primary account number
+ *     and a card verification value on every row, so the identifier-only projection described above is
+ *     emitted instead. That is the reason the deviation exists, and it is stated here so that a later
+ *     reviewer does not &quot;restore parity&quot; by reinstating the full emission.</li>
+ * <li>The misspelling in {@code CARD-EXPIRAION-DATE} ({@code app/cpy/CVACT02Y.cpy:L9}, missing the
+ *     {@code T} of &quot;EXPIRATION&quot;) is retained deliberately, as {@link Card#getExpiraionDate()}
+ *     over column {@code card_expiraion_date}. It is a corpus-wide convention rather than an isolated slip
+ *     &mdash; the account layout carries {@code ACCT-EXPIRAION-DATE} in the same shape &mdash; and
+ *     correcting it in any one place would break either the column contract, which fails schema validation
+ *     at startup, or the traceability mapping.</li>
+ * <li>The card alternate index is cited from {@code app/jcl/CARDFILE.jcl:L83-L88} and
+ *     {@code app/catlg/LISTCAT.txt:L281-L285}. {@code app/jcl/TRANIDX.jcl} is deliberately cited nowhere
+ *     in this file: {@code :L25-L27} of that member defines {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX} with
+ *     {@code KEYS(26 304)}, which is the <em>transaction</em> alternate index, not the card one.</li>
+ * <li>{@link #update(ExecutionContext)} checkpoints the row count and nothing else. It deliberately does
+ *     <b>not</b> checkpoint the card number of the last row read: a full sixteen-digit primary account
+ *     number written into generic framework metadata would leave the one relation the cardholder-data
+ *     boundary is drawn around and land in {@code BATCH_STEP_EXECUTION_CONTEXT}, governed by the
+ *     framework's retention and access needs rather than by any cardholder-data policy. The row count is
+ *     provably sufficient as a cursor because the ordering is fixed, so the card number never leaves its
+ *     row anywhere in this class. See that method for the full rationale.</li>
+ * <li>The lexical-versus-statement verb count divergence described above needs no action beyond citing the
+ *     statement counts.</li>
+ * <li>The {@code '9x'} status family maps to {@code com.cardemo.exception.FileAccessException} in the
+ *     shared status vocabulary, but this reader never raises it. That is measured, not an oversight: every
+ *     failure branch in {@code CBACT02C} runs {@code DISPLAY} then
+ *     {@code PERFORM 9910-DISPLAY-IO-STATUS} then {@code PERFORM 9999-ABEND-PROGRAM}
+ *     ({@code :L110-L113}, {@code :L129-L132}, {@code :L147-L150}), so there is no path on which a
+ *     non-normal status is anything but fatal. Introducing a non-fatal I/O outcome here would be a
+ *     behaviour change.</li>
+ * <li>The specific z/OS VSAM subcode a given JDBC failure would have produced on the mainframe cannot be
+ *     established from this repository, because mainframe-runtime reproduction is out of scope. Should a
+ *     byte-exact subcode ever be required, the SQLSTATE-to-subcode table belongs at the
+ *     {@link FileStatusMapper} layer, where the single definition of the status vocabulary already lives,
+ *     rather than in this reader.</li>
  * </ul>
  *
  * <h2>Thread safety</h2>
@@ -402,7 +398,7 @@ public class CardReader implements ItemStreamReader<Card> {
     // Legacy DISPLAY literals, reproduced byte for byte. Each is followed by its measured inner length so a
     // reviewer can confirm fidelity without opening the source. Rule 1 clause F: every assertion is cited.
     // All seven literals of the program are represented; there is no eighth, because DISPLAY CARD-RECORD at
-    // :L78 emits a record rather than a literal and is covered by the labelled deviation instead.
+    // :L78 emits a record rather than a literal and is covered by the deviation described above.
     // ----------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/CBACT02C.cbl:L71}, 38 characters. */
@@ -481,8 +477,7 @@ public class CardReader implements ItemStreamReader<Card> {
      * relational store reports a failure as a {@link DataAccessException} hierarchy and a driver SQLSTATE,
      * neither of which carries a VSAM subcode, so the subcode is set to {@code '0'} to mean &quot;no further
      * subcode available from this layer&quot;. The driver's own detail is never discarded: it travels on the
-     * cause of the thrown exception. The severity-Low finding on the missing subcode is recorded in the class
-     * documentation.
+     * cause of the thrown exception. The class documentation records why no VSAM subcode is available.
      * <p>
      * A first byte of {@code '9'} is also what selects the first branch of {@code 9910-DISPLAY-IO-STATUS}
      * ({@code app/cbl/CBACT02C.cbl:L163}), so a store failure renders through the same branch the legacy
@@ -508,9 +503,9 @@ public class CardReader implements ItemStreamReader<Card> {
      * {@code findAllByOrderByCardNumberAsc}, model the <em>online</em> card-list browse of
      * {@code app/cbl/COCRDLIC.cbl} and belong to {@code com.cardemo.service.card.CardListService}; calling one
      * of them from a batch reader would misattribute this class's source, and neither expresses a seek bound
-     * in any case. An earlier revision of this class instead narrowed the inherited {@code findAll(Pageable)}
-     * with an explicit sort; that form could express an order and a limit but not a keyset bound, which is why
-     * a finder is now declared for this scan rather than an inherited overload reused.
+     * in any case. Narrowing the inherited {@code findAll(Pageable)} with an explicit sort would express an
+     * order and a limit but not a keyset bound, which is why a dedicated finder is declared for this scan
+     * rather than an inherited overload reused.
      */
     private final CardRepository cardRepository;
 
@@ -657,8 +652,7 @@ public class CardReader implements ItemStreamReader<Card> {
      * {@code DISPLAY CARD-RECORD} over all 150 bytes, which would publish the card number at 1-based bytes
      * 1-16 and the verification value at 1-based bytes 28-30. It is replaced by an identifier-only projection
      * at {@code DEBUG} carrying the row sequence number and {@code CARD-ACCT-ID} only. This is the single
-     * deliberate, labelled deviation in this class; the full rationale, its High severity classification and
-     * the planned {@code DECISION_LOG.md} reference are in the class documentation.
+     * deliberate deviation in this class; the full rationale is in the class documentation.
      * <p>
      * <b>Why there is no {@code @Transactional} annotation.</b> A chunk-oriented step already runs this method
      * inside its own transaction, and Spring silently ignores the {@code readOnly} attribute of a method that
@@ -736,14 +730,14 @@ public class CardReader implements ItemStreamReader<Card> {
      * subsequent window is selected by {@code CARD-NUM > } the previous window's highest key rather than by an
      * offset. No entity, page, buffer or business value is serialised.
      * <p>
-     * <b>The card number is deliberately NOT checkpointed. Severity of doing so: Medium.</b> An earlier
-     * revision also wrote the primary key of the most recently emitted row as a verification anchor, and the
-     * argument for it was that the step execution context is transactional state persisted to
-     * {@code BATCH_STEP_EXECUTION_CONTEXT} in the same database and schema whose {@code card.card_num} column
-     * already held the identical value under the same access control - so no new trust boundary was crossed
-     * and Rule 1 clause D's four named surfaces (code, logs, tests, configuration) were untouched.
+     * <b>The card number is deliberately NOT checkpointed.</b> Writing the primary key of the most recently
+     * emitted row as a verification anchor would be defensible on a narrow reading: the step execution context
+     * is transactional state persisted to {@code BATCH_STEP_EXECUTION_CONTEXT} in the same database and schema
+     * whose {@code card.card_num} column already holds the identical value under the same access control, so
+     * no new trust boundary is crossed and Rule 1 clause D's four named surfaces (code, logs, tests,
+     * configuration) are untouched.
      * <p>
-     * That argument is true and it is not sufficient, which is why the write is gone. Data minimisation is not
+     * That argument is true and it is not sufficient, which is why no such write exists. Data minimisation is not
      * the same test as trust-boundary equivalence: a full sixteen digit primary account number written into
      * <em>generic framework metadata</em> escapes the one place a cardholder-data boundary is drawn - the
      * relation itself - and lands in a table whose retention, export and administrative access are governed by

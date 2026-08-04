@@ -164,8 +164,8 @@ import org.springframework.dao.DuplicateKeyException;
  *   <li><strong>Both inputs are read at CURRENT generation {@code (0)}.</strong> Neither DD says
  *       {@code (+1)} and neither says a range, so only the newest generation of each source takes part and
  *       <em>only the latest interest run merges</em>. An earlier {@code SYSTRAN} generation is never picked
- *       up. Severity <strong>Medium</strong>: nothing fails, but a second interest run inside one cycle
- *       silently supersedes the first. Remediation is operational - drive the combine job once per interest
+ *       up. Nothing fails, but a second interest run inside one cycle
+ *       silently supersedes the first. The operational answer is to drive the combine job once per interest
  *       run - and {@link CurrentGenerationOnlyMerge} pins the semantic so it cannot drift into a
  *       merge-everything reader.</li>
  * </ul>
@@ -181,7 +181,7 @@ import org.springframework.dao.DuplicateKeyException;
  *       in full. The mainframe DD name and dataset are {@code DALYTRAN}, so {@code dalytran.txt} looks right
  *       and does not exist. {@link FixtureLoader.Fixture#DAILY_TRANSACTION} owns the correct name; resolve it
  *       through the enum rather than typing a literal.</li>
- *   <li><strong>A duplicate {@code TRAN-ID} MUST fail the load.</strong> Severity <strong>Blocker</strong>.
+ *   <li><strong>A duplicate {@code TRAN-ID} MUST fail the load.</strong>
  *       {@code :L45-L46} opens the target {@code DISP=SHR} and the member contains no {@code IDCAMS DELETE}
  *       of the cluster, no {@code IEFBR14} pre-delete and no {@code REUSE} - the single {@code DELETE} token
  *       in all 52 lines is the {@code DISP=(NEW,CATLG,DELETE)} abnormal-termination disposition of
@@ -211,12 +211,12 @@ import org.springframework.dao.DuplicateKeyException;
  *       {@link FatalProcessingException#BATCH_RETURN_CODE} 12.</li>
  * </ul>
  *
- * <h2>Evidence, severity and what is not available</h2>
+ * <h2>Evidence, and what is not available</h2>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - the duplicate-load-must-fail contract, above.</li>
- *   <li><strong>Medium</strong> - the current-generation-only merge semantics, above.</li>
- *   <li><strong>Low</strong> - {@code app/proc/TRANREPT.prc:L1} is {@code //REPROC PROC}, exactly as
+ *   <li>the duplicate-load-must-fail contract, above.</li>
+ *   <li>the current-generation-only merge semantics, above.</li>
+ *   <li>{@code app/proc/TRANREPT.prc:L1} is {@code //REPROC PROC}, exactly as
  *       {@code app/proc/REPROC.prc:L1} is, so that member's internal procedure name differs from the member
  *       name {@code TRANREPT} that {@code EXEC PROC=TRANREPT} resolves. Logged only; nothing in this job
  *       depends on it and no remediation is proposed, since editing {@code app/**} is forbidden.</li>
@@ -232,7 +232,8 @@ import org.springframework.dao.DuplicateKeyException;
  *   <li>This file has <strong>no retained-no-op instance of its own</strong>. The parity mandate does force
  *       some deliberately empty constructs elsewhere in the migration - they live in
  *       {@code InterestCalculationProcessorTest}, {@code StatementProcessorTest} and the {@code RejectCode}
- *       enum, each carrying a {@code DECISION_LOG.md} entry and a {@code TRACEABILITY_MATRIX.md} row - but
+ *       enum, each owed an entry in the planned {@code DECISION_LOG.md} and a row in the planned
+ *       {@code TRACEABILITY_MATRIX.md} - but
  *       inventing one here to look consistent would be fabrication, so none exists.</li>
  * </ul>
  *
@@ -804,8 +805,8 @@ final class TransactionCombineProcessorTest {
 
             assertThat(merged)
                     .as("app/jcl/COMBTRAN.jcl:L26 names SYSTRAN(0) - the current generation - not (+1) and "
-                            + "not a range, so exactly one interest generation participates. Severity Medium: "
-                            + "nothing fails, but a second interest run inside one cycle silently supersedes "
+                            + "not a range, so exactly one interest generation participates. Nothing fails, "
+                            + "but a second interest run inside one cycle silently supersedes "
                             + "the first, so the combine job must be driven once per interest run")
                     .containsExactly(BACKUP_ID_LOW, INTEREST_ID_FIRST)
                     .doesNotContainAnyElementsOf(identifiersOf(earlierInterestRun));
@@ -1118,13 +1119,13 @@ final class TransactionCombineProcessorTest {
     }
 
     // ===================================================================================================
-    // STEP10 - app/jcl/COMBTRAN.jcl:L41-L48. THE BLOCKER.
+    // STEP10 - app/jcl/COMBTRAN.jcl:L41-L48. The duplicate-key contract.
     // ===================================================================================================
 
     /**
      * The load contract: a repeated {@code TRAN-ID} must fail, and must never be absorbed.
      *
-     * <p>Severity <strong>Blocker</strong>. The reasoning is entirely in the cards. {@code :L45-L46} opens
+     * <p>The reasoning is entirely in the cards. {@code :L45-L46} opens
      * {@code TRANSACT.VSAM.KSDS} at {@code DISP=SHR}; the member contains no {@code IDCAMS DELETE} of that
      * cluster, no {@code IEFBR14} pre-delete step and no {@code REUSE} option - the one {@code DELETE} token
      * in all 52 lines is {@code DISP=(NEW,CATLG,DELETE)} on {@code SORTOUT} at {@code :L33}, an
@@ -1135,7 +1136,7 @@ final class TransactionCombineProcessorTest {
      * on that key and the step fails.
      */
     @Nested
-    @DisplayName("STEP10 (BLOCKER): a duplicate TRAN-ID fails the REPRO load and is never absorbed")
+    @DisplayName("STEP10: a duplicate TRAN-ID fails the REPRO load and is never absorbed")
     final class DuplicateLoadMustFail {
 
         @Test
@@ -1222,7 +1223,7 @@ final class TransactionCombineProcessorTest {
         }
 
         @Test
-        @DisplayName("the remediation is stated, and it is not a retry, an upsert or a sequence")
+        @DisplayName("the failure is stated plainly, and it is not a retry, an upsert or a sequence")
         void theRemediationIsStatedAndIsNotAnUpsert() {
             final Transaction item = fullRecord(INTEREST_ID_FIRST, new BigDecimal("10.00"));
 
@@ -1369,7 +1370,7 @@ final class TransactionCombineProcessorTest {
                 return thrown;
             }
             throw new AssertionError("translateLoadFailure did not reject a duplicate key, which is the "
-                    + "Blocker contract of app/jcl/COMBTRAN.jcl:L48");
+                    + "duplicate-key contract of app/jcl/COMBTRAN.jcl:L48");
         }
     }
 
@@ -1404,7 +1405,8 @@ final class TransactionCombineProcessorTest {
                     .as("the whole of SORT FIELDS=(TRAN-ID,A) at app/jcl/COMBTRAN.jcl:L30 reduces to one "
                             + "in-process comparator. No temporary sort work file is created and no child "
                             + "process is started, so there is nothing to clean up and nothing to inject "
-                            + "into. This is a labelled mechanism substitution recorded in DECISION_LOG.md, "
+                            + "into. This is a labelled mechanism substitution owed an entry in the planned "
+                            + "DECISION_LOG.md, "
                             + "not a performance claim")
                     .isInstanceOf(Comparator.class);
         }

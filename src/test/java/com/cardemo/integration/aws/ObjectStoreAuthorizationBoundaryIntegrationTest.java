@@ -1,0 +1,345 @@
+/*
+ * ******************************************************************
+ * Program     : ObjectStoreAuthorizationBoundaryIntegrationTest.java
+ * Application : CardDemo
+ * Type        : Java 25 / JUnit 5 / Testcontainers integration test
+ * Function    : Establishes, by measurement rather than assumption,
+ *               what the emulated object store does and does not
+ *               enforce against a principal that is not the
+ *               application's - and thereby pins the reason the
+ *               operative control for that store is network
+ *               containment.
+ * Capability  : NEW - additive authorization evidence. The frozen
+ *               corpus has no object store: app/jcl/DEFGDGB.jcl
+ *               defines generation data groups whose access control
+ *               was RACF's and the catalogue's, neither of which is
+ *               reproduced here. There is therefore no COBOL paragraph
+ *               to cite; what is asserted is the Rule 1 Clause D
+ *               least-privilege property and, per Clause F, an honest
+ *               statement of what could not be verified.
+ * Source      : app/jcl/DEFGDGB.jcl @ 7756d89 (the seven GDG bases the
+ *               three buckets replace)
+ * Source      : app/jcl/CREASTMT.JCL:L72,L87 @ 7756d89 (STMTFILE and
+ *               HTMLFILE - the statement outputs whose bucket carries
+ *               customer-derived content)
+ * Source      : app/cpy/CVCUS01Y.cpy @ 7756d89 (the 500-byte customer
+ *               record, including the nine-digit government
+ *               identifier, that reaches statements)
+ * ******************************************************************
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ * ******************************************************************
+ */
+package com.cardemo.integration.aws;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
+
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.env.Environment;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
+import software.amazon.awssdk.services.s3.model.S3Exception;
+
+/**
+ * F-S13. Measures the authorization boundary around the emulated object store, including the statements
+ * bucket specifically.
+ *
+ * <h2>What this test is for, and why it is written as a measurement</h2>
+ *
+ * <p>The finding is that the emulator is host-published while holding personal data and while IAM
+ * enforcement is unset. Remediating it required answering a question that no amount of configuration reading
+ * settles: <em>does this emulator actually enforce anything?</em> Guessing either way would have been
+ * negligent - assuming enforcement would have justified leaving the port open, and assuming none would have
+ * justified skipping the setting.
+ *
+ * <p>So the question was measured, and this class is the measurement kept executable. It asserts three
+ * things:
+ *
+ * <ol>
+ *   <li>the application's own principal can read and write its own buckets, so nothing below is an artefact
+ *       of a broken harness;</li>
+ *   <li>requests that are structurally invalid - an unprovisioned bucket, a key that does not exist - are
+ *       refused, so the store is not simply answering yes to everything; and</li>
+ *   <li><strong>a foreign principal is NOT isolated by the emulator.</strong> This is the characterisation
+ *       that matters, and it is asserted deliberately rather than hidden.</li>
+ * </ol>
+ *
+ * <h2>The measured limitation, stated plainly</h2>
+ *
+ * <p>Against {@code localstack/localstack:4.14.0} - the community image this project pins - policy
+ * enforcement, cross-account isolation and bucket policies are <strong>not implemented</strong>. An arbitrary
+ * access key reads, writes and deletes another principal's objects; a cross-account key receives a successful
+ * bucket probe; and an explicit deny policy is accepted by the API and then ignored. Setting
+ * {@code ENFORCE_IAM} does not change this, and {@code docker-compose.yml} says so where it sets it.
+ *
+ * <p><strong>Therefore the operative control is network containment, not authorization.</strong>
+ * {@code docker-compose.yml} binds the emulator's edge port to the loopback interface through
+ * {@code CARDDEMO_BIND_ADDRESS}. That is why the bind address is documented there as the security boundary
+ * rather than as a convenience, and this class is the evidence for that reasoning.
+ *
+ * <h2>Why asserting insecure behaviour is the right thing here</h2>
+ *
+ * <p>A test that asserted isolation would fail, and a test that skipped the question would let a future
+ * reader assume isolation exists. This one records reality and <strong>fails if reality improves</strong>:
+ * should a licensed or later emulator begin enforcing, {@link ForeignPrincipalIsNotIsolated} breaks, and the
+ * correct response is to strengthen the assertion and re-evaluate whether the loopback bind is still the only
+ * control - not to delete the test. The failure message says exactly that.
+ *
+ * <p>Nothing here weakens the application's own guards. {@code com.cardemo.config.AwsConfig} refuses a
+ * non-allowlisted endpoint and refuses anything but a static credentials provider, and
+ * {@code com.cardemo.unit.config.AwsConfigSecurityGuardTest} covers both exhaustively. This class is about
+ * the store, not about the client.
+ */
+@DisplayName("F-S13: the object store's authorization boundary, measured rather than assumed")
+class ObjectStoreAuthorizationBoundaryIntegrationTest extends AbstractAwsIntegrationTest {
+
+    /**
+     * A principal that is not the application's.
+     *
+     * <p>Deliberately not a plausible key: it must be recognisable at a glance as test-only material, and it
+     * must not begin {@code AKIA} or {@code ASIA} - {@code AwsConfig} refuses those outright, and a value
+     * that could be mistaken for a live key has no place in a source file.
+     */
+    private static final String FOREIGN_ACCESS_KEY = "foreign-principal-not-a-real-key";
+
+    /** The foreign principal's secret. Not a secret in any real sense; see above. */
+    private static final String FOREIGN_SECRET_KEY = "foreign-principal-not-a-real-secret";
+
+    /** A bucket no {@code localstack-init/init-aws.sh} run provisions and no application property names. */
+    private static final String UNPROVISIONED_BUCKET = "carddemo-not-a-provisioned-bucket";
+
+    /** Object body standing in for a generated statement; short, and identifiable in a failure message. */
+    private static final String STATEMENT_BODY = "STATEMENT CONTENT STANDING IN FOR CUSTOMER-DERIVED OUTPUT";
+
+    /** The context's environment, used only to recover the emulator endpoint the harness registered. */
+    @Autowired
+    private Environment environment;
+
+    /**
+     * Builds a client authenticated as a principal that is not the application's, against the same endpoint.
+     *
+     * <p>The endpoint is read back from the property the harness registered rather than reconstructed, so
+     * this client addresses exactly the emulator the application addresses - which is the whole point: a
+     * different endpoint would prove nothing about isolation.
+     *
+     * @return an open client the caller must close, never {@code null}
+     */
+    private S3Client foreignPrincipalClient() {
+        final String endpoint = environment.getProperty("spring.cloud.aws.s3.endpoint");
+        assertThat(endpoint)
+                .as("the harness registers the emulator endpoint; without it this test would silently "
+                        + "address a different store and prove nothing")
+                .isNotBlank();
+        final String region = environment.getProperty("spring.cloud.aws.region.static", "us-east-1");
+
+        return S3Client.builder()
+                .endpointOverride(URI.create(endpoint))
+                .region(Region.of(region))
+                .forcePathStyle(true)
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create(FOREIGN_ACCESS_KEY, FOREIGN_SECRET_KEY)))
+                .build();
+    }
+
+    /**
+     * Writes one object to the statements bucket as the application's own principal.
+     *
+     * @param key the object key; must not be {@code null}
+     */
+    private void putStatementObject(final String key) {
+        s3Client().putObject(
+                request -> request.bucket(statementsBucket()).key(key),
+                RequestBody.fromString(STATEMENT_BODY, StandardCharsets.UTF_8));
+    }
+
+    /**
+     * The positive control. Everything else in this class is only meaningful if this passes.
+     */
+    @Nested
+    @DisplayName("the application's own principal reaches its own buckets")
+    class ApplicationPrincipalIsAdmitted {
+
+        @Test
+        @DisplayName("a statement object written by the application is readable by the application")
+        void applicationReadsItsOwnStatementObject() {
+            final String key = scopedResourceName("own-principal") + "/statement.txt";
+            putStatementObject(key);
+
+            assertThat(s3Client().getObjectAsBytes(
+                            request -> request.bucket(statementsBucket()).key(key))
+                    .asString(StandardCharsets.UTF_8))
+                    .as("the harness must be able to read what it just wrote, or every negative assertion "
+                            + "below would be indistinguishable from a broken fixture")
+                    .isEqualTo(STATEMENT_BODY);
+        }
+
+        @Test
+        @DisplayName("all three provisioned buckets exist and are addressable")
+        void allThreeBucketsExist() {
+            for (final String bucket :
+                    new String[] {batchInputBucket(), batchOutputBucket(), statementsBucket()}) {
+                assertThat(catchThrowable(() -> s3Client().headBucket(r -> r.bucket(bucket))))
+                        .as("bucket '%s' is named by an application property and provisioned by "
+                                + "localstack-init/init-aws.sh, so it must resolve", bucket)
+                        .isNull();
+            }
+        }
+    }
+
+    /**
+     * The store is not simply permissive about everything: structurally invalid requests are refused. This
+     * bounds the characterisation below - it shows the emulator does reject, so its failure to isolate is a
+     * specific gap rather than a blanket absence of checking.
+     */
+    @Nested
+    @DisplayName("structurally invalid requests are refused, so the store is not answering yes to everything")
+    class InvalidRequestsAreRefused {
+
+        @Test
+        @DisplayName("an unprovisioned bucket is refused, to the application's own principal included")
+        void unprovisionedBucketIsRefused() {
+            assertThat(catchThrowable(() ->
+                    s3Client().headBucket(request -> request.bucket(UNPROVISIONED_BUCKET))))
+                    .as("a bucket nothing provisions must not resolve; if it did, the three-bucket surface "
+                            + "would be unbounded and localstack-init/init-aws.sh would prove nothing")
+                    .isInstanceOf(S3Exception.class);
+        }
+
+        @Test
+        @DisplayName("a key that was never written is refused rather than answered with empty content")
+        void absentKeyIsRefused() {
+            assertThat(catchThrowable(() -> s3Client().getObjectAsBytes(request -> request
+                    .bucket(statementsBucket())
+                    .key(scopedResourceName("never-written") + "/absent.txt"))))
+                    .as("an absent key must fail rather than yield an empty body, because the batch load "
+                            + "paths distinguish 'no generation yet' from 'an empty generation'")
+                    .isInstanceOf(S3Exception.class);
+        }
+
+        @Test
+        @DisplayName("the foreign principal is refused on an unprovisioned bucket too")
+        void foreignPrincipalIsRefusedOnAnUnprovisionedBucket() {
+            try (S3Client foreign = foreignPrincipalClient()) {
+                final Throwable refusal = catchThrowable(() ->
+                        foreign.headBucket(request -> request.bucket(UNPROVISIONED_BUCKET)));
+                assertThat(refusal)
+                        .as("existence, not authorization, is what is being checked here - and it is checked "
+                                + "for every principal alike")
+                        .isInstanceOfAny(NoSuchBucketException.class, S3Exception.class);
+            }
+        }
+    }
+
+    /**
+     * The characterisation that justifies the network control.
+     *
+     * <p><strong>These assertions deliberately record insecure behaviour.</strong> Read the class
+     * documentation before changing them: if one of them starts failing, the emulator has begun enforcing,
+     * which is good news that must be acted on rather than suppressed.
+     */
+    @Nested
+    @DisplayName("a foreign principal is NOT isolated - which is why the edge port is loopback-bound")
+    class ForeignPrincipalIsNotIsolated {
+
+        /**
+         * The message every assertion in this group shares, so that a failure explains itself without the
+         * reader having to find this file's documentation first.
+         */
+        private static final String IMPROVEMENT_NOTICE =
+                "This assertion records a MEASURED LIMITATION of localstack/localstack:4.14.0 community "
+                        + "edition, which implements no policy enforcement, no cross-account isolation and "
+                        + "no bucket policies. If this test now FAILS, the emulator has started enforcing: "
+                        + "that is an improvement. Strengthen this assertion to require the refusal, and "
+                        + "re-evaluate whether the loopback bind in docker-compose.yml is still the only "
+                        + "control protecting these objects. Do NOT delete the test, and do NOT relax the "
+                        + "bind.";
+
+        @Test
+        @DisplayName("a foreign principal can READ a statement object it does not own")
+        void foreignPrincipalReadsAStatementObject() {
+            final String key = scopedResourceName("foreign-read") + "/statement.txt";
+            putStatementObject(key);
+
+            try (S3Client foreign = foreignPrincipalClient()) {
+                final String read = foreign.getObjectAsBytes(
+                                request -> request.bucket(statementsBucket()).key(key))
+                        .asString(StandardCharsets.UTF_8);
+
+                assertThat(read)
+                        .as("The statements bucket is the one the finding names specifically, because "
+                                + "app/jcl/CREASTMT.JCL:L72,L87 write customer-derived content into it. A "
+                                + "principal with an arbitrary key read it in full. %s", IMPROVEMENT_NOTICE)
+                        .isEqualTo(STATEMENT_BODY);
+            }
+        }
+
+        @Test
+        @DisplayName("a foreign principal can LIST the statements bucket it does not own")
+        void foreignPrincipalListsTheStatementsBucket() {
+            final String key = scopedResourceName("foreign-list") + "/statement.txt";
+            putStatementObject(key);
+
+            try (S3Client foreign = foreignPrincipalClient()) {
+                assertThat(foreign.listObjectsV2(request -> request.bucket(statementsBucket())).contents())
+                        .as("listing discloses the key space - and statement keys are structured by account "
+                                + "and month, so the listing itself is disclosure even before any object is "
+                                + "fetched. %s", IMPROVEMENT_NOTICE)
+                        .isNotEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("a foreign principal can DELETE a statement object it does not own")
+        void foreignPrincipalDeletesAStatementObject() {
+            final String key = scopedResourceName("foreign-delete") + "/statement.txt";
+            putStatementObject(key);
+
+            try (S3Client foreign = foreignPrincipalClient()) {
+                foreign.deleteObject(request -> request.bucket(statementsBucket()).key(key));
+            }
+
+            assertThat(catchThrowable(() -> s3Client().getObjectAsBytes(
+                    request -> request.bucket(statementsBucket()).key(key))))
+                    .as("the object is gone, so the exposure is not read-only: an unisolated principal can "
+                            + "destroy generated output as well as read it. %s", IMPROVEMENT_NOTICE)
+                    .isInstanceOf(S3Exception.class);
+        }
+
+        @Test
+        @DisplayName("the same absence of isolation holds for the batch input and output buckets")
+        void foreignPrincipalReachesTheOtherTwoBuckets() {
+            try (S3Client foreign = foreignPrincipalClient()) {
+                for (final String bucket : new String[] {batchInputBucket(), batchOutputBucket()}) {
+                    assertThat(catchThrowable(() -> foreign.listObjectsV2(r -> r.bucket(bucket))))
+                            .as("the output bucket holds the reject records of app/cbl/CBTRN02C.cbl and the "
+                                    + "transaction images, both of which carry card and account numbers, so "
+                                    + "the gap is not confined to statements. Bucket '%s'. %s",
+                                    bucket, IMPROVEMENT_NOTICE)
+                            .isNull();
+                }
+            }
+        }
+    }
+}

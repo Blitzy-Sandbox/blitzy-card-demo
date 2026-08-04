@@ -57,15 +57,18 @@ import com.cardemo.observability.MetricsConfig;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
+import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
+import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -74,7 +77,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.JobExecution;
@@ -159,6 +161,23 @@ class RejectWriterTest {
     private static final int RECORD_LENGTH = TRAN_DATA_LENGTH + TRAILER_LENGTH;
 
     private S3Operations s3Operations;
+
+    /**
+     * Every object the writer opened, in the order it opened them, mapped to the bytes it wrote there.
+     *
+     * <p>The writer no longer hands the store a finished buffer: it opens one stream per generation and appends
+     * to it, so what a test has to observe is the stream rather than an upload argument. Insertion ordered, so a
+     * test can still assert how many objects a run created and in what order - which is exactly what finding
+     * H-04 is about.
+     */
+    private Map<String, ByteArrayOutputStream> openedObjects;
+
+    /** The metadata stated on each opened object, keyed the same way. */
+    private Map<String, ObjectMetadata> openedMetadata;
+
+    /** Whether {@link #commitGeneration()} has already closed the writer, so it is closed exactly once. */
+    private boolean generationClosed;
+
     private MeterRegistry meterRegistry;
 
     /**
@@ -176,6 +195,11 @@ class RejectWriterTest {
     @BeforeEach
     void buildWriterAndCaptureLogs() {
         s3Operations = Mockito.mock(S3Operations.class);
+        openedObjects = new LinkedHashMap<>();
+        openedMetadata = new LinkedHashMap<>();
+        generationClosed = false;
+        Mockito.when(s3Operations.createResource(Mockito.anyString(), Mockito.anyString()))
+                .thenAnswer(invocation -> recordingResource(invocation.getArgument(1, String.class)));
         meterRegistry = new SimpleMeterRegistry();
         metricsConfig = new MetricsConfig(meterRegistry);
         stepExecution = stepExecution(JOB_INSTANCE_ID, JOB_EXECUTION_ID);
@@ -279,68 +303,83 @@ class RejectWriterTest {
     }
 
     /**
-     * Captures the single payload the writer uploaded and returns it as a string in the record charset.
+     * Builds a stand-in for one object-store resource that records everything written to it.
      *
-     * @return the uploaded payload
+     * <p>The stream deliberately does <em>not</em> discard bytes on {@code close()}: the writer completes its
+     * single generation there, and a test asserting the object's content has to be able to read it afterwards.
+     *
+     * @param key the object key the writer asked for
+     * @return the recording resource
+     */
+    private S3Resource recordingResource(final String key) {
+        ByteArrayOutputStream sink = openedObjects.computeIfAbsent(key, unused -> new ByteArrayOutputStream());
+        S3Resource resource = Mockito.mock(S3Resource.class);
+        Mockito.doAnswer(invocation -> {
+            openedMetadata.put(key, invocation.getArgument(0, ObjectMetadata.class));
+            return null;
+        }).when(resource).setObjectMetadata(Mockito.any(ObjectMetadata.class));
+        try {
+            Mockito.when(resource.getOutputStream()).thenReturn((OutputStream) sink);
+        } catch (java.io.IOException impossible) {
+            throw new IllegalStateException("stubbing cannot fail", impossible);
+        }
+        return resource;
+    }
+
+    /**
+     * Completes the run's single generation, exactly as a step does at its end.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl} writes records and then performs {@code 9300-DALYREJS-CLOSE} once; the
+     * writer mirrors that, so the object exists only after the close. Every payload and key helper below goes
+     * through this method so no assertion can accidentally inspect a generation that was never closed.
+     * Idempotent, so a test may also close explicitly.
+     */
+    private void commitGeneration() {
+        if (!generationClosed) {
+            generationClosed = true;
+            writer.close();
+        }
+    }
+
+    /**
+     * Completes the generation and returns its content as a string in the record charset.
+     *
+     * @return the written payload
      */
     private String uploadedPayload() {
-        ArgumentCaptor<InputStream> captor = ArgumentCaptor.forClass(InputStream.class);
-        Mockito.verify(s3Operations).upload(Mockito.eq(BUCKET), Mockito.anyString(), captor.capture(),
-                Mockito.any(ObjectMetadata.class));
-        return new String(drain(captor.getValue()), StandardCharsets.ISO_8859_1);
+        return new String(uploadedBytes(), StandardCharsets.ISO_8859_1);
     }
 
     /**
-     * Captures the single payload the writer uploaded and returns its raw bytes, so that byte length can be
-     * compared against character length independently of any decoding.
+     * Completes the generation and returns its raw bytes, so that byte length can be compared against
+     * character length independently of any decoding.
      *
-     * @return the uploaded bytes
+     * @return the written bytes
      */
     private byte[] uploadedBytes() {
-        ArgumentCaptor<InputStream> captor = ArgumentCaptor.forClass(InputStream.class);
-        Mockito.verify(s3Operations).upload(Mockito.eq(BUCKET), Mockito.anyString(), captor.capture(),
-                Mockito.any(ObjectMetadata.class));
-        return drain(captor.getValue());
+        commitGeneration();
+        assertThat(openedObjects).as("exactly one generation object per run").hasSize(1);
+        return openedObjects.values().iterator().next().toByteArray();
     }
 
-    /** @return the object key of the single upload the writer performed. */
+    /** @return the object key of the single generation the writer created. */
     private String uploadedKey() {
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        Mockito.verify(s3Operations).upload(Mockito.eq(BUCKET), captor.capture(), Mockito.any(InputStream.class),
-                Mockito.any(ObjectMetadata.class));
-        return captor.getValue();
+        commitGeneration();
+        assertThat(openedObjects)
+                .as("app/jcl/POSTTRAN.jcl:L38 names ONE dataset, so a run creates ONE object")
+                .hasSize(1);
+        return openedObjects.keySet().iterator().next();
     }
 
-    /** @return every object key the writer uploaded, in order. */
+    /** @return every object key the writer created, in order. */
     private List<String> uploadedKeys() {
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        Mockito.verify(s3Operations, Mockito.atLeastOnce()).upload(Mockito.eq(BUCKET), captor.capture(),
-                Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
-        return captor.getAllValues();
+        commitGeneration();
+        return List.copyOf(openedObjects.keySet());
     }
 
-    /** @return the metadata of the single upload the writer performed. */
+    /** @return the metadata of the single generation the writer created. */
     private ObjectMetadata uploadedMetadata() {
-        ArgumentCaptor<ObjectMetadata> captor = ArgumentCaptor.forClass(ObjectMetadata.class);
-        Mockito.verify(s3Operations).upload(Mockito.eq(BUCKET), Mockito.anyString(),
-                Mockito.any(InputStream.class), captor.capture());
-        return captor.getValue();
-    }
-
-    /**
-     * Reads a stream to exhaustion.
-     *
-     * @param source the stream the writer handed to the store
-     * @return every byte it carried
-     */
-    private static byte[] drain(final InputStream source) {
-        try (InputStream stream = source) {
-            ByteArrayOutputStream sink = new ByteArrayOutputStream();
-            stream.transferTo(sink);
-            return sink.toByteArray();
-        } catch (java.io.IOException failure) {
-            throw new IllegalStateException("cannot read the uploaded payload", failure);
-        }
+        return openedMetadata.get(uploadedKey());
     }
 
     /** @return every message this class's logger received. */
@@ -436,6 +475,8 @@ class RejectWriterTest {
                             REJECT_PREFIX, null);
 
             detached.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
+            // The key is published by the close, so the close is what has nothing to publish to.
+            detached.close();
 
             assertThat(loggedMessages())
                     .contains("No step context is available, so the DALYREJS generation key is not published");
@@ -635,8 +676,8 @@ class RejectWriterTest {
             assertThatExceptionOfType(FatalProcessingException.class)
                     .isThrownBy(() -> writer.writeReject(transaction, RejectCode.INVALID_CARD_NUMBER))
                     .withMessageContaining("does not fit its picture clause");
-            Mockito.verify(s3Operations, Mockito.never()).upload(Mockito.anyString(), Mockito.anyString(),
-                    Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
+            Mockito.verify(s3Operations, Mockito.never())
+                    .createResource(Mockito.anyString(), Mockito.anyString());
         }
 
         @Test
@@ -783,29 +824,34 @@ class RejectWriterTest {
     class GenerationKey {
 
         @Test
-        @DisplayName("the key carries the job instance, the job execution and a sequence number")
-        void theKeyCarriesBothIdentifiersAndASequence() {
+        @DisplayName("the key carries the job instance and the job execution, and no chunk sequence")
+        void theKeyCarriesBothIdentifiersAndNoSequence() {
             writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
 
             assertThat(uploadedKey())
-                    .as("app/jcl/DALYREJS.jcl's GDG base becomes a deterministic object prefix")
-                    .isEqualTo(String.format(Locale.ROOT, "dalyrejs/%019d/%019d-%019d.dat",
-                            JOB_INSTANCE_ID, JOB_EXECUTION_ID, 1));
+                    .as("app/jcl/DALYREJS.jcl's GDG base becomes a deterministic object prefix, and "
+                            + "app/jcl/POSTTRAN.jcl:L38 names ONE dataset per run, so there is no per-chunk "
+                            + "sequence to carry")
+                    .isEqualTo(String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat",
+                            JOB_INSTANCE_ID, JOB_EXECUTION_ID));
         }
 
         @Test
-        @DisplayName("a second emission takes the next sequence number rather than overwriting the first")
-        void aSecondEmissionTakesTheNextSequence() {
+        @DisplayName("HIGH H-04: two emissions land in ONE generation object, not two")
+        void twoEmissionsShareTheOneGenerationObject() {
             writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
             writer.writeReject(rejected("0000000000000002", "5.00"), RejectCode.OVERLIMIT_TRANSACTION);
 
             assertThat(uploadedKeys())
-                    .as("a GDG never overwrites a generation, so neither may the object store")
-                    .containsExactly(
-                            String.format(Locale.ROOT, "dalyrejs/%019d/%019d-%019d.dat",
-                                    JOB_INSTANCE_ID, JOB_EXECUTION_ID, 1),
-                            String.format(Locale.ROOT, "dalyrejs/%019d/%019d-%019d.dat",
-                                    JOB_INSTANCE_ID, JOB_EXECUTION_ID, 2));
+                    .as("app/jcl/POSTTRAN.jcl:L38 writes AWS.M2.CARDDEMO.DALYREJS(+1) - a single dataset - so a "
+                            + "later (0) reference resolves the whole run. One object per emission fragmented "
+                            + "that generation and made (0) resolve only the last fragment")
+                    .containsExactly(String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat",
+                            JOB_INSTANCE_ID, JOB_EXECUTION_ID));
+            assertThat(uploadedPayload())
+                    .as("both records are in that one object, in the order they were written")
+                    .hasSize(2 * RECORD_LENGTH)
+                    .startsWith("0000000000000001");
         }
 
         @Test
@@ -816,33 +862,42 @@ class RejectWriterTest {
 
             writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
             other.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
+            other.close();
 
             assertThat(uploadedKeys())
                     .containsExactly(
-                            String.format(Locale.ROOT, "dalyrejs/%019d/%019d-%019d.dat", 7L, 42L, 1),
-                            String.format(Locale.ROOT, "dalyrejs/%019d/%019d-%019d.dat", 8L, 43L, 1));
+                            String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", 7L, 42L),
+                            String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", 8L, 43L));
         }
 
         @Test
-        @DisplayName("the object metadata declares the byte count and an opaque content type")
-        void theMetadataDeclaresTheByteCount() {
+        @DisplayName("the object metadata declares an opaque content type and no content length")
+        void theMetadataDeclaresAnOpaqueContentType() {
             writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
 
             ObjectMetadata metadata = uploadedMetadata();
-            assertThat(metadata.getContentLength())
-                    .as("a fixed-length dataset is opaque bytes, and its length is part of the contract")
-                    .isEqualTo(Long.valueOf(RECORD_LENGTH));
             assertThat(metadata.getContentType()).isEqualTo("application/octet-stream");
+            assertThat(metadata.getContentLength())
+                    .as("the total is unknown until the last chunk has been appended, so no length is stated; "
+                            + "framing is proven per record instead, which is the stronger guarantee")
+                    .isNull();
         }
 
         @Test
-        @DisplayName("a successful emission publishes the key, the prefix and the cumulative count")
+        @DisplayName("a closed generation publishes the key, the prefix and the cumulative count")
         void aSuccessfulEmissionPublishesItsKey() {
             writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
 
             assertThat(stepExecution.getExecutionContext()
+                    .containsKey(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY))
+                    .as("the key names an object the store has not accepted until the close, so publishing it "
+                            + "before then would let a downstream step read a generation that is not there")
+                    .isFalse();
+            String key = uploadedKey();
+
+            assertThat(stepExecution.getExecutionContext()
                     .getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY))
-                    .isEqualTo(uploadedKey());
+                    .isEqualTo(key);
             assertThat(stepExecution.getExecutionContext()
                     .getString(RejectWriter.REJECT_GENERATION_PREFIX_CONTEXT_KEY))
                     .isEqualTo(String.format(Locale.ROOT, "dalyrejs/%019d/", JOB_INSTANCE_ID));
@@ -873,8 +928,7 @@ class RejectWriterTest {
 
         @BeforeEach
         void makeTheStoreFail() {
-            Mockito.when(s3Operations.upload(Mockito.anyString(), Mockito.anyString(),
-                            Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class)))
+            Mockito.when(s3Operations.createResource(Mockito.anyString(), Mockito.anyString()))
                     .thenThrow(new IllegalStateException("the bucket is unreachable"));
         }
 
@@ -998,14 +1052,18 @@ class RejectWriterTest {
     class ChunkWriting {
 
         @Test
-        @DisplayName("an empty chunk creates no generation and says why")
+        @DisplayName("an empty chunk appends nothing and says why")
         void anEmptyChunkCreatesNoGeneration() throws Exception {
             writer.write(chunk());
+            writer.close();
 
-            Mockito.verify(s3Operations, Mockito.never()).upload(Mockito.anyString(), Mockito.anyString(),
-                    Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
+            Mockito.verify(s3Operations, Mockito.never())
+                    .createResource(Mockito.anyString(), Mockito.anyString());
             assertThat(loggedMessages())
-                    .contains("No rejected transactions in this chunk; no DALYREJS generation is created");
+                    .contains("No rejected transactions in this chunk; nothing is appended to the DALYREJS "
+                            + "generation")
+                    .as("a run that rejects nothing must leave no object behind at all")
+                    .contains("No rejected transactions were written, so no DALYREJS generation was created");
         }
 
         @Test
@@ -1077,15 +1135,22 @@ class RejectWriterTest {
         }
 
         @Test
-        @DisplayName("a chunk emits one object rather than one object per record")
+        @DisplayName("HIGH H-04: two chunks open one object rather than one object per chunk")
         void aChunkEmitsOneObjectNotThree() throws Exception {
             writer.write(chunk(
                     new RejectWriter.RejectedTransaction(rejected(), RejectCode.INVALID_CARD_NUMBER),
                     new RejectWriter.RejectedTransaction(rejected("0000000000000002", "1.00"),
                             RejectCode.INVALID_CARD_NUMBER)));
+            writer.write(chunk(
+                    new RejectWriter.RejectedTransaction(rejected("0000000000000003", "2.00"),
+                            RejectCode.OVERLIMIT_TRANSACTION)));
+            writer.close();
 
-            Mockito.verify(s3Operations, Mockito.times(1)).upload(Mockito.eq(BUCKET), Mockito.anyString(),
-                    Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
+            Mockito.verify(s3Operations, Mockito.times(1))
+                    .createResource(Mockito.eq(BUCKET), Mockito.anyString());
+            assertThat(openedObjects.values().iterator().next().size())
+                    .as("all three records are in the one generation object")
+                    .isEqualTo(3 * RECORD_LENGTH);
         }
 
         @Test
@@ -1099,8 +1164,8 @@ class RejectWriterTest {
                             new RejectWriter.RejectedTransaction(rejected(), RejectCode.INVALID_CARD_NUMBER),
                             new RejectWriter.RejectedTransaction(broken, RejectCode.OVERLIMIT_TRANSACTION))));
 
-            Mockito.verify(s3Operations, Mockito.never()).upload(Mockito.anyString(), Mockito.anyString(),
-                    Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
+            Mockito.verify(s3Operations, Mockito.never())
+                    .createResource(Mockito.anyString(), Mockito.anyString());
             assertThat(rejectCount(100))
                     .as("the whole chunk is built before any byte is written, so nothing is half-counted")
                     .isZero();

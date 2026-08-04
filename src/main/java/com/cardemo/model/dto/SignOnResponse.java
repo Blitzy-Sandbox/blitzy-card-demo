@@ -282,11 +282,16 @@ public record SignOnResponse(
     /**
      * Returns a diagnostic rendering that deliberately omits the token.
      *
-     * @return a rendering of this response that contains no credential material and no personally identifiable
-     * information
+     * <p>Both fields are passed through {@link ApiMasking#forDiagnostics(String)}. They are server-produced
+     * but derived from the request: {@code userId} is the folded form of the identifier the caller supplied,
+     * so a control character in that identifier would reach this rendering and forge a log record.
+     *
+     * @return a rendering of this response that contains no credential material, no personally identifiable
+     *     information and no character that could terminate a log record
      */
     @Override
     public String toString() {
-        return "SignOnResponse[userId=" + this.userId + ", userType=" + this.userType + "]";
+        return "SignOnResponse[userId=" + ApiMasking.forDiagnostics(this.userId)
+                + ", userType=" + ApiMasking.forDiagnostics(this.userType) + "]";
     }
 }

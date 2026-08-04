@@ -126,7 +126,7 @@ class RepositoryHarnessLifecycleTest extends AbstractRepositoryIntegrationTest {
         // identical digest and the two must stay equal, so the absence of a tag is asserted as well as the
         // value - a reference that carried one again would be the drift this pin exists to prevent.
         assertThat(POSTGRES.getDockerImageName())
-                .isEqualTo("postgres@sha256:21f6013073bc6b92830a2129570e2f5ec42a6c734b5a985a41e83aa58f54c3c1")
+                .isEqualTo("postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20")
                 .doesNotContain("-alpine")
                 .contains("@sha256:");
 

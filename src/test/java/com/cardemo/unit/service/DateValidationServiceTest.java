@@ -170,13 +170,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code failOnWarning}, so a single raw type, unchecked cast or dangling documentation comment fails the
  * build; an unused import does not, because {@code javac} 25 publishes no {@code unused} lint key.
  *
- * <p>Verified on OpenJDK 25.0.3 with Apache Maven 3.9.11: {@code ./mvnw -B -ntp -o clean test} exits zero
- * with no warning of any kind. An earlier revision of this sentence also stated an absolute count of 6021
- * tests and that {@code ./mvnw -B -ntp -o verify} clears the JaCoCo line gate; both figures were true when
- * written and are stale now, so they are withdrawn rather than restated. The module-wide test count and the
- * measured coverage against the 0.80 floor are published once, dated, in section 0.4.5.1 of
- * {@code docs/technical-specifications.md}; this class contributes 105 of them and asserts nothing about
- * the total. The one goal that cannot run in an offline environment is the OWASP dependency check, which
+ * <p>The toolchain is OpenJDK 25.0.3 with Apache Maven 3.9.11, and {@code ./mvnw -B -ntp clean test} exits
+ * zero with no warning of any kind. No count of module-wide tests or coverage is stated here, because a
+ * figure of that kind goes stale the moment another class is added; this class asserts nothing about the
+ * total. The one goal that cannot run without network access is the OWASP dependency check, which
  * requires network access to refresh its advisory database; its state is a property of
  * {@code pom.xml} rather than of this class, and no assertion here depends on it.
  *
@@ -221,27 +218,26 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       it, not because the build demands it. Never relax the flag.</li>
  *   <li><strong>The inverted success token.</strong> A port that trusts the identifier
  *       {@code FC-INVALID-DATE} maps the all zeros token to an invalid outcome and produces exactly
- *       inverted behaviour that still compiles and still passes a naively written test. Severity
- *       Blocker. {@link TheMisnamedSuccessToken} is named to make that impossible to miss.</li>
+ *       inverted behaviour that still compiles and still passes a naively written test.
+ *       {@link TheMisnamedSuccessToken} is named to make that impossible to miss.</li>
  *   <li><strong>A bare {@code EXIT} read as an early return.</strong> Modelling each component exit
  *       as a Java {@code return} sets exactly one flag and never runs the later components, and it
- *       also skips the {@code :L327} set. Severity Blocker for the first effect and High for the
- *       second. {@link SequentialFallThrough} pins both.</li>
+ *       also skips the {@code :L327} set. {@link SequentialFallThrough} pins both effects.</li>
  *   <li><strong>The tri state flags collapsed into a boolean.</strong> A single boolean cannot
  *       represent the group of {@code '0'}, {@code 'B'}, {@code '0'} that satisfies neither group
- *       level condition. Severity High. {@link TriStateFlagConjunction} pins it.</li>
+ *       level condition. {@link TriStateFlagConjunction} pins it.</li>
  *   <li><strong>The strict inequality relaxed.</strong> Changing {@code >} to {@code >=} at
- *       {@code app/cpy/CSUTLDPY.cpy:L350} silently accepts a date of birth of today. Severity High.
+ *       {@code app/cpy/CSUTLDPY.cpy:L350} silently accepts a date of birth of today.
  *       {@link DateOfBirthOnTheInjectedClock} pins it from both sides of the boundary.</li>
  *   <li><strong>A library leap year predicate substituted.</strong> The source's two branch
  *       remainder at {@code app/cpy/CSUTLDPY.cpy:L243-L272} is the traceable artefact, and a
- *       February bound of one through twenty nine would bypass it altogether. Severity High.
+ *       February bound of one through twenty nine would bypass it altogether.
  *       {@link BoundaryRulesAsBehaviour} pins the four way leap outcome and the unreferenced
  *       twenty eight day condition name.</li>
  *   <li><strong>A structural assertion fails after a rename.</strong> The four tests that read the
  *       production source name the identifiers they look for in their failure descriptions. They are
- *       parity gates, not style checks: if the citation or the predicate order genuinely changed,
- *       the traceability matrix changed with it and must be updated in the same commit.</li>
+ *       parity gates, not style checks: if the citation or the predicate order genuinely changed, the
+ *       citation in this class has to be corrected in the same commit.</li>
  *   </ul>
  */
 @DisplayName("DateValidationService: sixteen labels, one injected clock, and outcomes returned as values")
@@ -453,10 +449,10 @@ class DateValidationServiceTest {
         void theCorpusDeclaresSixteenLabels() {
             // The census this class asserts against. Two labels come from the utility program and
             // fourteen from the procedure division copybook; the working storage copybook is a pure
-            // work area and declares none. Fewer than sixteen mapped methods is a Blocker, because
-            // the traceability matrix asserts paragraph level coverage.
+            // work area and declares none. Fewer than sixteen mapped methods means a paragraph lost its
+            // Java counterpart, which is what paragraph-level correspondence forbids.
             //
-            // Three Severity Low defects sit in the comment text the census walks past and are
+            // Three defects sit in the comment text the census walks past and are
             // deliberately not corrected, because app/ is frozen: the header at
             // app/cpy/CSUTLDPY.cpy:L5 names the companion work area 'CSUTLDTR' where it means
             // CSUTLDWY, and :L14-L15 list EDIT-DATE-OF-BIRTH twice, as both item d) and item e).
@@ -528,11 +524,10 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("the seven bare-EXIT paragraphs are mapped rather than deleted, and are marked no-ops")
         void theBareExitParagraphsAreMappedNotDeleted() {
-            // Rule 1 Clause B forbids dead code; the parity mandate requires these seven reachable
-            // no-ops. The conflict resolves in favour of parity because the prohibition is on
-            // artefacts WITHOUT an owner or a tracking reference, and each of these carries a Javadoc
-            // citation plus an explicit intentional-no-op marker. Deleting a call site would break
-            // the paragraph map. Severity of getting this wrong: Blocker, via the label count.
+            // These seven paragraphs are reachable no-ops in the source, so they are mapped rather than
+            // deleted. Each carries a Javadoc citation plus an explicit intentional-no-op marker, which is
+            // what keeps it from reading as residue. Deleting a call site would break the paragraph map,
+            // which the label count below catches.
             final List<String> unmarked = new ArrayList<>();
             for (final String exitMethod : List.of("a000MainExit", "editYearCcyyExit", "editMonthExit",
                     "editDayExit", "editDayMonthYearExit", "editDateCcyymmddExit", "editDateOfBirthExit")) {
@@ -550,7 +545,7 @@ class DateValidationServiceTest {
             // EDIT-DATE-LE-EXIT spans app/cpy/CSUTLDPY.cpy:L323-L328: the bare EXIT at :L324-L325, a
             // comment at :L326, then SET WS-EDIT-DATE-IS-VALID TO TRUE at :L327. Because the EXIT is
             // documentary, :L327 executes. This is the one exit paragraph with a body, and reading it
-            // as empty is the High severity mistake this test exists to prevent.
+            // as empty is the mistake this test exists to prevent.
             final String body = bodyOf("editDateLeExit");
 
             assertThat(body).as("EDIT-DATE-LE-EXIT must carry the :L327 set").contains(":L327");
@@ -659,7 +654,7 @@ class DateValidationServiceTest {
             // eight byte group FEEDBACK-TOKEN-VALUE at :L61. All zeros is severity zero and message
             // number zero, and :L130 moves 'Date is valid' for exactly that arm of the EVALUATE.
             //
-            // Severity Blocker. A port that trusts the identifier maps this token to an invalid
+            // A port that trusts the identifier maps this token to an invalid
             // outcome and produces exactly inverted behaviour that still compiles, still runs, and
             // still passes a naively written test - because the naive test asserts the name.
             final DateValidationResult result =
@@ -745,7 +740,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("all three component edits run even though the first one already failed")
         void allThreeComponentEditsRunEvenWhenTheFirstFails() {
-            // Severity Blocker. Every -EXIT paragraph body is a bare COBOL EXIT, a documentary
+            // Every -EXIT paragraph body is a bare COBOL EXIT, a documentary
             // no-op, so control walks straight through app/cpy/CSUTLDPY.cpy:L18 to :L25 to :L88 to
             // :L91 to :L145 to :L150 to :L205 to :L209. GO TO EDIT-YEAR-CCYY-EXIT at :L42 therefore
             // leaves EDIT-MONTH and EDIT-DAY still to run. A port that modelled each component exit
@@ -949,7 +944,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("the two group-level conditions are NOT complementary: '0','B','0' satisfies neither")
         void theTwoGroupLevelConditionsAreNotComplementary() {
-            // Severity High. WS-EDIT-DATE-IS-VALID is VALUE LOW-VALUES at :L44 and
+            // WS-EDIT-DATE-IS-VALID is VALUE LOW-VALUES at :L44 and
             // WS-EDIT-DATE-IS-INVALID is VALUE '000' at :L45. A group holding '0', 'B', '0' equals
             // neither of those two byte patterns, so both conditions are false at the same time. A
             // port that stored one boolean and negated it for the other would report this state as
@@ -1002,7 +997,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("year and month initialise PESSIMISTICALLY while day initialises OPTIMISTICALLY")
         void theInitialisationAsymmetryIsPreservedNotNormalised() {
-            // Severity High. app/cpy/CSUTLDPY.cpy:L27 sets FLG-YEAR-NOT-OK and :L92 sets
+            // app/cpy/CSUTLDPY.cpy:L27 sets FLG-YEAR-NOT-OK and :L92 sets
             // FLG-MONTH-NOT-OK before any test runs, but :L152 sets FLG-DAY-ISVALID - the exact
             // opposite. Every path then overwrites the initial state, so the asymmetry is NOT
             // observable through the public surface; that is why it must be pinned structurally, or a
@@ -1021,7 +1016,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("the month checks range then numeric, while the day checks numeric then range")
         void theOrderOfTheTwoChecksIsReversedBetweenMonthAndDay() {
-            // Severity High. EDIT-MONTH tests the range at app/cpy/CSUTLDPY.cpy:L111 and only then
+            // EDIT-MONTH tests the range at app/cpy/CSUTLDPY.cpy:L111 and only then
             // TEST-NUMVAL at :L126; EDIT-DAY tests TEST-NUMVAL at :L170 and only then the range at
             // :L187. Both branches of each pair emit that component's single message literal, so the
             // order is not distinguishable from the flags or the message - the structural assertion is
@@ -1042,7 +1037,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("EDIT-DATE-CCYYMMDD is one statement writing '000' to all three bytes, not a stub")
         void theChainEntryWritesTheWhollyInvalidStateInOneStatement() {
-            // Severity Low, but worth pinning: app/cpy/CSUTLDPY.cpy:L18-L20 contains a single SET of
+            // Worth pinning: app/cpy/CSUTLDPY.cpy:L18-L20 contains a single SET of
             // WS-EDIT-DATE-IS-INVALID, which writes '0' to all three bytes of the group at once. It
             // reads like an unfinished paragraph and is not one.
             final String body = bodyOf("editDateCcyymmdd");
@@ -1057,12 +1052,12 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("EDIT-DAY sets its flag valid twice, and the redundant second set is preserved")
         void theRedundantDayFlagReSetIsPreserved() {
-            // Severity Low, and the fourth instance in this file of the no-dead-code versus parity
+            // the fourth instance in this file of the no-dead-code versus parity
             // conflict. app/cpy/CSUTLDPY.cpy:L152 already sets FLG-DAY-ISVALID optimistically, and no
             // path that reaches :L203 has changed it, so the second SET is unreachable as a state
             // change. It is nonetheless a real statement on a real path and is preserved with an
-            // explicit marker rather than deleted, because removing it would break the statement level
-            // correspondence the traceability matrix cites. This assertion is its tracking reference.
+            // explicit marker rather than deleted, because removing it would break the statement-level
+            // correspondence with the source paragraph. This assertion is what keeps it visible.
             final String body = bodyOf("editDay");
             final long validAssignments = body.lines()
                     .filter(line -> line.contains("EditFlag.ISVALID"))
@@ -1080,12 +1075,12 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("WS-VALID-FEB-DAY is bounded at 28, not 29, and is declared without ever being used")
         void theFebruaryDayConditionNameIsBoundedAtTwentyEightAndUnreferenced() {
-            // app/cpy/CSUTLDWY.cpy:L33-L34 declares 88 WS-VALID-FEB-DAY VALUES 1 THROUGH 28. Severity
-            // High if that bound is written as 29: a February range of one through twenty nine would
+            // app/cpy/CSUTLDWY.cpy:L33-L34 declares 88 WS-VALID-FEB-DAY VALUES 1 THROUGH 28. Writing that
+            // bound as 29 would be wrong: a February range of one through twenty nine would
             // accept the twenty ninth without ever consulting the leap year test at
-            // app/cpy/CSUTLDPY.cpy:L243-L272. Severity Low that the condition name is never
+            // app/cpy/CSUTLDPY.cpy:L243-L272. The condition name is never
             // referenced anywhere in the corpus - it is preserved as a documented dead artefact under
-            // the parity mandate, with this assertion as its tracking reference.
+            // the parity mandate, and this assertion is what pins it.
             final long occurrences = SERVICE_SOURCE.lines()
                     .filter(line -> line.contains("VALID_FEBRUARY_DAY_MAXIMUM"))
                     .count();
@@ -1243,7 +1238,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("the leap test is the source's two-branch remainder, not a library predicate")
         void theLeapTestIsTheSourcesTwoBranchRemainder() {
-            // Severity High. Substituting a library leap year predicate is a mechanism substitution
+            // Substituting a library leap year predicate is a mechanism substitution
             // that must be logged, and it erases the traceable artefact the matrix cites. The two
             // divisors and the remainder are asserted structurally; the four-way outcome above is the
             // behavioural half of the same claim.
@@ -1300,7 +1295,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("a date of birth EQUAL to the clock's own date is REJECTED, because :L350 is strict")
         void aDateOfBirthEqualToTodayIsRejected() {
-            // Severity High. app/cpy/CSUTLDPY.cpy:L350 reads
+            // app/cpy/CSUTLDPY.cpy:L350 reads
             // IF WS-CURRENT-DATE-BINARY > WS-EDIT-DATE-BINARY, and only that strict comparison reaches
             // the CONTINUE at :L354. Equality therefore falls to the ELSE at :L355 and is refused.
             // Relaxing the comparison to a non strict one silently accepts today, which is a parity
@@ -1428,7 +1423,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("the check is a pure add-on: a composite failure short-circuits before it runs")
         void theCheckIsAPureAddOnAfterTheCompositeEdit() {
-            // Severity Medium. EDIT-DATE-OF-BIRTH performs no flag initialisation whatsoever - it
+            // EDIT-DATE-OF-BIRTH performs no flag initialisation whatsoever - it
             // presupposes the main chain already ran, which is why the caller at
             // app/cbl/COACTUPC.cbl gates it behind WS-EDIT-DT-OF-BIRTH-ISVALID. A composite failure
             // must therefore keep the composite message and never reach the future check.
@@ -1450,7 +1445,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("EDIT-DATE-OF-BIRTH touches no flag before its own comparison has been made")
         void theParagraphInitialisesNoFlagAtAll() {
-            // Severity Medium, structural because it is unobservable: every reachable call has already
+            // Structural, because it is unobservable: every reachable call has already
             // had its flags set to ISVALID by app/cpy/CSUTLDPY.cpy:L327. The absence of an
             // initialisation is nonetheless a real property of the paragraph, and adding one - by
             // analogy with :L27, :L92 or :L152 - would change what a future caller observes.
@@ -1526,7 +1521,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("a nine-character value is truncated to eight, and an eleven-character one is accepted")
         void surplusCharactersAreAbsorbedRatherThanRejected() {
-            // Severity Medium, documented rather than corrected. The copybook path moves its input into
+            // Documented rather than corrected. The copybook path moves its input into
             // PIC X(08), so a ninth character is simply lost; the utility path scans component digit
             // runs rather than fixed positions, so a value one character short or one character long
             // still parses. Both are legacy behaviour and both are preserved.
@@ -1541,7 +1536,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("the eight-character copybook mask and the ten-character program mask are NOT interchangeable")
         void theTwoMasksAreNotInterchangeable() {
-            // Severity High. app/cpy/CSUTLDPY.cpy:L291 moves 'YYYYMMDD' - eight characters, no
+            // app/cpy/CSUTLDPY.cpy:L291 moves 'YYYYMMDD' - eight characters, no
             // separators - before the CALL at :L293, whereas the four program call sites pass
             // 'YYYY-MM-DD' PIC X(10) from app/cbl/CORPT00C.cbl:L72 and app/cbl/COTRN02C.cbl:L60.
             // Conflating the two changes what CEEDAYS is asked to parse, and each mask rejects the
@@ -1575,7 +1570,7 @@ class DateValidationServiceTest {
         @Test
         @DisplayName("the rendered block renders the mask cleanly while the date portion is corrupted")
         void theRenderedBlockCorruptsTheDateButNotTheMask() {
-            // Severity Medium, a preserved legacy defect. app/cbl/CSUTLDTC.cbl:L122 moves the whole
+            // A preserved legacy defect: app/cbl/CSUTLDTC.cbl:L122 moves the whole
             // WS-DATE-TO-TEST group - a two byte binary length prefix followed by the text - into
             // WS-DATE PIC X(10), so the two prefix bytes displace the last two characters of the date.
             // WS-DATE-FMT is never moved over a second time, so the mask survives intact. This

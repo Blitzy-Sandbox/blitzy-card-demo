@@ -125,11 +125,23 @@
 #
 #   2. HOST-VIEW PORTS - `${VAR:-default}` on the left of a port mapping only.
 #      SERVER_PORT 8080, POSTGRES_PORT 5432, LOCALSTACK_PORT 4566,
-#      JAEGER_UI_PORT 16686, JAEGER_OTLP_GRPC_PORT 4317,
-#      JAEGER_OTLP_HTTP_PORT 4318, PROMETHEUS_PORT 9090, GRAFANA_PORT 3000.
+#      JAEGER_UI_PORT 16686, JAEGER_OTLP_HTTP_PORT 4318,
+#      PROMETHEUS_PORT 9090, GRAFANA_PORT 3000.
 #      These name where each service answers ON THE HOST, which is also what
 #      src/main/resources/application-local.yml assumes when the application
-#      is run on the host instead of in a container.
+#      is run on the host instead of in a container. There is no
+#      JAEGER_OTLP_GRPC_PORT: the gRPC receiver is not published, because
+#      nothing in this project speaks OTLP over gRPC.
+#
+#   2a. HOST BIND ADDRESS - `${CARDDEMO_BIND_ADDRESS:-127.0.0.1}`, the FIRST
+#      field of every port mapping in this file. Every service here either
+#      authenticates nothing (the emulator, Prometheus, the Jaeger UI) or is
+#      reachable with a credential published in this repository (the seeded
+#      demonstration principals of V3__seed_data.sql, the local database role),
+#      so loopback is the control that makes those acceptable. It is one
+#      variable rather than eight so that widening the surface is a single
+#      deliberate act with a single grep, and it defaults closed so that
+#      forgetting it cannot open anything.
 #
 #   3. IN-NETWORK COORDINATES - fixed literals in the `app` environment:
 #      POSTGRES_HOST=postgres, POSTGRES_PORT=5432, SERVER_PORT=8080,
@@ -278,8 +290,8 @@
 # optional CLONE_INDEX suffix so that two checkouts can run side by side:
 #
 #     CLONE_INDEX=1 SERVER_PORT=8081 POSTGRES_PORT=5433 LOCALSTACK_PORT=4567 \
-#     JAEGER_UI_PORT=16687 JAEGER_OTLP_GRPC_PORT=4319 \
-#     JAEGER_OTLP_HTTP_PORT=4320 PROMETHEUS_PORT=9091 GRAFANA_PORT=3001 \
+#     JAEGER_UI_PORT=16687 JAEGER_OTLP_HTTP_PORT=4320 \
+#     PROMETHEUS_PORT=9091 GRAFANA_PORT=3001 \
 #     docker compose up --build --wait
 #
 # The named volumes and the network are project-scoped, so they are isolated
@@ -318,9 +330,25 @@ x-carddemo-logging: &carddemo-logging
 # from DEFINE TDQUEUE(JOBS) in app/csd/CARDDEMO.CSD and is recorded as
 # carddemo.aws.sqs.report-queue-logical-name. The hook strips and re-appends
 # the suffix idempotently, so either spelling in `.env` converges.
+#
+# THE REGION IS ONE EXPRESSION, USED TWICE. Both spellings must always resolve
+# to the same value, and two independent `${...:-us-east-1}` defaults could not
+# guarantee that: exporting only AWS_REGION=eu-west-1 left AWS_DEFAULT_REGION
+# defaulted to us-east-1, so the application and the provisioning hook
+# addressed different regions and the hook created its buckets where the
+# application would never look. The anchor below is resolved once and aliased,
+# so drift is structurally impossible rather than merely unlikely.
+#
+# The precedence inside it is not arbitrary. AWS_REGION wins and falls back to
+# AWS_DEFAULT_REGION, which is the AWS CLI's own order, the order .env.example
+# documents for the same pair, and the order src/main/resources/application.yml
+# already binds as ${AWS_REGION:${AWS_DEFAULT_REGION}}. us-east-1 is the final
+# fallback so a bare `docker compose up` works with no `.env` at all.
+x-carddemo-region: &carddemo-region ${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}
+
 x-carddemo-aws-context: &carddemo-aws-context
-  AWS_REGION: ${AWS_REGION:-us-east-1}
-  AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+  AWS_REGION: *carddemo-region
+  AWS_DEFAULT_REGION: *carddemo-region
   CARDDEMO_S3_BATCH_INPUT_BUCKET: ${CARDDEMO_S3_BATCH_INPUT_BUCKET:-carddemo-batch-input}
   CARDDEMO_S3_BATCH_OUTPUT_BUCKET: ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET:-carddemo-batch-output}
   CARDDEMO_S3_STATEMENTS_BUCKET: ${CARDDEMO_S3_STATEMENTS_BUCKET:-carddemo-statements}
@@ -387,10 +415,38 @@ services:
       # Traces leave over OTLP/HTTP. management.otlp.tracing.endpoint binds
       # this name and expects the full /v1/traces path.
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+      # Metrics scrape credential. /actuator/prometheus is the one management
+      # endpoint that is NOT anonymous: SecurityConfig#metricsScrapeFilterChain
+      # governs it on its own filter chain and requires HTTP Basic credentials
+      # carrying the SCRAPE authority. The user name is a CROSS-FILE CONTRACT
+      # with observability/prometheus.yml, which cannot interpolate a variable
+      # because Prometheus performs no environment substitution on its
+      # configuration file - change one and you must change the other.
+      METRICS_SCRAPE_USERNAME: ${METRICS_SCRAPE_USERNAME:-carddemo-metrics-scraper}
+      # No default and no committed value. The chain fails CLOSED, so an unset
+      # credential means every scrape is answered 401 and the Prometheus target
+      # reports down - visible within one scrape interval, which is the correct
+      # failure direction for a metrics credential.
+      METRICS_SCRAPE_PASSWORD: "${METRICS_SCRAPE_PASSWORD:?set METRICS_SCRAPE_PASSWORD in .env - copy .env.example and generate a value, e.g. openssl rand -base64 32}"
     ports:
       # The application and its actuator share one port: no profile sets a
-      # separate management port, and the Dockerfile exposes 8080 alone.
-      - "${SERVER_PORT:-8080}:8080"
+      # separate management port, and the Dockerfile exposes 8080 alone, so this
+      # single mapping publishes /actuator/health, /actuator/info and
+      # /actuator/prometheus alongside the API.
+      #
+      # LOOPBACK-BOUND. Publishing on all interfaces offered the actuator
+      # surface - and, before remediation, an anonymously readable
+      # /actuator/prometheus rendering business series - to every host that
+      # could route to this machine. CARDDEMO_BIND_ADDRESS defaults to 127.0.0.1
+      # and is the single lever for every published port in this file.
+      #
+      # Nothing internal depends on the published address: observability/
+      # prometheus.yml scrapes the literal target app:8080 over the Compose
+      # network, the Grafana datasource names prometheus:9090, and the
+      # healthcheck runs inside the container. A deployment that genuinely needs
+      # a routable bind sets CARDDEMO_BIND_ADDRESS, or supplies a
+      # docker-compose.override.yml, and the safe default stays committed.
+      - "${CARDDEMO_BIND_ADDRESS:-127.0.0.1}:${SERVER_PORT:-8080}:8080"
     depends_on:
       # OPENFIL.jcl's `CEMT SET FIL(...) OPE` made the datasets available
       # before the region served traffic. These two conditions are that step:
@@ -401,11 +457,26 @@ services:
         condition: service_healthy
       localstack:
         condition: service_healthy
-      # Ordering only, and deliberately NOT service_healthy: tracing must
-      # never gate the data path. Waiting for the container to exist merely
-      # spares the first spans a connection-refused round trip.
-      jaeger:
-        condition: service_started
+      # JAEGER IS DELIBERATELY ABSENT FROM THIS LIST. It was here as
+      # `condition: service_started` for ordering, on the reasoning that waiting
+      # for the container to exist spares the first spans a connection-refused
+      # round trip. That reasoning is wrong in a way worth recording, because it
+      # makes tracing gate the data path it was added to observe: a Jaeger image
+      # that cannot be pulled, a container that exits, or a name that does not
+      # resolve now holds up the application, so a telemetry sink becomes a
+      # single point of failure for a payment system. The legacy analogue draws
+      # the line in the same place - app/jcl/OPENFIL.jcl:L26-L30 issues
+      # `CEMT SET FIL(...) OPE` for the five DATASETS the region serves from and
+      # for nothing else, because the corpus has no telemetry sink to wait on.
+      #
+      # Nothing is lost by removing it. The OTLP exporter is asynchronous and
+      # already tolerates an absent collector: an export failure is retried and
+      # then dropped, on the exporter's own thread, and no request or batch step
+      # observes it. The saving it bought was at most one connection attempt on
+      # the first span. The two conditions that remain are the two that carry
+      # data - the relational substrate and the emulator holding the buckets,
+      # the FIFO queue and the topic - and both are service_healthy rather than
+      # service_started because for those, existing is not the same as ready.
     healthcheck:
       # No `test` key: the probe is declared once, in the Dockerfile, and
       # inherited here so the two cannot drift. It opens /dev/tcp on the
@@ -463,7 +534,18 @@ services:
   # reject.
   # ==========================================================================
   postgres:
-    image: postgres:16.10-alpine@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
+    # Pinned by tag AND digest: the tag documents which engine this is to a
+    # reader, the digest is what actually resolves. 16.14 rather than the
+    # 16.10 first pinned here - a digest freezes content, which is what
+    # determinism wants, but it freezes the PATCH LEVEL with it, so an
+    # immutable pin ages silently and no part of the build reports it. 16.14
+    # closes eleven advisories 16.10 is exposed to, the most severe being
+    # CVE-2026-6473 at CVSS 8.8 (integer wraparound -> undersized allocation
+    # -> out-of-bounds write). The Maven dependency scan runs at
+    # failBuildOnCVSS=7 but never sees container images, so this literal's
+    # currency is reviewed deliberately; see the identical reasoning on
+    # AbstractBatchIntegrationTest.POSTGRES.
+    image: postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     container_name: carddemo-postgres${CLONE_INDEX:+-}${CLONE_INDEX:-}
     environment:
       # Non-default database and role: the image's own `postgres`/`postgres`
@@ -488,7 +570,15 @@ services:
       # Published for psql, for a host-run application and for the JDBC URL
       # that src/main/resources/application-local.yml defaults to. This is the
       # only port this service exposes.
-      - "${POSTGRES_PORT:-5432}:5432"
+      #
+      # LOOPBACK-BOUND. This database holds the seeded customer rows - names,
+      # addresses, telephone numbers and the nine-digit government identifier
+      # of app/cpy/CVCUS01Y.cpy - so an all-interfaces bind offered a
+      # password-guessing surface against personal data to the whole network.
+      # Reaching it from another machine is now a deliberate act (an SSH
+      # tunnel, or an explicit CARDDEMO_BIND_ADDRESS override) rather than the
+      # default.
+      - "${CARDDEMO_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -547,11 +637,42 @@ services:
       PERSISTENCE: "0"
       # 1 turns on the emulator's verbose request log; see TROUBLESHOOTING.
       DEBUG: ${LOCALSTACK_DEBUG:-0}
+      # ----------------------------------------------------------------------
+      # IAM enforcement - requested, and its MEASURED LIMITATION DISCLOSED
+      # ----------------------------------------------------------------------
+      # Set because the default is off and an unset access-control switch is an
+      # unstated decision. It is honest about what it buys here:
+      #
+      # THIS WAS MEASURED, NOT ASSUMED. Against localstack/localstack:4.14.0 -
+      # the community image this project pins - an arbitrary principal was able
+      # to list, download and DELETE another principal's object with
+      # ENFORCE_IAM=1 set and iam,sts added to SERVICES; a cross-account key
+      # received a successful head-bucket; and an explicit Deny/NotPrincipal
+      # bucket policy was accepted by the API and then not enforced. Policy
+      # enforcement, cross-account isolation and bucket policies are not
+      # community-tier features.
+      #
+      # THE OPERATIVE CONTROL IS THEREFORE NETWORK CONTAINMENT, not IAM: the
+      # edge port below is loopback-bound. This variable is retained as
+      # defence in depth and as forward compatibility - it costs nothing, and
+      # it means a licensed image enforces immediately rather than after
+      # someone remembers to add it. It is NOT relied upon.
+      ENFORCE_IAM: "1"
     ports:
       # The edge port only. The 4510-4559 external-service range and the
       # developer-endpoint port are not published, because no CardDemo code
       # path addresses them.
-      - "${LOCALSTACK_PORT:-4566}:4566"
+      #
+      # LOOPBACK-BOUND, AND THIS IS THE PRIMARY CONTROL FOR THIS SERVICE. The
+      # emulator holds the statements objects generated from
+      # app/jcl/CREASTMT.JCL, the reject records of app/cbl/CBTRN02C.cbl and
+      # the transaction images - card numbers, account identifiers and
+      # customer-derived content. Because the community image does not enforce
+      # IAM (see ENFORCE_IAM above), ANY principal that can reach this port can
+      # read and delete every object in every bucket. Containment at the
+      # network edge is what actually closes that, so the bind address is the
+      # security boundary rather than a convenience.
+      - "${CARDDEMO_BIND_ADDRESS:-127.0.0.1}:${LOCALSTACK_PORT:-4566}:4566"
     volumes:
       # READ-ONLY, and mounted at the directory the emulator runs once the
       # edge reports ready. Read-only matters: the hook is executable
@@ -598,29 +719,65 @@ services:
   # local stack - traces survive the process, not the container.
   # ==========================================================================
   jaeger:
-    image: jaegertracing/all-in-one:1.62.0@sha256:836e9b69c88afbedf7683ea7162e179de63b1f981662e83f5ebb68badadc710f
+    # MIGRATED FROM jaegertracing/all-in-one:1.62.0, which reached end of life
+    # (CWE-1104, use of an unmaintained component). jaegertracing/jaeger is the
+    # supported v2 line: an OpenTelemetry Collector distribution. Pinned by
+    # digest as well as by tag.
+    image: jaegertracing/jaeger:2.20.0@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
     container_name: carddemo-jaeger${CLONE_INDEX:+-}${CLONE_INDEX:-}
+    # v2 is configured by FILE, not by environment variable. The three v1
+    # variables this service used to set - COLLECTOR_OTLP_ENABLED,
+    # SPAN_STORAGE_TYPE and MEMORY_MAX_TRACES - have no v2 equivalents, so
+    # observability/jaeger-config.yml carries all three structurally. That file
+    # is not optional decoration: v2's built-in max_traces default is 100000,
+    # so migrating without it would have silently DOUBLED the span buffer this
+    # service is supposed to bound.
+    command: ["--config=file:/etc/jaeger/jaeger-config.yml"]
     environment:
-      # OTLP is off by default in this image and is the only protocol the
-      # application speaks.
-      COLLECTOR_OTLP_ENABLED: "true"
-      SPAN_STORAGE_TYPE: memory
-      # Bounded, so a stack left up for days cannot grow its span buffer
-      # without limit.
-      MEMORY_MAX_TRACES: "50000"
+      # Bind the receivers and the UI to all interfaces INSIDE the container's
+      # own network namespace, so sibling containers can reach them. The
+      # config file defaults this to localhost, which inside a namespace is
+      # reachable by nothing else. This is NOT host exposure - the published
+      # ports below are loopback-bound.
+      JAEGER_LISTEN_HOST: 0.0.0.0
+    volumes:
+      - ./observability/jaeger-config.yml:/etc/jaeger/jaeger-config.yml:ro
     ports:
-      - "${JAEGER_UI_PORT:-16686}:16686"
-      - "${JAEGER_OTLP_GRPC_PORT:-4317}:4317"
-      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"
+      # LOOPBACK-BOUND, all three. The UI serves stored spans and the two OTLP
+      # receivers accept them, none of them authenticated - the v2 collector
+      # offers no credential on these listeners any more than v1 did. Publishing
+      # them on every interface meant any host that could route here could both
+      # READ the trace store and INJECT spans into it. Spans carry request
+      # metadata for account, card, customer and transaction operations, which
+      # is why containment matters even though
+      # com.cardemo.observability.TemplatedUriObservationConvention now keeps
+      # business identifiers out of the attributes themselves. The two controls
+      # are complementary: the convention limits what is written, the bind
+      # address limits who can read it.
+      - "${CARDDEMO_BIND_ADDRESS:-127.0.0.1}:${JAEGER_UI_PORT:-16686}:16686"
+      - "${CARDDEMO_BIND_ADDRESS:-127.0.0.1}:${JAEGER_OTLP_HTTP_PORT:-4318}:4318"
+      # The OTLP/gRPC publish on 4317 is deliberately ABSENT. Nothing in this
+      # project speaks gRPC: management.otlp.tracing.endpoint and
+      # OTEL_EXPORTER_OTLP_ENDPOINT both name the /v1/traces HTTP path, so the
+      # mapping only ever widened the host surface for a protocol no client
+      # here uses. Service-to-service reachability is unaffected - the compose
+      # network exposes every container port to every other container.
     healthcheck:
-      # The admin port answers with a status document. It is probed from
-      # inside the container and is deliberately not published: nothing
-      # outside needs it. wget is the image's tool; it ships no curl.
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:14269/ | grep -q 'Server available'"]
+      # PORT 13133, not 14269. v2's healthcheckv2 extension replaces v1's admin
+      # port, and a probe left on the v1 port fails forever against a perfectly
+      # healthy container. Probed from inside and deliberately not published:
+      # nothing outside needs it.
+      #
+      # The document is asserted, not merely fetched. /status answers
+      # {"healthy":true,"status":"StatusOK",...}; grepping the flag means a
+      # collector that is listening but reporting itself unhealthy fails the
+      # probe instead of passing it. wget is busybox's, which this image ships;
+      # it has no curl.
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:13133/status | grep -q '\"healthy\":true'"]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 12
-      start_period: 15s
+      start_period: 20s
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -637,21 +794,54 @@ services:
   # observability/prometheus.yml and is mounted read-only.
   # ==========================================================================
   prometheus:
-    image: prom/prometheus:v2.55.1@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3
+    # v3.13.2. The 2.x line carried CVE-2026-42154 / GHSA-8rm2-7qqf-34qm, a
+    # remote-read heap-exhaustion exposure, and EVERY 2.x release is affected:
+    # v2.55.1 is the terminal 2.55 build and v2.53.5 the terminal 2.53 LTS, so
+    # no 2.x remediation path exists and the major upgrade is mandatory rather
+    # than elective. Pinned by digest as well as by tag.
+    image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
     container_name: carddemo-prometheus${CLONE_INDEX:+-}${CLONE_INDEX:-}
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       # A local evidence window, not a retention policy.
       - "--storage.tsdb.retention.time=24h"
-      # observability/prometheus.yml documents POST /-/reload as the way to
-      # apply an edit without losing the series; that route needs this flag.
-      - "--web.enable-lifecycle"
+      # --web.enable-lifecycle IS DELIBERATELY ABSENT. It publishes POST
+      # /-/reload AND POST /-/quit, neither authenticated: anything that could
+      # reach 9090 could terminate the monitoring stack. The reload convenience
+      # it bought is not worth an unauthenticated shutdown route, and the
+      # TROUBLESHOOTING section of observability/prometheus.yml has been
+      # rewritten to describe `docker compose restart prometheus` instead.
+      # Do not restore this flag to make an edit apply faster.
     ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      # LOOPBACK-BOUND. The query API answers over this port with no credential
+      # of any kind, and the series it serves are the application's business
+      # counters - transaction volumes, reject counts by reject code,
+      # authentication attempt counts. Securing the scrape TARGET while leaving
+      # the store that accumulates it open to the network would have closed the
+      # front door and left the back one open.
+      - "${CARDDEMO_BIND_ADDRESS:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
+    configs:
+      # The scrape credential, materialised as the file
+      # observability/prometheus.yml names in basic_auth.password_file.
+      #
+      # WHY A COMPOSE CONFIG RATHER THAN AN ENTRYPOINT WRAPPER: Prometheus
+      # performs no environment substitution on its configuration file, so the
+      # credential cannot be interpolated there. `content` below is interpolated
+      # by Compose and written VERBATIM - measured at exactly the byte length of
+      # the value, with NO trailing newline. That matters: Prometheus sends the
+      # file's bytes as the password, so a trailing newline would make every
+      # scrape fail authentication. Writing it with `echo` from a shell wrapper
+      # is the classic way to get that wrong, and it would also mean overriding
+      # this image's entrypoint and running a shell as root to write into a
+      # directory the nobody user could read.
+      - source: prometheus-scrape-password
+        target: /etc/prometheus/secrets/scrape-password
+        # Readable by the image's own unprivileged user (uid 65534, nobody).
+        mode: 0444
     healthcheck:
       # -/ready rather than -/healthy: the process being alive is weaker than
       # the query engine being able to answer, and `up --wait` should gate on
@@ -678,7 +868,12 @@ services:
   # because the dashboard's panels reference the datasource by uid.
   # ==========================================================================
   grafana:
-    image: grafana/grafana:11.3.1@sha256:fa801ab6e1ae035135309580891e09f7eb94d1abdbd2106bdc288030b028158c
+    # 12.4.6. 11.3.1 carried CVE-2026-21720, CVE-2026-33382 and
+    # CVE-2026-42127. NOTE ON WHY THE 11.x LINE WAS NOT CHOSEN: the newest
+    # 11.6 build predates the publication of CVE-2026-33382, so staying on 11.x
+    # would have looked like a patch while leaving one advisory unaddressed.
+    # Pinned by digest as well as by tag.
+    image: grafana/grafana:12.4.6@sha256:c2cd7057f6116f708b6ab11dc36089f4b34bcf5065c4457ca6b55daa42a9eb8c
     container_name: carddemo-grafana${CLONE_INDEX:+-}${CLONE_INDEX:-}
     environment:
       # Local sign-in, supplied externally. No default: a committed admin
@@ -695,7 +890,12 @@ services:
       # without internet access.
       GF_PLUGINS_PREINSTALL_DISABLED: "true"
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      # LOOPBACK-BOUND. Anonymous access is already disabled and the admin
+      # credential is externalised, so this is defence in depth rather than the
+      # only control - but a sign-in page reachable from the network is a
+      # credential-guessing surface, and the dashboards behind it render the
+      # same business series Prometheus stores.
+      - "${CARDDEMO_BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       # The path the dashboard provider in
@@ -740,4 +940,18 @@ volumes:
   postgres-data:
   prometheus-data:
   grafana-data:
+
+# ----------------------------------------------------------------------------
+# Compose configs. One entry: the metrics scrape credential Prometheus presents
+# to /actuator/prometheus.
+#
+# `content` is interpolated by Compose and written to the target byte-for-byte
+# with NO trailing newline, which is what basic_auth.password_file requires.
+# The value is never committed: it comes from the environment, .env.example
+# documents it with no value, and the `:?` guard below aborts `up` with a named
+# message rather than starting a stack whose every scrape would 401.
+# ----------------------------------------------------------------------------
+configs:
+  prometheus-scrape-password:
+    content: "${METRICS_SCRAPE_PASSWORD:?set METRICS_SCRAPE_PASSWORD in .env - copy .env.example and generate a value, e.g. openssl rand -base64 32}"
 

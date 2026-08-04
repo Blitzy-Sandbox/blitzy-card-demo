@@ -59,11 +59,22 @@
  * <h2>Current contents versus the target set</h2>
  *
  * <p>The Agent Action Plan specifies a five-stage pipeline plus an orchestrator - <strong>six</strong> types.
- * <strong>One exists today.</strong>
+ * Measured 4 August 2026, <strong>three exist today</strong>. An earlier revision of this document recorded
+ * one; that count is superseded, not merely restated.
  *
  * <p>Present:
  *
  * <ul>
+ *   <li>{@link com.cardemo.batch.jobs.DailyTransactionPostingJob} from {@code app/jcl/POSTTRAN.jcl} and
+ *       {@code app/cbl/CBTRN02C.cbl}. It folds {@code app/cbl/CBTRN01C.cbl} in as an explicitly labelled
+ *       <strong>read-only pre-flight step</strong>, because that program has no distinct JCL job and its verb
+ *       inventory contains no write operation, so a standalone job for it would have been an invention. Its
+ *       exit status is decided solely by whether the reject count exceeded zero.</li>
+ *   <li>{@link com.cardemo.batch.jobs.StatementGenerationJob} from {@code app/jcl/CREASTMT.JCL} (note the
+ *       <strong>uppercase</strong> extension - a case-sensitive {@code *.jcl} glob silently drops this member,
+ *       and it is the sole source for statement generation) plus {@code app/cbl/CBSTM03A.CBL} and
+ *       {@code CBSTM03B.CBL}. Five steps, including the projection sort whose two-byte timestamp truncation is
+ *       reproduced rather than corrected.</li>
  *   <li>{@link com.cardemo.batch.jobs.InterestCalculationJob} from {@code app/jcl/INTCALC.jcl} and
  *       {@code app/cbl/CBACT04C.cbl}. The ten-character date parameter becomes a job parameter, and output is
  *       written as a fresh sequential generation to object storage - <strong>not</strong> to the transaction
@@ -76,22 +87,11 @@
  * omission in the plan:
  *
  * <ul>
- *   <li>{@code DailyTransactionPostingJob} - <strong>Not available.</strong> From
- *       {@code app/jcl/POSTTRAN.jcl} and {@code app/cbl/CBTRN02C.cbl}. When authored it must fold
- *       {@code app/cbl/CBTRN01C.cbl} in as an explicitly labelled <strong>read-only pre-flight step</strong>:
- *       that program has no distinct JCL job and its verb inventory contains no write operation, so a
- *       standalone job for it would be an invention. Its exit status is decided solely by whether the reject
- *       count exceeded zero.</li>
  *   <li>{@code CombineTransactionsJob} - <strong>Not available.</strong> From {@code app/jcl/COMBTRAN.jcl}.
  *       <strong>No COBOL program exists for this job</strong>; its logic is entirely DFSORT and IDCAMS
  *       control cards, so the JCL is the source of truth. Concatenated input, sorted by transaction
  *       identifier ascending, then a bulk load. This is where duplicate-key exposure from a repeated interest
  *       date parameter must surface as a failure rather than a silent upsert.</li>
- *   <li>{@code StatementGenerationJob} - <strong>Not available.</strong> From {@code app/jcl/CREASTMT.JCL}
- *       (note the <strong>uppercase</strong> extension - a case-sensitive {@code *.jcl} glob silently drops
- *       this member, and it is the sole source for statement generation) plus {@code app/cbl/CBSTM03A.CBL}
- *       and {@code CBSTM03B.CBL}. Five steps, including the projection sort whose two-byte timestamp
- *       truncation must be reproduced rather than corrected.</li>
  *   <li>{@code TransactionReportJob} - <strong>Not available.</strong> From {@code app/jcl/TRANREPT.jcl},
  *       {@code app/proc/TRANREPT.prc} and {@code app/cbl/CBTRN03C.cbl}. Backup, then a filtered sort by card
  *       number with an inclusive date-range predicate, then report generation at 133 bytes per line.</li>
@@ -108,7 +108,8 @@
  * insert <strong>together</strong>. In the source these are three independent commits; in Java they are one
  * atomic unit. That closes a real hazard - the legacy rewrite-failure path leaves an orphaned category-balance
  * row and an orphaned transaction row - and because it is a behavioural improvement rather than parity, it is
- * labelled explicitly as a deviation in {@code DECISION_LOG.md} rather than passed off as equivalence.
+ * labelled explicitly as a deviation here and is owed an entry saying so in the planned
+ * {@code DECISION_LOG.md}, rather than passed off as equivalence.
  *
  * <p>This atomicity is also the reason the whole application is a single deployable modular monolith rather
  * than microservices: distributing those three writes across service boundaries would require compensating

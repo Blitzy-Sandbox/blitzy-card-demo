@@ -408,12 +408,19 @@ public record CommArea(
     /**
      * Returns a diagnostic rendering that discloses neither the card number nor any customer name.
      *
-     * @return a rendering of this projection containing no card number and no personally identifying name
+     * <p>Every field below is passed through {@link ApiMasking#forDiagnostics(String)}. All of them are
+     * declared {@code String} and all arrive from a JSON request body, so a caller controls their bytes; a CR
+     * or LF concatenated straight in here would forge log records. The escaping also makes this rendering safe
+     * on an instance that failed validation, which is the usual reason something renders one - {@code @Size}
+     * runs after Jackson has already constructed the record.
+     *
+     * @return a rendering of this projection containing no card number and no personally identifying name,
+     *     and no character that could terminate a log record
      */
     @Override
     public String toString() {
-        return "CommArea[userId=" + this.userId
-                + ", userType=" + this.userType
-                + ", accountStatus=" + this.accountStatus + "]";
+        return "CommArea[userId=" + ApiMasking.forDiagnostics(this.userId)
+                + ", userType=" + ApiMasking.forDiagnostics(this.userType)
+                + ", accountStatus=" + ApiMasking.forDiagnostics(this.accountStatus) + "]";
     }
 }

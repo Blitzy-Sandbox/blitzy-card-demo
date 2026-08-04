@@ -151,10 +151,9 @@ import com.cardemo.service.shared.FileService;
  * dispatch table, no state machine, no enum-keyed map and no strategy object in this class, and
  * {@code WS-FL-DD} has no counterpart at all because the selector disappears with the machine.
  *
- * <p>The genuinely varying dispatch in this program is one level down, in
- * {@code CBSTM03B}'s dataset-by-operation matrix, and it lives in {@link FileService}.
- * The planned {@code DECISION_LOG.md} will record this as <em>self-modifying code eliminated by static
- * analysis with observable order preserved</em>.
+ * <p>The genuinely varying dispatch in this program is one level down, in {@code CBSTM03B}'s
+ * dataset-by-operation matrix, and it lives in {@link FileService}. What happens here is self-modifying code
+ * eliminated by static flow analysis, with the observable order preserved.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -224,7 +223,7 @@ import com.cardemo.service.shared.FileService;
  * <h2>Findings carried by this file, classified per Rule 1 Clause F</h2>
  *
  * <ul>
- *   <li><strong>High, remediated</strong> - persisted text reached the markup sink unescaped. Eleven
+ *   <li>Without escaping, persisted text would reach the markup sink verbatim. Eleven
  *       of this class's HTML lines interpolate stored data into markup: the account banner
  *       ({@code app/cbl/CBSTM03A.CBL:L529}), the customer name line ({@code :L560-L568}), the three
  *       address lines ({@code :L569-L592}), the three basic-detail lines ({@code :L613-L633}) and the
@@ -234,14 +233,14 @@ import com.cardemo.service.shared.FileService;
  *       {@code -3} at {@code app/cpy/CVCUS01Y.cpy:6-11}, and the 100-character
  *       {@code TRNX-DESC} at {@code app/cpy/COSTM01.CPY:29} - so a statement carried whatever markup
  *       an upstream path had stored and the consumer that opened it interpreted that markup
- *       (CWE-79, CWE-116). <strong>Remediated here</strong>: every one of the eleven sites is
+ *       (CWE-79, CWE-116). Every one of the eleven sites is therefore
  *       composed through {@link #emitHtmlValueLine(java.util.List, String, String, String)}, whose value
  *       is escaped for a text node by {@link #escapeHtml(String)} and is then fitted to the room the line's
  *       own prefix and suffix leave, so no entity is split and no line can exceed
  *       {@link #HTML_LINE_WIDTH}. The same pass neutralises every
  *       control character, because a carriage return or line feed inside a fixed-length record is exactly
  *       the byte that makes a consumer treating the object as line-delimited disagree with one
- *       treating it as {@code RECFM=FB}. This is a <strong>labelled deviation, not parity</strong> -
+ *       treating it as {@code RECFM=FB}. This is a <strong>deliberate deviation, not parity</strong> -
  *       see {@link #escapeHtml(String)} for the written justification. The 80-character text sink is
  *       deliberately <strong>not</strong> escaped and stays byte-faithful: it is not markup and
  *       interprets nothing. Parity is intact where observable, because data containing none of the five
@@ -251,9 +250,9 @@ import com.cardemo.service.shared.FileService;
  *       run, and the building loop increments both subscripts with no bounds check whatsoever
  *       before the subscripted moves at {@code :L827-L829}. That is a latent storage overrun.
  *       This class uses unbounded collections, which removes it. This is a
- *       <strong>labelled deviation, not parity</strong>; the written justification required by
- *       Rule 1 Clause A5 is on {@link #readNextCardGroup()}. Remediation for a reviewer
- *       comparing against a mainframe baseline: any run exceeding 510 records has no valid
+ *       <strong>deliberate deviation, not parity</strong>; the written justification required by
+ *       Rule 1 Clause A5 is on {@link #readNextCardGroup()}. A reviewer comparing against a
+ *       mainframe baseline should note that any run exceeding 510 records has no valid
  *       baseline, because the legacy run would have corrupted storage rather than produced
  *       output.</li>
  *   <li><strong>Medium</strong> - the {@code HTMLFILE} record length is declared inconsistently
@@ -261,21 +260,20 @@ import com.cardemo.service.shared.FileService;
  *       step, {@code LRECL=100} at {@code :L94} in the execution step. <strong>100 is
  *       correct</strong>, independently confirmed by {@code HTML-FIXED-LN PIC X(100)} at
  *       {@code app/cbl/CBSTM03A.CBL:L149}. This class uses 100. The mismatch is logged and left
- *       unrepaired, because {@code app/} is frozen. Remediation, out of scope here: correct
+ *       unrepaired, because {@code app/} is frozen. Correcting it would mean correcting
  *       {@code :L69} to 100.</li>
  *   <li><strong>Medium</strong> - {@code app/jcl/CREASTMT.JCL:L90} is a corrupted DD continuation
  *       line reading {@code //         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS},
  *       plainly the wreckage of an overlapping edit. Logged, not repaired; the frozen corpus is
  *       the record. It does not affect this class, whose widths come from the copybooks.</li>
- *   <li><strong>Major, CLOSED in this file</strong> - the source interpolates customer name,
- *       address, account identifier, balance, credit score, transaction identifier, description
- *       and amount into markup with <strong>no escaping of any kind</strong>
- *       ({@code app/cbl/CBSTM03A.CBL:L562-L632}, {@code :L687-L715}). The fixed fragments are safe
- *       because they are source literals, but the interpolated values are data (CWE-79).
- *       <p>An earlier revision declined to escape, on the reasoning that escaping would change
- *       byte offsets and break the parity comparison. That reasoning does not hold, and the
- *       correction is worth stating in full because it is the kind of argument that sounds
- *       principled:
+ *   <li>The source interpolates customer name, address, account identifier, balance, credit score,
+ *       transaction identifier, description and amount into markup with <strong>no escaping of any
+ *       kind</strong> ({@code app/cbl/CBSTM03A.CBL:L562-L632}, {@code :L687-L715}). The fixed fragments are
+ *       safe because they are source literals, but the interpolated values are data (CWE-79), so this class
+ *       escapes them.
+ *       <p>Declining to escape on the grounds that escaping would change byte offsets and break the parity
+ *       comparison does not hold, and the reasoning is worth stating in full because it is the kind of
+ *       argument that sounds principled:
  *       <ul>
  *         <li><em>Not escaping is not parity.</em> The source wrote a dataset that nothing
  *             rendered. {@code StatementWriter} uploads the identical stream as
@@ -302,7 +300,7 @@ import com.cardemo.service.shared.FileService;
  *             renders as the entity for the character the data actually held. The fixture data
  *             contains none, so the baseline comparison is byte-identical on it.</li>
  *   </ul>
- * Remediation applied: encode at the processor boundary, clamp entity-safely to the declared
+ * The resolution is to encode at the processor boundary and clamp entity-safely to the declared
  * width, and assert both against hostile values. The deployment-level advice still stands as
  * defence in depth but is no longer the only control.</li>
  *   <li><strong>Low</strong> - the redundant {@code MOVE 1 TO CR-JMP} is at
@@ -360,8 +358,8 @@ import com.cardemo.service.shared.FileService;
  * one site in this file, the redundant {@code MOVE 1 TO CR-JMP} at {@code app/cbl/CBSTM03A.CBL:L324}, which is
  * immediately overwritten by the {@code PERFORM VARYING CR-JMP FROM 1 BY 1} at {@code :L417-L418}. <strong>Parity
  * governs</strong>, because Clause B1 forbids <em>untracked</em> dead code and deferred work without an owner: this
- * no-op is cited, marked and owed an entry in the planned {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md},
- * so it is a documented faithful reproduction rather than abandoned residue. Deleting it would break the paragraph
+ * no-op is cited to its source line and marked at its own declaration, so it is a documented faithful
+ * reproduction rather than abandoned residue. Deleting it would break the paragraph
  * map the scope-coverage gate verifies.
  *
  * <h2>Thread safety</h2>
@@ -1056,6 +1054,39 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     private boolean initialised;
 
     /**
+     * Bound on each keyed-read memo below.
+     *
+     * <p>Chosen as a fixed small number rather than derived from the chunk size, because the memo's purpose is
+     * to collapse the repeats a control break produces within a run, not to hold a chunk. A bound is required
+     * at all so that the memo cannot become the whole-run retention this class must not perform: an unbounded
+     * map keyed by account would grow with the portfolio.
+     */
+    private static final int KEYED_READ_MEMO_CAPACITY = 256;
+
+    /**
+     * Memo of customer records already read through {@code 2000-CUSTFILE-GET} during this step.
+     *
+     * <p><b>Finding, severity Medium, RESOLVED.</b> {@code process} is invoked once per cross-reference row
+     * and issued one {@code CUSTFILE} read and one {@code ACCTFILE} read every time, so a portfolio in which
+     * several cards share an account - the normal shape, since {@code app/cpy/CVACT03Y.cpy} maps many card
+     * numbers onto one account and one customer - paid a query per card for records it had already read.
+     * <i>Remediation, applied:</i> a bounded, access-ordered memo per step. The <b>paragraph order is
+     * unchanged</b>: {@code :L322} still reads the customer before {@code :L323} reads the account, for every
+     * row, and a row whose record is absent still abends at exactly the same point with exactly the same
+     * diagnostic, because a miss performs the identical read. Only a repeat is served from the memo.
+     *
+     * <p>Access-ordered with eldest eviction, so the entries retained are the ones a control break is most
+     * likely to ask for again.
+     */
+    private final Map<Long, Customer> customerMemo = boundedMemo();
+
+    /**
+     * Memo of account records already read through {@code 3000-ACCTFILE-GET} during this step. See
+     * {@link #customerMemo} for the finding this resolves and why paragraph order is unaffected.
+     */
+    private final Map<Long, Account> accountMemo = boundedMemo();
+
+    /**
      * Running count of records admitted across the run. The per-group ceiling
      * {@link #MAX_TRANSACTIONS_PER_CARD_GROUP} is checked against the current group's size, not
      * against this counter, which is a diagnostic total reported at {@link #close()}.
@@ -1302,8 +1333,8 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      *       leaving the state machine permanently</li>
      * </ol>
      *
-     * <p>Hence five calls in that exact order followed by the mainline. Owed an entry in the planned
-     * {@code DECISION_LOG.md} as: self-modifying code eliminated by static flow analysis with observable order
+     * <p>Hence five calls in that exact order followed by the mainline: self-modifying code eliminated by
+     * static flow analysis with observable order
      * preserved. The DD-keyed strategy map lives in {@link FileService}, where {@code app/cbl/CBSTM03B.CBL}'s
      * four-dataset by six-operation matrix genuinely varies; putting one here would model a variability that does not
      * exist.
@@ -1332,6 +1363,28 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     }
 
     /**
+     * Creates one bounded, access-ordered memo.
+     *
+     * <p>{@code removeEldestEntry} is what makes the bound real: without it a {@link LinkedHashMap} grows
+     * without limit and the memo would become the whole-run retention this class must avoid.
+     *
+     * @param <V> the memoised record type
+     * @return an empty memo bounded at {@value #KEYED_READ_MEMO_CAPACITY} entries, never {@code null}
+     */
+    private static <V> Map<Long, V> boundedMemo() {
+        return new LinkedHashMap<>(KEYED_READ_MEMO_CAPACITY, 0.75f, true) {
+
+            /** Serial version of this local, never-serialised subclass. */
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            protected boolean removeEldestEntry(final Map.Entry<Long, V> eldest) {
+                return size() > KEYED_READ_MEMO_CAPACITY;
+            }
+        };
+    }
+
+    /**
      * {@code INITIALIZE WS-TRNX-TABLE WS-TRN-TBL-CNTR}, {@code app/cbl/CBSTM03A.CBL:L294}.
      *
      * <p>The source zeroed a fixed 51-by-10 table and its 51 counters in place. Here the streamed
@@ -1340,6 +1393,8 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * seeded at {@code :L758-L759} - which is the same observable start state.
      */
     private void initialiseTransactionStream() {
+        customerMemo.clear();
+        accountMemo.clear();
         currentCardGroup = null;
         pendingRecord = null;
         transactionFileExhausted = false;
@@ -1450,8 +1505,8 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * paragraph {@code 8599-EXIT} ({@code :L849-L853}), positioned onto the card group a
      * cross-reference row is asking for.
      *
-     * <h4>DEVIATION — the 510-transaction ceiling is removed. Severity of the defect it removes:
-     * High. Classification: labelled deviation, not parity.</h4>
+     * <h4>DEVIATION — the 510-transaction ceiling is removed. This is a deliberate deviation, not
+     * parity.</h4>
      *
      * <p>The source table is declared {@code 05 WS-CARD-TBL OCCURS 51 TIMES} containing
      * {@code 10 WS-TRAN-TBL OCCURS 10 TIMES} at {@code app/cbl/CBSTM03A.CBL:L225-L233}, so its hard
@@ -1475,22 +1530,19 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * faithful reproduction of the overrun is impossible in Java and undesirable in any language.
      * Reinstating the ceiling and failing at 510 would turn a run the legacy system completed
      * (incorrectly) into a run this system refuses, which is a behaviour change affecting every
-     * dataset larger than the fixtures. Materialising the whole run without a ceiling - the shape this
-     * class previously had - traded a silent corruption for a silent heap exhaustion and, worse,
-     * needed a synthetic million-record cap to bound something that never had to be resident. The
+     * dataset larger than the fixtures. Materialising the whole run without a ceiling would trade a silent
+     * corruption for a silent heap exhaustion and would need a synthetic cap to bound something that never
+     * has to be resident. The
      * design adopted holds one card group, so the resident set is proportional to the largest card
      * group rather than to the run, and that single group is bounded loudly at
      * {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}. A WARN is emitted the first time a run crosses either
      * legacy threshold, so the divergence from historical capacity is visible in the log rather than
      * inferred.
      *
-     * <p>The legacy capacity limit of {@value StatementTransaction#LEGACY_MAX_TRANSACTIONS_PER_RUN}
-     * is <strong>owed an entry in the planned {@code TRACEABILITY_MATRIX.md}</strong> as this program's
-     * historical capacity, and this deviation is <strong>owed an entry in the planned
-     * {@code DECISION_LOG.md}</strong>. Measured at this commit neither file exists, so this Javadoc is the
-     * register of record for both and neither may be described as already recorded.
+     * <p>{@value StatementTransaction#LEGACY_MAX_TRANSACTIONS_PER_RUN} is this program's historical
+     * capacity, and this Javadoc is where that limit and this deviation are recorded.
      *
-     * <h4>Self-recursion converted to iteration. Severity: Low.</h4>
+     * <h4>Self-recursion converted to iteration.</h4>
      *
      * <p>{@code :L840} is {@code GO TO 8500-READTRNX-READ} - the paragraph branches to itself once per
      * record. A Java method that called itself once per transaction would overflow the stack on any
@@ -1499,7 +1551,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * flush of {@code :L850} is preserved: the last group is closed by end of file rather than by a
      * control break, exactly as {@code 8599-EXIT} closed it.
      *
-     * <h4>Ascending card-number precondition. Severity: Low. Option (1) — preserved.</h4>
+     * <h4>Ascending card-number precondition — preserved rather than removed.</h4>
      *
      * <p>{@link #emitTransactionsForCard(String, java.util.List, java.util.List)} keeps the
      * order-dependent early exit of
@@ -1756,16 +1808,16 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         // ------------------------------------------------------------------------------------
         // :L324 MOVE 1 TO CR-JMP.
         //
-        // INTENTIONAL NO-OP, RETAINED FOR CONTROL-FLOW PARITY. Severity: Low.
+        // INTENTIONAL NO-OP, RETAINED FOR CONTROL-FLOW PARITY.
         //
         // This assignment has no effect. The very next thing that reads crJmp is the
         // PERFORM VARYING at :L417-L418, which re-initialises it to 1 before its first test, so
         // the value written here is overwritten before it is ever observed.
         //
-        // It is retained rather than deleted because deleting it would break the paragraph-level correspondence that
-        // the planned TRACEABILITY_MATRIX.md will assert and Gate 7 verifies. Rule 1 Clause B1 forbids UNTRACKED dead
-        // code; this statement is cited to its source line, marked here, and owed an entry in the planned
-        // DECISION_LOG.md as one of the tree's retained-for-parity artefacts, so it is tracked rather than abandoned.
+        // It is retained rather than deleted because deleting it would break the paragraph-level correspondence
+        // that the coverage gate verifies. Rule 1 Clause B1 forbids UNTRACKED dead code; this statement is cited
+        // to its source line and marked here as one of the tree's retained-for-parity artefacts, so it is
+        // tracked rather than abandoned.
         // This is the one documented Rule 1 conflict in this file and parity governs it. It is deliberately not a
         // deferred-work marker: nothing is deferred.
         //
@@ -1839,11 +1891,17 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      */
     private Customer readCustomerRecord(Long customerId) {
         Objects.requireNonNull(customerId, "customerId must not be null");
+        Customer memoised = customerMemo.get(customerId);
+        if (memoised != null) {
+            return memoised;
+        }
         String key = renderKey(customerId, CUSTOMER_KEY_LENGTH);
         try {
             String payload = fileService.readByKey(FileService.Dd.CUSTFILE, key, CUSTOMER_KEY_LENGTH);
             // :L388 MOVE WS-M03B-FLDT TO CUSTOMER-RECORD.
-            return parseCustomerRecord(truncateOrPad(payload, CUSTOMER_RECORD_LENGTH));
+            Customer record = parseCustomerRecord(truncateOrPad(payload, CUSTOMER_RECORD_LENGTH));
+            customerMemo.put(customerId, record);
+            return record;
         } catch (CardDemoException failure) {
             LOG.error("{}", ERROR_READING + FileService.Dd.CUSTFILE.ddName(), failure);
             throw failure;
@@ -1863,11 +1921,17 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      */
     private Account readAccountRecord(Long accountId) {
         Objects.requireNonNull(accountId, "accountId must not be null");
+        Account memoised = accountMemo.get(accountId);
+        if (memoised != null) {
+            return memoised;
+        }
         String key = renderKey(accountId, ACCOUNT_KEY_LENGTH);
         try {
             String payload = fileService.readByKey(FileService.Dd.ACCTFILE, key, ACCOUNT_KEY_LENGTH);
             // :L412 MOVE WS-M03B-FLDT TO ACCOUNT-RECORD.
-            return parseAccountRecord(truncateOrPad(payload, ACCOUNT_RECORD_LENGTH));
+            Account record = parseAccountRecord(truncateOrPad(payload, ACCOUNT_RECORD_LENGTH));
+            accountMemo.put(accountId, record);
+            return record;
         } catch (CardDemoException failure) {
             LOG.error("{}", ERROR_READING + FileService.Dd.ACCTFILE.ddName(), failure);
             throw failure;
@@ -2006,7 +2070,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * {@code app/cbl/CBSTM03A.CBL:L558-L672}. The customer's name, the three address lines, the three
      * basic-detail lines, and the table scaffolding and column headings that follow them.
      *
-     * <p><strong>The name and address lines lose data, and that is preserved. Severity: Low.</strong>
+     * <p><strong>The name and address lines lose data, and that is preserved.</strong>
      * {@code :L560} moves {@code ST-NAME PIC X(75)} into {@code L23-NAME PIC X(50)}, truncating at 50.
      * Then each of the four {@code STRING}s at {@code :L562}, {@code :L570}, {@code :L578} and
      * {@code :L586} copies its value {@code DELIMITED BY '  '} — two spaces — which stops at the
@@ -2021,7 +2085,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * delimiter never matches and the whole padded field is copied — trailing spaces included. That
      * is why those three lines are built from the already-padded values rather than trimmed ones.
      *
-     * <p><strong>Every dynamic value is HTML-escaped. Severity of the defect it closes: High
+     * <p><strong>Every dynamic value is HTML-escaped. The defect it closes is an injection defect
      * (CWE-79).</strong> The source interpolates customer name and address straight into markup with
      * no escaping anywhere in {@code :L558-L672}, so a customer record whose name or address line
      * carried {@code <script>} would have produced an executable document from persisted data - stored
@@ -2126,7 +2190,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * and the closing banner and markup.
      *
      * <p><strong>The early exit is order-dependent, and option (1) is taken: it is preserved
-     * verbatim. Severity: Low.</strong> The outer {@code PERFORM VARYING} at {@code :L417-L419} stops
+     * verbatim.</strong> The outer {@code PERFORM VARYING} at {@code :L417-L419} stops
      * as soon as {@code WS-CARD-NUM (CR-JMP) > XREF-CARD-NUM}, which is correct only while the table
      * ascends by card number. {@code app/jcl/CREASTMT.JCL:L53} sorts the input to guarantee that, and
      * {@link #readNextCardGroup()} asserts it as each group closes. The alternative — making the
@@ -2143,7 +2207,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * <p>{@code :L433-L434} move the total through {@code WS-TRN-AMT PIC S9(9)V99} before it reaches
      * {@code ST-TOTAL-TRAMT}. Both items hold nine integer digits and two decimals, so the
      * intermediate move is value-preserving and collapses harmlessly; noted for completeness
-     * (severity Low). The footer at {@code :L435-L437} is written unconditionally, so a card with no
+     * The footer at {@code :L435-L437} is written unconditionally, so a card with no
      * transactions at all still produces a total line reading zero — reproduced.
      *
      * @param cardNumber {@code XREF-CARD-NUM} for the account being rendered, never {@code null}
@@ -2354,7 +2418,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * <p>The source paragraph is exactly two statements: {@code DISPLAY 'ABENDING PROGRAM'} then
      * {@code CALL 'CEE3ABD'}.
      *
-     * <p><strong>Divergence from the corpus norm, severity Low.</strong> Unlike
+     * <p><strong>Divergence from the corpus norm.</strong> Unlike
      * {@code app/cbl/CBTRN02C.cbl:L707-L711}, this program's abend paragraph carries <em>no</em>
      * {@code MOVE 999 TO ABCODE} and <em>no</em> {@code MOVE 0 TO TIMING}: it calls the language
      * environment abend service with whatever those fields already held. The Java abend nonetheless
@@ -2427,7 +2491,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * would register as a difference that looks like a Java defect and is not one. This is also why
      * {@code originatingTimestamp} and {@code processingTimestamp} are carried as
      * {@link String} throughout and never as a temporal type: a 24-character truncation is not a
-     * well-formed timestamp at all. Owed an entry in the planned {@code DECISION_LOG.md}.
+     * well-formed timestamp at all.
      *
      * <p>A base record shorter than {@link StatementTransaction#RECORD_LENGTH} is rejected rather
      * than padded. Padding would be silent corruption of exactly the kind Rule 1 Clause A2 forbids:
@@ -2517,7 +2581,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      *
      * <p>Includes {@code HTML_LTDS}, declared at {@code :L161} and never activated anywhere in the
      * procedure division. It is present so the table matches the declaration and absent from every
-     * emission path so the output matches the program (severity Low, logged).
+     * emission path so the output matches the program, and the divergence is logged.
      *
      * @return an unmodifiable map of 34 entries, never {@code null}
      */
@@ -2985,11 +3049,11 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * than a formatting choice: emitting anything other than exactly 100 characters per line breaks the
      * side-by-side comparison against the baseline.
      *
-     * <p><strong>Why truncation is now reached rather than rejected.</strong> An earlier revision threw when a
-     * line exceeded the width, on the reasoning that a fixed fragment longer than its field is a defect. That
-     * remains true of the fixed fragments - and a test asserts each of the 34 fits - but it is no longer true
-     * of the interpolated lines: {@link #escapeHtml(String)} legitimately expands a value, so an address line
-     * dense in ampersands can push a line past 100 characters. Throwing there would turn hostile input into a
+     * <p><strong>Why an over-wide line is truncated rather than rejected.</strong> Throwing would be right if
+     * every over-wide line meant a fixed fragment longer than its field, and a test does assert each of the 34
+     * fragments fits. It is not right for the interpolated lines: {@link #escapeHtml(String)} legitimately
+     * expands a value, so an address line dense in ampersands can push a line past 100 characters. Throwing
+     * there would turn hostile input into a
      * failed batch run, which is a denial of service rather than a defence; truncating is what the source
      * field does.
      *
@@ -3122,8 +3186,8 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      *
      * <p>{@code ACCT-CURR-BAL} is {@code PIC S9(10)V99}, one integer digit wider than this mask, so a
      * balance of a billion or more loses its high-order digit. That truncation is what the COBOL
-     * {@code MOVE} at {@code :L484} does and it is reproduced rather than rejected (severity Low,
-     * preserved legacy behaviour): failing here would refuse statements the legacy system produced.
+     * {@code MOVE} at {@code :L484} does and it is reproduced rather than rejected as preserved legacy
+     * behaviour: failing here would refuse statements the legacy system produced.
      *
      * @param value the amount, possibly {@code null}, which renders as zero
      * @return exactly {@value #EDITED_AMOUNT_WIDTH} characters, never {@code null}

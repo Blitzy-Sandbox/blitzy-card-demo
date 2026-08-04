@@ -39,10 +39,12 @@
 package com.cardemo.unit.model;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cardemo.model.dto.UserCreateRequest;
 import com.cardemo.model.enums.UserType;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Constraint;
@@ -160,66 +162,72 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
- * <p>Each mode is classified by severity, highest first, and names the assertion that catches it.
+ * <p>Each mode names the assertion that catches it.
  *
  * <ul>
- *   <li><strong>Blocker - the credential becomes readable.</strong> Adding a getter, a
- *       {@code toString} override, {@code equals}, {@code hashCode} or {@code Serializable} to the
- *       payload opens a read path to a plaintext credential. Caught by
- *       {@code noReadPathToTheCredentialExists}, {@code toStringIsTheInheritedIdentityForm},
- *       {@code equalsAndHashCodeAreNotOverridden} and {@code theTypeIsNotSerializable}.
- *       <em>Remediation:</em> remove the accessor or override; the service tier obtains the credential
- *       at the binding boundary and hashes it there.</li>
- *   <li><strong>Blocker - the seeded plaintext literal appears under {@code src/}.</strong> The ten
+ *   <li><strong>the credential becomes broadly readable.</strong> Exactly one read path is
+ *       sanctioned: {@code mapPassword(Function)}, which hands the value to a reader the caller supplies
+ *       instead of returning it, so it is not a bean accessor and is not a zero-argument method either.
+ *       Adding a {@code getPassword()}, a {@code setPassword()}, a zero-argument reader of any name, a
+ *       {@code toString} override, {@code equals}, {@code hashCode} or {@code Serializable} widens that to a
+ *       general read path. Caught by {@code theOnlyCredentialPathIsTheOneWayReader},
+ *       {@code toStringIsTheInheritedIdentityForm}, {@code equalsAndHashCodeAreNotOverridden} and
+ *       {@code theTypeIsNotSerializable}.
+ *       Instead: remove the added accessor or override. One sanctioned path exists because removing every
+ *       path is worse, not better: with the body member unreadable the controller accepted the credential on
+ *       a bespoke {@code X-Presented-Password} header instead, which generic ingress, proxy and APM
+ *       redaction does not recognise, and which let the audited body value diverge from the hashed header
+ *       value.</li>
+ *   <li><strong>the seeded plaintext literal appears under {@code src/}.</strong> The ten
  *       operators at {@code app/jcl/DUSRSECJ.jcl:L35-L44} share one plaintext value, which may not
  *       appear in any source, comment, assertion message or fixture. Caught by
- *       {@code everyCredentialUsedHereIsObviouslySynthetic}. <em>Remediation:</em> substitute an
+ *       {@code everyCredentialUsedHereIsObviouslySynthetic}. Instead: substitute an
  *       obviously synthetic value carrying punctuation and mixed case.</li>
- *   <li><strong>Blocker - a parity literal is altered.</strong> Most easily by "correcting"
+ *   <li><strong>a parity literal is altered.</strong> Most easily by "correcting"
  *       {@code 'User ID already exist...'} at {@code app/cbl/COUSR01C.cbl:L263} to {@code exists}, or
  *       by re-casing {@code can NOT be empty}, or by replacing three dots with an ellipsis character.
  *       Caught by {@code theDuplicateLiteralKeepsTheSourcesExistSpelling} and
- *       {@code everyPresenceLiteralKeepsItsThreeDotsAndItsUpperCaseNot}. <em>Remediation:</em> restore
+ *       {@code everyPresenceLiteralKeepsItsThreeDotsAndItsUpperCaseNot}. Instead: restore
  *       the literal byte for byte from the cited line; the parity gates compare these strings
  *       directly.</li>
- *   <li><strong>Blocker - the three states are collapsed.</strong> Coercing absent to blank, or
+ *   <li><strong>the three states are collapsed.</strong> Coercing absent to blank, or
  *       trimming a padded value, erases the {@code BLANK} versus {@code NOT-OK} distinction that
  *       {@code app/cpy/CSSETATY.cpy} depends on. Caught by
  *       {@code absentBlankAndLowValuesRemainDistinguishable} and
- *       {@code trailingSpacePaddingIsPreserved}. <em>Remediation:</em> store presented values verbatim
+ *       {@code trailingSpacePaddingIsPreserved}. Instead: store presented values verbatim
  *       and let the predicate, not the accessor, decide emptiness.</li>
- *   <li><strong>High - a shared base type is introduced with the update request.</strong> The two maps
+ *   <li><strong>a shared base type is introduced with the update request.</strong> The two maps
  *       differ in both the identifier field name and the field order, so any parent, interface or mixin
  *       makes one of them factually wrong. Caught by
- *       {@code hierarchyCarriesNoSharedBaseTypeOrMixin}. <em>Remediation:</em> keep each map's fields
+ *       {@code hierarchyCarriesNoSharedBaseTypeOrMixin}. Instead: keep each map's fields
  *       on its own type, in its own order.</li>
- *   <li><strong>High - the five presence messages are aggregated.</strong> The source reports the
+ *   <li><strong>the five presence messages are aggregated.</strong> The source reports the
  *       first failing field only, so collecting all five changes observable behaviour even though
  *       every individual literal is still correct. Caught by
  *       {@code withEveryFieldBlankOnlyTheFirstNameIsReported} and
- *       {@code theCascadeReportsTheFirstFailingFieldInSourceOrder}. <em>Remediation:</em> evaluate the
+ *       {@code theCascadeReportsTheFirstFailingFieldInSourceOrder}. Instead: evaluate the
  *       five checks in declaration order and return on the first failure.</li>
- *   <li><strong>High - the error field is widened from 78 to 80.</strong> The work area is eighty bytes
+ *   <li><strong>the error field is widened from 78 to 80.</strong> The work area is eighty bytes
  *       and the wire field seventy eight; widening hides the truncation instead of reproducing it.
  *       Caught by {@code errorMessageIsSeventyEightAndNotEighty} and
- *       {@code aSeventyNineCharacterValueViolatesTheWidth}. <em>Remediation:</em> keep the constraint
+ *       {@code aSeventyNineCharacterValueViolatesTheWidth}. Instead: keep the constraint
  *       at 78 and truncate on the way in.</li>
- *   <li><strong>High - a membership check stricter than the source is invented.</strong> The cascade
+ *   <li><strong>a membership check stricter than the source is invented.</strong> The cascade
  *       rejects a blank user type and nothing else, so a pattern constraint would refuse input the
  *       legacy system accepts. Caught by
- *       {@code thePayloadAddsNoMembershipCheckStricterThanTheSource}. <em>Remediation:</em> carry the
+ *       {@code thePayloadAddsNoMembershipCheckStricterThanTheSource}. Instead: carry the
  *       raw code and report it from the service.</li>
- *   <li><strong>High - a class level constraint models a gated cross field edit,</strong> or a session
+ *   <li><strong>a class level constraint models a gated cross field edit,</strong> or a session
  *       or navigation field reappears on the payload. Caught by
  *       {@code noClassLevelConstraintModelsAGatedCrossFieldEdit} and
- *       {@code noSessionOrNavigationPropertyIsPresent}. <em>Remediation:</em> gate the cross field rule
+ *       {@code noSessionOrNavigationPropertyIsPresent}. Instead: gate the cross field rule
  *       in the service, after the single field edits, and keep routing in the URL.</li>
- *   <li><strong>Medium - the build fails on a raw type or a resource that is never used.</strong> The
+ *   <li><strong>the build fails on a raw type or a resource that is never used.</strong> The
  *       compiler runs with {@code -Xlint:all -Werror} at {@code release 25}, so any warning in a category
  *       {@code javac} 25 publishes is fatal. An unused <em>import</em> is not such a category and is
  *       caught at review instead. In particular an
  *       {@link AutoCloseable} opened in a try with resources block must be referenced inside that
- *       block, or {@code -Xlint:try} fails the build. <em>Remediation:</em> read the first
+ *       block, or {@code -Xlint:try} fails the build. Instead: read the first
  *       {@code [ERROR]} line; the compiler names the exact construct.</li>
  *   </ul>
  *
@@ -235,12 +243,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       used by this test. To supply one, a fixture would have to be extracted from that JCL member,
  *       which is frozen, and its credential column would have to be replaced before it could be
  *       committed.</li>
- *   <li><strong>No schema artefact beyond the three planned migrations exists, and none is expected.</strong>
+ *   <li><strong>No schema artefact beyond the three migrations exists, and none is expected.</strong>
  *       All three - {@code V1__create_schema.sql}, {@code V2__create_indexes.sql} and
- *       {@code V3__seed_data.sql} - are present at this commit; an earlier revision of this entry said
- *       "child migrations of {@code V1__create_schema.sql} are Not available", which conflated "no fourth
- *       migration is planned" with "the later migrations are missing" and is withdrawn. Nothing here
- *       references any of them: this is a pure JVM unit test and reaches no schema in any case.</li>
+ *       {@code V3__seed_data.sql} - are present, and nothing here references any of them: this is a pure
+ *       JVM unit test that reaches no schema in any case.</li>
  *   </ul>
  *
  * @see UserCreateRequest
@@ -1479,25 +1485,81 @@ class UserCreateRequestTest {
 
     /**
      * Asserts that the plaintext credential presented by {@code PASSWDI PIC X(8)} at
-     * {@code app/cpy-bms/COUSR01.CPY:78} travels inbound and nothing outbound.
+     * {@code app/cpy-bms/COUSR01.CPY:78} travels inbound, reaches exactly one in-process reader through a
+     * non-serializing non-bean accessor, and reaches no serializer, renderer or bean mapper at all.
      */
     @Nested
     @DisplayName("6. Credential handling - PASSWDI X(8) at app/cpy-bms/COUSR01.CPY:78 is inbound only")
     class CredentialHandling {
 
         @Test
-        @DisplayName("no read path to the credential exists anywhere on the public surface")
-        void noReadPathToTheCredentialExists() {
+        @DisplayName("the only credential-naming method is the one-way reader, and it demands a reader")
+        void theOnlyCredentialPathIsTheOneWayReader() {
+            // Publishing nothing at all was not safe either: the add endpoint could not reach the credential
+            // it had just bound and took it from an undocumented X-Presented-Password header instead, so a
+            // contract-conformant body silently created a user with no credential and the credential
+            // travelled through the one channel generic ingress, proxy and APM redaction does NOT recognise,
+            // where the audited body value could diverge from the value actually hashed. Publishing a
+            // zero-argument reader was not safe either, because that is precisely the shape every reflective
+            // discoverer looks for. The remedy is exactly one method, which takes a reader as its argument.
+            final List<String> namingTheCredential = Arrays.stream(UserCreateRequest.class.getMethods())
+                    .map(method -> method.getName())
+                    .filter(name -> name.toLowerCase(Locale.ROOT).contains("password"))
+                    .toList();
+
+            assertThat(namingTheCredential)
+                    .as("exactly one path, and no more. Found: %s", namingTheCredential)
+                    .containsExactly("mapPassword");
+            assertThat(namingTheCredential)
+                    .as("and it must NOT be spelled as a JavaBean accessor: a getPassword() or isPassword() "
+                            + "would make the credential a discoverable bean property for "
+                            + "java.beans.Introspector, for Jackson's getter auto-detection and for every "
+                            + "reflective bean mapper and property-driven renderer on the classpath. A "
+                            + "setPassword() would additionally let the credential be replaced after "
+                            + "validation had already inspected it")
+                    .noneMatch(name -> name.startsWith("get") || name.startsWith("is")
+                            || name.startsWith("set"));
+
             assertThat(Arrays.stream(UserCreateRequest.class.getMethods())
+                    .filter(method -> method.getParameterCount() == 0)
                     .map(method -> method.getName())
                     .filter(name -> name.toLowerCase(Locale.ROOT).contains("password"))
                     .toList())
-                    .as("the credential is now written only through the constructor, so no method "
-                            + "whatsoever names it: a getPassword() would open a read path for every "
-                            + "caller, serializer and reflective bean mapper, and the setPassword() "
-                            + "this class used to expose would allow the credential to be replaced "
-                            + "after validation had already inspected it")
+                    .as("no ZERO-ARGUMENT method may name the credential. Jackson, reflective bean mappers, "
+                            + "toString generators and property-walking loggers all discover zero-argument "
+                            + "methods; a method that requires an argument is invisible to every one of them, "
+                            + "which is why the one-way reader is permitted and a getter is not - and why the "
+                            + "reader needs no @JsonIgnore to stay out of the serialised form")
                     .isEmpty();
+
+            final UserCreateRequest payload = populatedPayload();
+            // Typed local rather than an inline expression: R would otherwise be inferred from the
+            // assertThat overload set instead of from the reader, and the call would be ambiguous.
+            final String presentedBack = payload.mapPassword(presented -> presented);
+            assertThat(presentedBack)
+                    .as("the reader receives the value the constructor bound, unchanged. "
+                            + "app/cbl/COSGN00C.cbl upper-cases the credential before comparison and "
+                            + "CardDemoUserDetailsService reproduces that with Locale.ROOT; folding case here "
+                            + "as well, or folding it under the host locale, would change authentication "
+                            + "outcomes, so nothing is normalised on the way through")
+                    .isEqualTo(SYNTHETIC_CREDENTIAL);
+
+            final String absent = populatedPresented().with("password", null).build()
+                    .mapPassword(presented -> presented);
+            assertThat(absent)
+                    .as("an absent credential stays absent rather than becoming empty: "
+                            + "app/cbl/COUSR01C.cbl:136 treats absent and blank alike, but the two must "
+                            + "remain distinguishable states on the payload")
+                    .isNull();
+            final String blank = populatedPresented().with("password", "").build()
+                    .mapPassword(presented -> presented);
+            assertThat(blank)
+                    .as("and a present-but-blank credential stays empty rather than becoming null")
+                    .isEmpty();
+
+            assertThatNullPointerException()
+                    .as("a null reader would silently discard the credential")
+                    .isThrownBy(() -> payload.mapPassword(null));
         }
 
         @Test

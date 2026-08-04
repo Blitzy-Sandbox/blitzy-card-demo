@@ -62,10 +62,12 @@ import java.net.URI;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.security.SecureRandom;
 import java.sql.Statement;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Base64;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -211,10 +213,11 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *       password, and this class mirrors that exactly: the datasource is bound from injected connection
  *       details, so no address and no credential is written anywhere in this source. Neither is there any
  *       ambient-environment lookup, nor any read or write of a JVM-wide system property.</li>
- *   <li>Container image tags are stated, never defaulted: PostgreSQL {@code postgres:16} and LocalStack
- *       {@code localstack/localstack:4.14.0}. An image tag is the one literal a deterministic build
- *       requires; the database field documents why that tag names the major line and the Debian-based
- *       image rather than a patch level or the {@code alpine} variant.</li>
+ *   <li>Container images are stated, never defaulted: PostgreSQL by <strong>digest</strong> and LocalStack
+ *       by the exact tag {@code localstack/localstack:4.14.0}. An image reference is the one literal a
+ *       deterministic build requires; the database field documents why that reference is a digest rather
+ *       than any tag, why it is the Debian-based image rather than the {@code alpine} variant, and why it
+ *       names PostgreSQL 16.14 rather than an older patch level of the same major line.</li>
  *   <li>Time is pinned to {@code 2022-06-10T19:27:53Z} in UTC and published as a {@code java.time.Clock}
  *       bean. See the determinism note below for why the value is not arbitrary.</li>
  *   <li>{@code spring.batch.job.enabled} is {@code false}, so no job runs at startup and every launch is
@@ -399,11 +402,31 @@ public abstract class AbstractBatchIntegrationTest {
      *
      * <p>The deferral's precondition is met: the digest below is pulled into the provisioned environment's
      * cache, so the suite still starts without reaching the network, and a test that needs the network to
-     * start remains something this tier refuses. The digest resolves to PostgreSQL 16.10 on Debian
+     * start remains something this tier refuses. The digest resolves to PostgreSQL 16.14 on Debian
      * GNU/Linux 13 (trixie) with GLIBC 2.41, verified by inspecting the pulled image rather than inferred
      * from its name. {@code asCompatibleSubstituteFor} is required because a digest reference carries no tag,
      * so the library cannot otherwise recognise it as the PostgreSQL image its wait strategy and JDBC URL
      * builder expect.
+     *
+     * <p><strong>Why the patch level is 16.14 and not the 16.10 this field first pinned. Finding, severity
+     * High - raised against the original pin and remediated here.</strong> Immutability and currency are
+     * different properties, and a digest only delivers the first. Pinning by digest froze the engine under
+     * test, which is what determinism needs, but it also froze its <em>patch level</em>, so the pin silently
+     * aged: an immutable reference never picks up a security release, and nothing in the build would ever
+     * report that. The 16.10 digest was, by the time of this review, four security releases behind the 16
+     * line. PostgreSQL 16.14 closes eleven advisories that 16.10 is exposed to, of which
+     * {@code CVE-2026-6473} - integer wraparound causing undersized allocations and an out-of-bounds write -
+     * carries a CVSS v3.1 base score of <strong>8.8</strong>. That is above the {@code failBuildOnCVSS=7}
+     * threshold this project's dependency scan enforces on its Maven graph, so leaving it in the container
+     * substrate would have held the test substrate to a visibly weaker standard than the shipped artifact -
+     * the scanner does not see container images, which is precisely why the currency of this literal has to
+     * be reviewed deliberately rather than assumed.
+     *
+     * <p>The remedy keeps both properties instead of trading one for the other: the reference stays a digest,
+     * so it still cannot move on its own, and the patch level it names is reviewed and advanced explicitly,
+     * so advancing it is a recorded change with a stated reason rather than a silent registry event. The two
+     * facts a reader needs in order to check this are stated together on purpose - the digest, and the
+     * version it was measured to resolve to.
      *
      * <p><strong>The identical digest is named by
      * {@code com.cardemo.integration.repository.AbstractRepositoryIntegrationTest}, and the two must stay
@@ -426,7 +449,7 @@ public abstract class AbstractBatchIntegrationTest {
     @ServiceConnection
     static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(
             DockerImageName
-                    .parse("postgres@sha256:21f6013073bc6b92830a2129570e2f5ec42a6c734b5a985a41e83aa58f54c3c1")
+                    .parse("postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20")
                     .asCompatibleSubstituteFor("postgres"));
 
     /**
@@ -557,13 +580,42 @@ public abstract class AbstractBatchIntegrationTest {
         registry.add("carddemo.aws.sqs.report-queue", () -> reportQueue);
         registry.add("carddemo.aws.sns.notification-topic", () -> "carddemo-notifications");
 
-        // Deliberately synthetic, deliberately not a secret, and deliberately long enough to satisfy the
-        // 32-byte minimum the token signer enforces. The production property resolves an environment variable
-        // with no default so that the application cannot boot with a key an attacker already knows; a test
-        // still has to supply something, and what it supplies must be recognisable at a glance as test-only
-        // material that no deployment could mistake for a real key.
-        registry.add("carddemo.security.jwt.signing-key",
-                () -> "carddemo-integration-test-signing-key-not-a-secret");
+        // Generated fresh for this context from a cryptographically secure source, held only in this local,
+        // and never written to a file, a log line or an assertion message. The production property resolves
+        // an environment variable with no default so that the application cannot boot with a key an attacker
+        // already knows; a test still has to supply something, and generating it removes the whole class of
+        // committed-key-material problem rather than labelling one literal as harmless. It is resolved once
+        // and captured, because the registry may invoke the supplier more than once and a key that changed
+        // between resolutions would break every token round-trip.
+        final String ephemeralSigningKey = generateEphemeralSigningKey();
+        registry.add("carddemo.security.jwt.signing-key", () -> ephemeralSigningKey);
+    }
+
+    /**
+     * Generates a single-use token signing key for this context.
+     *
+     * <p><strong>Why generated rather than declared.</strong> Rule 1 Clause D forbids secrets in code, in
+     * configuration and <em>in tests</em>, with no carve-out for material that happens to be synthetic. A
+     * literal key in a test file is still committed key material: indexable, copyable into a deployment, and
+     * an example of the very pattern the clause exists to stop. Generating it removes the class of problem
+     * instead of declaring one instance of it safe. The value lives only in memory for the lifetime of the
+     * context, so there is nothing to leak, rotate or review.
+     *
+     * <p><strong>Strength.</strong> Thirty-two bytes of entropy is what {@code MacAlgorithm.HS256} requires
+     * and what {@code src/main/java/com/cardemo/security/JwtTokenProvider} enforces on the bound value; the
+     * encoding widens that to forty-three characters, so the length guard passes with room to spare. URL-safe
+     * unpadded encoding is used so the value survives property binding without escaping.
+     *
+     * <p><strong>Error modes.</strong> None this method can produce. {@link SecureRandom} is seeded by the
+     * platform and the encoder cannot fail on a fixed-length input.
+     *
+     * @return a freshly generated key, never {@code null}, never logged and never persisted
+     */
+    private static String generateEphemeralSigningKey() {
+        // 32 bytes == the HS256 minimum the token provider enforces on whatever this harness registers.
+        final byte[] keyMaterial = new byte[32];
+        new SecureRandom().nextBytes(keyMaterial);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
     }
 
     /**
@@ -613,7 +665,9 @@ public abstract class AbstractBatchIntegrationTest {
 
         final Map<QueueAttributeName, String> fifoAttributes = new EnumMap<>(QueueAttributeName.class);
         fifoAttributes.put(QueueAttributeName.FIFO_QUEUE, "true");
-        fifoAttributes.put(QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "true");
+        // Off, matching the production queue since finding H-08: the publisher supplies an explicit
+        // MessageDeduplicationId per submission, so the queue must never collapse on the body.
+        fifoAttributes.put(QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "false");
 
         try (SqsClient sqs = SqsClient.builder()
                 .endpointOverride(endpoint)
@@ -886,7 +940,7 @@ public abstract class AbstractBatchIntegrationTest {
      *
      * <p>Purpose: make a launched job's effects undoable even though the job commits them. Inputs: none.
      * Output: none. Side effects: deliberately extensive, and all of them are restorations rather than
-     * inventions - see the four steps below.
+     * inventions - see the five steps below.
      *
      * <p><strong>Step one, Spring Batch metadata.</strong> Every {@code BATCH_*} row is deleted, in
      * foreign-key order. This is what makes a job instance re-creatable: Spring Batch derives an instance
@@ -898,15 +952,23 @@ public abstract class AbstractBatchIntegrationTest {
      * documented seed state exactly: {@code V3} seeds <em>zero</em> transaction rows deliberately, because
      * the posting job is what fills the relation. Deleting is therefore a restoration, not a wipe.
      *
-     * <p><strong>Step three, the mutable money columns.</strong> The posting job updates the account balance
+     * <p><strong>Step three, the category-balance rows a job inserted.</strong> The posting job's
+     * category-balance step is an upsert, so a launch does not merely change seeded rows - it commits new
+     * ones, for every account, type and category combination the daily file carries that {@code tcatbal.txt}
+     * does not. Those rows are deleted here, leaving exactly the fifty keys {@code V3} seeded. Without this
+     * step the relation grows by one launch's worth of keys and stays that way for the rest of the
+     * invocation, which is precisely the order dependence this reset exists to remove.
+     *
+     * <p><strong>Step four, the mutable money columns.</strong> The posting job updates the account balance
      * and both cycle accumulators, the interest job zeroes the two accumulators, and both update the category
      * balance. Those columns are restored from the frozen fixtures themselves - {@code acctdata.txt} and
      * {@code tcatbal.txt}, decoded position-aware through {@link FixtureLoader} - so the restored value is
      * the seeded value by construction rather than by a hand-typed literal that could drift from it. Nothing
-     * is invented and no row is created or removed: the fifty accounts and fifty category balances are the
-     * ones {@code V3} seeded, and only the columns a job can change are written.
+     * is invented and this step creates and removes no row of its own: step three has already reduced the
+     * category-balance relation to the fifty keys {@code V3} seeded, the fifty accounts are the ones
+     * {@code V3} seeded because no job inserts an account, and only the columns a job can change are written.
      *
-     * <p><strong>Step four, the object store.</strong> Every object under the three buckets is removed, so a
+     * <p><strong>Step five, the object store.</strong> Every object under the three buckets is removed, so a
      * test cannot observe a key an earlier test wrote. The queue is deliberately <em>not</em> purged here:
      * LocalStack rate-limits a FIFO purge to once every sixty seconds, so purging per test would either fail
      * or serialise the tier; a subclass that asserts on queue content must therefore key its assertion on
@@ -931,6 +993,7 @@ public abstract class AbstractBatchIntegrationTest {
             connection.setAutoCommit(true);
             deleteBatchMetadata(connection);
             deleteCommittedTransactions(connection);
+            deleteCreatedCategoryBalances(connection);
             restoreSeededMoneyColumns(connection);
         } catch (final SQLException failure) {
             throw new IllegalStateException("The committed-state reset could not be issued, so this test "
@@ -971,6 +1034,51 @@ public abstract class AbstractBatchIntegrationTest {
     private static void deleteCommittedTransactions(final Connection connection) throws SQLException {
         try (Statement statement = connection.createStatement()) {
             statement.executeUpdate("DELETE FROM \"transaction\"");
+        }
+    }
+
+    /**
+     * Deletes the category-balance rows a job created, leaving exactly the fifty the seed defines.
+     *
+     * <p><strong>Why an update is not enough.</strong> {@link #restoreSeededMoneyColumns(Connection)} puts
+     * seeded <em>values</em> back, but it cannot remove a <em>row</em> that was never seeded, and the posting
+     * job creates rows: {@code 2700-UPDATE-TCATBAL} at {@code app/cbl/CBTRN02C.cbl:L467}-{@code :L500} treats
+     * file status {@code '23'} as an accepted control path and writes a new record for a
+     * (account, type, category) triple the file does not yet carry. {@code app/data/ASCII/dailytran.txt}
+     * carries 300 records spanning triples the fifty seeded rows of {@code app/data/ASCII/tcatbal.txt} do not
+     * cover, so one posting run leaves additional rows behind.
+     *
+     * <p>Because this tier's PostgreSQL container is a JVM singleton shared by every class in it, those extra
+     * rows are visible to every later class. The symptom is remote from the cause and reads as a defect in the
+     * wrong test - a class asserting "fifty seeded category balances" fails with a hundred, naming a job it
+     * never ran. Deleting the surplus here keeps that failure impossible rather than merely unlikely.
+     *
+     * <p>The surviving key set is taken from the fixture rather than from a count or a high-water mark, at the
+     * offsets {@code app/cpy/CVTRA01Y.cpy} declares - account at 1, type at 12, category at 14 - so a row is
+     * kept when and only when the frozen seed defines it.
+     *
+     * @param connection an auto-committing connection outside any test transaction
+     * @throws SQLException if the delete cannot be issued
+     */
+    private static void deleteCreatedCategoryBalances(final Connection connection) throws SQLException {
+        final FixtureLoader.FixtureData seeded =
+                FixtureLoader.load(FixtureLoader.Fixture.TRANSACTION_CATEGORY_BALANCE);
+        final StringBuilder sql = new StringBuilder(
+                "DELETE FROM transaction_category_balance "
+                        + "WHERE (acct_id, tran_type_cd, tran_cat_cd) NOT IN (");
+        for (int row = 0; row < seeded.recordCount(); row++) {
+            sql.append(row == 0 ? "(?, ?, ?)" : ", (?, ?, ?)");
+        }
+        sql.append(')');
+
+        try (PreparedStatement delete = connection.prepareStatement(sql.toString())) {
+            int parameter = 1;
+            for (int row = 0; row < seeded.recordCount(); row++) {
+                delete.setLong(parameter++, Long.parseLong(seeded.field(row, 1, 11)));
+                delete.setString(parameter++, seeded.field(row, 12, 2));
+                delete.setInt(parameter++, Integer.parseInt(seeded.field(row, 14, 4)));
+            }
+            delete.executeUpdate();
         }
     }
 

@@ -49,11 +49,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.cardemo.batch.writers.StatementWriter;
-import com.cardemo.observability.MetricsConfig;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Template;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -160,8 +158,7 @@ class StatementWriterDeliveryTest {
         // independent of the generation, so a real step execution would add nothing to these assertions.
         // The registrar is real rather than a double because it is constructed over a throwaway registry and
         // nothing here asserts a counter.
-        writer = new StatementWriter(s3Template, new MetricsConfig(new SimpleMeterRegistry()),
-                new FileStatusMapper(), FIXED_CLOCK, BUCKET);
+        writer = new StatementWriter(s3Template, new FileStatusMapper(), FIXED_CLOCK, BUCKET);
     }
 
     /**

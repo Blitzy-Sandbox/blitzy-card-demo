@@ -176,14 +176,17 @@
  *       combine processor; {@code TransactionReportProcessorScopeIsolationTest} proves the report processor's
  *       per-execution isolation across nested and concurrent step executions; {@code ParityLoggerRoutingTest}
  *       proves that no monetary value from this package reaches the application log stream.
- *       <strong>Not available, measured 3 August 2026:</strong> the posting processor, the interest processor
- *       and the statement processor have no unit test class of their own, so no coverage figure quoted anywhere
- *       is evidence about them. The required assertions are explicit: the 102/103 fall-through emitting a
- *       single record bearing 103; the exact over-limit expression; a negative amount reaching the debit
- *       accumulator unnormalised; interest computed by the literal-1200 form; the default-group fallback
- *       succeeding and a missing default row abending; twenty lines to a page; the control break firing on the
- *       card number; the end-of-data double count; and the retention bound failing rather than
- *       truncating.</li>
+ *       <strong>Measured 4 August 2026:</strong> every processor in this package now has a unit test class of
+ *       its own - {@code TransactionPostingProcessorTest}, {@code InterestCalculationProcessorTest},
+ *       {@code StatementProcessorTest} and {@code StatementProcessorStreamingTest} alongside the combine and
+ *       report suites already named. <strong>An earlier revision of this document recorded the posting,
+ *       interest and statement processors as having no unit test class</strong>; that statement was true when
+ *       written and is withdrawn here rather than quietly overwritten. The assertions it listed as owed are
+ *       the ones those classes now make: the 102/103 fall-through emitting a single record bearing 103; the
+ *       exact over-limit expression; a negative amount reaching the debit accumulator unnormalised; interest
+ *       computed by the literal-1200 form; the default-group fallback succeeding and a missing default row
+ *       abending; twenty lines to a page; the control break firing on the card number; the end-of-data double
+ *       count; and the retention bound failing rather than truncating.</li>
  *   <li><strong>Coverage.</strong> JaCoCo enforces an 80 percent LINE floor on the merged bundle at
  *       {@code verify} with {@code haltOnFailure} and no exclusions for this package.</li>
  *   <li><strong>Toolchain actually present, measured 3 August 2026</strong> at commit {@code 2e087c4}:

@@ -54,16 +54,13 @@ import com.cardemo.batch.writers.StatementWriter;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.dto.StatementTransaction;
 import com.cardemo.model.entity.CardCrossReference;
-import com.cardemo.observability.MetricsConfig;
 import com.cardemo.service.shared.FileService;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Template;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
@@ -206,8 +203,7 @@ class StatementOutputSinkContractTest {
         private final S3Template s3Template = mock(S3Template.class);
 
         private final StatementWriter writer = new StatementWriter(
-                this.s3Template, new MetricsConfig(new SimpleMeterRegistry()),
-                mock(FileStatusMapper.class), FIXED_CLOCK, BUCKET);
+                this.s3Template, mock(FileStatusMapper.class), FIXED_CLOCK, BUCKET);
     }
 
     /** What one completed statement emission produced. */

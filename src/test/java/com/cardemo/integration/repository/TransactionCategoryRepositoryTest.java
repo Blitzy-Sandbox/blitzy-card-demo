@@ -1,6 +1,6 @@
 /*
  * ******************************************************************
- * Program     : TransactionCategoryRepositoryTest
+ * Program     : TransactionCategoryRepositoryTest.java
  * Application : CardDemo
  * Type        : JUnit 5 integration test (Testcontainers PostgreSQL 16)
  * Function    : Exercises the TRANCATG cluster replacement against a real
@@ -55,6 +55,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Proves that {@link TransactionCategoryRepository} reproduces the {@code TRANCATG} VSAM KSDS cluster
@@ -107,7 +108,7 @@ import org.springframework.data.domain.Sort;
  * cross-reference by card number, the account by identifier, and the category balance by composite key -
  * and never reads {@code TRANCATG} or {@code TRANTYPE} at all.
  *
- * <h2>The TRAN-CAT-KEY name collision (severity: High)</h2>
+ * <h2>The TRAN-CAT-KEY name collision</h2>
  *
  * <p>The COBOL group name {@code TRAN-CAT-KEY} is declared twice in the corpus over two entirely
  * different keys, and confusing them is the defining hazard of this file:
@@ -128,7 +129,7 @@ import org.springframework.data.domain.Sort;
  * must not be harmonised. This class never references
  * {@code TransactionCategoryBalanceId}; the table it keys is owned by its own test.
  *
- * <h2>The intentional 01/0005 gap - do not "fix" it (severity: Blocker if fabricated)</h2>
+ * <h2>The intentional 01/0005 gap - do not "fix" it</h2>
  *
  * <p>Eighteen category combinations are seeded here. {@code app/data/ASCII/discgrp.txt} seeds seventeen
  * rows whose account group identifier is the literal {@code DEFAULT}. The arithmetic
@@ -203,7 +204,7 @@ import org.springframework.data.domain.Sort;
  * <ol>
  *   <li><strong>Every method errors before its first assertion.</strong> The Docker socket is
  *       unreachable. Start the daemon; nothing in this tier can substitute for it.</li>
- *   <li><strong>Testcontainers coordinates fail to resolve (severity: Blocker).</strong> The library is
+ *   <li><strong>Testcontainers coordinates fail to resolve.</strong> The library is
  *       pinned to 2.0.3, which renamed every module artefact. Two remedies are required together and both
  *       are already present in the root {@code pom.xml}: the managed version is overridden through the
  *       {@code testcontainers.version} property - never by importing a second bill of materials, because
@@ -223,14 +224,14 @@ import org.springframework.data.domain.Sort;
  *       codes, so an {@code Integer} over {@code NUMERIC(4)} can fail where {@code INTEGER} passes; the key
  *       class pins {@code columnDefinition = "numeric(4)"} to settle it. If this recurs, the fix belongs
  *       upstream in {@code V1__create_schema.sql} or in the entity or key class. Never widen a column
- *       arbitrarily and never patch the assertion (severity: Medium).</li>
+ *       arbitrarily and never patch the assertion.</li>
  *   <li><strong>An assertion fails on the wrong identifier type.</strong> Confirm the test is using
  *       {@link TransactionCategoryId} and not {@code TransactionCategoryBalanceId}; see the collision
  *       section above.</li>
  *   <li><strong>The foreign-key assertion looks wrong.</strong> The parent column is {@code tran_type},
  *       not {@code tran_type_cd}. {@code app/cpy/CVTRA03Y.cpy:L5} declares the field as
  *       {@code TRAN-TYPE}, the only such spelling in the corpus, so the two sides of
- *       {@code fk09_category_type} are named asymmetrically by design (severity: High).</li>
+ *       {@code fk09_category_type} are named asymmetrically by design.</li>
  *   <li><strong>A confusing null dereference while reading a fixture.</strong> The name must be the bare
  *       classpath-root name of one of the nine catalogued fixtures. The shared reader rejects an unknown
  *       name loudly rather than returning nothing, which is what keeps a typo from becoming a failure far
@@ -250,7 +251,7 @@ import org.springframework.data.domain.Sort;
  *       {@code pk_transaction_category} and {@code fk09_category_type}.</li>
  *   <li>No mapped association to {@code TransactionType}, and no expectation of
  *       {@code AttributeOverride}, {@code MapsId} or {@code IdClass}. The relationship is a
- *       database-level constraint only; asserting a mapped association would be a Blocker.</li>
+ *       database-level constraint only; asserting a mapped association would break parity.</li>
  *   <li>No outbound foreign keys. The three constraints that point <em>at</em> this table belong to the
  *       tests that own {@code "transaction"}, {@code transaction_category_balance} and
  *       {@code disclosure_group}.</li>
@@ -301,7 +302,7 @@ import org.springframework.data.domain.Sort;
  *       destroyed.</li>
  * </ol>
  *
- * <p>One further observation, recorded because it looks like a defect and is not (severity: Low). The
+ * <p>One further observation, recorded because it looks like a defect and is not. The
  * trailing {@code FILLER} in this fixture is zero-filled - four literal {@code 0} characters - as it is in
  * the disclosure-group, category-balance and transaction-type fixtures, whereas the account, customer,
  * card and daily-transaction fixtures space-fill theirs. Nothing here reads those bytes either way, and
@@ -748,4 +749,41 @@ class TransactionCategoryRepositoryTest extends AbstractRepositoryIntegrationTes
                     .containsExactly(1, 2, 3, 4, 5);
         }
     }
+
+    /**
+     * The catalogue reader the metadata contract below is asserted through.
+     *
+     * <p>Injected rather than constructed so that it is bound to the very container the harness started and
+     * the migrations were applied to. It issues catalogue reads only and mutates nothing.
+     */
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    /**
+     * The complete PostgreSQL metadata contract for the {@code transaction_category} table.
+     *
+     * <p><strong>Finding, severity High, RESOLVED.</strong> This class asserted whichever columns its
+     * behavioural tests happened to touch, and every one of those assertions was true and none of them was a
+     * contract. A widened character column, a lost decimal scale, a reordered composite key, a retargeted
+     * foreign key or a dropped check constraint would all have left this class green - and Hibernate's
+     * {@code ddl-auto: validate} would not have caught any of them either, because it compares type
+     * <em>compatibility</em> and not geometry. For a migration whose contract is that every width comes from
+     * a frozen picture clause, that was the gap that mattered most.
+     *
+     * <p><em>Remediation, applied:</em> {@link SchemaMetadataMatrix} declares every facet once and asserts
+     * the live catalogue against it by exact equality on ordered lists, so a missing facet and an extra facet
+     * both fail. Delegating rather than restating is deliberate: the shared schema test drives the identical
+     * contract over all eleven tables, and a paraphrase here could agree with the schema while disagreeing
+     * with the authority.
+     *
+     * <p>For {@code transaction_category} that is three columns, the two-part composite key of the catalogue's KEYLEN 6, and fk09 onto the transaction type - every value measured from the schema the migrations
+     * produce and checked against {@code app/cpy/CVTRA04Y.cpy}, never transcribed from prose.
+     */
+    @Test
+    @DisplayName("the transaction category table matches the complete declared metadata contract: columns, types, "
+            + "widths, precision, scale, nullability, primary key, foreign keys, indexes and constraints")
+    void theTableMatchesTheCompleteMetadataContract() {
+        SchemaMetadataMatrix.assertTableMatches(jdbcTemplate, "transaction_category");
+    }
+
 }

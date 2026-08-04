@@ -461,4 +461,172 @@ final class BuildProvenanceTest {
             return false;
         }
     }
+
+    /**
+     * The continuous-integration workflow's supply chain.
+     *
+     * <p>The POM assertions above exist because a floating dependency version makes a build
+     * irreproducible. A floating GitHub Action reference is the same defect with a wider blast radius,
+     * and it was present: every action was referenced by a major-version tag, which is a branch the
+     * publisher re-points at will. {@code @v4} therefore meant "whatever v4 is when the job starts",
+     * and that code runs with the workflow's token and full access to the checkout. A harness this file
+     * describes as deterministic and repeatable cannot be either while a third party can change what it
+     * executes between two builds of the same commit.
+     *
+     * <p>These assertions hold the remediation in place. They are deliberately mechanical rather than
+     * documentary, because the previous revision already <em>described</em> itself as a pinned,
+     * deterministic harness while referencing four actions by moving tag - so prose was demonstrably not
+     * sufficient to keep the property true. Each test below fails on the specific regression it names.
+     */
+    @Nested
+    @DisplayName("the CI workflow pins what it executes")
+    final class WorkflowSupplyChain {
+
+        /** Any {@code uses:} reference, capturing the action and whatever follows the {@code @}. */
+        private static final Pattern USES =
+                Pattern.compile("^\\s*uses:\\s*([^@\\s]+)@(\\S+)");
+
+        /** A 40-character lowercase hexadecimal Git commit identifier, and nothing looser. */
+        private static final Pattern COMMIT_SHA = Pattern.compile("^[0-9a-f]{40}$");
+
+        /**
+         * Reads the workflow as UTF-8 lines.
+         *
+         * @return the workflow's lines, in order
+         */
+        private List<String> workflowLines() {
+            final Path workflow = ROOT.resolve(".github/workflows/build.yml");
+            assertThat(workflow)
+                    .as("the CI workflow must exist: it is the harness Rule 1 Clause C's "
+                            + "deterministic-build requirement is discharged by")
+                    .isRegularFile();
+            try {
+                return Files.readAllLines(workflow, StandardCharsets.UTF_8);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read " + workflow, cause);
+            }
+        }
+
+        /**
+         * Collects every action reference in the workflow.
+         *
+         * @return the reference following each {@code uses:}, as {@code action@ref}
+         */
+        private List<String> actionReferences() {
+            final List<String> references = new ArrayList<>();
+            for (final String line : workflowLines()) {
+                final Matcher matcher = USES.matcher(line);
+                if (matcher.find()) {
+                    references.add(matcher.group(1) + "@" + matcher.group(2));
+                }
+            }
+            return references;
+        }
+
+        @Test
+        @DisplayName("every action is pinned to an immutable commit SHA, never a movable tag")
+        void everyActionIsPinnedToACommitSha() {
+            final List<String> references = actionReferences();
+
+            assertThat(references)
+                    .as("the scan must find the workflow's action references, so a silent empty pass "
+                            + "is impossible")
+                    .isNotEmpty();
+
+            final List<String> unpinned = new ArrayList<>();
+            for (final String reference : references) {
+                final String ref = reference.substring(reference.indexOf('@') + 1);
+                if (!COMMIT_SHA.matcher(ref).matches()) {
+                    unpinned.add(reference);
+                }
+            }
+
+            assertThat(unpinned)
+                    .as("""
+                        each reference must resolve to one immutable commit. A tag - including an \
+                        apparently specific one like v4.4.0 - is a mutable pointer the publisher can \
+                        move, so it pins nothing; only a 40-character commit identifier does. Offending \
+                        references are listed.""")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("each pinned SHA carries its human-readable release in a trailing comment")
+        void eachPinnedShaIsAnnotatedWithItsRelease() {
+            final List<String> unannotated = new ArrayList<>();
+            for (final String line : workflowLines()) {
+                if (USES.matcher(line).find() && !line.contains("# v")) {
+                    unannotated.add(line.strip());
+                }
+            }
+
+            assertThat(unannotated)
+                    .as("a bare 40-character hash is unreviewable and no dependency bot can tell "
+                            + "whether it is current, so the release it corresponds to is stated beside "
+                            + "it. The comment is for the reader; the SHA is what executes. Both are "
+                            + "required, which is why this is asserted separately from the pinning.")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("Maven runs through the checksum-verified wrapper, not a host or marketplace install")
+        void mavenRunsThroughTheWrapper() {
+            final List<String> hostInvocations = new ArrayList<>();
+            for (final String line : workflowLines()) {
+                final String stripped = line.strip();
+                if (stripped.startsWith("#")) {
+                    continue;
+                }
+                // A host invocation is `mvn` not immediately preceded by the wrapper's `./`.
+                if (stripped.matches(".*(^|[^./\\w])mvn\\s.*") && !stripped.contains("./mvnw")) {
+                    hostInvocations.add(stripped);
+                }
+            }
+
+            assertThat(hostInvocations)
+                    .as("""
+                        .mvn/wrapper/maven-wrapper.properties names the exact distribution together with \
+                        its distributionSha256Sum, so ./mvnw verifies what it downloads before running \
+                        it - a stronger guarantee than any install step, and the same tool a developer \
+                        and the Dockerfile build stage already use. A bare `mvn` reintroduces whatever \
+                        version the runner happens to carry.""")
+                    .isEmpty();
+
+            // Asserted over action REFERENCES rather than over raw text, and for the same reason the
+            // lifecycle-flag assertion in DemoUserSeedGateContractTest is: the workflow documents at
+            // length why this step was removed, and that explanation must not read as the step existing.
+            assertThat(actionReferences())
+                    .as("and no marketplace action installs a Maven beside the wrapper: that step was "
+                            + "removed rather than pinned, because it was both an unpinned third-party "
+                            + "dependency and redundant once ./mvnw verifies its own distribution")
+                    .noneSatisfy(reference -> assertThat(reference).contains("setup-maven"));
+        }
+
+        @Test
+        @DisplayName("the delivered container image is scanned, with a stated High/Critical threshold")
+        void theDeliveredImageIsScanned() {
+            final String workflow = String.join("\n", workflowLines());
+
+            assertThat(workflow)
+                    .as("""
+                        the Maven scan reads pom.xml's resolved graph and cannot see the runtime image. \
+                        That gap is how outdated PostgreSQL, Prometheus and Grafana images passed a green \
+                        build, one of them carrying CVSS 8.8 - above the threshold the Maven scan already \
+                        enforced. The image the Dockerfile produces is therefore scanned too.""")
+                    .contains("docker build --file Dockerfile")
+                    .contains("--severity HIGH,CRITICAL")
+                    .contains("--exit-code 1");
+
+            assertThat(workflow)
+                    .as("the scanner itself is pinned by digest, so the analysis is reproducible")
+                    .contains("aquasec/trivy:0.73.0@sha256:");
+
+            assertThat(workflow)
+                    .as("""
+                        and an advisory with no upstream fix is still reported: --ignore-unfixed must be \
+                        explicitly false, because hiding those findings lets a base image drift out of \
+                        support while this job stays green.""")
+                    .contains("--ignore-unfixed=false");
+        }
+    }
 }

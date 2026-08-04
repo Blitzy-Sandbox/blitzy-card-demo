@@ -36,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -63,11 +64,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 @DisplayName("SnapshotTokenService: the COMMAREA snapshot as an authenticated opaque token")
 class SnapshotTokenServiceTest {
 
-    /** A key of at least the 32 bytes the component requires. Test material only. */
-    private static final String KEY = "unit-test-signing-key-of-at-least-32-bytes";
+    /** A key of at least the 32 bytes the component requires, generated per run so nothing is committed. */
+    private static final String KEY = ephemeralSigningKey();
 
-    /** A second, unrelated key, used to prove a token sealed under one key does not open under another. */
-    private static final String OTHER_KEY = "another-unit-test-signing-key-32-bytes-plus";
+    /**
+     * A second, unrelated key, used to prove a token sealed under one key does not open under another.
+     *
+     * <p>Generated in a loop that rejects a value equal to {@link #KEY}. The probability of a collision
+     * between two 256-bit draws is negligible, but "negligible" is not "impossible", and a test whose whole
+     * point is that two keys differ must not rest on a probability.
+     */
+    private static final String OTHER_KEY = ephemeralSigningKeyOtherThan(KEY);
 
     /** Fifteen minutes, the component's documented default. */
     private static final long LIFETIME_SECONDS = 900L;
@@ -392,4 +399,43 @@ class SnapshotTokenServiceTest {
                     .hasMessageContaining("objectMapper");
         }
     }
+
+    /**
+     * Generates a single-use signing key for this suite.
+     *
+     * <p>Rule 1 Clause D forbids secrets in code, in configuration and <em>in tests</em>, with no carve-out
+     * for material that happens to be synthetic: a literal key in a committed file is still committed key
+     * material, indexable and copyable into a deployment, and it teaches the pattern the clause exists to
+     * stop. Generating it removes the class of problem instead of declaring one instance of it harmless. The
+     * value exists only in memory for the lifetime of this class, and no assertion depends on its content -
+     * only on its being long enough, internally consistent, and distinct from {@link #OTHER_KEY}.
+     *
+     * <p>Thirty-two bytes of entropy is the HS256 minimum the component enforces; URL-safe unpadded encoding
+     * widens that to forty-three characters, so the length guard passes with room to spare.
+     *
+     * @return a freshly generated key, never {@code null}, never logged and never persisted
+     */
+    private static String ephemeralSigningKey() {
+        final byte[] keyMaterial = new byte[32];
+        new SecureRandom().nextBytes(keyMaterial);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
+    }
+
+    /**
+     * Generates a key that is guaranteed to differ from the one supplied.
+     *
+     * <p>The loop is what makes "two different keys" a fact rather than a near-certainty. It cannot spin: each
+     * draw is independent and the rejected value is a single point in a 256-bit space.
+     *
+     * @param excluded the key the result must not equal; must not be {@code null}
+     * @return a freshly generated key that is not equal to {@code excluded}
+     */
+    private static String ephemeralSigningKeyOtherThan(final String excluded) {
+        String candidate = ephemeralSigningKey();
+        while (candidate.equals(excluded)) {
+            candidate = ephemeralSigningKey();
+        }
+        return candidate;
+    }
+
 }

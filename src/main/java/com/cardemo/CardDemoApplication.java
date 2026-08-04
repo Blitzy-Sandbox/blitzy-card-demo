@@ -66,18 +66,33 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *
  * <p>Component scanning is rooted at {@code com.cardemo} - the default of {@code @SpringBootApplication},
  * which is why no {@code scanBasePackages} attribute appears below - so it reaches whatever is authored,
- * without enumeration. The subpackage counts below are stated as <strong>present / target</strong> wherever
- * the two differ, so that a planned type is never read as a delivered one: {@code config} 6,
- * {@code security} 4, {@code model} (entity 11, key 3, enums 4, dto 26),
- * {@code repository} 11, {@code service} 21 across nine leaves, {@code controller}
- * <strong>6 / 8</strong> exposing <strong>12 operations today of a target 17</strong>, {@code batch}
- * (jobs <strong>1 / 6</strong>, processors 5, readers <strong>5 / 7</strong>, writers 3),
- * {@code exception} 9 and {@code observability} 3. Measured 3 August 2026 the tree holds 143
- * {@code .java} files - 119 production classes including this entry point, plus 24
- * {@code package-info.java} files, one for each package that declares a type.
- * <strong>The tree has not reached its target yet</strong>: five batch jobs, two batch readers and two
- * controllers are still to be authored, and each is named individually in the leaf document for its
- * package. The authoritative dated inventory, with the command that reproduces it, is section 0.4.5.1 of
+ * without enumeration. The subpackage counts are stated as <strong>present / target</strong> wherever the two
+ * differ, so that a planned type is never read as a delivered one: {@code config} 6, {@code security} 4,
+ * {@code model} (entity 11, key 3, enums 4, dto 26), {@code repository} 11, {@code service} 21 across nine
+ * leaves, {@code controller} <strong>8</strong> exposing <strong>17 operations</strong>, {@code batch}
+ * (jobs <strong>3 / 6</strong>, processors 5, readers <strong>6 / 7</strong>, writers 3), {@code exception} 9
+ * and {@code observability} 3.
+ *
+ * <p><strong>What is still to be authored</strong>, and nothing else: three batch jobs - the two remaining
+ * dataset jobs and {@code BatchPipelineOrchestrator} - and one batch reader. Each is named individually in the
+ * leaf document for its package. The <strong>controller layer is complete</strong>: all eight controllers are
+ * authored and all seventeen operations of {@code app/csd/CARDDEMO.CSD} are exposed.
+ *
+ * <p><strong>Finding M-09, severity Medium, RESOLVED.</strong> This paragraph previously reported six of eight
+ * controllers, twelve of seventeen operations, one of six batch jobs, five of seven readers, and whole-tree
+ * totals of 143 files and 119 types plus 24 package documents. Every one of those had been overtaken by the
+ * work, so the census understated what was delivered - which is the more damaging direction for an evidence
+ * artefact to be wrong in, because a reader concludes that authored, tested code does not exist. The values
+ * above are the measured ones, and the coupled sentence naming what remains was corrected in the same edit so
+ * that no two statements here can disagree.
+ *
+ * <p>The whole-tree file totals are <strong>deliberately no longer restated</strong>. They change with every
+ * file added anywhere in the tree, they were the first figures to go stale, and a reader who needs them is
+ * better served by the command that produces them than by a number that was true once:
+ * {@code find src/main/java -name '*.java' | wc -l} for the total, and the same with
+ * {@code -name 'package-info.java'} for the package documents. The per-package counts above are kept because
+ * they are stable, they orient a reader in the tree, and {@code InventoryCountGateTest} fails the build if
+ * they drift. The authoritative dated inventory is section 0.4.5.1 of
  * {@code docs/technical-specifications.md}. Dependencies are supplied by constructor injection throughout;
  * field and setter injection are not used anywhere.
  *

@@ -76,9 +76,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * source's own no-change message when none does. And it reports the three outcomes of each file operation -
  * found, not found, or the operation failed - with the source's exact message text in every case.
  *
- * <p>It is to be surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
- * {@code /api/admin/*} - <strong>planned</strong>, that controller has not been authored yet, so this
- * service currently has no HTTP entry point. {@code com.cardemo.config.SecurityConfig} already restricts
+ * <p>It is surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
+ * {@code /api/admin/*}, which is authored as of 4 August 2026; an earlier revision of this paragraph
+ * recorded that controller as planned and this service as having no HTTP entry point.
+ * {@code com.cardemo.config.SecurityConfig} restricts
  * {@code /api/admin/*} to the ADMIN role, so the rule is in place ahead of the route - the {@code 'A'} against
  * {@code 'U'} distinction of {@code CDEMO-USER-TYPE} at {@code app/cpy/COCOM01Y.cpy}:27-28, surfaced as
  * {@code com.cardemo.model.enums.UserType}.
@@ -136,9 +137,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       password, user type, from {@code app/cbl/COUSR02C.cbl}:180, {@code :186}, {@code :192}, {@code :198} and
  *       {@code :204}. It is a <strong>parity contract, not a preference</strong>, and it is
  *       <strong>not the sibling's order</strong>: see the troubleshooting entry below.</li>
- *   <li><strong>Two-layer optimistic concurrency</strong> - a business-level field-by-field snapshot comparison
- *       plus a store-level stale-write guard. Neither substitutes for the other; see the mechanism note
- *       below.</li>
+ *   <li><strong>Three-layer concurrency control</strong> - a pessimistic write lock held from the read to the
+ *       rewrite, which is what the source's {@code READ ... UPDATE} did, plus a business-level field-by-field
+ *       snapshot comparison, plus the provider's stale-write guard. No layer substitutes for another; see the
+ *       mechanism note below.</li>
  *   <li><strong>Screen field widths</strong> - taken from {@code app/cpy-bms/COUSR02.CPY} through the constants
  *       of {@code com.cardemo.model.dto.UserSecurityDto} rather than restated here, so the field contract has
  *       one owner: {@code TRNNAMEI PIC X(4)}:24, {@code TITLE01I PIC X(40)}:30, {@code CURDATEI PIC X(8)}:36,
@@ -169,9 +171,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       first name first and the identifier third, at {@code :120}, {@code :126} and {@code :132}. The two orders
  *       are genuinely different and must not be harmonised in either direction. Remedy: keep the explicit ordered
  *       chain exactly as written.</li>
- *   <li><strong>A stale write silently wins.</strong> The snapshot comparison was dropped in favour of a version
- *       counter alone, or the other way round. The two detect different things and both are required; see the
- *       mechanism note below. Remedy: restore whichever layer was removed.</li>
+ *   <li><strong>A stale write silently wins.</strong> The read stopped going through
+ *       {@link UserSecurityRepository#findByIdForUpdate(String)} and went back to the unlocked {@code findById},
+ *       or the snapshot comparison was dropped. The three layers detect different things over different windows
+ *       and all three are required; see the mechanism note below. Remedy: restore whichever layer was
+ *       removed.</li>
  *   <li><strong>A conflict is reported as an undifferentiated 409.</strong> The five outcomes of
  *       {@code com.cardemo.exception.ConcurrentUpdateException} were collapsed. This service raises exactly one
  *       of them, {@code DATA_CHANGED_BEFORE_UPDATE}, and keeps its two routes apart by cause. Remedy: keep the
@@ -332,31 +336,41 @@ import com.cardemo.service.shared.FileStatusMapper;
  * reported a change on every single request. It is a <strong>mechanism substitution, not a behaviour
  * change</strong>: the predicate answers identically to the source's for every input the source could hold.
  *
- * <h2>Labelled mechanism note: two-layer optimistic concurrency</h2>
+ * <h2>Labelled mechanism note: three-layer concurrency control</h2>
  *
  * <p>{@code app/csd/CARDDEMO.CSD}:88 defines {@code FILE(USRSEC)} with
  * {@code DSNAME(AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS)}, {@code BROWSE(YES) DELETE(YES) READ(YES) UPDATE(YES)
  * ADD(YES)} and {@code UPDATEMODEL(LOCKING)}, with {@code RECOVERY(NONE)}. The read at {@code :322-331} carries
  * {@code UPDATE}, so CICS held an exclusive record lock from the read until the rewrite at {@code :360-366} or
- * the end of the task. A stateless REST surface cannot hold a lock across a conversation, so the guarantee is
- * rebuilt from two layers.
+ * the end of the task. Part of that span - the terminal conversation between the two pseudo-conversational
+ * tasks - has no counterpart on a stateless surface. The rest of it does, and the guarantee is rebuilt from
+ * three layers rather than two.
  *
  * <ul>
+ *   <li><strong>Store layer, primary - a pessimistic write lock, which is what the source did.</strong> The read
+ *       goes through {@link UserSecurityRepository#findByIdForUpdate(String)}, so the row is held exclusively
+ *       from the read until the enclosing transaction ends. This is the direct analogue of {@code READ ... UPDATE}
+ *       under {@code UPDATEMODEL(LOCKING)}, and it is what makes the read-compare-rewrite sequence indivisible:
+ *       a second administrator's transaction blocks at its own read rather than interleaving with this one.
+ *       <strong>Finding, MEDIUM severity, resolved:</strong> this layer was absent, and without it the read and
+ *       the rewrite were an unguarded read-modify-write in which the second of two concurrent updates silently
+ *       discarded the first.</li>
  *   <li><strong>Business layer - an explicit field-by-field snapshot comparison.</strong> The caller states what
  *       it was last shown, and each stated value is compared against the record as freshly read inside the
- *       transaction. A disagreement means the record moved underneath the caller, and the write is abandoned.
- *       This is what {@code app/cbl/COACTUPC.cbl}:669-756 does for the account screen, and it is what a version
- *       counter cannot do: it detects <em>which field values</em> differ.</li>
- *   <li><strong>Store layer - a stale-write guard.</strong> A write that the persistence provider finds no
- *       longer applies to the row it read is reported rather than reapplied. This detects <em>that</em> the row
- *       moved, including cases the snapshot cannot see, such as the row being deleted between the read and the
- *       flush.</li>
+ *       transaction. A disagreement means the record moved between the caller's read and its write, and the
+ *       write is abandoned. This is what {@code app/cbl/COACTUPC.cbl}:669-756 does for the account screen, and it
+ *       is what neither a lock nor a version counter can do: it detects <em>which field values</em> differ, over
+ *       a window wider than one transaction.</li>
+ *   <li><strong>Store layer, secondary - a stale-write guard.</strong> A write that the persistence provider
+ *       finds no longer applies to the row it read is reported rather than reapplied. This still matters under a
+ *       lock, because the row can be deleted by a transaction that committed before this one took its lock.</li>
  *   </ul>
  *
- * <p><strong>Neither layer substitutes for the other.</strong> A concurrent write that set a field back to its
- * original value passes the business comparison and would fail a counter comparison; a concurrent delete passes
- * the business comparison and is caught only by the store layer. They are different guarantees, and relying on
- * either alone breaks the guarantee.
+ * <p><strong>No layer substitutes for another.</strong> The lock serialises concurrent writers but cannot know
+ * that a caller composed its submission from a view that is now stale; the snapshot comparison detects exactly
+ * that, but only for the fields the caller states; and a concurrent delete is caught by neither and is reported
+ * by the provider. They are three different guarantees over three different windows, and relying on any one
+ * alone breaks the guarantee.
  *
  * <p>Both routes raise {@code com.cardemo.exception.ConcurrentUpdateException} with the same outcome,
  * {@code DATA_CHANGED_BEFORE_UPDATE}, because that is the one of the type's five outcomes this program's
@@ -1178,9 +1192,11 @@ public class UserUpdateService {
      *
      * <p><strong>The business-level concurrency layer sits between the read and the predicates.</strong> When
      * the caller supplies what it was last shown and that disagrees with the record as freshly read, the write
-     * is abandoned. The source held a record lock across the whole conversation - {@code app/csd/CARDDEMO.CSD}
-     * defines {@code FILE(USRSEC)} with {@code UPDATEMODEL(LOCKING)} - and a stateless surface cannot, so the
-     * snapshot travels on the request instead. No retry, no merge, no re-read and no last-writer-wins: the
+     * is abandoned. The source held a record lock from its read to its rewrite - {@code app/csd/CARDDEMO.CSD}
+     * defines {@code FILE(USRSEC)} with {@code UPDATEMODEL(LOCKING)} - and the read this method performs takes
+     * that same lock through {@link UserSecurityRepository#findByIdForUpdate(String)}. What a stateless surface
+     * cannot hold is the part of the span that crossed the terminal conversation, and the snapshot travels on the
+     * request to cover exactly that part. No retry, no merge, no re-read and no last-writer-wins: the
      * source abandons the write and so does this.
      *
      * @param work     the method-local work area
@@ -1451,12 +1467,21 @@ public class UserUpdateService {
      * ahead of the three statements that follow it. It is a retained no-op, commented at its line and tracked in
      * at its line rather than deleted.
      *
-     * <p><strong>The record lock has no counterpart.</strong> The source's read carries {@code UPDATE} at
-     * {@code :328} and {@code app/csd/CARDDEMO.CSD} defines the file with {@code UPDATEMODEL(LOCKING)}, so the
-     * source held the row from the read until the rewrite - across a terminal conversation. A stateless surface
-     * cannot hold a lock across requests, so the two-layer concurrency design documented on this class replaces
-     * it: the caller's snapshot supplies the business-level guard and the persistence provider's stale-state
-     * detection supplies the store-level one.
+     * <p><strong>The record lock is reproduced, not replaced.</strong> The source's read carries {@code UPDATE}
+     * at {@code :328} and {@code app/csd/CARDDEMO.CSD:L88-L89} defines the file with
+     * {@code UPDATEMODEL(LOCKING)}, so the source held the row exclusively from the read until the rewrite. This
+     * read therefore goes through {@link UserSecurityRepository#findByIdForUpdate(String)}, which issues the
+     * same acquisition as a pessimistic write lock, and the enclosing
+     * {@code @Transactional(rollbackFor = Exception.class)} method is what releases it - exactly where the
+     * source's unit of work released it.
+     *
+     * <p><strong>Finding, MEDIUM severity, resolved.</strong> This read used the unlocked {@code findById} and
+     * the rewrite followed it with nothing in between, so two administrators could each read the same row and
+     * the second write would silently discard the first, losing a role change, a name change or a password
+     * digest. What the source held across a <em>terminal conversation</em> cannot be held across HTTP requests -
+     * that part genuinely has no counterpart - but the conversation's two halves have become one request here,
+     * and within that request the lock is available and is now taken. The business-level snapshot comparison of
+     * {@code 9700}-style change detection remains the second layer and is unchanged.
      *
      * <p>{@code :347} is a live {@code DISPLAY} of the response and reason codes - unlike the sibling add
      * program, where the equivalent statement is commented out - so it is reproduced as a structured log line.
@@ -1467,8 +1492,11 @@ public class UserUpdateService {
     private void readUserSecFile(final ScreenWorkArea work) {
         Optional<UserSecurity> located = Optional.empty();
         try {
-            located = this.userSecurityRepository.findById(work.secUsrId);
-                                                           // :322-331 EXEC CICS READ ... UPDATE RESP/RESP2
+            located = this.userSecurityRepository.findByIdForUpdate(work.secUsrId);
+                                                           // :322-331 EXEC CICS READ ... UPDATE RESP/RESP2 -
+                                                           // the UPDATE option at :328 is the pessimistic write
+                                                           // lock this finder acquires, held to the end of the
+                                                           // enclosing transaction.
             if (located.isPresent()) {
                 final UserSecurity securityRecord = located.get();
                 work.loadedRecord = securityRecord;        // :324 INTO (SEC-USER-DATA)
@@ -1550,13 +1578,16 @@ public class UserUpdateService {
      * the identifier delimited by its first space, so a shorter identifier does not carry the field's trailing
      * padding into the sentence.
      *
-     * <p><strong>The store-level concurrency layer lives here.</strong> A stale-state failure raised while
+     * <p><strong>The secondary store-level layer lives here.</strong> A stale-state failure raised while
      * flushing becomes the same {@code DATA_CHANGED_BEFORE_UPDATE} outcome the business-level comparison raises,
-     * but it carries the provider's exception as its cause, which is what keeps the two distinguishable. Note
-     * that the entity deliberately declares no version column, so this layer is reached through the provider's
-     * stale-state detection - a concurrent delete leaves the update affecting no row - rather than through a
-     * version counter; that limitation is disclosed on this class rather than repaired here, because the entity
-     * and the migration that would have to change are owned elsewhere.
+     * but it carries the provider's exception as its cause, which is what keeps the two distinguishable. The
+     * entity deliberately declares no version column - {@code V1__create_schema.sql} gives
+     * {@code user_security} exactly five, {@code ddl-auto: validate} makes that mandatory and the migration set
+     * is fixed at three members - so this layer is reached through the provider's stale-state detection rather
+     * than through a version counter. It is the <em>secondary</em> guard: the primary one is the pessimistic
+     * write lock the read took, which is why a concurrent update can no longer interleave with this rewrite at
+     * all. What remains for this layer is the case a lock cannot cover, a row deleted by a transaction that
+     * committed before this one read.
      *
      * <p>No retry, no merge, no re-read and no last-writer-wins. The source abandons the write on any failure
      * and so does this; because the whole read-compare-rewrite sequence runs inside one declarative transaction

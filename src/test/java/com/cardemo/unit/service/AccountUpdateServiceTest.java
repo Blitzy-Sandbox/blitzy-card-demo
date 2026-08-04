@@ -80,10 +80,12 @@ import com.cardemo.service.shared.ValidationLookupService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -237,17 +239,16 @@ import org.springframework.transaction.annotation.Transactional;
  *       strictness setting.</li>
  *   </ul>
  *
- * <h2>5. The documented conflict - parity governs</h2>
- * <p>Rule 1 clause B forbids dead code; the migration mandate requires one-to-one control-flow
- * correspondence so the paragraph map is mechanically provable. Where they collide, parity governs,
- * and clause B is satisfied by its own wording: the prohibition is on artefacts <em>without an
- * owner or tracking reference</em>, and each item below carries a locator, an assertion in this
- * class and an intentional-no-op marker. This class's instances are the missing
+ * <h2>5. Reachable no-ops, retained for control-flow parity</h2>
+ * <p>One-to-one control-flow correspondence keeps the paragraph map mechanically provable, so a
+ * paragraph whose body does nothing is still mapped rather than deleted. Each item below carries a
+ * locator, an assertion in this class and an intentional-no-op marker, which is what keeps it from
+ * reading as abandoned residue. This class's instances are the missing
  * {@code WHEN COULD-NOT-LOCK-CUST-FOR-UPDATE} arm - retained, asserted, never added; the
  * unreachable default abend message at {@code :4205-4206}; the bare {@code EXIT} body of
  * {@code 9700-CHECK-CHANGE-IN-REC-EXIT} at {@code :4193-4195}; and the commented-out naive
  * date-of-birth {@code MOVE} at {@code :3856}, cited as the source author's own evidence of the
- * trap. Deleting any of them would break the paragraph map. No other conflict exists.</p>
+ * trap. Deleting any of them would break the paragraph map.</p>
  *
  * <h2>6. What this class pins, and the ways each one gets broken</h2>
  * <ul>
@@ -451,8 +452,9 @@ final class AccountUpdateServiceTest {
     private static final int ACCOUNT_LOGICAL_FIELDS = 10;
 
     /**
-     * The figure the Agent Action Plan attributes to the account block. It matches neither census count;
-     * see {@code theAccountComparisonCensusIsSixteenClausesOverTenLogicalFields} for the disclosure.
+     * The twelve-predicate reading of the account block, which is what a summary count of it yields.
+     * {@code theAccountComparisonCensusIsSixteenClausesOverTenLogicalFields} relates it to the two figures
+     * measured from the source: sixteen comparison clauses over ten logical fields.
      */
     private static final int AAP_ACCOUNT_PREDICATE_CLAIM = 12;
 
@@ -905,10 +907,10 @@ final class AccountUpdateServiceTest {
     private final Clock clock = Clock.fixed(Instant.parse("2024-03-15T09:41:07Z"), ZoneOffset.UTC);
 
     /**
-     * A signing key of exactly the length {@code SnapshotTokenService} requires. A test literal, not a
-     * deployment secret, and it signs nothing outside this suite.
+     * A signing key of at least the length {@code SnapshotTokenService} requires, generated per run rather
+     * than declared, so no key material is committed. It signs nothing outside this suite.
      */
-    private static final String TEST_SIGNING_KEY = "carddemo-unit-test-signing-key-0123456789";
+    private static final String TEST_SIGNING_KEY = ephemeralSigningKey();
 
     /** The token lifetime the sealer is built with, long enough that no test can age one out by accident. */
     private static final long TOKEN_LIFETIME_SECONDS = 900L;
@@ -2879,7 +2881,7 @@ final class AccountUpdateServiceTest {
     // ACUP-CHANGES-OKAYED-LOCK-ERROR 'L', ACUP-CHANGES-OKAYED-BUT-FAILED 'F', with the composite
     // 88-levels ACUP-CHANGES-MADE VALUES 'E','N','C','L','F' and ACUP-CHANGES-FAILED VALUES 'L','F'.
     //
-    // Clause F disclosure. Of the twelve literals the brief enumerates, only FOUR are ever assigned
+    // Of the twelve outcome literals in play, only FOUR are ever assigned
     // on a reachable path - the two lock literals, the data-changed literal and the update-failed
     // literal. The other eight mirror source 88-levels whose SET is either commented out or absent
     // entirely: DID-NOT-FIND-ACCT-IN-CARDXREF and DID-NOT-FIND-ACCTCARD-COMBO are declaration-only,
@@ -4375,9 +4377,8 @@ final class AccountUpdateServiceTest {
         final AccountUpdateResult result = editTurn();
 
         assertThat(errorText(result)).isEqualTo(labelled(LABEL_CREDIT_LIMIT, MUST_BE_SUPPLIED));
-        // The message is quoted in the plan without its terminating period. The composed
-        // form carries one, because the suffix literal at :649 ends in '.'. The quoted text is a
-        // prefix of the real diagnostic, not the whole of it; no code change is warranted.
+        // The composed form carries a terminating period, because the suffix literal at :649 ends in
+        // '.'. A shorter spelling of this diagnostic is therefore a prefix of it rather than the whole.
         assertThat(errorText(result)).startsWith(CREDIT_LIMIT_MUST_BE_SUPPLIED);
         assertThat(cursorField(result)).isEqualTo(FIELD_CREDIT_LIMIT);
         assertThat(hasAspect(result, FIELD_CREDIT_LIMIT, FieldAttribute.ASPECT_MARKER)).isTrue();
@@ -6065,4 +6066,26 @@ final class AccountUpdateServiceTest {
                     + "one was renamed, update this list rather than removing the guard.");
         }
     }
+
+    /**
+     * Generates a single-use signing key for this suite.
+     *
+     * <p>Rule 1 Clause D forbids secrets in code, in configuration and <em>in tests</em>, with no carve-out
+     * for material that happens to be synthetic: a literal key in a committed file is still committed key
+     * material, indexable and copyable into a deployment, and it teaches the pattern the clause exists to
+     * stop. Generating it removes the class of problem instead of declaring one instance of it harmless. The
+     * value exists only in memory for the lifetime of this class, so there is nothing to leak or rotate, and
+     * no assertion anywhere depends on its content - only on its being long enough and internally consistent.
+     *
+     * <p>Thirty-two bytes of entropy is the HS256 minimum the sealer enforces; URL-safe unpadded encoding
+     * widens that to forty-three characters, so the length guard passes with room to spare.
+     *
+     * @return a freshly generated key, never {@code null}, never logged and never persisted
+     */
+    private static String ephemeralSigningKey() {
+        final byte[] keyMaterial = new byte[32];
+        new SecureRandom().nextBytes(keyMaterial);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
+    }
+
 }

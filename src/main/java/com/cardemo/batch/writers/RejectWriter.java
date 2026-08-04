@@ -2,7 +2,7 @@
  * ******************************************************************
  * Program     : RejectWriter.java
  * Application : CardDemo
- * Type        : Spring Batch ItemWriter (Java 25 / Spring Boot 3.5.11)
+ * Type        : Spring Batch ItemStreamWriter (Java 25 / Spring Boot 3.5.11)
  * Function    : Emits the 430-byte daily-transaction reject record.
  * Source      : app/cbl/CBTRN02C.cbl 2500-WRITE-REJECT-REC :L446-L465
  *               (27 paragraphs, 731 lines);
@@ -28,9 +28,8 @@
  */
 package com.cardemo.batch.writers;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
+import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
@@ -41,6 +40,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
+import io.awspring.cloud.s3.S3OutputStream;
+import io.awspring.cloud.s3.S3Resource;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,7 +50,8 @@ import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
-import org.springframework.batch.item.ItemWriter;
+import org.springframework.batch.item.ItemStreamException;
+import org.springframework.batch.item.ItemStreamWriter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -99,8 +101,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       A missing value fails the context at startup rather than silently writing somewhere unintended, which
  *       is the fail-fast standard this migration applies to every externalised setting.</li>
  *   <li>No endpoint, region or credential is read here. The object-storage client is injected already
- *       configured, and the local emulator endpoint override exists only in the {@code local} and {@code test}
- *       profiles, so no live-cloud path is structurally reachable from this class.</li>
+ *       configured, and the emulator endpoint override is declared in all four profiles - bound to a bare
+ *       {@code ${AWS_ENDPOINT_URL}} with no default in the base, {@code test} and {@code prod} profiles, so an
+ *       unset variable fails the context at startup, and defaulted to the LocalStack edge only in
+ *       {@code application-local.yml}. No live-cloud path is therefore structurally reachable from this class.
+ *       An earlier revision of this item said the override existed only in the {@code local} and
+ *       {@code test} profiles; that is withdrawn.</li>
  *   </ul>
  *
  * <h2>Why the 350-byte serialisation is not shared with the sibling writer</h2>
@@ -134,15 +140,25 @@ import com.cardemo.service.shared.FileStatusMapper;
  * numeric order, and identifiers make the key reproducible on re-run whereas a timestamp would not. That is
  * the determinism tradeoff, taken deliberately.
  *
- * <p>The concrete key of every object created is published twice, at two scopes and for two readers. The
- * <em>latest</em> key goes into the step execution context under {@link #REJECT_OBJECT_KEY_CONTEXT_KEY},
+ * <p><strong>Finding H-04, severity High, RESOLVED. One generation is one object.</strong> An earlier revision
+ * created a fresh object per chunk, so a run whose rejects spanned three commit intervals left three objects
+ * under one generation prefix while {@code app/jcl/POSTTRAN.jcl:L38} names a single dataset. A later
+ * {@code (0)} reference resolves the greatest key under the prefix, so it saw only the <em>last</em> chunk and
+ * silently reported a fraction of the run's rejects as all of them - the worst kind of defect, because the
+ * output looked entirely well formed. This writer now opens one stream at the first record, appends every
+ * chunk to it and completes it once, at {@code 9300-DALYREJS-CLOSE}. Peak memory is the object-store client's
+ * own part buffer rather than the reject volume, because that stream switches to a multi-part upload when its
+ * buffer fills; the run is never held in the heap.
+ *
+ * <p>The concrete key is published twice, at two scopes and for two readers, and in both cases only once the
+ * object exists. It goes into the step execution context under {@link #REJECT_OBJECT_KEY_CONTEXT_KEY},
  * alongside the generation prefix under {@link #REJECT_GENERATION_PREFIX_CONTEXT_KEY} and the cumulative record
- * count under {@link #REJECT_RECORD_COUNT_CONTEXT_KEY}, for a listener running inside this step. The
- * <em>complete ordered list</em> goes into the <b>job</b> execution context under
- * {@link #REJECT_OBJECT_KEYS_COUNT_ENTRY} and the indexed entries it describes, for a later step in the same
- * job. That is what makes a {@code (+1)} written earlier in a job readable as {@code (+1)} later in the same
- * job: the downstream step consumes the exact keys that were written, in creation order, instead of
- * re-resolving "latest" - a resolution that would race any concurrent producer and could not recover order.
+ * count under {@link #REJECT_RECORD_COUNT_CONTEXT_KEY} - the count is published at every chunk boundary, the key
+ * only at the close - for a listener running inside this step. It also goes into the <b>job</b> execution
+ * context under {@link #REJECT_OBJECT_KEYS_COUNT_ENTRY} and the single indexed entry it describes, for a later
+ * step in the same job. That is what makes a {@code (+1)} written earlier in a job readable as {@code (+1)}
+ * later in the same job: the downstream step consumes the exact key that was written instead of re-resolving
+ * "latest" - a resolution that would race any concurrent producer.
  *
  * <p>The {@code DALYREJS} generation base declares {@code LIMIT(5)} at {@code app/jcl/DALYREJS.jcl:L26}.
  * <strong>Retention is documented, not enforced here</strong>; object versioning supersedes generation
@@ -205,18 +221,18 @@ import com.cardemo.service.shared.FileStatusMapper;
  */
 @StepScope
 @Component
-public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction> {
+public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTransaction> {
 
     /**
-     * Step execution context key under which the concrete key of the most recently created reject object is
+     * Step execution context key under which the concrete key of this step's single reject object is
      * published, so a later step consumes the exact object this writer produced.
      */
     public static final String REJECT_OBJECT_KEY_CONTEXT_KEY = "carddemo.dalyrejs.object.key";
 
     /**
-     * Step execution context key under which the {@code (+1)} generation prefix is published. A step may emit
-     * several objects under one generation, so the prefix is what makes the whole generation discoverable
-     * while {@link #REJECT_OBJECT_KEY_CONTEXT_KEY} identifies the latest object precisely.
+     * Step execution context key under which the {@code (+1)} generation prefix is published. The generation
+     * holds exactly one object - see {@link #write(Chunk)} for why - so the prefix makes the generation
+     * discoverable while {@link #REJECT_OBJECT_KEY_CONTEXT_KEY} names that object precisely.
      */
     public static final String REJECT_GENERATION_PREFIX_CONTEXT_KEY = "carddemo.dalyrejs.generation.prefix";
 
@@ -231,9 +247,12 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      * Job execution context entry holding how many objects this job instance's reject generation contains, as a
      * {@code Long}.
      *
-     * <p>Together with {@link #rejectObjectKeysIndexEntry(int)} this is the complete, ordered, exact record of
-     * the generation. Read the count, then read that many indexed entries; entry {@code n} is the key of the
-     * {@code n}th object created, in creation order.
+     * <p>Together with {@link #rejectObjectKeysIndexEntry(int)} this is the complete, exact record of the
+     * generation. Read the count, then read that many indexed entries. <strong>Since finding H-04 the count is
+     * always one</strong>, because one {@code (+1)} generation is one object; the list shape is retained rather
+     * than collapsed to a single key so that a consumer written against the ordered protocol keeps working
+     * unchanged, and so that the protocol still expresses "the whole generation" rather than "the latest part
+     * of it".
      *
      * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision published only into the <em>step</em>
      * execution context and told the reader to "promote these to the job execution context from the step's
@@ -647,12 +666,36 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
     private final String generationPrefix;
 
     /**
-     * Monotonic per-step sequence distinguishing the objects of one generation.
+     * The one concrete object key this step's {@code (+1)} generation consists of, derived once at construction.
      *
-     * <p>An instance field on a step-scoped bean is not static mutable state. It is atomic so that a
-     * multi-threaded step cannot allocate the same key twice.
+     * <p><strong>Finding H-04, severity High, RESOLVED.</strong> An earlier revision allocated a fresh key per
+     * chunk from a monotonic sequence, so a run that rejected records across three commit intervals left three
+     * objects under one generation prefix. {@code app/jcl/POSTTRAN.jcl:L38} names a single dataset,
+     * {@code AWS.M2.CARDDEMO.DALYREJS(+1)}, and a later relative reference to {@code (0)} resolves that one
+     * dataset whole - so a consumer resolving "the current generation" as the greatest key under the prefix saw
+     * only the <em>last</em> chunk and silently reported a fraction of the run's rejects as all of them. The
+     * generation is now one object, written as one stream, and this field is that object's key.
      */
-    private final AtomicLong generationSequence = new AtomicLong();
+    private final String generationObjectKey;
+
+    /**
+     * The open write stream for this step's generation, or {@code null} before the first record and after the
+     * generation has been closed.
+     *
+     * <p>Obtained from {@code S3Operations.createResource(...).getOutputStream()}, which the library implements
+     * as a buffered stream that switches to a multi-part upload once its bounded buffer fills. That is what
+     * makes one object out of an arbitrary number of chunks <strong>without</strong> holding the run in the
+     * heap: peak memory is the library's part buffer, not the reject volume.
+     *
+     * <p>An instance field on a step-scoped bean is per-execution state, not static mutable state. It is
+     * mutated only from {@link #open(ExecutionContext)}, {@link #write(Chunk)} and {@link #close()}, which the
+     * framework serialises on the step's own thread; the {@code synchronized} on the append path additionally
+     * makes a multi-threaded step safe.
+     */
+    private OutputStream generationStream;
+
+    /** Whether {@link #close()} has already committed this step's generation, so a second call is a no-op. */
+    private boolean generationCommitted;
 
     /**
      * Cumulative count of reject records written by this step, mirroring {@code WS-REJECT-COUNT}
@@ -715,6 +758,7 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
         // built reference and -Xlint:this-escape stays silent.
         this.generationPrefix =
                 buildGenerationPrefix(requireGdgPrefix(rejectGdgPrefix), stepExecution);
+        this.generationObjectKey = buildGenerationObjectKey(this.generationPrefix, stepExecution);
     }
 
     /**
@@ -806,7 +850,7 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
     public void write(final Chunk<? extends RejectedTransaction> chunk) throws Exception {
         Objects.requireNonNull(chunk, "chunk must not be null");
         if (chunk.isEmpty()) {
-            LOGGER.debug("No rejected transactions in this chunk; no {} generation is created",
+            LOGGER.debug("No rejected transactions in this chunk; nothing is appended to the {} generation",
                     DALYREJS_DD_NAME);
             return;
         }
@@ -816,19 +860,117 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
             Objects.requireNonNull(rejected, "chunk must not contain a null item");
             payload.append(buildRejectRecord(rejected.transaction(), rejected.rejectCode()));
         }
-        emitGeneration(payload.toString(), chunk.size());
+        appendToGeneration(payload.toString(), chunk.size());
         for (final RejectedTransaction rejected : chunk) {
             countRejectedRecord(rejected.rejectCode());
         }
     }
 
     /**
+     * Opens this step's single {@code DALYREJS(+1)} generation, {@code 0300-DALYREJS-OPEN} at
+     * {@code app/cbl/CBTRN02C.cbl:L266}-{@code :L280}.
+     *
+     * <p>Nothing is created here. The source's {@code OPEN OUTPUT} allocates a dataset; an object store has no
+     * allocate step, and creating a zero-length object for a run that rejects nothing would put a generation on
+     * the base that the corpus cannot produce. What this method does is reset the per-execution write state, so
+     * a restart of the same step cannot inherit the previous attempt's counters or a half-written stream.
+     *
+     * <p>Side effects: clears this writer's staged state. Reads the supplied context but never mutates it.
+     *
+     * @param executionContext the step's context, consulted for nothing and mutated not at all; the parameter
+     *     exists because the stream contract declares it
+     * @throws ItemStreamException never; declared by the contract
+     */
+    @Override
+    public void open(final ExecutionContext executionContext) throws ItemStreamException {
+        this.generationStream = null;
+        this.generationCommitted = false;
+        this.recordsWritten.set(0L);
+        LOGGER.debug("{} generation is open for writing under {}", DALYREJS_DD_NAME, generationPrefix);
+    }
+
+    /**
+     * Publishes the running reject count at every chunk boundary, so a decider or a listener sees a value that
+     * is current rather than one that only appears when the step ends.
+     *
+     * <p>The concrete object key is <strong>not</strong> published here: it is published by {@link #close()},
+     * once the single object exists, because a key that names an object the store has not yet accepted would
+     * let a downstream step read a generation that is not there.
+     *
+     * @param executionContext the step's context; the cumulative count is written into it
+     * @throws ItemStreamException never; declared by the contract
+     */
+    @Override
+    public void update(final ExecutionContext executionContext) throws ItemStreamException {
+        if (executionContext == null) {
+            return;
+        }
+        executionContext.putString(REJECT_GENERATION_PREFIX_CONTEXT_KEY, generationPrefix);
+        executionContext.putLong(REJECT_RECORD_COUNT_CONTEXT_KEY, this.recordsWritten.get());
+    }
+
+    /**
+     * Closes the run's single generation, {@code 9300-DALYREJS-CLOSE} at
+     * {@code app/cbl/CBTRN02C.cbl:L654}-{@code :L668}, and publishes the concrete key it created.
+     *
+     * <p><strong>This is the point at which the {@code (+1)} generation comes into existence as one object.</strong>
+     * Closing the buffered stream is what completes the upload, so a failure here is a failed
+     * {@code CLOSE} and is reported through the same guard the source applies to one.
+     *
+     * <p>A step that rejected nothing closes nothing and publishes nothing, which is the {@code OPEN OUTPUT}
+     * followed by {@code CLOSE} of an empty dataset: the corpus writes no record and this writer creates no
+     * object. Idempotent - a second call after a successful close does nothing, because the stream reference is
+     * cleared once it has been committed.
+     *
+     * <p>Side effects: completes one object in the configured bucket; publishes the key, the generation prefix
+     * and the final record count into the step execution context, and the ordered one-entry key list into the
+     * job execution context.
+     *
+     * @throws ItemStreamException never directly; a storage failure is raised as the typed
+     *     {@code com.cardemo.exception.FileAccessException} or {@code FatalProcessingException} the guard
+     *     chooses, so the batch tier sees the same exception it would from any other failed write
+     */
+    @Override
+    public void close() throws ItemStreamException {
+        final OutputStream open = this.generationStream;
+        if (open == null) {
+            LOGGER.debug("No rejected transactions were written, so no {} generation was created",
+                    DALYREJS_DD_NAME);
+            return;
+        }
+        this.generationStream = null;
+
+        // app/cbl/CBTRN02C.cbl:L659 - MOVE 8 TO APPL-RESULT, then CLOSE and the two-way guard at :L661-:L667.
+        final Throwable failureCause = closeRejsFile(open);
+        final String dalyrejsStatus =
+                failureCause == null ? WRITE_SUCCESS_STATUS : WRITE_IO_ERROR_STATUS;
+        final int applResult = fileStatusMapper.applResultForGuard(dalyrejsStatus);
+        if (applResult != FileStatusMapper.APPL_AOK) {
+            // :L665 DISPLAY 'ERROR CLOSING REJECTS FILE', then the status render, then the abend - in order.
+            LOGGER.error(WRITE_FAILURE_TEXT);
+            displayIoStatus(dalyrejsStatus);
+            throw abendProgram(dalyrejsStatus, failureCause);
+        }
+
+        this.generationCommitted = true;
+        publishGeneration(this.generationObjectKey, 0);
+        LOGGER.debug("Closed the {} generation holding {} reject record(s)", DALYREJS_DD_NAME,
+                Long.valueOf(this.recordsWritten.get()));
+    }
+
+    /**
      * Writes a single reject record, for a caller that holds one rejected row and no chunk.
      *
      * <p>{@link #write(Chunk)} delegates to the same composition path per element, so the two entry points
-     * cannot drift. This overload creates its own single-record generation.
+     * cannot drift. This overload appends to the same single generation, so mixing the two entry points in one
+     * step still produces exactly one object.
      *
-     * <p>Side effects: identical to {@link #write(Chunk)} for a chunk of one.
+     * <p>Side effects: identical to {@link #write(Chunk)} for a chunk of one - the record is appended to this
+     * step's single generation, which {@link #close()} completes. <strong>A caller driving this method outside a
+     * step must call {@link #close()} itself</strong>, exactly as the source performs
+     * {@code 9300-DALYREJS-CLOSE}; inside a step the framework calls it, because this writer is an
+     * {@code ItemStream}. Appending here rather than creating an object per call is what keeps one
+     * {@code (+1)} generation to one object.
      *
      * @param transaction the staged input record to re-serialise; must not be {@code null}
      * @param rejectCode the outcome to render into the trailer; must not be {@code null}
@@ -841,13 +983,13 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      */
     public void writeReject(final DailyTransaction transaction, final RejectCode rejectCode) {
         final RejectedTransaction rejected = new RejectedTransaction(transaction, rejectCode);
-        emitGeneration(buildRejectRecord(rejected.transaction(), rejected.rejectCode()), 1);
+        appendToGeneration(buildRejectRecord(rejected.transaction(), rejected.rejectCode()), 1);
         countRejectedRecord(rejected.rejectCode());
     }
 
     /**
      * Reproduces {@code 2500-WRITE-REJECT-REC} at {@code app/cbl/CBTRN02C.cbl:L446-L465}, composing the record
-     * and leaving the write itself to {@link #emitGeneration(String, int)}.
+     * and leaving the write itself to {@link #appendToGeneration(String, int)}.
      *
      * <p>The paragraph's two {@code MOVE} statements map one to one onto the two methods called here and are
      * not consolidated, in keeping with the rule that every source paragraph and every applicable statement
@@ -1257,7 +1399,7 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      *         records, or if the write reports a status the mapper does not classify as an I/O error
      * @throws com.cardemo.exception.FileAccessException if the object-storage write fails
      */
-    private void emitGeneration(final String payload, final int recordCount) {
+    private synchronized void appendToGeneration(final String payload, final int recordCount) {
         // DEADLINE AND RETRY, and where they come from. Finding, severity High, RESOLVED. The upload below is
         // synchronous, so an unbounded call would hold the chunk transaction open for as long as the endpoint
         // chose to stall. No per-call override is configured HERE on purpose: a deadline written at this call
@@ -1270,13 +1412,12 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
         // app/cbl/CBTRN02C.cbl:L460-L463 does for any other physical write failure.
         final byte[] bytes = payload.getBytes(RECORD_CHARSET);
         assertUnblockedFraming(bytes.length, payload.length());
-        final String objectKey = nextGenerationKey();
 
         // app/cbl/CBTRN02C.cbl:L450 - MOVE 8 TO APPL-RESULT.
         int applResult = FileStatusMapper.APPL_RESULT_INITIAL;
 
         // app/cbl/CBTRN02C.cbl:L451 - WRITE FD-REJS-RECORD FROM REJECT-RECORD.
-        final Throwable failureCause = writeRejsRecord(objectKey, bytes);
+        final Throwable failureCause = writeRejsRecord(bytes);
         final String dalyrejsStatus =
                 failureCause == null ? WRITE_SUCCESS_STATUS : WRITE_IO_ERROR_STATUS;
 
@@ -1293,9 +1434,43 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
             throw abendProgram(dalyrejsStatus, failureCause);
         }
 
-        publishGeneration(objectKey, recordCount);
-        LOGGER.debug("Wrote {} reject record(s) to the {} generation, {} bytes", recordCount,
-                DALYREJS_DD_NAME, bytes.length);
+        this.recordsWritten.addAndGet(recordCount);
+        publishRunningCount();
+        LOGGER.debug("Appended {} reject record(s) ({} bytes) to the single {} generation", recordCount,
+                bytes.length, DALYREJS_DD_NAME);
+    }
+
+    /**
+     * Opens the write stream for this step's generation on first use, and returns the already-open one after
+     * that.
+     *
+     * <p>Lazy on purpose: a step that rejects nothing must leave no object behind, and the only way to
+     * guarantee that against a store which creates an object the moment a stream is closed is not to open one.
+     *
+     * <p>The metadata declares the content type and deliberately declares <strong>no content length</strong>:
+     * the total is not known until the last chunk has been written, and stating a wrong length is worse than
+     * stating none. Framing is proven per append by {@link #assertUnblockedFraming(int, int)} instead, which is
+     * the stronger check because it holds for every record rather than for the total alone.
+     *
+     * @return the open stream, never {@code null}
+     * @throws IOException if the store refuses to open the object
+     * @throws IllegalStateException if a record arrives after the generation has been closed, which would
+     *     otherwise silently create a second object under one generation - the very defect this design removes
+     */
+    private OutputStream openGenerationStream() throws IOException {
+        if (this.generationStream != null) {
+            return this.generationStream;
+        }
+        if (this.generationCommitted) {
+            throw new IllegalStateException(DALYREJS_DD_NAME + " generation " + generationPrefix
+                    + " has already been closed; a reject record arriving after the close would create a "
+                    + "second object under one (+1) generation, which app/jcl/POSTTRAN.jcl:L38 declares as a "
+                    + "single dataset");
+        }
+        final S3Resource resource = s3Operations.createResource(outputBucket, this.generationObjectKey);
+        resource.setObjectMetadata(streamedObjectMetadata());
+        this.generationStream = resource.getOutputStream();
+        return this.generationStream;
     }
 
     /**
@@ -1312,18 +1487,81 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      * the store's client raises unchecked exceptions and the stream contract declares a checked one, and an
      * unconfirmed write is an unconfirmed write either way.
      *
-     * <p>Side effects: creates one object in the configured bucket when it succeeds.
+     * <p>Side effects: opens this step's single object on the first call and appends to it on every call. The
+     * object is completed by {@link #close()}, not here, which is exactly the {@code WRITE} versus
+     * {@code CLOSE} split the source has.
      *
-     * @param objectKey the key to create
      * @param bytes the exact payload, already framing-checked
-     * @return {@code null} when the write was confirmed, otherwise the throwable that prevented it
+     * @return {@code null} when the write was accepted, otherwise the throwable that prevented it
      */
-    private Throwable writeRejsRecord(final String objectKey, final byte[] bytes) {
-        try (InputStream source = new ByteArrayInputStream(bytes)) {
-            s3Operations.upload(outputBucket, objectKey, source, objectMetadata(bytes.length));
+    private Throwable writeRejsRecord(final byte[] bytes) {
+        try {
+            openGenerationStream().write(bytes);
             return null;
         } catch (IOException | RuntimeException writeFailure) {
+            abandonGenerationStream();
             return writeFailure;
+        }
+    }
+
+    /**
+     * Reproduces the single statement {@code CLOSE DALYREJS-FILE} at {@code app/cbl/CBTRN02C.cbl:L660}.
+     *
+     * <p>Like the write, it reports rather than raises, so the caller's guard stays the one place a status
+     * becomes an outcome. Closing the buffered stream is what completes the upload, so this is the call that
+     * either brings the generation into existence or fails.
+     *
+     * <p>A failure abandons the partly written object rather than leaving an in-flight multi-part upload
+     * behind: an abandoned upload is storage nobody can see and nobody reclaims.
+     *
+     * @param open the stream to close, never {@code null}
+     * @return {@code null} when the object was accepted, otherwise the throwable that prevented it
+     */
+    private Throwable closeRejsFile(final OutputStream open) {
+        try {
+            open.close();
+            return null;
+        } catch (IOException | RuntimeException closeFailure) {
+            abortQuietly(open);
+            return closeFailure;
+        }
+    }
+
+    /**
+     * Abandons the in-flight generation so no partly written object and no dangling multi-part upload survives
+     * a failed write.
+     *
+     * <p>Called only from a failure path that is already reporting a status, so a secondary failure here must
+     * not replace the primary one - it is recorded at debug level and discarded. That is not a swallow: the
+     * primary throwable is returned to the guard and travels on as the cause of the abend.
+     */
+    private void abandonGenerationStream() {
+        final OutputStream open = this.generationStream;
+        this.generationStream = null;
+        if (open != null) {
+            abortQuietly(open);
+        }
+    }
+
+    /**
+     * Aborts one write stream, preferring the store's own abort where the stream offers it.
+     *
+     * <p>The library's buffered implementation exposes {@code abort()}, which cancels an in-flight multi-part
+     * upload; a stream that does not offer it is simply closed. Either way nothing is left half-created.
+     *
+     * @param open the stream to abandon, never {@code null}
+     */
+    private static void abortQuietly(final OutputStream open) {
+        try {
+            if (open instanceof S3OutputStream abortable) {
+                abortable.abort();
+            } else {
+                open.close();
+            }
+        } catch (final IOException | RuntimeException abortFailure) {
+            LOGGER.debug("Abandoning the {} generation reported a secondary failure of type {}; the primary "
+                            + "failure is the one reported to the guard", DALYREJS_DD_NAME,
+                    abortFailure.getClass().getName());
         }
     }
 
@@ -1446,26 +1684,31 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
     }
 
     /**
-     * Allocates the next concrete object key within this step's generation.
+     * Derives the single concrete object key this step's generation consists of.
      *
-     * <p>The sequence is atomic, so a multi-threaded step cannot allocate one key twice. The job execution
-     * identifier is included so a restart of the same job instance cannot collide with the objects of the
-     * previous execution while still sorting after them.
+     * <p>One key per step execution, allocated once, with <strong>no per-chunk sequence</strong>: a generation
+     * is one dataset, so it is one object. The job execution identifier is included so a restart of the same
+     * job instance writes a distinct object that still sorts after the previous attempt's, which is what lets a
+     * consumer resolve "the current generation" as the greatest key under the prefix and get a whole run rather
+     * than a fragment.
      *
      * <p>No wall clock is consulted. A timestamp would also be monotonic, but it would make the key
      * irreproducible on re-run and would import an environment-specific assumption; identifiers are
      * deterministic. That is the tradeoff, taken deliberately.
      *
-     * @return the object key for the generation about to be written
+     * <p>Static and a pure function of its arguments, so the constructor can call it without publishing a
+     * partly built instance.
+     *
+     * @param prefix the validated generation prefix, already ending in a separator
+     * @param stepExecution the step this writer serves, permitted to be {@code null}
+     * @return the object key for this step's generation, never {@code null}
      */
-    private String nextGenerationKey() {
+    private static String buildGenerationObjectKey(final String prefix, final StepExecution stepExecution) {
         final long jobExecutionId = stepExecution == null || stepExecution.getJobExecution() == null
                 ? UNASSIGNED_IDENTIFIER
                 : stepExecution.getJobExecution().getId();
-        return generationPrefix
+        return prefix
                 + String.format(Locale.ROOT, KEY_IDENTIFIER_FORMAT, jobExecutionId)
-                + "-"
-                + String.format(Locale.ROOT, KEY_SEQUENCE_FORMAT, generationSequence.incrementAndGet())
                 + OBJECT_KEY_SUFFIX;
     }
 
@@ -1475,10 +1718,11 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      *
      * <p>This is what makes a {@code (+1)} written by one step readable as {@code (+1)} by a later step in the
      * same job: the downstream step consumes the exact key recorded here instead of re-resolving "latest",
-     * which could otherwise pick up an object written by a different job execution. The <b>complete ordered</b>
-     * key list goes into the job execution context, written by this class rather than by an external promotion
-     * listener; see {@link #REJECT_OBJECT_KEYS_COUNT_ENTRY} for the finding that resolves and for the read
-     * protocol. The step-scoped entries remain for a listener running inside this step.
+     * which could otherwise pick up an object written by a different job execution. The <b>complete</b> key list -
+     * one entry, because one generation is one object - goes into the job execution context, written by this
+     * class rather than by an external promotion listener; see {@link #REJECT_OBJECT_KEYS_COUNT_ENTRY} for the
+     * finding that resolves and for the read protocol. The step-scoped entries remain for a listener running
+     * inside this step.
      *
      * <p>When no step context is available the values are simply not published, which is the explicit
      * {@code null} case rather than a silent failure.
@@ -1490,7 +1734,9 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      * @param recordCount the number of records that object carries
      */
     private void publishGeneration(final String objectKey, final int recordCount) {
-        final long cumulative = recordsWritten.addAndGet(recordCount);
+        final long cumulative = recordCount == 0
+                ? recordsWritten.get()
+                : recordsWritten.addAndGet(recordCount);
         if (stepExecution == null) {
             LOGGER.debug("No step context is available, so the {} generation key is not published",
                     DALYREJS_DD_NAME);
@@ -1507,10 +1753,28 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
             // are still written, so the writer stays testable and nothing is silently dropped in production.
             return;
         }
+        // Exactly one entry, written at index zero and a count of one, because the generation is exactly one
+        // object. The list shape is retained rather than collapsed to the single key so that a consumer written
+        // against the ordered protocol keeps working unchanged; it simply always reads a list of one. A repeated
+        // close cannot append a second entry, because the index is fixed rather than derived from the count.
         final ExecutionContext jobContext = jobExecution.getExecutionContext();
-        final int published = Math.toIntExact(jobContext.getLong(REJECT_OBJECT_KEYS_COUNT_ENTRY, 0L));
-        jobContext.putString(rejectObjectKeysIndexEntry(published), objectKey);
-        jobContext.putLong(REJECT_OBJECT_KEYS_COUNT_ENTRY, published + 1L);
+        jobContext.putString(rejectObjectKeysIndexEntry(0), objectKey);
+        jobContext.putLong(REJECT_OBJECT_KEYS_COUNT_ENTRY, 1L);
+    }
+
+    /**
+     * Publishes the running reject count into the step execution context at every append.
+     *
+     * <p>The concrete key is deliberately not published here: it names an object that does not exist until
+     * {@link #close()} completes the upload, and a downstream step that read it early would find nothing.
+     */
+    private void publishRunningCount() {
+        if (stepExecution == null) {
+            return;
+        }
+        final ExecutionContext context = stepExecution.getExecutionContext();
+        context.putString(REJECT_GENERATION_PREFIX_CONTEXT_KEY, generationPrefix);
+        context.putLong(REJECT_RECORD_COUNT_CONTEXT_KEY, recordsWritten.get());
     }
 
     /**
@@ -1530,21 +1794,23 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
     }
 
     /**
-     * Builds the metadata stated on a created object.
+     * Builds the metadata stated on the streamed generation object.
      *
-     * <p>The content length is declared so the store can verify the transfer, and the content type is the
-     * generic octet stream so that no intermediary treats the payload as text and translates line endings into
-     * a fixed-width record stream that has none.
+     * <p>The content type is the generic octet stream so that no intermediary treats the payload as text and
+     * translates line endings into a fixed-width record stream that has none.
      *
-     * <p>This method is a pure function of its argument.
+     * <p><strong>No content length is declared.</strong> The total is unknown until the last chunk has been
+     * appended, and a length that disagreed with the body would either fail the upload or, worse, truncate it.
+     * Framing is proven per append instead, by {@link #assertUnblockedFraming(int, int)}, which is the stronger
+     * guarantee: it holds for every record rather than for the total alone.
      *
-     * @param contentLength the exact byte length of the payload
+     * <p>This method is a pure function - it takes no argument and reads no field.
+     *
      * @return the metadata to attach
      */
-    private static ObjectMetadata objectMetadata(final int contentLength) {
+    private static ObjectMetadata streamedObjectMetadata() {
         return ObjectMetadata.builder()
                 .contentType(OBJECT_CONTENT_TYPE)
-                .contentLength(Long.valueOf(contentLength))
                 .build();
     }
 

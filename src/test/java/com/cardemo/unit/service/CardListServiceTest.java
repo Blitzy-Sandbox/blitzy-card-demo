@@ -494,7 +494,7 @@ final class CardListServiceTest {
      */
     private static Card card(final int ordinal, final long accountId) {
         return new Card(
-                cardNumber(ordinal), accountId,  EMBOSSED_NAME, EXPIRY_DATE, STATUS_ACTIVE);
+                cardNumber(ordinal), accountId, "007",  EMBOSSED_NAME, EXPIRY_DATE, STATUS_ACTIVE);
     }
 
     /**

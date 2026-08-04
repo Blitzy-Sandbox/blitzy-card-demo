@@ -1169,11 +1169,9 @@ class FileServiceTest {
         /**
          * INTENTIONAL RETENTION - not dead code. All six codes declared at
          * {@code app/cbl/CBSTM03B.CBL:L103-L108} are kept even though only twelve of the twenty-four cells are
-         * reachable and no handler implements {@code 'W'} or {@code 'Z'} at all. Clause B of Rule 1 forbids
-         * dead code; the parity mandate requires the declared contract to survive intact. Parity governs, and
-         * Clause B is satisfied on its own terms because the prohibition is on artefacts without an owner or a
-         * tracking reference: this one is cited to the source locator above and pinned by the assertion
-         * below.
+         * reachable and no handler implements {@code 'W'} or {@code 'Z'} at all. The declared contract is what
+         * the caller writes into {@code LK-M03B-OPER}, so narrowing the enumeration would narrow the boundary
+         * below its source. The retention is cited to the locator above and pinned by the assertion below.
          */
         @Test
         @DisplayName("all six operation codes are retained, including the two no handler implements")

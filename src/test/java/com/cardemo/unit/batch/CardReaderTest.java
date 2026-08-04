@@ -63,9 +63,7 @@ import org.mockito.Mockito;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.dao.QueryTimeoutException;
-import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import com.cardemo.repository.CardRepository;
 
 /**
@@ -163,7 +161,7 @@ class CardReaderTest {
     private static Card row(final long sequence) {
         // No card verification argument: the entity declares no such field and the schema no such column.
         return new Card(String.format(java.util.Locale.ROOT, "%016d", 4111111111111110L + sequence),
-                11L, "IMMANUEL KESSLER", "2025-05-20", "Y");
+                11L, "007", "IMMANUEL KESSLER", "2025-05-20", "Y");
     }
 
     /**

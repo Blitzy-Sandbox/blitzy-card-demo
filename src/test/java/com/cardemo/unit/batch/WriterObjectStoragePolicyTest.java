@@ -39,6 +39,7 @@ import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.cardemo.batch.writers.RejectWriter;
 import com.cardemo.batch.writers.StatementWriter;
@@ -52,7 +53,11 @@ import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileStatusMapper;
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
+import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.time.Clock;
 import java.time.Instant;
@@ -60,6 +65,8 @@ import java.time.ZoneOffset;
 import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -147,7 +154,7 @@ class WriterObjectStoragePolicyTest {
                     mock(S3Operations.class), new FileStatusMapper(), metrics(), "   ", "transact"));
             assertRejects(() -> new RejectWriter(mock(S3Operations.class), metrics(),
                     new FileStatusMapper(), "   ", GDG_PREFIX, null));
-            assertRejects(() -> new StatementWriter(mock(S3Operations.class), metrics(),
+            assertRejects(() -> new StatementWriter(mock(S3Operations.class),
                     new FileStatusMapper(), FIXED_CLOCK, "   "));
         }
 
@@ -158,7 +165,7 @@ class WriterObjectStoragePolicyTest {
                     mock(S3Operations.class), new FileStatusMapper(), metrics(), null, "transact"));
             assertRejects(() -> new RejectWriter(mock(S3Operations.class), metrics(),
                     new FileStatusMapper(), null, GDG_PREFIX, null));
-            assertRejects(() -> new StatementWriter(mock(S3Operations.class), metrics(),
+            assertRejects(() -> new StatementWriter(mock(S3Operations.class),
                     new FileStatusMapper(), FIXED_CLOCK, null));
         }
 
@@ -187,8 +194,7 @@ class WriterObjectStoragePolicyTest {
             for (WriterUnderTest subject : subjects()) {
                 final RuntimeException storageFailure =
                         new IllegalStateException("object storage rejected the upload");
-                doThrow(storageFailure).when(subject.objectStorage())
-                        .upload(anyString(), anyString(), any(), any(ObjectMetadata.class));
+                subject.failStorage().accept(storageFailure);
 
                 assertThatExceptionOfType(CardDemoException.class)
                         .as("%s must route a storage failure through FileStatusMapper", subject.name())
@@ -207,11 +213,7 @@ class WriterObjectStoragePolicyTest {
                 // because app/jcl/CREASTMT.JCL:STEP040 declares two DD names - STMTFILE at LRECL 80 and
                 // HTMLFILE at LRECL 100. What must hold for all of them is the destination, so every
                 // captured bucket argument is asserted rather than a single invocation.
-                final ArgumentCaptor<String> buckets = ArgumentCaptor.forClass(String.class);
-                verify(subject.objectStorage(), atLeastOnce())
-                        .upload(buckets.capture(), anyString(), any(), any(ObjectMetadata.class));
-
-                assertThat(buckets.getAllValues())
+                assertThat(subject.capturedBuckets().get())
                         .as("%s must write only to its configured bucket", subject.name())
                         .isNotEmpty()
                         .containsOnly(subject.bucket());
@@ -226,9 +228,60 @@ class WriterObjectStoragePolicyTest {
      * @param bucket the bucket it was configured with, never {@code null}
      * @param objectStorage the mock it will call, never {@code null}
      * @param emit the call that drives exactly one upload, never {@code null}
+     * @param failStorage makes this writer's store reject the write it is about to attempt. The three writers no
+     *     longer reach the store the same way: two hand it a finished buffer through {@code upload}, while
+     *     {@link RejectWriter} opens one stream per {@code (+1)} generation through {@code createResource} so
+     *     that a run's rejects are one object rather than one per chunk - finding H-04. The policy under test is
+     *     the same for all three; only the call that has to be made to fail differs, so it travels with the
+     *     subject instead of being assumed by the assertion
+     * @param capturedBuckets reports every bucket this writer addressed, read from whichever call it makes
      */
     private record WriterUnderTest(String name, String bucket, S3Operations objectStorage,
-            ThrowingCallable emit) {
+            ThrowingCallable emit, Consumer<RuntimeException> failStorage,
+            Supplier<List<String>> capturedBuckets) {
+    }
+
+    /**
+     * Stubs an object-store mock so a streamed write lands in a buffer the test can inspect.
+     *
+     * @param objectStorage the mock to stub, never {@code null}
+     * @return the buffer every streamed write lands in, never {@code null}
+     */
+    private static ByteArrayOutputStream stubStreamedWrites(final S3Operations objectStorage) {
+        final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        final S3Resource resource = mock(S3Resource.class);
+        try {
+            when(resource.getOutputStream()).thenReturn((OutputStream) sink);
+        } catch (final IOException impossible) {
+            throw new IllegalStateException("stubbing cannot fail", impossible);
+        }
+        when(objectStorage.createResource(anyString(), anyString())).thenReturn(resource);
+        return sink;
+    }
+
+    /**
+     * Reports every bucket argument a writer passed to {@code upload}.
+     *
+     * @param objectStorage the mock to interrogate, never {@code null}
+     * @return the captured bucket names, never {@code null}
+     */
+    private static List<String> uploadedBuckets(final S3Operations objectStorage) {
+        final ArgumentCaptor<String> buckets = ArgumentCaptor.forClass(String.class);
+        verify(objectStorage, atLeastOnce())
+                .upload(buckets.capture(), anyString(), any(), any(ObjectMetadata.class));
+        return buckets.getAllValues();
+    }
+
+    /**
+     * Reports every bucket argument a writer passed to {@code createResource}.
+     *
+     * @param objectStorage the mock to interrogate, never {@code null}
+     * @return the captured bucket names, never {@code null}
+     */
+    private static List<String> streamedBuckets(final S3Operations objectStorage) {
+        final ArgumentCaptor<String> buckets = ArgumentCaptor.forClass(String.class);
+        verify(objectStorage, atLeastOnce()).createResource(buckets.capture(), anyString());
+        return buckets.getAllValues();
     }
 
     /**
@@ -243,24 +296,34 @@ class WriterObjectStoragePolicyTest {
         transactionWriter.beforeStep(MetaDataInstanceFactory.createStepExecution());
 
         final S3Operations forRejects = mock(S3Operations.class);
+        stubStreamedWrites(forRejects);
         final RejectWriter rejectWriter = new RejectWriter(forRejects, metrics(), new FileStatusMapper(),
                 "carddemo-batch-output", GDG_PREFIX, null);
 
         final S3Operations forStatements = mock(S3Operations.class);
-        final StatementWriter statementWriter = new StatementWriter(forStatements, metrics(),
+        final StatementWriter statementWriter = new StatementWriter(forStatements,
                 new FileStatusMapper(), FIXED_CLOCK, "carddemo-statements");
 
         return List.of(
                 new WriterUnderTest("TransactionWriter", "carddemo-batch-output", forTransactions,
                         () -> transactionWriter.write(
-                                org.springframework.batch.item.Chunk.of(postedTransaction()))),
+                                org.springframework.batch.item.Chunk.of(postedTransaction())),
+                        failure -> doThrow(failure).when(forTransactions)
+                                .upload(anyString(), anyString(), any(), any(ObjectMetadata.class)),
+                        () -> uploadedBuckets(forTransactions)),
                 new WriterUnderTest("RejectWriter", "carddemo-batch-output", forRejects,
                         () -> rejectWriter.writeReject(stagedTransaction(),
-                                RejectCode.ACCOUNT_RECORD_NOT_FOUND)),
+                                RejectCode.ACCOUNT_RECORD_NOT_FOUND),
+                        failure -> doThrow(failure).when(forRejects)
+                                .createResource(anyString(), anyString()),
+                        () -> streamedBuckets(forRejects)),
                 new WriterUnderTest("StatementWriter", "carddemo-statements", forStatements, () -> {
                     statementWriter.openStatementOutputs("00000000001", "2024-01");
                     statementWriter.closeStatementOutputs();
-                }));
+                },
+                        failure -> doThrow(failure).when(forStatements)
+                                .upload(anyString(), anyString(), any(), any(ObjectMetadata.class)),
+                        () -> uploadedBuckets(forStatements)));
     }
 
     /**
@@ -276,7 +339,10 @@ class WriterObjectStoragePolicyTest {
     }
 
     /**
-     * The metrics facade every writer takes.
+     * The metrics facade the two reporting writers take.
+     *
+     * <p>{@code StatementWriter} is deliberately absent from its callers: that writer reports no series, so
+     * it holds no meter owner. See {@code MetricInstrumentOwnershipTest.everyReportingWriterTakesTheFacade}.
      *
      * @return a facade over a fresh registry, never {@code null}
      */

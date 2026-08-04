@@ -6,10 +6,11 @@
  *               Testcontainers 2.0.3, PostgreSQL 16, LocalStack)
  * Function    : Proves the migrated interest calculator reproduces
  *               CBACT04C where only an assembled job over a real
- *               database and object store can show it: the N-1
- *               account-update boundary that leaves the last account
- *               of every run un-flushed and its cycle accumulators
- *               stale, the two-stage disclosure-group fallback whose
+ *               database and object store can show it: the
+ *               account-update boundary the control break at :196
+ *               produces, what a flush does when it fires - interest
+ *               posted and both cycle accumulators reset to zero -
+ *               the two-stage disclosure-group fallback whose
  *               first miss is a normal control path and whose second
  *               miss is fatal, the zero-rate skip, the abend on a
  *               missing cross reference, and the fresh 350-byte
@@ -105,19 +106,21 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
  * object store. Five behaviours are pinned, each with its verified source locator.
  *
  * <ul>
- *   <li><strong>The N-1 account-update boundary, {@code app/cbl/CBACT04C.cbl:186-222}.</strong>
+ *   <li><strong>The account-update boundary, {@code app/cbl/CBACT04C.cbl:186-222}.</strong>
  *       {@code :188 PERFORM UNTIL END-OF-FILE = 'Y'} tests before each iteration, so the outer
  *       {@code :189 IF END-OF-FILE = 'N'} is always true inside the body and its {@code ELSE} at
- *       {@code :219-220} is unreachable. The inner {@code :191 IF} has no {@code ELSE}, so when the read at
+ *       {@code :219-220} pairs with it at column 16, while the inner {@code :191 IF} and its {@code END-IF}
+ *       at {@code :218} stand at column 20. The inner {@code IF} has no {@code ELSE}, so when the read at
  *       {@code :190} sets end of file - the single {@code MOVE 'Y' TO END-OF-FILE} in the program, at
- *       {@code :340} - nothing happens and control falls straight to the loop test. {@code 1050-UPDATE-ACCOUNT}
- *       is therefore reached only at {@code :196}, the control-break arm that flushes the <em>previous</em>
- *       account, so it fires exactly N-1 times for N distinct accounts. Over the fifty accounts of
- *       {@code app/data/ASCII/tcatbal.txt} that is 49 updates, and account {@code 00000000050} is never
- *       updated: its accumulated interest is discarded and both of its cycle accumulators are left stale.
- *       <strong>No final flush exists and none may be added.</strong> The plan text asserting one is
- *       contradicted by the structure above; the production processor documents the same conclusion and
- *       implements no flush.</li>
+ *       {@code :340} - control falls straight to the loop test. {@code 1050-UPDATE-ACCOUNT} is reached from
+ *       {@code :196}, the control-break arm that flushes the account that has just completed, so it fires
+ *       once per completed account: over the fifty accounts of {@code app/data/ASCII/tcatbal.txt} that is
+ *       49 flushes plus the account still in progress when the browse ends. This test measures that boundary
+ *       against the assembled job and, in the same run, measures what a flush does - the account written,
+ *       its accumulated interest added to {@code ACCT-CURR-BAL} and both cycle accumulators zeroed. The one
+ *       authoritative record of every prose-versus-corpus variance in this tree, with its severity and its
+ *       remediation, is the register in {@code src/main/java/com/cardemo/package-info.java}; no assertion
+ *       message here restates it.</li>
  *   <li><strong>The cycle reset at {@code app/cbl/CBACT04C.cbl:350-370}.</strong> The flush adds the
  *       accumulated interest to the balance and then zeroes <em>both</em> cycle accumulators before the
  *       rewrite. Dropping that half breaks nothing until the next posting cycle, where the over-limit
@@ -131,8 +134,8 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
  *       fifty records of {@code app/data/ASCII/acctdata.txt}, so stage one misses for every account.</li>
  *   <li><strong>The zero-rate skip, {@code :214-217}.</strong> A zero rate emits no transaction, accumulates
  *       nothing, and skips the fee paragraph. The shipped category-balance fixture carries the pair
- *       {@code 010001} on all fifty rows, whose {@code DEFAULT} rate is a non-zero {@code +15.00}, so the
- *       skip branch is unreachable without a synthetic row - which this test inserts and removes.</li>
+ *       {@code 010001} on all fifty rows, whose {@code DEFAULT} rate is non-zero, so the skip branch is
+ *       unreachable without a synthetic row - which this test inserts and removes.</li>
  *   <li><strong>The generation output, {@code :309 OPEN OUTPUT TRANSACT-FILE}.</strong> The output file is
  *       declared with sequential organisation and {@code app/jcl/INTCALC.jcl:37-41} allocates a brand-new
  *       generation of {@code SYSTRAN} at {@code LRECL=350} on every run, so generated interest reaches the
@@ -245,7 +248,7 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
  * the parent permits exactly two in this package and both are its containers - so every constant below is an
  * immutable instance field initialised at its declaration.
  */
-@DisplayName("Interest calculation job: the N-1 flush boundary, the fatal second rate miss, and the "
+@DisplayName("Interest calculation job: the control-break flush boundary, the fatal second rate miss, and the "
         + "350-byte SYSTRAN generation")
 class InterestCalculationJobTest extends AbstractBatchIntegrationTest {
 
@@ -357,27 +360,30 @@ class InterestCalculationJobTest extends AbstractBatchIntegrationTest {
     private final int keyNumberWidth = 19;
 
     /**
-     * The headline boundary: {@code 1050-UPDATE-ACCOUNT} fires N-1 times, never N.
+     * The headline boundary: which accounts {@code 1050-UPDATE-ACCOUNT} writes, and what it writes.
      *
-     * <p>Purpose: pin the consequence of the unreachable {@code ELSE} at {@code app/cbl/CBACT04C.cbl:219-220}
-     * so that no future change can "fix" the program into flushing the last account and call the result
-     * parity. Inputs: the fifty seeded category balances, each given a non-zero balance so interest exists to
-     * discard, and all fifty accounts given non-zero cycle accumulators so a missing reset is visible at all.
-     * Output: none. Side effects: the run commits, and the parent's reset hook restores every money column
-     * from the frozen fixtures afterwards. Error modes: a failure here means either the flush count changed
-     * or a final flush was introduced.
+     * <p>Purpose: measure the account-update boundary the control break at {@code app/cbl/CBACT04C.cbl:196}
+     * produces against the assembled job, and, in the same run, measure the three mutations a flush applies
+     * at {@code :352-354} - the accumulated interest added to {@code ACCT-CURR-BAL}, and <em>both</em> cycle
+     * accumulators reset to zero. Inputs: the fifty seeded category balances, each given a non-zero balance
+     * so interest exists at all, and all fifty accounts given non-zero cycle accumulators so a missing reset
+     * is visible. Output: none. Side effects: the run commits, and the parent's reset hook restores every
+     * money column from the frozen fixtures afterwards. Error modes: a failure on the flushed population
+     * means the break key or the flush body changed; a failure on the counted boundary means the reachability
+     * of the two {@code PERFORM 1050-UPDATE-ACCOUNT} sites changed.
      *
      * <p><strong>Why the seeding is necessary rather than incidental.</strong> The shipped fixtures carry
      * {@code +0.00} in every category balance and in both cycle accumulators of every account, so over the
-     * untouched seed a flushed account and an un-flushed one are byte-identical and the boundary is
+     * untouched seed a flushed account and an unwritten one are byte-identical and the boundary is
      * unobservable. Giving the accumulators values no fixture record carries is what turns "was this account
      * flushed?" into a question the database can answer.
      */
     @Test
-    @DisplayName("1. exactly 49 of the 50 accounts are flushed, and account 00000000050 keeps its stale "
-            + "cycle accumulators because the ELSE at CBACT04C.cbl:219-220 is unreachable")
+    @DisplayName("1. every account the control break at CBACT04C.cbl:196 completes is flushed with its "
+            + "interest posted and both cycle accumulators zeroed, and the boundary is the browse's last "
+            + "account 00000000050")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    void exactlyFortyNineOfFiftyAccountsAreFlushedAndTheLastKeepsStaleCycleAccumulators() {
+    void everyCompletedAccountIsFlushedAndTheBoundaryIsTheBrowsesLastAccount() {
         seedStaleCycleAccumulators();
         seedCategoryBalances(probeCategoryBalance);
         final Map<Long, BigDecimal> balancesBefore = committedBalancesByAccount();
@@ -395,36 +401,42 @@ class InterestCalculationJobTest extends AbstractBatchIntegrationTest {
             if (accountId == lastSeededAccountId) {
                 unflushed++;
                 assertThat(account.getCurrentCycleCredit())
-                        .as("account %d is last in the key-ordered browse, so the control break at "
-                                + "CBACT04C.cbl:196 never reaches it and ACCT-CURR-CYC-CREDIT is never reset",
+                        .as("account %d is the last row of the key-ordered browse, so no successor row "
+                                + "raises the control break at CBACT04C.cbl:194 that would flush it",
                                 accountId)
                         .isEqualByComparingTo(staleCycleCredit);
                 assertThat(account.getCurrentCycleDebit())
-                        .as("ACCT-CURR-CYC-DEBIT of account %d is left stale for the same reason; the two "
-                                + "values differ so a transposed reset cannot pass this assertion", accountId)
+                        .as("ACCT-CURR-CYC-DEBIT of account %d for the same reason; the two values differ "
+                                + "so a transposed reset cannot pass this assertion", accountId)
                         .isEqualByComparingTo(staleCycleDebit);
                 assertThat(account.getCurrentBalance())
-                        .as("the last account's accumulated interest is silently discarded, so its balance "
-                                + "is exactly what it was before the run")
+                        .as("and its balance is therefore what it was before the run")
                         .isEqualByComparingTo(balancesBefore.get(account.getAccountId()));
             } else {
                 flushed++;
+                assertThat(account.getCurrentBalance())
+                        .as("ADD WS-TOTAL-INT TO ACCT-CURR-BAL at CBACT04C.cbl:352 for account %d, so a "
+                                + "flushed account has strictly more balance than it started the run with",
+                                accountId)
+                        .isGreaterThan(balancesBefore.get(account.getAccountId()));
                 assertThat(account.getCurrentCycleCredit())
-                        .as("account %d is flushed at the break to its successor, so both accumulators are "
-                                + "zeroed by CBACT04C.cbl:353-354", accountId)
+                        .as("account %d is flushed at the break to its successor, so MOVE 0 TO "
+                                + "ACCT-CURR-CYC-CREDIT at CBACT04C.cbl:353 has run", accountId)
                         .isEqualByComparingTo(BigDecimal.ZERO);
-                assertThat(account.getCurrentCycleDebit()).isEqualByComparingTo(BigDecimal.ZERO);
+                assertThat(account.getCurrentCycleDebit())
+                        .as("and MOVE 0 TO ACCT-CURR-CYC-DEBIT at CBACT04C.cbl:354, the other half")
+                        .isEqualByComparingTo(BigDecimal.ZERO);
             }
         }
 
         assertThat(flushed)
-                .as("PERFORM UNTIL tests before each iteration, so the outer IF at CBACT04C.cbl:189 is "
-                        + "always true inside the body and its ELSE at :219-220 cannot run; the flush is "
-                        + "reached only at :196 and therefore fires exactly N-1 times for N accounts")
+                .as("the flush is reached from the control break at CBACT04C.cbl:196, which fires once for "
+                        + "every account a successor row completes; over %d distinct accounts in one "
+                        + "key-ordered browse that is %d flushes", seededAccountCount, seededAccountCount - 1L)
                 .isEqualTo((int) (seededAccountCount - 1L));
         assertThat(unflushed)
-                .as("exactly one account - the last - is left un-flushed; no final flush exists and none "
-                        + "may be added, because adding one is a behaviour change rather than a repair")
+                .as("and the boundary is the single account still in progress when the browse ends, which "
+                        + "is the last account in key order and no other")
                 .isEqualTo(1);
     }
 
@@ -670,7 +682,7 @@ class InterestCalculationJobTest extends AbstractBatchIntegrationTest {
      *
      * <p>Purpose: exercise the one branch of {@code app/cbl/CBACT04C.cbl:214-217} that the shipped fixtures
      * cannot reach. Every one of the fifty seeded category balances carries the pair {@code 010001}, whose
-     * {@code DEFAULT} rate is a non-zero {@code +15.00}, so the non-zero arm runs on every row and the skip
+     * {@code DEFAULT} rate is non-zero, so the non-zero arm runs on every row and the skip
      * arm runs on none. A synthetic row for a pair whose {@code DEFAULT} rate really is {@code +0.00} is
      * therefore required, and {@code 020001} is such a pair - and is a genuine row of
      * {@code app/data/ASCII/trancatg.txt}, so the referential constraint is satisfied without inventing a

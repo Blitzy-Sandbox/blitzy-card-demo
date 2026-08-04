@@ -66,50 +66,22 @@ import org.junit.jupiter.api.Test;
  * next-page sentinels, the three page sizes, the keyset boundary contract, immutability and row
  * ordering, and the input boundaries together with the diagnostic rendering.</p>
  *
- * <h3>1.1 Source attribution - the correct origin, and a Medium-severity specification defect</h3>
+ * <h3>1.1 Source attribution - where the paging fields are actually declared</h3>
  *
- * <p><b>Finding, severity Medium.</b> The Agent Action Plan states at &sect;0.4.1.2 and repeats at
- * &sect;0.5.1.4 that this type derives from "{@code COCOM01Y} page-number and next-page-flag fields".
- * <b>That attribution is wrong, and this test class deliberately does not perpetuate it.</b>
- * {@code app/cpy/COCOM01Y.cpy} is a 47-line, 160-byte communication area whose complete field list
- * occupies lines 19 to 44, and a case-insensitive search of the whole member for {@code PAGE} or
- * {@code NEXT} returns nothing. It declares exactly sixteen elementary fields, none of which is a
- * page number and none of which is a next-page flag:
- * {@code CDEMO-FROM-TRANID X(04)} at {@code :L21}, {@code CDEMO-FROM-PROGRAM X(08)} at {@code :L22},
- * {@code CDEMO-TO-TRANID X(04)} at {@code :L23}, {@code CDEMO-TO-PROGRAM X(08)} at {@code :L24},
- * {@code CDEMO-USER-ID X(08)} at {@code :L25}, {@code CDEMO-USER-TYPE X(01)} at {@code :L26} with
- * its {@code 'A'} and {@code 'U'} condition names at {@code :L27-L28},
- * {@code CDEMO-PGM-CONTEXT 9(01)} at {@code :L29} with its enter and re-enter condition names at
- * {@code :L30-L31}, {@code CDEMO-CUST-ID 9(09)} at {@code :L33}, the three customer name fields at
- * {@code :L34-L36}, {@code CDEMO-ACCT-ID 9(11)} at {@code :L38},
- * {@code CDEMO-ACCT-STATUS X(01)} at {@code :L39}, {@code CDEMO-CARD-NUM 9(16)} at {@code :L41}, and
- * {@code CDEMO-LAST-MAP X(7)} with {@code CDEMO-LAST-MAPSET X(7)} at {@code :L43-L44}.</p>
+ * <p>The paging contract this type carries is declared per list program rather than in one shared record.
+ * {@code app/cpy/COCOM01Y.cpy} is a 47-line, 160-byte communication area whose complete field list occupies
+ * lines 19 to 44, and a case-insensitive search of that member for {@code PAGE} or {@code NEXT} returns
+ * nothing. Each list program declares its own paging fields as level-05 items placed immediately after its
+ * {@code COPY COCOM01Y.} statement, so those items extend the copybook's {@code 01 CARDDEMO-COMMAREA} group
+ * while being declared in the program: see {@code app/cbl/COTRN00C.cbl:L61} followed by {@code :L62-L70},
+ * and {@code app/cbl/COUSR00C.cbl:L66} followed by {@code :L67-L75}. An expanded listing therefore shows the
+ * paging fields inside the COMMAREA group even though the copybook does not declare them, which is exactly
+ * why the widths and the sentinels have to be cited program by program - they diverge, and section 2 of this
+ * class asserts that divergence.</p>
  *
- * <p><b>Remediation, applied.</b> Cite program WORKING-STORAGE and the program COMMAREA extensions
- * instead. {@code docs/technical-specifications.md} now does exactly that, verified on 1 August 2026.
- * The canonical anchor for this type is
- * {@code app/cbl/COUSR00C.cbl:L54}, {@code 05 WS-PAGE-NUM PIC S9(04) COMP VALUE ZEROS.}, supported by
- * {@code app/cbl/COTRN00C.cbl:L63-L68} and {@code app/cbl/COCRDLIC.cbl:L239-L244}. The likely cause
- * of the prior-generation attribution error is textual adjacency rather than carelessness, and it is
- * worth recording
- * because it will recur: each list program declares its own paging fields as level-05 items placed
- * immediately after its {@code COPY COCOM01Y.} statement, so those items extend the copybook's
- * {@code 01 CARDDEMO-COMMAREA} group while being declared in the program. See
- * {@code app/cbl/COTRN00C.cbl:L61} followed by {@code :L62-L70}, and
- * {@code app/cbl/COUSR00C.cbl:L66} followed by {@code :L67-L75}. A reader scanning an expanded
- * listing sees the paging fields inside the COMMAREA group and attributes them to the copybook.</p>
- *
- * <p><b>Finding, severity Medium, closed.</b> The same prior-generation plan prose stated that the
- * seventeen BMS symbolic maps carry 460 input fields, while its own per-map table summed to 440. A
- * census of
- * {@code app/cpy-bms/*.CPY} counting {@code 02 <name>I PIC} declarations totals <b>441</b>:
- * COACTUP 54, COACTVW 37, COADM01 20, COBIL00 10, COCRDLI 45, COCRDSL 15, COCRDUP 17, COMEN01 20,
- * CORPT00 17, COSGN00 11, COTRN00 59, COTRN01 21, COTRN02 21, COUSR00 59, COUSR01 12, COUSR02 12,
- * COUSR03 11. The single discrepancy against that prose's table was COACTVW, which holds 37 rather than
- * 36. The specification now publishes 441 and 37. Neither figure affects this type; the census is
- * pinned here because
- * {@code PagingFieldWidthDivergence.symbolicMapInputFieldCensusIs441NotThe460Claimed} is where the
- * figure is pinned.</p>
+ * <p>The canonical anchor for this type is {@code app/cbl/COUSR00C.cbl:L54},
+ * {@code 05 WS-PAGE-NUM PIC S9(04) COMP VALUE ZEROS.}, supported by
+ * {@code app/cbl/COTRN00C.cbl:L63-L68} and {@code app/cbl/COCRDLIC.cbl:L239-L244}.</p>
  *
  * <h3>1.2 Every locator this class relies on</h3>
  *
@@ -211,28 +183,28 @@ import org.junit.jupiter.api.Test;
  *       compilation, so one raw type or one deprecation is an error rather than a
  *       warning. An unused import is not - {@code javac} 25.0.3 publishes no lint key for one - so that is
  *       caught at review. Reproduce with {@code ./mvnw -o -q test-compile}.</li>
- *   <li><b>An assertion cites {@code COCOM01Y} for pagination.</b> Severity High. The copybook has no
+ *   <li><b>An assertion cites {@code COCOM01Y} for pagination.</b> The copybook has no
  *       paging field; see &sect;1.1 above and cite {@code app/cbl/COUSR00C.cbl:L54} instead.</li>
- *   <li><b>The two next-page sentinels get conflated.</b> Severity Blocker. {@code 'N'} at
+ *   <li><b>The two next-page sentinels get conflated.</b> {@code 'N'} at
  *       {@code app/cbl/COTRN00C.cbl:L68} and {@code LOW-VALUES} at
  *       {@code app/cbl/COCRDLIC.cbl:L243} both mean "no next page" but are different bytes, and no
  *       single character can serve both. This type transports neither, which is what keeps both
  *       adapters lossless.</li>
- *   <li><b>The last-page encoding gets inverted.</b> Severity Blocker.
+ *   <li><b>The last-page encoding gets inverted.</b>
  *       {@code app/cbl/COCRDLIC.cbl:L240-L241} defines {@code CA-LAST-PAGE-SHOWN VALUE 0} and
  *       {@code CA-LAST-PAGE-NOT-SHOWN VALUE 9}, so zero means the last page <b>is</b> shown. Reading
  *       zero as false is exactly backwards.</li>
- *   <li><b>The three page sizes get unified.</b> Severity High. 7, 10 and 10 are three separate
+ *   <li><b>The three page sizes get unified.</b> 7, 10 and 10 are three separate
  *       source facts that happen to include a repeated value; collapsing them to one constant loses
  *       the card list.</li>
- *   <li><b>One paging-field width gets baked in.</b> Severity High. {@code PAGENOI} is
+ *   <li><b>One paging-field width gets baked in.</b> {@code PAGENOI} is
  *       {@code X(3)} and {@code PAGENUMI} is {@code X(8)}; a shared abstraction that assumes either
  *       breaks the other screen.</li>
- *   <li><b>A Spring Data type is imported.</b> Severity High. {@code Page}, {@code Slice} and
+ *   <li><b>A Spring Data type is imported.</b> {@code Page}, {@code Slice} and
  *       {@code Pageable} belong to the repository tier under {@code src/test/java/com/cardemo/
  *       integration/repository}, which is where the VSAM browse verbs are translated. This tier
  *       asserts only the contract of the object in front of it.</li>
- *   <li><b>A row payload reaches a log or an assertion message.</b> Severity Blocker. A page of card
+ *   <li><b>A row payload reaches a log or an assertion message.</b> A page of card
  *       rows carries primary account numbers and a page of user rows carries identities.
  *       {@link PageResponse#toString()} emits page number, page size and the next-page indicator only,
  *       and this class proves it.</li>
@@ -257,22 +229,20 @@ import org.junit.jupiter.api.Test;
  *   <li><b>The wall-clock zone of the legacy region: Not available.</b> Neither producer stores an
  *       offset. {@link FixedClockProvider#CANONICAL_ZONE} records the chosen zone explicitly rather
  *       than leaving it implicit.</li>
- *   <li><b>The production owners of the sentinel encodings: Not available.</b> The six helpers
+ *   <li><b>Why the sentinel encodings are re-implemented here.</b> The six helpers
  *       {@code moveToAlphanumericField}, {@code toFamilyA}, {@code toFamilyB}, {@code fromFamilyA},
  *       {@code fromFamilyB} and {@code toFamilyBLastPageMarker} re-implement, as test-local oracles,
  *       the {@code 'Y'} / {@code 'N'} family of {@code app/cbl/COTRN00C.cbl:L63-L68} and the inverted
- *       zero-or-nine last-page family of {@code app/cbl/COCRDLIC.cbl:L239-L244}.
- *       <b>Re-measured at this commit, the availability half of this entry is withdrawn:</b> both owning
- *       services exist - {@code com.cardemo.service.transaction.TransactionListService} and
- *       {@code com.cardemo.service.card.CardListService} - and the production encodings are asserted against
- *       them by {@code TransactionListServiceTest} and {@code CardListServiceTest}, so this file is no longer
- *       the only record of the contract. An earlier revision said the two services "do not exist at this
- *       checkpoint". What remains true, and is the actual reason the helpers stay, is narrower: neither
- *       service exposes a <em>public encoder</em> to delegate to - the sentinels are produced inside
- *       {@code listCards} and the list-screen methods - so these six helpers remain test-local constructors
- *       of sentinel values for this DTO tier, not a second copy of the contract. Deleting them would leave
- *       these DTO assertions with no way to build an input; re-pointing them would require widening the
- *       production API purely for tests, which is worse. What would be needed to remove them: a public
+ *       zero-or-nine last-page family of {@code app/cbl/COCRDLIC.cbl:L239-L244}. The production
+ *       encodings belong to {@code com.cardemo.service.transaction.TransactionListService} and
+ *       {@code com.cardemo.service.card.CardListService}, and are asserted against those services by
+ *       {@code TransactionListServiceTest} and {@code CardListServiceTest}, so this file is not the only
+ *       record of the contract. Neither service exposes a <em>public encoder</em> to delegate to - the
+ *       sentinels are produced inside {@code listCards} and the list-screen methods - so these six helpers
+ *       remain test-local constructors of sentinel values for this DTO tier, not a second copy of the
+ *       contract. Deleting them would leave these DTO assertions with no way to build an input; re-pointing
+ *       them would require widening the production API purely for tests. What would be needed to remove
+ *       them: a public
  *       encoder on either service, or moving these assertions up to the service tier that already owns it.
  *       Re-derive with
  *       {@code ls src/main/java/com/cardemo/service/card/CardListService.java} and

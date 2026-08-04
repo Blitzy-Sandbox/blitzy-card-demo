@@ -177,10 +177,11 @@
 -- fifty-row fixtures:
 --   customer.cust_ssn               6 of 50 rows lead with a zero
 --   customer.cust_fico_credit_score 7 of 50 rows lead with a zero
+--   card.card_cvv_cd                8 of 50 rows lead with a zero
 -- customer.cust_id, also PIC 9(09), has no such row and stays numeric.
--- card.card_cvv_cd would have been a third such column - 8 of its 50
--- fixture rows lead with a zero - but it is not declared at all; see the
--- note on the card table below.
+-- card.card_cvv_cd is the third such column - 8 of its 50 fixture rows
+-- lead with a zero - and is declared CHAR(3) for exactly that reason;
+-- see the note on the card table below.
 -- For cust_ssn the demotion is compensated by a CHECK restoring the
 -- numeric domain the copybook declared.
 --
@@ -690,22 +691,34 @@ CREATE TABLE customer (
 -- created here, and it is deliberately NOT unique - a customer may
 -- hold several cards on one account.
 --
--- card_cvv_cd IS NOT DECLARED. Card verification data is not retained
--- after authorisation, so the column does not exist and V3 loads no
--- value for it. The evidence that nothing observable depends on it is
--- collected at the column position below. Note what the corpus does
--- NOT contain: there is ZERO card-verification validation anywhere in
--- app/cbl - the only occurrences of the field are PIC X(03) over
--- PIC 9(03) redefinition pairs used for numeric conversion, at
--- app/cbl/COCRDLIC.cbl:102-103, app/cbl/COCRDUPC.cbl:107-108, :294,
--- :306 and :317, and app/cbl/COCRDSLC.cbl:76-77, none of which is ever
--- referenced. No 88-level, no range test and no digits test exists.
+-- card_cvv_cd IS DECLARED, and the read path is withheld instead of the
+-- column. FINDING, SEVERITY HIGH - RESOLVED. An earlier revision of this
+-- migration omitted the column outright on the reasoning that card
+-- verification data must not be retained. That reasoning does not survive
+-- the field contract: app/cpy/CVACT02Y.cpy:L7 declares CARD-CVV-CD
+-- PIC 9(03) inside the authoritative 150-byte record, and bytes 28-30 of
+-- all fifty rows of app/data/ASCII/carddata.txt carry three digits, so
+-- dropping the column loses three authoritative bytes and breaks the
+-- bidirectional field contract the migration exists to reproduce. The
+-- confidentiality concern is met where it belongs, in the mapping rather
+-- than in the schema: com.cardemo.model.entity.Card maps this column to a
+-- private field with NO getter, NO setter and no package-private accessor,
+-- exposes only a boolean comparison, omits it from toString(), and no DTO
+-- declares a counterpart, so the value can be written and compared but
+-- never read back, serialised or logged.
 --
--- Geometry: 16 + 11 + 50 + 10 + 1 = 88 modelled bytes, plus the 3
--- unmodelled CARD-CVV-CD bytes and the FILLER X(59) at
--- app/cpy/CVACT02Y.cpy:L11 = 150. Matches AVGLRECL 150. The record is
--- still 150 bytes wide in the frozen copybook and in every fixture; it
--- is three of those bytes that are not persisted.
+-- What the corpus does NOT contain is still worth recording, because it
+-- explains why no validation of this column exists anywhere in the target:
+-- there is ZERO card-verification validation anywhere in app/cbl - the
+-- only occurrences of the field are PIC X(03) over PIC 9(03) redefinition
+-- pairs used for numeric conversion, at app/cbl/COCRDLIC.cbl:102-103,
+-- app/cbl/COCRDUPC.cbl:107-108, :294, :306 and :317, and
+-- app/cbl/COCRDSLC.cbl:76-77, none of which is ever referenced. No
+-- 88-level, no range test and no digits test exists, so this column
+-- carries no CHECK constraint either.
+--
+-- Geometry: 16 + 11 + 3 + 50 + 10 + 1 = 91 modelled bytes, plus the
+-- FILLER X(59) at app/cpy/CVACT02Y.cpy:L11 = 150. Matches AVGLRECL 150.
 CREATE TABLE card (
   -- CARD-NUM             PIC X(16)  app/cpy/CVACT02Y.cpy:L5   bytes [1-16]
   card_num             CHAR(16)    NOT NULL,
@@ -716,21 +729,16 @@ CREATE TABLE card (
   -- join-side machinery.
   card_acct_id         NUMERIC(11) NOT NULL,
   -- CARD-CVV-CD          PIC 9(03)  app/cpy/CVACT02Y.cpy:L7   bytes [28-30]
-  -- DELIBERATELY NOT DECLARED. Card verification data must not be
-  -- retained after authorisation, and encrypting it would not make
-  -- retention acceptable, so there is no column here to hold it and no
-  -- seed value in V3 to load into one. The field stays declared in the
-  -- frozen copybook, which is where the legacy geometry is preserved;
-  -- what is removed is the live column, not the record of the contract.
-  -- Nothing observable in the source depends on it: it appears in NONE
-  -- of the 17 BMS symbolic maps, so no screen ever displayed or accepted
-  -- it; app/cbl/COCRDSLC.cbl:76-77 and app/cbl/COCRDLIC.cbl:102-103
-  -- declare redefinition pairs for it and never reference them; and in
-  -- app/cbl/COCRDUPC.cbl the new-value field CCUP-NEW-CVV-CD at :306 is
-  -- INITIALIZEd at :586 and read at :1464 but is never assigned by any
-  -- statement in the program, so the legacy update path had no input
-  -- source for it either. See the entity documentation on
-  -- com.cardemo.model.entity.Card for the labelled deviation.
+  -- CHAR(3) rather than NUMERIC(3), and the choice is load bearing: 8 of
+  -- the 50 rows of app/data/ASCII/carddata.txt begin this field with a
+  -- zero - 003, 021, 028, 031, 033, 045, 067 and 075 - so a numeric column
+  -- would drop the leading zero and the record could not be re-emitted
+  -- byte-exactly. The column is NOT NULL like every other column on this
+  -- table, so a card cannot be inserted without its three bytes.
+  -- The value is never selected by any repository projection, never
+  -- rendered by any DTO and never logged; see the private, accessor-less
+  -- mapping on com.cardemo.model.entity.Card.
+  card_cvv_cd          CHAR(3)     NOT NULL,
   -- CARD-EMBOSSED-NAME   PIC X(50)  app/cpy/CVACT02Y.cpy:L8   bytes [31-80]
   card_embossed_name   CHAR(50)    NOT NULL,
   -- CARD-EXPIRAION-DATE  PIC X(10)  app/cpy/CVACT02Y.cpy:L9   bytes [81-90]

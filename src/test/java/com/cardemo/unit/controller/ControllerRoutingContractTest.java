@@ -3,18 +3,20 @@
  * Test        : ControllerRoutingContractTest
  * Application : CardDemo
  * Type        : Java unit test - REST presentation tier
- * Function    : Assert the routing surface all six controllers publish: the
+ * Function    : Assert the routing surface all eight controllers publish: the
  *               base paths, the HTTP verb per route, the total endpoint count,
  *               the constructor contracts, and that a controller delegates
  *               rather than deciding.
  * Source      : app/csd/CARDDEMO.CSD - the transaction-to-program map that
  *               fixes which endpoint replaces which screen program:
+ *                 CC00      -> AuthController
  *                 CAVW/CAUP -> AccountController
  *                 CB00      -> BillingController
  *                 CCLI/CCDL/CCUP -> CardController
  *                 CM00/CA00 -> MenuController
  *                 CR00      -> ReportController
  *                 CT00/CT01/CT02 -> TransactionController
+ *                 CU00/CU01/CU02/CU03 -> AdminController
  * ****************************************************************************
  *
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
@@ -39,6 +41,8 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.mockito.Mockito.mock;
 
 import com.cardemo.controller.AccountController;
+import com.cardemo.controller.AdminController;
+import com.cardemo.controller.AuthController;
 import com.cardemo.controller.BillingController;
 import com.cardemo.controller.CardController;
 import com.cardemo.controller.MenuController;
@@ -47,6 +51,11 @@ import com.cardemo.controller.TransactionController;
 import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.account.AccountUpdateService;
 import com.cardemo.service.account.AccountViewService;
+import com.cardemo.service.admin.UserAddService;
+import com.cardemo.service.admin.UserDeleteService;
+import com.cardemo.service.admin.UserListService;
+import com.cardemo.service.admin.UserUpdateService;
+import com.cardemo.service.auth.AuthenticationService;
 import com.cardemo.service.billing.BillPaymentService;
 import com.cardemo.service.card.CardDetailService;
 import com.cardemo.service.card.CardListService;
@@ -75,14 +84,16 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Contract tests for the six controllers that replace the seventeen CICS screen programs.
+ * Contract tests for the eight controllers that replace the seventeen CICS screen programs.
  *
  * <p>A review recorded no dedicated controller tests at all. What was missing is specifically the
  * <em>routing</em> contract: which path each resource group publishes, which HTTP verb each operation answers
@@ -100,11 +111,26 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code CT01} and {@code CT02} three on one transaction resource. Verifying the paths is therefore verifying
  * the mapping recorded in the CSD, not merely a string constant.
  */
-@DisplayName("Controller routing - the six controllers and the twelve endpoints they publish")
+@DisplayName("Controller routing - the eight controllers and the seventeen endpoints they publish")
 final class ControllerRoutingContractTest {
 
-    /** The endpoint count this milestone's six controllers publish between them. */
-    private static final int EXPECTED_ENDPOINT_COUNT = 12;
+    /**
+     * The endpoint count the eight controllers publish between them.
+     *
+     * <p>One route per sourced CICS transaction. The CSD defines eighteen transactions, but {@code CDV1}
+     * fronts {@code COCRDSEC}, whose source is absent from the repository, so no endpoint exists for it and
+     * the translated total is seventeen rather than eighteen.
+     *
+     * <p><strong>This was 12 while the surface was six controllers, and a review found it still saying 12
+     * after two more controllers had been published.</strong> That is why
+     * {@link RoutingSurface#everyControllerOnDiskIsUnderTest()} now reads the controller package from disk
+     * and compares it with {@link #controllersByBasePath()}: an unregistered controller fails that test by
+     * name instead of quietly leaving this constant correct for a subset.
+     */
+    private static final int EXPECTED_ENDPOINT_COUNT = 17;
+
+    /** The number of controllers the presentation tier publishes. */
+    private static final int EXPECTED_CONTROLLER_COUNT = 8;
 
     /**
      * The shape of a source citation inside a constructor-guard message.
@@ -161,6 +187,10 @@ final class ControllerRoutingContractTest {
         final Map<String, Object> controllers = new LinkedHashMap<>();
         controllers.put("/api/accounts", new AccountController(
                 mock(AccountViewService.class), mock(AccountUpdateService.class)));
+        controllers.put("/api/admin/users", new AdminController(
+                mock(UserListService.class), mock(UserAddService.class),
+                mock(UserUpdateService.class), mock(UserDeleteService.class)));
+        controllers.put("/api/auth", new AuthController(mock(AuthenticationService.class)));
         controllers.put("/api/billing", new BillingController(mock(BillPaymentService.class)));
         controllers.put("/api/cards", new CardController(
                 mock(CardListService.class), mock(CardDetailService.class), mock(CardUpdateService.class),
@@ -172,6 +202,31 @@ final class ControllerRoutingContractTest {
                 mock(TransactionListService.class), mock(TransactionDetailService.class),
                 mock(TransactionAddService.class)));
         return controllers;
+    }
+
+    /**
+     * Lists the controller classes the package directory holds, by simple name, sorted.
+     *
+     * <p>Read from disk deliberately. {@link #controllersByBasePath()} is hand-maintained because each
+     * controller needs its own stubbed collaborators, and a hand-maintained list can only go stale silently -
+     * which it did, at six controllers. Comparing it against the directory turns the omission into a named
+     * failure. {@code package-info.java} declares no type and is excluded.
+     *
+     * @return the controller simple names, sorted so the comparison is order-independent
+     */
+    private static List<String> controllerSimpleNamesOnDisk() {
+        final Path directory = REPOSITORY_ROOT.resolve("src/main/java/com/cardemo/controller");
+        try (java.util.stream.Stream<Path> sources = Files.list(directory)) {
+            return sources
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.endsWith(".java"))
+                    .filter(name -> !"package-info.java".equals(name))
+                    .map(name -> name.substring(0, name.length() - ".java".length()))
+                    .sorted()
+                    .toList();
+        } catch (final java.io.IOException cause) {
+            throw new IllegalStateException("could not list " + directory, cause);
+        }
     }
 
     /**
@@ -196,7 +251,9 @@ final class ControllerRoutingContractTest {
         return Arrays.stream(type.getDeclaredMethods())
                 .filter(method -> method.isAnnotationPresent(GetMapping.class)
                         || method.isAnnotationPresent(PostMapping.class)
-                        || method.isAnnotationPresent(PutMapping.class))
+                        || method.isAnnotationPresent(PutMapping.class)
+                        || method.isAnnotationPresent(DeleteMapping.class)
+                        || method.isAnnotationPresent(PatchMapping.class))
                 .toList();
     }
 
@@ -253,8 +310,8 @@ final class ControllerRoutingContractTest {
         }
 
         @Test
-        @DisplayName("the six controllers publish twelve endpoints between them")
-        void endpointCountIsTwelve() {
+        @DisplayName("the eight controllers publish seventeen endpoints between them")
+        void endpointCountIsSeventeen() {
             final Map<String, Integer> perController = new LinkedHashMap<>();
             controllersByBasePath().forEach((path, controller) ->
                     perController.put(controller.getClass().getSimpleName(),
@@ -273,12 +330,19 @@ final class ControllerRoutingContractTest {
             controllersByBasePath().forEach((path, controller) -> {
                 final List<String> methodVerbs = new ArrayList<>();
                 for (final Method route : routeMethods(controller.getClass())) {
+                    // Each verb is read from its own annotation. An else-branch that assumed PUT for
+                    // everything not GET or POST would report the user-delete route as a PUT and the
+                    // assertion below would then pass on a wrong verb.
                     if (route.isAnnotationPresent(GetMapping.class)) {
                         methodVerbs.add("GET");
                     } else if (route.isAnnotationPresent(PostMapping.class)) {
                         methodVerbs.add("POST");
-                    } else {
+                    } else if (route.isAnnotationPresent(PutMapping.class)) {
                         methodVerbs.add("PUT");
+                    } else if (route.isAnnotationPresent(DeleteMapping.class)) {
+                        methodVerbs.add("DELETE");
+                    } else {
+                        methodVerbs.add("PATCH");
                     }
                 }
                 verbs.put(controller.getClass().getSimpleName(), methodVerbs.stream().sorted().toList());
@@ -288,6 +352,17 @@ final class ControllerRoutingContractTest {
                     .as("a view is a GET and an update is a PUT: the update carries the whole record plus "
                             + "its snapshot, which is a replacement rather than a partial change")
                     .containsExactly("GET", "PUT");
+            assertThat(verbs.get("AdminController"))
+                    .as("the four user-administration operations of CU00, CU01, CU02 and CU03 are a list "
+                            + "read, a create, a whole-record replacement and a destroy, so GET, POST, PUT "
+                            + "and DELETE - one verb each, and the DELETE is why the verb reader tests its "
+                            + "own annotation rather than defaulting")
+                    .containsExactly("DELETE", "GET", "POST", "PUT");
+            assertThat(verbs.get("AuthController"))
+                    .as("signing on establishes an identity that did not exist, so it is a POST; it is also "
+                            + "the one route the security chain grants anonymously, and a GET carrying a "
+                            + "credential would put that credential in a query string")
+                    .containsExactly("POST");
             assertThat(verbs.get("BillingController"))
                     .as("a bill payment creates a transaction, so it is a POST and not idempotent - the "
                             + "source generates a new identifier on every submission")
@@ -305,6 +380,23 @@ final class ControllerRoutingContractTest {
         }
 
         @Test
+        @DisplayName("every controller the package holds is registered here, so none escapes this suite")
+        void everyControllerOnDiskIsUnderTest() {
+            final List<String> registered = controllersByBasePath().values().stream()
+                    .map(controller -> controller.getClass().getSimpleName())
+                    .sorted()
+                    .toList();
+
+            assertThat(registered)
+                    .as("a controller present in src/main/java/com/cardemo/controller but absent from "
+                            + "controllersByBasePath() is exercised by nothing in this class, and every "
+                            + "count here stays correct for the subset - which is exactly how this suite "
+                            + "went stale at six controllers and twelve endpoints")
+                    .containsExactlyElementsOf(controllerSimpleNamesOnDisk())
+                    .hasSize(EXPECTED_CONTROLLER_COUNT);
+        }
+
+        @Test
         @DisplayName("no two controllers share a base path")
         void basePathsAreDistinct()  {
             final List<String> paths = new ArrayList<>(controllersByBasePath().keySet());
@@ -312,7 +404,7 @@ final class ControllerRoutingContractTest {
             assertThat(paths)
                     .as("a shared base path would make route resolution depend on registration order")
                     .doesNotHaveDuplicates()
-                    .hasSize(6);
+                    .hasSize(EXPECTED_CONTROLLER_COUNT);
         }
 
         @Test
@@ -436,16 +528,21 @@ final class ControllerRoutingContractTest {
         }
 
         @Test
-        @DisplayName("the guards together name all twelve screen programs the controllers replace")
+        @DisplayName("the guards together name all seventeen screen programs the controllers replace")
         void theGuardsNameEveryReplacedScreenProgram() {
             // Scoped to the SERVICE collaborators, which is what makes the claim "once each" true and
-            // meaningful. Each of the twelve screen programs is replaced by exactly one service bean, so the
-            // guard for that bean is the one place its program should be named. A controller may also depend
-            // on a cross-cutting collaborator that replaces a PART of one of those programs rather than the
-            // whole of it - SnapshotTokenService stands in for the CCUP-OLD-DETAILS snapshot comparison and
-            // the WS-CA-SCREEN-NUM browse position - and its guard cites a program that is already in the
-            // twelve. Counting it here would report a duplicate for a citation that is correct, and dropping
-            // its citation to satisfy an inventory would remove evidence the sibling test requires.
+            // meaningful. Each of the seventeen sourced screen programs is replaced by exactly one service
+            // bean, so the guard for that bean is the one place its program should be named. A controller may
+            // also depend on a cross-cutting collaborator that replaces a PART of one of those programs rather
+            // than the whole of it - SnapshotTokenService stands in for the CCUP-OLD-DETAILS snapshot
+            // comparison and the WS-CA-SCREEN-NUM browse position - and its guard cites a program that is
+            // already in the seventeen. Counting it here would report a duplicate for a citation that is
+            // correct, and dropping its citation to satisfy an inventory would remove evidence the sibling
+            // test requires.
+            //
+            // COCRDSEC is deliberately absent: app/csd/CARDDEMO.CSD defines transaction CDV1 against it, but
+            // no source for it exists anywhere in the repository, so no controller replaces it and no guard
+            // may cite it.
             final List<String> cited = new ArrayList<>();
             final List<String> otherCitations = new ArrayList<>();
             for (final Object controller : controllersByBasePath().values()) {
@@ -470,17 +567,20 @@ final class ControllerRoutingContractTest {
             }
 
             assertThat(cited)
-                    .as("the twelve guards should name the twelve screen programs of the CSD "
+                    .as("the guards should name the seventeen sourced screen programs of the CSD "
                             + "transaction-to-program map, once each")
                     .containsExactlyInAnyOrder(
+                            "app/cbl/COSGN00C.cbl",
                             "app/cbl/COACTVWC.cbl", "app/cbl/COACTUPC.cbl",
                             "app/cbl/COBIL00C.cbl",
                             "app/cbl/COCRDLIC.cbl", "app/cbl/COCRDSLC.cbl", "app/cbl/COCRDUPC.cbl",
                             "app/cbl/COMEN01C.cbl", "app/cbl/COADM01C.cbl",
                             "app/cbl/CORPT00C.cbl",
-                            "app/cbl/COTRN00C.cbl", "app/cbl/COTRN01C.cbl", "app/cbl/COTRN02C.cbl");
+                            "app/cbl/COTRN00C.cbl", "app/cbl/COTRN01C.cbl", "app/cbl/COTRN02C.cbl",
+                            "app/cbl/COUSR00C.cbl", "app/cbl/COUSR01C.cbl", "app/cbl/COUSR02C.cbl",
+                            "app/cbl/COUSR03C.cbl");
 
-            // Every other guarded collaborator must still cite a program from within the twelve. A citation
+            // Every other guarded collaborator must still cite a program from within the seventeen. A citation
             // naming something outside that set would mean a controller depends on a collaborator standing in
             // for a program no controller replaces, which is a routing defect rather than a documentation one.
             assertThat(otherCitations)

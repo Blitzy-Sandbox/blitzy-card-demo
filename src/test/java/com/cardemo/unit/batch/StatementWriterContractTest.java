@@ -137,7 +137,6 @@ class StatementWriterContractTest {
 
     private SimpleMeterRegistry meterRegistry;
 
-    private MetricsConfig metrics;
 
     private StatementWriter writer;
 
@@ -156,8 +155,7 @@ class StatementWriterContractTest {
                     return null;
                 });
         meterRegistry = new SimpleMeterRegistry();
-        metrics = new MetricsConfig(meterRegistry);
-        writer = new StatementWriter(s3Template, metrics, new FileStatusMapper(), FIXED_CLOCK,
+        writer = new StatementWriter(s3Template, new FileStatusMapper(), FIXED_CLOCK,
                 STATEMENTS_BUCKET);
     }
 
@@ -334,9 +332,9 @@ class StatementWriterContractTest {
             // The container gives each execution its own instance; this proves that instances really are
             // independent, so the scope actually buys isolation. A singleton would abend on the second open
             // with "a statement for another account is still open".
-            StatementWriter first = new StatementWriter(mock(S3Template.class), metrics,
+            StatementWriter first = new StatementWriter(mock(S3Template.class),
                     new FileStatusMapper(), FIXED_CLOCK, STATEMENTS_BUCKET);
-            StatementWriter second = new StatementWriter(mock(S3Template.class), metrics,
+            StatementWriter second = new StatementWriter(mock(S3Template.class),
                     new FileStatusMapper(), FIXED_CLOCK, STATEMENTS_BUCKET);
 
             first.openStatementOutputs(ACCOUNT_ID, STATEMENT_MONTH, 1L);
@@ -538,7 +536,7 @@ class StatementWriterContractTest {
     // ====================================================================================================
 
     @Nested
-    @DisplayName("The complete ordered generation is published to the JobExecution context (H-08)")
+    @DisplayName("A bounded object tally is published to the JobExecution context (H-08, H-04)")
     class GenerationRecord {
 
         private StepExecution execution;
@@ -557,22 +555,27 @@ class StatementWriterContractTest {
         }
 
         @Test
-        @DisplayName("all four keys of two accounts are recorded, not just the last pair")
-        void everyKeyIsRecorded() {
-            // The heart of the finding: the two step-scoped entries hold one text key and one HTML key, so a
-            // step covering fifty accounts left forty-nine pairs unrecoverable.
-            assertThat(publishedKeys(execution)).hasSize(4).doesNotHaveDuplicates();
+        @DisplayName("every object of both accounts is counted, not just the last pair")
+        void everyObjectIsCounted() {
+            // The original finding: the two step-scoped entries hold one text key and one HTML key, so a
+            // step covering many accounts left only the last account's pair behind and the rest were
+            // unrecoverable. The tally is what now covers them all - two accounts, two objects each.
+            assertThat(publishedObjectCount(execution)).isEqualTo(4L);
         }
 
         @Test
-        @DisplayName("the keys come back in creation order, text then HTML per account")
-        void orderIsCreationOrder() {
-            List<String> keys = publishedKeys(execution);
-            // The leaf names are the legacy dataset names of app/jcl/CREASTMT.JCL:L89 and :L96.
-            assertThat(keys.get(0)).endsWith("STATEMNT.PS");
-            assertThat(keys.get(1)).endsWith("STATEMNT.HTML");
-            assertThat(keys.get(2)).endsWith("STATEMNT.PS");
-            assertThat(keys.get(3)).endsWith("STATEMNT.HTML");
+        @DisplayName("the context holds a bounded set of entries, so it cannot grow with the account count")
+        void theContextDoesNotGrowWithTheAccountCount() {
+            // H-04: the job execution context is serialised to the job repository on every commit, so an
+            // entry per created object made its size proportional to the run. Only the tally may remain,
+            // and no per-object entry may reappear under the object-keys namespace.
+            ExecutionContext jobContext = execution.getJobExecution().getExecutionContext();
+            assertThat(jobContext.entrySet())
+                    .filteredOn(entry -> entry.getKey()
+                            .startsWith(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT.substring(0,
+                                    StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT.lastIndexOf('.') + 1)))
+                    .extracting(Map.Entry::getKey)
+                    .containsExactly(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT);
         }
 
         @Test
@@ -580,29 +583,25 @@ class StatementWriterContractTest {
         void stepContextCarriesTheLatestPair() {
             ExecutionContext stepContext = execution.getExecutionContext();
             assertThat(stepContext.getString(StatementWriter.CONTEXT_KEY_TEXT_OBJECT))
-                    .isEqualTo(publishedKeys(execution).get(2));
+                    .isNotBlank()
+                    .endsWith("STATEMNT.PS");
             assertThat(stepContext.getString(StatementWriter.CONTEXT_KEY_HTML_OBJECT))
-                    .isEqualTo(publishedKeys(execution).get(3));
+                    .isNotBlank()
+                    .endsWith("STATEMNT.HTML");
         }
 
         @Test
-        @DisplayName("no key contains a delimiter, so an indexed read cannot be ambiguous")
-        void keysCarryNoDelimiter() {
-            assertThat(publishedKeys(execution))
-                    .allSatisfy(key -> assertThat(key).doesNotContain(","));
-        }
-
-        @Test
-        @DisplayName("a negative index is refused rather than naming an entry no writer emits")
-        void negativeIndexIsRefused() {
-            assertThatThrownBy(() -> StatementWriter.objectKeysIndexEntry(-1))
-                    .isInstanceOf(IllegalArgumentException.class);
+        @DisplayName("both latest keys sit under the enumerable statement root, which is now the record")
+        void theLatestKeysSitUnderTheEnumerableRoot() {
+            // With no per-object list, a consumer that needs every object enumerates this prefix. That only
+            // works if every key the writer composes actually begins with it.
+            ExecutionContext stepContext = execution.getExecutionContext();
+            assertThat(stepContext.getString(StatementWriter.CONTEXT_KEY_TEXT_OBJECT))
+                    .startsWith(StatementWriter.KEY_ROOT + StatementWriter.KEY_SEPARATOR);
+            assertThat(stepContext.getString(StatementWriter.CONTEXT_KEY_HTML_OBJECT))
+                    .startsWith(StatementWriter.KEY_ROOT + StatementWriter.KEY_SEPARATOR);
         }
     }
-
-    // ====================================================================================================
-    // M-05, M-06 - key composition.
-    // ====================================================================================================
 
     @Nested
     @DisplayName("Object keys order lexicographically and admit only validated segments (M-05, M-06)")
@@ -631,7 +630,7 @@ class StatementWriterContractTest {
 
             uploads.clear();
             StatementWriter second =
-                    new StatementWriter(s3Template, metrics, new FileStatusMapper(), FIXED_CLOCK,
+                    new StatementWriter(s3Template, new FileStatusMapper(), FIXED_CLOCK,
                 STATEMENTS_BUCKET);
             second.openStatementOutputs(ACCOUNT_ID, STATEMENT_MONTH, 1_000_000_000_000L);
             second.writeStatementLine("A LINE");
@@ -713,32 +712,52 @@ class StatementWriterContractTest {
         }
 
         @Test
-        @DisplayName("no instrument name beyond the sanctioned four appears after a run")
-        void noFifthInstrument() throws Exception {
+        @DisplayName("a full run registers no instrument at all, sanctioned or otherwise")
+        void noInstrumentIsRegistered() throws Exception {
             emitOneStatement("SYNTHETICA", "1 SAMPLE STREET");
 
+            // The registry is untouched because this writer holds no MetricsConfig. Registering nothing is a
+            // stronger statement than registering only the sanctioned four, and it is the one that holds:
+            // MetricsConfig owns every instrument, and it is not a collaborator of this class.
+            assertThat(meterRegistry.getMeters())
+                    .as("StatementWriter must register no meter of any kind")
+                    .isEmpty();
             assertThat(meterRegistry.getMeters().stream()
                     .map(meter -> meter.getId().getName())
-                    .distinct()
                     .toList())
-                    .containsOnly(MetricsConfig.METRIC_RECORDS_PROCESSED,
+                    .doesNotContain(MetricsConfig.METRIC_RECORDS_PROCESSED,
                             MetricsConfig.METRIC_RECORDS_REJECTED,
                             MetricsConfig.METRIC_AUTHENTICATION_ATTEMPTS,
                             MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL);
         }
 
         @Test
-        @DisplayName("the processed counter advances by the exact number of records emitted")
-        void processedCounterIsExact() throws Exception {
+        @DisplayName("the processed counter is untouched, however many statements are emitted")
+        void processedCounterIsUntouchedByStatements() throws Exception {
+            // The facade is constructed over the same registry so that the series exists and is readable; the
+            // writer is not given it, and one increment through the owner is what the assertion measures against.
+            final MetricsConfig owner = new MetricsConfig(meterRegistry);
+            owner.countRecordProcessed();
+
             writer.write(new Chunk<>(List.of(
                     statement(ACCOUNT_ID, "ONE", "ONE"),
                     statement("99999999992", "TWO", "TWO"),
                     statement("99999999993", "THREE", "THREE"))));
 
-            // Three statements, so three records processed. The counter advances per statement written
-            // because a statement is what this writer's ItemWriter contract receives.
+            // The owner's single increment stands for one DALYTRAN record that a posting run genuinely
+            // handled, which is the only unit this untagged series carries: ADD 1 TO WS-TRANSACTION-COUNT at
+            // app/cbl/CBTRN02C.cbl:L206, reported by DISPLAY 'TRANSACTIONS PROCESSED :' at :L227. Three
+            // statements later the series still reads one, because a statement is not one of those records: it
+            // is an aggregate over transactions an earlier posting run had already counted, so counting it here
+            // summed two unrelated populations inside a series that carries no tag by which a query could ever
+            // separate them again. Six objects were delivered and the record count is still the one real record.
             assertThat(meterRegistry.counter(MetricsConfig.METRIC_RECORDS_PROCESSED).count())
-                    .isEqualTo(3.0d);
+                    .as("the owner's one increment is still the whole of the series")
+                    .isEqualTo(1.0d);
+            assertThat(uploads).hasSize(6);
+            assertThat(writer.statementsWritten())
+                    .as("the volume is still reported - through the writer's own accessor")
+                    .isEqualTo(3L);
         }
     }
 
@@ -769,7 +788,7 @@ class StatementWriterContractTest {
             when(failing.upload(anyString(), anyString(), any(InputStream.class), any(ObjectMetadata.class)))
                     .thenThrow(new IllegalStateException("connection reset"));
             StatementWriter failingWriter =
-                    new StatementWriter(failing, metrics, new FileStatusMapper(), FIXED_CLOCK,
+                    new StatementWriter(failing, new FileStatusMapper(), FIXED_CLOCK,
                             STATEMENTS_BUCKET);
             failingWriter.openStatementOutputs(ACCOUNT_ID, STATEMENT_MONTH, GENERATION);
             failingWriter.writeStatementLine("A LINE");
@@ -783,20 +802,19 @@ class StatementWriterContractTest {
     }
 
     /**
-     * Reads the published generation record back through the documented protocol: the count, then that many
-     * indexed entries, in order. Written as a downstream consumer would write it.
+     * Reads the published object tally back through the documented protocol.
      *
-     * @param execution the step execution whose job execution holds the record
-     * @return the keys in creation order
+     * <p>Written as a downstream consumer would write it: one entry, one number. The keys themselves are
+     * deliberately not recorded - a consumer needing those enumerates
+     * {@link StatementWriter#KEY_ROOT}, which reports what object storage holds rather than what an earlier
+     * execution remembered writing.
+     *
+     * @param execution the step execution whose job execution holds the tally
+     * @return the number of statement objects the step created
      */
-    private static List<String> publishedKeys(StepExecution execution) {
-        ExecutionContext jobContext = execution.getJobExecution().getExecutionContext();
-        int count = Math.toIntExact(jobContext.getLong(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT, 0L));
-        List<String> keys = new ArrayList<>(count);
-        for (int index = 0; index < count; index++) {
-            keys.add(jobContext.getString(StatementWriter.objectKeysIndexEntry(index)));
-        }
-        return keys;
+    private static long publishedObjectCount(StepExecution execution) {
+        return execution.getJobExecution().getExecutionContext()
+                .getLong(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT, 0L);
     }
 
     /**

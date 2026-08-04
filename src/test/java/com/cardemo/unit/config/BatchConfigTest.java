@@ -41,8 +41,11 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.cardemo.batch.jobs.StatementGenerationJob;
 import com.cardemo.batch.processors.TransactionReportProcessor;
 import com.cardemo.config.BatchConfig;
 import com.cardemo.exception.FatalProcessingException;
@@ -58,15 +61,23 @@ import com.cardemo.repository.TransactionRepository;
 import com.cardemo.repository.TransactionTypeRepository;
 import com.cardemo.service.shared.FileService;
 import com.cardemo.service.shared.FileStatusMapper;
+import io.awspring.cloud.s3.S3Operations;
+import io.awspring.cloud.s3.S3Resource;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.StepScope;
+import org.springframework.batch.core.scope.context.StepSynchronizationManager;
 import org.springframework.context.annotation.Bean;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
@@ -94,6 +105,17 @@ class BatchConfigTest {
 
     /** The sixteen-character card number of the fixture rows. */
     private static final String CARD_NUMBER = "4111111111111111";
+
+    /** The bucket the projected work object lives in; any non-blank value serves, since the store is mocked. */
+    private static final String WORK_BUCKET = "carddemo-batch-output";
+
+    /**
+     * The concrete key {@code STEP010} publishes, as a test double for a real generation key.
+     *
+     * <p>The shape matters only in that it is the key the binding must take from the job execution context
+     * rather than resolve for itself: "the latest object" would hand a concurrent run the wrong generation.
+     */
+    private static final String WORK_OBJECT_KEY = "gdg/creastmt-work/G0001V00.ps";
 
     /** A second, strictly greater card number, so ordering is observable. */
     private static final String HIGHER_CARD_NUMBER = "4111111111111112";
@@ -258,12 +280,36 @@ class BatchConfigTest {
         }
 
         @Test
-        @DisplayName("every binding opens and closes with the success status")
+        @DisplayName("every relational binding opens and closes with the success status")
         void everyBindingOpensAndClosesSuccessfully() {
             for (final FileService.Dataset binding : allBindings()) {
+                if (binding.dd() == FileService.Dd.TRNXFILE) {
+                    // TRNXFILE is not backed by a relation. It is the projected work cluster of
+                    // app/jcl/CREASTMT.JCL:L83, so it can only open over the object STEP010 published, and
+                    // outside a running step there is no published key to take. Its open contract is
+                    // asserted by the TrnxFile group below, in both directions.
+                    continue;
+                }
                 assertThat(binding.openInput()).as("OPEN INPUT %s", binding.dd().ddName()).isEqualTo("00");
                 assertThat(binding.close()).as("CLOSE %s", binding.dd().ddName()).isEqualTo("00");
             }
+        }
+
+        @Test
+        @DisplayName("TRNXFILE refuses to open when no step published a work object, rather than reading "
+                + "the live transaction relation instead")
+        void trnxFileRefusesToOpenWithoutAPublishedWorkObject() {
+            final FileService.Dataset binding =
+                    batchConfig.trnxFileDataset(mock(S3Operations.class), WORK_BUCKET);
+
+            assertThat(binding.openInput())
+                    .as("file status '35' is 'the file is not available', which is what an absent work "
+                            + "cluster is. Falling back to the live relation is the Blocker this binding was "
+                            + "changed to remove: STEP040 reads the FROZEN projection, never the sort's input")
+                    .isEqualTo("35");
+            assertThat(binding.readNext().status())
+                    .as("a DD that never opened yields end of file rather than a record")
+                    .isEqualTo("10");
         }
 
         @Test
@@ -271,7 +317,7 @@ class BatchConfigTest {
         void accessModesAreEnforced() {
             assertThatExceptionOfType(UnsupportedOperationException.class)
                     .isThrownBy(() -> batchConfig
-                            .trnxFileDataset(mock(TransactionRepository.class)).readByKey("k"));
+                            .trnxFileDataset(mock(S3Operations.class), WORK_BUCKET).readByKey("k"));
             assertThatExceptionOfType(UnsupportedOperationException.class)
                     .isThrownBy(() -> batchConfig
                             .xrefFileDataset(mock(CardCrossReferenceRepository.class)).readByKey("k"));
@@ -285,62 +331,165 @@ class BatchConfigTest {
     }
 
     @Nested
-    @DisplayName("TRNXFILE - the sorted statement stream")
+    @DisplayName("TRNXFILE - the PROJECTED work cluster, streamed from the object STEP010 published")
     class TrnxFile {
 
-        @Test
-        @DisplayName("records arrive in sort order, at the declared width, and end of file is reported once")
-        void recordsArriveInSortOrderAtTheDeclaredWidth() {
-            final TransactionRepository repository = mock(TransactionRepository.class);
-            when(repository.findStatementOrderAfter(eq(""), eq(""), any(Pageable.class)))
-                    .thenReturn(List.of(transaction("0000000000000001", CARD_NUMBER),
-                            transaction("0000000000000002", CARD_NUMBER)));
-            when(repository.findStatementOrderAfter(eq(CARD_NUMBER), eq("0000000000000002"),
-                    any(Pageable.class))).thenReturn(List.of());
+        /**
+         * Runs a body inside a step scope whose job execution context carries a published work-object key.
+         *
+         * <p>The binding is a singleton and takes the key from the running step, because {@code FileService}
+         * indexes every binding by DD in its constructor and a step-scoped proxy would be asked for its DD
+         * outside any step. Establishing a real step scope here is therefore what exercises the production
+         * path rather than a stand-in for it.
+         *
+         * @param publishedKey the key to publish, or {@code null} to publish none
+         * @param body the assertions to run
+         */
+        private void withPublishedWorkObject(final String publishedKey, final Runnable body) {
+            final JobExecution jobExecution = new JobExecution(1L);
+            if (publishedKey != null) {
+                jobExecution.getExecutionContext()
+                        .putString(StatementGenerationJob.WORK_OBJECT_KEY_CONTEXT_ENTRY, publishedKey);
+            }
+            final StepExecution stepExecution = new StepExecution("statementGenerationEmitStep",
+                    jobExecution, 1L);
+            StepSynchronizationManager.register(stepExecution);
+            try {
+                body.run();
+            } finally {
+                StepSynchronizationManager.release();
+            }
+        }
 
-            final FileService.Dataset binding = batchConfig.trnxFileDataset(repository);
-            assertThat(binding.openInput()).isEqualTo("00");
+        /**
+         * Stubs the object store so that the work object streams the supplied records.
+         *
+         * @param objectStorage the mocked store
+         * @param records the fixed-width records the object contains, already at the declared width
+         */
+        private void stubWorkObject(final S3Operations objectStorage, final String... records) {
+            final byte[] image = String.join("", records).getBytes(StandardCharsets.ISO_8859_1);
+            final S3Resource resource = mock(S3Resource.class);
+            try {
+                when(resource.getInputStream()).thenReturn(new ByteArrayInputStream(image));
+            } catch (final IOException impossible) {
+                throw new AssertionError("stubbing getInputStream cannot fail", impossible);
+            }
+            when(objectStorage.download(eq(WORK_BUCKET), eq(WORK_OBJECT_KEY))).thenReturn(resource);
+        }
 
-            final FileService.DatasetRead first = binding.readNext();
-            assertThat(first.status()).isEqualTo("00");
-            assertThat(first.record()).hasSize(FileService.Dd.TRNXFILE.recordWidth());
-            assertThat(first.record())
-                    .as("the OUTREC projection of app/jcl/CREASTMT.JCL:L57 puts the card number first")
-                    .startsWith(CARD_NUMBER);
-            assertThat(first.record().substring(16, 32))
-                    .as("bytes 17-32 are the original head, which begins with TRAN-ID")
-                    .isEqualTo("0000000000000001");
-
-            final FileService.DatasetRead second = binding.readNext();
-            assertThat(second.status()).isEqualTo("00");
-            assertThat(second.record().substring(16, 32)).isEqualTo("0000000000000002");
-
-            final FileService.DatasetRead end = binding.readNext();
-            assertThat(end.status()).isEqualTo("10");
-            assertThat(end.hasRecord()).isFalse();
-            assertThat(binding.readNext().status())
-                    .as("an exhausted sequence keeps reporting end of file without re-querying")
-                    .isEqualTo("10");
+        /**
+         * Builds one projected record: the card number, then the original head, padded to the declared width.
+         *
+         * @param transactionId the identifier that the projection places at bytes 17-32
+         * @return a record of exactly the DD's declared width
+         */
+        private String projectedRecord(final String transactionId) {
+            final int width = FileService.Dd.TRNXFILE.recordWidth();
+            final String head = CARD_NUMBER + transactionId;
+            return head + " ".repeat(width - head.length());
         }
 
         @Test
-        @DisplayName("re-opening restarts the scan from the beginning, exactly as a second OPEN INPUT does")
-        void reOpeningRestartsTheScan() {
-            final TransactionRepository repository = mock(TransactionRepository.class);
-            when(repository.findStatementOrderAfter(eq(""), eq(""), any(Pageable.class)))
-                    .thenReturn(List.of(transaction("0000000000000001", CARD_NUMBER)));
-            when(repository.findStatementOrderAfter(eq(CARD_NUMBER), eq("0000000000000001"),
-                    any(Pageable.class))).thenReturn(List.of());
+        @DisplayName("records arrive from the projected object in its own order, at the declared width, and "
+                + "end of file is reported once the object is exhausted")
+        void recordsArriveFromTheProjectedObject() {
+            final S3Operations objectStorage = mock(S3Operations.class);
+            stubWorkObject(objectStorage, projectedRecord("0000000000000001"),
+                    projectedRecord("0000000000000002"));
 
-            final FileService.Dataset binding = batchConfig.trnxFileDataset(repository);
-            binding.openInput();
-            assertThat(binding.readNext().status()).isEqualTo("00");
-            assertThat(binding.readNext().status()).isEqualTo("10");
+            withPublishedWorkObject(WORK_OBJECT_KEY, () -> {
+                final FileService.Dataset binding =
+                        batchConfig.trnxFileDataset(objectStorage, WORK_BUCKET);
+                assertThat(binding.openInput()).isEqualTo("00");
 
-            binding.openInput();
-            assertThat(binding.readNext().status())
-                    .as("the cursor is reset, so the first record is available again")
-                    .isEqualTo("00");
+                final FileService.DatasetRead first = binding.readNext();
+                assertThat(first.status()).isEqualTo("00");
+                assertThat(first.record()).hasSize(FileService.Dd.TRNXFILE.recordWidth());
+                assertThat(first.record())
+                        .as("the OUTREC projection of app/jcl/CREASTMT.JCL:L54 puts the card number first, "
+                                + "and it was applied by the PRODUCER - this binding does not re-project")
+                        .startsWith(CARD_NUMBER);
+                assertThat(first.record().substring(16, 32)).isEqualTo("0000000000000001");
+
+                assertThat(binding.readNext().record().substring(16, 32)).isEqualTo("0000000000000002");
+
+                final FileService.DatasetRead end = binding.readNext();
+                assertThat(end.status()).isEqualTo("10");
+                assertThat(end.hasRecord()).isFalse();
+                assertThat(binding.close()).isEqualTo("00");
+            });
+        }
+
+        @Test
+        @DisplayName("the live transaction relation is never consulted, which is the Blocker this binding "
+                + "was changed to close")
+        void theLiveTransactionRelationIsNeverConsulted() {
+            final S3Operations objectStorage = mock(S3Operations.class);
+            stubWorkObject(objectStorage, projectedRecord("0000000000000001"));
+
+            withPublishedWorkObject(WORK_OBJECT_KEY, () -> {
+                final FileService.Dataset binding =
+                        batchConfig.trnxFileDataset(objectStorage, WORK_BUCKET);
+                binding.openInput();
+                binding.readNext();
+                binding.close();
+            });
+
+            // The binding has no repository collaborator at all any more, which is the structural proof: the
+            // factory method's parameter list cannot express a live query. Asserted on the store instead,
+            // because that is the collaborator it DOES have.
+            verify(objectStorage).download(eq(WORK_BUCKET), eq(WORK_OBJECT_KEY));
+            verifyNoMoreInteractions(objectStorage);
+        }
+
+        @Test
+        @DisplayName("a truncated final record is a physical error, not end of file, because the DD is "
+                + "fixed-length")
+        void aTruncatedFinalRecordIsAPhysicalError() {
+            final S3Operations objectStorage = mock(S3Operations.class);
+            stubWorkObject(objectStorage, projectedRecord("0000000000000001"), "SHORT");
+
+            withPublishedWorkObject(WORK_OBJECT_KEY, () -> {
+                final FileService.Dataset binding =
+                        batchConfig.trnxFileDataset(objectStorage, WORK_BUCKET);
+                binding.openInput();
+                assertThat(binding.readNext().status()).isEqualTo("00");
+                assertThat(binding.readNext().status())
+                        .as("reading a partial record as a whole one would slice every field from the wrong "
+                                + "offset, so it is reported rather than absorbed")
+                        .startsWith("9");
+            });
+        }
+
+        @Test
+        @DisplayName("re-opening restarts the stream, exactly as a second OPEN INPUT does")
+        void reOpeningRestartsTheStream() {
+            final S3Operations objectStorage = mock(S3Operations.class);
+            final byte[] image = projectedRecord("0000000000000001")
+                    .getBytes(StandardCharsets.ISO_8859_1);
+            final S3Resource resource = mock(S3Resource.class);
+            try {
+                when(resource.getInputStream())
+                        .thenReturn(new ByteArrayInputStream(image), new ByteArrayInputStream(image));
+            } catch (final IOException impossible) {
+                throw new AssertionError("stubbing getInputStream cannot fail", impossible);
+            }
+            when(objectStorage.download(eq(WORK_BUCKET), eq(WORK_OBJECT_KEY))).thenReturn(resource);
+
+            withPublishedWorkObject(WORK_OBJECT_KEY, () -> {
+                final FileService.Dataset binding =
+                        batchConfig.trnxFileDataset(objectStorage, WORK_BUCKET);
+                binding.openInput();
+                assertThat(binding.readNext().status()).isEqualTo("00");
+                assertThat(binding.readNext().status()).isEqualTo("10");
+
+                assertThat(binding.openInput()).isEqualTo("00");
+                assertThat(binding.readNext().status())
+                        .as("a second OPEN INPUT re-downloads the object, so the first record is available "
+                                + "again")
+                        .isEqualTo("00");
+            });
         }
     }
 
@@ -487,7 +636,7 @@ class BatchConfigTest {
      */
     private List<FileService.Dataset> allBindings() {
         return List.of(
-                batchConfig.trnxFileDataset(mock(TransactionRepository.class)),
+                batchConfig.trnxFileDataset(mock(S3Operations.class), WORK_BUCKET),
                 batchConfig.xrefFileDataset(mock(CardCrossReferenceRepository.class)),
                 batchConfig.custFileDataset(mock(CustomerRepository.class)),
                 batchConfig.acctFileDataset(mock(AccountRepository.class)));

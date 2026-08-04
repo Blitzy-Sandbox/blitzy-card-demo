@@ -48,7 +48,7 @@
  * configurations and defaults, and its common failure modes and troubleshooting. This docstring is that
  * artefact - chosen over a README deliberately, so the documentation travels with the compilation unit and is
  * gated by the same build - and the four headings below are those four bullets in order. Clause B adds
- * <em>"document public APIs: purpose, inputs/outputs, side effects, error modes"</em>, which the three sibling
+ * <em>"document public APIs: purpose, inputs/outputs, side effects, error modes"</em>, which the four sibling
  * classes discharge member by member; this file documents the seam between them.
  *
  * <h2>What it does</h2>
@@ -81,7 +81,7 @@
  * empty-but-reachable {@code 1400-COMPUTE-FEES} paragraph of {@code app/cbl/CBACT04C.cbl}; and a redundant
  * index assignment in {@code app/cbl/CBSTM03A.CBL}.
  *
- * <h3>The three classes, and what each replaces</h3>
+ * <h3>The four classes, and what each replaces</h3>
  *
  * <dl>
  *   <dt>{@link CorrelationIdFilter}</dt>
@@ -109,9 +109,19 @@
  *       {@code TRANSACT}, {@code CCXREF}, {@code ACCTDAT}, {@code CXACAIX} and {@code USRSEC}, at
  *       {@code :L26-L30} in each. Those jobs made datasets <em>available</em>; no COBOL analogue for health
  *       <em>probing</em> exists, so the probing itself is additive.</dd>
+ *
+ *   <dt>{@link TemplatedUriObservationConvention}</dt>
+ *   <dd>Replaces nothing, because the frozen corpus exports no spans: its whole instrumentation is
+ *       {@code DISPLAY} to SYSOUT plus the four-character status renderer at
+ *       {@code app/cbl/CBTRN02C.cbl:L714-L731}. It exists because exporting spans introduced a disclosure the
+ *       corpus could not have: Spring attaches the CONCRETE request path as the {@code http.url} span
+ *       attribute, which published {@code SEC-USR-ID} of {@code app/cpy/CSUSR01Y.cpy:L18} on the two
+ *       administrative routes and {@code ACCT-ID} of {@code app/cpy/CVACT01Y.cpy:L18} on the account route
+ *       into the trace store. It substitutes the route template, so the attribute still says which route ran
+ *       and identifies nobody. Rule 1 Clause D, principle of least privilege.</dd>
  * </dl>
  *
- * <h3>The four instruments: three counters and one gauge</h3>
+ * <h3>The four instruments: four counters, ten series</h3>
  *
  * <p>{@link MetricsConfig} declares every name as a constant, and the checked-in Grafana dashboard queries
  * those published names directly. The pair is a contract: rename one side without the other and the panel
@@ -127,10 +137,20 @@
  *       published as {@code carddemo_auth_attempts_total}, tagged by
  *       {@link MetricsConfig#TAG_OUTCOME} {@code = outcome} and by nothing else.</li>
  *   <li>{@link MetricsConfig#METRIC_TRANSACTION_AMOUNT_TOTAL} {@code = carddemo.transaction.amount.total} -
- *       a <strong>gauge</strong>, not a counter, published as {@code carddemo_transaction_amount_total} with
- *       no second {@code _total} suffix because the name already ends in {@code total}. It reads an
- *       {@code AtomicReference} holding an exact {@code BigDecimal}; the one conversion to {@code double}
- *       happens on the scrape thread and is advisory telemetry, never a financial computation.</li>
+ *       counter, published as {@code carddemo_transaction_amount_total} with no <em>second</em>
+ *       {@code _total} suffix because the client strips the trailing {@code total} from the name and
+ *       re-appends the reserved suffix. Tagged by {@link MetricsConfig#TAG_SIGN} {@code = sign} and by
+ *       nothing else, so it is <strong>exactly two series</strong>, {@code credit} and {@code debit}, and
+ *       the signed total is recovered as {@code credit - debit}. Each series is a
+ *       {@code FunctionCounter} reading an {@code AtomicReference} that holds an exact
+ *       {@code BigDecimal}; the one conversion to {@code double} happens on the scrape thread and is
+ *       advisory telemetry, never a financial computation. Two series rather than one signed number for two
+ *       independent reasons: a Prometheus counter <strong>may not carry a negative value</strong> - the
+ *       client raises {@code IllegalArgumentException} at scrape time and fails the entire response, taking
+ *       every other series with it - and {@code app/cbl/CBTRN02C.cbl:L548-L552} itself keeps two
+ *       accumulators, {@code ACCT-CURR-CYC-CREDIT} and {@code ACCT-CURR-CYC-DEBIT}, partitioned on exactly
+ *       {@code IF DALYTRAN-AMT >= 0}. The tag mirrors the source's own decomposition, its cardinality is
+ *       two and cannot grow, and the four-name contract of AAP section 0.7.7 is untouched.</li>
  * </ul>
  *
  * <p><strong>No base unit is declared on any of the four</strong>, deliberately: Micrometer appends a
@@ -173,9 +193,19 @@
  *       {@link CorrelationIdFilter} then {@code com.cardemo.security.JwtAuthenticationFilter} then
  *       role-based authorisation - so a request rejected with 401 or 403 is still correlated. Chain
  *       composition itself belongs to {@code com.cardemo.config.SecurityConfig}, not here.</li>
- *   <li><strong>Registration versus definition.</strong> {@code com.cardemo.config.ObservabilityConfig} owns
- *       tracing and metrics registration and the wiring of these three classes; {@link MetricsConfig}
- *       <em>defines</em> the four instruments. Neither duplicates the other.</li>
+ *   <li><strong>Registration versus definition, stated precisely because an earlier revision of this item got
+ *       it wrong.</strong> That revision said {@code com.cardemo.config.ObservabilityConfig} owns tracing and
+ *       metrics registration and the wiring of these three classes; it is withdrawn. What
+ *       {@code ObservabilityConfig} actually declares is <strong>exactly one {@code @Bean}, the application
+ *       {@link java.time.Clock}</strong>, and that count is asserted by its own test. The three classes in this
+ *       package <strong>self-register</strong> - {@link CorrelationIdFilter} and {@link HealthIndicators}
+ *       through {@code @Component}, {@link MetricsConfig} through {@code @Configuration} - so the component
+ *       scan rooted at {@code com.cardemo} reaches them without any wiring being written anywhere.
+ *       Framework telemetry is <strong>auto-configured</strong>, not registered here: Spring Boot supplies the
+ *       {@code MeterRegistry}, the Prometheus scrape endpoint, the Micrometer tracer and the OTLP exporter from
+ *       the {@code management.*} properties in {@code application.yml}. {@link MetricsConfig} <em>defines</em>
+ *       the four metric names and registers their ten series against the injected registry. Nothing
+ *       duplicates anything.</li>
  *   <li><strong>Nothing here restates root-owned configuration.</strong> The scrape configuration lives only
  *       in {@code observability/prometheus.yml}; the Grafana datasource and dashboard live only in
  *       {@code observability/grafana/provisioning/datasources/datasource.yml} and
@@ -223,11 +253,21 @@
  * <ul>
  *   <li>Compile: {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean compile}</li>
  *   <li>Unit tests: {@code ./mvnw -B -ntp -Ddependency-check.skip=true test}</li>
- *   <li>Full gate: {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}</li>
+ *   <li><strong>Fast local verification</strong>, which does <strong>not</strong> satisfy the zero-warning
+ *       build gate: {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}</li>
+ *   <li><strong>The full gate</strong>, online and with nothing skipped:
+ *       {@code ./mvnw -B -ntp clean verify}</li>
  * </ul>
  *
- * <p>The skip flag suppresses only the OWASP vulnerability scan, which wants network access to the
- * vulnerability feed; drop it when the scan is wanted.
+ * <p><strong>The skip flag is a convenience, never a pass.</strong> An earlier revision of this list labelled
+ * the skipping invocation the "full gate"; that label is withdrawn, because it invites a run that never
+ * executed the vulnerability scan to be reported as satisfying a gate whose definition requires it.
+ * {@code -Ddependency-check.skip=true} suppresses {@code org.owasp:dependency-check-maven}, which wants network
+ * access to the vulnerability feed, and the goal then prints {@code Skipping dependency-check}. Running Maven
+ * offline with {@code -o} reaches the same hole by a different route, because the goal declares
+ * {@code requiresOnline} and Maven skips it with a warning. <strong>A skipped scan is not evidence that the
+ * scan passes</strong>, so only the no-skip online invocation above satisfies the gate whole; the fast form is
+ * for the inner development loop, where the compiler, doclint, test and coverage checks all still run.
  *
  * <p><strong>Three gates apply to this package, and one of them applies to this very file.</strong>
  *
@@ -265,9 +305,23 @@
  *       no manual configuration step.</li>
  * </ul>
  *
- * <p><strong>Bringing the topology up.</strong> {@code docker compose up -d} starts PostgreSQL 16,
- * LocalStack, Jaeger, Prometheus and Grafana; the application itself is not a Compose service, so run the
- * built JAR against the stack under the {@code local} profile. {@code localstack-init/init-aws.sh}
+ * <p><strong>Bringing the topology up. {@code docker compose up -d} starts all six services, and the
+ * application is one of them.</strong> An earlier revision of this paragraph said the application itself was
+ * not a Compose service and instructed the reader to run the built JAR separately; that is withdrawn.
+ * {@code docker-compose.yml} declares <strong>six</strong> services on the {@code carddemo} network - the
+ * {@code app} service itself, PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana - plus three named
+ * volumes. So a single {@code docker compose up -d} builds the image from the repository {@code Dockerfile},
+ * brings the application up alongside its dependencies, and gives Prometheus a scrape target reachable on the
+ * Compose network as {@code app:8080}, which is the literal
+ * {@code observability/prometheus.yml} names and cannot resolve any other way. The application waits on the
+ * dependencies' health checks rather than racing them, and its own health check is what
+ * {@code docker compose ps} reports.
+ *
+ * <p>Two consequences are worth stating because both are easy to get wrong. First, running the JAR on the host
+ * <em>instead</em> is still supported and is the right choice for a debugger, but it is a deliberate
+ * substitution rather than the documented default: it needs {@code --profile}-style overrides so the host can
+ * address {@code localhost} where the container addresses a service name, and Prometheus then cannot reach the
+ * application at all without an {@code extra_hosts} change. Second, {@code localstack-init/init-aws.sh}
  * idempotently creates the three S3 buckets, enables versioning on the output bucket and creates the FIFO
  * queue whose logical name is {@code carddemo-report-jobs} and whose physical name carries the mandatory
  * {@code .fifo} suffix - so repeated {@code docker compose up} cycles converge rather than failing on
@@ -369,9 +423,19 @@
  *       does the metric name in the panel query match the constant in {@link MetricsConfig} exactly - a
  *       rename on one side only is a silent break of the dashboard contract, and a declared base unit
  *       renames the published series just as effectively. Third, is {@code observability/prometheus.yml}
- *       scraping the right host and port. Fourth, has the counter ever been incremented: a
- *       never-incremented counter is absent from the scrape output entirely rather than present as
- *       zero.</dd>
+ *       scraping the right host and port.
+ *       <p><strong>What this chain must not conclude is that the counter has simply never been
+ *       incremented.</strong> An earlier revision of this item ended with exactly that step, on the general
+ *       Micrometer rule that a never-incremented counter is absent from the exposition rather than present at
+ *       zero; the rule is real but it does not apply to any CardDemo series, so the guidance is withdrawn.
+ *       {@link MetricsConfig} registers <strong>all ten of its series eagerly at construction</strong> - one
+ *       untagged processed counter, one per reject code, one per authentication outcome and one per amount
+ *       sign, each amount series a strongly-referenced {@code FunctionCounter} over an exact accumulator - so
+ *       every one of them appears on the scrape endpoint at
+ *       {@code 0.0} before any transaction has been posted and before any sign-on has occurred. An empty
+ *       CardDemo panel therefore means a name, a tag value, a scrape target or a query is wrong, never that
+ *       the series is waiting to be born. Reserve the absence explanation for <em>lazily</em> registered
+ *       meters, which is what a framework or third-party instrument resolved on first use will be.</p></dd>
  *
  *   <dt>Readiness is DOWN with an S3 reason - <strong>Medium</strong></dt>
  *   <dd>LocalStack is not up, or a bucket property is unset. Run {@code docker compose up -d localstack} and
@@ -460,11 +524,19 @@
  *             function keys in turn.</li>
  *       </ul></dd>
  *
- *   <dt>Live evidence for the container-dependent gates - {@code Not available} without a container
- *       runtime. Severity <strong>Medium</strong></dt>
- *   <dd>See the prerequisite under <em>How to run, build and test</em>. The gates that need no container -
- *       the zero-warning build, the security audit and the scope-coverage check - are runnable
- *       unconditionally and are therefore the first evidence produced.</dd>
+ *   <dt>Live evidence for the container-dependent gates - what remains {@code Not available}, and what no
+ *       longer does. Severity <strong>Medium</strong></dt>
+ *   <dd><strong>A container runtime is present and the six-service stack is provisioned</strong>, so the
+ *       container prerequisite is not the obstacle. An earlier revision of this item treated live evidence as
+ *       unavailable for want of a runtime; that framing is withdrawn, and {@code Not available} is now reserved
+ *       for evidence that is genuinely absent. What is genuinely absent is the end-to-end parity comparison:
+ *       there is no {@code src/test/java/com/cardemo/e2e} tree and no committed legacy baseline output to
+ *       compare against, and neither can be conjured from a running stack. <em>What is needed:</em> those two
+ *       artefacts. The gates that need no container at all - the zero-warning build, the security audit and the
+ *       scope-coverage check - are runnable unconditionally and are therefore the first evidence produced. Gate
+ *       status per gate is stated in exactly one place, section 0.7.9.2 of
+ *       {@code docs/technical-specifications.md}, and dated evidence in section 0.4.5.3; neither is restated
+ *       here.</dd>
  *
  *   <dt>A preserved legacy artefact worth one line. Severity <strong>Low</strong></dt>
  *   <dd>{@code app/jcl/OPENFIL.jcl:L1} reads {@code //OEPNFIL JOB 'Open files in CICS'} - the job name

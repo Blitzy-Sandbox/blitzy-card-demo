@@ -295,33 +295,26 @@ import org.springframework.transaction.annotation.Transactional;
  *       terminal.</li>
  *   </ul>
  *
- * <h2>Invariants that must continue to hold</h2>
+ * <h2>Invariants this class depends on</h2>
  *
  * <ul>
  *   <li>No credential value is echoed in a log line, a message or an exception. {@code ValidationException}
  *       is constructed with the field <i>name</i> - {@code userId} or {@code password} - and never with the
- *       value.</li>
- *   <li>No personal or financial data becomes a token claim. The claim set stays subject, role and the
- *       standard registered claims, and minting stays in the security package.</li>
- *   <li>The stored password hash is never read or passed from this class; verification is delegated and the
- *       hash accessor is never named here.</li>
+ *       value. The stored hash is never read or passed from here either; verification is delegated and the
+ *       hash accessor is never named.</li>
+ *   <li>No personal or financial data becomes a token claim: the set stays subject, role and the standard
+ *       registered claims, and minting stays in {@code com.cardemo.security.JwtTokenProvider}.</li>
  *   <li>Both the identifier and the password are case-folded, by delegating to a collaborator verified to
- *       fold both.</li>
- *   <li>No second password encoder is defined; the single application-wide bean is consumed indirectly
- *       through the delegate.</li>
- *   <li>Metric names and claim names are referenced through the owning class's own API rather than restated
- *       here, so neither can drift.</li>
- *   <li>{@code USRSEC} is catalogued, at {@code app/catlg/LISTCAT.txt:L3846} with the {@code KEYLEN 8} and
+ *       fold both. No second password encoder is defined; the single application-wide bean is consumed
+ *       indirectly through the delegate.</li>
+ *   <li>The token lifetime property is {@code carddemo.security.jwt.expiration-minutes} and the signing-key
+ *       variable is {@code JWT_SIGNING_KEY}. Those are the keys the provider binds, and no second spelling
+ *       is accepted anywhere.</li>
+ *   <li>The credential comparison is at {@code app/cbl/COSGN00C.cbl:L223} and the identity moves span
+ *       {@code :L224-L228}; {@code :L222} is the {@code WHEN 0} selector, not the comparison.
+ *       {@code USRSEC} is catalogued at {@code app/catlg/LISTCAT.txt:L3846} with the {@code KEYLEN 8} and
  *       {@code AVGLRECL 80} attribute line at {@code :L3883}, corroborated by
  *       {@code app/jcl/DUSRSECJ.jcl:L65-L66}.</li>
- *   <li>The routing hint survives as the user-class code {@code com.cardemo.model.dto.SignOnResponse}
- *       already carries; that response is another component's contract and is not widened from here.</li>
- *   <li>The token lifetime property is {@code carddemo.security.jwt.expiration-minutes} and the signing-key
- *       variable is {@code JWT_SIGNING_KEY}. Those are the keys the provider binds; no second spelling is
- *       introduced, and the superseded {@code expiration-seconds} and {@code JWT_SECRET} spellings are
- *       accepted nowhere.</li>
- *   <li>The credential comparison is at {@code app/cbl/COSGN00C.cbl:L223} and the identity moves span
- *       {@code :L224-L228}; {@code :L222} is the {@code WHEN 0} selector, not the comparison.</li>
  *   </ul>
  *
  * <h2>Boundaries of this class</h2>
@@ -332,13 +325,13 @@ import org.springframework.transaction.annotation.Transactional;
  *       classes onto role authorities, the stateless session policy, and the filter ordering that places
  *       correlation before token authentication before authorisation. None of those is configured
  *       here.</li>
- *   <li>No {@code com.cardemo.controller.AuthController} exists, so no consumer has pinned this service's
- *       signature and the HTTP status mapping and endpoint payload shape are undetermined. This class
- *       therefore <i>defines</i> its contract rather than conforming to one: one
- *       operation, {@code SignOnRequest} in and {@code SignOnResponse} out, with failures raised as typed
- *       exceptions carrying the legacy literal. Status selection belongs to that controller, since no
- *       exception in the hierarchy carries a status annotation and the tree has no
- *       global exception handler.</li>
+ *   <li>{@code com.cardemo.controller.AuthController} owns the HTTP surface: this class exposes one
+ *       operation, {@code SignOnRequest} in and {@code SignOnResponse} out, and raises typed exceptions
+ *       carrying the legacy literal. Status selection belongs to that controller, which maps each typed
+ *       exception itself, because no exception in the hierarchy carries a status annotation and the tree
+ *       has no global exception handler. In particular the controller answers both a missing row and a
+ *       rejected credential with the same {@code 401}, so the distinction this class preserves internally
+ *       does not reach a caller.</li>
  *   </ul>
  *
  * <p>Instances are immutable after construction and hold no request state, so a single bean is safe for

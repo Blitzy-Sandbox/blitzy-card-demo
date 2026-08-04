@@ -162,7 +162,7 @@ import jakarta.validation.Valid;
  * does not have, and holding an unused authority constant would be dead code; the operations that genuinely
  * are administrator-only live behind {@code /api/admin} on a different controller.</p>
  *
- * <h2>Blocker: transaction timestamps are text, never a temporal type</h2>
+ * <h2>Transaction timestamps are text, never a temporal type</h2>
  *
  * <p>{@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS} are declared {@code PIC X(26)} at
  * {@code app/cpy/CVTRA05Y.cpy:16} and {@code :17}, and the corpus holds three mutually incompatible
@@ -176,9 +176,9 @@ import jakarta.validation.Valid;
  * temporal type</strong>, and this class neither parses, reformats, normalises nor validates any timestamp
  * or date. The dates the operations carry - {@code TORIGDTI PIC X(10)} at
  * {@code app/cpy-bms/COTRN02.CPY:102} and its processing counterpart - are relayed as the text the
- * symbolic map declared them to be. Severity if violated: <strong>Blocker</strong>, because a temporal
- * type here would silently reject the blank timestamps the fixture proves are legal and would rewrite the
- * two forms into one, breaking parity against the baseline in a way no compiler reports.</p>
+ * symbolic map declared them to be. A temporal type here would silently reject the blank timestamps the
+ * fixture proves are legal and would rewrite the two forms into one, breaking parity against the baseline
+ * in a way no compiler reports.</p>
  *
  * <h2>Numeric contract</h2>
  *
@@ -875,9 +875,8 @@ public class TransactionController {
      *
      * <p><strong>It is preserved, not repaired.</strong> Behavioural parity is the contract of this
      * migration, so the update-intent read is reproduced in the <em>service</em> layer, where the paragraph
-     * map lives, and is owed an entry in the planned {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md} as
-     * tracked rather than accidental. It is documented at this operation but not reproduced at it, because a
-     * controller has no paragraph map and holds no transaction boundary. Removing the operand would be a behaviour
+     * map lives. It is documented at this operation but not reproduced at it, because a controller has no
+     * paragraph map and holds no transaction boundary. Removing the operand would be a behaviour
      * change - it would alter the locking observable to a concurrent updater - and is therefore
      * out of scope regardless of how much it looks like a defect.</p>
      *
@@ -916,8 +915,8 @@ public class TransactionController {
      *
      * <p>The amount is rendered on the legacy edited display mask by the service and its projection, not
      * here. The two timestamps are relayed as the 26-character text they are declared to be at
-     * {@code app/cpy/CVTRA05Y.cpy:16} and {@code :17} - see this class's documentation for why that is a
-     * <strong>Blocker</strong> if violated - and this method neither parses nor reformats them.</p>
+     * {@code app/cpy/CVTRA05Y.cpy:16} and {@code :17} - see this class's documentation for why a temporal
+     * type would break parity - and this method neither parses nor reformats them.</p>
      *
      * <h4>Side effects</h4>
      *
@@ -1002,7 +1001,7 @@ public class TransactionController {
      * {@code TransactionAddService}, which this method calls once. It performs no validation of its own
      * beyond the declarative field-width constraints the request record carries, and it generates nothing.</p>
      *
-     * <h4>Blocker-adjacent trap: two distinct numeric parsers, used deliberately</h4>
+     * <h4>Two distinct numeric parsers, used deliberately</h4>
      *
      * <p>The source uses <strong>two different numeric intrinsics on the same screen</strong>, and the
      * asymmetry is deliberate rather than incidental. Using one for both is a behaviour change: it either
@@ -1065,9 +1064,9 @@ public class TransactionController {
      * the maximum and inserting past it are two steps. The <strong>parity-preserving choice is to keep
      * it</strong> and let the primary key surface a collision as a duplicate-record failure, rather than
      * substituting a database sequence. A sequence would generate different values, would not reproduce the
-     * first-identifier-is-one behaviour, and would break comparison against the baseline. This is a labelled
-     * decision owed an entry in the planned {@code DECISION_LOG.md}, not an oversight, and it is why {@code 409} is a
-     * normal documented outcome of this operation rather than an internal error.</p>
+     * first-identifier-is-one behaviour, and would break comparison against the baseline. This is a
+     * deliberate, labelled decision rather than an oversight, and it is why {@code 409} is a normal
+     * documented outcome of this operation rather than an internal error.</p>
      *
      * <h4>Outputs</h4>
      *
@@ -1252,8 +1251,8 @@ public class TransactionController {
      * <p>This is the retained race of the add operation, not a defect. The source generates an identifier by
      * reading the maximum key and adding one ({@code app/cbl/COTRN02C.cbl:L444-L449}), which is not atomic;
      * the parity-preserving translation keeps that algorithm and lets the primary key detect a collision,
-     * which is legacy file status {@code '22'}. The decision to keep it rather than substitute a sequence is
-     * owed an entry in the planned {@code DECISION_LOG.md}.</p>
+     * which is legacy file status {@code '22'}. Keeping that algorithm rather than substituting a sequence
+     * is what preserves the generated values, including the first-identifier-is-one case.</p>
      *
      * <p>{@code 409} rather than {@code 500}, and the distinction matters operationally: the request is
      * <em>retryable</em> and will normally succeed on the next attempt, because by then the committed row is

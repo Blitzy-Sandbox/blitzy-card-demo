@@ -240,7 +240,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code CBACT03C} browses the <em>base</em> cluster sequentially, and calling the account finder from this
  * class would misattribute its source.
  *
- * <h3>The one deliberate, labelled deviation: the legacy whole-record emission is not reproduced</h3>
+ * <h3>The one deliberate deviation: the legacy whole-record emission is not reproduced</h3>
  * {@code :L78} and {@code :L96} both perform {@code DISPLAY CARD-XREF-RECORD}, which writes the record to
  * SYSOUT. Those bytes open with the <b>16-character card number</b> at 1-based bytes 1-16
  * ({@code app/cpy/CVACT03Y.cpy:L5}). Reproducing either verbatim would publish a primary account number into
@@ -290,12 +290,17 @@ import com.cardemo.service.shared.FileStatusMapper;
  * number. The count is reproduced exactly and the content is withheld.
  *
  * <h2>How to run, build and test</h2>
- * The owning {@code Job} and {@code Step} are <strong>planned and not authored at this commit</strong>.
- * The migration plan names {@code com.cardemo.config.BatchConfig} as their home and the planned
- * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} as their launcher. The home now exists and the
- * launcher does not: {@code com.cardemo.config} holds six classes and {@code com.cardemo.batch.jobs} holds
- * one,
- * {@code InterestCalculationJob}. What is already true is the property both will rely on -
+ * The read-only verification {@code Step} that would own this reader is <strong>planned and not authored at
+ * this commit</strong>, and that is now the whole of what is outstanding around it. An earlier revision of
+ * this paragraph named {@code com.cardemo.config.BatchConfig} as the home of every {@code Job} and
+ * {@code Step} and said {@code com.cardemo.batch.jobs} held one job, {@code InterestCalculationJob}; both
+ * statements are withdrawn. {@code com.cardemo.batch.jobs} now holds <strong>three of its six target
+ * jobs</strong> - {@code InterestCalculationJob}, {@code DailyTransactionPostingJob} and
+ * {@code StatementGenerationJob} - and <strong>each declares its own {@code Step} beans</strong>, while
+ * {@code BatchConfig} owns the dataset bindings and the record rendering rather than step topology. Still
+ * owed are this reader's verification step and the name-driven launcher above it, the planned
+ * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. What is already true is the property both will
+ * rely on -
  * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no
  * job runs at application startup and every job must be launched deliberately. This class carries
  * {@code @Component} and {@code @StepScope}, so the component scan registers a definition for it while no
@@ -305,25 +310,34 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code //XREFFILE DD} pointing at {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS} at {@code :L25-L26}. The same
  * file is read again by the posting job at {@code app/jcl/POSTTRAN.jcl:L32-L33}, through a different program.
  * <p>
- * Two build paths were verified in this environment; both are pinned and either may be used.
+ * Two build paths are available; both are pinned and either may be used. Each names a required
+ * <em>capability</em> rather than a dated reading of one host; dated measurements live in section 0.4.5.3 of
+ * {@code docs/technical-specifications.md}.
  * <ul>
- * <li><b>Host toolchain</b> &mdash; {@code ./mvnw -B -ntp clean compile}, then {@code ./mvnw -B -ntp test}.
- *     Verified present: OpenJDK 25.0.3 and Apache Maven 3.9.11.</li>
- * <li><b>Pinned container</b> &mdash; Docker Engine and {@code docker compose} are available, so the build
+ * <li><b>Host toolchain</b> &mdash; JDK 25 with {@code JAVA_HOME} set, then
+ *     {@code ./mvnw -B -ntp clean compile} and {@code ./mvnw -B -ntp test}. Maven 3.9.11 comes from the
+ *     pinned wrapper and {@code maven-enforcer-plugin} floors both.</li>
+ * <li><b>Pinned container</b> &mdash; given a reachable container daemon, the build
  *     can also run hermetically:
  *     {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -q -DskipTests compile}.
  *     </li>
  * </ul>
  * The compiler runs with {@code -Xlint:all -Werror} and {@code failOnWarning}, so the build fails on any
  * warning category {@code javac} 25 publishes. Coverage is gated by JaCoCo at an eighty percent line floor
- * with no package excluded. The tests that would cover this class belong in
- * {@code src/test/java/com/cardemo/unit/batch} for the status renderer, the guard logic and the projection,
- * and in {@code src/test/java/com/cardemo/integration/batch} for the Testcontainers PostgreSQL 16 scan.
- * Neither is authored at this commit: {@code unit/batch} holds three classes, none of which references this
- * reader, and {@code integration/batch} holds one abstract Testcontainers base with no concrete {@code *IT}
- * beneath it. This class creates neither, because test sources are outside the scope of the package it
- * belongs to. <b>A unit test must assert that exactly two record-level events occur per row</b>, since that
- * count is the parity property most easily lost by a well-meaning edit.
+ * with no package excluded. <strong>Both test tiers now cover this class.</strong> An earlier revision of this
+ * paragraph said neither was authored, that {@code unit/batch} held three classes none of which referenced this
+ * reader, and that {@code integration/batch} held one abstract Testcontainers base with no concrete subclass
+ * beneath it; every part of that is withdrawn. {@code src/test/java/com/cardemo/unit/batch} holds
+ * <strong>36</strong> sources and covers the status renderer, the guard logic and the projection through
+ * {@code CardCrossReferenceReaderTest}, {@code SequentialReaderContractTest},
+ * {@code SequentialReaderKeysetScanTest}, {@code ReaderSensitiveDataTest} and {@code BatchLogHygieneTest}.
+ * {@code src/test/java/com/cardemo/integration/batch} holds <strong>4</strong> sources - one abstract
+ * Testcontainers base and three concrete classes that execute under Failsafe against PostgreSQL 16 and
+ * LocalStack. This class still creates neither, because test sources are outside the scope of the package it
+ * belongs to. <b>The assertion that exactly two record-level events occur per row is delivered</b>, by
+ * {@code ReaderSensitiveDataTest}, which checks that both record events of {@code CBACT03C:L78} and
+ * {@code :L96} are still emitted while neither exposes a card number - that count being the parity property
+ * most easily lost by a well-meaning edit.
  *
  * <h2>Key configs and defaults</h2>
  * <ul>
@@ -373,17 +387,16 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     {@code ERROR OPENING XREFFILE} followed by the rendered status, and abends. Check that the Flyway
  *     migrations have applied and that the datasource points at the intended database.</li>
  * <li><b>A masked card number where a full one was expected is the intended behaviour</b>, not a defect: see
- *     the labelled deviation above. If a full card number is genuinely needed for an investigation, read it
+ *     the documented deviation above. If a full card number is genuinely needed for an investigation, read it
  *     from the authorised, audited {@code card_cross_reference} row rather than recovering it from a log
  *     line.</li>
  * </ul>
  *
  * <h2>Remaining boundaries and constraints</h2>
  * <ul>
- * <li><b>Medium</b> &mdash; the double display of {@code :L96} and {@code :L78}, retained for parity and
- *     justified above.</li>
- * <li><b>Medium</b> &mdash; the 36-versus-50 width discrepancy, documented above with all three citations and
- *     foreclosed by holding no positional logic at all.</li>
+ * <li>The double display of {@code :L96} and {@code :L78} is retained for parity and justified above.</li>
+ * <li>The 36-versus-50 width discrepancy is documented above with all three citations, and is foreclosed by
+ *     this class holding no positional logic at all.</li>
  * <li>{@link #update(ExecutionContext)} checkpoints the card number of the last row
  *     read, which is the only place in this class where that value leaves its row. It is written to the
  *     Spring Batch step execution context, which is transactional state persisted to
@@ -402,17 +415,17 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     record image.</li>
  * <li>The three-way verb-count divergence described above. No action beyond citing the
  *     statement counts.</li>
- * <li><b>Low</b> &mdash; the {@code '9x'} status family maps to
+ * <li>the {@code '9x'} status family maps to
  *     {@code com.cardemo.exception.FileAccessException} in the shared status vocabulary, but this reader never
  *     raises it. That is measured, not an oversight: every failure branch in {@code CBACT03C} runs
  *     {@code DISPLAY}, then {@code PERFORM 9910-DISPLAY-IO-STATUS}, then {@code PERFORM 9999-ABEND-PROGRAM}
  *     ({@code :L110-L113}, {@code :L129-L132}, {@code :L147-L150}), so there is no path on which a non-normal
  *     status is anything but fatal; introducing a non-fatal I/O outcome here would
  *     be a behaviour change, and importing that type would leave an unused import.</li>
- * <li><b>Low</b> &mdash; {@code app/cpy/CVACT03Y.cpy:L4} writes {@code 01 CARD-XREF-RECORD.} with a single
+ * <li>{@code app/cpy/CVACT03Y.cpy:L4} writes {@code 01 CARD-XREF-RECORD.} with a single
  *     space after {@code 01} where its sibling copybooks use two. It is cosmetic and affects no Java output;
  *     it is noted only so that nobody &quot;corrects&quot; a citation that quotes it faithfully.</li>
- * <li><b>Low</b> &mdash; the specific z/OS VSAM subcode a given JDBC failure would have produced on the
+ * <li>the specific z/OS VSAM subcode a given JDBC failure would have produced on the
  *     mainframe cannot be determined here. It would need a z/OS VSAM trace of the failing condition,
  *     which cannot be obtained here because mainframe-runtime reproduction is out of scope for this
  *     migration. If a byte-exact subcode is ever required, add a SQLSTATE-to-subcode
@@ -481,7 +494,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
     // reader can confirm fidelity without opening the source. Every assertion is cited.
     // All seven literals of the program are represented; there is no eighth, because the two
     // DISPLAY CARD-XREF-RECORD statements at :L78 and :L96 emit a record rather than a literal and are
-    // covered by the labelled deviation instead.
+    // covered by the documented deviation instead.
     // ----------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/CBACT03C.cbl:L71}, 38 characters. */
@@ -575,15 +588,18 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      * {@link CardCrossReferenceRepository#count()} and the declared
      * {@link CardCrossReferenceRepository#findByCardNumberGreaterThanOrderByCardNumberAsc(String,
      * org.springframework.data.domain.Pageable)},
-     * whose own documentation attributes it to {@code app/cbl/CBACT03C.cbl:L345-L366} and names the empty
-     * string as its start-of-sequence seed.
+     * whose own documentation attributes it to {@code app/cbl/CBSTM03A.CBL:L345-L366}, paragraph
+     * {@code 1000-XREFFILE-GET-NEXT}, and names the empty string as its start-of-sequence seed. The keyed
+     * sequence that finder ascends is the same one {@code app/cbl/CBACT03C.cbl:L29-L32} declares with
+     * {@code ORGANIZATION IS INDEXED} and {@code ACCESS MODE IS SEQUENTIAL}, which is this class's own
+     * source.
      * <p>
      * The interface's other derived finder,
      * {@link CardCrossReferenceRepository#findFirstByAccountIdOrderByCardNumberAsc(Long)}, models the
      * <em>alternate-index</em> path over {@code CXACAIX} and belongs to the callers that read by account;
-     * calling it from a batch reader would misattribute this class's source. An earlier revision of this class
-     * narrowed the inherited {@code findAll(Pageable)} overload with an explicit sort instead; that form could
-     * express an order and a limit but not a keyset bound, which is why the declared finder is used now.
+     * calling it from a batch reader would misattribute this class's source. Narrowing the inherited
+     * {@code findAll(Pageable)} overload with an explicit sort would express an order and a limit but not a
+     * keyset bound, which is why the declared finder is used.
      */
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
@@ -743,7 +759,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      * in the source, so both are reproduced, and each cites its own line. The record image itself is replaced
      * by an ordinal-only projection: the fact of the read and the row sequence number, never the 16-character
      * card number, never the account identifier and never the customer identifier. That is the single
-     * deliberate, labelled deviation in this class; the full rationale is in the class documentation.
+     * deliberate deviation in this class; the full rationale is in the class documentation.
      * <p>
      * <b>Why there is no {@code @Transactional} annotation.</b> A chunk-oriented step already runs this method
      * inside its own transaction, and Spring silently ignores the {@code readOnly} attribute of a method that

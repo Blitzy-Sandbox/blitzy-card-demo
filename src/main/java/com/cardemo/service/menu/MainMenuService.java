@@ -209,27 +209,26 @@ import com.cardemo.model.enums.UserType;
  * two sites cannot drift apart or a single parity rule be stated twice. Each says so in its own
  * documentation, so the seven-to-seven map above stays unambiguous.</p>
  *
- * <h2>6. Deviations from the source, with severities</h2>
+ * <h2>6. Deviations from the source</h2>
  *
- * <p>Owed an entry in the planned {@code DECISION_LOG.md} under the entries named below. Nothing in this list is a
- * silent improvement; every item is either forced by the target language or required by Rule 1, and every one is
- * observationally inert against the frozen table unless stated otherwise.</p>
+ * <p>Nothing in this list is a silent improvement; every item is either forced by the target language or
+ * required by Rule 1, and every one is observationally inert against the frozen table unless stated
+ * otherwise.</p>
  *
  * <ul>
- *   <li><strong>Blocker class if mis-implemented - the transfer never returns.</strong>
+ *   <li><strong>The transfer never returns.</strong>
  *       {@code EXEC CICS XCTL} at {@code app/cbl/COMEN01C.cbl:152-155} transfers control and does not
  *       come back, so the "coming soon" block at {@code :157-164} is unreachable whenever a real target
  *       resolves. A Java call does return, so {@link #processEnterKey(String, UserType)} returns
- *       immediately after resolving a real target. Decision log entry: <em>XCTL fall-through
- *       guard</em>.</li>
- *   <li><strong>Medium - bounds failure short-circuits before the gate subscript.</strong>
+ *       immediately after resolving a real target.</li>
+ *   <li><strong>bounds failure short-circuits before the gate subscript.</strong>
  *       {@code app/cbl/COMEN01C.cbl:127-134} has no early exit, so control falls through into
  *       {@code :136-137} and subscripts the option table with the value that just failed validation.
  *       Java is memory safe and would throw {@code IndexOutOfBoundsException} instead of reading
  *       adjacent storage, so the overread is unreproducible and the rejection is raised at once. The
  *       observable outcome is unchanged: in the source both paths perform {@code SEND-MENU-SCREEN} and
- *       the operator sees the message either way. Decision log entry: <em>bounds short-circuit</em>.</li>
- *   <li><strong>Medium - the option list is filtered for a standard user, not merely gated on
+ *       the operator sees the message either way.</li>
+ *   <li><strong>the option list is filtered for a standard user, not merely gated on
  *       selection.</strong> {@code BUILD-MENU-OPTIONS} at {@code app/cbl/COMEN01C.cbl:238-239} renders
  *       every option up to the count with no eligibility test, so the legacy screen showed a standard
  *       user an administrator-only option and refused it only on selection.
@@ -237,50 +236,48 @@ import com.cardemo.model.enums.UserType;
  *       privilege. Against the frozen table this is a <strong>no-op</strong>: all ten entries of
  *       {@code app/cpy/COMEN02Y.cpy:25-84} carry {@code 'U'}, so nothing is ever withheld and the
  *       rendered lines are byte identical to the legacy screen. The selection gate at {@code :136-137}
- *       is retained unchanged in addition. Decision log entry: <em>menu display filter</em>.</li>
- *   <li><strong>Low - the option table is referenced, not re-transcribed.</strong> Rule 1 Clause C
+ *       is retained unchanged in addition.</li>
+ *   <li><strong>the option table is referenced, not re-transcribed.</strong> Rule 1 Clause C
  *       forbids duplication, and a second copy of the ten literals could drift from the first. The
  *       single transcription lives in {@code MenuResponse.MAIN_MENU_OPTIONS}; this bean binds to it.
- *       Decision log entry: <em>single option-table transcription</em>.</li>
- *   <li><strong>Low - {@code REDEFINES} overreach; rows 11 and 12 are not modelled.</strong>
+ *</li>
+ *   <li><strong>{@code REDEFINES} overreach; rows 11 and 12 are not modelled.</strong>
  *       {@code app/cpy/COMEN02Y.cpy:88} declares {@code OCCURS 12 TIMES} over 46-byte entries, 552
  *       bytes, laid across a populated area of only ten entries, 460 bytes. Subscripts 11 and 12
  *       therefore overlay unrelated {@code WORKING-STORAGE} and what they contain is
- *       <strong>not available</strong>. Nothing is invented for them. Decision log entry:
- *       <em>option table capacity versus count</em>.</li>
- *   <li><strong>Low - no file-status collaborator.</strong> The complete {@code EXEC CICS} verb
+ *       <strong>not available</strong>. Nothing is invented for them.</li>
+ *   <li><strong>no file-status collaborator.</strong> The complete {@code EXEC CICS} verb
  *       inventory of the program is {@code RETURN} at {@code :107}, {@code XCTL} at {@code :152} and
  *       {@code :175}, {@code SEND} at {@code :189} and {@code RECEIVE} at {@code :201}. There is no
  *       {@code READ}, {@code WRITE}, {@code REWRITE}, {@code DELETE}, {@code STARTBR},
  *       {@code READNEXT}, {@code READPREV} or {@code ENDBR} anywhere in it, so there is no
  *       {@code FILE STATUS} path to translate and no status-mapping collaborator is injected. The
  *       corroborating artefact is {@code WS-USRSEC-FILE PIC X(08) VALUE 'USRSEC  '} at {@code :39},
- *       declared and never referenced. Decision log entry: <em>menu programs perform no
- *       I/O</em>.</li>
- *   <li><strong>Low - the user-type gate is retained although it cannot fire.</strong> See
+ *       declared and never referenced.</li>
+ *   <li><strong>the user-type gate is retained although it cannot fire.</strong> See
  *       {@link #processEnterKey(String, UserType)}. Rule 1 Clause B forbids <em>untracked</em> dead
- *       code; this branch is real, reachable code that the frozen data never triggers, and it is
- *       tracked here and in the decision log. No coverage exclusion is added; the test seam covers it.
- *       Decision log entry: <em>retained user-type gate</em>.</li>
- *   <li><strong>Low - the placeholder guard is always true in production.</strong> No program name in
+ *       code; this branch is real, reachable code that the frozen data never triggers, and it is tracked
+ *       here at its own declaration. No coverage exclusion is added; the test seam covers it.
+ *</li>
+ *   <li><strong>the placeholder guard is always true in production.</strong> No program name in
  *       the frozen table begins {@code DUMMY}, so the "coming soon" path cannot be reached with the
  *       shipped data. Retained and covered through the test seam for the same reason as above.
- *       Decision log entry: <em>retained placeholder guard</em>.</li>
- *   <li><strong>Low - two menu beans, no shared base.</strong> This bean and
+ *</li>
+ *   <li><strong>two menu beans, no shared base.</strong> This bean and
  *       {@code com.cardemo.service.menu.AdminMenuService} are deliberately independent, because their
  *       source programs are independent and their option tables have different shapes: the admin entry
  *       of {@code app/cpy/COADM02Y.cpy} has no user-type sub-field at all. An abstract base would have
- *       to invent one. Decision log entry: <em>two menu beans retained</em>.</li>
- *   <li><strong>Low - the same caption field is rendered two different ways.</strong>
+ *       to invent one.</li>
+ *   <li><strong>the same caption field is rendered two different ways.</strong>
  *       {@code CDEMO-MENU-OPT-NAME} is transferred {@code DELIMITED BY SPACE} at
  *       {@code app/cbl/COMEN01C.cbl:161}, truncating it, and {@code DELIMITED BY SIZE} at {@code :245},
  *       keeping it whole. Both are reproduced exactly and neither is generalised to the other site.
- *       Decision log entry: <em>DELIMITED BY SPACE versus SIZE</em>.</li>
- *   <li><strong>Low - captured-but-untested response codes.</strong>
+ *</li>
+ *   <li><strong>captured-but-untested response codes.</strong>
  *       {@code RECEIVE-MENU-SCREEN} captures {@code RESP} and {@code RESP2} at
  *       {@code app/cbl/COMEN01C.cbl:205-206} into {@code WS-RESP-CD} and {@code WS-REAS-CD} declared at
  *       {@code :43-44}, and nothing anywhere in the program ever tests them. That absent guard is
- *       preserved rather than improved. Decision log entry: <em>unguarded RECEIVE</em>.</li>
+ *       preserved rather than improved.</li>
  *   </ul>
  *
  * <h2>7. What this bean deliberately does not do</h2>
@@ -678,7 +675,7 @@ public class MainMenuService {
      * so an over-long value is rejected with the same literal the source uses for every other unusable
      * option. No new outcome is introduced.</p>
      *
-     * <p><strong>Deviation, severity Medium - the rejection short-circuits.</strong> The source has no
+     * <p><strong>Deviation - the rejection short-circuits.</strong> The source has no
      * early exit here: {@code :134} ends the {@code IF} and control falls straight through the blank
      * {@code :135} into the gate at {@code :136-137}, which subscripts
      * {@code CDEMO-MENU-OPT-USRTYPE(WS-OPTION)} with the value that just failed - zero, eleven, twelve,
@@ -689,7 +686,7 @@ public class MainMenuService {
      * unchanged</strong>, because both source paths perform {@code SEND-MENU-SCREEN} and the operator
      * sees the message either way. This hazard is unique to this program: the corresponding subscript in
      * {@code app/cbl/COADM01C.cbl:138} sits inside {@code IF NOT ERR-FLG-ON} at {@code :137} and is
-     * structurally safe. Decision log entry: <em>bounds short-circuit</em>.</p>
+     * structurally safe.</p>
      *
      * <p><strong>Eligibility gate, {@code :136-143}.</strong>
      * {@code IF CDEMO-USRTYP-USER AND CDEMO-MENU-OPT-USRTYPE(WS-OPTION) = 'A'} yields the byte-exact
@@ -703,8 +700,7 @@ public class MainMenuService {
      * <p><strong>Retained although it cannot fire.</strong> All ten entries of
      * {@code app/cpy/COMEN02Y.cpy:25-84} carry {@code 'U'}, so no selection can satisfy the second
      * conjunct against the frozen table. The branch is nonetheless real, reachable code and is kept
-     * verbatim, with the test seam {@link #MainMenuService(Clock, List)} covering it. Decision log entry:
-     * <em>retained user-type gate</em>.</p>
+     * verbatim, with the test seam {@link #MainMenuService(Clock, List)} covering it.</p>
      *
      * <p><strong>Dispatch and the placeholder guard, {@code :145-165}.</strong> {@code :145 IF NOT
      * ERR-FLG-ON} is satisfied by construction here, because both rejections above have already thrown.
@@ -712,13 +708,12 @@ public class MainMenuService {
      * {@code 'DUMMY'}; a real target is dispatched by {@code EXEC CICS XCTL} at {@code :152-155} and a
      * placeholder is not.</p>
      *
-     * <p><strong>Deviation, Blocker class if mis-implemented - the transfer never returns.</strong> The
+     * <p><strong>Deviation - the transfer never returns.</strong> The
      * inner {@code END-IF} closes at {@code :156}, so the notice assembly at {@code :157-163} and the
      * {@code SEND} at {@code :164} sit <em>after</em> the dispatch. Under CICS that is unreachable
      * whenever a real target resolves, because {@code XCTL} transfers control and never comes back. A
      * Java call does come back, so this method <strong>returns immediately</strong> once a real target is
-     * resolved. Without that guard every valid selection would answer "coming soon". Decision log entry:
-     * <em>XCTL fall-through guard</em>.</p>
+     * resolved. Without that guard every valid selection would answer "coming soon".</p>
      *
      * <p>{@code :147-148} stamp {@code CDEMO-FROM-TRANID} and {@code CDEMO-FROM-PROGRAM} and {@code :151}
      * zeroes {@code CDEMO-PGM-CONTEXT}; none has a counterpart, all three being routing state. Lines
@@ -794,9 +789,9 @@ public class MainMenuService {
 
         // :136-143 retained verbatim although the frozen table can never satisfy the second conjunct:
         // all ten entries carry 'U'. Kept because it is real, reachable code and because a table value
-        // of 'A' must behave exactly as the source made it behave. Owed an entry in the planned DECISION_LOG.md under
-        // "retained user-type gate"; covered through the package-private test seam, never by a coverage
-        // exclusion. The comparison is exact - CDEMO-USRTYP-USER is the byte 'U' and the gate byte is
+        // of 'A' must behave exactly as the source made it behave; covered through the package-private
+        // test seam, never by a coverage exclusion. The comparison is exact - CDEMO-USRTYP-USER is the
+        // byte 'U' and the gate byte is
         // compared with 'A' - so no case folding is performed on either side.
         if (userType == UserType.USER && isAdminOnlyOption(selectedOption)) {
             throw ValidationException.invalidField(OPTION_FIELD_NAME, ADMIN_ONLY_MESSAGE);
@@ -808,9 +803,9 @@ public class MainMenuService {
         final boolean placeholder = targetProgram.startsWith(PLACEHOLDER_PROGRAM_PREFIX);
 
         if (!placeholder) {
-            // :152-155 EXEC CICS XCTL transfers control and never returns, so :157-164 is unreachable on this path.
-            // Returning here is what reproduces that. Removing this return would answer "coming soon" for every valid
-            // selection. the planned DECISION_LOG.md entry \"XCTL fall-through guard".
+            // :152-155 EXEC CICS XCTL transfers control and never returns, so :157-164 is unreachable on
+            // this path. Returning here is what reproduces that: removing this return would answer
+            // "coming soon" for every valid selection.
             LOG.debug("Main menu option {} of {} resolved to target program {}",
                     selectedOptionNumber, menuOptionCount, targetProgram);
             return new MenuSelection(selectedOption.optionNumber(), selectedOption.optionName(),
@@ -1187,8 +1182,7 @@ public class MainMenuService {
 
             // The XCTL fall-through invariant. A real target carries no notice, because under CICS the notice at
             // app/cbl/COMEN01C.cbl:157-164 was unreachable once XCTL had transferred control; a placeholder target
-            // always carries one, because :159-163 always assembles a non-empty string. the planned DECISION_LOG.md
-            // entry \"XCTL fall-through guard".
+            // always carries one, because :159-163 always assembles a non-empty string.
             if (placeholder == message.isEmpty()) {
                 throw new IllegalArgumentException("message must be empty for a real target and non-empty "
                         + "for a placeholder target, but placeholder was " + placeholder

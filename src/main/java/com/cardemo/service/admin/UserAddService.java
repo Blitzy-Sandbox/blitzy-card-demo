@@ -71,9 +71,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * inserts one 80-byte security record. It reports the three outcomes the source reports - added, identifier
  * already taken, or the write failed - with the source's exact message text in each case.
  *
- * <p>It is to be surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
- * {@code /api/admin/*} - <strong>planned</strong>, that controller has not been authored yet, so this
- * service currently has no HTTP entry point. {@code com.cardemo.config.SecurityConfig} already restricts
+ * <p>It is surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
+ * {@code /api/admin/*}, which is authored as of 4 August 2026; an earlier revision of this paragraph
+ * recorded that controller as planned and this service as having no HTTP entry point.
+ * {@code com.cardemo.config.SecurityConfig} restricts
  * {@code /api/admin/*} to the ADMIN role, so the rule is in place ahead of the route - the
  * {@code 'A'} against {@code 'U'} distinction of {@code CDEMO-USER-TYPE} at
  * {@code app/cpy/COCOM01Y.cpy}:27-28, surfaced as {@code com.cardemo.model.enums.UserType}.
@@ -242,17 +243,27 @@ import com.cardemo.service.shared.FileStatusMapper;
  * the column back to a free-form character, which would let a meaningless type reach the authorisation model
  * that {@code SecurityConfig} builds on {@code 'A'} against {@code 'U'}.
  *
- * <h2>Labelled mechanism note: the presented password is a separate argument</h2>
+ * <h2>Labelled mechanism note: the presented password is an explicit argument, taken from the body</h2>
  *
  * <p>{@code com.cardemo.model.dto.UserCreateRequest} carries all twelve fields of
- * {@code app/cpy-bms/COUSR01.CPY} but publishes a read path for only eleven: the credential is write-only by
- * deliberate design, with no accessor of any visibility, so that no caller, serializer or reflective bean
- * mapper can read it back out. That design is load-bearing and is not weakened here.
+ * {@code app/cpy-bms/COUSR01.CPY}. Eleven have ordinary bean accessors; the twelfth, the credential, is
+ * write-only for JSON and publishes exactly one read path, {@code presentedPassword()}, which is deliberately
+ * not spelled as a getter and is annotated {@code @JsonIgnore} so that neither a serializer nor a reflective
+ * bean mapper can reach it. That narrowing is load-bearing and is not weakened here.
  *
- * <p>The presented password is consequently handed to this bean as an <em>explicit separate argument</em>
- * alongside the request. The request supplies the eleven readable presented fields; the credential travels on
- * its own, is read exactly once, is hashed immediately, and is never stored on this bean, never assigned to a
- * field of the work area, and never returned.
+ * <p>The presented password is handed to this bean as an <em>explicit argument</em> alongside the request,
+ * and its only production caller - {@code com.cardemo.controller.AdminController} - supplies
+ * {@code request.presentedPassword()} in the call expression itself. Keeping the argument explicit is what
+ * lets this bean state its own contract: the credential is read exactly once, hashed immediately, and never
+ * stored on this bean, never assigned to a field of the work area, never logged and never returned. Taking it
+ * from the same body that is audited is what makes the value hashed and the value bound the same value by
+ * construction.
+ *
+ * <p><strong>Finding, HIGH severity, resolved.</strong> The credential formerly reached the controller on a
+ * bespoke {@code X-Presented-Password} request header, because the body member had no read path at all. That
+ * put the credential on the one channel generic ingress, proxy and APM redaction does <em>not</em> recognise,
+ * and it allowed the audited body member and the hashed header value to diverge. The header is removed; the
+ * body member is the only channel.
  *
  * <h2>Labelled mechanism note: the declarative transaction boundary</h2>
  *
@@ -690,12 +701,16 @@ public class UserAddService {
      *
      * <p><strong>The credential.</strong> {@code presentedPassword} is read once, hashed immediately, and
      * never stored on this bean, assigned to a work-area field, logged, echoed, returned or placed in an
-     * exception message. See the mechanism note on this class for why it arrives as a separate argument.
+     * exception message. See the mechanism note on this class for why it is an explicit argument and why its
+     * only production caller supplies {@code request.presentedPassword()}.
      *
-     * @param request           the eleven readable presented fields of {@code app/cpy-bms/COUSR01.CPY}. Must
-     *                          not be {@code null}; every component is treated as untrusted, and a value
-     *                          wider than the screen field it transcribes is rejected rather than truncated
-     * @param presentedPassword the value of {@code PASSWDI PIC X(8)} at {@code app/cpy-bms/COUSR01.CPY}:78.
+     * @param request           the twelve presented fields of {@code app/cpy-bms/COUSR01.CPY} - eleven with
+     *                          ordinary accessors and the credential behind its single non-serializing read
+     *                          path. Must not be {@code null}; every component is treated as untrusted, and a
+     *                          value wider than the screen field it transcribes is rejected rather than
+     *                          truncated
+     * @param presentedPassword the value of {@code PASSWDI PIC X(8)} at {@code app/cpy-bms/COUSR01.CPY}:78,
+     *                          which production callers take from {@code request} itself.
      *                          May be {@code null}, empty or blank, each of which takes the empty-password
      *                          arm at {@code app/cbl/COUSR01C.cbl}:136 exactly as the source does
      * @return the assembled screen: on success its five input fields are blank, its message is

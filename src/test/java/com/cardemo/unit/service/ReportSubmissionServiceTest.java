@@ -192,12 +192,13 @@ import org.springframework.messaging.support.GenericMessage;
  * <p>Findings are classified Blocker, High, Medium or Low, each with its remediation.
  *
  * <ul>
- *   <li><strong>Blocker - the monthly period becomes month-to-date.</strong> A secondary description of this
- *       program calls the monthly range month-to-date. The frozen source settles it the other way:
- *       {@code :223} moves 1 to the day, {@code :224-228} adds one to the month and carries the year, and
- *       {@code :229-230} takes {@code DATE-OF-INTEGER(INTEGER-OF-DATE(...) - 1)} - the first of the next
- *       month less one day, which is the last day of <em>this</em> one. Every monthly report's range would
- *       be short. Remedy: first of next month, minus one day.</li>
+ *   <li><strong>Blocker - the monthly period becomes month-to-date.</strong> The frozen source builds the
+ *       end date at {@code :223} by moving 1 to the day, at {@code :224-228} by adding one to the month and
+ *       carrying the year, and at {@code :229-230} by taking
+ *       {@code DATE-OF-INTEGER(INTEGER-OF-DATE(...) - 1)} - the first of the next month less one day, which
+ *       is the last day of <em>this</em> one - and then reads all three subfields back out at
+ *       {@code :232-234}. Every monthly report's range would otherwise be short. Remedy: first of next
+ *       month, minus one day.</li>
  *   <li><strong>Blocker - a wall clock replaces the injected one.</strong> The verdict then changes with the
  *       calendar. Remedy: {@link FixedClockProvider}.</li>
  *   <li><strong>High - a non-zero severity whose message number is 2513 starts being rejected.</strong>
@@ -392,6 +393,14 @@ class ReportSubmissionServiceTest {
 
     /** app/cbl/CORPT00C.cbl:433, assigned only after both dates have been validated. */
     private static final String REPORT_NAME_CUSTOM = "Custom";
+
+    /**
+     * The upper bound SQS places on a {@code MessageDeduplicationId}, in characters.
+     *
+     * <p>Asserted rather than assumed because the identifier is generated per submission (finding H-08) and an
+     * over-long value is rejected by the service at send time, one submission at a time.
+     */
+    private static final int MAX_DEDUPLICATION_ID_LENGTH = 128;
 
     // -----------------------------------------------------------------------------------------------------
     // Validator outcome tokens, app/cbl/CORPT00C.cbl:396 and :399. Opaque to this class by design.
@@ -1164,7 +1173,9 @@ class ReportSubmissionServiceTest {
     //
     // :223 MOVE 1 TO WS-CURDATE-DAY; :224 ADD 1 TO WS-CURDATE-MONTH; :225-228 carry the year when the month
     // exceeds 12; :229-230 COMPUTE DATE-OF-INTEGER(INTEGER-OF-DATE(...) - 1). The first of the next month,
-    // less one day, is the last day of THIS one. The start is the first of this month, from :217-219.
+    // less one day, is the last day of THIS one; :232-234 then read the mutated year, month and day back out
+    // through the WS-CURDATE-N REDEFINES alias of app/cpy/CSDAT01Y.cpy:23. The start is the first of this
+    // month, from :217-219.
     // =====================================================================================================
 
     @Nested
@@ -1172,7 +1183,7 @@ class ReportSubmissionServiceTest {
     class MonthlyPeriod {
 
         @Test
-        @DisplayName("mid-month, the period runs from the first to the LAST day - explicitly not to today")
+        @DisplayName("mid-month, the period runs from the first day of the month to its last day")
         void midMonthTheperiodRunsToTheMonthEnd() {
             arrangePublish();
 
@@ -1182,9 +1193,9 @@ class ReportSubmissionServiceTest {
                     .as(":217-219 assemble the current year and month with a day of 01")
                     .isEqualTo("2022-06-01");
             assertThat(sendOptions.payload().endDate())
-                    .as(":223-230 give the month end; the clock reads the tenth, which must NOT appear")
-                    .isEqualTo("2022-06-30")
-                    .isNotEqualTo("2022-06-10");
+                    .as(":223-230 give the first of July less one day, and :232-234 read that value back "
+                            + "out of the redefined date area")
+                    .isEqualTo("2022-06-30");
         }
 
         @Test
@@ -1196,7 +1207,8 @@ class ReportSubmissionServiceTest {
 
             assertThat(sendOptions.payload().startDate()).isEqualTo("2022-06-01");
             assertThat(sendOptions.payload().endDate())
-                    .as("a start equal to today must not collapse the period to a single day")
+                    .as("a start equal to today must not collapse the period to a single day, because "
+                            + ":223 discards the day before the arithmetic begins")
                     .isEqualTo("2022-06-30");
         }
 
@@ -2271,7 +2283,8 @@ class ReportSubmissionServiceTest {
             verify(sqsTemplate).sendAsync(any());
             assertThat(sendOptions.invoked())
                     .as("one lambda invocation means one publish; seventeen would be seventeen")
-                    .containsExactly("queue", "payload", "messageGroupId", "headers");
+                    .containsExactly("queue", "payload", "messageGroupId", "messageDeduplicationId",
+                            "headers");
         }
 
         @Test
@@ -2289,15 +2302,43 @@ class ReportSubmissionServiceTest {
         }
 
         @Test
-        @DisplayName("no deduplication identifier and no delay are set, the source having neither")
-        void noDeduplicationIdentifierAndNoDelayAreSet() {
+        @DisplayName("a fresh deduplication identifier is set per submission, and no delay is set")
+        void aFreshDeduplicationIdentifierIsSetPerSubmission() {
+            // Finding H-08, severity High. This asserted that NO deduplication identifier was set, on the
+            // reasoning that the source has no idempotency key. The consequence was that the queue's own
+            // content-based deduplication became the key, hashing a body of one report name and two dates - so
+            // two legitimate submissions of the same period collapsed inside the five-minute window while
+            // DISPOSITION(MOD) at app/csd/CARDDEMO.CSD:503 appended both. An explicit identifier per
+            // submission is how the queue is told not to deduplicate on content; it is the mechanism that
+            // reproduces the append, not a guard the source lacked.
             arrangePublish();
 
             service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
 
-            assertThat(sendOptions.messageDeduplicationId()).isNull();
+            final String first = sendOptions.messageDeduplicationId();
+            assertThat(first)
+                    .as("an identifier is mandatory on every submission: it is what makes the append parity "
+                            + "hold regardless of the queue's own deduplication attribute, and against a "
+                            + "queue provisioned with that attribute disabled SQS also rejects a send "
+                            + "supplying none")
+                    .isNotBlank()
+                    .hasSizeLessThanOrEqualTo(MAX_DEDUPLICATION_ID_LENGTH);
+            assertThat(first)
+                    .as("and it must not be derived from the message, which would reinstate body-keyed "
+                            + "collapse under another name")
+                    .doesNotContain(REPORT_NAME_MONTHLY)
+                    .doesNotContain("2022-06-01")
+                    .doesNotContain("2022-06-30");
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.messageDeduplicationId())
+                    .as("the SAME period submitted again must carry a DIFFERENT identity, or the queue would "
+                            + "discard the second submission exactly as content-based deduplication did")
+                    .isNotEqualTo(first);
             assertThat(sendOptions.invoked())
-                    .doesNotContain("messageDeduplicationId", "delaySeconds", "header");
+                    .as("no delay: the transient data queue was read immediately and the source sets none")
+                    .doesNotContain("delaySeconds", "header");
         }
 
         @Test

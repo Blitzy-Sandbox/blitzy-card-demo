@@ -61,9 +61,17 @@
  *
  * <h2>Operations present today</h2>
  *
- * <p>Six controllers expose <strong>twelve</strong> HTTP operations:
+ * <p>Measured 4 August 2026: eight controllers expose <strong>seventeen</strong> HTTP operations, counted as
+ * method-level request mappings. Each controller also carries one class-level {@code @RequestMapping} that
+ * names its base path and is not itself an operation, so the annotation total is twenty-five.
  *
  * <ul>
+ *   <li>{@link com.cardemo.controller.AuthController} at {@code /api/auth} - CSD {@code CC00} from
+ *       {@code app/cbl/COSGN00C.cbl}. One operation, sign-on, and the only unauthenticated operation in the
+ *       whole surface. It delegates to {@code AuthenticationService}.</li>
+ *   <li>{@link com.cardemo.controller.AdminController} at {@code /api/admin} - CSD {@code CU00},
+ *       {@code CU01}, {@code CU02} and {@code CU03}. Four operations restricted to the administrator role: a
+ *       paged user list at page size 10, an add, an update and a delete.</li>
  *   <li>{@link com.cardemo.controller.AccountController} at {@code /api/accounts} - CSD {@code CAVW} and
  *       {@code CAUP}. A {@code GET} by account identifier, and a {@code PUT} whose body carries
  *       <strong>both</strong> the old and new detail groups, because a stateless request cannot otherwise
@@ -84,23 +92,18 @@
  * <h2>Current contents versus the target set</h2>
  *
  * <p>The Agent Action Plan specifies <strong>8</strong> controllers exposing <strong>17</strong> operations.
- * <strong>Six controllers and twelve operations exist today.</strong> Two controllers carrying the remaining
- * five operations are <strong>planned and not yet authored</strong>:
+ * Measured 4 August 2026, <strong>all eight controllers and all seventeen operations are authored</strong>, so
+ * the target set for this package is reached and nothing in it is outstanding.
  *
- * <ul>
- *   <li>{@code AuthController} - <strong>Not available.</strong> Planned for CSD {@code CC00} from
- *       {@code app/cbl/COSGN00C.cbl}, contributing <strong>one</strong> operation: sign-on, which is the only
- *       unauthenticated operation in the whole surface. The service it will delegate to,
- *       {@code AuthenticationService}, is already authored.</li>
- *   <li>{@code AdminController} - <strong>Not available.</strong> Planned at {@code /api/admin/*} for CSD
- *       {@code CU00}, {@code CU01}, {@code CU02} and {@code CU03}, contributing <strong>four</strong>
- *       operations restricted to the administrator role. All four of the services it will delegate to are
- *       already authored, {@code UserDeleteService} among them, so the controller is the only missing part.</li>
- *   </ul>
+ * <p><strong>An earlier revision of this document recorded six controllers and twelve operations, with
+ * {@code AuthController} and {@code AdminController} as planned and not yet authored.</strong> That statement
+ * was true when it was written and is now withdrawn: both classes exist, both are covered by a test class of
+ * their own, and the five operations they were owed - one sign-on and four administrative - are routable. The
+ * reconciliation that revision projected, {@code 12 + 1 + 4 = 17}, has been discharged rather than merely
+ * restated.
  *
- * <p>The reconciliation is therefore <strong>12 + 1 + 4 = 17</strong>. Volatile counts are not restated
- * elsewhere in this documentation set; the authoritative dated inventory is section 0.4.5.1 of
- * {@code docs/technical-specifications.md}.
+ * <p>Volatile counts are not restated elsewhere in this documentation set; the authoritative dated inventory
+ * is section 0.4.5.1 of {@code docs/technical-specifications.md}.
  *
  * <h2>One CSD transaction has no Java counterpart, deliberately</h2>
  *
@@ -164,13 +167,14 @@
  *
  *   <dt>403 on an administrative operation for a user who should be an administrator</dt>
  *   <dd>The token's role claim does not carry the authority derived from {@code CDEMO-USER-TYPE} {@code 'A'}.
- *       Note that the administrative surface is planned rather than authored, so a 404 here is expected
- *       today.</dd>
+ *       The administrative surface is authored and routable, so a 403 here is an authority problem and not a
+ *       routing one: check the claim the token actually carries rather than the path.</dd>
  *
  *   <dt>404 on an operation documented above</dt>
- *   <dd>Check whether the controller is one of the two still planned. {@code AuthController} and
- *       {@code AdminController} do not exist yet, so sign-on and the four administrative operations are not
- *       routable.</dd>
+ *   <dd>Every operation listed above is authored and mapped, so a 404 is a path or method mismatch rather
+ *       than an absent controller - check the base path, the HTTP method and the path variable's shape. An
+ *       earlier revision of this entry attributed a 404 to {@code AuthController} and
+ *       {@code AdminController} not existing yet; both now exist, and that explanation is withdrawn.</dd>
  *
  *   <dt>400 with a field-length or field-name complaint</dt>
  *   <dd>The request does not match the BMS field contract. Widths come from {@code app/cpy-bms/**} and are

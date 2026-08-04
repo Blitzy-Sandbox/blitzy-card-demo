@@ -20,7 +20,7 @@
  *               app/cbl/CBACT04C.cbl:L180       (PROCEDURE USING)
  *               app/cbl/CBACT04C.cbl:L188-L222 (1000-TCATBALF loop)
  *               app/cbl/CBACT04C.cbl:L194-L208 (control break)
- *               app/cbl/CBACT04C.cbl:L219-L220 (unreachable ELSE arm)
+ *               app/cbl/CBACT04C.cbl:L219-L220 (end-of-data ELSE arm)
  *               app/cbl/CBACT04C.cbl:L281       (DALY REJECTS defect)
  *               app/cbl/CBACT04C.cbl:L309       (OPEN OUTPUT TRANSACT)
  *               app/cbl/CBACT04C.cbl:L325-L348 (1000-TCATBALF-GET-NEXT)
@@ -147,18 +147,20 @@ import org.springframework.data.jpa.repository.Query;
  * <p><b>The three retained parity artefacts, and the one Rule 1 conflict they raise.</b> Rule 1 clause B
  * forbids dead code; the parity mandate requires reproducing reachable no-ops and preserving legacy
  * defects verbatim. <b>Parity governs</b>, and clause B's actual intent - no <em>untracked</em> residue -
- * is satisfied because each artefact is marked in code, asserted here, and carries a
- * {@code DECISION_LOG.md} entry plus a {@code TRACEABILITY_MATRIX.md} row. Deleting any of them would fail
+ * is satisfied because each artefact is marked in code, asserted here, and is owed
+ * an entry in the planned {@code DECISION_LOG.md} plus a row in the planned
+ * {@code TRACEABILITY_MATRIX.md}. Deleting any of them would fail
  * a stated acceptance criterion (the paragraph map that gate 7 verifies) to satisfy a stylistic one. All
  * three instances that belong to {@code CBACT04C} are covered here:
  * <ol>
- * <li><b>Canonical, Low.</b> {@code 1400-COMPUTE-FEES} at {@code app/cbl/CBACT04C.cbl:L518}-{@code :L520}
+ * <li><b>The canonical instance.</b> {@code 1400-COMPUTE-FEES} at {@code app/cbl/CBACT04C.cbl:L518}-{@code :L520}
  * is empty apart from the comment {@code * To be implemented}, has no {@code -EXIT} label, and is
  * genuinely {@code PERFORM}ed at {@code :L216}. Retained as an empty private method; group 11 asserts it
  * exists, runs on the non-zero-rate path and does nothing.</li>
- * <li><b>High.</b> The {@code ELSE} arm at {@code :L219}-{@code :L220} is unreachable, which is why the
- * last account is never flushed. Retained as a marked no-op; groups 3 and 11 assert both halves.</li>
- * <li><b>Low.</b> {@code 0200-DISCGRP-OPEN} displays {@code 'ERROR OPENING DALY REJECTS FILE'} at
+ * <li>The {@code ELSE} arm at {@code :L219}-{@code :L220} belongs to the outer {@code IF} at
+ * {@code :L189}, so the flush the source reaches is the one at {@code :L196}. The arm is retained and
+ * performs the whole of {@code 1050-UPDATE-ACCOUNT}; groups 3 and 11 assert both halves.</li>
+ * <li>{@code 0200-DISCGRP-OPEN} displays {@code 'ERROR OPENING DALY REJECTS FILE'} at
  * {@code :L281}, in a program that has no rejects file at all - a copy-and-paste defect. Preserved
  * verbatim rather than corrected to {@code 'ERROR OPENING DISCLOSURE GROUP FILE'}; group 14 asserts the
  * literal.</li>
@@ -174,35 +176,39 @@ import org.springframework.data.jpa.repository.Query;
  * run; what is needed to strengthen that is an execution of {@code app/jcl/INTCALC.jcl} on a z/OS system
  * with its {@code SYSTRAN(+1)} generation captured.
  *
- * <p><b>Where this suite deliberately contradicts the Agent Action Plan.</b> &sect;0.7.3.3 asserts that
- * "when the loop detects end of file it performs the account update one final time". The production class
- * establishes from the source - by indentation, at {@code app/cbl/CBACT04C.cbl:L188}, {@code :L191},
- * {@code :L218}, {@code :L219} and {@code :L221} - that the {@code ELSE} arm is <em>unreachable</em> and
- * that the last account of every run is therefore never flushed. These tests assert the source's
- * behaviour, not the plan's prose: group 11 proves the retained arm delegates correctly when invoked
- * directly, and group 3 proves nothing in the normal path invokes it. Asserting a final flush here would
- * lock in a defect the production class was written specifically to avoid.
+ * <p><b>What this suite asserts about the end-of-data arm, and where the variance is disclosed.</b> Every
+ * assertion below is derived from the primary source and cited to it. The reachability of
+ * {@code 1050-UPDATE-ACCOUNT} follows from the indentation at {@code app/cbl/CBACT04C.cbl:L188},
+ * {@code :L191}, {@code :L218}, {@code :L219} and {@code :L221}: the {@code ELSE} at {@code :L219} pairs
+ * with the outer {@code IF} at {@code :L189}, both at column 16, while the inner {@code IF} and its
+ * {@code END-IF} at {@code :L191} and {@code :L218} sit at column 20. Group 3 pins where the flush is
+ * reached from and what it does when it is - the completed account written, its accumulated interest
+ * posted, both cycle accumulators reset - and group 11 pins that the retained arm still delegates to that
+ * same flush when invoked directly. This suite states no conclusion about the specification prose: the one
+ * authoritative record of every prose-versus-corpus variance in this tree, with its severity and its
+ * remediation, is the register in {@code src/main/java/com/cardemo/package-info.java}, and duplicating it
+ * in an assertion message is what turns a test from parity evidence into a second specification.
  *
  * <p><b>Common failure modes and troubleshooting.</b>
  * <ul>
- * <li><b>Blocker.</b> A failure in group 5 means the formula has been algebraically rewritten. It must
+ * <li>A failure in group 5 means the formula has been algebraically rewritten. It must
  * multiply and only then divide by the literal {@code 1200} with {@code HALF_EVEN} at scale two; dividing
  * by 100 and then by 12, or multiplying by a decimal rate, rounds differently.</li>
- * <li><b>Blocker.</b> A failure in group 3 means the flush-reset-reload ordering of {@code :L196} to
+ * <li>A failure in group 3 means the flush-reset-reload ordering of {@code :L196} to
  * {@code :L203} has moved. Any other order posts one account's interest onto another account's
  * balance.</li>
- * <li><b>High.</b> A failure in group 4 means the two cycle counters are no longer zeroed on the account
+ * <li>A failure in group 4 means the two cycle counters are no longer zeroed on the account
  * rewrite, which corrupts the over-limit arithmetic of the following posting cycle.</li>
- * <li><b>High.</b> A failure in group 7 means the two-stage rate lookup has changed shape: stage one must
+ * <li>A failure in group 7 means the two-stage rate lookup has changed shape: stage one must
  * tolerate a record not found and retry with the literal {@code DEFAULT} group, and stage two must
  * abend.</li>
- * <li><b>Medium.</b> A failure in group 6 means a zero rate is no longer suppressing the transaction, so
+ * <li>A failure in group 6 means a zero rate is no longer suppressing the transaction, so
  * the run would emit interest rows of zero value that the source never writes.</li>
- * <li><b>High.</b> A failure in group 14's two stale-rate tests means a rate is being cached across
+ * <li>A failure in group 14's two stale-rate tests means a rate is being cached across
  * records. In the source the {@code INVALID KEY} arm at {@code app/cbl/CBACT04C.cbl:L416} only displays and
  * leaves the previous iteration's record area intact, so the Java path must resolve the rate freshly per
  * record and hold no rate state; a cache silently posts one category's rate onto another's balance.</li>
- * <li><b>High - and this one is a trap rather than a regression.</b> <b>The shipped fixtures exercise almost
+ * <li><b>The shipped fixtures exercise almost
  * none of this program's logic, so synthetic data is mandatory.</b> Group 13 measures the three reasons:
  * {@code app/data/ASCII/acctdata.txt} carries a blank {@code ACCT-GROUP-ID} on all fifty rows, so the
  * stage-one rate read always misses and the direct-hit arm is unreachable; every row of
@@ -211,8 +217,8 @@ import org.springframework.data.jpa.repository.Query;
  * decodes to {@code +0.00}, so the formula, the rounding mode and the {@code NUMERIC(11,2)} scale are all
  * invisible. A suite driven only by shipped data would pass while measuring nothing. The remediation is
  * synthetic rows - never an edited fixture, because {@code app/**} is frozen and is the parity oracle.</li>
- * <li><b>Low.</b> A failure in group 12 means a card number has reached a log record.</li>
- * <li><b>Low.</b> A failure in group 14's first test means the preserved {@code 'ERROR OPENING DALY REJECTS
+ * <li>A failure in group 12 means a card number has reached a log record.</li>
+ * <li>A failure in group 14's first test means the preserved {@code 'ERROR OPENING DALY REJECTS
  * FILE'} literal of {@code :L281} has been "corrected". It must not be: it is legacy output the parity
  * comparison is measured against.</li>
  * <li><b>Build.</b> A compilation failure naming an unused import is the zero-warning gate doing its job -
@@ -672,14 +678,16 @@ class InterestCalculationProcessorTest {
     }
 
     /**
-     * Invokes the retained unreachable {@code ELSE} arm directly.
+     * Invokes the retained end-of-data {@code ELSE} arm of {@code app/cbl/CBACT04C.cbl:L219}-{@code :L220}
+     * directly.
      *
-     * <p>The method is private and, in the source, unreachable. Invoking it reflectively is the only way
-     * to prove that the retained arm still delegates to the flush it names, which is what makes it a
-     * faithful reproduction rather than abandoned residue. Nothing in the normal path calls it, and group
-     * 3 asserts that too.
+     * <p>The method is private, and by the indentation pairing cited in the class documentation the source
+     * reaches {@code 1050-UPDATE-ACCOUNT} from the control break at {@code :L196}. Invoking the arm
+     * reflectively is the only way to prove that it still performs the whole of that paragraph - the save,
+     * the interest posting and both cycle resets - which is what makes it a faithful reproduction of the
+     * branch rather than abandoned residue. Group 3 covers the reachable path separately.
      */
-    private void invokeUnreachableEndOfFileArm() {
+    private void invokeEndOfFileArm() {
         try {
             Method arm = InterestCalculationProcessor.class
                     .getDeclaredMethod("updateAccountAtEndOfFile");
@@ -693,9 +701,9 @@ class InterestCalculationProcessorTest {
             throw new IllegalStateException("The retained arm raised a checked throwable", cause);
         } catch (ReflectiveOperationException reflection) {
             throw new IllegalStateException(
-                    "updateAccountAtEndOfFile is retained as a marked unreachable no-op and must remain "
-                            + "declared so that the paragraph map for app/cbl/CBACT04C.cbl:L219-L220 stays "
-                            + "provable", reflection);
+                    "updateAccountAtEndOfFile reproduces app/cbl/CBACT04C.cbl:L219-L220 and must remain "
+                            + "declared so that the paragraph map for that branch stays provable",
+                    reflection);
         }
     }
 
@@ -957,18 +965,58 @@ class InterestCalculationProcessorTest {
         }
 
         @Test
-        @DisplayName("the LAST account of the run is never flushed, exactly as :L219 never runs")
-        void theLastAccountIsNeverFlushed() {
-            Account only = stubAccount(ACCOUNT_A, "100.00", CARD_A);
+        @DisplayName("1050-UPDATE-ACCOUNT is reached only from the control break at :L196, so an account "
+                + "still in progress is not written part way through its own category-balance rows")
+        void theFlushIsReachedOnlyFromTheControlBreak() {
+            Account inProgress = stubAccount(ACCOUNT_A, "100.00", CARD_A);
             stubAnyRate("12.00");
 
             processor.process(categoryBalance(ACCOUNT_A, TYPE_CD, CAT_CD, "100.00"));
             processor.process(categoryBalance(ACCOUNT_A, "02", 6, "100.00"));
 
-            assertThat(only.getCurrentBalance())
-                    .as("no final flush exists and none may be added; see CBACT04C:L188/L218/L219 pairing")
+            // app/cbl/CBACT04C.cbl:L194-L199. Both rows carry the same TRANCAT-ACCT-ID, so the break test at
+            // :L194 is false on the second row and 1050-UPDATE-ACCOUNT - performed at :L196 and at :L220 - has
+            // not been reached from :L196. Writing here would post an account's interest before its last
+            // category-balance row had been read, which is the defect the break ordering exists to prevent.
+            assertThat(inProgress.getCurrentBalance())
+                    .as("ADD WS-TOTAL-INT TO ACCT-CURR-BAL at :L352 belongs to the flush, and the flush has "
+                            + "not been reached, so the balance the account was read with is untouched")
                     .isEqualByComparingTo(new BigDecimal("100.00"));
             Mockito.verify(accountRepository, Mockito.never()).save(Mockito.any());
+        }
+
+        @Test
+        @DisplayName("when the break does arrive the completed account IS written, with its accumulated "
+                + "interest posted and both cycle accumulators reset to zero, per :L352-L354")
+        void theCompletedAccountIsWrittenWithInterestPostedAndBothCyclesReset() {
+            Account completed = stubAccount(ACCOUNT_A, "100.00", CARD_A);
+            stubAccount(ACCOUNT_B, "200.00", CARD_B);
+            stubAnyRate("12.00");
+            assertThat(completed.getCurrentCycleCredit())
+                    .as("the fixture must start non-zero, or a missing reset would be invisible")
+                    .isEqualByComparingTo(new BigDecimal("500.00"));
+            assertThat(completed.getCurrentCycleDebit())
+                    .as("and the two accumulators must differ, so a transposed reset cannot pass")
+                    .isEqualByComparingTo(new BigDecimal("-100.00"));
+
+            // Two rows for account A, then one for account B. The third row is the control break, and the
+            // break at :L196 flushes the account that has just completed - A - with both of its rows summed.
+            processor.process(categoryBalance(ACCOUNT_A, TYPE_CD, CAT_CD, "100.00"));
+            processor.process(categoryBalance(ACCOUNT_A, "02", 6, "100.00"));
+            processor.process(categoryBalance(ACCOUNT_B, "100.00"));
+
+            Mockito.verify(accountRepository).save(completed);
+            assertThat(completed.getCurrentBalance())
+                    .as(":L352 ADD WS-TOTAL-INT TO ACCT-CURR-BAL. Two rows of 100.00 at 12.00 per cent give "
+                            + "100.00 * 12.00 / 1200 twice, so 1.00 + 1.00 on top of the opening 100.00")
+                    .isEqualByComparingTo(new BigDecimal("102.00"));
+            assertThat(completed.getCurrentCycleCredit())
+                    .as(":L353 MOVE 0 TO ACCT-CURR-CYC-CREDIT. Omitting this reset corrupts the next "
+                            + "posting cycle's over-limit arithmetic at app/cbl/CBTRN02C.cbl:L410-L413")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(completed.getCurrentCycleDebit())
+                    .as(":L354 MOVE 0 TO ACCT-CURR-CYC-DEBIT, the other half of the same reset")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
         }
 
         @Test
@@ -1692,19 +1740,27 @@ class InterestCalculationProcessorTest {
         }
 
         @Test
-        @DisplayName("the unreachable ELSE arm of :L219-L220 is retained and still delegates to the flush")
-        void theUnreachableArmStillDelegates() {
-            Account only = stubAccount(ACCOUNT_A, "100.00", CARD_A);
+        @DisplayName("the end-of-data ELSE arm of :L219-L220 is retained and performs the whole of "
+                + "1050-UPDATE-ACCOUNT: the account saved, its interest posted and both cycles reset")
+        void theRetainedEndOfDataArmPerformsTheWholeFlush() {
+            Account lastAccountInKeyOrder = stubAccount(ACCOUNT_A, "100.00", CARD_A);
             stubDirectRate("12.00");
             processor.process(categoryBalance(ACCOUNT_A, "100.00"));
-            assertThat(only.getCurrentBalance()).isEqualByComparingTo(new BigDecimal("100.00"));
+            assertThat(lastAccountInKeyOrder.getCurrentBalance()).isEqualByComparingTo(
+                    new BigDecimal("100.00"));
 
-            invokeUnreachableEndOfFileArm();
+            invokeEndOfFileArm();
 
-            assertThat(only.getCurrentBalance())
-                    .as("invoked directly it flushes; nothing in the normal path invokes it")
+            Mockito.verify(accountRepository).save(lastAccountInKeyOrder);
+            assertThat(lastAccountInKeyOrder.getCurrentBalance())
+                    .as(":L352 ADD WS-TOTAL-INT TO ACCT-CURR-BAL, one row of 100.00 at 12.00 per cent")
                     .isEqualByComparingTo(new BigDecimal("101.00"));
-            Mockito.verify(accountRepository).save(only);
+            assertThat(lastAccountInKeyOrder.getCurrentCycleCredit())
+                    .as(":L353 MOVE 0 TO ACCT-CURR-CYC-CREDIT")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(lastAccountInKeyOrder.getCurrentCycleDebit())
+                    .as(":L354 MOVE 0 TO ACCT-CURR-CYC-DEBIT")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
         }
 
         @Test
@@ -1721,7 +1777,7 @@ class InterestCalculationProcessorTest {
 
         /** Invokes the retained arm before any control break has loaded an account. */
         private void flushWithNothingLoaded() {
-            invokeUnreachableEndOfFileArm();
+            invokeEndOfFileArm();
         }
     }
 
@@ -1787,7 +1843,7 @@ class InterestCalculationProcessorTest {
          * the stage-one read at {@code :L416} can only ever miss over shipped data, so the {@code DEFAULT}
          * fallback of {@code :L436}-{@code :L438} is always taken and the direct arm is never entered.
          *
-         * <p>Severity <b>High</b>, and the remediation is the one this suite applies: synthesise an account
+         * <p>synthesise an account
          * with a non-blank group id. Editing the fixture is not an option - {@code app/**} is frozen and is
          * the parity oracle.
          */
@@ -1819,7 +1875,7 @@ class InterestCalculationProcessorTest {
          * <p>{@code TRANCAT-TYPE-CD PIC X(02)} and {@code TRANCAT-CD PIC 9(04)}
          * ({@code app/cpy/CVTRA01Y.cpy:L7}-{@code :L8}) occupy columns
          * {@value #TRANCAT_TYPE_AND_CATEGORY_COLUMN} to 17, and all fifty rows of
-         * {@code app/data/ASCII/tcatbal.txt} read {@value #SHIPPED_TYPE_AND_CATEGORY}. Severity <b>High</b>:
+         * {@code app/data/ASCII/tcatbal.txt} read {@value #SHIPPED_TYPE_AND_CATEGORY}. That matters because
          * without a synthetic key drawn from {@link #ZERO_RATE_DEFAULT_PAIRS}, the suppression branch of
          * {@code app/cbl/CBACT04C.cbl:L214}-{@code :L217} would never be executed by any test.
          */
@@ -1858,7 +1914,7 @@ class InterestCalculationProcessorTest {
          * text fields, and {@code ACCT-ADDR-ZIP} holds {@code A000000000} on every account row, so a scan
          * that is not position-aware mis-decodes them.
          *
-         * <p>Severity <b>High</b>: the {@code /1200} formula, the {@code HALF_EVEN} rounding and the
+         * <p>The {@code /1200} formula, the {@code HALF_EVEN} rounding and the
          * {@code NUMERIC(11,2)} scale are all invisible at a zero balance. Synthetic non-zero balances are
          * mandatory, and group 5 supplies them.
          */
@@ -2034,8 +2090,9 @@ class InterestCalculationProcessorTest {
          * <p><b>It is preserved verbatim and deliberately not repaired.</b> The literal is part of the
          * observable output the parity comparison is measured against, so correcting it to
          * {@code 'ERROR OPENING DISCLOSURE GROUP FILE'} would register as a diff. Severity <b>Low</b> - an
-         * operator reading the line is pointed at the wrong dataset, and nothing else - with a
-         * {@code DECISION_LOG.md} entry as its tracking reference, which is what keeps it a documented
+         * operator reading the line is pointed at the wrong dataset, and nothing else - owed an
+         * entry in the planned {@code DECISION_LOG.md} as its tracking reference, which is what keeps
+         * it a documented
          * reproduction rather than untracked residue under Rule 1 clause B.
          *
          * <p>Both halves of "preserved verbatim" are asserted, and each against the artefact that carries
@@ -2082,7 +2139,7 @@ class InterestCalculationProcessorTest {
          * that image the retry at {@code :L444} reads with. {@code app/data/ASCII/discgrp.txt} stores the
          * same padded form, which group 13 measures independently.
          *
-         * <p>Severity <b>High</b> if it regresses: a probe of the bare literal against a
+         * <p>a probe of the bare literal against a
          * {@code CHAR(10)} column matches or misses depending on the column type and the comparison
          * semantics, so a bare probe is the kind of fault that passes on one substrate and silently abends
          * every account on another.
@@ -2179,7 +2236,7 @@ class InterestCalculationProcessorTest {
          * {@code KEY IS FD-XREF-ACCT-ID}, the {@code ALTERNATE RECORD KEY} declared at {@code :L38}, so the
          * Java counterpart is an account-keyed finder rather than a card-keyed one.
          *
-         * <p><b>Refinement of the plan, severity Low.</b> {@code app/jcl/INTCALC.jcl} allocates <em>two</em>
+         * <p><b>A detail worth stating.</b> {@code app/jcl/INTCALC.jcl} allocates <em>two</em>
          * cross-reference DD names, {@code XREFFILE} and {@code XREFFIL1}, and the second reads as though the
          * program went through the alternate-index PATH. It does not: {@code CBACT04C} contains exactly one
          * xref {@code SELECT} ({@code :L34}-{@code :L39}) and it assigns {@code XREFFILE}, so

@@ -13,7 +13,7 @@
  *               drops the trailing filler, the dual 80-byte text and
  *               100-byte HTML emission, the per-card total, and the
  *               removal of the legacy 51-card by 10-transaction
- *               capacity ceiling as a labelled deviation.
+ *               capacity ceiling as a deliberate deviation.
  * Source      : app/cbl/CBSTM03A.CBL:L59-L83   (counters + call area)
  *               app/cbl/CBSTM03A.CBL:L146-L151 (ST-LINE15, HTML X(100))
  *               app/cbl/CBSTM03A.CBL:L225-L237 (51 x 10 table, PSAPTR)
@@ -67,6 +67,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -78,6 +79,7 @@ import com.cardemo.batch.processors.StatementProcessor;
 import com.cardemo.batch.processors.StatementProcessor.Statement;
 import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.FatalProcessingException;
+import com.cardemo.exception.FileAccessException;
 import com.cardemo.model.dto.StatementTransaction;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
@@ -86,6 +88,7 @@ import com.cardemo.service.shared.FileService;
 import com.cardemo.service.shared.FileStatusMapper;
 import com.cardemo.unit.model.FixedClockProvider;
 import com.cardemo.unit.model.FixtureLoader;
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -97,6 +100,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -132,7 +136,7 @@ import org.slf4j.LoggerFactory;
  * {@code **}{@code /*Test.java} and excludes {@code **}{@code /integration/**} and {@code **}{@code /e2e/**},
  * so a class moved out of {@code src/test/java/com/cardemo/unit/**} would match neither plugin's include set
  * and would <em>silently never run</em> — a green build with this class uncovered. That is why the file name
- * and location are a Blocker-severity contract and not a preference.
+ * and location are a contract and not a preference.
  *
  * <p><b>Key configuration and defaults.</b> Text records are 80 characters and HTML records are 100, the
  * two {@code LRECL} values {@code app/jcl/CREASTMT.JCL:STEP040} declares. The legacy table held 51 cards
@@ -168,31 +172,31 @@ import org.slf4j.LoggerFactory;
  *
  * <p><b>Common failure modes and troubleshooting.</b>
  * <ul>
- * <li><b>Blocker.</b> A failure in group 7 means the {@code OUTREC} projection has changed. It must emit
+ * <li>A failure in group 7 means the {@code OUTREC} projection has changed. It must emit
  * the 16-byte card number, then 262 bytes from the head, then 50 bytes from offset 279 - which truncates
  * the processing timestamp to 24 characters and drops the 20-byte filler entirely. Reproducing that
  * truncation is what keeps statement output byte-comparable with the legacy baseline; "fixing" it is a
  * divergence.</li>
- * <li><b>Blocker.</b> A failure in group 5 means an emitted record is no longer exactly 80 or 100
+ * <li>A failure in group 5 means an emitted record is no longer exactly 80 or 100
  * characters. A fixed block file rejects that outright.</li>
- * <li><b>High.</b> A failure in group 3 means the ascending-card-number precondition is no longer
+ * <li>A failure in group 3 means the ascending-card-number precondition is no longer
  * enforced. The lookup exits early on the first card greater than the one sought, so unsorted input would
  * silently skip cards rather than fail.</li>
- * <li><b>High.</b> A failure in group 2 means the initialisation order has changed. The transaction file
+ * <li>A failure in group 2 means the initialisation order has changed. The transaction file
  * must be opened and primed before the table is built, and the table before any statement is produced.</li>
- * <li><b>Medium.</b> A failure in group 11 means {@code close} no longer attempts all four datasets. It
+ * <li>A failure in group 11 means {@code close} no longer attempts all four datasets. It
  * must close every one and report the first failure with the rest suppressed, not stop at the first.</li>
- * <li><b>Low.</b> A failure in group 12 means an unmasked card number reached a diagnostic.</li>
- * <li><b>High.</b> A failure in group 14 means the {@code '00' OR '04'} leniency has leaked from the nine
+ * <li>A failure in group 12 means an unmasked card number reached a diagnostic.</li>
+ * <li>A failure in group 14 means the {@code '00' OR '04'} leniency has leaked from the nine
  * {@code IF}-guarded sites onto one of the four {@code EVALUATE}-guarded sites, or has been withdrawn from
  * the {@code IF} sites. The two guards are deliberately different and both halves must hold.</li>
- * <li><b>High.</b> A failure in group 15 means the final per-card counter flush of
+ * <li>A failure in group 15 means the final per-card counter flush of
  * {@code app/cbl/CBSTM03A.CBL:L850} has been lost, which silently drops the last card's transactions.</li>
- * <li><b>High.</b> A failure in group 16 means an over-capacity input is being silently truncated instead of
+ * <li>A failure in group 16 means an over-capacity input is being silently truncated instead of
  * failing loudly — the very defect the removal of the 510 ceiling was required not to reintroduce.</li>
- * <li><b>Blocker.</b> A failure in group 17 means the emission order has changed. The three closing text
+ * <li>A failure in group 17 means the emission order has changed. The three closing text
  * lines and the eight closing markup fragments are ordered output, so order is content.</li>
- * <li><b>Low.</b> A failure in group 21 means a forbidden pattern has entered the class under test — a
+ * <li>A failure in group 21 means a forbidden pattern has entered the class under test — a
  * {@code PSAPTR}/TIOT analogue, a spawned sort process, {@code sun.misc.Unsafe} or JNI.</li>
  * </ul>
  *
@@ -214,17 +218,14 @@ import org.slf4j.LoggerFactory;
  * {@link FixtureLoader.Fixture#DAILY_TRANSACTION} carries the correct spelling, which is why fixtures are
  * resolved through that enum rather than by a literal path anywhere in this class.
  *
- * <p><b>Two instances of the documented Clause B conflict live in the class under test.</b> Clause B forbids
- * dead code; the parity mandate requires the source's control flow to survive one-for-one. Parity governs, and
- * Clause B is satisfied by its own wording — the prohibition is on artefacts <em>without a tracking
- * reference</em>. Group 13 asserts both instances are still tracked rather than deleted: the five unreachable
+ * <p><b>Two reachable-looking no-ops live in the class under test, and both are retained.</b> The source's
+ * control flow has to survive one-for-one, so neither is deleted; each is marked in code and asserted here,
+ * which is what keeps it from reading as residue. Group 13 covers both: the five unreachable
  * {@code EXIT.} statements at {@code app/cbl/CBSTM03A.CBL:L762}, {@code :L781}, {@code :L799}, {@code :L816}
  * and {@code :L853}, each dead because its paragraph {@code GO TO}s away first; and the immediately redundant
  * {@code MOVE 1 TO CR-JMP} at {@code :L324}, redundant because the {@code PERFORM VARYING CR-JMP FROM 1 BY 1}
- * of {@code :L417} re-initialises it. Both are severity Low and both are owed an entry
- * in the planned {@code DECISION_LOG.md} and a row in the planned {@code TRACEABILITY_MATRIX.md}; neither
- * document exists in this branch, so the decision itself lives in the docstring beside the code it governs,
- * where it cannot drift from it. Deleting either call site would break the paragraph map Gate 7 reads.
+ * of {@code :L417} re-initialises it. The reasoning for each lives in the docstring beside the code it
+ * governs, where it cannot drift from it, and deleting either call site would break the paragraph map.
  */
 @DisplayName("StatementProcessor: CBSTM03A without its ALTER dispatch or its capacity ceiling")
 class StatementProcessorTest {
@@ -1096,7 +1097,7 @@ class StatementProcessorTest {
     }
 
     @Nested
-    @DisplayName("7. BLOCKER-CRITICAL: the OUTREC projection truncates and drops, and must keep doing so")
+    @DisplayName("7. The OUTREC projection truncates and drops, and must keep doing so")
     class OutrecProjection {
 
         @Test
@@ -1668,8 +1669,8 @@ class StatementProcessorTest {
          * asserts that determination structurally: the class under test declares no field, no map and no
          * method that keys behaviour on a DD name. The DD-keyed strategy map genuinely belongs to
          * {@link FileService}, where {@code CBSTM03B}'s four-file-by-six-operation matrix really does vary.
-         * Owed an entry in the planned {@code DECISION_LOG.md} as self-modifying code eliminated by static
-         * flow analysis with observable order preserved.
+         * The self-modifying dispatch is eliminated by static flow analysis, with the observable order
+         * preserved.
          */
         @Test
         @DisplayName("the processor declares no DD-keyed dispatch structure; that belongs to FileService")
@@ -1701,11 +1702,9 @@ class StatementProcessorTest {
          * The five unreachable {@code EXIT.} statements are retained, tracked, and observably harmless.
          *
          * <p>{@code app/cbl/CBSTM03A.CBL:L762}, {@code :L781}, {@code :L799}, {@code :L816} and {@code :L853}
-         * each sit immediately after a {@code GO TO}, so control never reaches any of them. Severity <b>Low</b>.
-         * Clause B forbids <em>untracked</em> dead code; these are owed an entry in the planned
-         * {@code DECISION_LOG.md} and a row in the planned {@code TRACEABILITY_MATRIX.md}, and carry an
-         * intentional-no-op marker in the translation itself, so they are tracked. Deleting them would
-         * break the paragraph map Gate 7 verifies.
+         * each sit immediately after a {@code GO TO}, so control never reaches any of them. They carry an
+         * intentional-no-op marker in the translation itself, which is what distinguishes them from residue,
+         * and deleting them would break the paragraph map.
          *
          * <p>What is assertable from outside is the consequence: retaining five no-ops changes nothing
          * observable. The initialisation sequence still opens exactly four datasets exactly once each and
@@ -1737,9 +1736,8 @@ class StatementProcessorTest {
          *
          * <p>It is immediately redundant because {@code 4000-TRNXFILE-GET}'s
          * {@code PERFORM VARYING CR-JMP FROM 1 BY 1} at {@code :L417-L418} re-initialises the same subscript
-         * before reading it. Severity <b>Low</b>, retained with an intentional-no-op marker and a
-         * forward reference to the planned {@code DECISION_LOG.md}, for the same Gate 7 reason as the dead
-         * {@code EXIT.}s.
+         * before reading it. Retained with an intentional-no-op marker, for the same paragraph-map reason as
+         * the dead {@code EXIT.}s.
          *
          * <p><b>The locator is {@code :L324}.</b> The adjacent {@code MOVE ZERO TO WS-TOTAL-AMT} at
          * {@code :L325} is <em>not</em> redundant, and this test proves the distinction rather than asserting
@@ -1927,7 +1925,7 @@ class StatementProcessorTest {
          * {@code WHEN '10'}. <b>There is no {@code WHEN '04'} at any of the four.</b> So {@code '04'} falls
          * into {@code WHEN OTHER} and abends — the exact opposite of the nine {@code IF} sites.
          *
-         * <p>Getting this wrong in either direction is a High-severity parity break: granting {@code '04'}
+         * <p>Getting this wrong in either direction is a parity break: granting {@code '04'}
          * here would silently accept a record the source rejected, and withdrawing it from the {@code IF}
          * sites would abend an open the source accepted.
          */
@@ -2154,15 +2152,13 @@ class StatementProcessorTest {
          * {@code WS-TRAN-TBL OCCURS 10 TIMES} — a hard ceiling of <b>510 transactions per run</b> — and
          * <b>neither {@code CR-CNT} nor {@code TR-CNT} is bounds-checked anywhere</b>. The subscripted
          * {@code MOVE}s at {@code :L827-L829} therefore walk off the end of the table on the 511th
-         * transaction. Severity <b>High</b>: a latent storage-overrun defect that corrupts adjacent storage
-         * silently.
+         * transaction - a latent storage-overrun defect that corrupts adjacent storage silently.
          *
-         * <p><b>This is a LABELLED DEVIATION, not parity.</b> Java uses unbounded collections, so the ceiling
+         * <p><b>This is a DELIBERATE DEVIATION, not parity.</b> Java uses unbounded collections, so the ceiling
          * is gone. The justification is written down rather than assumed (Rule 1 Clause A5): the removal
          * eliminates a <b>memory-corruption and silent-truncation hazard</b>; it is <em>not</em> a performance
-         * optimisation; the historical 510 limit is owed a row in the planned {@code TRACEABILITY_MATRIX.md}
-         * as the legacy capacity; and the deviation itself is owed an entry in the planned
-         * {@code DECISION_LOG.md}. Pretending the ceiling was
+         * optimisation; and the historical 510 limit stays published as named constants so the legacy
+         * capacity remains discoverable. Pretending the ceiling was
          * preserved would be false, and pretending its removal is invisible would be worse — which is why
          * group 4 asserts that passing each legacy threshold <em>warns</em>.
          *
@@ -2274,8 +2270,7 @@ class StatementProcessorTest {
          *
          * <p>51 cards times 10 transactions is 510, and all three figures come from
          * {@code app/cbl/CBSTM03A.CBL:L226} and {@code :L228}. Keeping them as named constants is what lets
-         * the warning messages and the planned {@code TRACEABILITY_MATRIX.md} cite one number rather than
-         * three copies.
+         * the warning messages cite one number rather than three copies.
          */
         @Test
         @DisplayName("the historical 51 x 10 = 510 capacity is recorded as named constants")
@@ -2295,7 +2290,7 @@ class StatementProcessorTest {
     }
 
     @Nested
-    @DisplayName("17. BLOCKER: the closing emission order of :L433-L454 - three text lines, then eight fragments")
+    @DisplayName("17. The closing emission order of :L433-L454 - three text lines, then eight fragments")
     class ClosingEmissionOrder {
 
         /**
@@ -2305,7 +2300,7 @@ class StatementProcessorTest {
          * {@code MOVE WS-TRN-AMT TO ST-TOTAL-TRAMT} at {@code :L434}, and then exactly three writes:
          * {@code ST-LINE12} (a rule of 80 hyphens), {@code ST-LINE14A} (the {@code 'Total EXP:'} line) and
          * {@code ST-LINE15} (the end-of-statement banner). Order is content in a fixed-block sequential file,
-         * so a reordering is a Blocker-severity parity break even though every line is individually correct.
+         * so a reordering is a parity break even though every line is individually correct.
          */
         @Test
         @DisplayName("the statement ends with a rule, then Total EXP:, then the END OF STATEMENT banner")
@@ -2617,7 +2612,7 @@ class StatementProcessorTest {
                     .isEqualTo("</html>");
             assertThat(fragments)
                     .as("HTML-LTDS at :L161 is declared but never SET anywhere in the procedure division;"
-                            + " it is present so the table matches the declaration (severity Low, logged)")
+                            + " it is present so the table matches the declaration")
                     .containsKey("HTML_LTDS");
             assertThat(fragments.values())
                     .as("app/cbl/CBSTM03A.CBL:L149 PIC X(100) bounds every fragment")
@@ -2966,16 +2961,85 @@ class StatementProcessorTest {
         }
 
         /**
-         * The abend preserves the underlying cause rather than swallowing it.
+         * The failure preserves the underlying cause rather than swallowing or replacing it.
          *
          * <p>Rule 1 Clause B4 requires the root cause to survive. The source could only
          * {@code DISPLAY 'RETURN CODE: ' WS-M03B-RC} before abending; the translation keeps that diagnostic
-         * <em>and</em> chains the originating exception, so a status-mapping failure remains traceable to the
-         * status that caused it.
+         * <em>and</em> keeps the originating throwable reachable, so a read failure remains traceable to
+         * whatever actually broke.
+         *
+         * <p><strong>Finding, severity Medium, RESOLVED.</strong> An earlier revision of this method carried
+         * this name while asserting only that <em>some</em> exception was thrown, that its message was not
+         * blank, and that the log line appeared. It never called {@code getCause()}, so the one property its
+         * name claimed was the one property it did not establish - and a processor that caught the failure and
+         * rethrew a brand-new exception with the cause dropped would have passed it.
+         *
+         * <p>It could not have been fixed by adding an assertion to the arrangement it used, and that is the
+         * substance of the defect rather than an excuse for it: a status is not a throwable, and
+         * {@code FileStatusMapper.fileServiceAbend} composes its exception with {@code null} as the cause, so
+         * an arrangement expressed purely as status {@code '35'} has no root cause to preserve. The
+         * arrangement therefore had to change too - {@code FakeDataset.failKeyedWith} makes the keyed read
+         * itself fail with a concrete instance, and the assertions below are on <em>identity</em>: the same
+         * exception object, carrying the same cause object, that the arrangement created. Type-and-message
+         * assertions would still pass against a reconstructed exception; {@code isSameAs} cannot.
+         *
+         * <p>The status {@code '35'} path is not lost - it keeps its own test below, which asserts what it can
+         * honestly establish.
          */
         @Test
-        @DisplayName("the failure logs the source's ERROR READING literal and preserves the cause")
+        @DisplayName("the failure logs the source's ERROR READING literal and preserves the cause by identity")
         void theFailurePreservesItsCause() {
+            stubTransactionFile(projectedRecord("0000000000000001", CARD_LOW, "1.00", "ONE"));
+            crossReferenceDataset.enqueueSequential("10", "");
+
+            // The concrete throwable whose survival is the whole subject of this test. A checked type is used
+            // deliberately: nothing in the production path could plausibly have manufactured this instance for
+            // itself, so finding it on the chain can only mean it was carried there.
+            IOException rootCause = new IOException("the object store closed the connection mid-read");
+            FileAccessException arranged = new FileAccessException(
+                    "CUSTFILE could not be read", rootCause);
+            customerDataset.failKeyedWith(arranged);
+
+            CardDemoException failure = null;
+            try {
+                processor.process(new CardCrossReference(CARD_LOW, 1L, 1L));
+            } catch (CardDemoException caught) {
+                failure = caught;
+            }
+
+            assertThat(failure)
+                    .as("a failing keyed customer read must not pass silently")
+                    .isNotNull();
+            assertThat(failure)
+                    .as("the processor catches, logs and rethrows; rethrowing the SAME instance is what keeps "
+                            + "the whole chain intact, and a newly constructed exception of the same type "
+                            + "would satisfy a type assertion while losing everything below it")
+                    .isSameAs(arranged);
+            assertThat(failure.getCause())
+                    .as("Rule 1 Clause B4 - the root cause must be the very object that failed, asserted by "
+                            + "identity rather than by type and message")
+                    .isSameAs(rootCause);
+            assertThat(failure.getMessage())
+                    .as("Rule 1 Clause B4 - the message carries context, not just a type")
+                    .isNotBlank();
+            assertThat(loggedMessages())
+                    .as("app/cbl/CBSTM03A.CBL:L383 DISPLAY 'ERROR READING CUSTFILE'")
+                    .contains("ERROR READING CUSTFILE");
+        }
+
+        /**
+         * The status {@code '35'} keyed read abends, with the source's literal logged - and with no cause,
+         * because a status is not a throwable.
+         *
+         * <p>Kept as its own test rather than folded into the one above so that each states exactly what its
+         * arrangement can establish. {@code FileStatusMapper.fileServiceAbend} passes {@code null} for the
+         * cause, and that is correct: there is no originating throwable on this path, and inventing one to
+         * make a chain look richer would be worse than an honest absence. The assertion is therefore that the
+         * cause is absent, which is a claim about the design rather than a gap in the test.
+         */
+        @Test
+        @DisplayName("a status of 35 abends with the source's literal logged, and honestly carries no cause")
+        void aStatusThirtyFiveAbendsWithNoCauseToCarry() {
             stubTransactionFile(projectedRecord("0000000000000001", CARD_LOW, "1.00", "ONE"));
             crossReferenceDataset.enqueueSequential("10", "");
             customerDataset.keyedDefault("35");
@@ -2989,10 +3053,16 @@ class StatementProcessorTest {
 
             assertThat(failure)
                     .as("a status of 35 at the keyed customer read must not pass silently")
-                    .isNotNull();
+                    .isNotNull()
+                    .isInstanceOf(FatalProcessingException.class);
             assertThat(failure.getMessage())
-                    .as("Rule 1 Clause B4 - the message carries context, not just a type")
-                    .isNotBlank();
+                    .as("the message must name the status, so the diagnostic the source DISPLAYed survives")
+                    .isNotBlank()
+                    .contains("35");
+            assertThat(failure.getCause())
+                    .as("there is no originating throwable on a status path, so the cause is absent by "
+                            + "design; fabricating one would misrepresent where the failure came from")
+                    .isNull();
             assertThat(loggedMessages())
                     .as("app/cbl/CBSTM03A.CBL:L383 DISPLAY 'ERROR READING CUSTFILE'")
                     .contains("ERROR READING CUSTFILE");
@@ -3169,6 +3239,48 @@ class StatementProcessorTest {
         }
 
         /**
+         * 🔴 A second card on the same account and customer costs no second keyed read.
+         *
+         * <p><b>Finding M-06, severity Medium.</b> {@code process} runs once per cross-reference row and used
+         * to issue one {@code CUSTFILE} read and one {@code ACCTFILE} read every single time. Because
+         * {@code app/cpy/CVACT03Y.cpy} maps many card numbers onto one account and one customer, a portfolio
+         * of {@code n} cards on one account paid {@code 2n} queries for two records. A bounded per-step memo
+         * now serves the repeat.
+         *
+         * <p>The assertion is deliberately about the <em>number of reads</em> rather than about the memo:
+         * exactly one read per DD for two rows that share both identifiers. It fails the moment the memo is
+         * removed, and it would also fail if the memo were keyed on the card number rather than on the
+         * customer and account identifiers.
+         *
+         * <p>Paragraph order is asserted separately by {@link #theKeyedReadsPassTheirComputedKeyLengths()},
+         * which still requires the reads to happen at all and with their computed key lengths.
+         */
+        @Test
+        @DisplayName("a second card on the same account and customer issues no further keyed read")
+        void repeatedIdentifiersAreNotReReadWithinAStep() {
+            FileService mockService = mock(FileService.class);
+            when(mockService.readAcceptingSecondaryStatus(FileService.Dd.TRNXFILE))
+                    .thenReturn(projectedRecord("0000000000000001", CARD_LOW, "1.00", "ONE"));
+            when(mockService.readByKey(any(FileService.Dd.class), anyString(), anyInt()))
+                    .thenAnswer(invocation -> switch ((FileService.Dd) invocation.getArgument(0)) {
+                        case CUSTFILE -> customerRows.getFirst();
+                        case ACCTFILE -> accountRows.getFirst();
+                        default -> throw new IllegalStateException(
+                                "app/cbl/CBSTM03A.CBL performs no keyed read on any other DD");
+                    });
+            StatementProcessor mocked = new StatementProcessor(mockService);
+
+            // Two different cards, one account, one customer - the shape CVACT03Y actually produces.
+            mocked.process(new CardCrossReference(CARD_LOW, 1L, 1L));
+            mocked.process(new CardCrossReference(CARD_HIGH, 1L, 1L));
+
+            verify(mockService, times(1)).readByKey(FileService.Dd.CUSTFILE, "000000001",
+                    FileService.Dd.CUSTFILE.keyWidth());
+            verify(mockService, times(1)).readByKey(FileService.Dd.ACCTFILE, "00000000001",
+                    FileService.Dd.ACCTFILE.keyWidth());
+        }
+
+        /**
          * {@code close} closes all four DDs and calls nothing else, per {@code :L331-L337}.
          *
          * <p>The mainline performs {@code 9100-TRNXFILE-CLOSE}, {@code 9200-XREFFILE-CLOSE},
@@ -3228,11 +3340,11 @@ class StatementProcessorTest {
     }
 
     @Nested
-    @DisplayName("22. LOW/MEDIUM: preserved legacy defects and forbidden patterns, each with its severity")
+    @DisplayName("22. Preserved legacy defects and forbidden patterns")
     class PreservedDefectsAndForbiddenPatterns {
 
         /**
-         * ⚠ <b>MEDIUM — LOG IT, FIX IT NOT.</b> The HTML output is declared at two different record lengths.
+         * <b>LOG IT, FIX IT NOT.</b> The HTML output is declared at two different record lengths.
          *
          * <p>{@code app/jcl/CREASTMT.JCL} declares the same {@code HTMLFILE} DD at
          * <b>{@code DCB=(LRECL=80,...)} in the pre-delete step {@code STEP030}, line {@code L69}</b> and at
@@ -3242,17 +3354,17 @@ class StatementProcessorTest {
          * <p><b>The program's own field width settles it:</b> {@code 05 HTML-FIXED-LN PIC X(100)} at
          * {@code app/cbl/CBSTM03A.CBL:L149}, plus the three further {@code PIC X(100)} groups at
          * {@code :L221-L223}, mean every {@code WRITE FD-HTMLFILE-REC} moves 100 bytes. <b>100 is the real
-         * width.</b> Remediation: none applied. The mismatch is recorded with both locators and is
+         * width.</b> None applied. The mismatch is recorded with both locators and is
          * <em>deliberately not reconciled</em>, because {@code app/**} is frozen and editing the JCL would
          * destroy the parity oracle. The Java side simply uses 100 and documents why.
          */
         @Test
-        @DisplayName("MEDIUM: the 80-vs-100 HTMLFILE mismatch is settled at 100 by the X(100) field")
+        @DisplayName("the 80-vs-100 HTMLFILE mismatch is settled at 100 by the X(100) field")
         void theHtmlRecordLengthMismatchIsSettledAtOneHundred() {
             assertThat(StatementTransaction.STATEMENT_HTML_RECORD_LENGTH)
                     .as("app/cbl/CBSTM03A.CBL:L149 HTML-FIXED-LN PIC X(100) and"
                             + " app/jcl/CREASTMT.JCL:L94 DCB=(LRECL=100,...) agree; :L69's LRECL=80 for the"
-                            + " same DD is the logged Medium defect and is NOT reconciled")
+                            + " same DD is the logged legacy defect and is NOT reconciled")
                     .isEqualTo(100)
                     .isNotEqualTo(StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH);
             assertThat(StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH)
@@ -3265,19 +3377,19 @@ class StatementProcessorTest {
         }
 
         /**
-         * ⚠ <b>MEDIUM — LOG IT, FIX IT NOT.</b> The {@code STMTFILE} DD statement in {@code STEP040} is
+         * <b>LOG IT, FIX IT NOT.</b> The {@code STMTFILE} DD statement in {@code STEP040} is
          * corrupted.
          *
          * <p>{@code app/jcl/CREASTMT.JCL:L90} reads, verbatim,
          * {@code //         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS} — fragments of two other DD
-         * statements spliced into one continuation line. Recorded with its locator. Remediation: none applied;
+         * statements spliced into one continuation line. Recorded with its locator. None applied;
          * {@code app/**} is frozen. The consequence for this tier is nil, because the text record width comes
          * from {@code FD-STMTFILE-REC PIC X(80)} at {@code app/cbl/CBSTM03A.CBL:L45} and from the intact
          * {@code DCB=(LRECL=80,...)} at {@code :L89}, not from the corrupted line. Step gating and DD
          * allocation belong to {@code src/test/java/com/cardemo/integration/batch}.
          */
         @Test
-        @DisplayName("MEDIUM: the corrupted STMTFILE DD line does not affect the 80-byte text width")
+        @DisplayName("the corrupted STMTFILE DD line does not affect the 80-byte text width")
         void theCorruptedDdLineDoesNotAffectTheTextWidth() {
             Statement statement = processor.process(stubHappyPath());
 
@@ -3290,7 +3402,7 @@ class StatementProcessorTest {
         }
 
         /**
-         * 🔴 <b>LOW — the {@code PSAPTR}/TIOT control-block peeking is omitted entirely, by design.</b>
+         * <b>the {@code PSAPTR}/TIOT control-block peeking is omitted entirely, by design.</b>
          *
          * <p>{@code app/cbl/CBSTM03A.CBL:L235-L237} declares {@code 01 PSAPTR POINTER},
          * {@code 01 BUMP-TIOT PIC S9(08) BINARY VALUE ZERO} and
@@ -3300,14 +3412,13 @@ class StatementProcessorTest {
          *
          * <p><b>It must not be reproduced in any form</b> — no PSA peeking, no TIOT walking, no pointer
          * arithmetic, no {@code sun.misc.Unsafe}, no JNI and no reflection into JVM internals. Rule 1 Clause D2
-         * requires known risky patterns to be flagged, and this is the flag. Recorded at severity <b>Low</b>
-         * and owed an entry in the planned {@code DECISION_LOG.md}; the job identity it was reaching for is
-         * supplied instead by
-         * the batch job-instance identifier in the logging context. This test asserts the omission structurally:
-         * the class under test declares no field of a pointer-like or unsafe type.
+         * requires known risky patterns to be flagged, and this is the flag. The job identity it was reaching
+         * for is supplied instead by the batch job-instance identifier in the logging context. This test
+         * asserts the omission structurally: the class under test declares no field of a pointer-like or
+         * unsafe type.
          */
         @Test
-        @DisplayName("LOW: no PSAPTR/TIOT analogue - no pointer, Unsafe, JNI or ByteBuffer field")
+        @DisplayName("no PSAPTR/TIOT analogue - no pointer, Unsafe, JNI or ByteBuffer field")
         void noControlBlockPeekingAnalogueExists() {
             List<String> forbidden = new ArrayList<>();
             for (var field : StatementProcessor.class.getDeclaredFields()) {
@@ -3480,6 +3591,16 @@ class StatementProcessorTest {
         private String openStatus = "00";
         private String closeStatus = "00";
         private FileService.DatasetRead keyedDefault = FileService.DatasetRead.withoutRecord("23");
+
+        /**
+         * A throwable a keyed read raises instead of reporting a status, or {@code null} to report a status.
+         *
+         * <p>Needed because a status is not a throwable: {@code FileStatusMapper.fileServiceAbend} composes its
+         * exception with {@code null} as the cause, so no arrangement expressed purely as a status can produce
+         * a failure that <em>has</em> a root cause. Proving that the processor preserves one therefore requires
+         * the read itself to fail with a concrete instance, which is what this field arranges.
+         */
+        private RuntimeException keyedFailure;
         private int openCount;
         private int closeCount;
         private int sequentialReadCount;
@@ -3529,6 +3650,9 @@ class StatementProcessorTest {
 
         @Override
         public FileService.DatasetRead readByKey(final String recordKey) {
+            if (keyedFailure != null) {
+                throw keyedFailure;
+            }
             return keyedReads.getOrDefault(recordKey.strip(), keyedDefault);
         }
 
@@ -3571,6 +3695,21 @@ class StatementProcessorTest {
          */
         void keyedDefault(final String status) {
             keyedDefault = FileService.DatasetRead.withoutRecord(status);
+        }
+
+        /**
+         * Directs every keyed read to raise this exact throwable instead of reporting a status.
+         *
+         * <p>The instance is raised as given, never copied and never wrapped, so a caller can assert on
+         * <em>identity</em> rather than on type and message. {@code FileService.readByKey} reaches the dataset
+         * through {@code dispatch}, which carries no {@code catch}, so whatever is thrown here travels
+         * unwrapped to the processor - and the processor's own {@code catch}-log-rethrow is then the thing
+         * under test.
+         *
+         * @param failure the throwable every keyed read will raise; never {@code null}
+         */
+        void failKeyedWith(final RuntimeException failure) {
+            keyedFailure = Objects.requireNonNull(failure, "failure must not be null");
         }
 
         /**

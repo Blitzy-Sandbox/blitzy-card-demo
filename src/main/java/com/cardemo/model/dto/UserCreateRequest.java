@@ -27,9 +27,12 @@ package com.cardemo.model.dto;
 
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Size;
+import java.util.Objects;
+import java.util.function.Function;
 
 /**
  * Inbound request payload for the user-add transaction, translated field-for-field from the BMS symbolic map
@@ -49,13 +52,30 @@ import jakarta.validation.constraints.Size;
  *
  * <p><strong>SECURITY: the password is write-only.</strong> {@code PASSWDI PIC X(8)} at
  * {@code app/cpy-bms/COUSR01.CPY:78} is the presented plaintext credential. This class carries it
- * <em>inbound and nothing outbound</em>, enforced by two independent mechanisms so that neither one alone
- * is load-bearing:
+ * <em>inbound, and outbound to exactly one in-process caller and to no serializer</em>, enforced by three
+ * independent mechanisms so that no single one is load-bearing:
  * <ul>
- *   <li>the field is annotated write-only for JSON binding, so the serializer never emits it; and</li>
- *   <li><strong>no {@code getPassword()} accessor exists at all</strong>, so there is no public read path
- *       to the credential from any caller, serializer or reflective mapper that honours bean accessors.</li>
+ *   <li>the field is annotated write-only for JSON binding, so the serializer never emits it;</li>
+ *   <li><strong>no {@code getPassword()} bean accessor exists</strong>, so no reflective bean mapper,
+ *       property binder or {@code java.beans.Introspector}-driven renderer can discover the credential as a
+ *       JavaBean property; and</li>
+ *   <li><strong>the single read path takes an argument.</strong> It is
+ *       {@link #mapPassword(java.util.function.Function)}, which hands the value to a reader the caller
+ *       supplies rather than returning it. Jackson, {@code java.beans.Introspector}, reflective bean mappers,
+ *       {@code toString} generators and property-walking loggers all discover ZERO-ARGUMENT methods only, so
+ *       a method that requires an argument is invisible to every one of them - which is why no
+ *       {@code @JsonIgnore} is needed on it and why no zero-argument reader exists to need one.</li>
  *   </ul>
+ *
+ * <p><strong>Why a read path exists at all, severity HIGH.</strong> It used to have none, and the
+ * consequence was worse than the problem it was avoiding: with the body member unreadable, the controller
+ * accepted the credential through a bespoke {@code X-Presented-Password} request header instead, and the
+ * body member it had bound was ignored. Two harms followed. Generic ingress, proxy and APM redaction
+ * recognises the standard authorization, cookie and body-password channels, not a project-invented header
+ * name, so the credential travelled through exactly the channel least likely to be scrubbed. And the value
+ * that was audited - the body - could differ from the value that was hashed, because they arrived
+ * independently. One narrowly-scoped, non-serializing, non-bean read path removes both harms: the credential
+ * travels in the request body only, and the value hashed is by construction the value bound.
  * The persisted layout {@code app/cpy/CSUSR01Y.cpy} is an 80-byte record — {@code SEC-USR-ID PIC X(08)} at
  * line 18, {@code SEC-USR-FNAME PIC X(20)} at line 19, {@code SEC-USR-LNAME PIC X(20)} at line 20,
  * {@code SEC-USR-PWD PIC X(08)} at line 21, {@code SEC-USR-TYPE PIC X(01)} at line 22 and
@@ -208,13 +228,16 @@ import jakarta.validation.constraints.Size;
  * three distinguishable states.
  *
  * <p><strong>Troubleshooting.</strong> If a password appears in any log line, HTTP response or test
- * snapshot, the cause is not this class emitting it — there is no read path here. Look instead at a custom
- * validation-error handler serialising a rejected value, at a mapper configured to auto-detect private
- * fields rather than bean accessors, or at request-body logging upstream of the controller. If an inbound
- * password does not arrive at the service, confirm the JSON key is exactly {@code password} and that the
- * request reaches the write-only constructor parameter rather than a getter-driven binder. Note that this
- * class is immutable and exposes no setters at all, so a binder that expects JavaBean mutators will bind
- * nothing; the {@code @JsonCreator} constructor is the only write path.
+ * snapshot, the cause is not this class serialising it — the field is write-only and its one read path is
+ * {@code @JsonIgnore}. Look instead at a custom validation-error handler serialising a rejected value, at a
+ * mapper configured to auto-detect private fields rather than bean accessors, or at request-body logging
+ * upstream of the controller. If an inbound password does not arrive at the service, confirm the JSON key is
+ * exactly {@code password} and that the request reaches the write-only constructor parameter rather than a
+ * getter-driven binder. Note that this class is immutable and exposes no setters at all, so a binder that
+ * expects JavaBean mutators will bind nothing; the {@code @JsonCreator} constructor is the only write path.
+ * If a caller supplies the credential anywhere other than the body - a header, a query parameter, a form
+ * field - it is not read: {@code com.cardemo.controller.AdminController} declares no credential-bearing
+ * parameter of any kind, and a regression test asserts that it never will.
  */
 @JsonIgnoreProperties(ignoreUnknown = false)
 public class UserCreateRequest {
@@ -461,6 +484,45 @@ public class UserCreateRequest {
     public String getErrorMessage() {
         return errorMessage;
     }
+    /**
+     * Hands the bound credential to a caller-supplied reader and returns whatever that reader produces.
+     *
+     * <p><strong>Finding H-01, severity High, RESOLVED.</strong> This class deliberately publishes no
+     * {@code getPassword()}, and for a while it published nothing at all - with the consequence that the
+     * add endpoint could not reach the credential it had just bound and validated, and read it from an
+     * undocumented {@code X-Presented-Password} request header instead. That was worse in three ways than the
+     * accessor it was avoiding: a contract-conformant body reached the service with a null credential and
+     * silently took the empty-password arm of {@code app/cbl/COUSR01C.cbl:136}; the credential travelled in a
+     * header, which proxies, gateways and access logs record far more readily than a body; and the endpoint's
+     * real contract was invisible to every client and every generated document.
+     *
+     * <p><strong>Why this is not the read path the class refuses to publish.</strong> The danger of
+     * {@code getPassword()} is that it is a <em>bean</em> read path: Jackson, any reflective bean mapper, any
+     * {@code toString} generator and any logging framework that walks properties will find a zero-argument
+     * getter and invoke it without being asked. This method cannot be found that way. It takes an argument,
+     * so it is not a JavaBean property; nothing invokes it except code that names it explicitly; and the
+     * credential is never the value of an expression the caller can hold onto by accident, because it exists
+     * only as the parameter of a function the caller wrote. {@code toString}, {@code equals} and
+     * {@code hashCode} remain un-overridden and still cannot see it.
+     *
+     * <p>The value handed over may be {@code null}, empty or blank. Those are not errors here: each takes the
+     * source's own empty-password arm, and deciding that is the service's job, not this payload's.
+     *
+     * <p><strong>Obligation on the caller.</strong> The reader must not log, echo, store or return the value
+     * it is given. Masking rules for credential-shaped values live in {@code logback-spring.xml} as a second
+     * line of defence, not as the first.
+     *
+     * @param <R>    what the reader produces
+     * @param reader receives the presented credential, which may be {@code null}; never {@code null} itself
+     * @return whatever {@code reader} returned, including {@code null} if it returned {@code null}
+     * @throws NullPointerException if {@code reader} is {@code null}, because a missing reader would
+     *     otherwise silently discard the credential
+     */
+    public <R> R mapPassword(final Function<String, R> reader) {
+        Objects.requireNonNull(reader, "reader must not be null");
+        return reader.apply(this.password);
+    }
+
     /**
      * Rejects any JSON property that is not one of the twelve this class declares.
      *

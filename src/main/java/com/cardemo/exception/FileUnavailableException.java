@@ -3,10 +3,16 @@
  * Program     : FileUnavailableException.java
  * Application : CardDemo
  * Type        : Java 25 / Spring Boot 3.5.11 exception
- * Function    : Typed translation of FILE STATUS '35' / DFHRESP(NOTOPEN) - dataset or
- *               resource unavailable.
- * Source      : app/cbl/CBTRN02C.cbl:L236-L252 @ 7756d89 - the universal OPEN guard whose
- *               failure branch this type serves.
+ * Function    : Typed target of the design-level FILE STATUS '35' / DFHRESP(NOTOPEN)
+ *               mapping - dataset or resource unavailable. Note that neither the
+ *               literal '35' nor DFHRESP(NOTOPEN) occurs anywhere under app/; the
+ *               mapping is established by the migration design rather than by a
+ *               source comparison. See com.cardemo.model.enums.FileStatus for the
+ *               provenance census.
+ * Source      : app/cbl/CBTRN02C.cbl:L236-L252 @ 7756d89 - 0000-DALYTRAN-OPEN, the
+ *               universal OPEN guard whose failure branch this type serves. The guard
+ *               tests only for '00' and abends on anything else, so it names no
+ *               unavailability status of its own.
  * Source      : app/jcl/OPENFIL.jcl @ 7756d89 and app/jcl/CLOSEFIL.jcl @ 7756d89 - the
  *               legacy online file-availability jobs.
  * Source      : app/csd/CARDDEMO.CSD @ 7756d89 - the eight-file online file control table.
@@ -34,8 +40,15 @@ import java.util.Optional;
 /**
  * Reports that a backing store was not open, not defined or not reachable when a CardDemo operation needed it.
  *
- * <p>It is the typed target for {@code FILE STATUS '35'} and for {@code DFHRESP(NOTOPEN)}: the store itself was
- * unavailable, so the request never reached the point of succeeding or failing on its own merits. In the Java
+ * <p>It is the typed target of the design-level mapping for {@code FILE STATUS '35'} and
+ * {@code DFHRESP(NOTOPEN)}: the store itself was unavailable, so the request never reached the point of
+ * succeeding or failing on its own merits. That mapping is <strong>specification-derived rather than
+ * corpus-derived</strong>: the frozen corpus contains no literal {@code '35'} comparison and no
+ * {@code DFHRESP(NOTOPEN)} handler anywhere under {@code app/}, and the universal OPEN guard cited in the banner
+ * tests only for {@code '00'} and abends on anything else. What the corpus does establish is the
+ * <em>condition</em> - {@code app/jcl/OPENFIL.jcl} and {@code app/jcl/CLOSEFIL.jcl} exist precisely because a
+ * dataset could be unavailable to the online region. {@code com.cardemo.model.enums.FileStatus} carries the full
+ * response-condition census behind this note. In the Java
  * target the same condition arises from a datasource that cannot hand out a connection, a schema whose
  * migrations have not been applied, an object-storage bucket that does not exist, and a queue whose endpoint
  * does not answer. One type covers all four, because from a caller's point of view they are the same fact -

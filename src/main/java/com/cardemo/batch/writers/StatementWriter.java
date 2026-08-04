@@ -44,14 +44,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.regex.Pattern;
 
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.ExitStatus;
-import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
 import org.springframework.batch.core.configuration.annotation.StepScope;
@@ -66,7 +64,6 @@ import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
 import com.cardemo.model.dto.StatementTransaction;
 import com.cardemo.model.enums.FileStatus;
-import com.cardemo.observability.MetricsConfig;
 import com.cardemo.service.shared.FileStatusMapper;
 
 /**
@@ -91,10 +88,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * aggregation and dual-format emission", this writer from {@code app/jcl/CREASTMT.JCL} for "two outputs at
  * 80 and 100 bytes per line respectively".
  *
- * <p>Both classes previously carried the full 34-fragment markup table and the whole {@code ST-LINE}
- * constant set, and both rendered the same paragraphs, so a change to one produced a statement that
- * disagreed with the other and no job connected either. The rendering now exists once, in the processor,
- * which is what makes the item type and the writer type the same type and the pipeline connectable.
+ * <p>The 34-fragment markup table and the {@code ST-LINE} constant set live in the processor and nowhere
+ * else. Holding them in both classes would let a change to one produce a statement that disagreed with the
+ * other; keeping the rendering in one place is also what makes the processor's item type and this writer's
+ * item type the same type, and therefore the pipeline connectable.
  *
  * <h2>Record geometry is preserved byte-exactly</h2>
  *
@@ -190,79 +187,72 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>Legacy defects and deviations affecting this writer</h2>
  *
- * <p>Every finding below is evidence-based, severity-classified and carries its remediation. None of them
- * is repaired in code: the legacy behaviour is the parity contract.
+ * <p>None of the items below is repaired in code: the legacy behaviour is the parity contract.
  *
  * <ol>
- *   <li><strong>Medium - the 80-versus-100 {@code HTMLFILE} record-length contradiction.</strong> The pre-delete step
- *       declares {@code DCB=(LRECL=80,BLKSIZE=3200,RECFM=FB)} for {@code HTMLFILE} ({@code app/jcl/CREASTMT.JCL:L69},
- *       inside {@code STEP030 EXEC PGM=IEFBR14} at {@code :L66}) while the step that actually writes the dataset
- *       declares {@code DCB=(LRECL=100,BLKSIZE=800,RECFM=FB)} ({@code :L94}). <em>Resolution:</em> <strong>100 is
- *       correct</strong>, on the triple confirmation of {@code CREASTMT.JCL:L94}, {@code CBSTM03A.CBL:L47} and
- *       {@code CBSTM03A.CBL:L149}. The 80 at {@code :L69} is a defect in a step that only deletes the dataset and
- *       therefore never writes a record. <em>Remediation:</em> none applied - the widths are <strong>not</strong>
- *       harmonised, and the contradiction is owed an entry in the planned {@code DECISION_LOG.md}.</li>
- *   <li><strong>Low - the corrupted {@code STMTFILE} DD continuation.</strong> {@code app/jcl/CREASTMT.JCL:L90}
- *       reads, verbatim, {@code //         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS} - a botched paste
- *       that left the fragments {@code 00,RECFM=FB)} and {@code ATA.VSAM.KSDS} inside the continuation. <em>What the
- *       line was meant to say is</em> <strong>{@code Not available}</strong>. The prerequisite for recovering it
- *       would be a pre-corruption revision of the member, and no such revision exists at {@code 7756d89}.
- *       <em>Remediation:</em> the line is quoted here and in the planned {@code DECISION_LOG.md} and is <strong>never
- *       reconstructed</strong>; the surrounding {@code :L89} and {@code :L91} clauses are unaffected and supply the
- *       record length and the dataset name.</li>
- *   <li><strong>Medium - the upstream projection truncates two timestamp bytes.</strong>
- *       {@code app/jcl/CREASTMT.JCL:L54} {@code OUTREC FIELDS=(1:263,16,17:1,262,279:279,50)} copies only 50 bytes
- *       from offset 279, which is the whole 26-byte originating timestamp plus the <strong>first 24 of the
- *       26</strong> processing-timestamp bytes, and drops the 20-byte trailing filler entirely - 328 bytes written
- *       into a 350-byte record. The projected processing timestamp therefore arrives as a 24-character value padded
- *       to 26. <em>Resolution:</em> that truncation is produced by the job's in-job projection, not by this writer.
- *       <em>Remediation:</em> none - the value is consumed exactly as received and is <strong>never
- *       repaired</strong>.</li>
- *   <li><strong>Low - {@code HTML-LTDS} is declared but never activated.</strong> The condition name
- *       {@code 88 HTML-LTDS VALUE '&lt;td&gt;'} is declared at {@code app/cbl/CBSTM03A.CBL:L161}, yet a census of the
- *       procedure division finds <strong>no</strong> {@code SET HTML-LTDS TO TRUE} anywhere: 33 of the 34 declared
- *       fragments are activated, across 64 {@code SET} statements. <em>Resolution:</em> it is a
- *       declared-but-unactivated artefact of the source, not an omission here. <em>Remediation:</em> the fragment is
- *       <strong>retained</strong> in {@link #htmlFragments()} so the fragment table matches the source declaration
- *       count exactly. It is deliberately not deleted; deleting it would make the table diverge from
- *       {@code :L148-L211} and would break the fragment census the coverage gate reads.</li>
- *   <li><strong>Medium - the legacy 510-transaction ceiling is removed.</strong>
+ *   <li><strong>The 80-versus-100 {@code HTMLFILE} record-length contradiction.</strong> The pre-delete step
+ *       declares {@code DCB=(LRECL=80,BLKSIZE=3200,RECFM=FB)} for {@code HTMLFILE}
+ *       ({@code app/jcl/CREASTMT.JCL:L69}, inside {@code STEP030 EXEC PGM=IEFBR14} at {@code :L66}) while the
+ *       step that actually writes the dataset declares {@code DCB=(LRECL=100,BLKSIZE=800,RECFM=FB)}
+ *       ({@code :L94}). <strong>100 is correct</strong>, on the triple confirmation of
+ *       {@code CREASTMT.JCL:L94}, {@code CBSTM03A.CBL:L47} and {@code CBSTM03A.CBL:L149}. The 80 at
+ *       {@code :L69} is a defect in a step that only deletes the dataset and therefore never writes a
+ *       record. The widths are <strong>not</strong> harmonised.</li>
+ *   <li><strong>The corrupted {@code STMTFILE} DD continuation.</strong> {@code app/jcl/CREASTMT.JCL:L90}
+ *       reads, verbatim, {@code //         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS} - a botched
+ *       paste that left the fragments {@code 00,RECFM=FB)} and {@code ATA.VSAM.KSDS} inside the
+ *       continuation. What the line was meant to say cannot be recovered from this repository: that would
+ *       need a pre-corruption revision of the member, and none exists at {@code 7756d89}. The line is quoted
+ *       here and is <strong>never reconstructed</strong>; the surrounding {@code :L89} and {@code :L91}
+ *       clauses are unaffected and supply the record length and the dataset name.</li>
+ *   <li><strong>The upstream projection truncates two timestamp bytes.</strong>
+ *       {@code app/jcl/CREASTMT.JCL:L54} {@code OUTREC FIELDS=(1:263,16,17:1,262,279:279,50)} copies only 50
+ *       bytes from offset 279, which is the whole 26-byte originating timestamp plus the <strong>first 24 of
+ *       the 26</strong> processing-timestamp bytes, and drops the 20-byte trailing filler entirely - 328
+ *       bytes written into a 350-byte record. The projected processing timestamp therefore arrives as a
+ *       24-character value padded to 26. That truncation is produced by the job's in-job projection, not by
+ *       this writer, and the value is consumed exactly as received and <strong>never repaired</strong>.</li>
+ *   <li><strong>{@code HTML-LTDS} is declared but never activated.</strong> The condition name
+ *       {@code 88 HTML-LTDS VALUE '&lt;td&gt;'} is declared at {@code app/cbl/CBSTM03A.CBL:L161}, yet a
+ *       census of the procedure division finds <strong>no</strong> {@code SET HTML-LTDS TO TRUE} anywhere: 33
+ *       of the 34 declared fragments are activated, across 64 {@code SET} statements. It is a
+ *       declared-but-unactivated artefact of the source, so the fragment is <strong>retained</strong> in
+ *       {@link #htmlFragments()} and the fragment table matches the source declaration count exactly.
+ *       Deleting it would make the table diverge from {@code :L148-L211} and would break the fragment census
+ *       the coverage gate reads.</li>
+ *   <li><strong>The legacy 510-transaction ceiling is removed.</strong>
  *       {@code app/cbl/CBSTM03A.CBL:L225-L233} declares {@code WS-CARD-TBL OCCURS 51 TIMES} each holding
  *       {@code WS-TRAN-TBL OCCURS 10 TIMES}, a hard ceiling of
- *       {@value com.cardemo.model.dto.StatementTransaction#LEGACY_MAX_TRANSACTIONS_PER_RUN} transactions per run, and
- *       the table-building loop increments both subscripts with no bounds check at all. <em>Resolution:</em> this is
- *       a <strong>labelled deviation, not parity</strong>. Java streams the transactions chunk by chunk, so the
- *       ceiling and its unguarded storage-overrun hazard are both gone. <em>Remediation:</em> justified in writing in
- *       the planned {@code DECISION_LOG.md} with the historical limit owed an entry in the planned
- *       {@code TRACEABILITY_MATRIX.md}. The ceiling is <strong>not</strong> claimed to have been preserved.</li>
- *   <li><strong>Medium - the object-storage record-framing convention is unspecified.</strong> The corpus defines
- *       {@code RECFM=FB} for both datasets but specifies no mainframe-to-object-storage transfer convention, so
- *       whether a downstream consumer expects newline-delimited output is <strong>{@code Not available}</strong>. The
- *       prerequisite is an explicit transfer specification, and none exists at {@code 7756d89}. <em>Remediation:</em>
- *       this class emits undelimited fixed-length records, which is what {@code RECFM=FB} means. A newline-delimited
- *       variant would be a labelled deviation requiring an entry in the planned {@code DECISION_LOG.md}, never a
- *       silent change.</li>
- *   <li><strong>Low - no service-level objective exists to assert against.</strong> The corpus publishes no
- *       throughput or latency target for statement generation, so any threshold would be invented. The required
- *       figure is <strong>{@code Not available}</strong>; the prerequisite is a stated objective, which the source
- *       does not contain. <em>Remediation:</em> the performance gate records a <em>measured baseline</em> rather than
- *       a pass-or-fail threshold.</li>
- *   <li><strong>Medium - the "millisecond precision followed by four zeros" description of the batch timestamp is
- *       arithmetically impossible.</strong> Millisecond precision is three digits, so three plus four zeros is
- *       <strong>27</strong> characters, whereas the field is 26. The verified layout is {@code DB2-MIL PIC 9(002)}
- *       followed by {@code DB2-REST PIC X(04)} ({@code app/cbl/CBTRN02C.cbl:L170-L174}, generated at {@code :L701}),
- *       that is <strong>centisecond</strong> precision - two digits - plus four zeros, giving the pattern
- *       {@code yyyy-MM-dd-HH.mm.ss.SS0000}, which sums to exactly 26. <em>Resolution:</em> the 26-character layout in
- *       the source governs. <em>Remediation:</em> owed an entry in the planned {@code DECISION_LOG.md}. This class is
- *       unaffected because it emits no timestamp, but the description would produce a one-byte-wide divergence in any
- *       component that generated one from it.</li>
- *   <li><strong>Low - the HTML declares a character set that does not govern the record encoding.</strong> The
+ *       {@value com.cardemo.model.dto.StatementTransaction#LEGACY_MAX_TRANSACTIONS_PER_RUN} transactions per
+ *       run, and the table-building loop increments both subscripts with no bounds check at all. This is a
+ *       <strong>deliberate deviation, not parity</strong>: Java streams the transactions chunk by chunk, so
+ *       the ceiling and its unguarded storage-overrun hazard are both gone. The ceiling is
+ *       <strong>not</strong> claimed to have been preserved.</li>
+ *   <li><strong>The object-storage record-framing convention is not specified by the corpus.</strong> The
+ *       corpus defines {@code RECFM=FB} for both datasets but specifies no mainframe-to-object-storage
+ *       transfer convention, so whether a downstream consumer expects newline-delimited output cannot be
+ *       established from it. This class emits undelimited fixed-length records, which is what
+ *       {@code RECFM=FB} means. A newline-delimited variant would be a deviation to state explicitly, never
+ *       a silent change.</li>
+ *   <li><strong>No service-level objective exists to assert against.</strong> The corpus publishes no
+ *       throughput or latency target for statement generation, so any threshold would be invented. The
+ *       performance gate therefore records a <em>measured baseline</em> rather than a pass-or-fail
+ *       threshold.</li>
+ *   <li><strong>The batch timestamp is centisecond precision, not millisecond.</strong> Millisecond
+ *       precision is three digits, so three plus four zeros would be <strong>27</strong> characters, whereas
+ *       the field is 26. The verified layout is {@code DB2-MIL PIC 9(002)} followed by
+ *       {@code DB2-REST PIC X(04)} ({@code app/cbl/CBTRN02C.cbl:L170-L174}, generated at {@code :L701}) -
+ *       two digits plus four zeros, giving the pattern {@code yyyy-MM-dd-HH.mm.ss.SS0000}, which sums to
+ *       exactly 26. The 26-character layout in the source governs. This class is unaffected because it emits
+ *       no timestamp, but any component that generated one on a millisecond reading would be one byte
+ *       wide.</li>
+ *   <li><strong>The HTML declares a character set that does not govern the record encoding.</strong> The
  *       fragment at {@code app/cbl/CBSTM03A.CBL:L153} emits {@code <meta charset="utf-8">} as document
- *       <em>content</em>. That is a statement about how a browser should interpret the markup, and it has <strong>no
- *       bearing</strong> on the encoding of the {@code RECFM=FB} record that carries it. <em>Resolution:</em> the
- *       record encoding is {@link #RECORD_CHARSET}, chosen because it is byte-transparent, so a 100-character line is
- *       exactly 100 bytes. <em>Remediation:</em> none needed - the fragment is emitted verbatim and the two concerns
- *       are simply distinct. Encoding the records as UTF-8 to "match" the declaration would silently break the
+ *       <em>content</em>. That is a statement about how a browser should interpret the markup and has
+ *       <strong>no bearing</strong> on the encoding of the {@code RECFM=FB} record that carries it. The
+ *       record encoding is {@link #RECORD_CHARSET}, chosen because it is byte-transparent, so a
+ *       100-character line is exactly 100 bytes. The fragment is emitted verbatim and the two concerns are
+ *       simply distinct: encoding the records as UTF-8 to "match" the declaration would silently break the
  *       geometry the moment any byte above {@code 0x7F} appeared.</li>
  *   </ol>
  *
@@ -319,8 +309,15 @@ public class StatementWriter
     // Object storage: key composition, validation and metadata.
     // ---------------------------------------------------------------------------------------------
 
-    /** Root key segment for every statement object. */
-    private static final String KEY_ROOT = "statements";
+    /**
+     * Root key segment for every statement object.
+     *
+     * <p>Public because it is the enumeration contract the pre-delete of {@code STEP030} depends on: that step
+     * must be able to find the prior logical output without knowing which accounts a previous run produced,
+     * and this prefix is what makes that possible. Keeping it private would force the prefix literal to be
+     * duplicated in the step, where the two copies could drift apart silently.
+     */
+    public static final String KEY_ROOT = "statements";
 
     /** Key segment carrying the account prefix required of every statement object. */
     private static final String KEY_ACCOUNT_SEGMENT = "account=";
@@ -331,8 +328,13 @@ public class StatementWriter
     /** Key segment carrying the GDG generation, zero padded so lexical order equals numeric order. */
     private static final String KEY_GENERATION_SEGMENT = "generation=";
 
-    /** Key separator. Object storage has no directories; the slash is a naming convention only. */
-    private static final String KEY_SEPARATOR = "/";
+    /**
+     * Key separator. Object storage has no directories; the slash is a naming convention only.
+     *
+     * <p>Public for the same reason as {@link #KEY_ROOT}: a consumer enumerating the statement root filters
+     * directory-marker keys by this separator, and must use the one the writer actually composes with.
+     */
+    public static final String KEY_SEPARATOR = "/";
 
     /** Object name of the text statement, echoing the legacy dataset's low-level qualifier. */
     private static final String TEXT_OBJECT_NAME = "STATEMNT.PS";
@@ -343,18 +345,18 @@ public class StatementWriter
     /**
      * Zero-padded width of the generation segment: the number of digits in {@code Long.MAX_VALUE}.
      *
-     * <p><b>Finding, severity Medium, RESOLVED.</b> An earlier revision used twelve and described it as "wide
-     * enough that padding never truncates". Truncation was never the hazard - {@code %012d} widens rather than
-     * truncates - and describing it that way hid the real one. The generation is a {@code long} job instance
-     * identifier, whose domain needs nineteen digits, and the moment one exceeds twelve digits the padding
-     * stops covering it: generation 1,000,000,000,000 renders as thirteen characters, and {@code "1000...0"}
-     * sorts <em>before</em> {@code "999999999999"} lexicographically. Since the entire purpose of padding these
+     * <p><b>Nineteen digits, and not a narrower width.</b> Truncation is not the hazard - a zero-padding
+     * format widens rather than truncates. The generation is a {@code long} job instance identifier, whose
+     * domain needs nineteen digits, and the moment one exceeds the padded width the padding stops covering
+     * it: on a twelve-digit width, generation 1,000,000,000,000 renders as thirteen characters and
+     * {@code "1000...0"} sorts <em>before</em> {@code "999999999999"} lexicographically. Since the entire
+     * purpose of padding these
      * digits is that "the lexicographic order of the keys equals the numeric order of the generations" - which
      * is what lets a relative {@code (0)} reference resolve as the greatest existing prefix - the equivalence
      * would break and a consumer would resolve {@code (0)} to a <em>stale</em> generation. It would not fail;
-     * it would quietly return the wrong statement. <i>Remediation, applied:</i> nineteen digits, the same width
-     * every other numeric key component in the tree uses, so the equivalence holds across the whole domain
-     * rather than up to an unproven bound.
+     * it would quietly return the wrong statement. Nineteen digits is the width every other numeric key
+     * component in the tree uses, so the equivalence holds across the whole domain rather than up to an
+     * unproven bound.
      */
     private static final int GENERATION_WIDTH = 19;
 
@@ -457,34 +459,28 @@ public class StatementWriter
 
     /**
      * Job-execution-context entry holding how many statement objects this job instance created, as a
-     * {@code Long}. Each object contributes one indexed entry named by {@link #objectKeysIndexEntry(int)}.
+     * {@code Long}.
      *
-     * <p>Together the two are the complete, ordered, exact record of what the step produced. Read the count,
-     * then read that many indexed entries; entry {@code n} is the key of the {@code n}th object created, in
-     * creation order, alternating text then HTML for each account.
+     * <p><b>Finding, severity High, RESOLVED twice - and the second resolution replaced the first.</b> The
+     * original defect was that the step published only into the <em>step</em> execution context, whose two
+     * entries hold one text key and one HTML key and are overwritten on every flush; a step producing
+     * statements for fifty accounts therefore left only the last account's pair behind. The first remediation
+     * appended <em>every</em> created key into the job execution context as an indexed entry. That made the
+     * record complete but made it unbounded: the job execution context is serialised to the job repository on
+     * every commit, so its size grew with the number of accounts, which is exactly the whole-run retention
+     * this class must not do.
      *
-     * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision published only into the <em>step</em>
-     * execution context and stated that "promotion to the job execution context, where a later step needs it,
-     * is configured on the job by an execution-context promotion listener". No such listener exists and no job
-     * configures one, so both keys were discarded when the step ended and nothing downstream could read them.
-     * The scoping was not the only defect: the two step entries hold <em>one</em> text key and <em>one</em> HTML
-     * key, overwritten on every flush, so a step that produced statements for fifty accounts left the last
-     * account's two keys behind and the other ninety-eight were unrecoverable. <i>Remediation, applied:</i>
-     * every key is appended here, in creation order, into the job execution context, by this class, with no
-     * external wiring needed for the record to be complete. The two step entries are kept, still naming the
-     * latest pair, for a listener running inside the step.
+     * <p>This entry holds the <em>count</em> only, which is one number
+     * whatever the account count, and the authoritative record of which objects exist is the statement root
+     * itself - {@link #KEY_ROOT} - which a consumer enumerates. That is strictly better than a recorded list
+     * as well as bounded: an enumeration reports what object storage actually holds, whereas a list reports
+     * only what some previous execution remembered writing. {@code STEP030}'s pre-delete is precisely such a
+     * consumer, and it needs no list.
      *
-     * <p>Indexed entries rather than one delimited string, for the reason the sibling writers give: a separator
-     * is a character that must not occur in a key, and a key embeds an account identifier and a month that
-     * arrive as data, so "must not occur" is not something this class can guarantee about a joined value.
+     * <p>The two step-scoped entries are kept, still naming the latest pair, for a listener running inside
+     * the step.
      */
     public static final String CONTEXT_KEY_OBJECT_KEYS_COUNT = "carddemo.statement.object.keys.count";
-
-    /**
-     * Prefix of the indexed job-execution entries described on {@link #CONTEXT_KEY_OBJECT_KEYS_COUNT}. The entry
-     * for index {@code n} is this prefix followed by {@code n}, rendered by {@link #objectKeysIndexEntry(int)}.
-     */
-    public static final String CONTEXT_KEY_OBJECT_KEYS_INDEX_PREFIX = "carddemo.statement.object.keys.";
 
     // ---------------------------------------------------------------------------------------------
     // Injected collaborators. Every one arrives by constructor; none is constructed here.
@@ -504,20 +500,6 @@ public class StatementWriter
 
     /** The sole owner of the status-to-exception decision. */
     private final FileStatusMapper fileStatusMapper;
-
-    /**
-     * The application's sole meter owner, through which this writer reports a processed record.
-     *
-     * <p>This class holds no meter and no metric name of its own. It previously resolved the counter itself
-     * with {@code meterRegistry.counter(...)} against a private copy of the name. That created no extra
-     * instrument - Micrometer returns the meter already registered under a name and tag set - but it did put
-     * a second copy of the published name in a second file, where it could drift from the owner's without
-     * anything failing, and it left the counter's description dependent on whichever registration ran first.
-     * Reporting through the owner leaves exactly one declaration of the name and one registration of the
-     * meter, which is what the dashboard expression {@code sum(carddemo_batch_records_processed_total)}
-     * depends on.
-     */
-    private final MetricsConfig metricsConfig;
 
     /** The bucket both objects are written to. */
     private final String statementsBucket;
@@ -564,7 +546,7 @@ public class StatementWriter
      *
      * <p>Per-execution state on a {@code @StepScope} bean, so it belongs to exactly one execution and needs no
      * cross-execution reasoning. It supplies one thing: the job execution context that
-     * {@link #publishCreatedKey(String)} appends the ordered generation record to. {@code null} when the bean is
+     * {@link #countCreatedObject()} updates the object tally on. {@code null} when the bean is
      * driven directly rather than by a step, which is the unit-test path.
      */
     private StepExecution currentStepExecution;
@@ -580,10 +562,6 @@ public class StatementWriter
      *
      * @param objectStorage the injected object-storage operations; must not be {@code null}. No client is
      *     ever constructed here and no endpoint or credential is ever named here
-     * @param metricsConfig the application's sole meter owner; must not be {@code null}. Exactly one
-     *     counter is reported through it, the untagged batch records-processed counter that
-     *     {@code com.cardemo.observability.MetricsConfig} names and registers. No registry is held here, so
-     *     this class cannot register a fifth instrument
      * @param fileStatusMapper the injected status mapper that owns the status-to-exception decision; must
      *     not be {@code null}
      * @param clock the application's single time source; must not be {@code null}. Used once per step, to
@@ -599,14 +577,12 @@ public class StatementWriter
      */
     public StatementWriter(
             S3Operations objectStorage,
-            MetricsConfig metricsConfig,
             FileStatusMapper fileStatusMapper,
             Clock clock,
             @Value("${carddemo.aws.s3.statements-bucket}") String statementsBucket) {
         this.objectStorage = Objects.requireNonNull(objectStorage, "objectStorage must not be null");
         this.fileStatusMapper = Objects.requireNonNull(fileStatusMapper, "fileStatusMapper must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
-        this.metricsConfig = Objects.requireNonNull(metricsConfig, "metricsConfig must not be null");
         if (statementsBucket == null || statementsBucket.isBlank()) {
             throw new IllegalArgumentException(
                     "carddemo.aws.s3.statements-bucket must be configured with a non-blank value; "
@@ -664,7 +640,15 @@ public class StatementWriter
         }
         closeStatementOutputs();
         this.statementsWritten++;
-        this.metricsConfig.countRecordProcessed();
+        // The statement count is exposed by statementsWritten(), which the emit step publishes into its own
+        // execution-context entry, and is deliberately NOT added to the records-processed counter. That counter
+        // reproduces DISPLAY 'TRANSACTIONS PROCESSED :' at app/cbl/CBTRN02C.cbl:L227, whose population is the
+        // daily transaction records POSTTRAN read at :L206 - one program, one population, one meaning. A
+        // statement is not one of those records, and the statement job's emit step was additionally advancing
+        // the same counter with the total it wrote, so one run moved an untagged series twice in a unit neither
+        // figure belonged to and no PromQL query could decompose it again. No application counter has this
+        // class's unit, so this class advances none; Spring Batch already publishes this writer's volume as
+        // spring.batch.item.write, per step and per job, which is decomposable.
     }
 
     // =============================================================================================
@@ -800,8 +784,8 @@ public class StatementWriter
         // Appended in creation order, text then HTML, matching the order the two uploads above ran in. Done
         // here rather than in afterStep because these two entries are one account's pair and a step produces
         // one pair per account: assembling at step end could only ever recover the last.
-        publishCreatedKey(textKey);
-        publishCreatedKey(htmlKey);
+        countCreatedObject();
+        countCreatedObject();
         this.outputsFlushed = true;
         LOG.info("Emitted statement objects for generation {}: {} text records, {} html records",
                 this.currentGeneration,
@@ -928,48 +912,29 @@ public class StatementWriter
     }
 
     /**
-     * Appends one created key to the ordered generation record in the job execution context.
+     * Counts one created object into the job execution context.
      *
-     * <p>Called as each object is created rather than once at step end, which is what makes the record complete:
-     * a step producing statements for many accounts creates many objects, and only the latest pair survives in
-     * the step-scoped entries. See {@link #CONTEXT_KEY_OBJECT_KEYS_COUNT} for the read protocol.
+     * <p>Called as each object is created rather than once at step end, so the count covers every object a
+     * step produced and not merely the last account's pair. The keys themselves are deliberately not recorded
+     * - see {@link #CONTEXT_KEY_OBJECT_KEYS_COUNT} for why an enumeration of {@link #KEY_ROOT} is both the
+     * bounded and the more truthful record.
      *
      * <p>Silently does nothing when no step execution has been captured, which is the case when the class is
-     * driven directly by a unit test. That is the explicit {@code null} branch and not an oversight: the keys are
-     * still returned by {@link #createdObjectKeys()}, so a test observes everything it needs.
+     * driven directly by a unit test. That is the explicit {@code null} branch and not an oversight: the keys
+     * are still returned by {@link #createdObjectKeys()}, so a test observes everything it needs.
      *
-     * <p>Side effects: appends two entries to the job execution context, the new indexed key and the updated
-     * count. No I/O and no logging.
-     *
-     * @param objectKey the key just created; never {@code null}
+     * <p>Side effects: updates one entry in the job execution context. No I/O and no logging.
      */
-    private void publishCreatedKey(String objectKey) {
+    private void countCreatedObject() {
         StepExecution captured = this.currentStepExecution;
         if (captured == null || captured.getJobExecution() == null) {
             return;
         }
-        JobExecution jobExecution = captured.getJobExecution();
-        ExecutionContext jobContext = jobExecution.getExecutionContext();
-        int published = Math.toIntExact(jobContext.getLong(CONTEXT_KEY_OBJECT_KEYS_COUNT, 0L));
-        jobContext.putString(objectKeysIndexEntry(published), objectKey);
+        ExecutionContext jobContext = captured.getJobExecution().getExecutionContext();
+        long published = jobContext.getLong(CONTEXT_KEY_OBJECT_KEYS_COUNT, 0L);
         jobContext.putLong(CONTEXT_KEY_OBJECT_KEYS_COUNT, published + 1L);
     }
 
-    /**
-     * Names the job-execution entry holding the key at one index of the ordered generation record.
-     *
-     * <p>Static and pure, so a downstream consumer and a test can apply the rule without an instance.
-     *
-     * @param index the zero-based position in creation order; must not be negative
-     * @return the context entry name, never {@code null}
-     * @throws IllegalArgumentException if {@code index} is negative, which would name an entry no writer emits
-     */
-    public static String objectKeysIndexEntry(int index) {
-        if (index < 0) {
-            throw new IllegalArgumentException("index must not be negative but was " + index);
-        }
-        return CONTEXT_KEY_OBJECT_KEYS_INDEX_PREFIX + Integer.toString(index);
-    }
 
     // =============================================================================================
     // Guards, key composition and the storage boundary.
@@ -1122,9 +1087,9 @@ public class StatementWriter
     /**
      * Refuses any character outside the permitted single-byte set of a fixed-width record.
      *
-     * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision validated only the record <em>length</em>,
-     * so a control byte arriving in a customer name, an address line or a transaction description travelled
-     * straight into the emitted stream. That is an injection defect on both outputs and for two different
+     * <p><b>Why the character set is validated and not only the record length.</b> Validating length alone
+     * would let a control byte arriving in a customer name, an address line or a transaction description travel
+     * straight into the emitted stream. That is an injection defect on both outputs, for two different
      * reasons. Both objects are <b>unblocked and undelimited</b> - {@code app/jcl/CREASTMT.JCL:STEP040} declares
      * {@code LRECL=80} for the text output and {@code LRECL=100} for the HTML - so a consumer finds record
      * boundaries by counting bytes and by nothing else, and a carriage return or line feed inside a record is a
@@ -1231,7 +1196,7 @@ public class StatementWriter
      */
     private void upload(String key, String content, String contentType, String objectName,
             String logicalFileName) {
-        // DEADLINE AND RETRY, and where they come from. Finding, severity High, RESOLVED. The upload below is
+        // DEADLINE AND RETRY, and where they come from. The upload below is
         // synchronous and a statement run performs two per account, so an unbounded call would wedge the step
         // rather than fail it. No per-call override is configured HERE deliberately: a deadline written at this
         // call site would be a second policy that drifts from the one every other AWS call in the tree obeys.
@@ -1257,7 +1222,12 @@ public class StatementWriter
                     OPERATION_WRITE,
                     Integer.valueOf(payload.length),
                     this.fileStatusMapper.displayIoStatus(STORAGE_FAILURE_STATUS));
-            LOG.error(message, cause);
+            // Finding M-06, severity Medium. The throwable is NOT logged: an object-store failure carries the
+            // bucket, the key and often the request URL in its message and stack, and this class's keys embed the
+            // account identifier as a key segment - which its own contract says must never reach a log. Its type
+            // is the classification an operator needs, and the throwable itself is preserved as the cause of the
+            // exception raised immediately below, so the root cause survives in full and nothing is swallowed.
+            LOG.error("{} (cause: {})", message, cause.getClass().getName());
             throw this.fileStatusMapper
                     .toException(STORAGE_FAILURE_STATUS, logicalFileName, OPERATION_WRITE, cause)
                     .orElseGet(() -> new FileAccessException(
@@ -1297,9 +1267,8 @@ public class StatementWriter
      * Reports the thirty-four fixed markup fragments the statement document is built from.
      *
      * <p>Delegates to {@link StatementProcessor#htmlFragments()}, which is the single definition site.
-     * The table was previously declared in this class as well, so a change to one copy produced a
-     * statement whose text and markup disagreed; the delegation is what keeps one table (Rule 1
-     * Clause C).
+     * Declaring the table here as well would let a change to one copy produce a statement whose text and
+     * markup disagreed; the delegation is what keeps exactly one table (Rule 1 Clause C).
      *
      * @return the unmodifiable fragment table, in source declaration order
      */
