@@ -8,7 +8,10 @@
  *               recur silently. Every package under
  *               src/main/java/com/cardemo that contains a type must
  *               carry exactly one package-info.java, and no package
- *               that contains no type may carry one. The previous
+ *               that contains no type may carry one - bar the
+ *               intermediate packages named in DOCUMENTED_CONTAINERS,
+ *               which are documented on purpose and whose entries this
+ *               test also keeps honest. The previous
  *               arrangement stated a fixed census in prose - "132 .java
  *               files, of which exactly 14 are package-info.java", with
  *               a per-package breakdown and an assertion that the nine
@@ -73,6 +76,14 @@ import org.junit.jupiter.api.Test;
  * a package with no documentation at all, a documentation file for a package that has been emptied, and a
  * document that omits one of the four topics the rule names.
  *
+ * <p><strong>The one exemption, and why it is still an invariant.</strong> An intermediate package holds no type
+ * and so falls outside the bijection's purpose - it cannot be emptied and its document cannot go stale that way -
+ * yet it can legitimately own facts that belong to a whole layer rather than to any leaf. Those packages are
+ * named in {@link #DOCUMENTED_CONTAINERS} and are exempted from the "no type-less package is documented" rule
+ * only. The exemption is bounded by two further assertions of its own: every entry must genuinely hold no type,
+ * and every entry must genuinely be documented. A type-less package that is not on the list still fails, and a
+ * listed package that stops being either type-less or documented also fails, so nothing can drift in behind it.
+ *
  * <p><strong>Side effects.</strong> None. It reads the source tree from the module root and writes nothing.
  */
 @DisplayName("Package documentation inventory - one document per package that contains a type")
@@ -83,6 +94,31 @@ class PackageDocumentationInventoryTest {
 
     /** The file name Java reserves for package documentation. */
     private static final String PACKAGE_INFO = "package-info.java";
+
+    /**
+     * Intermediate packages that hold no type of their own and are nevertheless documented on purpose.
+     *
+     * <p>The bijection below is "one document per package that contains a type", and it exists to stop two
+     * specific kinds of rot: a package whose types nothing documents, and a document for a package that has been
+     * emptied. An intermediate package is a third case that neither of those describes. It contains no type, so
+     * it can never be emptied and its document can never go stale that way; but it does own layer-wide facts -
+     * one toolchain, one configuration contract, one exception vocabulary, one paragraph-correspondence mandate -
+     * that are properties of the layer rather than of any single leaf, and that would otherwise have to be
+     * repeated in every leaf or stated nowhere. Repeating them is the duplication Rule 1 Clause C forbids;
+     * stating them nowhere fails Rule 1 Clause E for the layer.
+     *
+     * <p>So the exemption is an <strong>allow-list, not a relaxation</strong>. Only the paths named here may
+     * carry a document without holding a type, every other type-less package is still rejected, and the two
+     * assertions immediately below keep the list itself honest: each entry must really be type-less, and each
+     * entry must really be documented. An intermediate package that is neither cannot hide here.
+     *
+     * <p>{@code com/cardemo/model} and {@code com/cardemo/batch} are deliberately <em>absent</em> from this
+     * list. Their leaves are cohesive enough to document themselves, so a container document there would be a
+     * summary with nothing to summarise. {@code com/cardemo/service} is different in kind: it spans nine leaves
+     * and 21 beans translated from 17 separate COBOL programs, and the invariants that bind all 21 are what its
+     * document holds.
+     */
+    private static final List<Path> DOCUMENTED_CONTAINERS = List.of(SOURCE_ROOT.resolve("service"));
 
     /**
      * The four topics Rule 1 Clause E names, as the heading text each document must carry. Matched on the
@@ -178,10 +214,13 @@ class PackageDocumentationInventoryTest {
         }
 
         @Test
-        @DisplayName("no package without a type carries package-info.java")
+        @DisplayName("no package without a type carries package-info.java, bar the allow-listed containers")
         void noEmptyPackageIsDocumented() {
             List<String> orphaned = new ArrayList<>();
             for (Path directory : allPackageDirectories()) {
+                if (DOCUMENTED_CONTAINERS.contains(directory)) {
+                    continue;
+                }
                 if (!containsType(directory) && containsDocumentation(directory)) {
                     orphaned.add(directory.toString());
                 }
@@ -189,8 +228,42 @@ class PackageDocumentationInventoryTest {
 
             assertThat(orphaned)
                     .as("a document for a package that has been emptied describes nothing and will not be "
-                            + "maintained; the three intermediate packages model, service and batch contain no "
-                            + "types and correctly carry none")
+                            + "maintained; the intermediate packages model and batch contain no types and "
+                            + "correctly carry none, and the only type-less package allowed a document is the "
+                            + "service layer root named in DOCUMENTED_CONTAINERS")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("every allow-listed container really is type-less, so the allow-list masks no real package")
+        void everyAllowListedContainerIsGenuinelyTypeLess() {
+            List<String> notContainers = new ArrayList<>();
+            for (Path container : DOCUMENTED_CONTAINERS) {
+                if (!Files.isDirectory(container) || containsType(container)) {
+                    notContainers.add(container.toString());
+                }
+            }
+
+            assertThat(notContainers)
+                    .as("an entry that has gained a type is covered by the bijection proper and must be removed "
+                            + "from DOCUMENTED_CONTAINERS, or the exemption starts hiding a real package")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("every allow-listed container really is documented, so the allow-list cannot rot")
+        void everyAllowListedContainerIsDocumented() {
+            List<String> undocumented = new ArrayList<>();
+            for (Path container : DOCUMENTED_CONTAINERS) {
+                if (!containsDocumentation(container)) {
+                    undocumented.add(container.toString());
+                }
+            }
+
+            assertThat(undocumented)
+                    .as("these packages are exempted from the bijection precisely because they are documented on "
+                            + "purpose; an exemption for a package carrying no document exempts nothing and is "
+                            + "the drift this class exists to catch")
                     .isEmpty();
         }
 
@@ -203,10 +276,15 @@ class PackageDocumentationInventoryTest {
             long documented = allPackageDirectories().stream()
                     .filter(PackageDocumentationInventoryTest::containsDocumentation)
                     .count();
+            long documentedContainers = DOCUMENTED_CONTAINERS.stream()
+                    .filter(PackageDocumentationInventoryTest::containsDocumentation)
+                    .count();
 
             assertThat(documented)
-                    .as("the counts may change together; they may not diverge")
-                    .isEqualTo(withType);
+                    .as("the counts may change together; they may not diverge. The allow-listed container "
+                            + "documents are added to the right-hand side rather than subtracted from the left, "
+                            + "so a container document is only ever balanced by an entry in DOCUMENTED_CONTAINERS")
+                    .isEqualTo(withType + documentedContainers);
         }
     }
 

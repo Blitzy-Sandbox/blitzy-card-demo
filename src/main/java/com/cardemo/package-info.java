@@ -147,11 +147,16 @@
  * which is the single authoritative dated inventory for this repository and governs over any count quoted in
  * a Javadoc comment.
  *
- * <p><strong>All 14 package documentation files now exist</strong>, at exactly these locations and nowhere
- * else: {@code com/cardemo}, {@code config}, {@code security}, {@code model/entity}, {@code model/key},
+ * <p><strong>The fourteen-location census of package documentation is withdrawn.</strong> An earlier revision of
+ * this paragraph asserted that exactly 14 such files existed "at exactly these locations and nowhere else",
+ * naming {@code com/cardemo}, {@code config}, {@code security}, {@code model/entity}, {@code model/key},
  * {@code model/enums}, {@code model/dto}, {@code repository}, {@code service}, {@code controller},
- * {@code batch}, {@code batch/jobs}, {@code exception} and {@code observability}. This is the one element of
- * the 132-file target that is complete, and it is verifiable directly with
+ * {@code batch}, {@code batch/jobs}, {@code exception} and {@code observability}. That is no longer accurate in
+ * either direction - the nine {@code service} leaves and the three further {@code batch} leaves each carry their
+ * own document, while {@code batch} itself carries none - and a hand-maintained list of locations is exactly the
+ * kind of claim that drifted before. It is replaced by the invariant rather than by a corrected list: one
+ * document per package that contains a type, plus the bounded allow-list of intermediate packages described
+ * below, asserted by {@code PackageDocumentationInventoryTest}. Measure it rather than quoting it, with
  * {@code find src/main/java -name 'package-info.java' | wc -l}.
  *
  * <p><strong>Dated readings, offered as a sample and not as a specification.</strong> At commit
@@ -162,12 +167,21 @@
  * find src/main/java -name package-info.java | wc -l
  * }</pre>
  *
- * <p>Two constraints on the shape do survive as rules, because neither is a count. There is deliberately
- * <strong>no</strong> {@code package-info.java} at the {@code com/cardemo/model}, {@code com/cardemo/service}
- * or {@code com/cardemo/batch} roots: those three packages contain no types, so under the bijection above
- * they get none, and their leaves each document themselves. And <strong>no {@code README} or other Markdown
- * file may be added anywhere under {@code src/main/java}</strong>: the package documentation files are the
- * module documentation, and Markdown there would be a second, unmaintained copy of it.
+ * <p>Two constraints on the shape do survive as rules, because neither is a count. The first governs the three
+ * intermediate packages {@code com/cardemo/model}, {@code com/cardemo/service} and {@code com/cardemo/batch},
+ * none of which contains a type, so none receives a document under the bijection above and each one's leaves
+ * document themselves. <strong>{@code com/cardemo/service} is the single deliberate exception</strong>, and an
+ * earlier revision of this paragraph named it alongside the other two as carrying no document - that is no longer
+ * true and the claim is withdrawn. It carries a layer document because it spans nine leaves and 21 beans
+ * translated from 17 separate COBOL programs, and one toolchain, one configuration contract, one exception
+ * vocabulary and one paragraph-correspondence mandate bind all 21; repeating those in nine leaves is the
+ * duplication Clause C forbids, and stating them nowhere fails Clause E for the layer. The exception is bounded
+ * rather than open: {@code PackageDocumentationInventoryTest} holds it in an explicit allow-list, asserts that
+ * every listed package really is type-less and really is documented, and still rejects every other type-less
+ * package - so {@code model} and {@code batch} remain undocumented by rule and not by accident. The second
+ * constraint is that <strong>no {@code README} or other Markdown file may be added anywhere under
+ * {@code src/main/java}</strong>: the package documentation files are the module documentation, and Markdown
+ * there would be a second, unmaintained copy of it.
  *
  * <h2>Migration mapping at a glance</h2>
  *
@@ -246,9 +260,12 @@
  *       An <strong>unused import is not</strong>, because {@code javac} 25 publishes no {@code unused} lint
  *       key - the only documentation-adjacent key it does publish is
  *       {@code dangling-doc-comments}. Rule 1 Clause B's prohibition on an unused import is therefore
- *       enforced at review, and malformed Javadoc is caught by a <strong>separate explicit doclint
- *       gate</strong>, because no Javadoc plugin is bound in {@code pom.xml}. That gate's exact command is
- *       published in section 0.4.5.1.</li>
+ *       enforced at review, and malformed Javadoc is caught by a <strong>separate doclint gate</strong> rather
+ *       than by the compiler. An earlier revision of this entry added that no Javadoc plugin was bound in
+ *       {@code pom.xml}; that is no longer accurate and the claim is withdrawn -
+ *       {@code maven-javadoc-plugin} is bound at {@code verify} as the execution {@code doclint-gate}, running
+ *       {@code javadoc-no-fork} with {@code doclint} set to {@code all} and {@code failOnWarnings} true, so
+ *       malformed documentation fails the build in the ordinary course of {@code clean verify}.</li>
  *   <li><strong>Tests.</strong> Surefire runs the unit tier with the integration and end to end trees excluded
  *       by path and alphabetical order for determinism; Failsafe is bound to {@code verify} and runs the tiers
  *       that use Testcontainers against PostgreSQL 16 and LocalStack.</li>

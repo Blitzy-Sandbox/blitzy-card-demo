@@ -66,10 +66,12 @@
 #   docker build --pull -t carddemo:local .
 #
 # The build context is filtered by .dockerignore, which excludes .git,
-# target, .env and .env.* , every key/certificate/credential pattern,
-# samples/ and app/data/EBCDIC/ . Only pom.xml, .mvn/, mvnw and src/ are
+# target, .env and .env.* , every key/certificate/credential pattern and
+# samples/ . Only pom.xml, .mvn/, mvnw, src/, app/, localstack-init/ and
+# the four repository files the unit tier reads - .env.example,
+# docker-compose.yml, .github/ and, through app/, the frozen corpus - are
 # COPYed, so nothing else can reach any layer even if it survives the
-# filter.
+# filter. See REQUIRED TEST CONTRACTS below for why each one is there.
 #
 # WHAT THIS BUILD IS NOT
 #
@@ -297,19 +299,54 @@ RUN ./mvnw -B -ntp test-compile
 #                  hostile input and asserts the guards fail closed
 #                  before any AWS call, so no aws CLI is needed - only
 #                  bash, which this base provides
+#   .env.example   EnvironmentTemplateContractTest locates the repository
+#                  root by looking for a directory holding BOTH pom.xml
+#                  and .env.example, then reconciles every template
+#                  assignment against the four profile files. Without it
+#                  the class initialiser throws and all thirteen of its
+#                  assertions error out
+#   docker-compose.yml and .github/workflows/build.yml
+#                  the same test's LIVE assertion requires every template
+#                  name to have a committed consumer, and reads all four
+#                  of docker-compose.yml, localstack-init/init-aws.sh,
+#                  pom.xml and .github/workflows/build.yml to find one -
+#                  a missing consumer file is an unchecked IO exception,
+#                  not a skipped check
+#
+# Those three additions and the withdrawal of the app/data/EBCDIC
+# exclusion in .dockerignore were established by evidence, not by
+# inspection: the first image build of this stage failed with
+# EnvironmentTemplateContractTest erroring in its initialiser and
+# SourceCitationResolutionTest reporting seven app/data/EBCDIC citations
+# as unresolved, while the identical suite passed on the host. Every
+# failure was an artefact of the context rather than of the tree, which
+# is precisely the class of defect this comment exists to prevent
+# recurring.
 #
 # The whole of app/ is copied rather than those four directories
 # because app/ is frozen by contract - .github/workflows/build.yml has
 # a dedicated "Frozen corpus guard (app/ must be unmodified)" job - so
-# this is an immutable, permanently cached 2.5 MB layer, whereas a hand
+# this is an immutable, permanently cached 2.7 MB layer, whereas a hand
 # maintained list of subdirectories would silently break the image build
-# the first time a new test reads a corpus member outside it.
-# app/data/EBCDIC is excluded by .dockerignore, structurally rather than
-# by omission here, so the 13 codepage reference files never enter the
-# context. Nothing from app/ crosses into the runtime stage: only
+# the first time a new test reads a corpus member outside it. That
+# reasoning is why app/data/EBCDIC now travels with it: 204 KB of
+# codepage reference that no code parses, and that seven committed
+# citations name, so the citation gate needs the paths to resolve.
+# Nothing from app/ crosses into the runtime stage: only
 # /image/carddemo.jar does.
 COPY app/ app/
 COPY localstack-init/ localstack-init/
+
+# The three repository files the unit tier reads that are neither source
+# nor corpus. Placed immediately before src/ so they sit above the
+# longest layer and below the dependency layer: editing one re-runs the
+# build and the tests, which is correct, and never re-resolves the
+# dependency graph. .env.example is a template of NAMES - its
+# credential-bearing entries are deliberately empty - and it is confined
+# to this stage, so no template and no compose file reaches the runtime
+# image.
+COPY .env.example docker-compose.yml ./
+COPY .github/ .github/
 
 COPY src/ src/
 

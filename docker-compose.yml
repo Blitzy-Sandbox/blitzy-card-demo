@@ -1,19 +1,25 @@
 # ******************************************************************
 # * File         : docker-compose.yml
 # * Application  : CardDemo
-# * Type         : Local runtime topology (Docker Compose)
-# * Function     : Provisions the substrate that replaces the z/OS runtime of
-# *                the frozen COBOL corpus in app/. PostgreSQL 16 replaces the
-# *                10 VSAM KSDS clusters catalogued in app/catlg/LISTCAT.txt and
-# *                defined by the 12 IDCAMS jobs in app/jcl. LocalStack replaces
-# *                the 7 GDG bases of app/jcl/DEFGDGB.jcl (S3) and the
-# *                DEFINE TDQUEUE(JOBS) contract of app/csd/CARDDEMO.CSD (SQS
-# *                FIFO), plus operator notification (SNS). Jaeger, Prometheus
-# *                and Grafana supply the observability layer the COBOL corpus
-# *                lacks entirely (its only instrumentation is DISPLAY and the
-# *                9910-DISPLAY-IO-STATUS renderer of app/cbl/CBTRN02C.cbl).
-# *                Supersedes app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl,
-# *                whose purpose was making datasets available to the region.
+# * Type         : Local runtime topology (Compose Specification)
+# * Function     : Stands up the complete substrate that replaces the z/OS
+# *                runtime of the frozen COBOL corpus in app/, plus the Java 25
+# *                application itself, as six containers on one isolated
+# *                network. Derived from app/jcl/OPENFIL.jcl and
+# *                app/jcl/CLOSEFIL.jcl, whose SDSF `CEMT SET FIL(...) OPE`
+# *                and `CLO` decks made the CICS datasets available to the
+# *                region: that operator step becomes declarative
+# *                health-conditioned service dependency here. S3 replaces the
+# *                generation data groups of app/jcl/DEFGDGB.jcl,
+# *                app/jcl/DALYREJS.jcl and app/jcl/REPTFILE.jcl; one SQS FIFO
+# *                queue replaces DEFINE TDQUEUE(JOBS) in
+# *                app/csd/CARDDEMO.CSD; PostgreSQL replaces the ten VSAM KSDS
+# *                clusters of app/catlg/LISTCAT.txt together with the USRSEC
+# *                cluster that app/jcl/DUSRSECJ.jcl defines in JCL; and
+# *                Jaeger, Prometheus and Grafana supply the observability
+# *                layer the corpus lacks, whose whole instrumentation is
+# *                DISPLAY plus the 9910-DISPLAY-IO-STATUS renderer of
+# *                app/cbl/CBTRN02C.cbl.
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -31,158 +37,707 @@
 # * language governing permissions and limitations under the License
 # ******************************************************************
 #
-# Parallel agents / multiple clones: every published port and every stateful
-# name below is parameterised by CLONE_INDEX (default 0). Start an isolated
-# instance with, for example:
-#     CLONE_INDEX=1 docker compose -p carddemo-1 up -d
-# which shifts PostgreSQL to 5433, LocalStack to 4576, Jaeger UI to 16687,
-# Prometheus to 9091 and Grafana to 3001. Reuse of a single shared stack is
-# preferred where tests do not mutate conflicting state; one container per
-# agent is NOT required.
+# ============================================================================
+# WHAT THIS FILE DOES
+# ============================================================================
+# Six services, one bridge network, three named volumes:
+#
+#   app          the modular monolith, built from the repository-root
+#                Dockerfile and run as its single non-root Java 25 JAR
+#   postgres     PostgreSQL 16, the relational substrate the three Flyway
+#                migrations establish and seed at application start
+#   localstack   S3, SQS and SNS only, provisioned by
+#                localstack-init/init-aws.sh once the edge reports ready
+#   jaeger       OTLP collector plus trace UI
+#   prometheus   scrapes app:8080/actuator/prometheus every 15s
+#   grafana      the checked-in datasource and CardDemo dashboard
+#
+# The topology is the evidence harness for the migration's validation gates:
+# Gate 1 (end-to-end boundary parity against app/data/ASCII/dailytran.txt),
+# Gate 3 (measured performance baseline), Gate 4 (named-fixture validation),
+# Gate 5 (API contract verification) and Gate 8 (integration sign-off) all
+# execute against this stack. Nothing here reaches a live cloud endpoint: the
+# only AWS-shaped endpoint in the file is the emulator on the compose network,
+# and both src/main/java/com/cardemo/config/AwsConfig.java and
+# localstack-init/init-aws.sh refuse any host outside their shared allowlist.
+#
+# ============================================================================
+# HOW TO RUN, BUILD AND TEST
+# ============================================================================
+# One-time preparation. Copy the template and fill in the six values that
+# have deliberately no default anywhere in this file:
+#
+#     cp .env.example .env && chmod 600 .env
+#     # then set, in .env:
+#     #   JWT_SIGNING_KEY         >= 32 bytes; HS256 refuses anything shorter
+#     #   POSTGRES_PASSWORD       any local value; it is never a live secret
+#     #   GRAFANA_ADMIN_USER      local Grafana sign-in
+#     #   GRAFANA_ADMIN_PASSWORD  local Grafana sign-in
+#     #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  emulator placeholders
+#
+# Bring the stack up, building the application image, and block until every
+# service reports healthy:
+#
+#     docker compose config --quiet            # schema and interpolation check
+#     docker compose pull --ignore-buildable   # the 5 pinned substrate images
+#     docker compose up --build --wait         # non-zero if any is unhealthy
+#
+# `--ignore-buildable` is required rather than decorative: a plain
+# `docker compose pull` also tries to pull `app`, which is built from the
+# Dockerfile here and published to no registry, so the command would end in a
+# pull-access-denied error after every substrate image had already arrived.
+#
+# Verify, tear down, and inspect:
+#
+#     docker compose ps
+#     # 8080 is SERVER_PORT's default and carddemo is POSTGRES_USER's and
+#     # POSTGRES_DB's; substitute your own values, or the shifted ones from
+#     # PARALLEL CLONES below, if you set them.
+#     curl -fsS http://localhost:8080/actuator/health/readiness
+#     curl -fsS http://localhost:8080/actuator/health/liveness
+#     docker compose logs app | grep -i flyway
+#     docker compose exec postgres psql -U carddemo -d carddemo \
+#       -c 'table flyway_schema_history'
+#     docker compose exec localstack awslocal s3api list-buckets
+#     docker compose down                    # keeps the volumes
+#     docker compose down -v                 # discards them: a clean-volume run
+#
+# The Maven build and the test pyramid do NOT run here. Unit and integration
+# tests run on the host with `./mvnw -B -ntp clean verify`; the integration
+# tier brings up its own Testcontainers PostgreSQL and LocalStack and is
+# independent of this stack. The image build stage inside the Dockerfile does
+# run `./mvnw clean package`, so `--build` compiles the tree and executes the
+# unit tier; the coverage and vulnerability gates are bound to `verify` in
+# pom.xml and are therefore a host-side concern, not an image-build one.
+#
+# ============================================================================
+# KEY CONFIGURATION AND DEFAULTS
+# ============================================================================
+# Every value is either a literal chosen here for determinism or a `.env`
+# variable. Five groups exist, and the distinction between the first two is
+# the one that trips people up.
+#
+#   1. REQUIRED, no default - `${VAR:?message}`. Interpolation fails and the
+#      command aborts before a container is created. JWT_SIGNING_KEY,
+#      POSTGRES_PASSWORD, GRAFANA_ADMIN_USER, GRAFANA_ADMIN_PASSWORD,
+#      AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. A committed default for
+#      any of them would be a usable credential in version control.
+#
+#   2. HOST-VIEW PORTS - `${VAR:-default}` on the left of a port mapping only.
+#      SERVER_PORT 8080, POSTGRES_PORT 5432, LOCALSTACK_PORT 4566,
+#      JAEGER_UI_PORT 16686, JAEGER_OTLP_GRPC_PORT 4317,
+#      JAEGER_OTLP_HTTP_PORT 4318, PROMETHEUS_PORT 9090, GRAFANA_PORT 3000.
+#      These name where each service answers ON THE HOST, which is also what
+#      src/main/resources/application-local.yml assumes when the application
+#      is run on the host instead of in a container.
+#
+#   3. IN-NETWORK COORDINATES - fixed literals in the `app` environment:
+#      POSTGRES_HOST=postgres, POSTGRES_PORT=5432, SERVER_PORT=8080,
+#      AWS_ENDPOINT_URL=http://localstack:4566 and
+#      OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces. They are
+#      pinned rather than interpolated because a container port is not a host
+#      port: shifting SERVER_PORT for a parallel clone must move the published
+#      port and leave the listener at 8080, since
+#      observability/prometheus.yml names `app:8080` as a literal it cannot
+#      interpolate.
+#
+#   4. RESOURCE NAMES - one spelling, shared by the anchor below, so the
+#      application and the provisioning hook cannot disagree about which
+#      bucket, queue or topic they mean.
+#
+#   5. TOPOLOGY KNOBS read by this file alone, both optional and neither a
+#      credential: CLONE_INDEX (empty; suffixes the project, the container
+#      names and the built image tag - see PARALLEL CLONES) and
+#      LOCALSTACK_DEBUG (0; set 1 for the emulator's verbose request log).
+#
+# Images are pinned to an exact tag AND an immutable digest. Every digest
+# below is a multi-arch manifest list, so a pull on arm64 still resolves the
+# arm64 layer rather than silently landing an amd64 image. LOCALSTACK_IMAGE is
+# the one image expressed as a variable, because .env.example documents that
+# override; its default carries the same pinned tag and digest.
+#
+# ============================================================================
+# LEGACY-TO-LOCAL TOPOLOGY MAP
+# ============================================================================
+#   app/catlg/LISTCAT.txt         10 VSAM KSDS clusters
+#   app/jcl/DUSRSECJ.jcl          + USRSEC, KEYS(8,0) RECORDSIZE(80,80)
+#                                 -> 11 PostgreSQL tables, established by
+#                                    V1__create_schema.sql, indexed by
+#                                    V2__create_indexes.sql and seeded by
+#                                    V3__seed_data.sql
+#   app/jcl/OPENFIL.jcl           CEMT SET FIL(TRANSACT|CCXREF|ACCTDAT|
+#   app/jcl/CLOSEFIL.jcl          CXACAIX|USRSEC) OPE / CLO
+#                                 -> health-conditioned depends_on plus the
+#                                    readiness group readinessState,db,s3,sqs
+#                                    in src/main/resources/application.yml
+#   app/csd/CARDDEMO.CSD          DEFINE TDQUEUE(JOBS) TYPE(EXTRA)
+#                                 DDNAME(INREADER) RECORDSIZE(80)
+#                                 -> one SQS FIFO queue; logical name
+#                                    carddemo-report-jobs, physical name
+#                                    carddemo-report-jobs.fifo because AWS
+#                                    requires the suffix on a FIFO queue
+#   app/jcl/DEFGDGB.jcl           6 GDG bases: TRANSACT.BKUP, TRANSACT.DALY,
+#                                 TRANREPT, TCATBALF.BKUP, SYSTRAN,
+#                                 TRANSACT.COMBINED
+#   app/jcl/DALYREJS.jcl          the 7th, DALYREJS
+#                                 -> S3 key prefixes under three buckets, one
+#                                    prefix per base, listed in
+#                                    src/main/resources/application.yml as
+#                                    carddemo.aws.s3.gdg-prefixes
+#   app/jcl/REPTFILE.jcl          TRANREPT retention: this member declares
+#                                 LIMIT(10) while app/jcl/DEFGDGB.jcl declares
+#                                 LIMIT(5) for the same base. A single value
+#                                 must be chosen; the migration chose 10, the
+#                                 larger, so no generation the legacy system
+#                                 would have kept is discarded. It is recorded
+#                                 as carddemo.aws.s3.gdg-retention-generations
+#                                 and DOCUMENTED rather than enforced here: no
+#                                 bucket lifecycle rule is created, because
+#                                 object versioning on the output bucket
+#                                 supersedes generation counting.
+#   app/jcl/DUSRSECJ.jcl          10 inline SYSUT1 users, every one carrying
+#                                 the literal plaintext password
+#                                 -> V3__seed_data.sql stores BCrypt hashes
+#                                    only. No password from that deck appears
+#                                    as an environment value in this file, in
+#                                    `docker compose config` output or in any
+#                                    container environment.
+#
+# ============================================================================
+# SECURITY POSTURE
+# ============================================================================
+#   * No secret is committed. Six variables fail fast; the rest are names,
+#     ports and endpoints that grant nothing.
+#   * No `env_file` is declared on any service. `.env` is read for
+#     interpolation only, so a value reaches a container solely because it is
+#     named in that service's `environment` block: the app never receives the
+#     Grafana credentials and Grafana never receives the signing key.
+#   * The Docker socket is never mounted, no service is privileged, no service
+#     uses host networking and no service adds a Linux capability. The
+#     application additionally runs with a read-only root filesystem, all
+#     capabilities dropped and privilege escalation disabled.
+#   * The emulator credentials are placeholders by construction:
+#     AwsConfig.java refuses an access key beginning AKIA or ASIA and both it
+#     and the provisioning hook allowlist the endpoint host, so a live
+#     endpoint cannot be addressed from this topology even deliberately.
+#   * PostgreSQL authenticates external connections with scram-sha-256 and is
+#     started with a required password, so `trust` cannot be reached from
+#     outside the container.
+#
+# ============================================================================
+# COMMON FAILURE MODES AND TROUBLESHOOTING
+# ============================================================================
+#   * `required variable JWT_SIGNING_KEY is missing a value` on any compose
+#     command. Group 1 above did its job: create `.env` from `.env.example`
+#     and set the six required values. Nothing was created, so nothing needs
+#     cleaning up.
+#   * `Bind for 0.0.0.0:5432 failed: port is already allocated`. Another stack
+#     - commonly a sibling clone - holds the host port. Export CLONE_INDEX and
+#     the shifted host ports as described under PARALLEL CLONES below.
+#   * `app` never becomes healthy and its log ends at a Flyway or Hibernate
+#     error. The schema and the entity model disagree; ddl-auto is `validate`
+#     in every profile, so this is a real mismatch rather than a startup race.
+#     Read it with `docker compose logs app`, then
+#     `docker compose down -v && docker compose up --build --wait` for a
+#     clean-volume run.
+#   * `app` never becomes healthy and its log ends at
+#     `JWT_SIGNING_KEY` or a signing-key length complaint. HS256 requires at
+#     least 32 bytes of key material.
+#   * `app` restarts three times and stops. That is `restart: on-failure:3`
+#     working as intended: a boot-time misconfiguration surfaces as a stopped
+#     container with a readable log instead of an endless crash loop.
+#   * `localstack` stays unhealthy. Its probe asserts three things: that s3,
+#     sqs and sns each report available or running, and that the READY-stage
+#     hook reached SUCCESSFUL. `docker compose logs localstack | grep
+#     '\[init-aws\]'` prints the hook's own diagnosis; exit 2 is a
+#     configuration error, exit 3 means the edge never came up. Set
+#     LOCALSTACK_DEBUG=1 in `.env` for the emulator's verbose request log, and
+#     re-run the hook by hand with
+#     `docker compose exec localstack bash /etc/localstack/init/ready.d/init-aws.sh`
+#     - it is idempotent, so a second run converges rather than failing on
+#     resources it already created.
+#   * Prometheus shows the carddemo-app target down. The application answers
+#     on the compose network at app:8080; confirm with
+#     `docker compose exec prometheus wget -q -O- http://app:8080/actuator/prometheus | head -3`.
+#     Prometheus re-resolves the name every scrape and recovers on its own
+#     once the application answers, so no reload is needed.
+#   * Grafana shows no dashboard. The provider in
+#     observability/grafana/provisioning/dashboards/dashboards.yml reads
+#     /var/lib/grafana/dashboards, which is the read-only bind below; the
+#     dashboard is uid carddemo-overview and the datasource is uid
+#     carddemo-prometheus.
+#   * Traces are missing from Jaeger. Tracing deliberately does not gate the
+#     data path: `app` waits on the database and the emulator only, so it will
+#     start and serve traffic while dropping spans. Check
+#     `docker compose ps jaeger` and the OTLP endpoint above.
+#
+# ============================================================================
+# PARALLEL CLONES
+# ============================================================================
+# The project name, every container name and every published port carries an
+# optional CLONE_INDEX suffix so that two checkouts can run side by side:
+#
+#     CLONE_INDEX=1 SERVER_PORT=8081 POSTGRES_PORT=5433 LOCALSTACK_PORT=4567 \
+#     JAEGER_UI_PORT=16687 JAEGER_OTLP_GRPC_PORT=4319 \
+#     JAEGER_OTLP_HTTP_PORT=4320 PROMETHEUS_PORT=9091 GRAFANA_PORT=3001 \
+#     docker compose up --build --wait
+#
+# The named volumes and the network are project-scoped, so they are isolated
+# by the project name alone. Sharing one stack is preferable whenever the
+# tests in flight do not mutate conflicting state; one stack per agent is not
+# a requirement.
+# ============================================================================
 
 name: carddemo${CLONE_INDEX:+-}${CLONE_INDEX:-}
 
+# ----------------------------------------------------------------------------
+# Shared fragments. Compose ignores top-level keys beginning `x-`, and
+# `docker compose config` expands every alias, so the rendered topology is
+# fully explicit while the source keeps one spelling per fact.
+# ----------------------------------------------------------------------------
+
+# Log rotation. A stack left up for days must not fill the disk, and an
+# unbounded json-file log is the usual way that happens.
+x-carddemo-logging: &carddemo-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# The AWS resource names and the region, shared verbatim by the application
+# and by the provisioning hook. localstack-init/init-aws.sh reads exactly
+# these variable names from its container environment and creates precisely
+# these containers - three buckets, one FIFO queue, one topic - while
+# src/main/resources/application.yml binds the same names onto
+# carddemo.aws.s3.*, carddemo.aws.sqs.report-queue and
+# carddemo.aws.sns.notification-topic. Sharing one fragment is what makes it
+# impossible for the two sides to provision one name and address another.
+#
+# The queue's physical name carries the `.fifo` suffix AWS requires of a FIFO
+# queue; its logical name, carddemo-report-jobs, is the contract inherited
+# from DEFINE TDQUEUE(JOBS) in app/csd/CARDDEMO.CSD and is recorded as
+# carddemo.aws.sqs.report-queue-logical-name. The hook strips and re-appends
+# the suffix idempotently, so either spelling in `.env` converges.
+x-carddemo-aws-context: &carddemo-aws-context
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+  CARDDEMO_S3_BATCH_INPUT_BUCKET: ${CARDDEMO_S3_BATCH_INPUT_BUCKET:-carddemo-batch-input}
+  CARDDEMO_S3_BATCH_OUTPUT_BUCKET: ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET:-carddemo-batch-output}
+  CARDDEMO_S3_STATEMENTS_BUCKET: ${CARDDEMO_S3_STATEMENTS_BUCKET:-carddemo-statements}
+  CARDDEMO_SQS_REPORT_QUEUE: ${CARDDEMO_SQS_REPORT_QUEUE:-carddemo-report-jobs.fifo}
+  CARDDEMO_SNS_NOTIFICATION_TOPIC: ${CARDDEMO_SNS_NOTIFICATION_TOPIC:-carddemo-notifications}
+
 services:
 
-  # --------------------------------------------------------------------------
-  # PostgreSQL 16 - replaces the VSAM data substrate
-  # --------------------------------------------------------------------------
-  postgres:
-    image: postgres:16.10-alpine
-    container_name: carddemo-postgres${CLONE_INDEX:+-}${CLONE_INDEX:-}
+  # ==========================================================================
+  # app - the CardDemo modular monolith
+  #
+  # One deployable JAR, deliberately not a set of microservices: the dual
+  # dataset write of app/cbl/COACTUPC.cbl and the three-write posting unit of
+  # app/cbl/CBTRN02C.cbl are single units of work, and distributing them would
+  # forfeit the atomicity parity depends on.
+  #
+  # The image is built here rather than pulled. Its build stage runs the Maven
+  # build and its runtime stage is eclipse-temurin 25 running as uid 10001, so
+  # nothing in this service needs to restate the user, the port or the probe -
+  # see Dockerfile for all three.
+  # ==========================================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Clone-suffixed so two checkouts building at once cannot overwrite each
+    # other's tag. `local` marks the profile this topology activates, not a
+    # release: the release version is pom.xml's and is carried in the image's
+    # org.opencontainers.image.version label.
+    image: carddemo:local${CLONE_INDEX:+-}${CLONE_INDEX:-}
+    container_name: carddemo-app${CLONE_INDEX:+-}${CLONE_INDEX:-}
     environment:
+      <<: *carddemo-aws-context
+      # Pinned, not interpolated. This topology IS the local one: the prod
+      # profile fails fast on absent externalised secrets and addresses a
+      # different substrate, so allowing it to be selected here would only
+      # ever produce a confusing failure.
+      SPRING_PROFILES_ACTIVE: local
+      CARDDEMO_TIME_ZONE: ${CARDDEMO_TIME_ZONE:-UTC}
+      # In-network coordinates. Fixed because a container port is not a host
+      # port: SERVER_PORT below shifts only where the service answers on the
+      # host, and observability/prometheus.yml names app:8080 as a literal.
+      SERVER_PORT: "8080"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
       POSTGRES_USER: ${POSTGRES_USER:-carddemo}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env - copy .env.example and choose a local value}"
+      # HS256 refuses key material shorter than 32 bytes, and no default is
+      # committed anywhere in this repository for it.
+      JWT_SIGNING_KEY: "${JWT_SIGNING_KEY:?set JWT_SIGNING_KEY in .env to at least 32 bytes of key material}"
+      JWT_ISSUER: ${JWT_ISSUER:-carddemo}
+      JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-30}
+      # The emulator on the compose network. `localstack` is on the endpoint
+      # allowlist that AwsConfig.java and localstack-init/init-aws.sh share,
+      # and it is the service name rather than the container name so a
+      # CLONE_INDEX suffix cannot change it.
+      AWS_ENDPOINT_URL: http://localstack:4566
+      # Emulator placeholders, supplied externally and never committed.
+      # AwsConfig.java refuses any value beginning AKIA or ASIA, so a live
+      # key cannot be used here even by accident.
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID in .env to the emulator placeholder - see .env.example}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY in .env to the emulator placeholder - see .env.example}"
+      # Traces leave over OTLP/HTTP. management.otlp.tracing.endpoint binds
+      # this name and expects the full /v1/traces path.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+    ports:
+      # The application and its actuator share one port: no profile sets a
+      # separate management port, and the Dockerfile exposes 8080 alone.
+      - "${SERVER_PORT:-8080}:8080"
+    depends_on:
+      # OPENFIL.jcl's `CEMT SET FIL(...) OPE` made the datasets available
+      # before the region served traffic. These two conditions are that step:
+      # PostgreSQL healthy means the relational substrate accepts connections,
+      # and LocalStack healthy means the buckets, the FIFO queue and the topic
+      # exist - see that service's probe.
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      # Ordering only, and deliberately NOT service_healthy: tracing must
+      # never gate the data path. Waiting for the container to exist merely
+      # spares the first spans a connection-refused round trip.
+      jaeger:
+        condition: service_started
+    healthcheck:
+      # No `test` key: the probe is declared once, in the Dockerfile, and
+      # inherited here so the two cannot drift. It opens /dev/tcp on the
+      # configured port, requests /actuator/health/readiness and requires
+      # "status":"UP" - which, per the readiness group in
+      # src/main/resources/application.yml, means readinessState AND db AND s3
+      # AND sqs. The liveness group is separate and holds livenessState only.
+      # Only the timings are overridden, for a local stack that boots against
+      # an empty volume and must run all three Flyway migrations first. The
+      # arithmetic is deliberate: failures inside start_period do not count, so
+      # a cold boot has 90s free, after which six consecutive failures - 60s,
+      # the same steady-state window the Dockerfile chooses with 4 x 15s -
+      # mark the service unhealthy. Measured here: a clean-volume boot reached
+      # readiness in 17s, and the probe is what makes readiness observable,
+      # since a stopped dependency turns /actuator/health/readiness 503 while
+      # /actuator/health/liveness stays 200.
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    # A boot-time misconfiguration must be readable, not looped over: three
+    # attempts, then the container stays stopped with its log intact.
+    restart: "on-failure:3"
+    # server.shutdown is graceful and Spring's default per-phase timeout is
+    # 30s, so allow the in-flight request drain to finish before SIGKILL.
+    stop_grace_period: 45s
+    # Least privilege. The JAR needs no capability, no privilege escalation
+    # and no writable root filesystem; the JVM needs a writable temp
+    # directory, which the tmpfs below supplies in memory.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 268435456
+    networks:
+      - carddemo
+    logging: *carddemo-logging
+
+  # ==========================================================================
+  # postgres - the relational substrate
+  #
+  # Replaces the ten VSAM KSDS clusters catalogued in app/catlg/LISTCAT.txt
+  # plus the USRSEC cluster that app/jcl/DUSRSECJ.jcl defines in JCL rather
+  # than in the catalogue listing: eleven tables in total.
+  #
+  # No SQL is mounted into /docker-entrypoint-initdb.d. The schema, the
+  # indexes and the seed data are Flyway's, applied by the application at
+  # start from src/main/resources/db/migration, and an entrypoint script would
+  # create objects behind Flyway's back that validate-on-migrate would then
+  # reject.
+  # ==========================================================================
+  postgres:
+    image: postgres:16.10-alpine@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
+    container_name: carddemo-postgres${CLONE_INDEX:+-}${CLONE_INDEX:-}
+    environment:
+      # Non-default database and role: the image's own `postgres`/`postgres`
+      # pair is never used, and the password has no default at all.
+      POSTGRES_DB: ${POSTGRES_DB:-carddemo}
+      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env - copy .env.example and choose a local value}"
+      # Explicit, so `trust` cannot be reached from outside the container. The
+      # loopback `trust` lines initdb writes into pg_hba.conf remain, but they
+      # are reachable only from inside this container, which publishes no
+      # shell and mounts no socket outward.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      # Deterministic collation and encoding. C ordering is byte ordering,
+      # which is what the fixed-width uppercase and numeric keys inherited
+      # from the copybooks sort by; a locale-dependent collation would make
+      # ORDER BY results depend on the host's environment.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      # A subdirectory, so the volume root can hold the lost+found a
+      # filesystem may create without initdb refusing a non-empty directory.
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
+      # Published for psql, for a host-run application and for the JDBC URL
+      # that src/main/resources/application-local.yml defaults to. This is the
+      # only port this service exposes.
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-carddemo} -d ${POSTGRES_DB:-carddemo}"]
-      interval: 10s
+      # Over TCP on purpose. Without -h, pg_isready answers over the Unix
+      # socket, which the entrypoint has already opened during the
+      # initialisation phase while TCP is still closed - the classic
+      # false-ready that lets a dependent service start too early. The role
+      # and database come from this container's own environment, so the names
+      # are stated once.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
       timeout: 5s
-      retries: 12
+      retries: 24
       start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - carddemo
+    logging: *carddemo-logging
 
-  # --------------------------------------------------------------------------
-  # LocalStack - S3 (GDG replacement), SQS FIFO (TDQ 'JOBS' replacement), SNS
+  # ==========================================================================
+  # localstack - S3, SQS and SNS, and nothing else
   #
-  # Pinned to 4.14.0 to match the LocalStack CLI version the environment
-  # provisions, and because it is the last release line that does not require
-  # an ACTIVE LocalStack licence at container start. S3, SQS and SNS are all
-  # community-tier services, so no Pro licence is needed for CardDemo.
+  # S3 replaces the seven generation data groups: the six bases defined in
+  # app/jcl/DEFGDGB.jcl and DALYREJS from app/jcl/DALYREJS.jcl. A relative
+  # generation becomes a key prefix over a versioned bucket rather than a
+  # catalogue entry. The FIFO queue replaces DEFINE TDQUEUE(JOBS) in
+  # app/csd/CARDDEMO.CSD, whose 80-byte fixed record carried the submitted
+  # job deck; the topic replaces operator notification.
   #
-  # No Pro auth token is passed in, and .env.example deliberately does not ship
-  # one: a name no committed file reads documents a setting that does not
-  # exist, which is the exact drift EnvironmentTemplateContractTest forbids.
-  # Pro-only services, should they ever be required, need BOTH halves supplied
-  # deliberately - LOCALSTACK_IMAGE=localstack/localstack-pro:<tag> and an
-  # ACTIVE token exported into this service's environment - so neither half is
-  # committed here in a form that only half works.
-  # --------------------------------------------------------------------------
+  # The community image is pinned, and no LocalStack Pro token is passed or
+  # committed: S3, SQS and SNS are all community-tier, so the licence-bearing
+  # image and an active token would both have to be supplied deliberately for
+  # a Pro-only service, and supplying half of that pair works less well than
+  # supplying neither.
+  # ==========================================================================
   localstack:
-    image: ${LOCALSTACK_IMAGE:-localstack/localstack:4.14.0}
+    image: ${LOCALSTACK_IMAGE:-localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a}
     container_name: carddemo-localstack${CLONE_INDEX:+-}${CLONE_INDEX:-}
     environment:
+      <<: *carddemo-aws-context
+      # Exactly the three services the application uses. Every other API the
+      # emulator can offer stays off, which is both least privilege and the
+      # reason the health probe below can assert a closed set.
       SERVICES: s3,sqs,sns
+      # In-container loopback: the emulator's own edge. This is the URL the
+      # provisioning hook polls for readiness.
+      AWS_ENDPOINT_URL: http://localhost:4566
+      # State is not persisted. Persistence is not a community-tier feature,
+      # and it is not wanted: localstack-init/init-aws.sh is idempotent and
+      # re-provisions the same three buckets, one queue and one topic on every
+      # start, which is exactly the clean-slate behaviour the fixture-driven
+      # gates need. No named volume is attached for the same reason.
+      PERSISTENCE: "0"
+      # 1 turns on the emulator's verbose request log; see TROUBLESHOOTING.
       DEBUG: ${LOCALSTACK_DEBUG:-0}
-      PERSISTENCE: 0
-      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
-      # Bucket, queue and topic names created by the init hook. Each
-      # name carries the service it addresses - CARDDEMO_S3_*,
-      # CARDDEMO_SQS_*, CARDDEMO_SNS_* - and is spelled identically in
-      # .env.example and in localstack-init/init-aws.sh, which reads
-      # them from the container environment. Every resource the hook
-      # provisions is forwarded here: a name left out would be settable
-      # in .env yet silently ignored by the hook.
-      CARDDEMO_S3_BATCH_INPUT_BUCKET: ${CARDDEMO_S3_BATCH_INPUT_BUCKET:-carddemo-batch-input}
-      CARDDEMO_S3_BATCH_OUTPUT_BUCKET: ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET:-carddemo-batch-output}
-      CARDDEMO_S3_STATEMENTS_BUCKET: ${CARDDEMO_S3_STATEMENTS_BUCKET:-carddemo-statements}
-      CARDDEMO_SQS_REPORT_QUEUE: ${CARDDEMO_SQS_REPORT_QUEUE:-carddemo-report-jobs.fifo}
-      CARDDEMO_SNS_NOTIFICATION_TOPIC: ${CARDDEMO_SNS_NOTIFICATION_TOPIC:-carddemo-notifications}
     ports:
+      # The edge port only. The 4510-4559 external-service range and the
+      # developer-endpoint port are not published, because no CardDemo code
+      # path addresses them.
       - "${LOCALSTACK_PORT:-4566}:4566"
     volumes:
+      # READ-ONLY, and mounted at the directory the emulator runs once the
+      # edge reports ready. Read-only matters: the hook is executable
+      # repository content, and a writable mount would let a container process
+      # rewrite it.
       - ./localstack-init:/etc/localstack/init/ready.d:ro
-      - localstack-data:/var/lib/localstack
+      # The host Docker socket is deliberately NOT mounted. Only Lambda and
+      # the container-backed services need it, and none of those is enabled.
     healthcheck:
-      test: ["CMD-SHELL", "awslocal s3 ls >/dev/null 2>&1 || curl -sf http://localhost:4566/_localstack/health"]
+      # Two assertions, because service availability alone would let the
+      # application start against an emulator whose buckets and queue are
+      # still being created. First, s3, sqs and sns must each report
+      # available or running - grepped one at a time so the check does not
+      # depend on the order of keys in the response. Second, the READY-stage
+      # hook must have reached SUCCESSFUL, which is what makes
+      # `condition: service_healthy` on `app` mean "the three buckets, the
+      # FIFO queue and the topic exist". curl is the emulator image's own
+      # tool; the image ships no wget.
+      test:
+        - CMD-SHELL
+        - >-
+          health="$$(curl -sf http://localhost:4566/_localstack/health)" || exit 1;
+          for service in s3 sqs sns; do
+          echo "$$health" | grep -Eq "\"$$service\": \"(available|running)\"" || exit 1;
+          done;
+          curl -sf http://localhost:4566/_localstack/init/ready | grep -q '"state": "SUCCESSFUL"'
       interval: 10s
       timeout: 10s
-      retries: 20
+      retries: 24
       start_period: 30s
     restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - carddemo
+    logging: *carddemo-logging
 
-  # --------------------------------------------------------------------------
-  # Jaeger - distributed tracing backend (OTLP in, UI out)
-  # --------------------------------------------------------------------------
+  # ==========================================================================
+  # jaeger - trace collector and UI
+  #
+  # New capability rather than a translation: the corpus carries no tracing of
+  # any kind. all-in-one keeps spans in memory, which is the right trade for a
+  # local stack - traces survive the process, not the container.
+  # ==========================================================================
   jaeger:
-    image: jaegertracing/all-in-one:1.62.0
+    image: jaegertracing/all-in-one:1.62.0@sha256:836e9b69c88afbedf7683ea7162e179de63b1f981662e83f5ebb68badadc710f
     container_name: carddemo-jaeger${CLONE_INDEX:+-}${CLONE_INDEX:-}
     environment:
+      # OTLP is off by default in this image and is the only protocol the
+      # application speaks.
       COLLECTOR_OTLP_ENABLED: "true"
       SPAN_STORAGE_TYPE: memory
+      # Bounded, so a stack left up for days cannot grow its span buffer
+      # without limit.
+      MEMORY_MAX_TRACES: "50000"
     ports:
       - "${JAEGER_UI_PORT:-16686}:16686"
       - "${JAEGER_OTLP_GRPC_PORT:-4317}:4317"
       - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"
+    healthcheck:
+      # The admin port answers with a status document. It is probed from
+      # inside the container and is deliberately not published: nothing
+      # outside needs it. wget is the image's tool; it ships no curl.
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:14269/ | grep -q 'Server available'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - carddemo
+    logging: *carddemo-logging
 
-  # --------------------------------------------------------------------------
-  # Prometheus - scrapes /actuator/prometheus every 15s
-  # --------------------------------------------------------------------------
+  # ==========================================================================
+  # prometheus - scrapes the application's metrics endpoint
+  #
+  # Replaces the end-of-run counter reporting of app/cbl/CBTRN02C.cbl, whose
+  # DISPLAY of transactions processed and rejected was the whole of the
+  # legacy system's measurement. The scrape configuration lives in
+  # observability/prometheus.yml and is mounted read-only.
+  # ==========================================================================
   prometheus:
-    image: prom/prometheus:v2.55.1
+    image: prom/prometheus:v2.55.1@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3
     container_name: carddemo-prometheus${CLONE_INDEX:+-}${CLONE_INDEX:-}
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+      # A local evidence window, not a retention policy.
       - "--storage.tsdb.retention.time=24h"
+      # observability/prometheus.yml documents POST /-/reload as the way to
+      # apply an edit without losing the series; that route needs this flag.
       - "--web.enable-lifecycle"
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # -/ready rather than -/healthy: the process being alive is weaker than
+      # the query engine being able to answer, and `up --wait` should gate on
+      # the stronger one.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - carddemo
+    logging: *carddemo-logging
 
-  # --------------------------------------------------------------------------
-  # Grafana - dashboards, provisioned from observability/grafana
-  # --------------------------------------------------------------------------
+  # ==========================================================================
+  # grafana - the provisioned CardDemo dashboard
+  #
+  # Both halves are checked in and mounted read-only, so the integration
+  # sign-off gate needs no manual configuration step: the datasource is uid
+  # carddemo-prometheus pointing at http://prometheus:9090, and the dashboard
+  # is uid carddemo-overview in the CardDemo folder. Deterministic ids matter
+  # because the dashboard's panels reference the datasource by uid.
+  # ==========================================================================
   grafana:
-    image: grafana/grafana:11.3.1
+    image: grafana/grafana:11.3.1@sha256:fa801ab6e1ae035135309580891e09f7eb94d1abdbd2106bdc288030b028158c
     container_name: carddemo-grafana${CLONE_INDEX:+-}${CLONE_INDEX:-}
     environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Local sign-in, supplied externally. No default: a committed admin
+      # password is a credential in version control even on a local stack.
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:?set GRAFANA_ADMIN_USER in .env - see .env.example}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env - see .env.example}"
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_PATHS_PROVISIONING: /etc/grafana/provisioning
-      # Determinism: Grafana 11.3 preinstalls grafana-lokiexplore-app from the
-      # network at every start. Disabled so the stack comes up identically with
-      # or without internet access.
+      # Determinism: this release preinstalls a plugin from the network at
+      # every start. Disabled so the stack comes up identically with or
+      # without internet access.
       GF_PLUGINS_PREINSTALL_DISABLED: "true"
     ports:
       - "${GRAFANA_PORT:-3000}:3000"
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      # The path the dashboard provider in
+      # observability/grafana/provisioning/dashboards/dashboards.yml reads.
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
-      - prometheus
+      # Ordering, so the provisioned datasource resolves on first paint.
+      # Grafana starts regardless; this only avoids a needless red panel.
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - carddemo
+    logging: *carddemo-logging
 
+# ----------------------------------------------------------------------------
+# One isolated bridge network. Compose prefixes it with the project name, so
+# it is per-clone by construction, and every service reaches its peers by
+# service name over it. No service uses host networking.
+# ----------------------------------------------------------------------------
+networks:
+  carddemo:
+    driver: bridge
+
+# ----------------------------------------------------------------------------
+# Named volumes, one per service whose state is intentional. `docker compose
+# down` keeps them, `down -v` discards them, and a clean-volume run is what
+# proves the three Flyway migrations apply exactly once from nothing.
+#
+# The emulator has no volume on purpose - see PERSISTENCE above.
+# ----------------------------------------------------------------------------
 volumes:
   postgres-data:
-  localstack-data:
   prometheus-data:
   grafana-data:
+

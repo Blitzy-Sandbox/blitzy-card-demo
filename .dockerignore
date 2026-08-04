@@ -9,9 +9,10 @@
 # Source      : samples/jcl/{BATCMP,CICCMP,BMSCMP}.jcl,
 #               samples/proc/{BUILDBAT,BUILDBMS,BUILDONL}.prc and
 #               samples/m2/** (z/OS build tooling and binary emulator
-#               runtime archives, superseded by pom.xml) +
-#               app/data/EBCDIC/** (codepage reference, never parsed)
-#               @ 7756d89 - the only two content trees excluded below
+#               runtime archives, superseded by pom.xml)
+#               @ 7756d89 - the only content tree excluded below.
+#               app/data/EBCDIC/** was excluded too until the in-image
+#               unit tier proved it must not be; see the withdrawal note
 # ******************************************************************
 # Copyright Amazon.com, Inc. or its affiliates.
 # All Rights Reserved.
@@ -82,10 +83,10 @@
 #       > /tmp/ctx.Dockerfile
 #     DOCKER_BUILDKIT=0 docker build --no-cache -f /tmp/ctx.Dockerfile .
 #
-#   The listing it prints IS the context. app/ (less EBCDIC), src/,
-#   pom.xml, mvnw, mvnw.cmd, .mvn/, Dockerfile, docker-compose.yml,
-#   localstack-init/, observability/, docs/ and .env.example must all
-#   appear; .git, target, samples and app/data/EBCDIC must not. Then
+#   The listing it prints IS the context. app/ in full - EBCDIC
+#   included - src/, pom.xml, mvnw, mvnw.cmd, .mvn/, Dockerfile,
+#   docker-compose.yml, localstack-init/, observability/, docs/ and
+#   .env.example must all appear; .git, target and samples must not. Then
 #   confirm the real build still resolves every COPY:
 #
 #     docker build --no-cache -t carddemo:verify .
@@ -217,15 +218,25 @@ blitzy
 # would later hide those archives from a clone if copied across.
 samples
 
-# The EBCDIC datasets: fixed-width .PS files retained as byte-level
-# codepage reference only, never transcoded and never read by the build.
-# The ASCII fixtures under app/data/ASCII are the authoritative seed and
-# test input, which is why this names the EBCDIC directory specifically
-# and never app/data, which would take both.
-app/data/EBCDIC
+# The EBCDIC datasets were excluded here in an earlier revision - 204 KB
+# of fixed-width .PS files retained as byte-level codepage reference,
+# never transcoded and, as source, never read by the build. That
+# exclusion is WITHDRAWN, and the reason is a test rather than a
+# preference: SourceCitationResolutionTest asserts that every `app/...`
+# path cited anywhere in the tree resolves on disk, and seven committed
+# citations name app/data/EBCDIC - DailyTransactionReader.java,
+# RejectWriter.java, TransactionWriter.java, AwsConfig.java twice,
+# application-test.yml and UserSecurityTest.java. The Dockerfile runs the
+# unit tier inside the build stage, so pruning the subtree turned those
+# seven citations into "cited but does not resolve" and failed the image
+# build on a defect that exists only in the build context. The files
+# enter the context and are still never parsed; nothing from app/ crosses
+# into the runtime stage, so the shipped image is byte-identical either
+# way. The ASCII fixtures under app/data/ASCII remain the authoritative
+# seed and test input.
 
-# Everything else is protected by OMISSION, not by negation: app/ (less
-# the EBCDIC datasets), src/, docs/, diagrams/, observability/,
+# Everything else is protected by OMISSION, not by negation: app/, src/,
+# docs/, diagrams/, observability/,
 # localstack-init/, .github/, .mvn/, pom.xml, mvnw, mvnw.cmd, Dockerfile,
 # docker-compose.yml and the evidence artefacts all stay in the context
 # because no rule above reaches them. A line such as `!app/**` would read

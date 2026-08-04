@@ -80,16 +80,19 @@
 # HOW TO RUN AND VALIDATE
 # ============================================================================
 #   Start      docker compose up -d prometheus
-#   Config     docker run --rm -v "$PWD/observability:/etc/prometheus:ro" \
+#   Config     docker run --rm --entrypoint promtool \
+#                  -v "$PWD/observability:/etc/prometheus:ro" \
 #                  <the prom/prometheus image pinned in docker-compose.yml> \
-#                  promtool check config /etc/prometheus/prometheus.yml
+#                  check config /etc/prometheus/prometheus.yml
+#              --entrypoint is required: the image's entrypoint is the server
+#              binary, so passing `promtool` as an argument reaches the server
+#              and is rejected as an unexpected argument.
 #              Must exit 0 and print SUCCESS with no warning. Always use the
 #              pinned image rather than a locally installed promtool, so the
 #              validation matches the binary that will read the file.
 #   Targets    curl -fsS http://localhost:9090/api/v1/targets
 #              The carddemo-app target must report health "up", scrapeUrl
-#              http://host.docker.internal:8080/actuator/prometheus and
-#              scrapeInterval 15s.
+#              http://app:8080/actuator/prometheus and scrapeInterval 15s.
 #   Served     curl -fsS http://localhost:9090/api/v1/status/config
 #              Confirms the read-only mount resolved to this file.
 #   Reload     the prometheus service runs with --web.enable-lifecycle, so
@@ -108,8 +111,8 @@
 #     itself.
 #   * One job, job_name carddemo-app. Treat it as a published name: it labels
 #     every stored series and any future query may select on it.
-#   * One target, host.docker.internal:8080 - see the note on the target for
-#     why that host and not a Compose service name.
+#   * One target, app:8080 - the Compose service and the port it listens on
+#     inside the network; see the note on the target itself.
 #   * metrics_path /actuator/prometheus. The base path comes from
 #     management.endpoints.web.base-path and the endpoint is one of the three
 #     that management.endpoints.web.exposure.include permits, alongside health
@@ -130,20 +133,26 @@
 # ============================================================================
 # COMMON FAILURE MODES AND TROUBLESHOOTING
 # ============================================================================
-#   * Target down, "connection refused". The application is not listening on
-#     host port 8080. Start it - `SPRING_PROFILES_ACTIVE=local ./mvnw
-#     spring-boot:run` - and confirm with
-#     `curl -fsS http://localhost:8080/actuator/prometheus | head`. Prometheus
-#     keeps retrying every 15s and recovers on its own once the endpoint
-#     answers, so no reload is needed.
-#   * Target down, "no such host" or a lookup failure. The host alias did not
-#     resolve inside the container. Confirm the prometheus service still
-#     carries extra_hosts host.docker.internal:host-gateway in
-#     docker-compose.yml, then check it from inside the container with
-#     `docker compose exec prometheus getent hosts host.docker.internal`. A
-#     Compose service name such as `app` fails here for the opposite reason:
-#     docker-compose.yml declares no application service, so the name has
-#     nothing to resolve to and the target would be down permanently.
+#   * Target down, "connection refused". The application container is up but
+#     not yet serving, or it is still applying the Flyway migrations. Check
+#     `docker compose ps app` and confirm from inside this container with
+#     `docker compose exec prometheus wget -q -O- http://app:8080/actuator/prometheus | head -3`.
+#     Prometheus keeps retrying every 15s and recovers on its own once the
+#     endpoint answers, so no reload is needed.
+#   * Target down, "no such host" or a lookup failure. The `app` service is not
+#     on this network - typically because the stack was brought up for a subset
+#     of services, as `docker compose up -d prometheus` alone does. Bring the
+#     application up with `docker compose up -d --build app`, or start the whole
+#     stack with `docker compose up --build --wait`. Compose re-resolves the
+#     service name on every scrape, so the target recovers without a reload.
+#   * Running the application on the host instead of in the container - for
+#     example `SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run` - moves it
+#     off this network, and `app` then has nothing to resolve to. Reach a
+#     host-run process by pointing the target at host.docker.internal:8080 and
+#     giving the prometheus service `extra_hosts` of
+#     host.docker.internal:host-gateway in docker-compose.yml; both changes
+#     belong together, and both are reverted by returning to the containerised
+#     application, which is the committed topology.
 #   * Target up but HTTP 404. The actuator exposure list no longer includes
 #     prometheus, or the base path moved. Both live in application.yml, not
 #     here; fix them there rather than changing metrics_path.
@@ -202,23 +211,24 @@ scrape_configs:
     metrics_path: /actuator/prometheus
     scheme: http
     static_configs:
-      # One static target. The repository-root docker-compose.yml runs the data
-      # and observability substrate in containers but declares NO application
-      # service - its services are postgres, localstack, jaeger, prometheus and
-      # grafana, and it contains no build stanza. The application runs on the
-      # host: src/main/resources/application-local.yml defaults its datasource
-      # host to localhost and directs the reader either to run the application
-      # on the host or to add an application service to docker-compose.yml. To
-      # cross the container boundary the prometheus
-      # service declares extra_hosts host.docker.internal:host-gateway, which
-      # Docker resolves to the host gateway address at container start. That
-      # mapping exists for precisely this scrape and is the only name by which
-      # Prometheus can reach the application in the topology as committed, so
-      # it is the single target here. Should an application service later be
-      # added to docker-compose.yml, this becomes that service's name and port
-      # and the extra_hosts entry can go with it.
+      # One static target: the `app` service of the repository-root
+      # docker-compose.yml, reached by service name over the Compose bridge
+      # network that both containers join. Compose resolves the name through
+      # its embedded DNS at every scrape, so a restarted or rebuilt
+      # application container is picked up without a reload.
+      #
+      # The port is the CONTAINER port, 8080, not the published host port.
+      # docker-compose.yml pins the application's SERVER_PORT to 8080 inside
+      # the network for exactly this reason and shifts only the published port
+      # for parallel clones, because this literal cannot interpolate a
+      # variable - Prometheus performs no environment substitution on its
+      # configuration file. An earlier revision targeted
+      # host.docker.internal:8080 because the topology then ran the substrate
+      # only and the application ran on the host; that indirection went with
+      # the extra_hosts entry it required when the application service was
+      # added. See TROUBLESHOOTING above for reaching a host-run process.
       - targets:
-          - host.docker.internal:8080
+          - app:8080
         labels:
           # The one target label, and a cross-file contract rather than a
           # decoration: src/main/resources/application.yml states that

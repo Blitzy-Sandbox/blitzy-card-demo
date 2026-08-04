@@ -11,7 +11,9 @@
  *               DELETE anywhere - so each becomes a verification step
  *               that reads and reports and mutates nothing. The fifth
  *               reader supplies the 350-byte DALYTRAN input that the
- *               daily posting program consumes.
+ *               daily posting program consumes, and the sixth reads the
+ *               350-byte TRANSACT.BKUP generation that the transaction
+ *               report stream backs up before it filters and reports.
  * Source      : app/cbl/CBACT01C.cbl (193 lines; account file scan)
  *               @ 7756d89
  * Source      : app/cbl/CBACT02C.cbl (178 lines; card file scan)
@@ -30,6 +32,13 @@
  *               49-hyphen rule) @ 7756d89
  * Source      : app/catlg/LISTCAT.txt:L59, :L202, :L403 (key lengths
  *               11, 16, 16 and average record lengths 300, 150, 50)
+ *               @ 7756d89
+ * Source      : app/proc/TRANREPT.prc:L21-L31 (STEP01R, the backup REPRO
+ *               at LRECL=350 RECFM=FB) and :L36-L37 (STEP05R reading the
+ *               same (+1) generation), app/proc/REPROC.prc:L21
+ *               (EXEC PGM=IDCAMS), app/ctl/REPROCT.ctl:L15 (the single
+ *               REPRO control card) and app/cpy/CVTRA05Y.cpy (350-byte
+ *               TRAN-RECORD). No COBOL program exists for that step.
  *               @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -52,7 +61,8 @@
 /**
  * Sequential readers: the {@code ItemReader} side of the batch stream. Four of them are the legacy programs
  * whose entire purpose was to read a dataset from start to finish and report on it; the fifth feeds the daily
- * posting job its fixed-width input.
+ * posting job its fixed-width input; the sixth reads back the transaction backup generation that the report
+ * stream takes before it filters and reports, a step that has no COBOL program at all.
  *
  * <p><strong>The read-only property is proved from the source, not assumed.</strong> Each of
  * {@code app/cbl/CBACT01C.cbl}, {@code CBACT02C.cbl}, {@code CBACT03C.cbl} and {@code CBCUS01C.cbl} has a verb
@@ -78,13 +88,26 @@
  *       over the 350-byte {@code DALYTRAN-RECORD} of {@code app/cpy/CVTRA06Y.cpy}. This is the one reader here
  *       that feeds a processing job rather than a verification step, and it decodes zoned-decimal overpunch
  *       signs position-aware from the {@code PIC} clauses, so a negative amount stays negative.</li>
+ *   <li>{@link com.cardemo.batch.readers.TransactionBackupReader} - the {@code TRANSACT.BKUP} generation that
+ *       {@code app/proc/TRANREPT.prc:L21-L31} {@code STEP01R} creates and {@code :L36-L37} {@code STEP05R}
+ *       consumes, over the 350-byte {@code TRAN-RECORD} of {@code app/cpy/CVTRA05Y.cpy}. There is no COBOL
+ *       program for that step: {@code app/proc/REPROC.prc:L21} runs {@code IDCAMS} and the whole of the logic
+ *       is the single {@code REPRO INFILE(FILEIN) OUTFILE(FILEOUT)} card at {@code app/ctl/REPROCT.ctl:L15},
+ *       so the JCL, the procedure and the control card are the source of truth. It is the <strong>canonical
+ *       owner of the {@code CVTRA05Y} overpunch decoder</strong>, and it resolves its generation object key
+ *       once and carries it forward rather than re-resolving the newest generation mid-job.</li>
  *   </ul>
  *
- * <p><strong>Not available: two of the three input readers.</strong> Measured 3 August 2026, this package
- * contains the four verification readers and the daily transaction reader above, and no others. The
- * backup-generation reader of {@code app/proc/TRANREPT.prc:STEP01R} and the concatenated-input reader of
- * {@code app/jcl/COMBTRAN.jcl:STEP05R} are <strong>planned and not present</strong>. Nothing here may be read
- * as a claim that either of them exists.
+ * <p><strong>Not available: one of the three input readers.</strong> Re-measured 3 August 2026, this package
+ * contains the four verification readers, the daily transaction reader and the transaction backup reader
+ * above, and no others. The concatenated-input reader of {@code app/jcl/COMBTRAN.jcl:STEP05R} is
+ * <strong>planned and not present</strong>, and it is <strong>to reuse</strong> the {@code CVTRA05Y} decoder
+ * of {@link com.cardemo.batch.readers.TransactionBackupReader} rather than re-implement it. Nothing here may
+ * be read as a claim that it exists.
+ *
+ * <p><strong>An earlier revision of this document recorded two absent input readers.</strong> That count was
+ * correct when it was written and is withdrawn here rather than quietly overwritten: the backup-generation
+ * reader has since been authored and is listed above, so the figure is now one.
  *
  * <h3>Two source behaviours that shape every reader here</h3>
  *

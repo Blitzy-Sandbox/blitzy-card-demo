@@ -167,6 +167,22 @@ class EvidenceHonestyTest {
                     + "|\\bno\\s+\\{@code\\s+@SpringBootApplication\\}\\s+entry\\s+point",
             Pattern.CASE_INSENSITIVE);
 
+    /**
+     * The two forbidden phrasings for denying a test class, with the denied name captured.
+     *
+     * <p>It replaces a pattern that was built per test class name from {@code Pattern.quote(name)} and
+     * compiled inside the matching loop. Capturing the name instead makes one pattern serve every name, which
+     * is what turns the check from a product of three growing quantities into one pass over the sentences;
+     * {@code noExistingTestClassIsDescribedAsAbsent} records the measurement. The capture is {@code \w+}
+     * because a test class name is a Java identifier, so it spans exactly what the quoted literal spanned,
+     * and the required closing brace keeps it from matching a longer name that merely ends with the one being
+     * looked for.
+     */
+    private static final Pattern TEST_CLASS_DENIAL = Pattern.compile(
+            "\\bno\\s+\\{@code\\s+(\\w+)\\}\\s+exists"
+                    + "|\\{@code\\s+(\\w+)\\}\\s+(?:is\\s+not\\s+available|does\\s+not\\s+exist)",
+            Pattern.CASE_INSENSITIVE);
+
     private static final Pattern SENTENCE_SPLIT = Pattern.compile("(?<=[.;:])\\s+(?=[A-Z(<{])");
     private static final Pattern HTML_TAG = Pattern.compile("<[^>]+>");
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
@@ -253,6 +269,27 @@ class EvidenceHonestyTest {
             }
         }
         return found;
+    }
+
+    /**
+     * Returns every test class name one sentence denies the existence of, in the order the sentence names
+     * them.
+     *
+     * <p>A sentence may deny more than one name, and one pass collects them all. Exactly one of the pattern's
+     * two capturing groups participates in any given match - they belong to different alternatives - so the
+     * one that is not {@code null} is the captured name. Names are de-duplicated, because a sentence that
+     * denies the same class twice is one offence, which is what the former per-name matching reported.
+     *
+     * @param sentence one comment sentence
+     * @return the denied names, empty if the sentence denies none
+     */
+    private static Set<String> deniedTestClassNames(final String sentence) {
+        final Matcher matcher = TEST_CLASS_DENIAL.matcher(sentence);
+        final Set<String> denied = new LinkedHashSet<>();
+        while (matcher.find()) {
+            denied.add(matcher.group(1) == null ? matcher.group(2) : matcher.group(1));
+        }
+        return denied;
     }
 
     @Nested
@@ -356,8 +393,12 @@ class EvidenceHonestyTest {
         @Test
         @DisplayName("no existing test class is described as non-existent")
         void noExistingTestClassIsDescribedAsAbsent() {
+            // Walked once and reused. The two loops below both need the same file list, and each call to
+            // sources() re-walks both source roots.
+            final List<Path> files = sources();
+
             final Set<String> existing = new LinkedHashSet<>();
-            for (final Path file : sources()) {
+            for (final Path file : files) {
                 final String name = file.getFileName().toString();
                 if (name.endsWith("Test.java")) {
                     existing.add(name.substring(0, name.length() - ".java".length()));
@@ -366,16 +407,41 @@ class EvidenceHonestyTest {
             assertThat(existing).as("the unit tier must contain test classes for this rule to have force")
                     .hasSizeGreaterThan(20);
 
+            // ONE MATCH PER SENTENCE, NOT ONE PER SENTENCE AND TEST CLASS NAME.
+            //
+            // This loop used to compile a pattern per test class name at its innermost point and match every
+            // sentence against every one of them, so both the compilation count and the match count were the
+            // product of three growing quantities: source files, documented sentences within them, and test
+            // class names. On the present tier that is 191 files times some 37,000 claim sentences times 180
+            // names - above ten million compilations and as many matches. The method ran for more than half an
+            // hour without finishing, and every file added to the repository made it worse superlinearly - a
+            // growing tax on every future change rather than a fixed cost.
+            //
+            // Inverting it removes the product outright. TEST_CLASS_DENIAL, compiled once as a constant,
+            // recognises the two forbidden phrasings and CAPTURES the name they deny; the name is then looked
+            // up in the set of names that exist. Hoisting a per-name pattern out of the loop would have cut
+            // the compilations alone and left the match count untouched, so the capture is taken instead and
+            // the cheap {@code ...} pre-filter below keeps the sentences that cannot match out of the scan
+            // entirely. The outcome is identical, and deliberately so: a test class name is a Java identifier,
+            // so the captured \w+ spans exactly what Pattern.quote(name) used to match, and a captured name
+            // that is not a real test class simply fails the lookup where it formerly failed the match.
+            // Offenders are still reported one per claim and name, in the order of the existing set, so the
+            // message a failure produces is unchanged too.
             final List<String> stale = new ArrayList<>();
-            for (final Path file : sources()) {
+            for (final Path file : files) {
                 for (final Claim claim : claims(file)) {
+                    // Every denial phrasing requires a {@code ...} reference, so a sentence without one
+                    // cannot match either alternative and need not be scanned at all.
+                    final String sentence = claim.sentence();
+                    if (!sentence.contains("{@code")) {
+                        continue;
+                    }
+                    final Set<String> denied = deniedTestClassNames(sentence);
+                    if (denied.isEmpty()) {
+                        continue;
+                    }
                     for (final String testName : existing) {
-                        final Pattern denial = Pattern.compile(
-                                "\\bno\\s+\\{@code\\s+" + Pattern.quote(testName) + "\\}\\s+exists"
-                                        + "|\\{@code\\s+" + Pattern.quote(testName)
-                                        + "\\}\\s+(?:is\\s+not\\s+available|does\\s+not\\s+exist)",
-                                Pattern.CASE_INSENSITIVE);
-                        if (denial.matcher(claim.sentence()).find()) {
+                        if (denied.contains(testName)) {
                             stale.add(claim.file() + ":" + claim.line() + " denies " + testName);
                         }
                     }

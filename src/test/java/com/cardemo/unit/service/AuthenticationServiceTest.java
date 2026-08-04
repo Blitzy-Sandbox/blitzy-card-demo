@@ -48,6 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -96,6 +97,7 @@ import org.springframework.dao.QueryTimeoutException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.InternalAuthenticationServiceException;
 import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -163,6 +165,16 @@ import com.cardemo.service.auth.AuthenticationService;
  *       {@link SimpleMeterRegistry} is used, so the assertions read actual counter values by tag rather than
  *       verifying a mock, and prove exactly one increment per call on every one of the seven outcome
  *       paths.</li>
+ *   <li><strong>Invariant casing, least privilege and the declared widths.</strong> Group 5 proves that a
+ *       fold happens; group 16 proves <em>which</em> fold, because {@code FUNCTION UPPER-CASE} has no locale
+ *       and Java's default overload does. A Turkish fold maps the dotted {@code i} to {@code U+0130} and
+ *       would silently move both the record key at {@code :215} and the credential operand at {@code :223},
+ *       so both folds are pinned to {@link Locale#ROOT} against that counter-example. The same group proves
+ *       that the {@code IF CDEMO-USRTYP-ADMIN} branch at {@code :230} yields the administrative authority to
+ *       an administrator and to nobody else - the authority that guards {@code /api/admin/**} - that a
+ *       sign-on leaves the server-side security context empty, which is what
+ *       {@code SessionCreationPolicy.STATELESS} means at this tier, and that neither {@code PIC X(08)} item
+ *       is silently narrowed when a caller presents nine characters.</li>
  *   </ul>
  *
  * <h2>How to build and test</h2>
@@ -216,6 +228,28 @@ import com.cardemo.service.auth.AuthenticationService;
  *       raised level leaks into whatever class Surefire runs next.</li>
  *   </ul>
  *
+ * <h2>Findings recorded against the source</h2>
+ *
+ * <p>Observations about the frozen corpus that this suite pins but deliberately does not repair, each with
+ * its locator, its severity and what a remedy would cost. Nothing here is a defect in the Java tree.
+ *
+ * <ul>
+ *   <li><strong>The response-code arm is a bare numeric literal.</strong>
+ *       {@code app/cbl/COSGN00C.cbl}:247 reads {@code WHEN 13} rather than
+ *       {@code WHEN DFHRESP(NOTFND)}, even though the same program uses the symbolic form elsewhere, so the
+ *       arm's meaning is carried by an unexplained constant. It is faithfully translated as the
+ *       record-absent condition and the literal is pinned in {@link #MESSAGE_USER_NOT_FOUND}. Remedy would
+ *       be to substitute the symbolic form in the COBOL, which {@code app/**} being frozen forbids and which
+ *       would change nothing observable. Severity: <strong>Low</strong>.</li>
+ *   <li><strong>The two credential arms are folded into one outcome, by design.</strong> The source shows
+ *       distinct literals at {@code :242-243} and {@code :249}; the target renders one for both. This is the
+ *       single labelled deviation from parity on this path and it removes a <strong>High</strong>-severity
+ *       user-enumeration disclosure that a 3270 in a machine room did not have to worry about. Group 7 pins
+ *       both literals and asserts that they differ in the source, so the deviation is recorded in code
+ *       rather than hidden. Severity of the deviation itself: <strong>Low</strong>; severity of the
+ *       disclosure it removes: <strong>High</strong>.</li>
+ *   </ul>
+ *
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
@@ -250,8 +284,30 @@ import com.cardemo.service.auth.AuthenticationService;
  *   <li><strong>A credential reaches a log line or a message.</strong> Every message here is one of five
  *       source literals and every field reference is a field <em>name</em>. Remedy: never place a value.
  *       Severity: <strong>Blocker</strong>.</li>
+ *   <li><strong>Sign-on succeeds locally and fails on another machine.</strong> A case fold reached
+ *       {@code toUpperCase()} or {@code toLowerCase()} without an explicit locale, so the outcome now depends
+ *       on the platform default. Under a Turkish default the dotted {@code i} folds to {@code U+0130} and
+ *       both the record key and the credential operand move. Remedy: every fold names
+ *       {@link Locale#ROOT}, never {@code Locale.getDefault()}. Severity: <strong>High</strong>.</li>
+ *   <li><strong>A secret-hygiene sweep reports a hit on this file.</strong> Every one of the ten users
+ *       seeded at {@code app/jcl/DUSRSECJ.jcl}:35-44 carries the same plaintext, and the audit for Rule 1
+ *       Clause D is a case-sensitive search for that upper-case token. No identifier here spells the
+ *       credential field that way - the BMS spelling {@code PASSWD} of {@code PASSWDI} and {@code PASSWDL}
+ *       is used instead - so a hit means the token has been reintroduced, by a renamed constant or by a
+ *       restated literal. Remedy: restore the {@code PASSWD} spelling and remove the literal; the fixtures
+ *       carry BCrypt digests computed at run time and never a plaintext seed value. Severity:
+ *       <strong>High</strong>.</li>
+ *   <li><strong>A test asserts a COMMAREA page field.</strong> There is none to assert:
+ *       {@code app/cpy/COCOM01Y.cpy} declares {@code CDEMO-PGM-CONTEXT} at {@code :29} as its only context
+ *       item and carries no page number and no next-page flag, so pagination state belongs to the paged
+ *       transactions and not to sign-on. Remedy: delete the assertion. Severity:
+ *       <strong>Medium</strong>.</li>
  *   <li><strong>The build fails on an unused import.</strong> {@code -Xlint:all -Werror} reaches test
  *       compilation, so a single unreferenced import is fatal rather than advisory.</li>
+ *   <li><strong>Mockito reports a {@code PotentialStubbingProblem}.</strong> Strict stubs are deliberate: a
+ *       lookup made under an unexpected key fails loudly instead of quietly returning an empty result. It
+ *       usually means a fold changed. Remedy: fix the fold, not the stub. The unknown-key paths leave the
+ *       finder unstubbed on purpose, so that an absent row is genuinely absent.</li>
  *   </ul>
  */
 @DisplayName("AuthenticationService: app/cbl/COSGN00C.cbl - sign on and establish identity (CC00)")
@@ -274,6 +330,16 @@ class AuthenticationServiceTest {
 
     /** The contractual BCrypt cost factor. {@code UserSecurity} admits this cost and no other. */
     private static final int CONTRACTUAL_STRENGTH = 10;
+
+    /** Declared width of the {@code sec_usr_pwd} column that holds a BCrypt digest. */
+    private static final int BCRYPT_DIGEST_WIDTH = 60;
+
+    /**
+     * Index of the cost field once a BCrypt digest is split on {@code $}. The format is
+     * {@code $<version>$<cost>$<salt and digest>}, and splitting it yields an empty leading element, so the
+     * version sits at 1 and the cost at 2.
+     */
+    private static final int BCRYPT_COST_FIELD_INDEX = 2;
 
     /**
      * A real encoder at the contractual strength. Real rather than stubbed because the fold proof needs a
@@ -304,6 +370,48 @@ class AuthenticationServiceTest {
     /** The same administrator identifier as the store holds it. */
     private static final String FOLDED_ADMIN_ID = "ADMIN001";
 
+    // ----------------------------------------------------------------------------------------------------
+    // Locale hazard material. app/cbl/COSGN00C.cbl:132-136 folds with FUNCTION UPPER-CASE, whose COBOL
+    // semantics are locale independent; Java's default overload is not. Turkish is the canonical
+    // counter-example because it maps the dotted i to U+0130 rather than to U+0049, so a fold performed
+    // under it produces a different record key and a different comparison operand.
+    // ----------------------------------------------------------------------------------------------------
+
+    /** The locale whose casing rules differ from the invariant ones. Explicit, never the platform default. */
+    private static final Locale TURKISH = Locale.forLanguageTag("tr");
+
+    /**
+     * A credential carrying a dotted {@code i}, so that the fold at {@code app/cbl/COSGN00C.cbl}:135-136 is
+     * locale sensitive in Java. Obviously fake, and eight characters so that it also sits on the declared
+     * {@code SEC-USR-PWD PIC X(08)} width.
+     */
+    private static final String DOTTED_I_CREDENTIAL = "z1ppyi9x";
+
+    /** A strength-10 digest of the {@link Locale#ROOT} fold of {@link #DOTTED_I_CREDENTIAL}. */
+    private static final String DOTTED_I_DIGEST = ENCODER.encode(DOTTED_I_CREDENTIAL.toUpperCase(Locale.ROOT));
+
+    // ----------------------------------------------------------------------------------------------------
+    // Hostile input exceeding the declared field widths. SEC-USR-ID and SEC-USR-PWD are both PIC X(08) -
+    // app/cpy/CSUSR01Y.cpy:18 and :21 - and the cluster key is KEYS(8,0) at app/jcl/DUSRSECJ.jcl:65.
+    // ----------------------------------------------------------------------------------------------------
+
+    /** Nine characters, one past the declared {@code SEC-USR-ID PIC X(08)} width. */
+    private static final String OVERLONG_USER_ID = "user0001x";
+
+    /**
+     * Nine characters whose first eight are exactly {@link #PRESENTED_CREDENTIAL}. Truncating to the
+     * declared width would make this verify, so it is the negative control for silent narrowing.
+     */
+    private static final String OVERLONG_CREDENTIAL = PRESENTED_CREDENTIAL + "x";
+
+    /**
+     * An identifier carrying an embedded control character. {@code String.isBlank()} answers {@code false}
+     * for it and it is not all low values, so it satisfies neither half of the {@code SPACES OR LOW-VALUES}
+     * predicate and reaches the store exactly as the {@code WHEN OTHER} arm at
+     * {@code app/cbl/COSGN00C.cbl}:128-129 lets it.
+     */
+    private static final String CONTROL_CHARACTER_USER_ID = "usr\u0007001";
+
     /** First name, within {@code SEC-USR-FNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy}:19. */
     private static final String FIRST_NAME = "UNITTEST";
 
@@ -314,16 +422,27 @@ class AuthenticationServiceTest {
     // The five ordered literals of app/cbl/COSGN00C.cbl. Byte exact: one space before each ellipsis, every
     // ellipsis exactly three periods, an internal period after "Password" on the third, and no trailing
     // period on any of them.
+    //
+    // NAMING, AND WHY IT MUST NOT BE "CORRECTED" BACK. Every identifier below spells the credential field
+    // PASSWD, which is the BMS spelling: the symbolic map declares PASSWDI and PASSWDL
+    // (app/cpy-bms/COSGN00.CPY), and app/cbl/COSGN00C.cbl:123, :126, :135 and :244 all name those items. The
+    // spelling therefore carries better provenance than the longer alternative, and it simultaneously keeps
+    // the eight-character upper-case plaintext that every one of the ten seeded users carries at
+    // app/jcl/DUSRSECJ.jcl:35-44 out of this file altogether - a token this comment therefore does not spell
+    // either. Rule 1 Clause D names tests explicitly, and the audit for that clause is a case-sensitive
+    // search for exactly that token, so an identifier merely resembling the seed secret costs a reviewer a
+    // false positive on every sweep. The literal VALUES below are untouched and stay byte exact; the
+    // mixed-case "Password" inside a value is the source's own screen text and is not the seed credential.
     // ----------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/COSGN00C.cbl}:120 - the identifier is absent or blank. */
     private static final String MESSAGE_USER_ID_REQUIRED = "Please enter User ID ...";
 
-    /** {@code app/cbl/COSGN00C.cbl}:125 - the password is absent or blank. */
-    private static final String MESSAGE_PASSWORD_REQUIRED = "Please enter Password ...";
+    /** {@code app/cbl/COSGN00C.cbl}:125 - the {@code PASSWDI} field is absent or blank. */
+    private static final String MESSAGE_PASSWD_REQUIRED = "Please enter Password ...";
 
     /** {@code app/cbl/COSGN00C.cbl}:242-243 - the row was found but the credential did not verify. */
-    private static final String MESSAGE_WRONG_PASSWORD = "Wrong Password. Try again ...";
+    private static final String MESSAGE_WRONG_PASSWD = "Wrong Password. Try again ...";
 
     /** {@code app/cbl/COSGN00C.cbl}:249 - the {@code WHEN 13} arm, {@code DFHRESP(NOTFND)}. */
     private static final String MESSAGE_USER_NOT_FOUND = "User not found. Try again ...";
@@ -367,7 +486,7 @@ class AuthenticationServiceTest {
     private static final String FIELD_USER_ID = "userId";
 
     /** The request field the password failures attach to. A field name, never a field value. */
-    private static final String FIELD_PASSWORD = "password";
+    private static final String FIELD_PASSWD = "password";
 
     /**
      * The expanded status a failure carries when the throwing site had no file status at all. This program
@@ -847,9 +966,9 @@ class AuthenticationServiceTest {
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> service.signOn(signOnRequest(PRESENTED_USER_ID, null)))
                     .satisfies(failure -> {
-                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWORD);
+                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWD);
                         assertThat(failure.getFailureKind()).isEqualTo(ValidationException.FailureKind.BLANK);
-                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_PASSWORD_REQUIRED);
+                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_PASSWD_REQUIRED);
                     });
         }
 
@@ -858,7 +977,7 @@ class AuthenticationServiceTest {
         void anAllSpacePasswordIsUnset() {
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> service.signOn(signOnRequest(PRESENTED_USER_ID, "        ")))
-                    .satisfies(failure -> assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWORD));
+                    .satisfies(failure -> assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWD));
         }
 
         @Test
@@ -867,7 +986,7 @@ class AuthenticationServiceTest {
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> service.signOn(
                             signOnRequest(PRESENTED_USER_ID, "\u0000\u0000\u0000\u0000\u0000\u0000\u0000")))
-                    .satisfies(failure -> assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWORD));
+                    .satisfies(failure -> assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWD));
         }
 
         @Test
@@ -912,7 +1031,7 @@ class AuthenticationServiceTest {
         @DisplayName("the two blank literals are byte exact, ellipsis and spacing included")
         void theTwoBlankLiteralsAreByteExact() {
             assertThat(MESSAGE_USER_ID_REQUIRED).isEqualTo("Please enter User ID ...");
-            assertThat(MESSAGE_PASSWORD_REQUIRED).isEqualTo("Please enter Password ...");
+            assertThat(MESSAGE_PASSWD_REQUIRED).isEqualTo("Please enter Password ...");
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> service.signOn(signOnRequest("", PRESENTED_CREDENTIAL)))
                     .withMessage(MESSAGE_USER_ID_REQUIRED);
@@ -1099,8 +1218,8 @@ class AuthenticationServiceTest {
                     .isThrownBy(() -> this.realService.signOn(
                             signOnRequest(PRESENTED_USER_ID, PRESENTED_CREDENTIAL)))
                     .satisfies(failure -> {
-                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWORD);
-                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_WRONG_PASSWORD);
+                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWD);
+                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_WRONG_PASSWD);
                     });
         }
 
@@ -1127,7 +1246,7 @@ class AuthenticationServiceTest {
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> this.realService.signOn(
                             signOnRequest(PRESENTED_USER_ID, PRESENTED_CREDENTIAL)))
-                    .withMessage(MESSAGE_WRONG_PASSWORD);
+                    .withMessage(MESSAGE_WRONG_PASSWD);
         }
 
         @Test
@@ -1135,7 +1254,16 @@ class AuthenticationServiceTest {
         void theStoredDigestIsAGenuineStrengthTenDigest() {
             // No digest literal exists in this file; strength is proved by the contract UserSecurity
             // enforces, which admits cost 10 and refuses every other cost.
-            assertThat(STORED_DIGEST).hasSize(60);
+            assertThat(STORED_DIGEST).hasSize(BCRYPT_DIGEST_WIDTH);
+            // The cost factor read straight off the digest's own third field. BCrypt encodes it in the
+            // string itself - $<version>$<cost>$<salt+digest> - so this asserts the strength that was
+            // actually applied, not merely the strength the encoder was configured with. V3__seed_data.sql
+            // writes cost 10 and CardDemoUserDetailsService verifies against it; a digest at any other cost
+            // fails every seeded sign-on, which is the High-severity mismatch this assertion catches.
+            assertThat(STORED_DIGEST.split("\\$")[BCRYPT_COST_FIELD_INDEX])
+                    .as("app/jcl/DUSRSECJ.jcl:35-44 seeds ten users whose digests must all carry cost %d",
+                            CONTRACTUAL_STRENGTH)
+                    .isEqualTo(String.valueOf(CONTRACTUAL_STRENGTH));
             assertThat(ENCODER.matches(PRESENTED_CREDENTIAL.toUpperCase(Locale.ROOT), STORED_DIGEST))
                     .isTrue();
             assertThat(ENCODER.matches(PRESENTED_CREDENTIAL, STORED_DIGEST))
@@ -1283,8 +1411,8 @@ class AuthenticationServiceTest {
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> service.signOn(signOnRequest(PRESENTED_USER_ID, PRESENTED_CREDENTIAL)))
                     .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_WRONG_PASSWORD);
-                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWORD);
+                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_WRONG_PASSWD);
+                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWD);
                         assertThat(failure.getFailureKind())
                                 .isEqualTo(ValidationException.FailureKind.INVALID);
                         assertThat(failure.getCause()).isSameAs(absent);
@@ -1308,8 +1436,8 @@ class AuthenticationServiceTest {
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> service.signOn(signOnRequest(PRESENTED_USER_ID, PRESENTED_CREDENTIAL)))
                     .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_WRONG_PASSWORD);
-                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWORD);
+                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_WRONG_PASSWD);
+                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWD);
                         assertThat(failure.getMessage())
                                 .as("not even the folded identifier is disclosed")
                                 .doesNotContain(FOLDED_USER_ID);
@@ -1324,7 +1452,7 @@ class AuthenticationServiceTest {
         void theMissingRecordLiteralIsByteExact() {
             assertThat(MESSAGE_USER_NOT_FOUND)
                     .isEqualTo("User not found. Try again ...")
-                    .isNotEqualTo(MESSAGE_WRONG_PASSWORD);
+                    .isNotEqualTo(MESSAGE_WRONG_PASSWD);
         }
     }
 
@@ -1351,8 +1479,8 @@ class AuthenticationServiceTest {
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> service.signOn(signOnRequest(PRESENTED_USER_ID, PRESENTED_CREDENTIAL)))
                     .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_WRONG_PASSWORD);
-                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWORD);
+                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_WRONG_PASSWD);
+                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWD);
                         assertThat(failure.getFailureKind())
                                 .as("a value was supplied and it is wrong, which is INVALID and never BLANK")
                                 .isEqualTo(ValidationException.FailureKind.INVALID);
@@ -1375,7 +1503,7 @@ class AuthenticationServiceTest {
         @Test
         @DisplayName("the wrong-password literal is byte exact, internal period included")
         void theWrongPasswordLiteralIsByteExact() {
-            assertThat(MESSAGE_WRONG_PASSWORD).isEqualTo("Wrong Password. Try again ...");
+            assertThat(MESSAGE_WRONG_PASSWD).isEqualTo("Wrong Password. Try again ...");
         }
     }
 
@@ -1800,7 +1928,7 @@ class AuthenticationServiceTest {
         @Test
         @DisplayName("all five source literals fit inside both widths, so the narrowing never fires for them")
         void allFiveLiteralsFitInsideBothWidths() {
-            assertThat(List.of(MESSAGE_USER_ID_REQUIRED, MESSAGE_PASSWORD_REQUIRED, MESSAGE_WRONG_PASSWORD,
+            assertThat(List.of(MESSAGE_USER_ID_REQUIRED, MESSAGE_PASSWD_REQUIRED, MESSAGE_WRONG_PASSWD,
                     MESSAGE_USER_NOT_FOUND, MESSAGE_UNABLE_TO_VERIFY))
                     .allSatisfy(literal -> assertThat(literal.length())
                             .isLessThanOrEqualTo(ERROR_MESSAGE_FIELD_LENGTH));
@@ -1893,7 +2021,7 @@ class AuthenticationServiceTest {
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> service.signOn(signOnRequest(PRESENTED_USER_ID, PRESENTED_CREDENTIAL)))
                     .satisfies(failure -> {
-                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWORD);
+                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWD);
                         assertThat(failure.getMessage()).doesNotContain(PRESENTED_CREDENTIAL);
                     });
             assertThat(capturedLines()).allSatisfy(line ->
@@ -1986,6 +2114,233 @@ class AuthenticationServiceTest {
                     .isEqualTo("U");
             assertThat(service.signOn(signOnRequest(PRESENTED_ADMIN_ID, PRESENTED_CREDENTIAL)).userType())
                     .isEqualTo("A");
+        }
+    }
+
+    // =====================================================================================================
+    // 16. Locale.ROOT, least privilege and the PIC X(08) hostile boundary
+    // =====================================================================================================
+
+    /**
+     * Four concerns the preceding groups establish only indirectly, each of which fails silently if it is
+     * wrong.
+     *
+     * <ul>
+     *   <li><b>The fold is invariant.</b> {@code FUNCTION UPPER-CASE} at
+     *       {@code app/cbl/COSGN00C.cbl}:132-136 has no locale to be sensitive to; Java's default
+     *       {@code toUpperCase()} overload does. Under a Turkish default the dotted {@code i} folds to
+     *       {@code U+0130}, which corrupts both the record key at {@code :215} and the credential operand at
+     *       {@code :223} - so the entire authentication decision turns on the invariant locale being named
+     *       explicitly. Group 5 proves the fold happens; this group proves <em>which</em> fold.</li>
+     *   <li><b>The authority is least privilege.</b> {@code IF CDEMO-USRTYP-ADMIN} at {@code :230} routed an
+     *       administrator to {@code COADM01C} and everyone else to {@code COMEN01C}. Routing is URL-based
+     *       now, so that branch decides authorisation instead, and the administrative namespace
+     *       {@code /api/admin/**} is guarded by a single authority. Granting it to a standard user would be
+     *       privilege escalation that no functional test notices.</li>
+     *   <li><b>Nothing is retained server side.</b> Transformation Rule 7 replaces
+     *       {@code RETURN TRANSID ... COMMAREA} with stateless request handling, so a sign-on must leave the
+     *       server-side security context untouched and hand the identity back as a bearer token instead.</li>
+     *   <li><b>The declared widths are boundaries, not suggestions.</b> Both credential items are
+     *       {@code PIC X(08)} - {@code app/cpy/CSUSR01Y.cpy}:18 and :21, with {@code KEYS(8,0)} at
+     *       {@code app/jcl/DUSRSECJ.jcl}:65 - and silently narrowing an over-long input to eight characters
+     *       would admit a credential the system of record refuses.</li>
+     * </ul>
+     */
+    @Nested
+    @DisplayName("16. Locale.ROOT, least privilege and the PIC X(08) hostile boundary")
+    class LocaleLeastPrivilegeAndWidthBoundary {
+
+        @AfterEach
+        void clearAnySecurityContext() {
+            // Restores the thread-local the statelessness assertion reads, so no residue can reach another
+            // test through it. The assertion itself never populates it; this only guarantees that.
+            SecurityContextHolder.clearContext();
+        }
+
+        @Test
+        @DisplayName("the identifier fold is Locale.ROOT, so a dotted i cannot move the record key")
+        void theIdentifierFoldIsLocaleRoot() {
+            // The hazard is real before it is excluded: under Turkish rules this identifier folds to a
+            // DIFFERENT key, so if the production fold were locale sensitive the lookup below would be made
+            // under "ADMIN\u0130001" and STRICT_STUBS would reject the call outright.
+            assertThat(PRESENTED_ADMIN_ID.toUpperCase(TURKISH))
+                    .as("the dotted i is what makes app/cbl/COSGN00C.cbl:132-134 locale sensitive in Java")
+                    .isNotEqualTo(FOLDED_ADMIN_ID);
+            when(userSecurityRepository.findById(FOLDED_ADMIN_ID))
+                    .thenReturn(Optional.of(storedUser(FOLDED_ADMIN_ID, UserType.ADMIN)));
+
+            final SignOnResponse response =
+                    serviceOverTheRealVerifier().signOn(signOnRequest(PRESENTED_ADMIN_ID, PRESENTED_CREDENTIAL));
+
+            assertThat(response.userId())
+                    .as("only the invariant fold resolves the row that KEYS(8,0) actually holds")
+                    .isEqualTo(FOLDED_ADMIN_ID);
+            // Every key the store is asked for, captured rather than counted. The success path reads twice -
+            // once inside the verifier and once for the class byte - and asserting the SET of keys rather
+            // than the number of reads is what makes this a statement about the fold instead of a statement
+            // about call counts, which group 6 already owns.
+            final ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+            verify(userSecurityRepository, atLeastOnce()).findById(keys.capture());
+            assertThat(keys.getAllValues())
+                    .as("no read may be made under the Turkish fold %s",
+                            PRESENTED_ADMIN_ID.toUpperCase(TURKISH))
+                    .isNotEmpty()
+                    .containsOnly(FOLDED_ADMIN_ID);
+        }
+
+        @Test
+        @DisplayName("the credential fold is Locale.ROOT, so a dotted i cannot break the verification")
+        void theCredentialFoldIsLocaleRoot() {
+            // The negative control first: the Turkish fold of this credential does NOT match the stored
+            // digest, so a locale-sensitive fold at :135-136 would refuse a correct credential outright.
+            assertThat(ENCODER.matches(DOTTED_I_CREDENTIAL.toUpperCase(TURKISH), DOTTED_I_DIGEST))
+                    .as("a Turkish fold produces U+0130 and BCrypt is byte sensitive, so it cannot match")
+                    .isFalse();
+            when(userSecurityRepository.findById(FOLDED_USER_ID)).thenReturn(Optional.of(
+                    new UserSecurity(FOLDED_USER_ID, FIRST_NAME, LAST_NAME, DOTTED_I_DIGEST,
+                            UserType.USER)));
+
+            final SignOnResponse response =
+                    serviceOverTheRealVerifier().signOn(signOnRequest(PRESENTED_USER_ID, DOTTED_I_CREDENTIAL));
+
+            assertThat(response.token())
+                    .as("the invariant fold at :135-136 is the only one that verifies this credential")
+                    .isNotBlank();
+        }
+
+        @Test
+        @DisplayName("only an administrator carries the authority guarding /api/admin/**")
+        void onlyAnAdministratorCarriesTheAdminNamespaceAuthority() {
+            final Jwt decoded = tokenDecoder.decode(signOnThroughTheDouble(FOLDED_ADMIN_ID,
+                    PRESENTED_ADMIN_ID, UserType.ADMIN).token());
+
+            assertThat(decoded.getClaimAsString(JwtTokenProvider.ROLE_CLAIM_NAME))
+                    .as("com.cardemo.config.SecurityConfig guards /api/admin/** with exactly this authority")
+                    .isEqualTo(JwtTokenProvider.ADMIN_AUTHORITY)
+                    .isEqualTo(tokenProvider.authorityFor(UserType.ADMIN));
+        }
+
+        @Test
+        @DisplayName("a standard user is refused that authority, so /api/admin/** stays closed to them")
+        void aStandardUserIsRefusedTheAdminNamespaceAuthority() {
+            final Jwt decoded = tokenDecoder.decode(signOnThroughTheDouble(FOLDED_USER_ID,
+                    PRESENTED_USER_ID, UserType.USER).token());
+
+            assertThat(decoded.getClaimAsString(JwtTokenProvider.ROLE_CLAIM_NAME))
+                    .as("the :235 ELSE branch grants the standard authority and never the administrative one")
+                    .isEqualTo(JwtTokenProvider.USER_AUTHORITY)
+                    .isEqualTo(tokenProvider.authorityFor(UserType.USER))
+                    .isNotEqualTo(JwtTokenProvider.ADMIN_AUTHORITY);
+        }
+
+        @Test
+        @DisplayName("a successful sign-on populates no server-side security context - STATELESS")
+        void aSuccessfulSignOnPopulatesNoServerSideSecurityContext() {
+            assertThat(SecurityContextHolder.getContext().getAuthentication())
+                    .as("nothing is authenticated before the call, so the check below measures this call")
+                    .isNull();
+
+            final SignOnResponse response =
+                    signOnThroughTheDouble(FOLDED_USER_ID, PRESENTED_USER_ID, UserType.USER);
+
+            assertThat(SecurityContextHolder.getContext().getAuthentication())
+                    .as("SessionCreationPolicy.STATELESS: identity leaves as a bearer token, not as "
+                            + "server-side state, so RETURN TRANSID ... COMMAREA has no residue here")
+                    .isNull();
+            assertThat(response.token())
+                    .as("the token is the whole of the identity handed back")
+                    .isNotBlank();
+        }
+
+        @Test
+        @DisplayName("an identifier wider than PIC X(08) is neither narrowed nor accepted")
+        void anIdentifierWiderThanTheDeclaredWidthIsNeitherNarrowedNorAccepted() {
+            // findById is deliberately left unstubbed: the folded nine-character key matches no row, which
+            // is the WHEN 13 arm at :247-251, and stubbing it would assert a row that KEYS(8,0) cannot hold.
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> serviceOverTheRealVerifier().signOn(
+                            signOnRequest(OVERLONG_USER_ID, PRESENTED_CREDENTIAL)))
+                    .satisfies(failure -> {
+                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_WRONG_PASSWD);
+                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWD);
+                    });
+
+            verify(userSecurityRepository).findById(OVERLONG_USER_ID.toUpperCase(Locale.ROOT));
+        }
+
+        @Test
+        @DisplayName("a credential wider than PIC X(08) is not narrowed to eight and so cannot verify")
+        void aCredentialWiderThanTheDeclaredWidthIsNotNarrowedToEight() {
+            // The first eight characters of OVERLONG_CREDENTIAL are exactly the correct credential. Were the
+            // presented value narrowed to the declared width before verification, this would succeed - which
+            // is why this test is the guard against silent narrowing rather than a restatement of group 8.
+            assertThat(OVERLONG_CREDENTIAL)
+                    .startsWith(PRESENTED_CREDENTIAL)
+                    .hasSize(PRESENTED_CREDENTIAL.length() + 1);
+            when(userSecurityRepository.findById(FOLDED_USER_ID))
+                    .thenReturn(Optional.of(storedUser(FOLDED_USER_ID, UserType.USER)));
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> serviceOverTheRealVerifier().signOn(
+                            signOnRequest(PRESENTED_USER_ID, OVERLONG_CREDENTIAL)))
+                    .withMessage(MESSAGE_WRONG_PASSWD);
+        }
+
+        @Test
+        @DisplayName("an identifier carrying control characters is not unset, is refused, and is not echoed")
+        void anIdentifierCarryingControlCharactersIsRefusedAndNotEchoed() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> serviceOverTheRealVerifier().signOn(
+                            signOnRequest(CONTROL_CHARACTER_USER_ID, PRESENTED_CREDENTIAL)))
+                    .satisfies(failure -> {
+                        assertThat(failure.getMessage())
+                                .as("it is neither SPACES nor LOW-VALUES, so :128-129 lets it through to "
+                                        + "the store and it fails as a credential refusal, not as a blank")
+                                .isEqualTo(MESSAGE_WRONG_PASSWD)
+                                .doesNotContain(CONTROL_CHARACTER_USER_ID)
+                                .doesNotContain("\u0007");
+                    });
+
+            verify(userSecurityRepository).findById(CONTROL_CHARACTER_USER_ID.toUpperCase(Locale.ROOT));
+            assertThat(capturedLines())
+                    .as("untrusted input must not be echoed into telemetry, Rule 1 Clause A")
+                    .noneMatch(line -> line.contains(CONTROL_CHARACTER_USER_ID) || line.contains("\u0007"));
+        }
+
+        /**
+         * Assembles the bean over the <em>real</em> credential verifier, so that a real fold and a real
+         * strength-10 digest are exercised rather than described.
+         *
+         * <p>Built on demand rather than in a {@code @BeforeEach}: constructing the verifier performs one
+         * BCrypt encode at cost 10 to build its constant-work digest, and three of the tests below - the two
+         * authority concerns and the statelessness concern - do not depend on a real fold at all. Charging
+         * them for that encode would be the obvious inefficiency Rule 1 Clause A asks to be avoided.
+         *
+         * @return a service whose credential verification is genuine
+         */
+        private AuthenticationService serviceOverTheRealVerifier() {
+            final CardDemoUserDetailsService realVerifier =
+                    new CardDemoUserDetailsService(userSecurityRepository, ENCODER);
+            return new AuthenticationService(realVerifier, userSecurityRepository, tokenProvider,
+                    metricsConfig, FIXED_CLOCK);
+        }
+
+        /**
+         * Signs on successfully through the mocked verifier, which is enough for the claim and statelessness
+         * concerns because neither depends on a real fold.
+         *
+         * @param foldedUserId    the folded identifier the verifier reports; must not be {@code null}
+         * @param presentedUserId the identifier as presented; must not be {@code null}
+         * @param userType        the class byte the stored row carries; must not be {@code null}
+         * @return the successful response
+         */
+        private SignOnResponse signOnThroughTheDouble(final String foldedUserId,
+                final String presentedUserId, final UserType userType) {
+            when(cardDemoUserDetailsService.authenticate(presentedUserId, PRESENTED_CREDENTIAL))
+                    .thenReturn(principalNamed(foldedUserId));
+            when(userSecurityRepository.findById(foldedUserId))
+                    .thenReturn(Optional.of(storedUser(foldedUserId, userType)));
+            return service.signOn(signOnRequest(presentedUserId, PRESENTED_CREDENTIAL));
         }
     }
 

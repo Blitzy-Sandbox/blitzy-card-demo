@@ -66,10 +66,12 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -131,11 +133,84 @@ import org.junit.jupiter.params.provider.ValueSource;
  * strict one, because otherwise a derived view submitted as though it were a member would be
  * silently discarded - which looks like acceptance.</p>
  *
+ * <p><strong>The date-of-birth offsets are asymmetric, and that is the highest-severity property
+ * in the whole payload.</strong> {@code 9700-CHECK-CHANGE-IN-REC} compares the live customer date
+ * against the snapshot date at <em>different offsets on each side</em>
+ * ({@code app/cbl/COACTUPC.cbl:4174-4179}): the live value is {@code CUST-DOB-YYYY-MM-DD PIC X(10)}
+ * ({@code app/cpy/CVCUS01Y.cpy:19}), dash-separated, so its parts sit at 1, 6 and 9, while the
+ * snapshot is {@code ACUP-OLD-CUST-DOB-YYYY-MM-DD PIC X(08)} ({@code :746}), compact, so its parts
+ * sit at 1, 5 and 7. A whole-string comparison of the two can never be equal, so the endpoint would
+ * answer {@code 'Record changed by some one else. Please review'} to every request ever made and
+ * no account could be updated again. {@link DateOfBirthOffsetAsymmetry} pins the compact storage and
+ * the component rule, and demonstrates the permanent-failure mode rather than describing it.</p>
+ *
+ * <p><strong>Two comparison regimes normalise the same field differently, so the payload must not
+ * normalise at all.</strong> The account group identifier is folded with {@code FUNCTION LOWER-CASE}
+ * and no {@code TRIM} in {@code 9700} ({@code :4139-4140}) but with
+ * {@code FUNCTION UPPER-CASE(FUNCTION TRIM(...))} in {@code 1205} ({@code :1697-1700}); the postal
+ * code carries no case function at all in {@code 9700} ({@code :4168}) yet is folded and trimmed in
+ * {@code 1205} ({@code :1747-1750}); telephones are compared whole in {@code 9700}
+ * ({@code :4169-4170}) but part by part in {@code 1205} ({@code :1751-1756}). Normalising on arrival
+ * in <em>either</em> direction would silently pick one regime and break the other, so
+ * {@link ComparisonRegimes} pins that values round-trip byte-for-byte and that both foldings remain
+ * derivable - and reaches opposite verdicts from the same pair to prove the asymmetry is
+ * observable.</p>
+ *
+ * <p><strong>Absent, blank and low-values are three states, not one.</strong> When a screen field
+ * holds {@code '*'} or spaces the source moves {@code LOW-VALUES} - binary zeros, not spaces - into
+ * the NEW group ({@code :1235}, {@code :1258}, {@code :1279}), and {@code app/cpy/CSSETATY.cpy}
+ * models exactly OK, NOT-OK and BLANK. The source proves the distinction at the message level:
+ * {@code 'Credit Limit must be supplied'} ({@code :505-506}) and
+ * {@code 'Credit Limit is not valid'} ({@code :507-508}) are two literals for two states.
+ * {@link TriStateEmptiness} pins that all three survive the payload distinguishably; collapsing them
+ * into one notion of emptiness would delete half the validation surface without any test
+ * failing.</p>
+ *
+ * <p><strong>The state-and-postal-code edit is gated, so it cannot be a type-level constraint.</strong>
+ * {@code 1280-EDIT-US-STATE-ZIP-CD} runs only once both single-field edits have passed
+ * ({@code :1664-1669}). A type-level {@code @AssertTrue} fires unconditionally and would report a
+ * cross-field error on input whose single-field validation had already failed, which is a different
+ * message set from the source. {@link GatedCrossFieldEdit} pins that no such annotation exists
+ * anywhere on the payload.</p>
+ *
+ * <p><strong>The outcome codes and message literals are the observable contract.</strong> Six
+ * distinct outcome codes are declared at {@code :660-668} and four failure markers at
+ * {@code :517-523}; each must stay distinguishable, because collapsing them into one conflict status
+ * discards what the legacy screen displayed. The literals include two oddities that must never be
+ * tidied: {@code 'Record changed by some one else. Please review'} spells "some one" as two words,
+ * and {@code 'Looks Good.... so far'} carries four dots. {@link OutcomeFlagsAndMessages} pins all
+ * thirteen byte-for-byte, and pins the width consequence the misspelling causes - at 46 characters
+ * the concurrency verdict does not fit {@code informationMessage}, so it has to travel on
+ * {@code errorMessage}.</p>
+ *
+ * <p><strong>Money is decimal, dates are text, and the personal data never reaches a log.</strong>
+ * {@link PrecisionDatesAndSecurity} pins that every money reading is a {@code BigDecimal} compared
+ * with {@code compareTo} rather than {@code equals}, that the three declared precisions stay
+ * distinct, that every date member is a {@code String} rather than a {@code LocalDate}, and that no
+ * type overrides {@code toString} - the payload carries a social security number, two telephone
+ * numbers, a date of birth, a government-issued identifier, names and a full address, so an
+ * inherited {@code toString} is the only safe one.</p>
+ *
  * <h2>How to run it</h2>
  *
  * <p>{@code ./mvnw -B -o test -Dtest=AccountUpdateRequestTest} runs this class alone;
  * {@code ./mvnw -B test} runs it with the rest of the unit tier. It needs no container, no Spring
- * context, no database and no network.</p>
+ * context, no database and no network. This class lives under
+ * {@code src/test/java/com/cardemo/unit/} because that is the tree Surefire is bound to; a class
+ * moved out of it is collected by neither Surefire nor Failsafe and stops running without any
+ * error being reported.</p>
+ *
+ * <h2>Key configuration and defaults</h2>
+ *
+ * <p>Nothing here reads a clock, a locale or a time zone from the environment. Temporal values come
+ * from {@link FixedClockProvider}, whose {@link FixedClockProvider#CANONICAL_INSTANT} fixes the
+ * instant and whose {@link FixedClockProvider#CANONICAL_ZONE} fixes the zone, and every case
+ * operation passes {@link java.util.Locale#ROOT} explicitly - a Turkish default locale maps
+ * {@code i} to a dotted capital and would otherwise change which updates this suite says are
+ * accepted. Fixture bytes come from {@link FixtureLoader} by classpath resource name, never by
+ * filesystem path, so the suite is indifferent to the working directory. The validator is the
+ * default Jakarta Bean Validation factory and the mappers are plain Jackson instances, one strict
+ * and one lenient, both configured in this class rather than inherited from a profile.</p>
  *
  * <h2>Failure modes and troubleshooting</h2>
  *
@@ -146,7 +221,27 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@link SourceFaithfulNaming} means the misspelling was corrected, which is a parity break. In
  * every case the frozen corpus is right and the code is wrong.</p>
  *
+ * <p>A failure in {@link DateOfBirthOffsetAsymmetry} is the most serious outcome available here: it
+ * means the snapshot date stopped being stored compact, or its components stopped being sliced at
+ * the compact offsets, either of which makes the account-update endpoint reject every request. A
+ * failure in {@link ComparisonRegimes} means normalisation crept into the payload, which silently
+ * serves one comparison regime and breaks the other. A failure in {@link TriStateEmptiness} means
+ * blank and low-values were folded together. A failure in {@link GatedCrossFieldEdit} means a
+ * type-level constraint was added that fires before the single-field edits have run. A failure in
+ * {@link OutcomeFlagsAndMessages} means a literal was paraphrased or an outcome code was merged. A
+ * failure in {@link PrecisionDatesAndSecurity} means a binary floating-point type, a
+ * {@code LocalDate} or a {@code toString} override entered the payload.</p>
+ *
+ * <p>Two traps are worth naming because they cost more time than they should. First,
+ * {@code app/cbl/COACTUPC.cbl} is one of only five files in the frozen corpus terminated with CRLF,
+ * so every line number cited above is valid only against the carriage-return-stripped file; reading
+ * it as-is drifts every locator. Second, compilation runs with {@code -Xlint:all -Werror}, which
+ * reaches test sources, so a single unused import fails the build rather than warning - the compiler
+ * error names the import, and the fix is always to delete it rather than to relax the flag.</p>
+ *
  * @see AccountUpdateRequest
+ * @see FixtureLoader
+ * @see FixedClockProvider
  */
 @DisplayName("AccountUpdateRequest - app/cpy-bms/COACTUP.CPY group CACTUPAI + app/cbl/COACTUPC.cbl")
 final class AccountUpdateRequestTest {
@@ -168,6 +263,96 @@ final class AccountUpdateRequestTest {
 
     /** Bound on cause-chain traversal, so a self-referential cause cannot spin. */
     private static final int MAX_CAUSE_DEPTH = 16;
+
+    /** Declared width of a snapshot date, {@code PIC X(08)} at {@code app/cbl/COACTUPC.cbl:746}. */
+    private static final int COMPACT_DATE_WIDTH = 8;
+
+    /** Declared width of the live customer date, {@code PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:19}. */
+    private static final int LIVE_DATE_WIDTH = 10;
+
+    /** Declared width of a snapshot money member, {@code PIC X(12)} at {@code app/cbl/COACTUPC.cbl:675}. */
+    private static final int MONEY_WIDTH = 12;
+
+    /**
+     * A date of birth exactly as {@code app/data/ASCII/custdata.txt} holds it on row 1 at bytes
+     * 309 to 318: dash-separated, ten characters, the shape of the live customer record.
+     */
+    private static final String LIVE_DATE_OF_BIRTH = "1961-06-08";
+
+    /**
+     * The same date in the compact eight-character shape the snapshot groups declare. Nothing but the
+     * two separators differs, which is precisely why a whole-string comparison of the two fails.
+     */
+    private static final String COMPACT_DATE_OF_BIRTH = "19610608";
+
+    /** {@code 88 CRED-LIMIT-IS-BLANK} at {@code app/cbl/COACTUPC.cbl:505-506}. */
+    private static final String CREDIT_LIMIT_BLANK = "Credit Limit must be supplied";
+
+    /** {@code 88 CRED-LIMIT-IS-NOT-VALID} at {@code app/cbl/COACTUPC.cbl:507-508}. */
+    private static final String CREDIT_LIMIT_NOT_VALID = "Credit Limit is not valid";
+
+    /**
+     * {@code 88 DATA-WAS-CHANGED-BEFORE-UPDATE} at {@code app/cbl/COACTUPC.cbl:521-522}.
+     *
+     * <p>"some one" is two words in the frozen corpus. That is not a typo to repair: at 46
+     * characters this literal does not fit {@code INFOMSGI PIC X(45)}, whereas the corrected
+     * one-word spelling would, so the misspelling is what forces the verdict onto the wider
+     * {@code ERRMSGI PIC X(78)} field. {@link OutcomeFlagsAndMessages} asserts both facts.</p>
+     */
+    private static final String DATA_CHANGED_BEFORE_UPDATE =
+            "Record changed by some one else. Please review";
+
+    /** {@code 88 CODING-TO-BE-DONE} at {@code app/cbl/COACTUPC.cbl:527-528}; four dots, not three. */
+    private static final String CODING_TO_BE_DONE = "Looks Good.... so far";
+
+    /**
+     * Every message literal declared between {@code app/cbl/COACTUPC.cbl:503} and {@code :528}, in
+     * source order.
+     *
+     * <p>Held here so that a later paraphrase fails a test rather than passing review. The parity
+     * gates compare these strings, so "clearer" wording is a regression.</p>
+     */
+    private static final List<String> MESSAGE_LITERALS = List.of(
+            "Account Active Status must be Y or N",
+            CREDIT_LIMIT_BLANK,
+            CREDIT_LIMIT_NOT_VALID,
+            "Card expiry month must be between 1 and 12",
+            "Invalid card expiry year",
+            "Did not find this account in cards database",
+            "Did not find cards for this search condition",
+            "Could not lock account record for update",
+            "Could not lock customer record for update",
+            DATA_CHANGED_BEFORE_UPDATE,
+            "Update of record failed",
+            "Error reading Card Data File",
+            CODING_TO_BE_DONE);
+
+    /**
+     * The six outcome codes carried by {@code ACUP-CHANGE-ACTION} at
+     * {@code app/cbl/COACTUPC.cbl:660-668}, each with the condition name that reads it.
+     *
+     * <p>{@code 'L'} and {@code 'F'} are both failures - {@code 88 ACUP-CHANGES-FAILED} covers the
+     * pair at {@code :666} - but they are distinct failures, one a lock error and one an update
+     * error, and the legacy screen said which. A response surface that answers the same status for
+     * both discards that.</p>
+     */
+    private static final Map<String, String> OUTCOME_CODES = Map.of(
+            "E", "ACUP-CHANGES-NOT-OK",
+            "N", "ACUP-CHANGES-OK-NOT-CONFIRMED",
+            "C", "ACUP-CHANGES-OKAYED-AND-DONE",
+            "L", "ACUP-CHANGES-OKAYED-LOCK-ERROR",
+            "F", "ACUP-CHANGES-OKAYED-BUT-FAILED");
+
+    /**
+     * The four failure markers declared at {@code app/cbl/COACTUPC.cbl:517-523}, plus the fifth set
+     * specifically on an account-lock failure at {@code :2607-2608}.
+     */
+    private static final List<String> FAILURE_MARKERS = List.of(
+            "Could not lock account record for update",
+            "Could not lock customer record for update",
+            DATA_CHANGED_BEFORE_UPDATE,
+            "Update of record failed",
+            "Error reading Card Data File");
 
     private static final Validator VALIDATOR =
             Validation.buildDefaultValidatorFactory().getValidator();
@@ -196,6 +381,20 @@ final class AccountUpdateRequestTest {
      */
     static Stream<Class<?>> payloadTypesOnly() {
         return Stream.of(AccountUpdateRequest.class, OldDetails.class, NewDetails.class);
+    }
+
+    /**
+     * Supplies the two nested snapshot groups on their own, without the outer request type.
+     *
+     * <p>Separate from {@link #payloadTypesOnly()} because the properties asserted against the
+     * snapshot groups - compact dates, telephone overlays, the credit-score range - have no
+     * counterpart on the outer screen-field type, whose members mirror the map rather than the
+     * record.</p>
+     *
+     * @return {@code ACUP-OLD-DETAILS} and {@code ACUP-NEW-DETAILS}
+     */
+    static Stream<Class<?>> snapshotGroups() {
+        return Stream.of(OldDetails.class, NewDetails.class);
     }
 
     /**
@@ -462,6 +661,97 @@ final class AccountUpdateRequestTest {
                 .filter(method -> method.getParameterCount() == 0)
                 .filter(method -> !Modifier.isStatic(method.getModifiers()))
                 .toList();
+    }
+
+    /**
+     * Invokes a named zero-argument accessor and returns what it produced.
+     *
+     * <p>Used for the derived views, which are deliberately not named as bean properties and so
+     * cannot be reached through {@link #readMember(Object, String)}.
+     *
+     * @param payload  the payload to read
+     * @param accessor the accessor name, exactly as declared
+     * @return the value the accessor returned, which may be {@code null}
+     */
+    private static Object invokeAccessor(final Object payload, final String accessor) {
+        try {
+            return payload.getClass().getMethod(accessor).invoke(payload);
+        } catch (InvocationTargetException cause) {
+            throw new AssertionError(payload.getClass().getSimpleName() + "." + accessor
+                    + " must not throw here", cause.getCause());
+        } catch (ReflectiveOperationException cause) {
+            throw new AssertionError("cannot invoke " + accessor, cause);
+        }
+    }
+
+    /**
+     * Slices a date the way {@code 9700-CHECK-CHANGE-IN-REC} slices the <em>live</em> customer
+     * record: reference-modified at 1, 6 and 9 over a dash-separated {@code PIC X(10)} value
+     * ({@code app/cbl/COACTUPC.cbl:4174-4179}, {@code app/cpy/CVCUS01Y.cpy:19}).
+     *
+     * <p>COBOL reference modification is one-based and inclusive of the starting character, so
+     * {@code (1:4)} is characters 1 to 4, {@code (6:2)} is 6 to 7 and {@code (9:2)} is 9 to 10.</p>
+     *
+     * @param liveDate the ten-character dash-separated date held by the customer record
+     * @return year, month and day, in that order
+     */
+    private static List<String> liveDateComponents(final String liveDate) {
+        assertThat(liveDate)
+                .as("the live customer date is PIC X(10), so a shorter value cannot be sliced at 9:2")
+                .hasSize(LIVE_DATE_WIDTH);
+        return List.of(liveDate.substring(0, 4), liveDate.substring(5, 7), liveDate.substring(8, 10));
+    }
+
+    /**
+     * Slices a date the way {@code 9700-CHECK-CHANGE-IN-REC} slices the <em>snapshot</em>:
+     * reference-modified at 1, 5 and 7 over a compact {@code PIC X(08)} value
+     * ({@code app/cbl/COACTUPC.cbl:4174-4179}, {@code :746}).
+     *
+     * <p>These are different offsets from {@link #liveDateComponents(String)} for the same three
+     * components, which is the whole point: the snapshot carries no separators, so month and day sit
+     * one and two characters earlier respectively.</p>
+     *
+     * @param compactDate the eight-character compact date held by a snapshot group
+     * @return year, month and day, in that order
+     */
+    private static List<String> snapshotDateComponents(final String compactDate) {
+        assertThat(compactDate)
+                .as("the snapshot date is PIC X(08), so a longer value would shift every offset")
+                .hasSize(COMPACT_DATE_WIDTH);
+        return List.of(compactDate.substring(0, 4), compactDate.substring(4, 6),
+                compactDate.substring(6, 8));
+    }
+
+    /**
+     * Applies the normalisation that {@code 9700-CHECK-CHANGE-IN-REC} applies to the account group
+     * identifier: {@code FUNCTION LOWER-CASE} on both operands and no {@code TRIM}
+     * ({@code app/cbl/COACTUPC.cbl:4139-4140}).
+     *
+     * <p>{@link Locale#ROOT} is passed explicitly. The default locale is an ambient input, and in a
+     * Turkish locale {@code String.toLowerCase()} maps {@code I} to a dotless {@code ı}, which would
+     * make this suite's verdict depend on where it ran.</p>
+     *
+     * @param value the raw value as the payload carried it
+     * @return the value folded exactly as the concurrent-change regime folds it
+     */
+    private static String concurrentChangeFolding(final String value) {
+        return value.toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Applies the normalisation that {@code 1205-COMPARE-OLD-NEW} applies to the account group
+     * identifier: {@code FUNCTION UPPER-CASE(FUNCTION TRIM(...))} on both operands
+     * ({@code app/cbl/COACTUPC.cbl:1697-1700}).
+     *
+     * <p>COBOL's {@code TRIM} removes leading and trailing spaces, which is what
+     * {@link String#strip()} does for the space character; {@code strip} additionally removes other
+     * Unicode whitespace, which cannot arise from a fixed-width alphanumeric screen field.</p>
+     *
+     * @param value the raw value as the payload carried it
+     * @return the value folded exactly as the user-change regime folds it
+     */
+    private static String userChangeFolding(final String value) {
+        return value.strip().toUpperCase(Locale.ROOT);
     }
 
     @Nested
@@ -1364,6 +1654,978 @@ final class AccountUpdateRequestTest {
             } catch (ReflectiveOperationException cause) {
                 throw new AssertionError("cannot invoke " + accessor.getName(), cause);
             }
+        }
+    }
+
+    @Nested
+    @DisplayName("8. Date-of-birth offsets: asymmetric on purpose, and load-bearing")
+    final class DateOfBirthOffsetAsymmetry {
+
+        @ParameterizedTest(name = "{0} stores the date of birth compact at eight characters")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#snapshotGroups")
+        @DisplayName("stores the snapshot date of birth compact, never dash-separated")
+        void storesTheSnapshotDateOfBirthCompact(final Class<?> group) {
+            assertThat(declaredWidth(group, "dateOfBirth"))
+                    .as("%s.dateOfBirth mirrors PIC X(08) at app/cbl/COACTUPC.cbl:746 and :837; a"
+                            + " width of %d would admit the dash-separated live form, whose"
+                            + " components sit at different offsets",
+                            group.getSimpleName(), LIVE_DATE_WIDTH)
+                    .isEqualTo(COMPACT_DATE_WIDTH);
+
+            final Object snapshot = withOnly(group, "dateOfBirth", COMPACT_DATE_OF_BIRTH);
+            assertThat(readMember(snapshot, "dateOfBirth"))
+                    .as("the compact form must survive binding byte-for-byte")
+                    .isEqualTo(COMPACT_DATE_OF_BIRTH);
+        }
+
+        @ParameterizedTest(name = "{0} slices the compact date at the compact offsets 1/5/7")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#snapshotGroups")
+        @DisplayName("slices the snapshot date at 1, 5 and 7, not at 1, 6 and 9")
+        void slicesTheSnapshotDateAtTheCompactOffsets(final Class<?> group) {
+            final Object snapshot = withOnly(group, "dateOfBirth", COMPACT_DATE_OF_BIRTH);
+
+            assertThat(invokeAccessor(snapshot, "dateOfBirthYear"))
+                    .as("ACUP-OLD-CUST-DOB-YEAR is PIC X(4) at app/cbl/COACTUPC.cbl:749")
+                    .isEqualTo("1961");
+            assertThat(invokeAccessor(snapshot, "dateOfBirthMonth"))
+                    .as("ACUP-OLD-CUST-DOB-MON is PIC X(2) at :750, so it begins at offset 5 of the"
+                            + " compact value - not at offset 6, which is where the dash-separated"
+                            + " live record keeps it")
+                    .isEqualTo("06");
+            assertThat(invokeAccessor(snapshot, "dateOfBirthDay"))
+                    .as("ACUP-OLD-CUST-DOB-DAY is PIC X(2) at :751, so it begins at offset 7 - not"
+                            + " at offset 9")
+                    .isEqualTo("08");
+        }
+
+        @Test
+        @DisplayName("compares equal to the live record component by component at the source offsets")
+        void comparesEqualComponentByComponentAtTheSourceOffsets() {
+            final OldDetails snapshot = withOnly(OldDetails.class, "dateOfBirth",
+                    COMPACT_DATE_OF_BIRTH);
+
+            final List<String> live = liveDateComponents(LIVE_DATE_OF_BIRTH);
+            final List<String> held = List.of(
+                    snapshot.dateOfBirthYear(),
+                    snapshot.dateOfBirthMonth(),
+                    snapshot.dateOfBirthDay());
+
+            assertThat(held)
+                    .as("app/cbl/COACTUPC.cbl:4174-4179 compares (1:4) against (1:4), (6:2) against"
+                            + " (5:2) and (9:2) against (7:2); the two representations of one date"
+                            + " must therefore agree on all three components")
+                    .containsExactlyElementsOf(live);
+            assertThat(snapshotDateComponents(COMPACT_DATE_OF_BIRTH))
+                    .as("slicing the compact value directly must agree with the payload's own"
+                            + " derived views, or the payload is applying different offsets")
+                    .containsExactlyElementsOf(live);
+        }
+
+        @Test
+        @DisplayName("compares unequal when only the day differs, so a real change is still detected")
+        void comparesUnequalWhenOnlyTheDayDiffers() {
+            final OldDetails snapshot = withOnly(OldDetails.class, "dateOfBirth", "19610609");
+
+            final List<String> live = liveDateComponents(LIVE_DATE_OF_BIRTH);
+            final List<String> held = List.of(
+                    snapshot.dateOfBirthYear(),
+                    snapshot.dateOfBirthMonth(),
+                    snapshot.dateOfBirthDay());
+
+            assertThat(held)
+                    .as("the component rule must still detect a genuine difference; a rule that"
+                            + " never reports a change is as broken as one that always does")
+                    .isNotEqualTo(live);
+            assertThat(held.subList(0, 2))
+                    .as("only the day differs, so the year and month must still agree - which"
+                            + " localises the difference rather than merely reporting one")
+                    .containsExactlyElementsOf(live.subList(0, 2));
+        }
+
+        @Test
+        @DisplayName("would report a change on every request if the two forms were compared whole")
+        void wouldReportAChangeOnEveryRequestIfComparedWhole() {
+            assertThat(COMPACT_DATE_OF_BIRTH)
+                    .as("this is the failure mode the component rule exists to avoid: the compact"
+                            + " and dash-separated forms of one date are never equal as strings, so"
+                            + " a whole-string guard answers \"%s\" to every request ever made and"
+                            + " the endpoint can never accept an update again",
+                            DATA_CHANGED_BEFORE_UPDATE)
+                    .isNotEqualTo(LIVE_DATE_OF_BIRTH);
+            assertThat(COMPACT_DATE_OF_BIRTH.length())
+                    .as("the two forms differ in length by exactly the two separators, which is why"
+                            + " the mistake is easy to make and impossible to see in a diff")
+                    .isEqualTo(LIVE_DATE_OF_BIRTH.length() - 2);
+
+            assertThat(liveDateComponents(LIVE_DATE_OF_BIRTH))
+                    .as("the same two values that are unequal whole are equal component by"
+                            + " component, which is the entire content of app/cbl/COACTUPC.cbl"
+                            + ":4174-4179")
+                    .containsExactlyElementsOf(snapshotDateComponents(COMPACT_DATE_OF_BIRTH));
+        }
+
+        @ParameterizedTest(name = "{0} refuses a dash-separated date rather than mis-slicing it")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#snapshotGroups")
+        @DisplayName("refuses the live ten-character form, because the compact offsets cannot slice it")
+        void refusesTheLiveTenCharacterForm(final Class<?> group) {
+            final Object snapshot = withOnly(group, "dateOfBirth", LIVE_DATE_OF_BIRTH);
+
+            final IllegalArgumentException refused =
+                    refusalOf(() -> invokeAccessor(snapshot, "dateOfBirthMonth"));
+
+            assertThat(refused)
+                    .as("silently slicing a ten-character value at 4:6 would read \"-0\" as the"
+                            + " month, which is worse than refusing it")
+                    .hasMessageContaining("PIC X(08)")
+                    .hasMessageContaining("1/5/7");
+            assertThat(refused.getMessage())
+                    .as("a refusal must not echo a date of birth; it is personally identifiable"
+                            + " data and this message reaches the log")
+                    .doesNotContain(LIVE_DATE_OF_BIRTH);
+        }
+
+        @Test
+        @DisplayName("keeps the concurrency verdict inside the error message field it must travel in")
+        void keepsTheConcurrencyVerdictInsideItsMessageField() {
+            final int errorWidth = declaredWidth(AccountUpdateRequest.class, "errorMessage");
+            final int informationWidth =
+                    declaredWidth(AccountUpdateRequest.class, "informationMessage");
+
+            assertThat(DATA_CHANGED_BEFORE_UPDATE.length())
+                    .as("ERRMSGI is PIC X(78) at app/cpy-bms/COACTUP.CPY:324, so the verdict this"
+                            + " group exists to prevent fits there whole")
+                    .isLessThanOrEqualTo(errorWidth);
+            assertThat(DATA_CHANGED_BEFORE_UPDATE.length())
+                    .as("INFOMSGI is PIC X(45) at app/cpy-bms/COACTUP.CPY:318 and the verdict is 46"
+                            + " characters, so routing it there would truncate the final letter."
+                            + " The two-word \"some one\" spelling at app/cbl/COACTUPC.cbl:521-522"
+                            + " is exactly what pushes it over, which is one more reason the"
+                            + " misspelling must not be tidied")
+                    .isGreaterThan(informationWidth);
+        }
+    }
+
+    @Nested
+    @DisplayName("9. Comparison regimes: the payload must not normalise, because two regimes disagree")
+    final class ComparisonRegimes {
+
+        @ParameterizedTest(name = "{0} round-trips a mixed-case, space-padded group identifier")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#snapshotGroups")
+        @DisplayName("stores the group identifier exactly as given, folding neither case nor padding")
+        void storesTheGroupIdentifierExactlyAsGiven(final Class<?> group) {
+            final String raw = "GoLd  DiSc";
+
+            assertThat(readMember(withOnly(group, "groupId", raw), "groupId"))
+                    .as("%s.groupId feeds two regimes that fold it differently -"
+                            + " FUNCTION LOWER-CASE with no TRIM at app/cbl/COACTUPC.cbl:4139-4140"
+                            + " and FUNCTION UPPER-CASE(FUNCTION TRIM(...)) at :1697-1700 - so"
+                            + " normalising on arrival would serve one and break the other",
+                            group.getSimpleName())
+                    .isEqualTo(raw);
+        }
+
+        @Test
+        @DisplayName("lets the two regimes reach opposite verdicts on one group-identifier pair")
+        void letsTheTwoRegimesReachOppositeVerdictsOnAGroupIdentifier() {
+            final OldDetails snapshot = withOnly(OldDetails.class, "groupId", "GOLD      ");
+            final NewDetails edited = withOnly(NewDetails.class, "groupId", "gold");
+
+            final String held = snapshot.getGroupId();
+            final String submitted = edited.getGroupId();
+
+            assertThat(concurrentChangeFolding(submitted))
+                    .as("9700 folds with LOWER-CASE and no TRIM (app/cbl/COACTUPC.cbl:4139-4140),"
+                            + " so the trailing padding survives the fold and the two differ")
+                    .isNotEqualTo(concurrentChangeFolding(held));
+            assertThat(userChangeFolding(submitted))
+                    .as("1205 folds with UPPER-CASE(TRIM()) (:1697-1700), so the same pair is equal"
+                            + " and no user change is reported. One pair, two verdicts: this is why"
+                            + " the payload has to keep the bytes and leave the folding to the"
+                            + " service")
+                    .isEqualTo(userChangeFolding(held));
+        }
+
+        @Test
+        @DisplayName("lets the two regimes reach opposite verdicts on the active status")
+        void letsTheTwoRegimesReachOppositeVerdictsOnTheActiveStatus() {
+            final OldDetails snapshot = withOnly(OldDetails.class, "activeStatus", "Y");
+            final NewDetails edited = withOnly(NewDetails.class, "activeStatus", "y");
+
+            assertThat(edited.getActiveStatus())
+                    .as("9700 compares the active status with no case function at all"
+                            + " (app/cbl/COACTUPC.cbl:4116), so a lower-case letter is a change")
+                    .isNotEqualTo(snapshot.getActiveStatus());
+            assertThat(userChangeFolding(edited.getActiveStatus()))
+                    .as("1205 folds both sides with UPPER-CASE (:1685-1688), so the same pair is"
+                            + " no change")
+                    .isEqualTo(userChangeFolding(snapshot.getActiveStatus()));
+        }
+
+        @Test
+        @DisplayName("keeps the postal code case-sensitive, which the account fixture makes reachable")
+        void keepsThePostalCodeCaseSensitive() {
+            final String fixtureZip = "A000000000";
+            final OldDetails snapshot = withOnly(OldDetails.class, "addressZip", fixtureZip);
+            final NewDetails edited = withOnly(NewDetails.class, "addressZip",
+                    fixtureZip.toLowerCase(Locale.ROOT));
+
+            assertThat(edited.getAddressZip())
+                    .as("9700 compares CUST-ADDR-ZIP with no case function"
+                            + " (app/cbl/COACTUPC.cbl:4168). This is not academic: every one of the"
+                            + " 50 rows of app/data/ASCII/acctdata.txt carries the non-numeric"
+                            + " postal code A000000000, so a letter really is present in the"
+                            + " production data and its case really does decide the verdict")
+                    .isNotEqualTo(snapshot.getAddressZip());
+            assertThat(userChangeFolding(edited.getAddressZip()))
+                    .as("1205 folds the postal code with UPPER-CASE(TRIM()) (:1747-1750), so the"
+                            + " same pair is no change there")
+                    .isEqualTo(userChangeFolding(snapshot.getAddressZip()));
+        }
+
+        @Test
+        @DisplayName("offers the balance as text for 1205 and as a number for 9700")
+        void offersTheBalanceAsTextAndAsANumber() {
+            final String overpunched = "00000001940{";
+            final String plainDigits = "000000019400";
+
+            final OldDetails snapshot = withOnly(OldDetails.class, "currentBalance", overpunched);
+            final OldDetails equivalent = withOnly(OldDetails.class, "currentBalance", plainDigits);
+
+            assertThat(snapshot.getCurrentBalance())
+                    .as("1205 compares ACUP-NEW-CURR-BAL against ACUP-OLD-CURR-BAL as the PIC X(12)"
+                            + " text it is (app/cbl/COACTUPC.cbl:1689), so the display image must"
+                            + " survive intact - this is the value app/data/ASCII/acctdata.txt"
+                            + " carries on row 1")
+                    .isEqualTo(overpunched)
+                    .isNotEqualTo(equivalent.getCurrentBalance());
+            assertThat(snapshot.currentBalanceAmount())
+                    .as("9700 compares ACCT-CURR-BAL against the ACUP-OLD-CURR-BAL-N numeric"
+                            + " redefine (:4117), and the trailing overpunch { denotes +0, so both"
+                            + " images denote 194.00. Two images, one number: the text regime says"
+                            + " changed and the numeric regime says unchanged, so both readings have"
+                            + " to exist")
+                    .isEqualByComparingTo(equivalent.currentBalanceAmount());
+        }
+
+        @ParameterizedTest(name = "{0} offers each date whole and as three components")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#snapshotGroups")
+        @DisplayName("offers each date whole for 1205 and as three components for 9700")
+        void offersEachDateWholeAndAsThreeComponents(final Class<?> group) {
+            final Map<String, String> dates = new LinkedHashMap<>();
+            dates.put("openDate", "20141120");
+            dates.put("expiraionDate", "20250520");
+            dates.put("reissueDate", "20250520");
+            final Object snapshot = withMembers(group, dates);
+
+            assertThat(readMember(snapshot, "openDate"))
+                    .as("1205 compares ACUP-NEW-OPEN-DATE against ACUP-OLD-OPEN-DATE whole"
+                            + " (app/cbl/COACTUPC.cbl:1692), so the eight-character value must be"
+                            + " readable as one string. This is row 1 of"
+                            + " app/data/ASCII/acctdata.txt, whose live form is 2014-11-20")
+                    .isEqualTo("20141120");
+            assertThat(List.of(
+                    invokeAccessor(snapshot, "openDateYear"),
+                    invokeAccessor(snapshot, "openDateMonth"),
+                    invokeAccessor(snapshot, "openDateDay")))
+                    .as("9700 compares ACCT-OPEN-DATE(1:4), (6:2) and (9:2) against three discrete"
+                            + " snapshot members (:4127-4129), so the same value must also be"
+                            + " readable as three components - never as one string")
+                    .containsExactlyElementsOf(liveDateComponents("2014-11-20"));
+            assertThat(List.of(
+                    invokeAccessor(snapshot, "expiraionDateYear"),
+                    invokeAccessor(snapshot, "expiraionDateMonth"),
+                    invokeAccessor(snapshot, "expiraionDateDay")))
+                    .as("the expiry date is sliced the same way at :4131-4133, under the misspelled"
+                            + " name the frozen corpus uses at app/cpy/CVACT01Y.cpy:11")
+                    .containsExactly("2025", "05", "20");
+            assertThat(List.of(
+                    invokeAccessor(snapshot, "reissueDateYear"),
+                    invokeAccessor(snapshot, "reissueDateMonth"),
+                    invokeAccessor(snapshot, "reissueDateDay")))
+                    .as("and the reissue date at :4135-4137")
+                    .containsExactly("2025", "05", "20");
+        }
+
+        @Test
+        @DisplayName("stores the telephone whole on OLD and by part on NEW, as the source assigns them")
+        void storesTheTelephoneWholeOnOldAndByPartOnNew() {
+            final String fixtureImage = "(908)119-8310  ";
+            final OldDetails snapshot = withOnly(OldDetails.class, "phoneNumber1", fixtureImage);
+            final Map<String, String> parts = new LinkedHashMap<>();
+            parts.put("phoneNumber1AreaCode", "908");
+            parts.put("phoneNumber1Prefix", "119");
+            parts.put("phoneNumber1LineNumber", "8310");
+            final NewDetails edited = withMembers(NewDetails.class, parts);
+
+            assertThat(snapshot.getPhoneNumber1())
+                    .as("9700 compares CUST-PHONE-NUM-1 against ACUP-OLD-CUST-PHONE-NUM-1 whole"
+                            + " (app/cbl/COACTUPC.cbl:4169-4170), so the OLD group keeps the whole"
+                            + " fifteen-byte image - exactly as row 1 of"
+                            + " app/data/ASCII/custdata.txt holds it at bytes 250 to 264")
+                    .isEqualTo(fixtureImage)
+                    .hasSize(PHONE_WIDTH);
+            assertThat(List.of(
+                    snapshot.phoneNumber1AreaCode(),
+                    snapshot.phoneNumber1Prefix(),
+                    snapshot.phoneNumber1LineNumber()))
+                    .as("the REDEFINES at :723-731 places the three parts at offsets 2, 6 and 10,"
+                            + " leaving the parenthesis, parenthesis and hyphen in the FILLER bytes")
+                    .containsExactly("908", "119", "8310");
+            assertThat(List.of(
+                    edited.getPhoneNumber1AreaCode(),
+                    edited.getPhoneNumber1Prefix(),
+                    edited.getPhoneNumber1LineNumber()))
+                    .as("1205 compares the six telephone parts individually (:1751-1756), so the NEW"
+                            + " group keeps the parts. Both groups agree on the three parts, which"
+                            + " is what that regime reads")
+                    .containsExactly("908", "119", "8310");
+        }
+
+        @Test
+        @DisplayName("cannot rebuild the punctuation from the parts, so neither side may be flattened")
+        void cannotRebuildThePunctuationFromTheParts() {
+            final String fixtureImage = "(908)119-8310  ";
+            final Map<String, String> parts = new LinkedHashMap<>();
+            parts.put("phoneNumber1AreaCode", "908");
+            parts.put("phoneNumber1Prefix", "119");
+            parts.put("phoneNumber1LineNumber", "8310");
+            final NewDetails edited = withMembers(NewDetails.class, parts);
+
+            final String rebuilt = edited.phoneNumber1();
+
+            assertThat(rebuilt)
+                    .as("the FILLER bytes of the REDEFINES at :723-731 are unnamed, so no MOVE to a"
+                            + " part ever writes them and the parts alone cannot say what they held")
+                    .hasSize(PHONE_WIDTH)
+                    .isNotEqualTo(fixtureImage);
+            assertThat(rebuilt.substring(1, 4) + rebuilt.substring(5, 8) + rebuilt.substring(9, 13))
+                    .as("the twelve data bytes do agree, which is precisely the boundary: the parts"
+                            + " carry the number and the whole carries the number plus punctuation."
+                            + " Flattening either group to match the other would name a value that"
+                            + " group never holds")
+                    .isEqualTo("9081198310");
+        }
+
+        @ParameterizedTest(name = "{0} declares no version counter")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#payloadTypesOnly")
+        @DisplayName("declares no version counter, so the snapshot is the only value-level evidence")
+        void declaresNoVersionCounter(final Class<?> type) {
+            assertThat(fieldNames(type))
+                    .as("a JPA version column answers \"did this row change?\" while"
+                            + " 9700-CHECK-CHANGE-IN-REC answers \"do these field values differ from"
+                            + " what the user was shown?\". %s carries no counter, so the snapshot"
+                            + " groups are the only evidence for the second question and are"
+                            + " load-bearing rather than decorative", type.getSimpleName())
+                    .noneMatch(member -> member.toLowerCase(Locale.ROOT).contains("version"));
+        }
+
+        @Test
+        @DisplayName("reports no change when a field was written away and restored, unlike a counter")
+        void reportsNoChangeWhenAFieldWasWrittenAwayAndRestored() {
+            final String original = "GOLD      ";
+            final OldDetails shownToTheUser = withOnly(OldDetails.class, "groupId", original);
+            final OldDetails afterTheRoundTrip = withOnly(OldDetails.class, "groupId", original);
+
+            assertThat(concurrentChangeFolding(afterTheRoundTrip.getGroupId()))
+                    .as("a concurrent writer that set this field to something else and then back"
+                            + " leaves the value the user was shown, so 9700 finds no change and the"
+                            + " update proceeds - while a version counter would have advanced twice"
+                            + " and refused it. The two guards answer different questions, so"
+                            + " neither substitutes for the other and both are required")
+                    .isEqualTo(concurrentChangeFolding(shownToTheUser.getGroupId()));
+        }
+    }
+
+    @Nested
+    @DisplayName("10. Emptiness is three states: absent, blank and low-values")
+    final class TriStateEmptiness {
+
+        @ParameterizedTest(name = "NewDetails.{0} keeps absent, blank and low-values apart")
+        @CsvSource({
+            "ssnPart1, 3",
+            "ssnPart2, 2",
+            "ssnPart3, 4",
+            "ficoScore, 3",
+            "dateOfBirth, 8",
+        })
+        @DisplayName("keeps absent, blank and low-values distinguishable on every affected member")
+        void keepsAbsentBlankAndLowValuesDistinguishable(final String member, final int width) {
+            final Object absent = readMember(withOnly(NewDetails.class, member, null), member);
+            final Object blank = readMember(withOnly(NewDetails.class, member, " ".repeat(width)),
+                    member);
+            final Object lowValues =
+                    readMember(withOnly(NewDetails.class, member, "\u0000".repeat(width)), member);
+
+            assertThat(absent)
+                    .as("NewDetails.%s: an absent member is not a blank one", member)
+                    .isNull();
+            assertThat(blank)
+                    .as("NewDetails.%s: SPACES must survive as spaces", member)
+                    .isEqualTo(" ".repeat(width));
+            assertThat(lowValues)
+                    .as("NewDetails.%s: app/cbl/COACTUPC.cbl moves LOW-VALUES - binary zeros, not"
+                            + " spaces - when the screen field holds '*' or SPACES (:1235, :1258,"
+                            + " :1279), so the two must not be folded together", member)
+                    .isEqualTo("\u0000".repeat(width))
+                    .isNotEqualTo(blank);
+        }
+
+        @ParameterizedTest(name = "NewDetails.{0} admits all three states without a violation")
+        @ValueSource(strings = {"ssnPart1", "ficoScore", "dateOfBirth"})
+        @DisplayName("admits all three states, so validation alone cannot tell them apart")
+        void admitsAllThreeStatesWithoutAViolation(final String member) {
+            final int width = declaredWidth(NewDetails.class, member);
+
+            for (final String value : Arrays.asList(null, " ".repeat(width),
+                    "\u0000".repeat(width))) {
+                final Set<ConstraintViolation<Object>> violations =
+                        VALIDATOR.validate(withOnly(NewDetails.class, member, value));
+                assertThat(violations)
+                        .as("app/cpy/CSSETATY.cpy models OK, NOT-OK and BLANK and fires its markers"
+                                + " only on re-entry, so the width contract must accept all three"
+                                + " states and leave the three-way decision to the service. A"
+                                + " constraint that rejected blank here would collapse the model to"
+                                + " two states")
+                        .isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("collapses all three states to no number, while the stored text keeps them apart")
+        void collapsesAllThreeStatesToNoNumberWhileTheTextKeepsThemApart() {
+            final NewDetails absent = withOnly(NewDetails.class, "ficoScore", null);
+            final NewDetails blank = withOnly(NewDetails.class, "ficoScore", "   ");
+            final NewDetails lowValues = withOnly(NewDetails.class, "ficoScore", "\u0000\u0000\u0000");
+
+            assertThat(List.of(absent, blank, lowValues))
+                    .as("none of the three is three decimal digits, so the numeric view is absent"
+                            + " for all three and cannot be what distinguishes them")
+                    .allSatisfy(group -> {
+                        assertThat(group.ficoScoreValue()).isNull();
+                        assertThat(group.ficoScoreIsInValidRange()).isFalse();
+                    });
+
+            assertThat(blank.getFicoScore())
+                    .as("the stored text is what preserves the distinction, which is what lets the"
+                            + " service choose between 'Credit Limit must be supplied' and"
+                            + " 'Credit Limit is not valid' rather than emitting one message for"
+                            + " both")
+                    .isNotEqualTo(lowValues.getFicoScore())
+                    .isNotNull();
+            assertThat(absent.getFicoScore()).isNull();
+        }
+
+        @Test
+        @DisplayName("keeps a low-values date sliceable, so its components stay distinguishable too")
+        void keepsALowValuesDateSliceable() {
+            final NewDetails lowValues =
+                    withOnly(NewDetails.class, "dateOfBirth", "\u0000".repeat(COMPACT_DATE_WIDTH));
+            final NewDetails blank =
+                    withOnly(NewDetails.class, "dateOfBirth", " ".repeat(COMPACT_DATE_WIDTH));
+
+            assertThat(lowValues.dateOfBirthYear())
+                    .as("the source moves LOW-VALUES into ACUP-NEW-CUST-DOB-YEAR itself (:1258),"
+                            + " which is the redefine of the compact PIC X(08), so a component of a"
+                            + " low-values date must read back as low-values rather than as spaces")
+                    .isEqualTo("\u0000".repeat(4))
+                    .isNotEqualTo(blank.dateOfBirthYear());
+            assertThat(List.of(lowValues.dateOfBirthMonth(), lowValues.dateOfBirthDay()))
+                    .as("month and day are moved independently at :1265 and :1272, so each keeps its"
+                            + " own state")
+                    .containsExactly("\u0000\u0000", "\u0000\u0000");
+        }
+
+        @Test
+        @DisplayName("keeps the blank and the not-valid messages distinct and independently carriable")
+        void keepsTheBlankAndNotValidMessagesDistinct() {
+            assertThat(CREDIT_LIMIT_BLANK)
+                    .as("app/cbl/COACTUPC.cbl:505-506 and :507-508 are two literals because they"
+                            + " report two states. One message for both would delete the"
+                            + " distinction from the observable contract")
+                    .isNotEqualTo(CREDIT_LIMIT_NOT_VALID);
+            assertThat(List.of(CREDIT_LIMIT_BLANK, CREDIT_LIMIT_NOT_VALID))
+                    .as("both must fit ERRMSGI PIC X(78) so either can be reported on its own")
+                    .allSatisfy(message -> assertThat(message.length())
+                            .isLessThanOrEqualTo(
+                                    declaredWidth(AccountUpdateRequest.class, "errorMessage")));
+        }
+    }
+
+    @Nested
+    @DisplayName("11. The state-and-postal-code edit is gated, so it cannot be a type-level constraint")
+    final class GatedCrossFieldEdit {
+
+        @ParameterizedTest(name = "{0} declares no unconditional cross-field constraint")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#payloadTypesOnly")
+        @DisplayName("declares no @AssertTrue or @AssertFalse anywhere on the type")
+        void declaresNoUnconditionalCrossFieldConstraint(final Class<?> type) {
+            assertThat(type.getAnnotations())
+                    .as("1280-EDIT-US-STATE-ZIP-CD runs only once FLG-STATE-ISVALID and"
+                            + " FLG-ZIPCODE-ISVALID are both set (app/cbl/COACTUPC.cbl:1664-1669)."
+                            + " A type-level @AssertTrue fires unconditionally, so it would report a"
+                            + " cross-field error on input whose single-field edit had already"
+                            + " failed - a different message set from the source")
+                    .noneMatch(annotation -> isAssertion(annotation.annotationType()));
+
+            assertThat(Arrays.stream(type.getDeclaredMethods())
+                    .flatMap(method -> Arrays.stream(method.getAnnotations()))
+                    .map(java.lang.annotation.Annotation::annotationType)
+                    .toList())
+                    .as("%s must not carry a method-level assertion either; the gating belongs to"
+                            + " the ordered edits of 1200-EDIT-MAP-INPUTS", type.getSimpleName())
+                    .noneMatch(GatedCrossFieldEdit.this::isAssertion);
+
+            assertThat(Arrays.stream(type.getDeclaredFields())
+                    .flatMap(field -> Arrays.stream(field.getAnnotations()))
+                    .map(java.lang.annotation.Annotation::annotationType)
+                    .toList())
+                    .as("nor a field-level assertion")
+                    .noneMatch(GatedCrossFieldEdit.this::isAssertion);
+        }
+
+        @Test
+        @DisplayName("reports nothing for an unlisted state code beside a non-numeric postal code")
+        void reportsNothingForAnUnlistedStateCodeBesideANonNumericPostalCode() {
+            final Map<String, String> hostile = new LinkedHashMap<>();
+            hostile.put("addressStateCode", "AP");
+            hostile.put("addressZip", "A000000000");
+            final NewDetails edited = withMembers(NewDetails.class, hostile);
+
+            assertThat(VALIDATOR.validate(edited))
+                    .as("AP, FM, MH and PW appear in app/data/ASCII/acctdata.txt but not in the"
+                            + " 56-entry VALID-US-STATE-CODE table at app/cpy/CSLKPCDY.cpy:1013, and"
+                            + " every one of those 50 rows carries the non-numeric postal code"
+                            + " A000000000. Declaring either rule here would reject the repository's"
+                            + " own seed data before the service ever saw it")
+                    .isEmpty();
+            assertThat(edited.getAddressStateCode()).isEqualTo("AP");
+            assertThat(edited.getAddressZip()).isEqualTo("A000000000");
+        }
+
+        @Test
+        @DisplayName("keeps the postal code five characters on the screen and ten in the snapshot")
+        void keepsThePostalCodeFiveOnScreenAndTenInTheSnapshot() {
+            assertThat(declaredWidth(AccountUpdateRequest.class, "addressZip"))
+                    .as("ACSZIPCI is PIC X(5) at app/cpy-bms/COACTUP.CPY:246")
+                    .isEqualTo(5);
+            assertThat(declaredWidth(OldDetails.class, "addressZip"))
+                    .as("ACUP-OLD-CUST-ADDR-ZIP is PIC X(10) at app/cbl/COACTUPC.cbl:721, so a"
+                            + " ten-byte snapshot sits behind a five-character screen field."
+                            + " Unifying them would either truncate the snapshot or widen the screen"
+                            + " contract, and both are parity breaks")
+                    .isEqualTo(10);
+            assertThat(declaredWidth(NewDetails.class, "addressZip")).isEqualTo(10);
+        }
+
+        @Test
+        @DisplayName("carries the edit routine labels verbatim, including the ten-character length")
+        void carriesTheEditRoutineLabelsVerbatim() {
+            assertThat("Phone Number 2")
+                    .as("1260-EDIT-US-PHONE-NUM is driven with this label at"
+                            + " app/cbl/COACTUPC.cbl:1640; the string reaches the user, so it is"
+                            + " part of the contract")
+                    .isNotEqualTo("Phone number 2");
+            assertThat("Primary Card Holder")
+                    .as("1220-EDIT-YESNO is driven with this label at :1657")
+                    .isNotEqualTo("Primary Cardholder");
+            assertThat(declaredWidth(NewDetails.class, "eftAccountId"))
+                    .as("1245-EDIT-NUM-REQD is driven with the label 'EFT Account Id' at :1647 and"
+                            + " WS-EDIT-ALPHANUM-LENGTH 10 at :1650, which is the same ten"
+                            + " characters ACUP-NEW-CUST-EFT-ACCOUNT-ID declares at :843")
+                    .isEqualTo(10);
+        }
+
+        /**
+         * Reports whether an annotation type is one of the two unconditional bean-validation
+         * assertions.
+         *
+         * @param annotationType the annotation type to classify
+         * @return {@code true} for {@code @AssertTrue} or {@code @AssertFalse}
+         */
+        private boolean isAssertion(final Class<?> annotationType) {
+            return "jakarta.validation.constraints.AssertTrue".equals(annotationType.getName())
+                    || "jakarta.validation.constraints.AssertFalse".equals(annotationType.getName());
+        }
+    }
+
+    @Nested
+    @DisplayName("12. Outcome codes and message literals: byte-for-byte, oddities included")
+    final class OutcomeFlagsAndMessages {
+
+        @Test
+        @DisplayName("keeps all five outcome codes distinct, including the two failure codes")
+        void keepsAllFiveOutcomeCodesDistinct() {
+            assertThat(OUTCOME_CODES)
+                    .as("ACUP-CHANGE-ACTION carries five single-character outcomes at"
+                            + " app/cbl/COACTUPC.cbl:660-668")
+                    .hasSize(5);
+            assertThat(OUTCOME_CODES.keySet())
+                    .containsExactlyInAnyOrder("E", "N", "C", "L", "F")
+                    .allSatisfy(code -> assertThat(code).hasSize(1));
+            assertThat(OUTCOME_CODES.get("L"))
+                    .as("88 ACUP-CHANGES-FAILED covers both 'L' and 'F' at :666, but :667 and :668"
+                            + " name them separately - a lock error and an update failure. A"
+                            + " response surface that answers one status for both discards what the"
+                            + " legacy screen displayed")
+                    .isNotEqualTo(OUTCOME_CODES.get("F"));
+        }
+
+        @Test
+        @DisplayName("keeps the five failure markers distinct rather than collapsing them")
+        void keepsTheFiveFailureMarkersDistinct() {
+            assertThat(FAILURE_MARKERS)
+                    .as("the four markers at app/cbl/COACTUPC.cbl:517-523 plus the cross-reference"
+                            + " read error at :525-526 each name a different failure, and :2607-2608"
+                            + " sets one of them specifically on an account-lock failure")
+                    .hasSize(5)
+                    .doesNotHaveDuplicates();
+        }
+
+        @Test
+        @DisplayName("carries all thirteen message literals byte-for-byte")
+        void carriesAllThirteenMessageLiteralsByteForByte() {
+            assertThat(MESSAGE_LITERALS)
+                    .as("app/cbl/COACTUPC.cbl:503-528 declares thirteen message condition names")
+                    .hasSize(13)
+                    .doesNotHaveDuplicates()
+                    .allSatisfy(literal -> assertThat(literal)
+                            .isNotBlank()
+                            .isEqualTo(literal.strip()));
+        }
+
+        @Test
+        @DisplayName("spells the concurrency verdict with two words, exactly as the corpus does")
+        void spellsTheConcurrencyVerdictWithTwoWords() {
+            assertThat(DATA_CHANGED_BEFORE_UPDATE)
+                    .as("app/cbl/COACTUPC.cbl:521-522 spells it 'some one'. The parity gates compare"
+                            + " this string, so the tidier one-word spelling is a regression rather"
+                            + " than a fix")
+                    .isEqualTo("Record changed by some one else. Please review")
+                    .contains(" some one ")
+                    .doesNotContain("someone");
+        }
+
+        @Test
+        @DisplayName("keeps four dots in the placeholder verdict, not three")
+        void keepsFourDotsInThePlaceholderVerdict() {
+            assertThat(CODING_TO_BE_DONE)
+                    .as("app/cbl/COACTUPC.cbl:527-528 carries four dots")
+                    .isEqualTo("Looks Good.... so far")
+                    .contains("Good....")
+                    .isNotEqualTo("Looks Good... so far");
+        }
+
+        @Test
+        @DisplayName("fits every literal inside the error message field the map declares")
+        void fitsEveryLiteralInsideTheErrorMessageField() {
+            final int errorWidth = declaredWidth(AccountUpdateRequest.class, "errorMessage");
+
+            assertThat(MESSAGE_LITERALS)
+                    .as("ERRMSGI is PIC X(78) at app/cpy-bms/COACTUP.CPY:324, so every verdict the"
+                            + " program can emit has to fit there whole - a truncated message is a"
+                            + " parity break the gates would catch as a diff")
+                    .allSatisfy(literal -> assertThat(literal.length())
+                            .isLessThanOrEqualTo(errorWidth));
+            assertThat(MESSAGE_LITERALS.stream().mapToInt(String::length).max().orElseThrow())
+                    .as("the longest of the thirteen is the concurrency verdict at 46 characters")
+                    .isEqualTo(DATA_CHANGED_BEFORE_UPDATE.length())
+                    .isEqualTo(46);
+        }
+
+        @Test
+        @DisplayName("shows that only the misspelling pushes the verdict past the information field")
+        void showsThatOnlyTheMisspellingPushesTheVerdictPastTheInformationField() {
+            final int informationWidth =
+                    declaredWidth(AccountUpdateRequest.class, "informationMessage");
+
+            assertThat(informationWidth)
+                    .as("INFOMSGI is PIC X(45) at app/cpy-bms/COACTUP.CPY:318")
+                    .isEqualTo(45);
+            assertThat(DATA_CHANGED_BEFORE_UPDATE.length())
+                    .as("the corpus spelling is one character too wide for that field")
+                    .isGreaterThan(informationWidth);
+            assertThat("Record changed by some one else. Please review".replace(" some one ",
+                    " someone ").length())
+                    .as("the corrected spelling is exactly 45 and would fit, which is how a"
+                            + " well-meant tidy-up could silently move the verdict onto the narrower"
+                            + " field and then truncate it once the spelling was reverted")
+                    .isEqualTo(informationWidth);
+        }
+    }
+
+    @Nested
+    @DisplayName("13. Decimal money, textual dates, and personal data that never reaches a log")
+    final class PrecisionDatesAndSecurity {
+
+        /** Column of {@code ACCT-CURR-BAL} in the 300-byte account record, one-based. */
+        private static final int ACCOUNT_BALANCE_COLUMN = 13;
+
+        /** Column of {@code ACCT-ADDR-ZIP}, which begins with a letter on all fifty rows. */
+        private static final int ACCOUNT_ZIP_COLUMN = 103;
+
+        /** Column of {@code ACCT-GROUP-ID}, which is ten spaces on all fifty rows. */
+        private static final int ACCOUNT_GROUP_COLUMN = 113;
+
+        /** Width of {@code ACCT-ADDR-ZIP} and {@code ACCT-GROUP-ID}, both {@code PIC X(10)}. */
+        private static final int ACCOUNT_TEXT_WIDTH = 10;
+
+        /** Column of {@code CUST-SSN} in the 500-byte customer record, one-based. */
+        private static final int CUSTOMER_SSN_COLUMN = 280;
+
+        /** Width of {@code CUST-SSN}, {@code PIC 9(09)}. */
+        private static final int CUSTOMER_SSN_WIDTH = 9;
+
+        @ParameterizedTest(name = "{0} exposes no binary floating-point reading")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#payloadTypesOnly")
+        @DisplayName("exposes no float or double anywhere, on any member or derived view")
+        void exposesNoBinaryFloatingPointReading(final Class<?> type) {
+            assertThat(zeroArgumentAccessors(type))
+                    .as("every PIC S9(n)V99 in the corpus is exact decimal. A binary floating-point"
+                            + " type cannot represent 0.01, so one appearing anywhere on %s would"
+                            + " fail the security audit outright", type.getSimpleName())
+                    .allSatisfy(accessor -> assertThat(accessor.getReturnType())
+                            .isNotIn(float.class, double.class, Float.class, Double.class));
+            assertThat(Arrays.stream(type.getDeclaredFields()).map(Field::getType).toList())
+                    .allSatisfy(fieldType -> assertThat(fieldType)
+                            .isNotIn(float.class, double.class, Float.class, Double.class));
+        }
+
+        @ParameterizedTest(name = "{0} reads every money member as a two-place BigDecimal")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#snapshotGroups")
+        @DisplayName("reads every money member as a BigDecimal scaled to two places")
+        void readsEveryMoneyMemberAsATwoPlaceBigDecimal(final Class<?> group) {
+            final List<String> money = List.of("currentBalance", "creditLimit", "cashCreditLimit",
+                    "currentCycleCredit", "currentCycleDebit");
+            final Map<String, String> images = new LinkedHashMap<>();
+            money.forEach(member -> images.put(member, "00000001940{"));
+            final Object snapshot = withMembers(group, images);
+
+            for (final String member : money) {
+                assertThat(declaredWidth(group, member))
+                        .as("%s.%s mirrors PIC X(12) at app/cbl/COACTUPC.cbl:675, whose numeric"
+                                + " redefine is PIC S9(10)V99", group.getSimpleName(), member)
+                        .isEqualTo(MONEY_WIDTH);
+                final Object amount = invokeAccessor(snapshot, member + "Amount");
+                assertThat(amount)
+                        .as("%s.%sAmount must be exact decimal", group.getSimpleName(), member)
+                        .isInstanceOf(BigDecimal.class);
+                assertThat((BigDecimal) amount)
+                        .as("the V99 of the PIC clause fixes the scale at two")
+                        .hasScaleOf(2)
+                        .isEqualByComparingTo(new BigDecimal("194.00"));
+            }
+        }
+
+        @Test
+        @DisplayName("must be compared with compareTo, because equals also compares the scale")
+        void mustBeComparedWithCompareToRatherThanEquals() {
+            final OldDetails snapshot =
+                    withOnly(OldDetails.class, "currentBalance", "00000001940{");
+            final BigDecimal sameValueDifferentScale = new BigDecimal("194.000");
+
+            assertThat(snapshot.currentBalanceAmount())
+                    .as("BigDecimal.equals compares the unscaled value AND the scale, so 194.00 and"
+                            + " 194.000 are unequal by equals while denoting one amount. Every"
+                            + " comparison of a money reading must therefore use compareTo")
+                    .isEqualByComparingTo(sameValueDifferentScale);
+            assertThat(snapshot.currentBalanceAmount().equals(sameValueDifferentScale))
+                    .as("and this is why: equals answers false for the same amount, which is the"
+                            + " defect the rule exists to prevent")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("keeps the three declared precisions distinct rather than widening to one")
+        void keepsTheThreeDeclaredPrecisionsDistinct() {
+            assertThat(FixtureLoader.MONEY_FIELD_WIDTH)
+                    .as("the account money tier is PIC S9(10)V99, which is the tier this payload's"
+                            + " snapshot members belong to: ACUP-OLD-CURR-BAL-N at"
+                            + " app/cbl/COACTUPC.cbl:676-677 and ACCT-CURR-BAL at"
+                            + " app/cpy/CVACT01Y.cpy:7")
+                    .isEqualTo(MONEY_WIDTH)
+                    .isEqualTo(declaredWidth(OldDetails.class, "currentBalance"));
+            assertThat(List.of(FixtureLoader.MONEY_FIELD_WIDTH, FixtureLoader.AMOUNT_FIELD_WIDTH,
+                    FixtureLoader.RATE_FIELD_WIDTH))
+                    .as("the other two tiers are PIC S9(09)V99 and PIC S9(04)V99, whose widths"
+                            + " FixtureLoader declares alongside this one. Collapsing the three into"
+                            + " one wide type would let a value the source rejects round-trip"
+                            + " silently. This asserts the declared PIC widths only - what the"
+                            + " generated schema states about them is Not available here, because"
+                            + " this tier reads no migration file and none is asserted against")
+                    .containsExactly(12, 11, 6)
+                    .doesNotHaveDuplicates();
+            assertThat(FixtureLoader.DECIMAL_SCALE)
+                    .as("all three tiers share the V99 scale of two; only the precision differs")
+                    .isEqualTo(2);
+        }
+
+        @ParameterizedTest(name = "{0} carries every date as text")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#payloadTypesOnly")
+        @DisplayName("carries every date as text, never as a temporal type")
+        void carriesEveryDateAsText(final Class<?> type) {
+            assertThat(zeroArgumentAccessors(type))
+                    .as("the corpus stores dates as PIC X(08) and PIC X(10) alphanumerics and"
+                            + " compares them as characters, including at offsets a parsed date has"
+                            + " no notion of. A temporal type on %s would normalise away exactly the"
+                            + " representation the comparison reads, and would reject the"
+                            + " low-values state as unparseable", type.getSimpleName())
+                    .filteredOn(accessor -> accessor.getName().toLowerCase(Locale.ROOT)
+                            .contains("date"))
+                    .isNotEmpty()
+                    .allSatisfy(accessor -> assertThat(accessor.getReturnType())
+                            .isEqualTo(String.class));
+        }
+
+        @Test
+        @DisplayName("takes the header date and time from the injected clock, never from a live one")
+        void takesTheHeaderDateAndTimeFromTheInjectedClock() {
+            final Clock clock = FixedClockProvider.canonicalClock();
+            final String timestamp = FixedClockProvider.onlineTimestamp(clock);
+
+            final String headerDate = timestamp.substring(5, 7) + "/" + timestamp.substring(8, 10)
+                    + "/" + timestamp.substring(2, 4);
+            final String headerTime = timestamp.substring(11, 19);
+
+            final Map<String, String> header = new LinkedHashMap<>();
+            header.put("currentDate", headerDate);
+            header.put("currentTime", headerTime);
+            final AccountUpdateRequest payload =
+                    withMembers(AccountUpdateRequest.class, header);
+
+            assertThat(payload.getCurrentDate())
+                    .as("CURDATEI is PIC X(8) at app/cpy-bms/COACTUP.CPY:36, and the value comes"
+                            + " from FixedClockProvider so that this assertion means the same thing"
+                            + " on every machine and in every month")
+                    .isEqualTo("06/10/22")
+                    .hasSize(declaredWidth(AccountUpdateRequest.class, "currentDate"));
+            assertThat(payload.getCurrentTime())
+                    .as("CURTIMEI is PIC X(8) on this map at app/cpy-bms/COACTUP.CPY:54 - and PIC"
+                            + " X(9) on app/cpy-bms/COSGN00.CPY:54, which is why the six header"
+                            + " fields are declared inline here rather than shared with another map")
+                    .isEqualTo("19:27:53")
+                    .hasSize(declaredWidth(AccountUpdateRequest.class, "currentTime"));
+            assertThat(FixedClockProvider.CANONICAL_ZONE)
+                    .as("the zone is fixed too, so a machine in another offset reads the same"
+                            + " calendar day out of the same instant")
+                    .isEqualTo(java.time.ZoneOffset.UTC);
+        }
+
+        @ParameterizedTest(name = "{0} inherits toString, equals and hashCode")
+        @MethodSource("com.cardemo.unit.model.AccountUpdateRequestTest#payloadTypesOnly")
+        @DisplayName("overrides neither toString nor equals nor hashCode, given what it carries")
+        void overridesNeitherToStringNorEqualsNorHashCode(final Class<?> type) {
+            final List<String> overridden = zeroArgumentAccessors(type).stream()
+                    .map(Method::getName)
+                    .filter(name -> "toString".equals(name) || "hashCode".equals(name))
+                    .toList();
+
+            assertThat(overridden)
+                    .as("%s carries a social security number, two telephone numbers, a date of"
+                            + " birth, a government-issued identifier, three name parts and a full"
+                            + " address. A generated toString would put all of it into any log line"
+                            + " that interpolated the payload, so the inherited one is the only safe"
+                            + " one - and hashCode must not digest the same data either",
+                            type.getSimpleName())
+                    .isEmpty();
+            assertThat(Arrays.stream(type.getDeclaredMethods())
+                    .filter(method -> "equals".equals(method.getName()))
+                    .toList())
+                    .as("nor may %s define value equality over personal data", type.getSimpleName())
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("renders no personal data when a fully populated payload is interpolated")
+        void rendersNoPersonalDataWhenInterpolated() {
+            final FixtureLoader.FixtureData customers =
+                    FixtureLoader.load(FixtureLoader.Fixture.CUSTOMER);
+            final String socialSecurityNumber =
+                    customers.field(0, CUSTOMER_SSN_COLUMN, CUSTOMER_SSN_WIDTH);
+
+            final Map<String, String> populated = new LinkedHashMap<>();
+            populated.put("ssn", socialSecurityNumber);
+            populated.put("dateOfBirth", COMPACT_DATE_OF_BIRTH);
+            populated.put("phoneNumber1", "(908)119-8310  ");
+            final OldDetails snapshot = withMembers(OldDetails.class, populated);
+
+            final String rendered = String.valueOf(snapshot);
+
+            assertThat(rendered.contains(socialSecurityNumber))
+                    .as("the social security number must not appear in the rendering of the"
+                            + " snapshot. Only the boolean outcome is asserted, so a failure here"
+                            + " reports that the leak happened without reprinting the value into the"
+                            + " build log as well")
+                    .isFalse();
+            assertThat(rendered.contains(COMPACT_DATE_OF_BIRTH))
+                    .as("nor may the date of birth appear")
+                    .isFalse();
+            assertThat(rendered.contains("9081198310") || rendered.contains("119-8310"))
+                    .as("nor either telephone number, whole or in part")
+                    .isFalse();
+            assertThat(snapshot.getSsn())
+                    .as("the value is still reachable through its accessor, so the payload"
+                            + " transports it without advertising it")
+                    .hasSize(CUSTOMER_SSN_WIDTH);
+        }
+
+        @Test
+        @DisplayName("accepts the account fixture's own postal code and blank group identifier")
+        void acceptsTheAccountFixtureOwnPostalCodeAndBlankGroupIdentifier() {
+            final FixtureLoader.FixtureData accounts =
+                    FixtureLoader.load(FixtureLoader.Fixture.ACCOUNT);
+
+            assertThat(accounts.recordCount())
+                    .as("app/data/ASCII/acctdata.txt is 15050 bytes of fifty 300-byte records")
+                    .isEqualTo(50);
+
+            for (int index = 0; index < accounts.recordCount(); index++) {
+                final String zip = accounts.field(index, ACCOUNT_ZIP_COLUMN, ACCOUNT_TEXT_WIDTH);
+                final String groupId =
+                        accounts.field(index, ACCOUNT_GROUP_COLUMN, ACCOUNT_TEXT_WIDTH);
+                final Map<String, String> values = new LinkedHashMap<>();
+                values.put("addressZip", zip);
+                values.put("groupId", groupId);
+                final OldDetails snapshot = withMembers(OldDetails.class, values);
+
+                assertThat(VALIDATOR.validate(snapshot))
+                        .as("record %d of the account fixture must bind without a violation: the"
+                                + " postal code is not numeric and the group identifier is blank on"
+                                + " every row, so a digits-only rule or a non-blank rule would"
+                                + " reject the repository's own seed data", index)
+                        .isEmpty();
+                assertThat(snapshot.getAddressZip()).isEqualTo(zip);
+                assertThat(snapshot.getGroupId()).isEqualTo(groupId);
+            }
+        }
+
+        @Test
+        @DisplayName("decodes the overpunch sign from the declared position, never from the record")
+        void decodesTheOverpunchSignFromTheDeclaredPosition() {
+            final FixtureLoader.FixtureData accounts =
+                    FixtureLoader.load(FixtureLoader.Fixture.ACCOUNT);
+
+            assertThat(accounts.signedDecimal(0, ACCOUNT_BALANCE_COLUMN,
+                    FixtureLoader.MONEY_FIELD_WIDTH))
+                    .as("ACCT-CURR-BAL is PIC S9(10)V99 at columns 13 to 24 of the account record"
+                            + " and row 1 holds 00000001940{, whose trailing { denotes +0, so the"
+                            + " value is 194.00")
+                    .isEqualByComparingTo(new BigDecimal("194.00"));
+
+            final Throwable atTheWrongPosition = catchThrowable(() -> accounts.signedDecimal(0,
+                    ACCOUNT_ZIP_COLUMN, ACCOUNT_TEXT_WIDTH));
+
+            assertThat(atTheWrongPosition)
+                    .as("ACCT-ADDR-ZIP begins with the letter A, which a decoder applied without"
+                            + " regard to the PIC clauses would read as the overpunch for +1."
+                            + " Decoding must be driven by the declared field positions only, so"
+                            + " attempting it here has to fail rather than invent a number")
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(atTheWrongPosition.getCause())
+                    .as("and the root cause must be preserved rather than swallowed")
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(accounts.field(0, ACCOUNT_ZIP_COLUMN, ACCOUNT_TEXT_WIDTH))
+                    .as("read as the text it is, the same bytes are perfectly valid")
+                    .startsWith("A");
         }
     }
 }
