@@ -672,20 +672,29 @@ class StatementOutputSinkContractTest {
         }
 
         @Test
-        @DisplayName("the composed keys carry exactly the five intended segments")
+        @DisplayName("the composed keys carry exactly the six intended segments")
         void theComposedKeysCarryExactlyTheIntendedSegments() {
             Emission emission = emit(benign("PURCHASE"));
 
             // The generation is zero-padded to nineteen digits, the width of Long.MAX_VALUE, so that the
             // lexicographic order of the keys equals the numeric order of the generations across the whole
             // domain - which is what lets a relative GDG (0) reference resolve as the greatest prefix.
+            //
+            // The statement ordinal beneath it is finding F-01: an account holds as many statements as it
+            // holds cards, because CARDXREF.VSAM.AIX is a non-unique alternate index on the account
+            // identifier, so a key that stopped at the generation identified an account-month and the second
+            // statement of an account was written over the first. It is padded to the same width and for the
+            // same reason, and it sits after the generation so that the greatest-prefix equivalence above is
+            // unaffected.
             assertThat(emission.keys())
                     .containsEntry(StatementWriter.STMTFILE_DD_NAME,
                             "statements/account=00000000001/month=2024-03/"
-                                    + "generation=0000000000000000007/STATEMNT.PS")
+                                    + "generation=0000000000000000007/statement=0000000000000000001/"
+                                    + "STATEMNT.PS")
                     .containsEntry(StatementWriter.HTMLFILE_DD_NAME,
                             "statements/account=00000000001/month=2024-03/"
-                                    + "generation=0000000000000000007/STATEMNT.HTML");
+                                    + "generation=0000000000000000007/statement=0000000000000000001/"
+                                    + "STATEMNT.HTML");
             assertThat(emission.keys().values()).allSatisfy(key -> assertThat(key)
                     .doesNotContain("..")
                     .doesNotContain("//")

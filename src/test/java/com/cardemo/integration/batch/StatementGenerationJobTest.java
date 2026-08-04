@@ -82,10 +82,12 @@ import org.springframework.transaction.annotation.Transactional;
 import com.cardemo.batch.processors.StatementProcessor;
 import com.cardemo.batch.writers.StatementWriter;
 import com.cardemo.model.dto.StatementTransaction;
+import com.cardemo.model.entity.Card;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
+import com.cardemo.repository.CardRepository;
 import com.cardemo.repository.CustomerRepository;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileService;
@@ -296,6 +298,16 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
     @Autowired
     private CardCrossReferenceRepository cardCrossReferenceRepository;
 
+    /**
+     * Commits the additional card that finding F-01's regression needs, and removes it again.
+     *
+     * <p>A transaction carries a foreign key to the card relation - {@code fk04_transaction_card} - so a probe
+     * transaction on a second card of one account needs that card to exist. The cross-reference relation
+     * carries no such key to it, which is why the two rows are inserted separately rather than through one.
+     */
+    @Autowired
+    private CardRepository cardRepository;
+
     /** Confirms the seeded customer census the statement path joins through. */
     @Autowired
     private CustomerRepository customerRepository;
@@ -430,6 +442,17 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
 
     /** Root key segment under which both statement objects are written. */
     private final String statementKeyRoot = "statements/";
+
+    /**
+     * The card number finding F-01's regression adds as a second card on one seeded account.
+     *
+     * <p>Sixteen digits, as {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:5} requires, and chosen
+     * above every seeded card number so that it sorts last: the projection's primary sort key is the card
+     * number, so a value at the end of the sequence exercises the two-card account at the far end of the
+     * stream from its first card rather than adjacent to it, which is the arrangement the card-ordered driving
+     * read actually produces.
+     */
+    private final String additionalCardNumber = "9900000000000001";
 
     /**
      * Transactions driven through the pipeline by the ceiling test: comfortably above the legacy
@@ -887,19 +910,27 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
         for (final S3Object object : emitted) {
             assertThat(object.key())
                     .as("every statement object is keyed by account, then statement month, then generation, "
-                            + "and the month is formatted from the fixed clock rather than from wall time")
+                            + "then the statement's own ordinal, and the month is formatted from the fixed "
+                            + "clock rather than from wall time")
                     .startsWith(statementKeyRoot + "account=")
                     .contains("/month=" + expectedMonth + "/")
-                    .contains("/generation=" + expectedGeneration + "/");
+                    .contains("/generation=" + expectedGeneration + "/")
+                    .containsPattern("/statement=\\d{" + generationSegmentWidth + "}/");
         }
 
         assertThat(emitted.stream().map(S3Object::key).toList())
                 .as("both objects of the account whose card carries the probe transaction are present under "
                         + "the account's own prefix")
-                .contains(expectedStatementObjectKey(probeAccountId(), expectedMonth, expectedGeneration,
+                .contains(soleStatementObjectKey(probeAccountId(), expectedMonth, expectedGeneration,
                                 statementTextObjectName),
-                        expectedStatementObjectKey(probeAccountId(), expectedMonth, expectedGeneration,
+                        soleStatementObjectKey(probeAccountId(), expectedMonth, expectedGeneration,
                                 statementMarkupObjectName));
+
+        assertThat(emitted.stream().map(S3Object::key).toList())
+                .as("finding F-01: the key identifies a statement, so no two objects of a run can share one "
+                        + "and no statement can be written over another")
+                .doesNotHaveDuplicates()
+                .hasSize(seededCrossReferenceCount * 2);
     }
 
     // =================================================================================================
@@ -1389,6 +1420,134 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
                 .isSorted();
     }
 
+    /**
+     * Finding F-01: an account with two cross-reference rows keeps both statements.
+     *
+     * <p>Purpose: reproduce, and then close, a silent data loss. The emitted object key used to be a function
+     * of the account, the statement month and the generation only, so it identified an account-month rather
+     * than a statement - and an account-month holds as many statements as the account holds cards. Object
+     * storage accepts a write to an existing key, reports success and keeps only the last, so the second
+     * statement of an account destroyed the first with no warning, no error and a {@code COMPLETED} run. This
+     * test fails on that implementation and passes only when the key carries the statement's own ordinal.
+     *
+     * <p>Inputs: one additional card on the account of the lowest-keyed seeded cross-reference, one additional
+     * cross-reference row pointing at it, and one probe transaction on each of the account's two cards, with
+     * distinct identifiers so that each statement's content is attributable to exactly one card. Output: none.
+     * Side effects: the extra card and cross-reference rows are committed and are removed again in the
+     * {@code finally} block, because the parent harness resets transactions, batch metadata, money columns and
+     * the buckets but deliberately does not touch the card or cross-reference relations - test 14 asserts
+     * their census, so a leak here would fail a different test and name the wrong cause.
+     *
+     * <p>Error modes: a failure of the count assertion means statements are being overwritten again; a failure
+     * of the content assertions means the two statements exist but carry the wrong transactions, which would
+     * point at the emission rather than at the key.
+     *
+     * <p>Several cards on one account is a designed state and not a contrivance: {@code CARDXREF.VSAM.AIX} and
+     * {@code CARDDATA.VSAM.AIX} are <strong>non-unique</strong> alternate indexes on the account identifier
+     * ({@code app/catlg/LISTCAT.txt:254-270}), {@code app/cbl/COCRDLIC.cbl} exists to list the several cards
+     * of one account, and {@code app/cbl/CBSTM03A.CBL} opens its output once at {@code :293} and closes it
+     * once at {@code :339}, appending one statement per cross-reference row into a single sequential dataset -
+     * so the source retained every statement.
+     */
+    @Test
+    @DisplayName("15. F-01: an account carrying two cross-reference rows keeps both statements - neither "
+            + "object pair is written over the other, as CBSTM03A.CBL:293-339 retains both")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void anAccountWithTwoCrossReferenceRowsKeepsBothStatements() {
+        final CardCrossReference first = firstSeededCrossReference();
+        final String secondCardNumber = additionalCardNumber;
+        final String firstTransactionId = probeTransactionId(1);
+        final String secondTransactionId = probeTransactionId(2);
+        try {
+            cardRepository.save(new Card(secondCardNumber, first.getAccountId(), "123",
+                    "QA SECOND CARD HOLDER", "2030-12-31", "Y"));
+            cardCrossReferenceRepository.save(new CardCrossReference(secondCardNumber,
+                    first.getCustomerId(), first.getAccountId()));
+            seedTransaction(firstTransactionId, first.getCardNumber());
+            seedTransaction(secondTransactionId, secondCardNumber);
+
+            final JobExecution execution = launchStatementGeneration();
+            assertRunCompleted(execution);
+
+            final String month = YearMonth.now(clock()).toString();
+            final String generation = String.format(Locale.ROOT, "%0" + generationSegmentWidth + "d",
+                    execution.getJobInstance().getInstanceId());
+            final String accountSegment = accountKeySegment(first.getAccountId());
+
+            final long expectedStatements = seededCrossReferenceCount + 1L;
+            assertThat(execution.getExecutionContext().getLong(statementsEmittedContextEntry))
+                    .as("one statement per cross-reference row, and there are now %d of them",
+                            Long.valueOf(expectedStatements))
+                    .isEqualTo(expectedStatements);
+
+            final List<String> emitted = objectsUnder(statementsBucket, statementKeyRoot).stream()
+                    .map(S3Object::key)
+                    .toList();
+            assertThat(emitted)
+                    .as("every statement emitted still exists: %d statements times the two output streams. "
+                            + "A count of %d would mean the second statement of each two-card account had "
+                            + "been silently overwritten", Long.valueOf(expectedStatements),
+                            Long.valueOf(seededCrossReferenceCount * 2L))
+                    .doesNotHaveDuplicates()
+                    .hasSize((int) (expectedStatements * 2L));
+
+            final List<String> textKeys = statementObjectKeys(accountSegment, month, generation,
+                    statementTextObjectName);
+            final List<String> markupKeys = statementObjectKeys(accountSegment, month, generation,
+                    statementMarkupObjectName);
+            assertThat(textKeys)
+                    .as("the account now holds two cards, %s and %s, so its prefix holds two text objects",
+                            maskedCardNumber(first.getCardNumber()), maskedCardNumber(secondCardNumber))
+                    .hasSize(2);
+            assertThat(markupKeys)
+                    .as("and two markup objects, written at the other width by the same step")
+                    .hasSize(2);
+
+            final List<String> firstCardText = new ArrayList<>();
+            final List<String> secondCardText = new ArrayList<>();
+            for (final String key : textKeys) {
+                final List<String> records = fixedWidthRecords(objectBytes(statementsBucket, key),
+                        StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH);
+                if (records.stream().anyMatch(record -> record.startsWith(firstTransactionId))) {
+                    firstCardText.addAll(records);
+                }
+                if (records.stream().anyMatch(record -> record.startsWith(secondTransactionId))) {
+                    secondCardText.addAll(records);
+                }
+            }
+            assertThat(firstCardText)
+                    .as("the statement of card %s survives and carries its own transaction",
+                            maskedCardNumber(first.getCardNumber()))
+                    .isNotEmpty();
+            assertThat(secondCardText)
+                    .as("so does the statement of card %s - this is the assertion that failed before F-01 was "
+                            + "closed, because one of the two objects had replaced the other",
+                            maskedCardNumber(secondCardNumber))
+                    .isNotEmpty();
+            assertThat(firstCardText)
+                    .as("and neither statement carries the other card's transaction, so the two objects are "
+                            + "two statements rather than one statement written twice")
+                    .noneMatch(record -> record.startsWith(secondTransactionId));
+            assertThat(secondCardText)
+                    .noneMatch(record -> record.startsWith(firstTransactionId));
+
+            for (final String key : markupKeys) {
+                assertThat(objectBytes(statementsBucket, key).length
+                        % StatementTransaction.STATEMENT_HTML_RECORD_LENGTH)
+                        .as("both markup objects keep the LRECL=100 geometry of app/jcl/CREASTMT.JCL:94")
+                        .isZero();
+            }
+        } finally {
+            // In this order, and each one a no-op when the row was never committed: the transaction refers to
+            // the card through fk04_transaction_card, so it goes first. The parent harness empties the
+            // transaction relation after every test but does not touch card or card_cross_reference, so these
+            // two rows would otherwise outlive the test and fail test 14's census while naming the wrong cause.
+            transactionRepository.deleteById(secondTransactionId);
+            cardCrossReferenceRepository.deleteById(secondCardNumber);
+            cardRepository.deleteById(secondCardNumber);
+        }
+    }
+
     // =================================================================================================
     // Launching and outcome helpers.
     // =================================================================================================
@@ -1525,7 +1684,7 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
      * @return the statement's text records in write order, never {@code null}
      */
     private List<String> statementTextRecords(final String accountSegment, final long generation) {
-        final String key = expectedStatementObjectKey(accountSegment, YearMonth.now(clock()).toString(),
+        final String key = soleStatementObjectKey(accountSegment, YearMonth.now(clock()).toString(),
                 String.format(Locale.ROOT, "%0" + generationSegmentWidth + "d", Long.valueOf(generation)),
                 statementTextObjectName);
         return fixedWidthRecords(objectBytes(statementsBucket, key),
@@ -1533,19 +1692,66 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
     }
 
     /**
-     * Builds the object key a statement is expected to occupy, from its four key segments.
+     * The prefix under which every statement object of one account, month and generation is filed.
+     *
+     * @param accountSegment the eleven-digit account identifier, never {@code null}
+     * @param month the {@code uuuu-MM} statement month, never {@code null}
+     * @param generation the zero-padded generation ordinal, never {@code null}
+     * @return the prefix, ending in the key separator, never {@code null}
+     */
+    private String statementObjectPrefix(final String accountSegment, final String month,
+            final String generation) {
+
+        return statementKeyRoot + "account=" + accountSegment + "/month=" + month
+                + "/generation=" + generation + "/";
+    }
+
+    /**
+     * Resolves the keys of one output stream for one account, month and generation, in ascending key order.
+     *
+     * <p><strong>Resolved by enumeration rather than composed here, and that is the point of finding
+     * F-01.</strong> A key identifies a statement, not an account-month: it carries the statement's ordinal
+     * within the run beneath the generation, because the driving read returns one cross-reference row per card
+     * and {@code CARDXREF.VSAM.AIX} is a <em>non-unique</em> alternate index on the account identifier
+     * ({@code app/catlg/LISTCAT.txt:254-270}). A test that rebuilt the whole key from business data alone
+     * would therefore be asserting the very assumption that lost twelve statements - that an account-month has
+     * exactly one - so this method asks the bucket instead, and the account, month and generation prefix is
+     * what it asks with.
      *
      * @param accountSegment the eleven-digit account identifier, never {@code null}
      * @param month the {@code uuuu-MM} statement month, never {@code null}
      * @param generation the zero-padded generation ordinal, never {@code null}
      * @param objectName the file name, either the text object or the markup object, never {@code null}
-     * @return the full key, never {@code null}
+     * @return every matching key, ascending, never {@code null} and possibly empty
      */
-    private String expectedStatementObjectKey(final String accountSegment, final String month,
+    private List<String> statementObjectKeys(final String accountSegment, final String month,
             final String generation, final String objectName) {
 
-        return statementKeyRoot + "account=" + accountSegment + "/month=" + month
-                + "/generation=" + generation + "/" + objectName;
+        return objectsUnder(statementsBucket, statementObjectPrefix(accountSegment, month, generation))
+                .stream()
+                .map(S3Object::key)
+                .filter(key -> key.endsWith(objectName))
+                .toList();
+    }
+
+    /**
+     * Resolves the single key of one output stream for one account, month and generation.
+     *
+     * @param accountSegment the eleven-digit account identifier, never {@code null}
+     * @param month the {@code uuuu-MM} statement month, never {@code null}
+     * @param generation the zero-padded generation ordinal, never {@code null}
+     * @param objectName the file name, either the text object or the markup object, never {@code null}
+     * @return the one matching key, never {@code null}
+     */
+    private String soleStatementObjectKey(final String accountSegment, final String month,
+            final String generation, final String objectName) {
+
+        final List<String> keys = statementObjectKeys(accountSegment, month, generation, objectName);
+        assertThat(keys)
+                .as("account %s holds one cross-reference row in the seeded state, so exactly one %s object "
+                        + "must exist under its month and generation prefix", accountSegment, objectName)
+                .hasSize(1);
+        return keys.getFirst();
     }
 
     /**

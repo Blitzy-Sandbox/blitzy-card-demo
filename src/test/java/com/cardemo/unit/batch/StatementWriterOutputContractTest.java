@@ -73,6 +73,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.item.Chunk;
+import org.springframework.test.util.ReflectionTestUtils;
 
 @DisplayName("StatementWriter: the persistence half of the statement contract")
 class StatementWriterOutputContractTest {
@@ -349,10 +350,58 @@ class StatementWriterOutputContractTest {
 
             assertThat(uploads.get(0).key()).isEqualTo(
                     "statements/account=00000000001/month=2024-03/generation=0000000000000000000/"
-                            + "STATEMNT.PS");
+                            + "statement=0000000000000000001/STATEMNT.PS");
             assertThat(uploads.get(1).key()).isEqualTo(
                     "statements/account=00000000001/month=2024-03/generation=0000000000000000000/"
-                            + "STATEMNT.HTML");
+                            + "statement=0000000000000000001/STATEMNT.HTML");
+        }
+
+        @Test
+        @DisplayName("F-01: a second statement for the same account and month is not written over the first")
+        void secondStatementForOneAccountDoesNotOverwriteTheFirst() throws Exception {
+            writer.write(Chunk.of(statement(ACCOUNT_ID, 1, 1), statement(ACCOUNT_ID, 1, 1)));
+
+            assertThat(uploads).hasSize(4);
+            assertThat(uploads.stream().map(Upload::key).toList())
+                    .as("the statement ordinal beneath the generation is what distinguishes them; without it "
+                            + "both pairs composed one key and object storage silently kept only the last")
+                    .doesNotHaveDuplicates()
+                    .allSatisfy(key -> assertThat(key)
+                            .startsWith("statements/account=" + ACCOUNT_ID + "/month=" + FIXED_MONTH
+                                    + "/generation=0000000000000000000/"));
+            assertThat(uploads.get(0).key()).contains("statement=0000000000000000001/");
+            assertThat(uploads.get(2).key()).contains("statement=0000000000000000002/");
+            assertThat(writer.statementsWritten()).isEqualTo(2L);
+        }
+
+        @Test
+        @DisplayName("F-01: a repeated key is refused rather than silently overwriting a statement")
+        void aRepeatedKeyIsRefused() {
+            writer.openStatementOutputs(ACCOUNT_ID, FIXED_MONTH);
+            writer.writeStatementLine("FIRST");
+            writer.closeStatementOutputs();
+
+            // Rewinds the ordinal series to the value the first statement already used, which is the one thing
+            // the key's uniqueness rests on. The guard must refuse the write rather than let storage accept it:
+            // a PUT to an existing key succeeds, reports success and destroys the earlier statement.
+            ReflectionTestUtils.setField(writer, "statementOrdinal", Long.valueOf(0L));
+            writer.openStatementOutputs(ACCOUNT_ID, FIXED_MONTH);
+            writer.writeStatementLine("SECOND");
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(writer::flushStatementOutputs)
+                    .satisfies(abend -> {
+                        assertThat(abend.getAbendReason())
+                                .contains("repeats one this step execution has already written");
+                        assertThat(abend.getAbendReason())
+                                .as("the key carries the account identifier and the statement month, so the "
+                                        + "diagnostic names the two ordinals and never the key")
+                                .doesNotContain(ACCOUNT_ID)
+                                .doesNotContain("statements/");
+                    });
+            assertThat(uploads)
+                    .as("only the first statement's pair reached storage; the refused write uploaded nothing")
+                    .hasSize(2);
         }
 
         @ParameterizedTest

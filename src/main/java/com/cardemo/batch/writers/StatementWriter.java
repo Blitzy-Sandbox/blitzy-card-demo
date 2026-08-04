@@ -3,7 +3,7 @@
  * Application : CardDemo
  * Type        : Spring Batch ItemWriter
  * Function    : Persists the 80-byte text statement and the 100-byte HTML statement produced by
- *               StatementProcessor, one object pair per account, preserving both record widths
+ *               StatementProcessor, one object pair per statement, preserving both record widths
  *               byte-exactly at the object-storage boundary.
  * Source      : app/jcl/CREASTMT.JCL STEP040 :L79 (STMTFILE LRECL=80 :L89, HTMLFILE LRECL=100 :L94);
  *               app/cbl/CBSTM03A.CBL :L45 FD-STMTFILE-REC X(80), :L47 FD-HTMLFILE-REC X(100),
@@ -126,6 +126,25 @@ import com.cardemo.service.shared.FileStatusMapper;
  * control character could forge a log line. So the account identifier must be exactly
  * {@value #ACCOUNT_ID_DIGITS} ASCII digits and the statement month must be a strictly resolved
  * {@code uuuu-MM}; anything else is refused before a key is composed.
+ *
+ * <h2>One object pair per statement, not per account</h2>
+ *
+ * <p><b>Finding F-01, severity Major, RESOLVED.</b> The key composed here identifies a <em>statement</em>:
+ * account, then statement month, then generation, then the statement's ordinal within the step execution.
+ * It previously stopped at the generation, which identified an account-month instead - and an account-month
+ * carries as many statements as the account has cards. Twelve accounts with two cross-reference rows each
+ * therefore lost twelve statements to twelve overwrites, with storage reporting success for every write and
+ * the run finishing {@code COMPLETED}. Several cards on one account is a designed state, not a corner case:
+ * {@code CARDXREF.VSAM.AIX} and {@code CARDDATA.VSAM.AIX} are non-unique alternate indexes on the account
+ * identifier ({@code app/catlg/LISTCAT.txt:L254-L270}), and the source's own driving loop emits one
+ * statement per cross-reference row. See {@link #KEY_STATEMENT_SEGMENT} for the full reasoning, including why
+ * the discriminator is the statement's position rather than its card number, and
+ * {@link #requireStatementKeyIsUnwritten(String)} for the guard that refuses a repeated key rather than
+ * trusting the shape.
+ *
+ * <p>The account and month prefixes are unchanged, so a consumer still filters on them; what changed is that
+ * an account-month prefix may now hold several statements, exactly as the source's single sequential dataset
+ * held several statements for one account.
  *
  * <h2>Generation data group translation</h2>
  *
@@ -329,6 +348,55 @@ public class StatementWriter
     private static final String KEY_GENERATION_SEGMENT = "generation=";
 
     /**
+     * Key segment carrying the statement's ordinal within the run, which is what makes every key unique.
+     *
+     * <p><b>Finding F-01, severity Major, RESOLVED here: a statement was silently overwritten.</b> Until this
+     * segment existed the key was a function of the account, the statement month and the generation and of
+     * nothing else, so it identified an <em>account-month</em> rather than a <em>statement</em>. That is only
+     * the same thing while an account has exactly one card, and an account having several is a first-class
+     * state of this data model, not an edge case: {@code CARDXREF.VSAM.AIX} and {@code CARDDATA.VSAM.AIX} are
+     * <b>non-unique</b> alternate indexes on the account identifier
+     * ({@code app/catlg/LISTCAT.txt:L254-L270}), the emit step's driving read returns one cross-reference row
+     * per card, and {@code app/cbl/COCRDLIC.cbl} exists precisely to list the several cards of one account.
+     * With twelve of fifty accounts carrying two cross-reference rows, sixty-two statements were composed and
+     * only fifty pairs survived: the second statement of an account replaced the first, storage reported
+     * success for both writes, and the run finished {@code COMPLETED} with no warning anywhere. Silent loss of
+     * customer output is the worst failure mode this class can have, so the remedy is structural rather than
+     * advisory - see {@link #requireStatementKeyIsUnwritten(String)} for the guard that makes a repeat
+     * impossible rather than merely unlikely.
+     *
+     * <p><b>Why the ordinal, and not the card number.</b> The natural key of a statement is the
+     * cross-reference row, whose key is the sixteen-digit card number - but a card number is a primary account
+     * number, and this tree treats it as never-emit rather than as maskable. The reason is recorded in
+     * {@code src/main/resources/logback-spring.xml}: a sixteen-digit card number is indistinguishable from a
+     * sixteen-digit {@code TRAN-ID} ({@code app/cpy/CVTRA05Y.cpy:L5} and {@code :L15}), so no shape rule can
+     * mask one without redacting the other, and "the remediation is the one the entity classes already
+     * implement, namely never emitting it". An object key is not a private place: it is published into the
+     * step execution context, which the job repository persists, and it appears in every listing of the
+     * bucket. Putting a primary account number there would create a new disclosure in metadata to avoid one
+     * in a file name, so the discriminator is the statement's <em>position</em> instead.
+     *
+     * <p><b>Why the position is the faithful choice.</b> {@code app/cbl/CBSTM03A.CBL} opens both outputs once
+     * at {@code :L293}, appends one statement per cross-reference row through the mainline loop, and closes
+     * them once at {@code :L339}, so in the source a statement's identity within the output <em>was</em> its
+     * position in a single sequential dataset - {@code AWS.M2.CARDDEMO.STATEMNT.PS} at
+     * {@code app/jcl/CREASTMT.JCL:L91}. This segment states that position explicitly instead of leaving it
+     * implicit in a byte offset. The account and month prefixes the migration mandates are untouched, and the
+     * generation segment stays <em>ahead</em> of this one so that a relative {@code (0)} reference still
+     * resolves as the lexicographically greatest generation prefix.
+     *
+     * <p>Appending several statements into one per-account object - the other way to lose nothing - was
+     * rejected on two grounds. The driving read returns cross-reference rows in <b>card-number</b> order
+     * ({@code app/cbl/CBSTM03B.CBL} {@code 2000-XREFFILE-PROC} is a sequential read of a cluster keyed on
+     * {@code XREF-CARD-NUM}), so an account's rows are not adjacent and appending would need either the
+     * whole-run retention this class deliberately does not do - see
+     * {@link #CONTEXT_KEY_OBJECT_KEYS_COUNT} - or a download and re-upload per statement, whose cost grows
+     * with the square of the cards on an account and whose failure mode is a half-appended object. It would
+     * also break this class's one structural promise, that an object is created whole.
+     */
+    private static final String KEY_STATEMENT_SEGMENT = "statement=";
+
+    /**
      * Key separator. Object storage has no directories; the slash is a naming convention only.
      *
      * <p>Public for the same reason as {@link #KEY_ROOT}: a consumer enumerating the statement root filters
@@ -359,6 +427,18 @@ public class StatementWriter
      * unproven bound.
      */
     private static final int GENERATION_WIDTH = 19;
+
+    /**
+     * Zero-padded width of the statement-ordinal segment, defined as {@link #GENERATION_WIDTH} rather than as
+     * a second literal.
+     *
+     * <p>One number under two names, deliberately. The ordinal is a {@code long} counter and needs the padding
+     * to be wide enough that lexical order equals numeric order across its whole domain, which is exactly the
+     * argument {@link #GENERATION_WIDTH} sets out at length; writing {@code 19} again here would be a second
+     * place for that argument to be forgotten. Deriving it states that the two segments are padded for the
+     * same reason and cannot drift apart.
+     */
+    private static final int STATEMENT_ORDINAL_WIDTH = GENERATION_WIDTH;
 
     /**
      * Content type advertised for the text object, including the charset the bytes are actually in.
@@ -479,6 +559,17 @@ public class StatementWriter
      *
      * <p>The two step-scoped entries are kept, still naming the latest pair, for a listener running inside
      * the step.
+     *
+     * <p><b>Finding F-01, severity Major, RESOLVED: the published figure now counts distinct objects.</b> The
+     * tally is incremented once per object created, which is only the number of objects that <em>exist</em> if
+     * no two of them share a key. Before {@link #KEY_STATEMENT_SEGMENT} that condition did not hold: a run
+     * over sixty-two cross-reference rows spanning fifty accounts published 124 while the bucket held 100,
+     * so the entry over-reported by exactly the number of statements it had silently destroyed - and the one
+     * figure an operator would have checked to notice the loss was the figure that concealed it. Every key a
+     * step composes now carries that step's strictly increasing statement ordinal, so two objects cannot share
+     * a key, so each increment counts an object that is still there. The property is asserted rather than
+     * assumed: {@link #requireStatementKeyIsUnwritten(String)} refuses a key that does not advance, which
+     * turns any future regression into a failed step instead of a quiet over-count.
      */
     public static final String CONTEXT_KEY_OBJECT_KEYS_COUNT = "carddemo.statement.object.keys.count";
 
@@ -525,6 +616,37 @@ public class StatementWriter
 
     /** The generation the open statement is being written under. */
     private long currentGeneration;
+
+    /**
+     * Ordinal of the statement currently open within this step execution, one based; zero before the first
+     * open.
+     *
+     * <p>Advanced by every {@link #openStatementOutputs(String, String, long)} and never reused, which is what
+     * makes the composed key unique - see {@link #KEY_STATEMENT_SEGMENT}. An open that fails before its flush
+     * consumes its ordinal rather than releasing it: the sequence is an identity, not a census, and a gap in it
+     * is harmless where a reused value would not be.
+     */
+    private long statementOrdinal;
+
+    /**
+     * Ordinal of the statement most recently uploaded; zero before the first flush.
+     *
+     * <p>The whole state {@link #requireStatementKeyIsUnwritten(String)} needs to prove that a key is new. One
+     * {@code long} rather than a set of every key written, because the ordinals are strictly increasing: the
+     * only key a fresh one could repeat is the last, so bounded state suffices and a per-run collection - which
+     * would be the whole-run retention {@link #CONTEXT_KEY_OBJECT_KEYS_COUNT} exists to avoid - is not needed.
+     */
+    private long flushedStatementOrdinal;
+
+    /**
+     * Key of the most recently uploaded text object, retained across opens for the collision guard.
+     *
+     * <p>Distinct from {@link #textObjectKey}, which an open clears because it reports the <em>current</em>
+     * statement's key. This one survives the open so that the guard has something to compare against, and it
+     * is the text key alone because both objects of a pair differ only in their trailing object name: a unique
+     * text key implies a unique markup key.
+     */
+    private String flushedTextObjectKey;
 
     /** Whether a statement is open, so a record has somewhere to go. */
     private boolean outputsOpen;
@@ -601,7 +723,9 @@ public class StatementWriter
      *
      * <p>Each statement is opened, filled from its own already-composed lines and closed within this call,
      * which is what makes {@code OPEN OUTPUT} at {@code app/cbl/CBSTM03A.CBL:L293} and {@code CLOSE} at
-     * {@code :L339} bracket exactly one account, as they did in the source.
+     * {@code :L339} bracket exactly one statement, as they did in the source. Two statements of the same
+     * account are two separate object pairs, each under its own statement ordinal - see
+     * {@link #KEY_STATEMENT_SEGMENT}.
      *
      * <p>An empty or {@code null} chunk writes nothing at all and, in particular, does not bring a
      * statement into existence: a spurious empty object is never created.
@@ -652,12 +776,12 @@ public class StatementWriter
     }
 
     // =============================================================================================
-    // The per-account output lifecycle. Public because a step may drive it directly - the statement
+    // The per-statement output lifecycle. Public because a step may drive it directly - the statement
     // job's tasklet variant does - and because it is the observable counterpart of OPEN and CLOSE.
     // =============================================================================================
 
     /**
-     * Opens the two per-account statement outputs, using the generation captured from the enclosing job.
+     * Opens the two statement outputs, using the generation captured from the enclosing job.
      *
      * <p>This is the Java counterpart of {@code OPEN OUTPUT STMT-FILE HTML-FILE} at
      * {@code app/cbl/CBSTM03A.CBL:L293}. It buffers rather than holding two dataset handles, because the
@@ -676,7 +800,11 @@ public class StatementWriter
     }
 
     /**
-     * Opens the two per-account statement outputs under an explicit generation.
+     * Opens the two statement outputs under an explicit generation.
+     *
+     * <p>Reserves this statement's ordinal within the step execution as it opens, which is the segment that
+     * distinguishes it from every other statement of the same account and month - see
+     * {@link #KEY_STATEMENT_SEGMENT}. The ordinal is never reused, so two opens can never compose one key.
      *
      * @param accountId the account the statement belongs to; exactly {@value #ACCOUNT_ID_DIGITS} digits
      * @param statementMonth the statement month; a strictly resolved {@code uuuu-MM}
@@ -700,11 +828,16 @@ public class StatementWriter
         this.currentAccountId = verifiedAccountId;
         this.currentStatementMonth = verifiedMonth;
         this.currentGeneration = generation;
+        // Advanced before anything can be written into the statement, so the ordinal that reaches the key is
+        // the one this open reserved. Never reused: see KEY_STATEMENT_SEGMENT for why uniqueness of the key
+        // rests on it, and statementOrdinal for why a gap left by a failed open is harmless.
+        this.statementOrdinal++;
         this.outputsOpen = true;
         this.outputsFlushed = false;
         this.textObjectKey = null;
         this.htmlObjectKey = null;
-        LOG.debug("Opened statement outputs for statement month {} generation {}", verifiedMonth, generation);
+        LOG.debug("Opened statement outputs {} for statement month {} generation {}",
+                Long.valueOf(this.statementOrdinal), verifiedMonth, Long.valueOf(generation));
     }
 
     /**
@@ -763,9 +896,13 @@ public class StatementWriter
      * boundary. Calling this method again without further records is a no-op that returns the same keys,
      * so a flush followed by a close never uploads twice.
      *
+     * <p>The composed key is checked against the last one written before either upload is issued, so a
+     * statement can never replace another - see {@link #requireStatementKeyIsUnwritten(String)}.
+     *
      * @return an unmodifiable map from logical file name - {@value #STMTFILE_DD_NAME} and
      *     {@value #HTMLFILE_DD_NAME} - to the object key created for it, in that order
-     * @throws com.cardemo.exception.FatalProcessingException if no statement is open
+     * @throws com.cardemo.exception.FatalProcessingException if no statement is open, or if the composed key
+     *     repeats one this step execution has already written
      * @throws com.cardemo.exception.FileAccessException if object storage rejects either upload. The
      *     exception carries the logical file name and the attempted operation, and preserves the
      *     underlying cause; it never carries the record buffer or the object key
@@ -777,25 +914,30 @@ public class StatementWriter
         }
         String textKey = objectKey(TEXT_OBJECT_NAME);
         String htmlKey = objectKey(HTML_OBJECT_NAME);
+        requireStatementKeyIsUnwritten(textKey);
         upload(textKey, this.textRecords.toString(), TEXT_CONTENT_TYPE, TEXT_OBJECT_NAME, STMTFILE_DD_NAME);
         upload(htmlKey, this.htmlRecords.toString(), HTML_CONTENT_TYPE, HTML_OBJECT_NAME, HTMLFILE_DD_NAME);
         this.textObjectKey = textKey;
         this.htmlObjectKey = htmlKey;
-        // Appended in creation order, text then HTML, matching the order the two uploads above ran in. Done
-        // here rather than in afterStep because these two entries are one account's pair and a step produces
-        // one pair per account: assembling at step end could only ever recover the last.
+        this.flushedStatementOrdinal = this.statementOrdinal;
+        this.flushedTextObjectKey = textKey;
+        // Counted in creation order, text then HTML, matching the order the two uploads above ran in. Done
+        // here rather than in afterStep because these two objects are one statement's pair and a step produces
+        // one pair per statement: assembling at step end could only ever recover the last. Each increment is a
+        // distinct object because the guard above has already refused a repeated key.
         countCreatedObject();
         countCreatedObject();
         this.outputsFlushed = true;
-        LOG.info("Emitted statement objects for generation {}: {} text records, {} html records",
-                this.currentGeneration,
-                this.textRecords.length() / TEXT_RECORD_LENGTH,
-                this.htmlRecords.length() / HTML_RECORD_LENGTH);
+        LOG.info("Emitted statement {} objects for generation {}: {} text records, {} html records",
+                Long.valueOf(this.statementOrdinal),
+                Long.valueOf(this.currentGeneration),
+                Integer.valueOf(this.textRecords.length() / TEXT_RECORD_LENGTH),
+                Integer.valueOf(this.htmlRecords.length() / HTML_RECORD_LENGTH));
         return createdObjectKeys();
     }
 
     /**
-     * Flushes if necessary and then closes the two per-account outputs.
+     * Flushes if necessary and then closes the two outputs of the open statement.
      *
      * <p>This is the Java counterpart of {@code CLOSE STMT-FILE HTML-FILE} at
      * {@code app/cbl/CBSTM03A.CBL:L339}. The created keys remain readable through
@@ -870,6 +1012,14 @@ public class StatementWriter
     public void beforeStep(StepExecution stepExecution) {
         this.stepStatementMonth = YearMonth.now(this.clock).format(STATEMENT_MONTH_FORMAT);
         this.statementsWritten = 0L;
+        // The ordinal series belongs to one step execution, so it restarts here. Restarting it is safe rather
+        // than collision-prone because STEP030 - app/jcl/CREASTMT.JCL:L66, the IEFBR14 pre-delete - has
+        // already emptied the statement root before this step publishes anything, and because a re-attempt of
+        // the same job instance writes under the same generation and must therefore reproduce, not accumulate,
+        // that instance's keys.
+        this.statementOrdinal = 0L;
+        this.flushedStatementOrdinal = 0L;
+        this.flushedTextObjectKey = null;
         this.currentStepExecution = stepExecution;
         if (stepExecution == null || stepExecution.getJobExecution() == null
                 || stepExecution.getJobExecution().getJobInstance() == null) {
@@ -918,6 +1068,11 @@ public class StatementWriter
      * step produced and not merely the last account's pair. The keys themselves are deliberately not recorded
      * - see {@link #CONTEXT_KEY_OBJECT_KEYS_COUNT} for why an enumeration of {@link #KEY_ROOT} is both the
      * bounded and the more truthful record.
+     *
+     * <p>Counting per object is a count of <em>distinct</em> objects because
+     * {@link #requireStatementKeyIsUnwritten(String)} has already refused any key that repeats: one increment,
+     * one key, one object that is still there. That equivalence is finding F-01's second half - the published
+     * tally used to exceed the objects that existed by exactly the number destroyed.
      *
      * <p>Silently does nothing when no step execution has been captured, which is the case when the class is
      * driven directly by a unit test. That is the explicit {@code null} branch and not an oversight: the keys
@@ -1069,7 +1224,16 @@ public class StatementWriter
     }
 
     /**
-     * Composes one object key from the validated segments and the generation.
+     * Composes one object key from the validated segments, the generation and the statement ordinal.
+     *
+     * <p>Five segments then the object name, in this order and for these reasons: the root
+     * ({@link #KEY_ROOT}) is what {@code STEP030} enumerates; the account and month are the prefixes the
+     * migration mandates and are what a consumer filters on; the generation replaces the relative GDG
+     * reference and is padded so that the greatest prefix is the newest; and the statement ordinal makes the
+     * key identify a <em>statement</em> rather than an account-month, which is finding F-01 - see
+     * {@link #KEY_STATEMENT_SEGMENT}. The ordinal comes last because it is the narrowest scope: putting it
+     * ahead of the generation would break the "greatest prefix is newest" equivalence that a {@code (0)}
+     * reference resolves through.
      *
      * @param objectName the low-level object name
      * @return the complete key
@@ -1081,7 +1245,50 @@ public class StatementWriter
                 + KEY_GENERATION_SEGMENT
                 + String.format(Locale.ROOT, "%0" + GENERATION_WIDTH + "d",
                         Long.valueOf(this.currentGeneration))
+                + KEY_SEPARATOR
+                + KEY_STATEMENT_SEGMENT
+                + String.format(Locale.ROOT, "%0" + STATEMENT_ORDINAL_WIDTH + "d",
+                        Long.valueOf(this.statementOrdinal))
                 + KEY_SEPARATOR + objectName;
+    }
+
+    /**
+     * Refuses a composed key that this step execution has already written.
+     *
+     * <p><b>Finding F-01, severity Major: this is the guard that makes a silent overwrite impossible.</b> The
+     * key shape of {@link #KEY_STATEMENT_SEGMENT} already prevents a collision, because the ordinal it carries
+     * strictly increases and is never reused - but "prevented by construction" is a property of today's
+     * construction, and the failure it prevents is the loss of customer output with a {@code COMPLETED} status
+     * and nothing in the log. So the property is asserted where it is relied upon. Object storage would accept
+     * a repeated key and report success, so nothing below this method can detect the loss; nothing above it
+     * would look.
+     *
+     * <p>Two conditions, both refused: an ordinal that does not strictly advance beyond the last one flushed,
+     * and a composed key equal to the last one written. The first is the invariant, the second is the
+     * consequence, and checking both means a change to either the ordinal or the key composition still trips
+     * the guard. Comparing against the last key alone is sufficient <em>because</em> the ordinals increase: no
+     * earlier key can be re-composed without also failing the ordinal test, so this needs one {@code long} and
+     * one {@code String} rather than a record of every key the run has written.
+     *
+     * <p>Security: the diagnostic names the two ordinals and never the key, because a statement key carries
+     * the account identifier and the statement month.
+     *
+     * @param textKey the text object key about to be uploaded, never {@code null}
+     * @throws com.cardemo.exception.FatalProcessingException if the key repeats one already written
+     */
+    private void requireStatementKeyIsUnwritten(String textKey) {
+        if (this.statementOrdinal > this.flushedStatementOrdinal
+                && !textKey.equals(this.flushedTextObjectKey)) {
+            return;
+        }
+        throw abend(String.format(Locale.ROOT,
+                "the composed object key repeats one this step execution has already written: statement "
+                        + "ordinal %d does not advance beyond the last flushed ordinal %d. Object storage "
+                        + "would accept the write, report success and destroy the earlier statement, so the "
+                        + "run is abandoned instead. The key is withheld from this message because it carries "
+                        + "the account identifier and the statement month",
+                Long.valueOf(this.statementOrdinal), Long.valueOf(this.flushedStatementOrdinal)),
+                STMTFILE_DD_NAME, OPERATION_WRITE);
     }
 
     /**
@@ -1197,7 +1404,7 @@ public class StatementWriter
     private void upload(String key, String content, String contentType, String objectName,
             String logicalFileName) {
         // DEADLINE AND RETRY, and where they come from. The upload below is
-        // synchronous and a statement run performs two per account, so an unbounded call would wedge the step
+        // synchronous and a statement run performs two per statement, so an unbounded call would wedge the step
         // rather than fail it. No per-call override is configured HERE deliberately: a deadline written at this
         // call site would be a second policy that drifts from the one every other AWS call in the tree obeys.
         // AwsConfig.applyBoundedPolicy installs it on the client itself through an S3ClientCustomizer - a 30

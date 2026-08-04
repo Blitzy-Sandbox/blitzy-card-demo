@@ -810,17 +810,43 @@ class StatementWriterTest {
     class ObjectKeysAndContext {
 
         @Test
-        @DisplayName("both keys carry the account, the month, a twelve-digit generation and the object name")
+        @DisplayName("both keys carry the account, the month, the generation, the statement ordinal and the "
+                + "object name")
         void bothKeysCarryTheAccountMonthAndGeneration() {
             writer.openStatementOutputs(ACCOUNT_ID, MONTH, 7L);
             writer.writeStatementLine("x");
             writer.flushStatementOutputs();
 
             assertThat(uploadedKeys()).containsExactly(
-                    String.format(Locale.ROOT, "statements/account=%s/month=%s/generation=%019d/STATEMNT.PS",
-                            ACCOUNT_ID, MONTH, 7L),
-                    String.format(Locale.ROOT, "statements/account=%s/month=%s/generation=%019d/STATEMNT.HTML",
-                            ACCOUNT_ID, MONTH, 7L));
+                    String.format(Locale.ROOT,
+                            "statements/account=%s/month=%s/generation=%019d/statement=%019d/STATEMNT.PS",
+                            ACCOUNT_ID, MONTH, 7L, 1L),
+                    String.format(Locale.ROOT,
+                            "statements/account=%s/month=%s/generation=%019d/statement=%019d/STATEMNT.HTML",
+                            ACCOUNT_ID, MONTH, 7L, 1L));
+        }
+
+        @Test
+        @DisplayName("F-01: two statements for the same account and month occupy two distinct key pairs")
+        void twoStatementsForOneAccountOccupyDistinctKeys() {
+            writer.openStatementOutputs(ACCOUNT_ID, MONTH, 7L);
+            writer.writeStatementLine("first");
+            writer.closeStatementOutputs();
+            writer.openStatementOutputs(ACCOUNT_ID, MONTH, 7L);
+            writer.writeStatementLine("second");
+            writer.closeStatementOutputs();
+
+            assertThat(uploadedKeys())
+                    .as("an account holds as many statements as it holds cards, because CARDXREF.VSAM.AIX is "
+                            + "a non-unique alternate index on the account identifier; four distinct keys "
+                            + "means neither statement was overwritten")
+                    .doesNotHaveDuplicates()
+                    .hasSize(4);
+            assertThat(uploadedKeys().get(0))
+                    .contains(String.format(Locale.ROOT, "statement=%019d/", 1L));
+            assertThat(uploadedKeys().get(2))
+                    .as("the ordinal advances with the second open, and every other segment is unchanged")
+                    .contains(String.format(Locale.ROOT, "statement=%019d/", 2L));
         }
 
         @Test
@@ -984,7 +1010,7 @@ class StatementWriterTest {
             // The counts are derived from the accumulated buffer lengths divided by the record widths, so
             // they are a property of what this writer emitted rather than of what any composer produced.
             assertThat(loggedMessages())
-                    .anyMatch(message -> message.startsWith("Emitted statement objects for generation 0")
+                    .anyMatch(message -> message.startsWith("Emitted statement 1 objects for generation 0")
                             && message.contains("2 text records")
                             && message.contains("1 html records"));
         }

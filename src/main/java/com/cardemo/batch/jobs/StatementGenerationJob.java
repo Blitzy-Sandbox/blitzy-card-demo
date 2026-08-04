@@ -153,10 +153,13 @@ import io.awspring.cloud.s3.S3Resource;
  *   <li>One projected, sorted sequential object per run - the {@code AWS.M2.CARDDEMO.TRXFL.SEQ} analogue -
  *       under {@link #workPrefix} in the batch output bucket. Records are exactly
  *       {@value StatementTransaction#RECORD_LENGTH} bytes.</li>
- *   <li>Two statement objects per account, written by {@link StatementWriter}: text at
+ *   <li>Two statement objects per <b>statement</b>, written by {@link StatementWriter}: text at
  *       {@value StatementTransaction#STATEMENT_TEXT_RECORD_LENGTH} bytes per line and markup at
  *       {@value StatementTransaction#STATEMENT_HTML_RECORD_LENGTH}, under account and month prefixes in the
- *       statements bucket.</li>
+ *       statements bucket. Per statement and not per account: the driving read returns one cross-reference
+ *       row per card and an account may hold several, since {@code CARDXREF.VSAM.AIX} is a non-unique
+ *       alternate index on the account identifier, so the key carries a statement ordinal beneath the
+ *       generation - see {@code StatementWriter.KEY_STATEMENT_SEGMENT}, finding F-01.</li>
  *   <li>Execution-context entries recording the concrete object key each step created, so a later step
  *       re-reads <b>that key</b> rather than re-resolving "the latest object". See <i>Object storage</i>.</li>
  *   <li><strong>No application counter at all.</strong> Finding H-09, severity High, RESOLVED: an earlier
@@ -3006,7 +3009,7 @@ public class StatementGenerationJob {
             try {
                 final ExecutionContext context = jobExecution.getExecutionContext();
                 LOG.info("END OF EXECUTION OF JOB {}: status={} exit={} projected={} loaded={} "
-                                + "preDeleted={} statements={}",
+                                + "preDeleted={} statements={} objects={}",
                         jobName, jobExecution.getStatus(), jobExecution.getExitStatus().getExitCode(),
                         Integer.valueOf(context.containsKey(WORK_RECORD_COUNT_CONTEXT_ENTRY)
                                 ? context.getInt(WORK_RECORD_COUNT_CONTEXT_ENTRY) : 0),
@@ -3015,7 +3018,13 @@ public class StatementGenerationJob {
                         Integer.valueOf(context.containsKey(PRE_DELETED_OBJECT_COUNT_CONTEXT_ENTRY)
                                 ? context.getInt(PRE_DELETED_OBJECT_COUNT_CONTEXT_ENTRY) : 0),
                         Long.valueOf(context.containsKey(STATEMENTS_EMITTED_CONTEXT_ENTRY)
-                                ? context.getLong(STATEMENTS_EMITTED_CONTEXT_ENTRY) : 0L));
+                                ? context.getLong(STATEMENTS_EMITTED_CONTEXT_ENTRY) : 0L),
+                        // Reported beside the statement count deliberately, and it is finding F-01's audit
+                        // trail: the invariant is that a run creates exactly two objects per statement, so a
+                        // reader of one line can see the two figures disagree. They previously could not,
+                        // because the tally counted uploads rather than surviving objects.
+                        Long.valueOf(context.containsKey(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT)
+                                ? context.getLong(StatementWriter.CONTEXT_KEY_OBJECT_KEYS_COUNT) : 0L));
             } finally {
                 final ExecutionContext jobContext = jobExecution.getExecutionContext();
                 unwindDiagnostic(jobContext, INHERITED_JOB_INSTANCE_ID_CONTEXT_ENTRY,
