@@ -150,10 +150,9 @@ import io.awspring.cloud.s3.S3Operations;
  * {@code CombineTransactionsJob}, {@code TransactionReportJob} and the planned
  * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. The lost final flush is the behaviour
  * of the system of record and it is reproduced exactly.
- * {@code InterestCalculationProcessor.updateAccountAtEndOfFile()} retains the branch as a marked,
- * unreachable no-op so the paragraph map stays provable - it lives there, with the rest of the
- * {@code :L185}-{@code :L232} loop body it belongs to, rather than being duplicated here.
- * <strong>No final flush is implemented and none may be added.</strong>
+ * {@code InterestCalculationProcessor.updateAccountAtEndOfFile()} reproduces the branch faithfully so the
+ * paragraph map stays provable - it lives there, with the rest of the {@code :L185}-{@code :L232} loop body
+ * it belongs to, rather than being duplicated here.
  *
  * <p><b>Where the variance against the specification prose is recorded.</b> The reading above is derived
  * from the frozen corpus and differs from what the specification prose describes. That variance is

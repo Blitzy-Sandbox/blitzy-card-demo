@@ -58,7 +58,6 @@ import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.Transaction;
-import com.cardemo.observability.MetricsConfig;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.TransactionRepository;
