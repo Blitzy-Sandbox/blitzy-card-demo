@@ -97,7 +97,7 @@ import org.springframework.web.bind.annotation.PutMapping;
  *       which makes a ninth controller a failure here rather than an omission.
  *   </ul>
  */
-@DisplayName("Counted claims, held as gates: 636 seed rows, 17 DTOs, 50 exception handlers")
+@DisplayName("Counted claims, held as gates: 636 seed rows, 29 DTOs, 64 exception handlers")
 final class InventoryCountGateTest {
 
     /** An {@code INSERT INTO <table>} statement at the start of a line. */
@@ -114,17 +114,22 @@ final class InventoryCountGateTest {
     private static final int EXPECTED_SEED_ROWS = 636;
 
     /** The corrected data-transfer-object count. */
-    private static final int EXPECTED_DTO_COUNT = 26;
+    private static final int EXPECTED_DTO_COUNT = 29;
 
     /**
      * The corrected executable exception-handler count, across all eight controllers.
      *
      * <p>Derived rather than remembered: the six-controller surface declared 37, and the sign-on and
-     * user-administration controllers add 6 and 7 respectively. The per-controller split below is what makes
-     * the total impossible to reach by two compensating errors, and it is why this constant is stated as a
-     * total <em>and</em> broken out.
+     * user-administration controllers add 6 and 7 respectively, giving the 50 the typed hierarchy needs. The
+     * seven controllers that bind a request body then add two apiece - one for the framework's bean-validation
+     * refusal and one for a body it could not read at all - which is 14 more and closes a High-severity
+     * error-serialization finding: those two conditions are raised before a mapped method is entered, so they
+     * were escaping to the framework's default handling and answering in a shape that carried neither
+     * {@code errorCode} nor {@code correlationId}. {@code MenuController} binds no body and correctly gains
+     * neither. The per-controller split below is what makes the total impossible to reach by two compensating
+     * errors, and it is why this constant is stated as a total <em>and</em> broken out.
      */
-    private static final int EXPECTED_HANDLER_COUNT = 50;
+    private static final int EXPECTED_HANDLER_COUNT = 64;
 
     /**
      * The route total the eight controllers publish between them.
@@ -148,18 +153,24 @@ final class InventoryCountGateTest {
      * fails {@link ControllerInventory#everyControllerIsEnumerated()} rather than escaping the census. That
      * gate is what stopped this map from silently staying at six.
      *
+     * <p>Every row except {@code MenuController} carries two handlers for the framework's own body failures on
+     * top of the typed hierarchy it maps - the bean-validation refusal and the unreadable body. That is why the
+     * menu row is the only one that did not grow by two: it is the one controller with no
+     * {@code @RequestBody} parameter anywhere, so neither condition can arise on it and declaring a handler for
+     * them would be unreachable code.
+     *
      * @return one entry per controller
      */
     private static Map<Class<?>, Integer> expectedHandlersPerController() {
         final Map<Class<?>, Integer> expected = new LinkedHashMap<>();
-        expected.put(AccountController.class, 8);
-        expected.put(AdminController.class, 7);
-        expected.put(AuthController.class, 6);
-        expected.put(BillingController.class, 7);
-        expected.put(CardController.class, 7);
+        expected.put(AccountController.class, 10);
+        expected.put(AdminController.class, 9);
+        expected.put(AuthController.class, 8);
+        expected.put(BillingController.class, 9);
+        expected.put(CardController.class, 9);
         expected.put(MenuController.class, 3);
-        expected.put(ReportController.class, 5);
-        expected.put(TransactionController.class, 7);
+        expected.put(ReportController.class, 7);
+        expected.put(TransactionController.class, 9);
         return expected;
     }
 
@@ -318,11 +329,11 @@ final class InventoryCountGateTest {
 
     /** F37 - the data-transfer-object inventory. */
     @Nested
-    @DisplayName("26 data transfer objects, not the stale 16 or 17")
+    @DisplayName("29 data transfer objects, not the stale 16, 17 or 26")
     final class DataTransferObjectCount {
 
         @Test
-        @DisplayName("the dto package holds exactly 26 types, excluding its package documentation")
+        @DisplayName("the dto package holds exactly 29 types, excluding its package documentation")
         void theDtoPackageHoldsSeventeenTypes() {
             final Path directory = ROOT.resolve("src/main/java/com/cardemo/model/dto");
             final List<String> types;
@@ -338,15 +349,20 @@ final class InventoryCountGateTest {
             }
             assertThat(types)
                     .as(
-                            "17 request-and-projection types plus 9 added when the REST surface stopped "
-                                    + "returning entities: 8 response envelopes - account update, account "
-                                    + "view, bill payment, card, card list, report submission, transaction "
-                                    + "and transaction list - and the ApiMasking helper they share. "
-                                    + "SignOnResponse remains the one with no BMS symbolic map, because CICS "
-                                    + "returned identity in the COMMAREA rather than on a screen, which is "
-                                    + "exactly why a map-driven count missed it")
+                            "17 request-and-projection types plus 12 added when the REST surface stopped "
+                                    + "returning entities and service records: 11 response envelopes - "
+                                    + "account update, account view, bill payment, card, card list, report "
+                                    + "submission, transaction, transaction list, user list, user create and "
+                                    + "user update - and the ApiMasking helper they share. The last three "
+                                    + "close a High-severity API-contract finding: the administration "
+                                    + "operations were returning the service tier's own screen records, so "
+                                    + "navigation, colour, cursor, selector and erase/send state was the "
+                                    + "public contract. SignOnResponse remains the one with no BMS symbolic "
+                                    + "map, because CICS returned identity in the COMMAREA rather than on a "
+                                    + "screen, which is exactly why a map-driven count missed it")
                     .hasSize(EXPECTED_DTO_COUNT)
-                    .contains("SignOnResponse.java", "AccountViewResponse.java", "ApiMasking.java");
+                    .contains("SignOnResponse.java", "AccountViewResponse.java", "ApiMasking.java",
+                            "UserListResponse.java", "UserCreateResponse.java", "UserUpdateResponse.java");
         }
 
         @Test
@@ -360,12 +376,12 @@ final class InventoryCountGateTest {
 
     /** F38 - the executable exception-handler inventory. */
     @Nested
-    @DisplayName("50 executable @ExceptionHandler methods across the eight controllers")
+    @DisplayName("64 executable @ExceptionHandler methods across the eight controllers")
     final class ExceptionHandlerCount {
 
         @Test
-        @DisplayName("the eight controllers declare exactly 50 annotated methods in total")
-        void theEightControllersDeclareFiftyHandlers() {
+        @DisplayName("the eight controllers declare exactly 64 annotated methods in total")
+        void theEightControllersDeclareSixtyFourHandlers() {
             final long total = expectedHandlersPerController().keySet().stream()
                     .mapToLong(InventoryCountGateTest::handlerCount)
                     .sum();
@@ -373,7 +389,10 @@ final class InventoryCountGateTest {
                     .as(
                             "counted as ANNOTATED METHODS, not as occurrences of the token: the token also "
                                     + "appears in Javadoc prose on these classes, which is how a text scan "
-                                    + "reaches 40")
+                                    + "reaches a different number. 50 map the typed hierarchy; the other 14 "
+                                    + "are the two framework body failures on each of the seven controllers "
+                                    + "that bind a request body, which used to escape to the framework's "
+                                    + "default handling and answer without the envelope")
                     .isEqualTo(EXPECTED_HANDLER_COUNT);
         }
 

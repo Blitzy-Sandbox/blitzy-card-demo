@@ -73,6 +73,7 @@ import com.cardemo.service.report.ReportSubmissionService;
 import com.cardemo.service.transaction.TransactionAddService;
 import com.cardemo.service.transaction.TransactionDetailService;
 import com.cardemo.service.transaction.TransactionListService;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -82,8 +83,16 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.core.MethodParameter;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.http.server.ServletServerHttpRequest;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.validation.BeanPropertyBindingResult;
+import org.springframework.validation.BindingResult;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 
 /**
  * What every controller error body may and may not contain.
@@ -143,10 +152,32 @@ class ErrorBodyDisclosureTest {
     /** An abend reason, equally distinctive. */
     private static final String SECRET_REASON = "ZZUNEXPECTEDFILESTATUS";
 
+    /**
+     * The value a caller submitted and the framework's field error retained.
+     *
+     * <p>Stands in for the plaintext password of the add-user body and for the social security number of the
+     * account update body: Spring's {@code FieldError} keeps the rejected value alongside the message, so a
+     * bind handler that serialised field errors wholesale would publish it. The sweep proves none does.
+     */
+    private static final String SECRET_REJECTED_VALUE = "ZZSUBMITTEDSECRETVALUE";
+
+    /** The interpolated constraint message a field error carries. */
+    private static final String SECRET_CONSTRAINT_MESSAGE = "ZZSIZEMUSTBEBETWEENONEANDEIGHT";
+
+    /** The field name a field error names, withheld because a violation set has no stable order. */
+    private static final String SECRET_FIELD_NAME = "zzSubmittedField";
+
+    /** A parser diagnostic, standing in for the message a Jackson read failure composes. */
+    private static final String SECRET_PARSER_MESSAGE =
+            "ZZUNRECOGNIZEDFIELD at [Source: (ZZNonClosingInputStream); line: 1, column: 17]";
+
     /** Every value that must never appear in a body, in one place so no test can forget one. */
     private static final List<String> EVERY_INTERNAL_VALUE = List.of(
             SECRET_FILE, SECRET_OPERATION, SECRET_STATUS, SECRET_CONSTRAINT, SECRET_RELATION, SECRET_KEY,
-            SECRET_CULPRIT, SECRET_REASON, "COBOL FILE STATUS", "IO-STATUS-04");
+            SECRET_CULPRIT, SECRET_REASON, "COBOL FILE STATUS", "IO-STATUS-04",
+            SECRET_REJECTED_VALUE, SECRET_CONSTRAINT_MESSAGE, SECRET_FIELD_NAME, SECRET_PARSER_MESSAGE,
+            "ZZNonClosingInputStream", "HttpMessageNotReadableException",
+            "MethodArgumentNotValidException");
 
     /** The correlation identifier placed in the diagnostic context for the duration of each test. */
     private static final String CORRELATION_ID = "c0rrel4t10n-1d-f0r-th3-t3st";
@@ -205,6 +236,60 @@ class ErrorBodyDisclosureTest {
      * @param response the response the handler built
      */
     private record Answer(String label, ResponseEntity<ProblemDetail> response) {
+    }
+
+    /**
+     * A stand-in for the mapped method whose body the framework was binding when the violation was raised.
+     *
+     * <p>Never invoked. {@code MethodArgumentNotValidException} requires the {@code MethodParameter} the
+     * framework was working on, and only that parameter's reflective metadata is read - never the method
+     * itself. Declaring the stand-in here rather than reflecting on one of the real operations keeps the
+     * fixture independent of which of the seven body-bearing controllers is being driven, and none of the
+     * fourteen handlers under test reads the parameter at all.
+     *
+     * @param body the stand-in request-body parameter, which exists so that a {@code MethodParameter} can be
+     *             built and is never read
+     */
+    private static void boundRequestBody(final String body) {
+        // Intentionally empty: this method exists to be reflected on, not to be called. See the Javadoc.
+    }
+
+    /**
+     * Builds the framework's bean-validation failure carrying a field error with every value withheld.
+     *
+     * <p>The field error is constructed directly rather than through {@code rejectValue}, so that the rejected
+     * value, the constraint message and the field name are all distinctive sentinels: those three are exactly
+     * what a bind handler must not publish, and the sweep asserts none of them reaches a body.
+     *
+     * @return a populated bind failure, never {@code null}
+     */
+    private static MethodArgumentNotValidException aBindFailure() {
+        final Method bound;
+        try {
+            bound = ErrorBodyDisclosureTest.class.getDeclaredMethod("boundRequestBody", String.class);
+        } catch (final NoSuchMethodException absent) {
+            throw new AssertionError("the stand-in bound method must exist for this fixture", absent);
+        }
+
+        final BindingResult binding = new BeanPropertyBindingResult(new Object(), "requestBody");
+        binding.addError(new FieldError("requestBody", SECRET_FIELD_NAME, SECRET_REJECTED_VALUE, false, null,
+                null, SECRET_CONSTRAINT_MESSAGE));
+
+        return new MethodArgumentNotValidException(new MethodParameter(bound, 0), binding);
+    }
+
+    /**
+     * Builds the framework's read failure carrying a parser diagnostic that names an internal stream class.
+     *
+     * <p>The message is the shape a Jackson read failure actually composes - an unrecognised property, the
+     * deserialiser's stream class and the byte offset - because that is precisely the disclosure the unreadable
+     * body handlers must suppress.
+     *
+     * @return a populated read failure, never {@code null}
+     */
+    private static HttpMessageNotReadableException anUnreadableBody() {
+        return new HttpMessageNotReadableException(SECRET_PARSER_MESSAGE,
+                new ServletServerHttpRequest(new MockHttpServletRequest()));
     }
 
     /**
@@ -309,6 +394,37 @@ class ErrorBodyDisclosureTest {
         answers.add(new Answer("Transaction.abend", group.transaction().handleAbend(abend)));
         answers.add(new Answer("Transaction.typed", group.transaction().handleTypedFailure(typed)));
 
+        // The two framework body failures, on each of the seven controllers that bind a request body. They are
+        // swept for a reason no typed mapper needs: the exceptions the framework hands them retain the value
+        // the caller submitted - on the sign-on and add-user bodies that value is a plaintext password, and on
+        // the account update body it is a social security number - and the parser diagnostic names the
+        // deserialiser's own stream class. Both were previously escaping to the framework's default handling
+        // rather than reaching any code in this package, which is what the High-severity finding recorded.
+        // MenuController is absent because it declares no @RequestBody parameter and neither condition can
+        // arise on it.
+        final MethodArgumentNotValidException bindFailure = aBindFailure();
+        final HttpMessageNotReadableException unreadableBody = anUnreadableBody();
+
+        answers.add(new Answer("Account.bindFailure", group.account().handleBodyBindFailure(bindFailure)));
+        answers.add(new Answer("Account.unreadableBody",
+                group.account().handleUnreadableBody(unreadableBody)));
+        answers.add(new Answer("Admin.bindFailure", group.admin().handleBodyBindFailure(bindFailure)));
+        answers.add(new Answer("Admin.unreadableBody", group.admin().handleUnreadableBody(unreadableBody)));
+        answers.add(new Answer("Auth.bindFailure", group.auth().handleBodyBindFailure(bindFailure)));
+        answers.add(new Answer("Auth.unreadableBody", group.auth().handleUnreadableBody(unreadableBody)));
+        answers.add(new Answer("Billing.bindFailure", group.billing().handleBodyBindFailure(bindFailure)));
+        answers.add(new Answer("Billing.unreadableBody",
+                group.billing().handleUnreadableBody(unreadableBody)));
+        answers.add(new Answer("Card.bindFailure", group.card().handleBodyBindFailure(bindFailure)));
+        answers.add(new Answer("Card.unreadableBody", group.card().handleUnreadableBody(unreadableBody)));
+        answers.add(new Answer("Report.bindFailure", group.report().handleBodyBindFailure(bindFailure)));
+        answers.add(new Answer("Report.unreadableBody",
+                group.report().handleUnreadableBody(unreadableBody)));
+        answers.add(new Answer("Transaction.bindFailure",
+                group.transaction().handleBodyBindFailure(bindFailure)));
+        answers.add(new Answer("Transaction.unreadableBody",
+                group.transaction().handleUnreadableBody(unreadableBody)));
+
         return answers;
     }
 
@@ -412,15 +528,21 @@ class ErrorBodyDisclosureTest {
         @Test
         @DisplayName("Every handler of every controller is exercised")
         void everyHandlerIsCovered() {
-            // Executable @ExceptionHandler methods: Account 8, Admin 7, Auth 6, Billing 7, Card 7, Menu 3,
-            // Report 5, Transaction 7 - fifty across the eight controllers. Forty-nine are driven here;
+            // Executable @ExceptionHandler methods: Account 10, Admin 9, Auth 8, Billing 9, Card 9, Menu 3,
+            // Report 7, Transaction 9 - sixty-four across the eight controllers. Sixty-three are driven here;
             // Report's queue-failure arm is driven separately below, because it is the one handler whose
             // detail is a relayed legacy literal and it is asserted against that literal.
             //
             // A review found this suite frozen at six controllers, so the sign-on and user-administration
             // handlers were swept by nothing. Both are now driven, and the sign-on ones matter most of the
             // eight: an unauthenticated caller is the only caller who reaches them.
-            assertThat(everyHandlerAnswer()).hasSize(49);
+            //
+            // The same review found the two framework body failures - a bean-validation refusal and a body
+            // that could not be read - answered by nothing in this package on any of the seven controllers
+            // that bind a body. Those fourteen handlers now exist and are driven here, which is what makes
+            // "no rejected value and no parser detail reaches a caller" a measured property rather than a
+            // claim about code that did not run.
+            assertThat(everyHandlerAnswer()).hasSize(63);
         }
     }
 

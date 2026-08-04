@@ -539,7 +539,19 @@ class SecurityConfigTest {
     // Authorisation matrix, driven through the real servlet filter chain
     // ---------------------------------------------------------------------------------------------
 
-    private record Outcome(int status, boolean reachedApplication, boolean sessionCreated, String challenge) { }
+    /**
+     * One dispatch through the real servlet filter chain.
+     *
+     * @param status the status the chain produced
+     * @param reachedApplication whether the terminal chain was invoked, that is whether a handler would have
+     *     run
+     * @param sessionCreated whether a session was minted on the way, which must never happen
+     * @param challenge the {@code WWW-Authenticate} header, or {@code null} when none was written
+     * @param contentType the response media type, or {@code null} when no body was written
+     * @param body the response body as text, empty when none was written
+     */
+    private record Outcome(int status, boolean reachedApplication, boolean sessionCreated, String challenge,
+            String contentType, String body) { }
 
     private static Outcome call(final AnnotationConfigWebApplicationContext ctx,
                                 final String method,
@@ -559,7 +571,9 @@ class SecurityConfigTest {
                 response.getStatus(),
                 terminal.getRequest() != null,
                 request.getSession(false) != null,
-                response.getHeader("WWW-Authenticate"));
+                response.getHeader("WWW-Authenticate"),
+                response.getContentType(),
+                response.getContentAsString());
     }
 
     @Test
@@ -662,7 +676,8 @@ class SecurityConfigTest {
         final MockFilterChain terminal = new MockFilterChain();
         chain.doFilter(request, response, terminal);
         return new Outcome(response.getStatus(), terminal.getRequest() != null,
-                request.getSession(false) != null, response.getHeader("WWW-Authenticate"));
+                request.getSession(false) != null, response.getHeader("WWW-Authenticate"),
+                response.getContentType(), response.getContentAsString());
     }
 
     /**
@@ -950,6 +965,126 @@ class SecurityConfigTest {
             assertThat(outcome.status()).isEqualTo(401);
             assertThat(outcome.reachedApplication()).isFalse();
             assertThat(outcome.sessionCreated()).isFalse();
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The security refusals carry the same problem body every controller carries
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * The exact body an unauthenticated request receives.
+     *
+     * <p>Stated in full rather than matched loosely, because the defect being pinned was an <em>empty</em>
+     * body: a client met a populated RFC 9457 document from every controller and nothing at all from the
+     * authentication and authorisation layers, so one error handler could not cover the surface and a rejected
+     * request carried no correlation identifier to tie it back to its log line. A loose assertion would pass
+     * against a body that had quietly lost a member.
+     *
+     * <p>The correlation value is {@code unavailable} because these dispatches drive the security chain
+     * directly; in a running application {@code com.cardemo.observability.CorrelationIdFilter} registers far
+     * ahead of the chain and populates the diagnostic context first.
+     */
+    private static final String EXPECTED_UNAUTHENTICATED_BODY =
+            "{\"type\":\"about:blank\",\"title\":\"Authentication required\",\"status\":401,"
+                    + "\"detail\":\"The request did not carry a usable bearer token. Obtain one from the "
+                    + "sign-on operation and present it in the Authorization header.\","
+                    + "\"errorCode\":\"CARDDEMO-AUTHENTICATION-REQUIRED\","
+                    + "\"correlationId\":\"unavailable\"}";
+
+    /** The exact body an authenticated but unentitled request receives, on the same terms. */
+    private static final String EXPECTED_FORBIDDEN_BODY =
+            "{\"type\":\"about:blank\",\"title\":\"Authorization denied\",\"status\":403,"
+                    + "\"detail\":\"The presented token is valid but does not carry the authority this "
+                    + "operation requires.\",\"errorCode\":\"CARDDEMO-AUTHORIZATION-DENIED\","
+                    + "\"correlationId\":\"unavailable\"}";
+
+    /**
+     * A 401 now carries the shared envelope, and still carries the bare bearer challenge.
+     *
+     * <p>Both halves matter. The body is the remediation; the header is the behaviour that must survive it,
+     * because the writer delegates to the framework's own bearer entry point for the status and the challenge
+     * and adds only the body it omits. A hand-written 401 would have been the moment the RFC 6750 form was
+     * quietly lost.
+     *
+     * @throws Exception if the mock layer cannot dispatch, which is a harness failure
+     */
+    @Test
+    @DisplayName("an unauthenticated request receives the shared problem envelope and keeps its challenge")
+    void unauthenticatedRefusalCarriesTheSharedEnvelope() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
+            for (final String path : new String[] {
+                    "/api/accounts/00000000001", "/api/cards", "/api/transactions", "/api/menu/main",
+                    "/api/admin/users", "/nothing/declared" }) {
+                final Outcome denied = call(ctx, "GET", path, null);
+
+                assertThat(denied.status()).as("%s", path).isEqualTo(401);
+                assertThat(denied.challenge())
+                        .as("%s must keep the bare RFC 6750 challenge; the writer delegates rather than "
+                                + "reimplements precisely so this cannot be lost", path)
+                        .isEqualTo("Bearer");
+                assertThat(denied.contentType())
+                        .as("%s must answer the same media type a controller rejection answers", path)
+                        .isEqualTo("application/problem+json");
+                assertThat(denied.body())
+                        .as("%s must answer the shared envelope, not an empty body", path)
+                        .isEqualTo(EXPECTED_UNAUTHENTICATED_BODY);
+                assertThat(denied.sessionCreated()).as("%s", path).isFalse();
+            }
+        }
+    }
+
+    /**
+     * A 403 carries the same envelope with its own condition, and discloses nothing about the model.
+     *
+     * @throws Exception if the mock layer cannot dispatch, which is a harness failure
+     */
+    @Test
+    @DisplayName("an authenticated but unentitled request receives the shared problem envelope")
+    void forbiddenRefusalCarriesTheSharedEnvelope() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
+            final String userToken = ctx.getBean(JwtTokenProvider.class)
+                    .issueToken("USER0001", UserType.USER);
+            final Outcome denied = call(ctx, "GET", "/api/admin/users", userToken);
+
+            assertThat(denied.status())
+                    .as("403 rather than 401: the caller authenticated and is simply not entitled")
+                    .isEqualTo(403);
+            assertThat(denied.reachedApplication()).isFalse();
+            assertThat(denied.contentType()).isEqualTo("application/problem+json");
+            assertThat(denied.body()).isEqualTo(EXPECTED_FORBIDDEN_BODY);
+            assertThat(denied.body())
+                    .as("and it names neither the required authority nor the token, because describing the "
+                            + "authorisation model to a principal it has just refused is a disclosure")
+                    .doesNotContain("ADMIN")
+                    .doesNotContain(userToken);
+        }
+    }
+
+    /**
+     * The two refusals are distinguishable from each other and from a controller rejection only by their
+     * condition, never by their shape.
+     *
+     * @throws Exception if the mock layer cannot dispatch, which is a harness failure
+     */
+    @Test
+    @DisplayName("both security refusals publish exactly the members a controller rejection publishes")
+    void bothRefusalsPublishTheSameMembers() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
+            final String userToken = ctx.getBean(JwtTokenProvider.class)
+                    .issueToken("USER0001", UserType.USER);
+
+            for (final String body : new String[] {
+                    call(ctx, "GET", "/api/cards", null).body(),
+                    call(ctx, "GET", "/api/admin/users", userToken).body() }) {
+                assertThat(body)
+                        .as("the six members, in the order Spring's own ProblemDetail renders them")
+                        .startsWith("{\"type\":\"about:blank\",\"title\":\"")
+                        .contains("\"status\":")
+                        .contains("\"detail\":\"")
+                        .contains("\"errorCode\":\"CARDDEMO-")
+                        .endsWith("\"correlationId\":\"unavailable\"}");
+            }
         }
     }
 

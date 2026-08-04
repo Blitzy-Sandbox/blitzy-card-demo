@@ -96,6 +96,24 @@ class RequestBoundaryHardeningTest {
     /** The bound the filter enforces, restated here so a silent change to it fails a test. */
     private static final int EXPECTED_MAX_BODY_BYTES = 16 * 1024;
 
+    /**
+     * The exact refusal body an oversized request receives, whichever shape it took.
+     *
+     * <p>Written out in full rather than matched loosely, because the point of the remediation is that this
+     * body is <em>identical</em> to what a controller produces for a rejection: the same members, in the same
+     * order, with a {@code correlationId} that is present even when no correlation is in scope. A loose
+     * assertion would pass against a body that had quietly lost a member.
+     *
+     * <p>{@code unavailable} is the correct correlation value here: these tests drive the filter directly, so
+     * {@code com.cardemo.observability.CorrelationIdFilter} - which registers far ahead of the security chain
+     * in a running application - has not populated the diagnostic context.
+     */
+    private static final String EXPECTED_PAYLOAD_TOO_LARGE_BODY =
+            "{\"type\":\"about:blank\",\"title\":\"Request body too large\",\"status\":413,"
+                    + "\"detail\":\"The request body exceeds the number of bytes this application will read "
+                    + "from one request.\",\"errorCode\":\"CARDDEMO-REQUEST-BODY-TOO-LARGE\","
+                    + "\"correlationId\":\"unavailable\"}";
+
     /** The binary name of the filter under test, a private nested class of the security configuration. */
     private static final String FILTER_CLASS_NAME =
             "com.cardemo.config.SecurityConfig$RequestBodyLimitFilter";
@@ -144,6 +162,30 @@ class RequestBoundaryHardeningTest {
         return request;
     }
 
+    /**
+     * Builds a POST whose declared length is within the bound while its content is not.
+     *
+     * <p>A client that lies about {@code Content-Length}. A real container refuses to deliver more bytes than
+     * the declaration announced, so this shape is not reachable through Tomcat; it is constructed here because
+     * it is the one path on which the bounded stream - the filter's second line of defence - is still
+     * exercised, and "expected never to fire" is not the same as "cannot fire".
+     *
+     * @param bodyBytes how many bytes the body actually carries
+     * @return the prepared request, declaring a length of {@value #EXPECTED_MAX_BODY_BYTES} regardless
+     */
+    private static MockHttpServletRequest underDeclaredRequestOf(final int bodyBytes) {
+        final byte[] body = "x".repeat(bodyBytes).getBytes(StandardCharsets.UTF_8);
+        final MockHttpServletRequest request = new MockHttpServletRequest("POST", SIGN_ON_URI) {
+            @Override
+            public long getContentLengthLong() {
+                return EXPECTED_MAX_BODY_BYTES;
+            }
+        };
+        request.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        request.setContent(body);
+        return request;
+    }
+
     @Nested
     @DisplayName("the byte bound, applied before authentication")
     class ByteBound {
@@ -165,10 +207,25 @@ class RequestBoundaryHardeningTest {
                     .as("and nothing downstream ran: the refusal is on the DECLARATION, so not one body byte "
                             + "was read. This is the property that makes the bound cheap.")
                     .isNull();
+            assertThat(response.getContentType())
+                    .as("the refusal is an RFC 9457 problem document, the same media type every controller "
+                            + "answers a rejection with, and with no charset parameter so the two headers are "
+                            + "byte-comparable")
+                    .isEqualTo(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
             assertThat(response.getContentAsString())
-                    .as("the response body discloses nothing, matching the server.error settings that emit "
-                            + "no message, no binding detail and no exception class")
-                    .isEmpty();
+                    .as("""
+                        the body carries the shared envelope. An EMPTY body was the previous behaviour and was \
+                        reported as a High-severity contract defect: a client met a populated problem \
+                        document from every controller and an empty one from the body bound, so no single \
+                        error handler covered the surface and a rejected request could not be tied back to \
+                        its own log line.""")
+                    .isEqualTo(EXPECTED_PAYLOAD_TOO_LARGE_BODY);
+            assertThat(response.getContentAsString())
+                    .as("and it discloses nothing about the request, matching the server.error settings that "
+                            + "emit no message, no binding detail and no exception class - in particular it "
+                            + "names neither the bound nor the declared length")
+                    .doesNotContain(String.valueOf(EXPECTED_MAX_BODY_BYTES))
+                    .doesNotContain("xxxxx");
         }
 
         @Test
@@ -205,34 +262,63 @@ class RequestBoundaryHardeningTest {
         }
 
         @Test
-        @DisplayName("a chunked body declaring no length is bounded as it is consumed")
-        void aChunkedBodyIsBoundedDuringTheRead() throws Exception {
+        @DisplayName("a chunked body declaring no length is refused up front, not lazily during the read")
+        void aChunkedBodyIsRefusedUpFront() throws Exception {
             final MockHttpServletRequest request = signOnRequestOf(EXPECTED_MAX_BODY_BYTES * 2, false);
             final MockHttpServletResponse response = new MockHttpServletResponse();
             final MockFilterChain chain = new MockFilterChain();
 
             bodyLimitFilter().doFilter(request, response, chain);
 
-            // The declaration check has nothing to inspect, so the request is passed on - wrapped.
-            assertThat(chain.getRequest())
-                    .as("a chunked request cannot be refused on a declaration it never made, so it proceeds "
-                            + "with its body wrapped rather than being rejected up front")
-                    .isNotNull();
-
-            final HttpServletRequest wrapped = (HttpServletRequest) chain.getRequest();
-            assertThatExceptionOfType(IOException.class)
+            assertThat(response.getStatus())
                     .as("""
-                        and the read fails at the bound instead of yielding two full buffers. This is the \
-                        case that matters: an attacker chooses the encoding, so the shape that declares no \
-                        length is the shape they would send. A Content-Length check alone would have left \
-                        exactly this open.""")
-                    .isThrownBy(() -> wrapped.getInputStream().readAllBytes());
+                        413, exactly as for a declared oversize. This is the case that matters: an attacker \
+                        chooses the encoding, so the shape that declares no length is the shape they would \
+                        send, and it must not buy a different answer.""")
+                    .isEqualTo(HttpStatus.PAYLOAD_TOO_LARGE.value());
+            assertThat(chain.getRequest())
+                    .as("""
+                        and nothing downstream ran. The bound reads the length-less body itself, up to one \
+                        byte past the limit, so the refusal happens before authentication and before any \
+                        handler - rather than lazily from inside a body read, where Spring converts the \
+                        IOException into HttpMessageNotReadableException and the answer becomes 400.""")
+                    .isNull();
+            assertThat(response.getContentAsString())
+                    .as("carrying the same envelope the declared arm carries")
+                    .isEqualTo(EXPECTED_PAYLOAD_TOO_LARGE_BODY);
+        }
+
+        @Test
+        @DisplayName("both oversized shapes produce a byte-identical refusal, whatever the transfer encoding")
+        void theTwoOversizedShapesAreIndistinguishable() throws Exception {
+            final MockHttpServletResponse declared = new MockHttpServletResponse();
+            final MockHttpServletResponse undeclared = new MockHttpServletResponse();
+
+            bodyLimitFilter().doFilter(signOnRequestOf(EXPECTED_MAX_BODY_BYTES + 1, true), declared,
+                    new MockFilterChain());
+            bodyLimitFilter().doFilter(signOnRequestOf(EXPECTED_MAX_BODY_BYTES + 1, false), undeclared,
+                    new MockFilterChain());
+
+            assertThat(undeclared.getStatus())
+                    .as("""
+                        the Medium-severity finding this pins: equal violations previously produced different \
+                        statuses purely because one request declared Content-Length and the other did not, so \
+                        a caller could select its own error code by choosing an encoding.""")
+                    .isEqualTo(declared.getStatus());
+            assertThat(undeclared.getContentType()).isEqualTo(declared.getContentType());
+            assertThat(undeclared.getContentAsString())
+                    .as("and the bodies agree byte for byte, not merely in shape")
+                    .isEqualTo(declared.getContentAsString());
         }
 
         @Test
         @DisplayName("the bulk read is bounded, not only the single-byte read")
         void theBulkReadIsBounded() throws Exception {
-            final MockHttpServletRequest request = signOnRequestOf(EXPECTED_MAX_BODY_BYTES * 2, false);
+            // A request that UNDER-DECLARES its length: the declaration passes the up-front check, so the
+            // request proceeds wrapped, and the wrapper is what refuses the bytes the declaration disowned.
+            // That path is defence in depth - a container enforces Content-Length itself - and it is the only
+            // one on which the bounded stream is still reachable, which is exactly why it is asserted here.
+            final MockHttpServletRequest request = underDeclaredRequestOf(EXPECTED_MAX_BODY_BYTES * 2);
             final MockFilterChain chain = new MockFilterChain();
             bodyLimitFilter().doFilter(request, new MockHttpServletResponse(), chain);
 
@@ -249,6 +335,56 @@ class RequestBoundaryHardeningTest {
                             }
                         }
                     });
+        }
+
+        @Test
+        @DisplayName("the single-byte read is bounded too, on the same under-declared path")
+        void theSingleByteReadIsBounded() throws Exception {
+            final MockFilterChain chain = new MockFilterChain();
+            bodyLimitFilter().doFilter(underDeclaredRequestOf(EXPECTED_MAX_BODY_BYTES * 2),
+                    new MockHttpServletResponse(), chain);
+
+            final HttpServletRequest wrapped = (HttpServletRequest) chain.getRequest();
+
+            assertThatExceptionOfType(IOException.class)
+                    .as("both overloads are overridden, so neither is a way past the bound")
+                    .isThrownBy(() -> {
+                        try (var stream = wrapped.getInputStream()) {
+                            while (stream.read() >= 0) {
+                                // Drain one byte at a time until the bound refuses.
+                            }
+                        }
+                    });
+        }
+
+        @Test
+        @DisplayName("a length-less JSON body within the bound reaches the chain byte for byte")
+        void aLengthLessJsonBodyIsReplayedIntact() throws Exception {
+            final String document = "{\"userId\":\"USER0001\",\"password\":\"not-a-real-credential\"}";
+            final MockHttpServletRequest request = new MockHttpServletRequest("POST", SIGN_ON_URI) {
+                @Override
+                public long getContentLengthLong() {
+                    return -1L;
+                }
+            };
+            request.setContentType(MediaType.APPLICATION_JSON_VALUE);
+            request.setContent(document.getBytes(StandardCharsets.UTF_8));
+
+            final MockFilterChain chain = new MockFilterChain();
+            bodyLimitFilter().doFilter(request, new MockHttpServletResponse(), chain);
+
+            final HttpServletRequest wrapped = (HttpServletRequest) chain.getRequest();
+
+            assertThat(new String(wrapped.getInputStream().readAllBytes(), StandardCharsets.UTF_8))
+                    .as("""
+                        the up-front read consumes the body, so the wrapper has to hand the captured bytes \
+                        on. If it did not, every length-less request would reach its handler with an empty \
+                        body - a far worse defect than the one the read exists to fix.""")
+                    .isEqualTo(document);
+            assertThat(wrapped.getReader().readLine())
+                    .as("both accessors replay, and each call yields a fresh stream rather than an exhausted "
+                            + "one, because a message converter may reach for either")
+                    .isEqualTo(document);
         }
 
         @Test

@@ -38,6 +38,9 @@ import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -57,8 +60,11 @@ import com.cardemo.exception.FileUnavailableException;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.UserCreateRequest;
+import com.cardemo.model.dto.UserCreateResponse;
+import com.cardemo.model.dto.UserListResponse;
 import com.cardemo.model.dto.UserSecurityDto;
 import com.cardemo.model.dto.UserUpdateRequest;
+import com.cardemo.model.dto.UserUpdateResponse;
 import com.cardemo.service.admin.UserAddService;
 import com.cardemo.service.admin.UserDeleteService;
 import com.cardemo.service.admin.UserListService;
@@ -293,6 +299,23 @@ import com.cardemo.service.admin.UserUpdateService;
  *       naming an identifier on a subsequent call. <strong>No endpoint is added for any of the three</strong>,
  *       because each would be an eighteenth operation with no CSD transaction behind it.</li>
  *   </ul>
+ *
+ * <h2>Every response is API-owned, and the service records never reach a serializer</h2>
+ *
+ * <p>The four services return records that are faithful to the 3270 turn: they carry the six recurring header
+ * fields, the attribute byte an {@code ERRMSGC} move set, the field a {@code MOVE -1} parked the cursor on, the
+ * advisory program an {@code EXEC CICS XCTL} would have transferred to, the erase and send counters, the
+ * control-transferred and transfer-requested flags, and the row selector. That fidelity is deliberate and it is
+ * an <strong>in-process contract</strong>. Three of the four operations previously returned those records
+ * directly, which published terminal and navigation state as the public REST contract - a High-severity
+ * API-contract defect with a CWE-200 aspect, and an accidental long-term compatibility commitment to the
+ * services' internal shape. Each of the three now projects onto an API-owned payload inside this class:
+ * {@code UserListResponse}, {@code UserCreateResponse} and {@code UserUpdateResponse}, each publishing only
+ * business fields, the source's own message and fixed page metadata, and each naming what it withholds in a
+ * {@code WITHHELD_COMPONENTS} list a test asserts against. The delete operation already answered a payload from
+ * {@code com.cardemo.model.dto}, {@code UserSecurityDto.UserDeleteScreen}, whose eleven components are the
+ * symbolic map's own fields with no navigation, colour, cursor or selector member among them, so it is
+ * unchanged.</p>
  *
  * <h2>State and thread safety</h2>
  *
@@ -562,6 +585,35 @@ public class AdminController {
     private static final String FAILURE_PROBLEM_DETAIL =
             "The request could not be completed. Quote the correlation identifier when reporting this.";
 
+    /**
+     * The single detail published when the framework's bean validation refuses the request body.
+     *
+     * <p>Fixed, and deliberately naming no field. The framework's binding result carries a field error per
+     * violation, and each of those retains the <em>submitted value</em> alongside its message - which on the
+     * add-user body is a plaintext password. {@code UserCreateRequest} documents that hazard as one of its own
+     * error modes and states the rule this constant enforces: a handler must never publish a rejected value.
+     * Withholding the field name as well costs a caller nothing, because the schema that declares the
+     * constraint is what the caller wrote the body against, and it buys determinism: Hibernate Validator
+     * reports violations from an unordered set, so any single-field or first-field projection would vary
+     * between two identical requests. The field names do reach the log line, where they are diagnosable
+     * without being disclosed.
+     */
+    private static final String BIND_FAILURE_PROBLEM_DETAIL =
+            "One or more fields of the request body failed validation. Correct the body and resubmit.";
+
+    /**
+     * The single detail published when the request body could not be read at all.
+     *
+     * <p>Covers the three conditions the framework folds into one exception before either body-bearing
+     * operation on this class is entered: a body that is not well-formed JSON, a body carrying a property
+     * outside the schema, and a request with no body where one is required. The parser's own message is not
+     * published, because it names the deserialiser's internal stream class, the byte offset it stopped at and,
+     * for an unrecognised property, the full list of properties the type accepts - a schema dump handed to a
+     * caller.
+     */
+    private static final String UNREADABLE_BODY_PROBLEM_DETAIL =
+            "The request body could not be read as JSON matching this operation's schema.";
+
     /** Problem-detail member carrying the rejected field name. */
     private static final String FIELD_PROPERTY = "field";
 
@@ -629,6 +681,17 @@ public class AdminController {
 
     /** Stable error code meaning that an unexpected typed failure occurred. */
     private static final String ERROR_CODE_INTERNAL = "CARDDEMO-INTERNAL-FAILURE";
+
+    /**
+     * Stable error code meaning that the request body could not be read as JSON matching the schema.
+     *
+     * <p>Distinct from {@link #ERROR_CODE_VALIDATION} because the two conditions are distinct: a body that
+     * parsed and then failed a rule is not the same as a body that never parsed, and a client that retries
+     * automatically needs to tell them apart. The framework-level bean-validation refusal, by contrast,
+     * publishes {@link #ERROR_CODE_VALIDATION} - the same code the service-tier refusal publishes - so a
+     * caller sees one code per condition rather than one code per layer that happened to catch it.</p>
+     */
+    private static final String ERROR_CODE_UNREADABLE_BODY = "CARDDEMO-REQUEST-BODY-UNREADABLE";
 
     /** The abend code as text, for an abend raised here rather than carried in from a service. */
     private static final String ABEND_CODE = String.valueOf(FatalProcessingException.BATCH_ABEND_CODE);
@@ -761,20 +824,28 @@ public class AdminController {
      * and no case fold, because a normalising converter on a control token silently accepts instructions the
      * operation never declared.
      *
-     * <p><strong>Outputs.</strong> {@code 200} with the assembled screen and, inside it, the same rows as
-     * paging metadata: a {@code PageResponse} carrying the page number, the page size in force, whether a
-     * further record exists, and the two boundary identifiers to page from. Rows arrive in browse order -
-     * ascending user identifier, the key order of the {@code USRSEC} cluster and the order the repository's
-     * only finder imposes - so <strong>the ordering is deterministic and repeatable for a given
-     * cursor</strong>. The screen additionally carries the source's own advisory message, which is the only
-     * place several outcomes are reported at all: reaching either boundary, an empty result, or a refused
-     * identifier. A total element count and a total page count are <b>Not available</b> by design, because
-     * the browse looks ahead exactly one record and never counts.
+     * <p><strong>Outputs.</strong> {@code 200} with {@code UserListResponse}: the page's rows, the page
+     * number a caller echoes back, the page size in force, whether a further record exists, and the two
+     * boundary identifiers to page from. Rows arrive in browse order - ascending user identifier, the key
+     * order of the {@code USRSEC} cluster and the order the repository's only finder imposes - so
+     * <strong>the ordering is deterministic and repeatable for a given cursor</strong>. The response
+     * additionally carries the source's own advisory message, which is the only place several outcomes are
+     * reported at all: reaching either boundary, an empty result, or a refused identifier. A total element
+     * count and a total page count are <b>Not available</b> by design, because the browse looks ahead exactly
+     * one record and never counts.
      *
-     * <p><strong>No credential and no digest can appear in this response.</strong> Neither the screen
-     * projection nor its row type declares a password member, so there is nothing to omit and nothing to
-     * remember to blank. The personal data a row does carry - identifier, given name, family name and the
-     * one-character type code - is exactly what the 3270 screen displayed and nothing more.
+     * <p><strong>The service's screen record is not the wire contract.</strong> The record the service
+     * assembles is faithful to the 3270 turn and therefore carries an advisory navigation target, a cursor
+     * field, an error flag, an erase flag, a send counter, a control-transferred flag, the row selector and a
+     * duplicated screen-and-page pair. Returning it directly published all of that as the public contract,
+     * which was a High-severity API-contract defect with a CWE-200 aspect; the record is now strictly
+     * in-process and this operation answers the API-owned projection instead. What is withheld is enumerated
+     * on {@code UserListResponse} and asserted against its {@code WITHHELD_COMPONENTS} list.
+     *
+     * <p><strong>No credential and no digest can appear in this response.</strong> Neither the response nor
+     * its row type declares a password member, so there is nothing to omit and nothing to remember to blank.
+     * The personal data a row does carry - identifier, given name, family name and the one-character type
+     * code - is exactly what the 3270 screen displayed and nothing more.
      *
      * <p><strong>Side effects.</strong> None. The operation reads and returns; it writes no row, publishes no
      * message and mutates no field of this class.
@@ -821,7 +892,7 @@ public class AdminController {
      * which is what a first request means, and only the two declared tokens are accepted.
      * @param rowCountToken how many rows the previous response carried; null resolves to zero. Accepted only
      * as ASCII digits, and refused by the service when it exceeds the rows the screen paints.
-     * @return {@code 200 OK} with the assembled screen, its page of rows and the cursor for the adjacent
+     * @return {@code 200 OK} with the API-owned page projection, its rows and the cursor for the adjacent
      * page; never null
      * @throws ValidationException if a control token is malformed, or if the service refuses the page
      * number, the echoed row count or the identifier filter
@@ -830,7 +901,7 @@ public class AdminController {
      * failure
      */
     @GetMapping
-    public ResponseEntity<UserListService.UserListScreen> listUsers(
+    public ResponseEntity<UserListResponse> listUsers(
             @RequestParam(name = ACTION_PARAMETER, required = false) final String actionToken,
             @RequestParam(name = USER_ID_FILTER_PARAMETER, required = false) final String userIdInput,
             @RequestParam(name = PAGE_PARAMETER, required = false) final String pageToken,
@@ -850,7 +921,7 @@ public class AdminController {
             // forward, so the answer is always page one and the echoed cursor is irrelevant on this arm.
             // The dedicated entry point is what the service documents for exactly that, so no cursor is
             // fabricated in order to reach the general one.
-            return ResponseEntity.ok(openUserList(userIdInput));
+            return ResponseEntity.ok(publishableList(openUserList(userIdInput)));
         }
 
         final UserListService.UserListRequest request = new UserListService.UserListRequest(
@@ -862,7 +933,7 @@ public class AdminController {
                 echoedRows(requireDigits(rowCountToken, ROW_COUNT_PARAMETER,
                         MAXIMUM_ROW_COUNT_TOKEN_DIGITS)));
 
-        return ResponseEntity.ok(pageUserList(action, request));
+        return ResponseEntity.ok(publishableList(pageUserList(action, request)));
     }
 
     /**
@@ -907,14 +978,19 @@ public class AdminController {
      * nothing. Note that the order is <em>not</em> the sibling update program's, which checks the identifier
      * first; the two must not be harmonised.
      *
-     * <p><strong>Outputs.</strong> {@code 201 Created} with the assembled screen, whose five input fields are
-     * blank and whose message is {@code 'User '} plus the trimmed identifier plus
-     * {@code ' has been added ...'} - the {@code STRING} result of
-     * {@code app/cbl/COUSR01C.cbl:L255-L257} - carried with the green
-     * message attribute the source moved at {@code :L254}. The status is {@code 201} rather than {@code 200}
-     * because the operation creates a record, exactly as the sibling transaction-add and bill-payment
-     * operations answer for the same reason. The screen declares no password member, so no credential and no
-     * digest can travel back.
+     * <p><strong>Outputs.</strong> {@code 201 Created} with {@code UserCreateResponse}, whose four business
+     * fields are blank on the success arm - the source clears its input fields once the record is written -
+     * and whose message is {@code 'User '} plus the trimmed identifier plus {@code ' has been added ...'},
+     * the {@code STRING} result of {@code app/cbl/COUSR01C.cbl:L255-L257}, relayed byte for byte. The status
+     * is {@code 201} rather than {@code 200} because the operation creates a record, exactly as the sibling
+     * transaction-add and bill-payment operations answer for the same reason. Neither the response nor the
+     * service's own record declares a password member, so no credential and no digest can travel back.
+     *
+     * <p><strong>The service's screen record is not the wire contract.</strong> It carries the green message
+     * attribute the source moved at {@code :L254}, the field the cursor was parked on and the advisory
+     * navigation target, none of which is a business outcome; publishing them was a High-severity
+     * API-contract defect. The record is now strictly in-process and this operation answers the API-owned
+     * projection, whose withheld members are enumerated on {@code UserCreateResponse}.
      *
      * <p><strong>Side effects.</strong> On success exactly one row is inserted into the security table and the
      * presented credential is replaced by a BCrypt digest before it reaches that row. On any failure nothing
@@ -953,20 +1029,21 @@ public class AdminController {
      * {@code PASSWDI PIC X(8)} member is the presented plaintext credential and is the only channel by which
      * one is accepted; it may be null, empty or blank, each of which takes the source's own empty-password
      * arm, and it is never logged, echoed or returned.
-     * @return {@code 201 Created} with the assembled screen carrying the source's added message; never null
+     * @return {@code 201 Created} with the API-owned projection carrying the source's added message; never
+     * null
      * @throws ValidationException if a field is empty, over-wide, or carries a user type outside the two the
      * source admits
      * @throws DuplicateRecordException if the identifier is already present
      * @throws FatalProcessingException if the insert fails for any reason other than a typed CardDemo failure
      */
     @PostMapping
-    public ResponseEntity<UserAddService.UserAddScreen> addUser(
+    public ResponseEntity<UserCreateResponse> addUser(
             @Valid @RequestBody final UserCreateRequest request) {
 
         // The credential is read from the body it was bound and validated in, through the one-way reader the
         // payload publishes for exactly this purpose, so it never becomes a value this method holds.
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(request.mapPassword(presented -> applyUserAdd(request, presented)));
+                .body(publishableAdd(request.mapPassword(presented -> applyUserAdd(request, presented))));
     }
 
     /**
@@ -1017,14 +1094,23 @@ public class AdminController {
      * at {@code :L219}, {@code :L223}, {@code :L227} and {@code :L231} then decide whether anything is
      * written at all.
      *
-     * <p><strong>Outputs.</strong> {@code 200} with the assembled screen. On a write its message is
-     * {@code 'User '} plus the trimmed identifier plus {@code ' has been updated ...'} with the green message
-     * attribute of {@code app/cbl/COUSR02C.cbl:L371}; when none of the four fields differs the source instead
-     * emits {@code 'Please modify to update ...'} at {@code :L239} and abandons the write, and that outcome
-     * is returned as a screen with the same {@code 200} rather than raised, because it is neither an error nor
-     * a conflict. The screen's own modified flag distinguishes the two. The screen declares no password member,
-     * so the credential echo the source performed at {@code :L169} is deliberately not reproduced and nothing
-     * here can carry a credential, a digest or a masked-but-present value.
+     * <p><strong>Outputs.</strong> {@code 200} with {@code UserUpdateResponse}. On a write its message is
+     * {@code 'User '} plus the trimmed identifier plus {@code ' has been updated ...'}, the caption the source
+     * paints green at {@code app/cbl/COUSR02C.cbl:L371}; when none of the four fields differs the source
+     * instead emits {@code 'Please modify to update ...'} at {@code :L239} and abandons the write, and that
+     * outcome is returned with the same {@code 200} rather than raised, because it is neither an error nor a
+     * conflict. <strong>{@code updateApplied} is what distinguishes the two</strong> - the transcription of
+     * {@code WS-USR-MODIFIED} as it stood at the write decision of {@code :L236} - and it is published for
+     * exactly that reason, because a caller that cannot tell "saved" from "nothing to save" has lost
+     * behaviour the screen conveyed. The response declares no password member, so the credential echo the
+     * source performed at {@code :L169} is deliberately not reproduced and nothing here can carry a
+     * credential, a digest or a masked-but-present value.
+     *
+     * <p><strong>The service's screen record is not the wire contract.</strong> It carries the three attribute
+     * bytes, the cursor field, the transfer flag and the advisory navigation target, which describe a terminal
+     * conversation rather than an outcome; returning it directly was a High-severity API-contract defect with a
+     * CWE-200 aspect. The record is now strictly in-process, and the withheld members are enumerated on
+     * {@code UserUpdateResponse} and asserted against its {@code WITHHELD_COMPONENTS} list.
      *
      * <p><strong>Side effects.</strong> One keyed read, then at most one rewrite. On any failure nothing is
      * written: the service method is transactional and rolls back for every exception, checked or unchecked.
@@ -1078,19 +1164,19 @@ public class AdminController {
      * service against the cluster key.
      * @param request the twelve declared fields of the update screen, validated at the map's widths before
      * this method is entered; must not be null, and every member is treated as untrusted.
-     * @return {@code 200 OK} with the assembled screen, carrying either the source's updated message or its
-     * "please modify" advisory; never null
+     * @return {@code 200 OK} with the API-owned projection, carrying either the source's updated message or
+     * its "please modify" advisory together with the write decision; never null
      * @throws ValidationException if a field is empty, over-wide, or carries a user type outside the two the
      * source admits
      * @throws RecordNotFoundException if the identifier is not present on the read or on the rewrite
      * @throws FatalProcessingException if the update fails for any reason other than a typed CardDemo failure
      */
     @PutMapping(USER_PATH)
-    public ResponseEntity<UserUpdateService.UserUpdateScreen> updateUser(
+    public ResponseEntity<UserUpdateResponse> updateUser(
             @PathVariable(name = USER_ID_PATH_VARIABLE) final String userId,
             @Valid @RequestBody final UserUpdateRequest request) {
 
-        return ResponseEntity.ok(applyUserUpdate(userId, request));
+        return ResponseEntity.ok(publishableUpdate(applyUserUpdate(userId, request)));
     }
 
     /**
@@ -1217,6 +1303,75 @@ public class AdminController {
      */
     private static String publishableDetail(final String message, final String fallback) {
         return RETURNABLE_SOURCE_CAPTIONS.contains(message) ? message : fallback;
+    }
+
+    /**
+     * Projects the user-list service's screen record onto the response contract this operation publishes.
+     *
+     * <p><strong>Finding, severity High - remediated by this method and its two siblings.</strong> The three
+     * body-bearing user-administration operations previously returned the service records themselves, so
+     * {@code navigationTarget}, {@code cursorField}, {@code errorFlagOn}, {@code eraseRequested},
+     * {@code sendCount}, {@code controlTransferred}, {@code selectionFlag}, {@code selectedUserId} and a
+     * duplicated screen-and-page pair were serialized as the public REST contract. That is 3270 and
+     * implementation state on the wire - a CWE-200-style exposure, and an accidental long-term compatibility
+     * commitment to the service's internal shape. The service records are now strictly in-process: they cross
+     * no serializer, and this class is the only thing that reads them.
+     *
+     * <p>What travels is what a caller can act on: the four business columns of each row, the paging cursor
+     * the next request echoes, and the screen's own advisory message. What is withheld, and why, is enumerated
+     * on {@code UserListResponse} and asserted against {@code UserListResponse.WITHHELD_COMPONENTS}, so the
+     * boundary is machine-checked rather than merely described here.
+     *
+     * <p>The page number handed to the projection is the service's own {@code legacyPageNumber} rather than the
+     * paging payload's floored one, because that is the value {@code CDEMO-CU00-PAGE-NUM} held and therefore
+     * the value a caller must send back; the two differ only after a browse that found nothing, where the
+     * source leaves zero.
+     *
+     * @param screen the record the user-list service assembled, already proven non-null; never serialized
+     * @return the response contract, never null
+     */
+    private static UserListResponse publishableList(final UserListService.UserListScreen screen) {
+        return UserListResponse.of(screen.page(), screen.legacyPageNumber(), screen.screen().errorMessage());
+    }
+
+    /**
+     * Projects the user-add service's screen record onto the response contract this operation publishes.
+     *
+     * <p>The same boundary as {@link #publishableList(UserListService.UserListScreen)} and for the same
+     * High-severity finding: the record carries the message-attribute byte, the cursor field, the advisory
+     * navigation target and the six recurring header fields, none of which is a business outcome. The four
+     * business fields and the source's own {@code ERRMSGI PIC X(78)} line survive, the latter relayed byte for
+     * byte because on the success arm it carries the {@code ' has been added ...'} result of
+     * {@code app/cbl/COUSR01C.cbl:L255-L257} and the parity comparison is made on text.
+     *
+     * <p>Neither the record nor the response declares a credential or digest component, so this projection has
+     * nothing to blank and no way to leak one.
+     *
+     * @param screen the record the user-add service assembled, already proven non-null; never serialized
+     * @return the response contract, never null
+     */
+    private static UserCreateResponse publishableAdd(final UserAddService.UserAddScreen screen) {
+        return UserCreateResponse.of(screen.userId(), screen.firstName(), screen.lastName(),
+                screen.userType(), screen.errorMessage());
+    }
+
+    /**
+     * Projects the user-update service's screen record onto the response contract this operation publishes.
+     *
+     * <p>The same boundary again, with one addition that is deliberately <em>not</em> withheld:
+     * {@code userModified} becomes {@code updateApplied}. It is the transcription of {@code WS-USR-MODIFIED} as
+     * it stood at the write decision of {@code app/cbl/COUSR02C.cbl:L236}, so it distinguishes "saved" from
+     * "nothing differed, so nothing was written" - an outcome of the operation rather than a description of a
+     * screen, and behaviour the legacy screen conveyed that a caller would otherwise lose. The colour byte, the
+     * cursor field, the transfer flag and the navigation target do not travel, because a client paints its own
+     * screen and navigates by URL.
+     *
+     * @param screen the record the user-update service assembled, already proven non-null; never serialized
+     * @return the response contract, never null
+     */
+    private static UserUpdateResponse publishableUpdate(final UserUpdateService.UserUpdateScreen screen) {
+        return UserUpdateResponse.of(screen.userId(), screen.firstName(), screen.lastName(),
+                screen.userType(), screen.errorMessage(), screen.userModified());
     }
 
     /**
@@ -1483,6 +1638,95 @@ public class AdminController {
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(withPublicEnvelope(problem, ERROR_CODE_INTERNAL));
+    }
+
+    /**
+     * Maps a bean-validation failure the framework raised on the request body onto {@code 400 Bad Request}
+     * with this controller's own envelope.
+     *
+     * <p><strong>Why this mapper exists.</strong> {@code @Valid} on the add-user and update-user bodies is
+     * enforced by the framework <em>before</em> the mapped method is entered, so a violation never reaches the
+     * service and never becomes the {@link ValidationException} the mapper above claims. Without this method
+     * the refusal escaped to the framework's default handling and answered with a body of an entirely
+     * different shape - no {@code title}, no {@code errorCode} and no {@code correlationId} - so one logical
+     * outcome, a rejected input, looked like two unrelated failures depending on which layer noticed it. A
+     * review recorded that inconsistency as a High-severity finding against this class.
+     *
+     * <p><strong>Why it is declared here rather than centrally.</strong> The envelope is per-controller by
+     * design: the title names the resource, so a single advice class could not produce it without being told
+     * which controller it was answering for. This package declares no {@code @ControllerAdvice} and no shared
+     * base class, and this method keeps that property - it carries {@code @ExceptionHandler} only and is
+     * scoped to this controller alone, exactly like the typed mappers above it.
+     *
+     * <p><strong>What the body does not contain.</strong> No rejected value, no field name, no constraint
+     * message, no exception class and no discriminator; {@link #BIND_FAILURE_PROBLEM_DETAIL} records why each
+     * is withheld. The discriminator in particular is omitted rather than invented: the framework supplies no
+     * counterpart to the two-state marker of {@code app/cpy/CSSETATY.cpy}, so publishing one would misreport
+     * it.
+     *
+     * <p>This method is not request-mapped and is none of the four operations.
+     *
+     * @param rejection the framework's binding result, read for the log line only - its field errors retain
+     * the submitted values, so nothing is copied out of them into the body
+     * @return {@code 400 Bad Request} carrying the fixed envelope and nothing drawn from the rejection
+     */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ProblemDetail> handleBodyBindFailure(
+            final MethodArgumentNotValidException rejection) {
+
+        final ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, BIND_FAILURE_PROBLEM_DETAIL);
+        problem.setTitle(VALIDATION_PROBLEM_TITLE);
+
+        LOG.warn("Refused a user administration request with 400: the framework rejected {} field(s) of the "
+                        + "request body before the operation was entered. Fields {}",
+                rejection.getBindingResult().getFieldErrorCount(),
+                rejection.getBindingResult().getFieldErrors().stream()
+                        .map(FieldError::getField).distinct().sorted().toList());
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(withPublicEnvelope(problem, ERROR_CODE_VALIDATION));
+    }
+
+    /**
+     * Maps a request body the framework could not read onto {@code 400 Bad Request} with this controller's
+     * own envelope.
+     *
+     * <p>Claims the one exception the framework folds three conditions into, all of which occur before the
+     * mapped method is entered: a body that is not well-formed JSON, a body carrying a property outside the
+     * schema, and a request with no body where {@code @RequestBody} requires one. Each was previously answered
+     * by the framework's default handling, in a shape no client-side handler written against this package's
+     * envelope could read - the second half of the same High-severity finding.
+     *
+     * <p>The status is {@code 400} rather than {@code 415} or {@code 422}: the caller addressed the right
+     * operation with the right media type and sent something this operation cannot accept, which is precisely
+     * a bad request. Answering it identically to a bean-validation refusal is deliberate, and the two are told
+     * apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than by the status line.
+     *
+     * <p>This method is not request-mapped and is none of the four operations.
+     *
+     * @param unreadable the framework's read failure, whose message and cause chain are deliberately kept out
+     * of the body and emitted at {@code DEBUG} only
+     * @return {@code 400 Bad Request} carrying the fixed envelope and nothing drawn from the parser
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ProblemDetail> handleUnreadableBody(
+            final HttpMessageNotReadableException unreadable) {
+
+        final ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, UNREADABLE_BODY_PROBLEM_DETAIL);
+        problem.setTitle(VALIDATION_PROBLEM_TITLE);
+
+        LOG.warn("Refused a user administration request with 400: the request body could not be read. Read "
+                + "failure {}", unreadable.getClass().getSimpleName());
+        // The cause chain is preserved rather than dropped, but it is emitted only at DEBUG. A parser message
+        // can quote the fragment of the payload it stopped on, and the add-user payload carries a plaintext
+        // password, so it must not be written at a level that is enabled in every environment. At DEBUG an
+        // operator who deliberately asks for the chain gets all of it.
+        LOG.debug("Cause chain of the unreadable user administration body", unreadable);
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(withPublicEnvelope(problem, ERROR_CODE_UNREADABLE_BODY));
     }
 
     /**

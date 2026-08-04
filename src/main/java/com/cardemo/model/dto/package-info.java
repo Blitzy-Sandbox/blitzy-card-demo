@@ -4,7 +4,7 @@
  * Package     : com.cardemo.model.dto
  * Application : CardDemo
  * Type        : Java 25 / Spring Boot 3.5.11 package documentation
- * Function    : Package contract for the 26 data transfer objects
+ * Function    : Package contract for the 29 data transfer objects
  *               replacing the BMS symbolic maps and the COMMAREA.
  * Source      : app/cpy-bms/** (17 symbolic maps, 441 input fields,
  *               of which COACTVW contributes 37);
@@ -35,9 +35,9 @@
  * Request and response payloads for the CardDemo REST surface, derived field for field from the 17 BMS symbolic
  * maps and the COMMAREA of the frozen COBOL corpus.
  *
- * <p><strong>What it does.</strong> 26 data transfer objects, and nothing else besides this file: the
- * seventeen request-and-projection types, the eight response envelopes added when the REST surface stopped
- * returning entities directly, and the masking helper those envelopes share. They
+ * <p><strong>What it does.</strong> 29 data transfer objects, and nothing else besides this file: the
+ * seventeen request-and-projection types, the eleven response envelopes added when the REST surface stopped
+ * returning entities and service records directly, and the masking helper those envelopes share. They
  * replace exactly two legacy mechanisms: the symbolic maps under {@code app/cpy-bms}, which carried screen
  * field values between a 3270 terminal and a CICS program, and the COMMAREA of
  * {@code app/cpy/COCOM01Y.cpy}, which carried identity and selection state across {@code EXEC CICS XCTL}.
@@ -69,6 +69,13 @@
  *       stateless HTTP.</li>
  *   <li>{@link StatementTransaction} - {@code app/cpy/COSTM01.CPY} with its 32-byte {@code TRNX-KEY}, and the
  *       133-byte report lines of {@code app/cpy/CVTRA07Y.cpy}.</li>
+ *   <li>{@link UserListResponse}, {@link UserCreateResponse} and {@link UserUpdateResponse} - the three
+ *       user-administration response envelopes, projected from {@code app/cpy-bms/COUSR00.CPY},
+ *       {@code COUSR01.CPY} and {@code COUSR02.CPY}. They exist because the administration operations
+ *       previously returned the service tier's own screen records, publishing terminal, colour, cursor,
+ *       selector and navigation state as the public contract; each of the three publishes only business
+ *       fields, the source's own message and fixed page metadata, and each names what it withholds in a
+ *       {@code WITHHELD_COMPONENTS} list a test asserts against. None carries a password or a hash.</li>
  *   </ul>
  *
  * <p>Filename casing in those citations is load-bearing and reproduced exactly as it appears on disk: all 17
@@ -182,9 +189,12 @@
  *   <li>{@code COTRN00.CPY} 59 fields to {@link TransactionDto}, list projection.</li>
  *   <li>{@code COTRN01.CPY} 21 fields to {@link TransactionDto}, detail projection.</li>
  *   <li>{@code COTRN02.CPY} 21 fields to {@link TransactionAddRequest}.</li>
- *   <li>{@code COUSR00.CPY} 59 fields to {@link UserSecurityDto}, list contract.</li>
- *   <li>{@code COUSR01.CPY} 12 fields to {@link UserCreateRequest}.</li>
- *   <li>{@code COUSR02.CPY} 12 fields to {@link UserUpdateRequest}.</li>
+ *   <li>{@code COUSR00.CPY} 59 fields to {@link UserSecurityDto}, list contract, and its business columns
+ *       to {@link UserListResponse}.</li>
+ *   <li>{@code COUSR01.CPY} 12 fields to {@link UserCreateRequest}, and its readable subset to
+ *       {@link UserCreateResponse}.</li>
+ *   <li>{@code COUSR02.CPY} 12 fields to {@link UserUpdateRequest}, and its readable subset to
+ *       {@link UserUpdateResponse}.</li>
  *   <li>{@code COUSR03.CPY} 11 fields to {@link UserSecurityDto.UserDeleteScreen}.</li>
  * </ul>
  *

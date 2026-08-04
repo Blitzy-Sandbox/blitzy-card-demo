@@ -27,7 +27,6 @@ package com.cardemo.model.dto;
 
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Size;
@@ -228,8 +227,12 @@ import java.util.function.Function;
  * three distinguishable states.
  *
  * <p><strong>Troubleshooting.</strong> If a password appears in any log line, HTTP response or test
- * snapshot, the cause is not this class serialising it — the field is write-only and its one read path is
- * {@code @JsonIgnore}. Look instead at a custom validation-error handler serialising a rejected value, at a
+ * snapshot, the cause is not this class serialising it — the field is write-only and its one read path takes
+ * an argument, which is what makes it invisible to every reflective discoverer, so no {@code @JsonIgnore} is
+ * involved anywhere in the guarantee. Read the bullet list above rather than looking for that annotation: an
+ * earlier revision of this file carried an unused import of it, which a review recorded as a hygiene finding
+ * precisely because a reader who trusted this paragraph would go looking for an annotation that was never
+ * there. Look instead at a custom validation-error handler serialising a rejected value, at a
  * mapper configured to auto-detect private fields rather than bean accessors, or at request-body logging
  * upstream of the controller. If an inbound password does not arrive at the service, confirm the JSON key is
  * exactly {@code password} and that the request reaches the write-only constructor parameter rather than a

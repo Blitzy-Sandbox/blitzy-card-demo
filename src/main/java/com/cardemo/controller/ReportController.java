@@ -33,8 +33,11 @@ import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -483,6 +486,32 @@ public class ReportController {
             "The report job could not be published to the report-jobs queue.";
 
     /**
+     * The single detail published when the framework's bean validation refuses the request body.
+     *
+     * <p>Fixed, and deliberately naming no field. The framework's binding result carries a field error per
+     * violation, and each of those retains the <em>submitted value</em> alongside its message - which on this
+     * body is the six custom-range date components. Withholding the field name as well costs a caller nothing,
+     * because the schema that declares the constraint is what the caller wrote the body against, and it buys
+     * determinism: Hibernate Validator reports violations from an unordered set, so any single-field or
+     * first-field projection would vary between two identical requests. The field names do reach the log line,
+     * where they are diagnosable without being disclosed.
+     */
+    private static final String BIND_FAILURE_PROBLEM_DETAIL =
+            "One or more fields of the request body failed validation. Correct the body and resubmit.";
+
+    /**
+     * The single detail published when the request body could not be read at all.
+     *
+     * <p>Covers the three conditions the framework folds into one exception before the operation is entered: a
+     * body that is not well-formed JSON, a body carrying a property outside the schema, and a request with no
+     * body where one is required. The parser's own message is not published, because it names the
+     * deserialiser's internal stream class, the byte offset it stopped at and, for an unrecognised property,
+     * the full list of properties the type accepts - a schema dump handed to a caller.
+     */
+    private static final String UNREADABLE_BODY_PROBLEM_DETAIL =
+            "The request body could not be read as JSON matching this operation's schema.";
+
+    /**
      * Stable error code meaning that the request was refused by a field-level validation rule.
      */
     private static final String ERROR_CODE_VALIDATION = "CARDDEMO-VALIDATION-REJECTED";
@@ -506,6 +535,17 @@ public class ReportController {
      * Stable error code meaning that an unexpected typed failure occurred.
      */
     private static final String ERROR_CODE_INTERNAL = "CARDDEMO-INTERNAL-FAILURE";
+
+    /**
+     * Stable error code meaning that the request body could not be read as JSON matching the schema.
+     *
+     * <p>Distinct from {@link #ERROR_CODE_VALIDATION} because the two conditions are distinct: a body that
+     * parsed and then failed a rule is not the same as a body that never parsed, and a client that retries
+     * automatically needs to tell them apart. The framework-level bean-validation refusal, by contrast,
+     * publishes {@link #ERROR_CODE_VALIDATION} - the same code the service-tier refusal publishes - so a
+     * caller sees one code per condition rather than one code per layer that happened to catch it.
+     */
+    private static final String ERROR_CODE_UNREADABLE_BODY = "CARDDEMO-REQUEST-BODY-UNREADABLE";
 
     /**
      * The logger. Static and final, so it is not mutable state; the correlation, trace and span identifiers
@@ -1024,6 +1064,97 @@ public class ReportController {
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(withPublicEnvelope(problem, ERROR_CODE_INTERNAL));
+    }
+
+    /**
+     * Maps a bean-validation failure the framework raised on the request body onto {@code 400 Bad Request}
+     * with this controller's own envelope.
+     *
+     * <p><strong>Why this mapper exists.</strong> {@code @Valid} on the request body is enforced by the
+     * framework <em>before</em> the mapped method is entered, so a violation never reaches the service and
+     * never becomes the {@link ValidationException} the rejection mapper above claims. Without this method the
+     * refusal escaped to the framework's default handling and answered with a body of an entirely different
+     * shape - no {@code title}, no {@code errorCode} and no {@code correlationId} - so one logical outcome, a
+     * rejected input, looked like two unrelated failures depending on which layer noticed it. A review recorded
+     * that inconsistency as a High-severity finding on this seam, and it is the same defect on every route in
+     * this package that binds a body.
+     *
+     * <p><strong>Why it is declared here rather than centrally.</strong> The envelope is per-controller by
+     * design: the title names the resource, so a single advice class could not produce it without being told
+     * which controller it was answering for. This package declares no {@code @ControllerAdvice} and no shared
+     * base class, and this method keeps that property - it carries {@code @ExceptionHandler} only and is
+     * scoped to this controller alone, exactly like the typed mappers above it.
+     *
+     * <p><strong>What the body does not contain.</strong> No rejected value, no field name, no constraint
+     * message, no exception class and no discriminator; {@link #BIND_FAILURE_PROBLEM_DETAIL} records why each
+     * is withheld. The discriminator in particular is omitted rather than invented: the framework supplies no
+     * counterpart to the two-state marker of {@code app/cpy/CSSETATY.cpy}, so publishing one would misreport
+     * it.
+     *
+     * <p>This method is not request-mapped and is not the operation.
+     *
+     * @param rejection the framework's binding result, read for the log line only - its field errors retain
+     *                  the submitted values, so nothing is copied out of them into the body
+     * @return {@code 400 Bad Request} carrying the fixed envelope and nothing drawn from the rejection
+     */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ProblemDetail> handleBodyBindFailure(
+            final MethodArgumentNotValidException rejection) {
+
+        final ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, BIND_FAILURE_PROBLEM_DETAIL);
+        problem.setTitle(VALIDATION_PROBLEM_TITLE);
+
+        LOG.warn("Refused transaction {} with 400: the framework rejected {} field(s) of the request body "
+                        + "before the operation was entered. Fields {}",
+                TRANSACTION_ID, rejection.getBindingResult().getFieldErrorCount(),
+                rejection.getBindingResult().getFieldErrors().stream()
+                        .map(FieldError::getField).distinct().sorted().toList());
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(withPublicEnvelope(problem, ERROR_CODE_VALIDATION));
+    }
+
+    /**
+     * Maps a request body the framework could not read onto {@code 400 Bad Request} with this controller's
+     * own envelope.
+     *
+     * <p>Claims the one exception the framework folds three conditions into, all of which occur before the
+     * mapped method is entered: a body that is not well-formed JSON, a body carrying a property outside the
+     * schema, and a request with no body where {@code @RequestBody} requires one. Each was previously answered
+     * by the framework's default handling, in a shape no client-side handler written against this package's
+     * envelope could read - the second half of the same High-severity finding.
+     *
+     * <p>The status is {@code 400} rather than {@code 415} or {@code 422}: the caller addressed the right
+     * operation with the right media type and sent something this operation cannot accept, which is precisely
+     * a bad request. Answering it identically to a bean-validation refusal is deliberate, and the two are told
+     * apart by {@link #ERROR_CODE_UNREADABLE_BODY} rather than by the status line.
+     *
+     * <p>This method is not request-mapped and is not the operation.
+     *
+     * @param unreadable the framework's read failure, whose message and cause chain are deliberately kept out
+     *                   of the body and emitted at {@code DEBUG} only
+     * @return {@code 400 Bad Request} carrying the fixed envelope and nothing drawn from the parser
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ProblemDetail> handleUnreadableBody(
+            final HttpMessageNotReadableException unreadable) {
+
+        final ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, UNREADABLE_BODY_PROBLEM_DETAIL);
+        problem.setTitle(VALIDATION_PROBLEM_TITLE);
+
+        LOG.warn("Refused transaction {} with 400: the request body could not be read. Read failure {}",
+                TRANSACTION_ID, unreadable.getClass().getSimpleName());
+        // The cause chain is preserved rather than dropped, but it is emitted only at DEBUG. A parser message
+        // can quote the fragment of the payload it stopped on, so it must not be written at a level that is
+        // enabled in every environment. At DEBUG an operator who deliberately asks for the chain gets all of
+        // it.
+        LOG.debug("Cause chain of the unreadable report submission body for transaction {}", TRANSACTION_ID,
+                unreadable);
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(withPublicEnvelope(problem, ERROR_CODE_UNREADABLE_BODY));
     }
 
     /**

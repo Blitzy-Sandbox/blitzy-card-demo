@@ -38,6 +38,7 @@
  */
 package com.cardemo.config;
 
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.security.JwtAuthenticationFilter;
 import com.cardemo.security.JwtTokenProvider;
 import jakarta.servlet.DispatcherType;
@@ -49,19 +50,27 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Locale;
+import java.util.Set;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.config.Customizer;
@@ -72,6 +81,7 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -82,7 +92,9 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.web.BearerTokenAuthenticationEntryPoint;
 import org.springframework.security.oauth2.server.resource.web.access.BearerTokenAccessDeniedHandler;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
 import org.springframework.security.web.header.HeaderWriterFilter;
 import org.springframework.security.web.savedrequest.NullRequestCache;
@@ -367,7 +379,27 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *
  * <p>The one header this class does cause is the bearer challenge: a rejected request carries
  * {@code WWW-Authenticate: Bearer} with no realm and no error parameters, which is the bare RFC 6750 form
- * the configured entry point emits when no token was presented at all.
+ * the configured entry point emits when no token was presented at all. The two headers a serialised refusal
+ * adds beside it - {@code Content-Type: application/problem+json} and {@code Content-Length} - describe the
+ * body this class now writes rather than the security posture, and are set by
+ * {@link #writeProblemDetail(jakarta.servlet.http.HttpServletResponse, org.springframework.http.HttpStatus,
+ * String, String, String)} alone.
+ *
+ * <h2>Every refusal carries the same body as every controller</h2>
+ *
+ * <p>A rejected request is answered with an RFC 9457 problem document carrying exactly the members a
+ * {@code com.cardemo.controller} handler publishes: {@code type}, {@code title}, {@code status},
+ * {@code detail}, {@code errorCode} and {@code correlationId}. Three conditions are serialised here because
+ * they are refused before any handler is reached - an unauthenticated request, an authenticated but
+ * unentitled one, and one whose body exceeds the byte bound - and each publishes a fixed title, a fixed
+ * detail and a stable code that name the condition and nothing about the request. Before this, all three
+ * answered with a status line and no body at all, so a client met two different error shapes on one API and a
+ * rejected request could not be tied back to its own log line; that was a High-severity contract defect and
+ * it is closed here rather than in a controller, because no controller runs on these paths.
+ *
+ * <p>The metrics scrape chain is deliberately not part of that: it answers an HTTP Basic challenge to a
+ * Prometheus scraper rather than a JSON contract to an API client, so its refusal remains the framework's
+ * own and is documented as such.
  *
  * <h2>How requests are matched</h2>
  *
@@ -895,6 +927,100 @@ public class SecurityConfig {
     private static final String SCRAPE_AUTHORITY = "SCRAPE";
 
     // =============================================================================================
+    // The shared error envelope. Every refusal this class serialises carries the same members, in the
+    // same order, as the body each @ExceptionHandler in com.cardemo.controller produces, so that one
+    // client-side error handler covers the whole surface rather than one shape per rejection layer.
+    // =============================================================================================
+
+    /**
+     * The logger this class refuses through.
+     *
+     * <p>Every refusal serialised below is logged once, at {@code WARN}, naming the condition and never the
+     * credential, the token, the header set or any body byte. The logger is the only static field on this
+     * class that is not a plain constant; it is immutable and thread-safe, so the no-global-mutable-state
+     * property of Rule 1 Clause B is unaffected.
+     */
+    private static final Logger LOG = LoggerFactory.getLogger(SecurityConfig.class);
+
+    /**
+     * The problem type every serialised body carries, {@value}.
+     *
+     * <p>Matches what {@code org.springframework.http.ProblemDetail#forStatus(HttpStatus)} produces for a
+     * controller body, so a client that switches on the {@code type} member cannot tell a rejection written
+     * here from one written by a controller. No application-specific type URI is minted: none is published,
+     * and a URI that does not resolve is worse than the RFC 9457 default.
+     */
+    private static final String PROBLEM_TYPE = "about:blank";
+
+    /** The title every authentication refusal carries, {@value}. */
+    private static final String AUTHENTICATION_PROBLEM_TITLE = "Authentication required";
+
+    /**
+     * The fixed detail every authentication refusal carries, {@value}.
+     *
+     * <p>It names the remedy and nothing about the request. It does not say whether a token was absent,
+     * malformed, expired, signed by the wrong key or issued by the wrong issuer, because each of those is a
+     * probe an unauthenticated caller can run at will; the distinction survives in the structured log and in
+     * the {@code WWW-Authenticate} parameters the framework's own entry point writes.
+     */
+    private static final String AUTHENTICATION_PROBLEM_DETAIL =
+            "The request did not carry a usable bearer token. Obtain one from the sign-on operation and "
+                    + "present it in the Authorization header.";
+
+    /** The stable machine-readable code every authentication refusal carries, {@value}. */
+    private static final String ERROR_CODE_AUTHENTICATION_REQUIRED = "CARDDEMO-AUTHENTICATION-REQUIRED";
+
+    /** The title every authorisation refusal carries, {@value}. */
+    private static final String AUTHORIZATION_PROBLEM_TITLE = "Authorization denied";
+
+    /**
+     * The fixed detail every authorisation refusal carries, {@value}.
+     *
+     * <p>It states the condition without naming the authority that was required, because naming it would
+     * describe the authorisation model to a principal that has just been refused by it.
+     */
+    private static final String AUTHORIZATION_PROBLEM_DETAIL =
+            "The presented token is valid but does not carry the authority this operation requires.";
+
+    /** The stable machine-readable code every authorisation refusal carries, {@value}. */
+    private static final String ERROR_CODE_AUTHORIZATION_DENIED = "CARDDEMO-AUTHORIZATION-DENIED";
+
+    /** The title every oversized-body refusal carries, {@value}. */
+    private static final String PAYLOAD_PROBLEM_TITLE = "Request body too large";
+
+    /**
+     * The fixed detail every oversized-body refusal carries, {@value}.
+     *
+     * <p>The bound itself is deliberately not published. A caller cannot act on the number - the largest
+     * legitimate body is four times smaller - and stating it tells an attacker exactly how much of the
+     * allowance a single request may consume.
+     */
+    private static final String PAYLOAD_PROBLEM_DETAIL =
+            "The request body exceeds the number of bytes this application will read from one request.";
+
+    /** The stable machine-readable code every oversized-body refusal carries, {@value}. */
+    private static final String ERROR_CODE_PAYLOAD_TOO_LARGE = "CARDDEMO-REQUEST-BODY-TOO-LARGE";
+
+    /**
+     * The value published for the correlation identifier when the request carries none, {@value}.
+     *
+     * <p>The same literal the controllers publish, so the member is always present and a client never has to
+     * branch on its absence. It can only be reached when a refusal is written outside
+     * {@code com.cardemo.observability.CorrelationIdFilter}, which registers far ahead of this chain.
+     */
+    private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
+
+    /**
+     * The request methods this application never reads a body from.
+     *
+     * <p>Used by the body bound to decide whether an undeclared length is worth reading ahead of the chain.
+     * Compared case-sensitively, because HTTP method names are case-sensitive: a lower-case {@code get} is
+     * not the {@code GET} method and is treated as a method that may carry a body, which is the safe
+     * direction.
+     */
+    private static final Set<String> BODYLESS_METHODS = Set.of("GET", "HEAD", "OPTIONS", "TRACE");
+
+    // =============================================================================================
     // Bound state. Three immutable values, all supplied by constructor injection. There is no field
     // @Autowired, no setter, no static mutable field and no service lookup anywhere in this class.
     // =============================================================================================
@@ -1190,9 +1316,13 @@ public class SecurityConfig {
                         }))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .requestCache(cache -> cache.requestCache(new NullRequestCache()))
+                // Both refusals are serialised through this class's own writers, which delegate to the
+                // framework's bearer components for the status and the challenge header and then add the
+                // problem body those components omit. See writeProblemDetail for why the empty answers they
+                // produce on their own were a High-severity contract defect.
                 .exceptionHandling(handling -> handling
-                        .authenticationEntryPoint(new BearerTokenAuthenticationEntryPoint())
-                        .accessDeniedHandler(new BearerTokenAccessDeniedHandler()))
+                        .authenticationEntryPoint(new ProblemDetailAuthenticationEntryPoint())
+                        .accessDeniedHandler(new ProblemDetailAccessDeniedHandler()))
 
                 // The request-body bound, placed AFTER the header writer so a refusal still carries the
                 // security headers, and BEFORE the security context and the bearer filter so it applies to
@@ -1494,6 +1624,193 @@ public class SecurityConfig {
     }
 
     /**
+     * Serialises one refusal as the same problem body a controller would have produced.
+     *
+     * <p><strong>Finding, severity High - remediated by this method.</strong> The framework's bearer entry
+     * point and access-denied handler set a status and a challenge header and write <em>no body at all</em>,
+     * and the body bound below previously did the same. A caller therefore met three different shapes on one
+     * API: a populated problem document from any controller, and an empty document from the authentication,
+     * authorisation and body-limit layers. A client cannot write one error handler against that, and the
+     * empty answers carry no correlation identifier, so a rejected request could not be tied back to its own
+     * log line. This method is the single place all three are now written, which is what makes them identical
+     * by construction rather than by three implementations that happen to agree.
+     *
+     * <p><strong>The body is composed rather than serialised, deliberately.</strong> Every interpolated value
+     * is either a compile-time constant declared in this class or the correlation identifier, and the
+     * identifier is read through {@code CorrelationIdFilter#currentCorrelationId()}, which returns a value
+     * only when it matches that filter's published grammar - at most sixty-four characters of
+     * {@code [A-Za-z0-9_-]} - and {@code null} otherwise. There is consequently no character in the result
+     * that JSON would need escaped, and no attacker-controlled text reaches the body: composing it here
+     * needs neither an injected {@code ObjectMapper} nor an escaper, and it cannot fail on a
+     * serialisation path where a thrown exception would leave the caller with an empty 500. The member order
+     * matches Spring's own {@code ProblemDetail} rendering - type, title, status, detail, then the
+     * application's own properties - so the two are byte-comparable.
+     *
+     * <p><strong>Nothing about the request is disclosed.</strong> No token, no header, no body byte, no
+     * exception message, no exception class, no required authority and no dataset name reaches the body: the
+     * title, the detail and the code are fixed per condition, which is exactly what the
+     * {@code server.error.include-*} settings ask of every other error path.
+     *
+     * <p><strong>A committed response is reported, never overwritten.</strong> If something has already begun
+     * writing, the status line and part of the body are already on the wire and there is nothing correct left
+     * to do; the condition is logged at {@code WARN} so it is visible rather than silent. It cannot arise on
+     * the three paths that call this method - each runs before any handler has written - and is guarded
+     * because the alternative is an {@code IllegalStateException} thrown from an error path.
+     *
+     * @param response the response to write, never {@code null}
+     * @param status the status to publish, which is always the status already set on the response by the
+     * framework component that refused the request, so the body can never contradict the status line
+     * @param title the fixed, condition-specific title
+     * @param detail the fixed, condition-specific detail, which names no value from the request
+     * @param errorCode the stable machine-readable code for the condition
+     * @throws IOException if the body cannot be written to the response stream, which the servlet container
+     * translates; it is propagated rather than swallowed so a broken connection is not reported as a
+     * successful refusal
+     */
+    private static void writeProblemDetail(final HttpServletResponse response, final HttpStatus status,
+            final String title, final String detail, final String errorCode) throws IOException {
+
+        if (response.isCommitted()) {
+            LOG.warn("Refused a request with {} but the response was already committed, so the {} problem "
+                    + "envelope could not be written", status.value(), errorCode);
+            return;
+        }
+
+        final String correlationId = CorrelationIdFilter.currentCorrelationId();
+        final byte[] body = String.format(
+                Locale.ROOT,
+                "{\"type\":\"%s\",\"title\":\"%s\",\"status\":%d,\"detail\":\"%s\",\"errorCode\":\"%s\","
+                        + "\"correlationId\":\"%s\"}",
+                PROBLEM_TYPE,
+                title,
+                status.value(),
+                detail,
+                errorCode,
+                correlationId == null ? CORRELATION_ID_UNAVAILABLE : correlationId)
+                .getBytes(StandardCharsets.UTF_8);
+
+        response.setStatus(status.value());
+        // No charset parameter, because that is what Spring emits for a ResponseEntity<ProblemDetail>: the
+        // two Content-Type headers must match or the bodies are not interchangeable to a client that
+        // negotiates on it. JSON is UTF-8 by specification, and the bytes above are encoded as such.
+        response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+        response.setContentLength(body.length);
+        response.getOutputStream().write(body);
+        // Committing here is deliberate. The header writer runs ahead of every caller of this method and is
+        // configured to write the default security headers eagerly, so they are already on the response;
+        // flushing then guarantees the refusal reaches the client as written rather than depending on what
+        // the rest of the chain does with an uncommitted buffer.
+        response.flushBuffer();
+    }
+
+    /**
+     * Resolves the status already set on a response, falling back when it is not a status this framework
+     * generation knows.
+     *
+     * <p>Reading the status back rather than assuming one is what keeps the serialised body honest. The
+     * framework's bearer entry point answers {@code 401} for an absent or invalid token but {@code 400} for a
+     * malformed request and {@code 403} for insufficient scope, choosing from the RFC 6750 mapping; hardcoding
+     * {@code 401} here would publish a body whose {@code status} member disagreed with the status line for
+     * those cases, which is exactly the inconsistency this remediation exists to remove.
+     *
+     * @param response the response whose status was set by the component that refused the request
+     * @param fallback the status to publish when the response carries one this framework generation does not
+     * enumerate, which no configured component can produce
+     * @return the status to publish, never {@code null}
+     */
+    private static HttpStatus statusOf(final HttpServletResponse response, final HttpStatus fallback) {
+        final HttpStatus resolved = HttpStatus.resolve(response.getStatus());
+        return resolved == null ? fallback : resolved;
+    }
+
+    /**
+     * Answers an unauthenticated request with the bearer challenge <em>and</em> the shared problem body.
+     *
+     * <p>It does not reimplement the challenge, it delegates it. {@code BearerTokenAuthenticationEntryPoint}
+     * owns the RFC 6750 behaviour - the {@code WWW-Authenticate: Bearer} header, the error parameters when the
+     * failure is an OAuth2 one, and the status that mapping selects - and every one of those is preserved
+     * exactly by calling it first and adding only the body it omits. Replacing it with hand-written header
+     * logic would put a security header contract in a place that is easy to get subtly wrong.
+     *
+     * <p>The body is written unconditionally after the delegate returns, because the delegate sets a status
+     * and a header and never commits the response.
+     */
+    private static final class ProblemDetailAuthenticationEntryPoint implements AuthenticationEntryPoint {
+
+        /**
+         * The framework entry point that owns the challenge header and the status.
+         *
+         * <p>Held rather than extended so that this class cannot accidentally suppress part of the delegate's
+         * behaviour by overriding it.
+         */
+        private final BearerTokenAuthenticationEntryPoint challenge =
+                new BearerTokenAuthenticationEntryPoint();
+
+        /**
+         * Creates the entry point.
+         *
+         * <p>Stated explicitly because the build's Javadoc gate treats an undocumented default constructor as
+         * a warning and escalates every warning to a failure. It holds no configuration: the realm is
+         * deliberately unset, which is what makes the challenge the bare {@code Bearer} form.
+         */
+        private ProblemDetailAuthenticationEntryPoint() {
+            super();
+        }
+
+        @Override
+        public void commence(final HttpServletRequest request, final HttpServletResponse response,
+                final AuthenticationException authenticationException) throws IOException {
+
+            this.challenge.commence(request, response, authenticationException);
+
+            LOG.warn("Refused an unauthenticated request to {} with {}. The reason is not disclosed to the"
+                    + " caller", request.getRequestURI(), response.getStatus());
+
+            writeProblemDetail(response, statusOf(response, HttpStatus.UNAUTHORIZED),
+                    AUTHENTICATION_PROBLEM_TITLE, AUTHENTICATION_PROBLEM_DETAIL,
+                    ERROR_CODE_AUTHENTICATION_REQUIRED);
+        }
+    }
+
+    /**
+     * Answers an unauthorised request with the framework's own headers <em>and</em> the shared problem body.
+     *
+     * <p>The counterpart of {@link ProblemDetailAuthenticationEntryPoint} for a principal that authenticated
+     * and is not entitled: {@code BearerTokenAccessDeniedHandler} is delegated to first, so the {@code 403}
+     * status and any {@code WWW-Authenticate} parameters it writes are preserved, and only the body it omits
+     * is added.
+     */
+    private static final class ProblemDetailAccessDeniedHandler implements AccessDeniedHandler {
+
+        /** The framework handler that owns the status and any challenge parameters. */
+        private final BearerTokenAccessDeniedHandler challenge = new BearerTokenAccessDeniedHandler();
+
+        /**
+         * Creates the handler.
+         *
+         * <p>Stated explicitly for the same reason as the sibling entry point's constructor. It holds no
+         * configuration.
+         */
+        private ProblemDetailAccessDeniedHandler() {
+            super();
+        }
+
+        @Override
+        public void handle(final HttpServletRequest request, final HttpServletResponse response,
+                final AccessDeniedException accessDeniedException) throws IOException, ServletException {
+
+            this.challenge.handle(request, response, accessDeniedException);
+
+            LOG.warn("Refused an authenticated but unentitled request to {} with {}. The required authority"
+                    + " is not disclosed to the caller", request.getRequestURI(), response.getStatus());
+
+            writeProblemDetail(response, statusOf(response, HttpStatus.FORBIDDEN),
+                    AUTHORIZATION_PROBLEM_TITLE, AUTHORIZATION_PROBLEM_DETAIL,
+                    ERROR_CODE_AUTHORIZATION_DENIED);
+        }
+    }
+
+    /**
      * Bounds the number of request-body bytes any caller may make this application read.
      *
      * <p><strong>Finding, severity High - remediated by this filter.</strong> Exactly one business endpoint is
@@ -1511,11 +1828,34 @@ public class SecurityConfig {
      * in {@code application.yml} for their own reasons and neither closes this gap, which is precisely why an
      * explicit filter is required rather than a configuration line.
      *
-     * <p><strong>Both shapes are bounded, and the second is the one that matters.</strong> A request that
-     * declares {@code Content-Length} is refused on the declaration alone, before a byte is read. A chunked
-     * request declares no length at all - which is the shape an attacker would choose - so for those the body
-     * is wrapped and the bound is enforced as it is consumed, meaning the read fails at the limit instead of
-     * continuing to allocate. Checking only {@code Content-Length} would leave the more dangerous case open.
+     * <p><strong>Both shapes are bounded, and both are refused identically.</strong> A request that declares
+     * {@code Content-Length} is refused on the declaration alone, before a byte is read. A request that
+     * declares no length at all - the chunked shape, which is the one an attacker would choose - has its body
+     * read here, ahead of the chain, up to one byte past the bound; over the bound it is refused with the same
+     * status and the same body as the declared case, and within the bound the captured bytes are replayed to
+     * the chain. Checking only {@code Content-Length} would leave the more dangerous case open.
+     *
+     * <p><strong>Finding, severity Medium - remediated by that up-front read.</strong> Previously the
+     * length-less shape was merely wrapped, and the bound was enforced lazily as the body was consumed by
+     * throwing an {@link IOException} from the stream. That produced a different answer for the same
+     * violation: Spring's {@code AbstractMessageConverterMethodArgumentResolver} catches an
+     * {@code IOException} raised while reading a body and rethrows it as
+     * {@code HttpMessageNotReadableException}, so an oversized chunked body was answered {@code 400 Bad
+     * Request} - "your body was malformed", which it was not - while an oversized declared body was answered
+     * {@code 413}. The status a caller received therefore depended on the transfer encoding it happened to
+     * choose. <strong>Translating that exception instead would not have fixed it deterministically</strong>,
+     * which is why the read moved rather than the exception being caught: a checked {@code IOException} never
+     * escapes to this filter at all because the resolver has already converted it, and an unchecked variant
+     * only arrives after {@code FrameworkServlet} has rewrapped it, by which time the answer depends on
+     * whether any resolver claimed it and whether the response is still uncommitted. Refusing before the chain
+     * runs removes every one of those conditions: the two shapes are now indistinguishable to a caller, and
+     * neither reaches a handler.
+     *
+     * <p>The cost of the up-front read is bounded by the bound itself - at most 16 KB is buffered, for
+     * requests whose method may carry a body and which declared no length - and it buys the property that
+     * nothing downstream runs for either oversized shape. {@code GET}, {@code HEAD}, {@code OPTIONS} and
+     * {@code TRACE} are left untouched, because no route in this application reads a body from them, so no
+     * pair of equivalent violations exists there to diverge.
      *
      * <p><strong>Position in the chain is load-bearing.</strong> Registered after
      * {@link org.springframework.security.web.header.HeaderWriterFilter} so a refusal still carries
@@ -1524,10 +1864,12 @@ public class SecurityConfig {
      * ones that can reach the sign-on route. Moving it after authentication would exempt exactly the caller it
      * exists to bound.
      *
-     * <p>The response is {@code 413 Payload Too Large} with an empty body, consistent with the
-     * {@code server.error} settings that emit no message, no binding detail and no exception class. Nothing
-     * about the rejected request is logged at request scope beyond its declared length, so an oversized body
-     * cannot be used to write attacker-chosen text into the log.
+     * <p>The response is {@code 413 Payload Too Large} carrying the shared problem envelope that
+     * {@link SecurityConfig#writeProblemDetail} composes - the same shape every controller and both security
+     * refusals produce, and no more disclosive than the {@code server.error} settings allow, since the detail
+     * is fixed and names neither the bound nor anything about the request. Nothing about the rejected request
+     * is logged at request scope beyond its declared length, so an oversized body cannot be used to write
+     * attacker-chosen text into the log.
      */
     private static final class RequestBodyLimitFilter extends OncePerRequestFilter {
 
@@ -1543,6 +1885,15 @@ public class SecurityConfig {
          * body while remaining four orders of magnitude below what an unbounded read permits.
          */
         private static final long MAX_BODY_BYTES = 16L * 1024L;
+
+        /**
+         * The transfer buffer used by the up-front read, namely 8192 bytes.
+         *
+         * <p>A copy buffer size and nothing more: it bounds how much is moved per {@code read} call, never how
+         * much is accepted, which is {@link #MAX_BODY_BYTES} alone. Two of these fit inside the bound, so a
+         * legitimate body is captured in at most two passes.
+         */
+        private static final int COPY_BUFFER_BYTES = 8192;
 
         /**
          * Creates the filter.
@@ -1563,24 +1914,223 @@ public class SecurityConfig {
                 final HttpServletResponse response,
                 final FilterChain filterChain) throws ServletException, IOException {
 
-            if (request.getContentLengthLong() > MAX_BODY_BYTES) {
-                response.setStatus(HttpStatus.PAYLOAD_TOO_LARGE.value());
+            final long declaredLength = request.getContentLengthLong();
+
+            if (declaredLength > MAX_BODY_BYTES) {
+                refuse(response, declaredLength);
                 return;
             }
+
+            if (declaredLength < 0L && mayCarryBody(request)) {
+                // One byte past the bound is read on purpose: it is what distinguishes a body that is exactly
+                // at the bound, which is admitted, from one that is over it, which is refused. Nothing beyond
+                // that byte is ever read, so the allocation is bounded whatever the caller sends.
+                final byte[] captured = readAtMost(request.getInputStream(), MAX_BODY_BYTES + 1L);
+                if (captured.length > MAX_BODY_BYTES) {
+                    refuse(response, declaredLength);
+                    return;
+                }
+                filterChain.doFilter(new BufferedBodyRequest(request, captured), response);
+                return;
+            }
+
             filterChain.doFilter(new BoundedBodyRequest(request, MAX_BODY_BYTES), response);
+        }
+
+        /**
+         * Whether a request's method admits a body this application would read.
+         *
+         * <p>The four methods excluded have no body semantics on any route here, so reading ahead for them
+         * would buy nothing and would touch the most common verb on the surface. A method this application
+         * does not recognise at all is treated as one that may carry a body, which is the direction that keeps
+         * the bound applied; an absent method - which a servlet container does not produce - takes the same
+         * arm as a body-less one and is still bounded lazily by the wrapper below.
+         *
+         * @param request the request being screened, never {@code null}
+         * @return {@code true} when the method may carry a body this application reads
+         */
+        private static boolean mayCarryBody(final HttpServletRequest request) {
+            final String method = request.getMethod();
+            return method != null && !BODYLESS_METHODS.contains(method);
+        }
+
+        /**
+         * Reads at most a fixed number of bytes from a request body, stopping at the bound rather than at the
+         * end of the stream.
+         *
+         * <p>The stream is never drained past {@code limit}, so an unbounded body cannot make this method
+         * allocate without bound - which is the whole purpose of reading here rather than letting a message
+         * converter read. A zero-length return is treated as the end of the stream: a blocking servlet input
+         * stream returns zero only when asked for zero bytes, which the arithmetic below cannot request, so
+         * the branch cannot truncate a legitimate body, and treating it as end of stream is what makes the loop
+         * provably terminate.
+         *
+         * @param source the request body stream, never {@code null}
+         * @param limit the greatest number of bytes to read, which the caller sets one byte past the bound it
+         * is enforcing
+         * @return the bytes read, never {@code null} and never longer than {@code limit}
+         * @throws IOException if the body cannot be read, which is propagated rather than translated because
+         * a broken connection is not an oversized body
+         */
+        private static byte[] readAtMost(final InputStream source, final long limit) throws IOException {
+            final ByteArrayOutputStream captured = new ByteArrayOutputStream();
+            final byte[] buffer = new byte[COPY_BUFFER_BYTES];
+            long remaining = limit;
+
+            while (remaining > 0L) {
+                final int read = source.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                if (read <= 0) {
+                    break;
+                }
+                captured.write(buffer, 0, read);
+                remaining -= read;
+            }
+            return captured.toByteArray();
+        }
+
+        /**
+         * Refuses one oversized body with the shared problem envelope.
+         *
+         * <p>Both arms of {@link #doFilterInternal} call this method, which is what makes the declared-length
+         * and the length-less refusals identical rather than merely similar. The declared length is logged so
+         * an operator can tell the two apart; {@code -1} means the request declared none and the bound was
+         * reached while reading it.
+         *
+         * @param response the response to refuse on, never {@code null}
+         * @param declaredLength the length the request declared, or {@code -1} when it declared none
+         * @throws IOException if the refusal cannot be written
+         */
+        private static void refuse(final HttpServletResponse response, final long declaredLength)
+                throws IOException {
+
+            LOG.warn("Refused a request body with {}: declared length {} against a bound of {} bytes",
+                    HttpStatus.PAYLOAD_TOO_LARGE.value(), declaredLength, MAX_BODY_BYTES);
+
+            writeProblemDetail(response, HttpStatus.PAYLOAD_TOO_LARGE, PAYLOAD_PROBLEM_TITLE,
+                    PAYLOAD_PROBLEM_DETAIL, ERROR_CODE_PAYLOAD_TOO_LARGE);
+        }
+    }
+
+    /**
+     * Replays an already-captured request body to the rest of the chain.
+     *
+     * <p>This is what makes the up-front read transparent. The body bound reads a length-less body itself in
+     * order to answer an oversized one before the chain runs; a request whose body has been consumed would
+     * otherwise reach the handler empty, so the captured bytes are handed on through this wrapper instead. It
+     * is used only for requests that declared no length and stayed within the bound, so the array it holds is
+     * never larger than the bound.
+     *
+     * <p>Both body accessors are overridden, and each call yields a fresh stream over the same bytes, so a
+     * reader that asks twice is answered twice rather than being handed an exhausted stream.
+     */
+    private static final class BufferedBodyRequest extends HttpServletRequestWrapper {
+
+        /** The captured body, never longer than the bound the filter enforces. */
+        private final byte[] body;
+
+        /**
+         * Wraps one request around its already-captured body.
+         *
+         * @param request the request whose body was read ahead of the chain
+         * @param body the captured bytes, copied on the way in so the wrapper cannot be mutated afterwards
+         */
+        private BufferedBodyRequest(final HttpServletRequest request, final byte[] body) {
+            super(request);
+            this.body = body.clone();
+        }
+
+        @Override
+        public ServletInputStream getInputStream() {
+            return new CapturedServletInputStream(new ByteArrayInputStream(this.body));
+        }
+
+        @Override
+        public BufferedReader getReader() {
+            return new BufferedReader(new InputStreamReader(getInputStream(), StandardCharsets.UTF_8));
+        }
+    }
+
+    /**
+     * A servlet input stream over bytes already held in memory.
+     *
+     * <p>The stream half of {@link BufferedBodyRequest}. It adds no bound of its own, because the bytes it
+     * serves were bounded when they were captured; it exists only because a servlet request must hand out a
+     * {@link ServletInputStream} and the standard library's byte-array stream is not one.
+     */
+    private static final class CapturedServletInputStream extends ServletInputStream {
+
+        /** The captured bytes being served. */
+        private final ByteArrayInputStream captured;
+
+        /**
+         * Wraps one in-memory body.
+         *
+         * @param captured the bytes to serve, never {@code null}
+         */
+        private CapturedServletInputStream(final ByteArrayInputStream captured) {
+            this.captured = captured;
+        }
+
+        @Override
+        public int read() {
+            return this.captured.read();
+        }
+
+        @Override
+        public int read(final byte[] buffer, final int offset, final int length) {
+            return this.captured.read(buffer, offset, length);
+        }
+
+        @Override
+        public int available() {
+            return this.captured.available();
+        }
+
+        @Override
+        public boolean isFinished() {
+            return this.captured.available() == 0;
+        }
+
+        @Override
+        public boolean isReady() {
+            return true;
+        }
+
+        @Override
+        public void setReadListener(final ReadListener readListener) {
+            // The specification permits a read listener only on an upgraded or asynchronous request, and no
+            // route in this application enters either mode. Refusing states that rather than accepting a
+            // listener that would never be called, which would be a silently broken contract.
+            throw new IllegalStateException(
+                    "A read listener cannot be set on a request whose body was captured by the request-body"
+                            + " bound, because this application serves no asynchronous or upgraded request");
+        }
+
+        @Override
+        public void close() throws IOException {
+            this.captured.close();
         }
     }
 
     /**
      * Wraps a request so its body cannot yield more than a fixed number of bytes.
      *
-     * <p>This is what bounds a chunked request, where {@code Content-Length} is absent and a declaration check
-     * therefore has nothing to inspect. The stream counts what it hands out and fails once the bound is
-     * exceeded, so the refusal happens during the read rather than after an allocation has already succeeded.
+     * <p><strong>This is defence in depth for a request that declared a length within the bound.</strong> A
+     * declaration is a claim, and a client that under-declares it would otherwise be free to send more; the
+     * stream counts what it hands out and fails once the bound is exceeded, so an over-long body stops being
+     * read rather than continuing to allocate. In practice the container enforces the declaration first - it
+     * delivers no more bytes than {@code Content-Length} announced - so this bound is a second line that is
+     * expected never to fire, and is kept because "expected never to fire" is not the same as "cannot".
+     *
+     * <p>It is <strong>not</strong> what bounds a request that declared no length: those are read and refused
+     * up front by {@link RequestBodyLimitFilter}, precisely because a lazy refusal from inside a body read
+     * cannot produce a deterministic status. See that filter's Medium-severity finding for why.
      *
      * <p>The failure is an {@link IOException} rather than a custom exception because that is what a servlet
      * input stream is permitted to throw, and what every reader up the stack - including Jackson - already
-     * handles. Spring maps it to a 4xx without a body, matching the {@code server.error} disclosure settings.
+     * handles. Spring converts it into {@code HttpMessageNotReadableException}, which the controllers answer
+     * {@code 400} through the shared problem envelope: the honest answer for a body that disagreed with its
+     * own declaration, and no longer the answer any oversized body receives.
      */
     private static final class BoundedBodyRequest extends HttpServletRequestWrapper {
 
