@@ -62,6 +62,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.FileAccessException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.ReportRequest;
 import com.cardemo.service.report.ReportSubmissionService;
@@ -2481,6 +2482,53 @@ class ReportSubmissionServiceTest {
                         assertThat(failure.getCause())
                                 .as("Rule 1 Clause B - the root cause is preserved, never swallowed")
                                 .isSameAs(cause);
+                    });
+        }
+
+        /**
+         * The failure names what failed and what was attempted, and carries no fabricated file status.
+         *
+         * <p>Three properties, each of which a diagnostic downstream depends on.
+         *
+         * <p>The <strong>logical</strong> queue name, because {@code app/cbl/CORPT00C.cbl:515-523} writes to
+         * {@code QUEUE('JOBS')} and an {@code ERROR} line that named no resource would report a failure
+         * without saying what failed - the defect this assertion pins shut. Logical rather than physical:
+         * the logical name is a literal in {@code application.yml}, so it cannot carry an account
+         * identifier, whereas the physical name and the resolved URL can.
+         *
+         * <p>The operation {@code WRITEQ TD}, which is the source's own verb rather than the SDK operation
+         * name, because the line is read against the COBOL program.
+         *
+         * <p>And <strong>no</strong> file status. This program declares no {@code FILE-CONTROL} paragraph, no
+         * {@code SELECT} and no {@code FD}, so there is nothing to report; supplying one would fabricate an
+         * I/O condition. The assertion is on {@code hasIoStatus()} rather than on the expanded status,
+         * because the expanded status of an absent status is the placeholder {@code " 032"} - the faithful
+         * rendering of an uninitialised two byte field - and it is precisely that placeholder which must not
+         * reach a diagnostic as though the queue had returned it.
+         */
+        @Test
+        @DisplayName("the failure names the logical queue and WRITEQ TD, and carries no file status")
+        void theFailureNamesTheQueueAndTheOperationButNoStatus() {
+            final MessagingOperationFailedException cause =
+                    new MessagingOperationFailedException("queue unavailable", QUEUE_LOGICAL_NAME);
+            doThrow(cause).when(sqsTemplate).sendAsync(any());
+
+            assertThatExceptionOfType(FileAccessException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")))
+                    .satisfies(failure -> {
+                        assertThat(failure.getLogicalFileName())
+                                .as("the logical queue name, so the ERROR line names the failing resource")
+                                .isEqualTo(QUEUE_LOGICAL_NAME);
+                        assertThat(failure.getOperation())
+                                .as(":515-523 EXEC CICS WRITEQ TD - the source's verb, not the SDK's")
+                                .isEqualTo("WRITEQ TD");
+                        assertThat(failure.hasIoStatus())
+                                .as("no FILE-CONTROL, no SELECT and no FD in this program, so no COBOL FILE "
+                                        + "STATUS exists and none is invented")
+                                .isFalse();
+                        assertThat(failure.getMessage())
+                                .as("the literal is untouched by carrying the resource and the operation")
+                                .isEqualTo(MSG_UNABLE_TO_WRITE_TDQ);
                     });
         }
 

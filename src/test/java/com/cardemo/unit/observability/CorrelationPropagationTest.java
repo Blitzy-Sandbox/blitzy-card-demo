@@ -38,6 +38,7 @@ import com.cardemo.config.AwsConfig;
 import com.cardemo.observability.CorrelationIdFilter;
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,11 +48,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.MDC;
+import software.amazon.awssdk.core.SdkRequest;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.awssdk.http.SdkHttpRequest;
+import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
+import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 
 /**
  * Unit tests for the outbound half of the correlation contract.
@@ -340,6 +344,180 @@ final class CorrelationPropagationTest {
             assertThat(AwsConfig.CorrelationIdExecutionInterceptor.class.getDeclaredFields())
                     .as("one instance is shared by three clients and every concurrent request, so any "
                             + "mutable instance field would be a data race")
+                    .allSatisfy(field -> assertThat(java.lang.reflect.Modifier.isStatic(
+                            field.getModifiers())).isTrue());
+        }
+    }
+
+    /**
+     * The queue-send recovery interceptor, which covers the one call the uniform interceptor cannot reach.
+     *
+     * <p>Runtime testing through a logging proxy found the exact gap: on the first publish of a process,
+     * {@code SqsTemplate} resolves the queue URL and attributes and chains the send onto that resolution, so
+     * {@code GetQueueUrl} is issued from the request thread and carries the header while the chained
+     * {@code SendMessage} is issued from an SDK completion thread that never passed through the servlet filter
+     * and therefore carries none. Thread context cannot be conjured on that thread, and pushing it there would
+     * mean writing one request's identity onto a pooled SDK thread where the next request could read it.
+     *
+     * <p>The identifier is already on the request, as the message attribute the publisher set from the very
+     * same validated context, so it is recovered from there: no thread state, no shared mutable state, correct
+     * on any thread, and impossible for two concurrent publishes to confuse because each value travels inside
+     * its own request object.
+     *
+     * <p>Four properties are asserted: it recovers the identifier when the request has no header; it never
+     * replaces a header that is already there, so the two interceptors cannot disagree in either order; it
+     * drops a malformed attribute exactly as the uniform interceptor drops a malformed context entry; and it
+     * touches nothing but a send, so the queue-resolution calls - one per process, shared by every later
+     * request - are not attributed to whichever request happened to trigger them.
+     */
+    @Nested
+    @DisplayName("the queue-send recovery interceptor stamps a send issued without thread context")
+    final class SendRecoveryFromMessageAttributes {
+
+        /** The interceptor under test, obtained the same way the SDK obtains it. */
+        private final ExecutionInterceptor recovery =
+                new AwsConfig.SqsSendCorrelationRecoveryInterceptor();
+
+        /**
+         * Builds the send request the SDK would hand the interceptor.
+         *
+         * @param correlationId the value to carry as the correlation message attribute, or null for none
+         * @return a send request carrying the queue-publish shape the application produces
+         */
+        private SendMessageRequest sendRequest(final String correlationId) {
+            final SendMessageRequest.Builder builder = SendMessageRequest.builder()
+                    .queueUrl("http://localhost:4566/000000000000/carddemo-report-jobs.fifo")
+                    .messageGroupId("carddemo-report-jobs")
+                    .messageBody("{\"reportName\":\"Monthly\"}");
+            if (correlationId != null) {
+                builder.messageAttributes(Map.of(
+                        CorrelationIdFilter.CORRELATION_ID_HEADER,
+                        MessageAttributeValue.builder().dataType("String").stringValue(correlationId).build(),
+                        "X-Carddemo-Transaction",
+                        MessageAttributeValue.builder().dataType("String").stringValue("CR00").build()));
+            }
+            return builder.build();
+        }
+
+        /**
+         * Runs the recovery interceptor over a request.
+         *
+         * @param httpRequest   the HTTP request as it stands when the interceptor is called
+         * @param modelled the modelled SDK request the SDK is about to transmit
+         * @return the request the interceptor produced
+         */
+        private SdkHttpRequest intercept(final SdkHttpRequest httpRequest, final SdkRequest modelled) {
+            return this.recovery.modifyHttpRequest(new Context.ModifyHttpRequest() {
+                @Override
+                public SdkHttpRequest httpRequest() {
+                    return httpRequest;
+                }
+
+                @Override
+                public SdkRequest request() {
+                    return modelled;
+                }
+
+                @Override
+                public Optional<software.amazon.awssdk.core.async.AsyncRequestBody> asyncRequestBody() {
+                    return Optional.empty();
+                }
+
+                @Override
+                public Optional<software.amazon.awssdk.core.sync.RequestBody> requestBody() {
+                    return Optional.empty();
+                }
+            }, new ExecutionAttributes());
+        }
+
+        @Test
+        @DisplayName("with no thread context, the identifier is recovered from the message attribute")
+        void theIdentifierIsRecoveredFromTheMessageAttribute() {
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID))
+                    .as("the case under test is precisely an SDK thread that holds no context")
+                    .isNull();
+
+            final SdkHttpRequest stamped = intercept(
+                    outboundRequest("sqs.us-east-1.localhost.localstack.cloud", "/"),
+                    sendRequest(CORRELATION_ID));
+
+            assertThat(correlationHeader(stamped))
+                    .as("the publish reaches the wire correlated even though the sending thread had no "
+                            + "diagnostic context, which is the gap the proxy capture found open")
+                    .containsExactly(CORRELATION_ID);
+        }
+
+        @Test
+        @DisplayName("a header already stamped from the diagnostic context is never replaced")
+        void anExistingHeaderIsNeverReplaced() {
+            final SdkHttpRequest alreadyStamped =
+                    outboundRequest("sqs.us-east-1.localhost.localstack.cloud", "/").toBuilder()
+                            .putHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, CORRELATION_ID)
+                            .build();
+
+            final SdkHttpRequest result = intercept(alreadyStamped, sendRequest("some-other-value"));
+
+            assertThat(correlationHeader(result))
+                    .as("the two interceptors run on the same client, so the second must be a no-op when the "
+                            + "first has acted - otherwise the order between them would be observable")
+                    .containsExactly(CORRELATION_ID);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"bad value", "with\rcarriage", "with\nlinefeed", "semi;colon", "",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+        @DisplayName("a malformed attribute value is dropped rather than written to a header")
+        void aMalformedAttributeValueIsDropped(final String malformed) {
+            final SdkHttpRequest result = intercept(
+                    outboundRequest("sqs.us-east-1.localhost.localstack.cloud", "/"),
+                    sendRequest(malformed));
+
+            assertThat(correlationHeader(result))
+                    .as("a header is a text protocol: an unbounded value or one carrying CR or LF would be a "
+                            + "request-splitting vector, and the grammar is owned by CorrelationIdFilter")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a send with no correlation attribute is returned unchanged")
+        void aSendWithoutTheAttributeIsUnchanged() {
+            final SdkHttpRequest request = outboundRequest("sqs.us-east-1.localhost.localstack.cloud", "/");
+
+            final SdkHttpRequest result = intercept(request, sendRequest(null));
+
+            assertThat(correlationHeader(result)).isEmpty();
+            assertThat(result.headers()).isEqualTo(request.headers());
+        }
+
+        @Test
+        @DisplayName("queue-resolution calls are left alone, because their result is shared by every request")
+        void queueResolutionCallsAreLeftAlone() {
+            final SdkHttpRequest result = intercept(
+                    outboundRequest("sqs.us-east-1.localhost.localstack.cloud", "/"),
+                    software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest.builder()
+                            .queueName("carddemo-report-jobs.fifo").build());
+
+            assertThat(correlationHeader(result))
+                    .as("GetQueueUrl and GetQueueAttributes resolve a queue once per process and their result "
+                            + "serves every later publish, so attributing them to one request would be a "
+                            + "misleading correlation rather than a missing one")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the interceptor never throws, whatever the request shape")
+        void theInterceptorNeverThrows() {
+            assertThat(intercept(outboundRequest("sqs.us-east-1.localhost.localstack.cloud", "/"), null))
+                    .as("a diagnostic must never be able to fail a publish")
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("the interceptor is stateless, so one instance serves every concurrent publish")
+        void theInterceptorIsStateless() {
+            assertThat(AwsConfig.SqsSendCorrelationRecoveryInterceptor.class.getDeclaredFields())
+                    .as("it reads the identifier from the request it is handed, so it needs no field at all - "
+                            + "and any mutable one would let two publishes borrow each other's identity")
                     .allSatisfy(field -> assertThat(java.lang.reflect.Modifier.isStatic(
                             field.getModifiers())).isTrue());
         }

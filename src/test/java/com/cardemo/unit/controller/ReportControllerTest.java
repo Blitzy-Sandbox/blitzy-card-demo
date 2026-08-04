@@ -33,11 +33,15 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.cardemo.controller.ReportController;
 import com.cardemo.exception.FileAccessException;
 import com.cardemo.model.dto.ReportRequest;
 import com.cardemo.model.dto.ReportSubmissionResponse;
 import com.cardemo.service.report.ReportSubmissionService;
+import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -288,6 +292,112 @@ class ReportControllerTest {
 
             assertThat(response.getStatusCode()).as(description).isEqualTo(HttpStatus.UNAUTHORIZED);
             assertThat(response.getBody()).isNull();
+        }
+    }
+
+    /**
+     * The operator diagnostic of the queue-failure handler.
+     *
+     * <p>The body of that response is fixed and already asserted above; this is about the other half of the
+     * handler, the {@code ERROR} line that carries everything the body deliberately withholds. Two properties
+     * are pinned because both were observed to fail in runtime testing.
+     *
+     * <p><strong>No slot may render {@code null}.</strong> A publish failure is raised by the service itself
+     * rather than composed by {@code FileStatusMapper}, and {@code FileAccessException} documents its resource
+     * name and its operation as permitted to be absent, so the naive template printed the four characters
+     * {@code null} twice. That names nothing, cannot be told apart from a defect in the logging, and is what
+     * Rule 1 Clause A rules out as a meaningless error.
+     *
+     * <p><strong>No slot may render a file status the path never had.</strong> The expanded status of an
+     * absent status is {@code " 032"}, the faithful rendering of an uninitialised two byte field, and printing
+     * it on a path with no file at all invites a reader to hunt for a {@code '9x'} condition that never
+     * occurred. It must be reserved for the failures that genuinely carry a status - which the last test here
+     * proves still render it.
+     */
+    @Nested
+    @DisplayName("the queue-failure diagnostic names every slot it prints")
+    class QueueFailureDiagnostic {
+
+        /** The logger the handler writes to, captured rather than mocked so the real template is exercised. */
+        private final Logger handlerLogger =
+                (Logger) org.slf4j.LoggerFactory.getLogger(ReportController.class);
+
+        /** Collects the events the handler emits for the duration of one test. */
+        private final ListAppender<ILoggingEvent> captured = new ListAppender<>();
+
+        /**
+         * Runs the handler with the appender attached and returns the messages it emitted.
+         *
+         * <p>The appender is detached in a {@code finally} block, so a failing assertion cannot leave a
+         * capture attached to a shared logger for the next test in the run.
+         *
+         * @param failure the failure to hand the handler
+         * @return the formatted messages, in emission order
+         */
+        private List<String> diagnosticFor(final FileAccessException failure) {
+            this.captured.setContext(this.handlerLogger.getLoggerContext());
+            this.captured.start();
+            this.handlerLogger.addAppender(this.captured);
+            try {
+                controller().handleQueueFailure(failure);
+                return this.captured.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+            } finally {
+                this.handlerLogger.detachAppender(this.captured);
+                this.captured.stop();
+            }
+        }
+
+        @Test
+        @DisplayName("a publish failure names its queue and its verb, and reports no file status")
+        void aPublishFailureNamesItsQueueAndVerb() {
+            final List<String> emitted = diagnosticFor(new FileAccessException(
+                    "Unable to Write TDQ (JOBS)...", null, "carddemo-report-jobs", "WRITEQ TD",
+                    new IllegalStateException("queue does not exist")));
+
+            assertThat(emitted).hasSize(1);
+            assertThat(emitted.get(0))
+                    .as("the resource and the verb of app/cbl/CORPT00C.cbl:515-523 reach the operator")
+                    .contains("resource carddemo-report-jobs")
+                    .contains("operation WRITEQ TD")
+                    .as("a program with no FILE-CONTROL, SELECT or FD has no status to report")
+                    .contains("status none")
+                    .doesNotContain("null")
+                    .as(" 032 is the rendering of an ABSENT status and must never be presented as one the "
+                            + "queue returned")
+                    .doesNotContain(" 032");
+        }
+
+        @Test
+        @DisplayName("a failure that identifies nothing still prints no null")
+        void aFailureThatIdentifiesNothingPrintsNoNull() {
+            final List<String> emitted =
+                    diagnosticFor(new FileAccessException("Unable to Write TDQ (JOBS)..."));
+
+            assertThat(emitted).hasSize(1);
+            assertThat(emitted.get(0))
+                    .contains("resource unidentified")
+                    .contains("operation unidentified")
+                    .contains("status none")
+                    .doesNotContain("null")
+                    .doesNotContain(" 032");
+        }
+
+        @Test
+        @DisplayName("a failure that does carry a file status still renders it")
+        void aFailureCarryingAStatusStillRendersIt() {
+            final List<String> emitted = diagnosticFor(
+                    new FileAccessException("Unable to Write TDQ (JOBS)...", "9010", "JOBS", "WRITEQ"));
+
+            assertThat(emitted).hasSize(1);
+            assertThat(emitted.get(0))
+                    .as("the NNNN-expanded status of AAP 0.5.1.9 is kept on the paths that have one, and it "
+                            + "is the EXPANDED form: app/cbl/CBTRN02C.cbl:714-731 copies the first byte "
+                            + "through and expands the second byte's binary value into three digits, so the "
+                            + "raw status '9010' renders as 9048 - the '0' of the second byte being 0x30")
+                    .contains("status 9048")
+                    .contains("resource JOBS")
+                    .contains("operation WRITEQ")
+                    .doesNotContain("null");
         }
     }
 

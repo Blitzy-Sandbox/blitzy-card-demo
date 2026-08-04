@@ -423,6 +423,30 @@ public class ReportController {
     private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
 
     /**
+     * The descriptor written into an {@code ERROR} diagnostic in place of a resource or operation the throwing
+     * site did not identify.
+     * <p>
+     * Declared once and shared by both queue handlers, so the two lines an operator correlates cannot drift
+     * apart, and so no diagnostic can ever print the four characters {@code null} - which name nothing, look
+     * like a defect in the logging rather than an absent field, and are what Rule 1 Clause A rules out as a
+     * meaningless error. The wording matches {@code FileStatusMapper}'s own vocabulary for the same condition.
+     */
+    private static final String UNIDENTIFIED_DESCRIPTOR = "unidentified";
+
+    /**
+     * The descriptor written into an {@code ERROR} diagnostic in place of a COBOL {@code FILE STATUS} when the
+     * failing path has none.
+     * <p>
+     * The report job publish is such a path: {@code app/cbl/CORPT00C.cbl} declares no {@code FILE-CONTROL}
+     * paragraph, no {@code SELECT} and no {@code FD}, so no status exists. {@code FileAccessException} still
+     * renders {@code " 032"} for an absent status - the faithful rendering of an uninitialised two byte field -
+     * and printing that would invite a reader to hunt for a {@code '9x'} condition that never occurred, so
+     * this word is printed instead and the {@code FILE STATUS IS: NNNN} vocabulary of AAP 0.5.1.9 stays on the
+     * paths that genuinely carry a status.
+     */
+    private static final String FILE_STATUS_ABSENT = "none";
+
+    /**
      * The fixed detail returned when the report-jobs queue cannot be reached at all.
      * <p>
      * Fixed rather than taken from the exception. A {@code FileUnavailableException} on this path is
@@ -873,7 +897,7 @@ public class ReportController {
 
         // The named resource is logged, not returned: it is the queue's internal identity.
         LOG.error("Transaction {} could not reach the report-jobs queue; resource {}", TRANSACTION_ID,
-                unavailable.resourceName().orElse("unidentified"), unavailable);
+                unavailable.resourceName().orElse(UNIDENTIFIED_DESCRIPTOR), unavailable);
 
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(withPublicEnvelope(problem, ERROR_CODE_UNAVAILABLE));
@@ -895,6 +919,13 @@ public class ReportController {
      * logged at {@code ERROR}; it is never returned, which is the counterpart of the source displaying the
      * response and reason codes to the operator's log rather than to the terminal. The expanded file status,
      * the logical resource and the operation go the same way - to the log only.
+     *
+     * <p><strong>The diagnostic names every slot it prints.</strong> The resource and the operation are
+     * rendered through {@link #describeOrUnidentified(String)} so an absent field reads as
+     * {@value #UNIDENTIFIED_DESCRIPTOR} rather than as {@code null}, and the file status is rendered through
+     * {@link #renderStatus(FileAccessException)} so it appears only when the failure actually carries one. A
+     * publish failure carries none - {@code app/cbl/CORPT00C.cbl} declares no file - and it does name its
+     * resource and its operation, because {@code WRITEQ TD QUEUE('JOBS')} at {@code :L515-L523} states both.
      *
      * <p><strong>Why a literal may be returned here at all.</strong> Every other
      * {@code FileAccessException} in this application is composed by {@code FileStatusMapper}, whose text
@@ -924,9 +955,13 @@ public class ReportController {
                 ? LEGACY_QUEUE_FAILURE_LITERAL
                 : QUEUE_FAILURE_PROBLEM_DETAIL);
 
-        LOG.error("Transaction {} failed to publish the report job; status {} resource {} operation {}",
-                TRANSACTION_ID, failure.getExpandedStatus(), failure.getLogicalFileName(),
-                failure.getOperation(), failure);
+        // Every slot is rendered from a value that exists. The resource and the operation fall back to
+        // UNIDENTIFIED_DESCRIPTOR rather than printing null, and the expanded status is emitted only when the
+        // failure actually carries one - a publish failure does not, and printing this type's absent-status
+        // rendering would name a COBOL FILE STATUS the queue never returned.
+        LOG.error("Transaction {} failed to publish the report job; resource {} operation {} status {}",
+                TRANSACTION_ID, describeOrUnidentified(failure.getLogicalFileName()),
+                describeOrUnidentified(failure.getOperation()), renderStatus(failure), failure);
 
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                 .body(withPublicEnvelope(problem, ERROR_CODE_IO_FAILURE));
@@ -1045,6 +1080,49 @@ public class ReportController {
         return authentication == null
                 || !authentication.isAuthenticated()
                 || authentication instanceof AnonymousAuthenticationToken;
+    }
+
+    /**
+     * Renders a diagnostic field that the throwing site may not have supplied.
+     *
+     * <p>Exists so that no {@code ERROR} line can print the four characters {@code null}. An absent field is a
+     * real condition - {@code FileAccessException} documents both its resource name and its operation as
+     * permitted to be absent - but {@code null} describes it to nobody: a reader cannot tell an unidentified
+     * resource from a logging defect, and Rule 1 Clause A asks for errors that mean something. A blank value is
+     * treated as absent for the same reason, since it renders as nothing at all inside the line.
+     *
+     * <p>The value is returned exactly as supplied when it is present. Nothing is stripped, truncated, masked
+     * or case-folded: these are logical dataset, queue and operation names taken from the frozen corpus, and a
+     * name an operator can grep for is the entire point of emitting it.
+     *
+     * <p>Static and side-effect free.
+     *
+     * @param value the resource or operation the failure carried, which may be null or blank.
+     * @return the value unchanged when present, otherwise {@link #UNIDENTIFIED_DESCRIPTOR}
+     */
+    private static String describeOrUnidentified(final String value) {
+        return value == null || value.isBlank() ? UNIDENTIFIED_DESCRIPTOR : value;
+    }
+
+    /**
+     * Renders the COBOL {@code FILE STATUS} of a failure, or reports that it has none.
+     *
+     * <p>The distinction is asked of the failure rather than inferred from the rendered value, because
+     * {@code FileAccessException#getExpandedStatus()} is never absent: it returns {@code " 032"} when no status
+     * was supplied, which is the faithful rendering of an uninitialised two byte field and is correct to keep
+     * for the paths that have one. On a publish failure there is no status at all - the source program declares
+     * no {@code FILE-CONTROL} paragraph, no {@code SELECT} and no {@code FD} - so emitting that rendering would
+     * name an I/O condition the queue never reported and send an operator looking for a {@code '9x'} status
+     * that does not exist.
+     *
+     * <p>Static and side-effect free.
+     *
+     * @param failure the failure being diagnosed; must not be null.
+     * @return the four character expanded status when the failure carries one, otherwise
+     *         {@link #FILE_STATUS_ABSENT}
+     */
+    private static String renderStatus(final FileAccessException failure) {
+        return failure.hasIoStatus() ? failure.getExpandedStatus() : FILE_STATUS_ABSENT;
     }
 
     /**

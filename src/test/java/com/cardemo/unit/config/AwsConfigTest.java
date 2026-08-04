@@ -46,6 +46,7 @@ import com.cardemo.observability.CorrelationIdFilter;
 import io.awspring.cloud.sns.core.TopicArnResolver;
 import io.awspring.cloud.sqs.listener.QueueNotFoundStrategy;
 import java.net.URI;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
@@ -617,6 +618,82 @@ class AwsConfigTest {
                         assertThat(configuration.apiCallAttemptTimeout()).isPresent();
                         assertThat(configuration.executionInterceptors()).isNotEmpty();
                     });
+        }
+    }
+
+    /**
+     * The recovery interceptor is registered on the queue client and on that client only.
+     *
+     * <p>It exists because {@code SqsTemplate} chains a send behind an asynchronous queue resolution and, on a
+     * cold cache, issues that send from an SDK completion thread with no diagnostic context - a shape no other
+     * client has. Registering it on the object-storage or notification client would put operation-aware code on
+     * a path that does not need it, so the scoping is asserted rather than assumed: two interceptor types on the
+     * queue builder, one on each of the other two.
+     */
+    @Nested
+    @DisplayName("the queue-send correlation recovery interceptor is registered on the queue client only")
+    class QueueSendRecoveryRegistration {
+
+        /**
+         * Collects the interceptor types a customizer pair installs on one builder.
+         *
+         * @param builder    the client builder under test
+         * @param customized the customization to apply, as the library would
+         * @return the simple names of the interceptor types registered, in registration order
+         */
+        private List<String> interceptorTypesOn(final software.amazon.awssdk.core.client.builder
+                .SdkClientBuilder<?, ?> builder, final Runnable customized) {
+            customized.run();
+            return builder.overrideConfiguration().executionInterceptors().stream()
+                    .map(interceptor -> interceptor.getClass().getSimpleName())
+                    .toList();
+        }
+
+        @Test
+        @DisplayName("the queue client gets both interceptors and the other two get only the uniform one")
+        void theQueueClientGetsBothInterceptors() {
+            final AwsConfig config =
+                    newConfig(LOCAL_ENDPOINT, LOCAL_ENDPOINT, LOCAL_ENDPOINT, "test", "test", PHYSICAL_QUEUE);
+
+            var sqsBuilder = software.amazon.awssdk.services.sqs.SqsAsyncClient.builder();
+            var s3Builder = software.amazon.awssdk.services.s3.S3Client.builder();
+            var snsBuilder = software.amazon.awssdk.services.sns.SnsClient.builder();
+
+            assertThat(interceptorTypesOn(sqsBuilder,
+                    () -> config.correlationIdSqsAsyncClientCustomizer().customize(sqsBuilder)))
+                    .as("the uniform interceptor first, so a value from the diagnostic context wins, then the "
+                            + "recovery interceptor for the cold-cache send the first one cannot reach")
+                    .containsExactly("CorrelationIdExecutionInterceptor",
+                            "SqsSendCorrelationRecoveryInterceptor");
+
+            assertThat(interceptorTypesOn(s3Builder,
+                    () -> config.correlationIdS3ClientCustomizer().customize(s3Builder)))
+                    .as("an object write is issued from the thread that asked for it, so there is nothing to "
+                            + "recover and no reason to inspect a modelled request here")
+                    .containsExactly("CorrelationIdExecutionInterceptor");
+
+            assertThat(interceptorTypesOn(snsBuilder,
+                    () -> config.correlationIdSnsClientCustomizer().customize(snsBuilder)))
+                    .containsExactly("CorrelationIdExecutionInterceptor");
+        }
+
+        @Test
+        @DisplayName("registering the pair preserves the deadlines the other customizer applied")
+        void registeringThePairPreservesTheDeadlines() {
+            final AwsConfig config =
+                    newConfig(LOCAL_ENDPOINT, LOCAL_ENDPOINT, LOCAL_ENDPOINT, "test", "test", PHYSICAL_QUEUE);
+
+            var sqsBuilder = software.amazon.awssdk.services.sqs.SqsAsyncClient.builder();
+            config.cardDemoSqsAsyncClientCustomizer(staticCredentials()).customize(sqsBuilder);
+            config.correlationIdSqsAsyncClientCustomizer().customize(sqsBuilder);
+
+            var configuration = sqsBuilder.overrideConfiguration();
+            assertThat(configuration.executionInterceptors())
+                    .as("adding two interceptors through the Consumer overload would have started from a "
+                            + "fresh configuration and silently discarded the deadlines below")
+                    .hasSize(2);
+            assertThat(configuration.apiCallTimeout()).isPresent();
+            assertThat(configuration.apiCallAttemptTimeout()).isPresent();
         }
     }
 

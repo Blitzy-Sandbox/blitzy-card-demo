@@ -1683,11 +1683,20 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
          * <strong>Blocker</strong>, and a containment check would not notice a fourth period or a missing
          * parenthesis.
          *
-         * <p>Two absences are asserted too, and both are deliberate. The failure carries no logical file name
-         * and no operation, because the source declares no file control entry for the transient data queue -
-         * emitting one would fabricate an I/O status that does not exist. And the failure is not swallowed:
-         * the legacy definition carries {@code ERROROPTION(IGNORE)} at {@code app/csd/CARDDEMO.CSD:501}, so
-         * the transaction monitor ignored a failed write, and <strong>the Java side deliberately does
+         * <p><strong>What the failure carries, and what it deliberately does not.</strong> It names the
+         * logical queue and the operation {@code WRITEQ TD}, because the source states both at
+         * {@code app/cbl/CORPT00C.cbl:515-523} - {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} - and because an
+         * {@code ERROR} diagnostic that omitted them would report a failure without saying what failed, which
+         * Rule 1 Clause A rules out. It carries <strong>no file status</strong>, and that absence is asserted
+         * rather than assumed: the source declares no file control entry, no {@code SELECT} and no {@code FD}
+         * for the transient data queue, so a status would fabricate an I/O condition that does not exist.
+         * {@code hasIoStatus()} reporting {@code false} is what keeps the {@code FILE STATUS IS: NNNN}
+         * rendering off this path, since the expanded status of an absent status is the placeholder
+         * {@code " 032"} rather than nothing at all.
+         *
+         * <p>A third property is asserted for the same reason: the failure is not swallowed. The legacy
+         * definition carries {@code ERROROPTION(IGNORE)} at {@code app/csd/CARDDEMO.CSD:501}, so the
+         * transaction monitor ignored a failed write, and <strong>the Java side deliberately does
          * not</strong>. That divergence is labelled rather than absorbed, and Rule 1 Clause B is what
          * requires it.
          */
@@ -1717,10 +1726,22 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
                             + "sees the source's message and a developer still sees why it happened")
                     .isNotNull();
             assertThat(((FileAccessException) thrown).getLogicalFileName())
-                    .as("the source declares no file control entry and no file status for the transient data "
-                            + "queue, so no logical file name is fabricated here")
-                    .isNull();
-            assertThat(((FileAccessException) thrown).getOperation()).isNull();
+                    .as("the failing resource is named, and named LOGICALLY: app/cbl/CORPT00C.cbl:515-523 "
+                            + "writes to QUEUE('JOBS'), so an operator diagnostic that left the slot empty "
+                            + "would report a failure without saying what failed. The logical name is a "
+                            + "literal in application.yml and therefore carries no account identifier, "
+                            + "unlike the physical name or the resolved URL")
+                    .isEqualTo(reportQueueLogicalName());
+            assertThat(((FileAccessException) thrown).getOperation())
+                    .as("the source's own verb, EXEC CICS WRITEQ TD, rather than the SDK operation name: the "
+                            + "line is reconciled against the COBOL program")
+                    .isEqualTo("WRITEQ TD");
+            assertThat(((FileAccessException) thrown).hasIoStatus())
+                    .as("the source declares no file control entry, no SELECT and no FD for the transient "
+                            + "data queue, so there is no COBOL FILE STATUS to carry and none is fabricated. "
+                            + "This is what keeps the FILE STATUS IS: NNNN rendering - and the ' 032' "
+                            + "placeholder that stands for an absent status - off this path entirely")
+                    .isFalse();
         }
 
         /**

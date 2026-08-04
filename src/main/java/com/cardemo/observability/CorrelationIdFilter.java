@@ -822,7 +822,34 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
      *         present is not well-formed
      */
     public static String currentCorrelationId() {
-        final String candidate = MDC.get(MDC_KEY_CORRELATION_ID);
+        return usableCorrelationId(MDC.get(MDC_KEY_CORRELATION_ID));
+    }
+
+    /**
+     * Returns a candidate correlation identifier when it is safe to propagate, and {@code null} when it is not.
+     *
+     * <p>The counterpart to {@link #currentCorrelationId()} for a value that did <em>not</em> come from this
+     * thread's diagnostic context. One caller needs exactly that:
+     * {@code com.cardemo.config.AwsConfig} recovers the identifier from a queue message's own attributes when a
+     * publish is completed on a client thread that never had the diagnostic context - and that value is about
+     * to be written into an HTTP header, so it must pass the same grammar as any other.
+     *
+     * <p><strong>This method, not a re-declared pattern, is how a caller validates.</strong> The bound of
+     * {@value #MAX_CORRELATION_ID_LENGTH} characters and the {@code [A-Za-z0-9_-]} character set are owned here
+     * and nowhere else, which is what makes "no carriage return, no line feed, no unbounded value can reach a
+     * text protocol" a property of one method rather than a convention several files are trusted to remember.
+     *
+     * <p>A rejected candidate yields {@code null} rather than an exception or a substitute, because every
+     * caller treats that as "no correlation available": a missing correlation is a diagnostic gap, whereas a
+     * corrupted header would be a request-splitting vector and an invented one would be a lie.
+     *
+     * <p>Side effects: none. It reads no thread state, mutates nothing, and never logs - so it is safe to call
+     * from an SDK client thread mid-request.
+     *
+     * @param candidate the identifier to check, which may be {@code null}, blank, oversized or malformed
+     * @return the candidate unchanged when it is well-formed, otherwise {@code null}
+     */
+    public static String usableCorrelationId(final String candidate) {
         return isWellFormed(candidate) ? candidate : null;
     }
 

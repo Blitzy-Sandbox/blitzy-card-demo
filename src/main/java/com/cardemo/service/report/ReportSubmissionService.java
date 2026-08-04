@@ -717,6 +717,18 @@ public class ReportSubmissionService {
     private static final String MSG_UNABLE_TO_WRITE_TDQ = "Unable to Write TDQ (JOBS)...";
 
     /**
+     * The legacy operation this publish replaces, {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} at
+     * {@code app/cbl/CORPT00C.cbl:L515-L523}.
+     *
+     * <p>Carried on the failure so that the diagnostic can name <em>what</em> was attempted rather than
+     * leaving the slot empty. The source's own verb is used, not the SDK operation name: an operator reading
+     * the line is reconciling it against the COBOL program, and {@code WRITEQ TD} is the term that appears
+     * there and in {@code app/csd/CARDDEMO.CSD}'s queue definition. It is a compile-time literal, so it
+     * cannot vary by request and cannot carry anything derived from input.
+     */
+    private static final String OPERATION_WRITEQ_TD = "WRITEQ TD";
+
+    /**
      * The severity code that the date validator returns for an accepted date,
      * {@code IF CSUTLDTC-RESULT-SEV-CD = '0000'} at {@code app/cbl/CORPT00C.cbl:L396} and {@code :L416}.
      *
@@ -2593,14 +2605,26 @@ public class ReportSubmissionService {
      * returned exception where a caller - including an exception handler that decides an HTTP status - still
      * has all of it.
      *
-     * <p><strong>The user-facing outcome is byte-identical to the source.</strong> The two-argument
-     * {@link FileAccessException} form is used deliberately: the four-argument form renders a COBOL
-     * {@code FILE STATUS} as the fixed literal {@code FILE STATUS IS: NNNN} followed by the status digits,
-     * and this program has no {@code FILE STATUS} to render - it declares no {@code FILE-CONTROL} paragraph,
-     * no {@code SELECT} and no {@code FD} anywhere - so emitting that literal would fabricate an I/O status
-     * that does not exist. The message is {@link #MSG_UNABLE_TO_WRITE_TDQ}, byte for byte, three trailing
-     * periods included, on every failure path without exception; a deadline and a transport error are the
-     * same event to the user, exactly as every non-{@code NORMAL} response was one event at {@code :L528}.
+     * <p><strong>The user-facing outcome is byte-identical to the source.</strong> The message is
+     * {@link #MSG_UNABLE_TO_WRITE_TDQ}, byte for byte, three trailing periods included, on every failure path
+     * without exception; a deadline and a transport error are the same event to the user, exactly as every
+     * non-{@code NORMAL} response was one event at {@code :L528}.
+     *
+     * <p><strong>The failure names its resource and its operation, and deliberately carries no file
+     * status.</strong> {@link FileAccessException} is built with the logical queue name and
+     * {@link #OPERATION_WRITEQ_TD}, because {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} at {@code :L515-L523}
+     * states both, and an {@code ERROR} diagnostic that omitted them would report a failure without saying
+     * what failed - which Rule 1 Clause A calls a meaningless error and Clause B calls lost context. The
+     * status argument is {@code null} on purpose: that type renders a COBOL {@code FILE STATUS} as the fixed
+     * literal {@code FILE STATUS IS: NNNN} followed by the status digits, and this program has no status to
+     * render - it declares no {@code FILE-CONTROL} paragraph, no {@code SELECT} and no {@code FD} anywhere -
+     * so a supplied value would fabricate an I/O condition that never occurred. The resulting instance reports
+     * {@code hasIoStatus() == false}, which is what tells the reader of the diagnostic to render no status at
+     * all rather than the absent-status placeholder.
+     *
+     * <p>The <em>logical</em> queue name is used, never the physical name and never the resolved URL: it is a
+     * literal in {@code application.yml}, so it is provably free of an account identifier, and it is the same
+     * value the warning above and the publish span already carry.
      *
      * <p>The cursor field {@code MONTHLYL} at {@code :L533} is documented on the caller but is not carried
      * on the exception: a failed publish is a server-side failure rather than a field-level rejection, so
@@ -2626,7 +2650,14 @@ public class ReportSubmissionService {
 
         // :L530-L534 MOVE 'Y' TO WS-ERR-FLG, MOVE the literal TO WS-MESSAGE, MOVE -1 TO MONTHLYL,
         // PERFORM SEND-TRNRPT-SCREEN.
-        return new FileAccessException(MSG_UNABLE_TO_WRITE_TDQ, failure);
+        //
+        // The resource and the operation are named; the file status is not. Both halves are deliberate and
+        // both are read by com.cardemo.controller.ReportController's ERROR diagnostic: the source writes
+        // WRITEQ TD QUEUE('JOBS'), so naming the logical queue and that verb reports what the source itself
+        // says, while a null status leaves hasIoStatus() false so that no FILE STATUS IS: NNNN rendering is
+        // produced for a program that declares no file at all.
+        return new FileAccessException(MSG_UNABLE_TO_WRITE_TDQ, null, this.reportQueueLogicalName,
+                OPERATION_WRITEQ_TD, failure);
     }
 
     /**

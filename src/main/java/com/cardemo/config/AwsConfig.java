@@ -82,6 +82,7 @@ import software.amazon.awssdk.arns.Arn;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.SdkRequest;
 import software.amazon.awssdk.core.client.builder.SdkClientBuilder;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.interceptor.Context;
@@ -101,7 +102,9 @@ import software.amazon.awssdk.services.sqs.model.GetQueueAttributesResponse;
 import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueUrlResponse;
 import software.amazon.awssdk.services.sqs.model.Message;
+import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
+import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 
 /**
  * Cloud integration configuration for the CardDemo modular monolith: the single place where the
@@ -1747,6 +1750,16 @@ public class AwsConfig {
             new CorrelationIdExecutionInterceptor();
 
     /**
+     * The one queue-send recovery interceptor instance, registered on the queue client only.
+     *
+     * <p>Stateless for the same reason as the interceptor above, and for a stronger one: it reads the identifier
+     * from the request object it is handed, so it holds nothing at all between calls and cannot leak one
+     * publish's identity into another's.
+     */
+    private static final SqsSendCorrelationRecoveryInterceptor SQS_SEND_CORRELATION_INTERCEPTOR =
+            new SqsSendCorrelationRecoveryInterceptor();
+
+    /**
      * Stamps the request-scoped correlation identifier onto every outbound AWS request.
      *
      * <p><strong>The gap this closes.</strong> {@link CorrelationIdFilter} makes one identifier follow a
@@ -1801,7 +1814,7 @@ public class AwsConfig {
     }
 
     /**
-     * Adds the correlation interceptor to the queue client.
+     * Adds the correlation interceptors to the queue client.
      *
      * <p>The asynchronous counterpart of {@link #correlationIdS3ClientCustomizer()}; the rationale for the
      * mechanism, the header and the absence-tolerant behaviour is documented there and is not repeated.
@@ -1809,11 +1822,20 @@ public class AwsConfig {
      * operator is most likely to need: it is the bridge that replaces {@code EXEC CICS WRITEQ TD
      * QUEUE('JOBS')}, where the legacy system's only trace of a submission was the queue record itself.
      *
-     * @return a customizer adding the correlation interceptor to the queue client
+     * <p><strong>Two interceptors here, one on the other two clients.</strong> The queue client is the only one
+     * whose work is chained behind an asynchronous resolution: {@code SqsTemplate} resolves the queue URL and
+     * attributes first and issues the send from whichever thread completes that resolution, which on a cold
+     * cache is an SDK thread with no diagnostic context. {@link SqsSendCorrelationRecoveryInterceptor} is
+     * registered after the uniform one to cover exactly that case by recovering the identifier from the
+     * message's own attributes. It is added second so that a header stamped from the diagnostic context is what
+     * survives when both could act, though by construction the two can only ever produce the same value - the
+     * message attribute is populated from the very context the first one reads.
+     *
+     * @return a customizer adding both correlation interceptors to the queue client
      */
     @Bean
     public SqsAsyncClientCustomizer correlationIdSqsAsyncClientCustomizer() {
-        return AwsConfig::applyCorrelationInterceptor;
+        return AwsConfig::applyQueueCorrelationInterceptors;
     }
 
     /**
@@ -1848,6 +1870,28 @@ public class AwsConfig {
     private static void applyCorrelationInterceptor(final SdkClientBuilder<?, ?> builder) {
         builder.overrideConfiguration(builder.overrideConfiguration().toBuilder()
                 .addExecutionInterceptor(CORRELATION_ID_INTERCEPTOR)
+                .build());
+    }
+
+    /**
+     * Adds both correlation interceptors to the queue client builder, in that order and without discarding
+     * anything already set on it.
+     *
+     * <p>The read-back through {@code toBuilder()} is load-bearing for the reason documented on
+     * {@link #applyCorrelationInterceptor(SdkClientBuilder)}, and it matters twice as much here: this method
+     * adds two interceptors, and the {@code Consumer} overload of {@code overrideConfiguration} would have
+     * discarded the deadlines and the retry strategy that the other customizer applies.
+     *
+     * <p>The uniform interceptor is added first, so it runs first on the request path and a value from the
+     * diagnostic context wins; the recovery interceptor then finds the header already present and changes
+     * nothing. On the cold-cache send, where the diagnostic context is empty, only the second one can act.
+     *
+     * @param builder the queue client builder the library is configuring; never {@code null}
+     */
+    private static void applyQueueCorrelationInterceptors(final SdkClientBuilder<?, ?> builder) {
+        builder.overrideConfiguration(builder.overrideConfiguration().toBuilder()
+                .addExecutionInterceptor(CORRELATION_ID_INTERCEPTOR)
+                .addExecutionInterceptor(SQS_SEND_CORRELATION_INTERCEPTOR)
                 .build());
     }
 
@@ -2629,6 +2673,117 @@ public class AwsConfig {
             return context.httpRequest().toBuilder()
                     .putHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, correlationId)
                     .build();
+        }
+    }
+
+    /**
+     * Recovers the correlation identifier from the message itself when a queue publish is issued on a thread
+     * that has no diagnostic context, so that the send arrives correlated on the wire as well as in its
+     * payload metadata.
+     *
+     * <p><strong>The gap this closes, precisely.</strong>
+     * {@link CorrelationIdExecutionInterceptor} reads the calling thread's {@link MDC}, which is the right
+     * mechanism and is uniform across every operation of every client - but it can only read what the calling
+     * thread holds. {@code SqsTemplate.sendAsync} first resolves the queue URL and the queue attributes, caching
+     * the result in a private map, and chains the send onto that resolution. On the <em>first</em> publish of a
+     * process the resolution has not completed yet, so the chained {@code SendMessage} is issued from an SDK
+     * completion thread, which never passed through {@code CorrelationIdFilter} and therefore holds no
+     * diagnostic context: the request went out unstamped even though the publishing request had a perfectly
+     * good identifier. Runtime testing through a logging proxy observed exactly that - {@code GetQueueUrl}
+     * carried the header and the chained {@code SendMessage} did not.
+     *
+     * <p><strong>Why the message attribute is the right recovery source.</strong> The identifier is already on
+     * the request: {@code com.cardemo.service.report.ReportSubmissionService} sets it as the
+     * {@value CorrelationIdFilter#CORRELATION_ID_HEADER} message attribute from the same validated diagnostic
+     * context, on the request thread, before the publish is handed over. Reading it back here needs no thread
+     * context, no context-propagating executor and no state of any kind, so it is correct on any thread and
+     * under any amount of concurrency - two publishes in flight cannot borrow each other's identifier, because
+     * each one's value travels inside its own request object.
+     *
+     * <p><strong>Why this is a separate interceptor rather than a change to the uniform one.</strong> Reading
+     * {@code Context.ModifyHttpRequest#request()} couples an interceptor to individual operations, and the
+     * uniform interceptor must stay operation-agnostic so that it applies identically to object writes, queue
+     * sends and notifications alike - including operations added later. That constraint is asserted by its own
+     * unit tests, which hand it a context whose {@code request()} throws. Keeping the operation-aware recovery
+     * in a second class, registered on the queue client only, means the uniform contract is unchanged and this
+     * class's behaviour is confined to the one operation that can carry the identifier in its own payload.
+     *
+     * <p><strong>What it deliberately does not do.</strong> It never replaces a header that is already present,
+     * so a request stamped from the diagnostic context is untouched and the two interceptors cannot disagree
+     * whatever order they run in. It adds nothing to {@code GetQueueUrl} or {@code GetQueueAttributes}: those
+     * resolve a queue once per process and their result is shared by every later request, so attributing them
+     * to whichever request happened to trigger the resolution would be a misleading correlation rather than a
+     * missing one. And it never throws - a diagnostic must not be able to fail a publish - so a request shape
+     * it does not recognise is returned exactly as received.
+     */
+    public static final class SqsSendCorrelationRecoveryInterceptor implements ExecutionInterceptor {
+
+        /**
+         * Creates the interceptor.
+         *
+         * <p>Public because it is registered on the shared queue client and exercised directly by tests. It is
+         * stateless - it declares no instance field - so one instance serves every concurrent publish.
+         */
+        public SqsSendCorrelationRecoveryInterceptor() {
+            // Stateless: the identifier is read from the request being sent, never from thread state.
+        }
+
+        /**
+         * Adds the correlation header from the message's own attributes when the request has none.
+         *
+         * <p>Runs after the uniform interceptor on the same client, so an identifier that was available in the
+         * diagnostic context has already been stamped and is left exactly as it is. The recovered value is
+         * re-validated through {@link CorrelationIdFilter#usableCorrelationId(String)} before it is written,
+         * because a header is a text protocol and this is a different trust boundary from the one the filter
+         * guards: anything carrying a carriage return, a line feed or an unbounded length is dropped rather
+         * than forwarded.
+         *
+         * @param context             the request about to be sent
+         * @param executionAttributes the execution attributes; unused, because the identifier travels on the
+         *                            request rather than in an attribute
+         * @return the request, with the correlation header added when one could be recovered
+         */
+        @Override
+        public SdkHttpRequest modifyHttpRequest(final Context.ModifyHttpRequest context,
+                final ExecutionAttributes executionAttributes) {
+
+            final SdkHttpRequest httpRequest = context.httpRequest();
+            if (httpRequest.firstMatchingHeader(CorrelationIdFilter.CORRELATION_ID_HEADER).isPresent()) {
+                return httpRequest;
+            }
+
+            final String recovered = correlationIdOf(context.request());
+            if (recovered == null) {
+                return httpRequest;
+            }
+            return httpRequest.toBuilder()
+                    .putHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, recovered)
+                    .build();
+        }
+
+        /**
+         * Reads the correlation identifier out of a send request's message attributes.
+         *
+         * <p>Only {@code SendMessage} is recognised. The application publishes one message per submission -
+         * Transformation Rule 10 replaces a single {@code EXEC CICS WRITEQ TD} with a single
+         * {@code SqsTemplate} send - so a batch send never occurs on this path, and guessing which entry of a
+         * hypothetical batch should speak for the whole HTTP request would be inventing a correlation rather
+         * than recovering one.
+         *
+         * @param request the modelled request the SDK is about to transmit, which a non-standard caller could
+         *                make {@code null}
+         * @return the well-formed identifier the message carries, or {@code null} when the request is not a
+         *         send, carries no correlation attribute, or carries one that is not well-formed
+         */
+        private static String correlationIdOf(final SdkRequest request) {
+            if (!(request instanceof final SendMessageRequest sendMessage)) {
+                return null;
+            }
+            final MessageAttributeValue attribute =
+                    sendMessage.messageAttributes().get(CorrelationIdFilter.CORRELATION_ID_HEADER);
+            return attribute == null
+                    ? null
+                    : CorrelationIdFilter.usableCorrelationId(attribute.stringValue());
         }
     }
 
