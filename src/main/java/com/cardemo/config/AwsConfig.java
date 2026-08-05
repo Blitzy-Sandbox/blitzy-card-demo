@@ -166,8 +166,9 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *       kind is created, and again in this class's constructor before any client exists. See the guarantee
  *       below.</li>
  *   <li><strong>It declares no queue listener.</strong> The consumer that replaces the JES2 internal reader
- *       belongs to the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which is <strong>not
- *       authored yet</strong> - measured at this commit that class does not exist and the tree carries no
+ *       is owed by {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which <strong>is now
+ *       authored</strong> - an earlier revision of this entry recorded that class as absent, and that
+ *       reading is withdrawn. What remains true, and is the point of this entry, is that the tree carries no
  *       {@code @SqsListener} declaration at all, so a published message is not yet drained. Re-derive with
  *       {@code grep -rn "@SqsListener" src/main/java}. The bean below is a producer with a named future
  *       consumer, not a producer with a live one.</li>
@@ -479,8 +480,10 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * <p>Two consequences for anyone reading a message body. It is <em>untrusted input</em>, so it is bound as
  * typed JSON with strict binding and never through Java serialization; the base profile pins
  * {@code fail-on-unknown-properties} for exactly this reason. And the consumer that replaces the JES2 internal
- * reader is the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}, not this class - and that
- * orchestrator is <strong>not authored yet</strong>.
+ * reader is owed by {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, not by this class. That
+ * orchestrator is <strong>now authored</strong>, so the outstanding item is the listener itself rather than
+ * the class that will hold it; an earlier revision recorded the orchestrator as unauthored and that is
+ * withdrawn.
  *
  * <p>The producer replaces the block at {@code app/cbl/CORPT00C.cbl:L517-L523} - {@code EXEC CICS WRITEQ TD},
  * {@code QUEUE ('JOBS')}, {@code FROM (JCL-RECORD)}, {@code LENGTH (LENGTH OF JCL-RECORD)},
@@ -1375,8 +1378,9 @@ public class AwsConfig {
      * and unknown-property settings the base profile pins.
      *
      * <p>This bean publishes. It declares no listener: the consumer that replaces the JES2 internal reader is
-     * the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which is <strong>not authored
-     * yet</strong>, so nothing drains the queue yet. On a send failure
+     * owed by {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which is <strong>now authored</strong>
+     * though the listener itself is not, so nothing drains the queue yet. An earlier revision recorded that
+     * orchestrator as unauthored and that reading is withdrawn. On a send failure
      * {@code com.cardemo.service.report.ReportSubmissionService} reproduces the legacy screen text
      * {@code Unable to Write TDQ (JOBS)...} - three trailing dots - from
      * {@code app/cbl/CORPT00C.cbl:L531-L532}, byte for byte.

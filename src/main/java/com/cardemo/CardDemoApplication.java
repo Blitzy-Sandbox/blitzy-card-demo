@@ -99,11 +99,14 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *
  * <p><strong>Batch jobs do not run at startup.</strong> {@code spring.batch.job.enabled} is {@code false},
  * because the framework default of {@code true} would run every job on every boot. Launching is explicit.
- * The two intended launch paths are the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} and the SQS
+ * The two intended launch paths are {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} and the SQS
  * listener that replaces the JES2 internal reader behind {@code DEFINE TDQUEUE(JOBS) TYPE(EXTRA)
  * DDNAME(INREADER) TYPEFILE(OUTPUT) RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD)} at
- * {@code app/csd/CARDDEMO.CSD:L499-L505}; <strong>both are planned rather than authored</strong>, so a job is
- * currently driven from a test or by launching its {@code Job} bean directly.
+ * {@code app/csd/CARDDEMO.CSD:L499-L505}. <strong>The orchestrator is authored; the listener is not.</strong>
+ * An earlier revision of this paragraph said both were planned rather than authored, and that is withdrawn
+ * for the orchestrator: it composes the five stages and is launched deliberately. Until the listener exists
+ * a queued request is drained by nothing, so a job is driven from a test, from the orchestrator, or by
+ * launching its {@code Job} bean directly.
  *
  * <p><strong>How to build, run and test.</strong> Build with the pinned wrapper: {@code ./mvnw clean verify}.
  * {@code maven-enforcer-plugin:3.5.0} floors the toolchain at Java {@code [25,)} and Maven

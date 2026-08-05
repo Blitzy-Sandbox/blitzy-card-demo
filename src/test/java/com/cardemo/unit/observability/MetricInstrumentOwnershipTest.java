@@ -376,6 +376,16 @@ class MetricInstrumentOwnershipTest {
             assertThat(count(MetricsConfig.METRIC_RECORDS_PROCESSED))
                     .as("no application counter is advanced by this writer")
                     .isZero();
+            // Nor any other series, which is the stronger claim: this writer holds no meter owner at all, so
+            // it cannot advance one. Asserted against both sign-tagged series rather than one aggregate,
+            // because the amount total is partitioned on the sign branch of app/cbl/CBTRN02C.cbl:L547-L552
+            // and an untouched instrument has to read zero on each side of it.
+            assertThat(creditTotal())
+                    .as("the credit side of the amount total is untouched by a statement")
+                    .isZero();
+            assertThat(debitTotal())
+                    .as("and so is the debit side")
+                    .isZero();
         }
     }
 

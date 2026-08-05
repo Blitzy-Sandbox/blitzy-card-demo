@@ -243,8 +243,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * The bean is {@code @StepScope}, so one instance exists per step execution and nothing runs at application
  * start: every profile sets {@code spring.batch.job.enabled: false}. The {@code Job} and {@code Step} that
  * drive it are declared by {@link com.cardemo.config.BatchConfig} and are launched by
- * {@link com.cardemo.batch.jobs.TransactionReportJob}, which is authored, and will in turn be sequenced by the
- * planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}.
+ * {@link com.cardemo.batch.jobs.TransactionReportJob}, which is authored, and is in turn sequenced by
+ * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which is authored as well; an earlier revision
+ * described that orchestrator as planned, and that qualification is withdrawn.
  *
  * <p>Build and static gates, from the repository root:
  * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The compiler runs at

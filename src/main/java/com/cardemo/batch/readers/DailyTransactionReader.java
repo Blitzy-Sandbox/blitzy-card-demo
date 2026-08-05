@@ -198,9 +198,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * authored, and launched by {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which
  * <strong>is also authored</strong>. An earlier revision of this paragraph described that job as planned
  * and said neither job class existed at this commit; that is withdrawn - the owning job is delivered, so
- * this reader is reachable end to end from its own step. What is still planned is the name-driven entry
- * point above it, the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which is a
- * statement about sequencing rather than about this reader or its job.
+ * this reader is reachable end to end from its own step. The name-driven entry point above it,
+ * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, is authored too; an earlier revision called it
+ * still planned, and that is withdrawn. Either way the point was one about sequencing rather than about
+ * this reader or its job.
  *
  * <p>Build and static gates, from the repository root:
  * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The compiler runs at

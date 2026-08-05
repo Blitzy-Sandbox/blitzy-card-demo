@@ -155,8 +155,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code Step} beans itself; {@code BatchConfig} owns the dataset bindings and record rendering rather than
  * step topology. What is genuinely still owed is <strong>the read-only verification step that would own this
  * reader</strong>, the Java counterpart of {@code app/jcl/READACCT.jcl}, together with the name-driven
- * launcher above it, the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}; until the step
- * exists a job is launched deliberately rather than by an orchestrator. What both rely on is already true:
+ * launcher above it. That launcher, {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, is authored -
+ * an earlier revision of this sentence called it planned, which is withdrawn - so what remains owed is the
+ * verification step itself, not the launcher. What both rely on is already true:
  * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no
  * job runs at application startup. This class carries {@code @Component} and {@code @StepScope}, so the
  * component scan registers a definition for it while no instance is constructed until a step is executing -

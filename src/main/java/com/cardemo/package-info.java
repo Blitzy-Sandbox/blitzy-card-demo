@@ -324,9 +324,10 @@
  *
  * <p><strong>Batch jobs do not auto run.</strong> {@code spring.batch.job.enabled} is {@code false}, so
  * starting the application does not post transactions. Launching is explicit. The two intended launch paths
- * are the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} and the planned SQS listener that
- * replaces the JES2 internal reader; <strong>neither is authored yet</strong>, so today a job is driven from a
- * test or by launching its {@code Job} bean directly.
+ * are {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} and the planned SQS listener that
+ * replaces the JES2 internal reader. An earlier revision said neither was authored yet; that is withdrawn
+ * for the orchestrator, which is now present. The listener is still owed, so today a job is driven from a
+ * test, from the orchestrator, or by launching its {@code Job} bean directly.
  *
  * <p><strong>Environment prerequisite, stated plainly.</strong> A container runtime with an accessible socket
  * is required for the Testcontainers tiers and for {@code docker compose up}. Where a piece of evidence

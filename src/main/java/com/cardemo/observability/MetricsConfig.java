@@ -160,6 +160,14 @@ import com.cardemo.model.enums.RejectCode;
  * count of rows an earlier run already reported - is stated with its callers at
  * {@link #METRIC_RECORDS_PROCESSED}.
  *
+ * <p><strong>The unit column is as binding as the name column, and most binding on the two untagged
+ * series.</strong> A tag lets a query separate contributors after the fact; an untagged counter does not, so
+ * a caller that advances {@code carddemo.batch.records.processed} with something that is not one record
+ * corrupts the series irreversibly rather than merely adding noise to it. The rule that keeps that series
+ * meaningful - one increment per record handled, never one per aggregate over records, and never a second
+ * count of rows an earlier run already reported - is stated with its callers at
+ * {@link #METRIC_RECORDS_PROCESSED}.
+ *
  * <p><strong>The five strings below are declared here and nowhere else.</strong> They used to be mirrored as
  * executable YAML at {@code src/main/resources/application.yml} under {@code carddemo.metrics.*}, described
  * there as the metrics contract and headed "consumed by MetricsConfig". This class binds no property and its

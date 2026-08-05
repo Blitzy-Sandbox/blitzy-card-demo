@@ -86,9 +86,10 @@ import org.junit.jupiter.api.Test;
  *       comment states that something is already recorded in a register that does not exist at this commit.
  *       Reword it to the obligation - "owed an entry in the planned {@code DECISION_LOG.md}" - rather than
  *       creating the file, which is owned elsewhere.</li>
- *   <li><strong>A failure naming {@code BatchConfig} or {@code BatchPipelineOrchestrator}</strong> means a
- *       comment attributes present-tense behaviour to a class that has not been authored. Qualify the
- *       reference as planned.</li>
+ *   <li><strong>A failure naming a formerly-unauthored class</strong> - {@code BatchConfig},
+ *       {@code ObservabilityConfig} or {@code BatchPipelineOrchestrator} - means one of them has been removed
+ *       from disk while prose still refers to it as present. All three are authored, so the unauthored-class
+ *       pattern that once required them to be qualified as planned is retired.</li>
  *   <li><strong>A failure naming a test path</strong> means prose says a test lives somewhere it does not.
  *       Either author the test or state the coverage as owed.</li>
  *   <li><strong>A failure from the stale-absence group</strong> is the opposite case: prose says an artefact
@@ -167,10 +168,6 @@ class EvidenceHonestyTest {
     private static final List<String> PHRASE_LISTING_SOURCES =
             List.of(SELF, "PackageDocumentationInventoryTest.java");
 
-    /** Classes named by the plan that have not been authored; a bare reference implies they exist. */
-    private static final Pattern UNAUTHORED_CLASS = Pattern.compile(
-            "(?<!planned\\s)\\{@code\\s+com\\.cardemo\\.batch\\.jobs\\.BatchPipelineOrchestrator\\}");
-
     /**
      * Classes this guard used to cover and no longer does, because they have since been authored.
      *
@@ -180,10 +177,18 @@ class EvidenceHonestyTest {
      * pending. The narrowing is self-checking: {@link #theNarrowingOfThisGuardStillHolds} asserts these files
      * exist, so if one is ever removed the guard must be revisited deliberately rather than passing by
      * accident.
+     *
+     * <p>{@code BatchPipelineOrchestrator} joined this roster for exactly that reason, and it is the case the
+     * roster was built for. It was the last remaining subject of the unauthored-class pattern, so that pattern
+     * and the test that applied it are gone rather than left to guard an empty set: every class the plan names
+     * is now on disk. The nine prose sites that qualified it as planned were corrected in the same change, so
+     * the tree no longer describes a delivered class as pending. If any file below is ever removed, the
+     * pattern must be reinstated deliberately rather than a bare reference passing by accident.
      */
     private static final List<String> FORMERLY_UNAUTHORED = List.of(
             "src/main/java/com/cardemo/config/BatchConfig.java",
-            "src/main/java/com/cardemo/config/ObservabilityConfig.java");
+            "src/main/java/com/cardemo/config/ObservabilityConfig.java",
+            "src/main/java/com/cardemo/batch/jobs/BatchPipelineOrchestrator.java");
 
     /** A test file path asserted in prose. */
     private static final Pattern TEST_PATH = Pattern.compile("src/test/java/[A-Za-z0-9_/]+\\.java");
@@ -486,15 +491,6 @@ class EvidenceHonestyTest {
         }
 
         @Test
-        @DisplayName("no unauthored configuration class is referenced as though it existed")
-        void noUnauthoredClassIsReferencedBare() {
-            assertThat(offenders(UNAUTHORED_CLASS))
-                    .as("BatchPipelineOrchestrator is not authored at this commit; every reference must be "
-                            + "qualified as planned")
-                    .isEmpty();
-        }
-
-        @Test
         @DisplayName("the classes this guard stopped covering really are authored, so the narrowing is honest")
         void theNarrowingOfThisGuardStillHolds() {
             for (final String authored : FORMERLY_UNAUTHORED) {
@@ -670,14 +666,6 @@ class EvidenceHonestyTest {
                     .matcher("destined for a {@code DECISION_LOG.md} entry and a row").find())
                     .as("a future-tense obligation is not a claim of a held entry; 'destined for' says the "
                             + "entry is owed, which is exactly what is true")
-                    .isFalse();
-
-            assertThat(UNAUTHORED_CLASS.matcher(
-                    "a job comes from {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}.").find())
-                    .isTrue();
-            assertThat(UNAUTHORED_CLASS.matcher(
-                    "a job comes from the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}.")
-                    .find())
                     .isFalse();
 
             assertThat(STALE_ABSENCE.matcher("{@code V3__seed_data.sql} is not available.").find()).isTrue();

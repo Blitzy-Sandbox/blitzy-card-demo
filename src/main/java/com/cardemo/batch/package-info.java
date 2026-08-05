@@ -146,10 +146,10 @@
  *       {@code app/cbl/CBSTM03A.CBL} and {@code app/cbl/CBSTM03B.CBL}. Five steps.</li>
  *   <li>{@code TransactionReportJob} - from {@code app/jcl/TRANREPT.jcl}, {@code app/proc/TRANREPT.prc},
  *       {@code app/proc/REPROC.prc}, {@code app/ctl/REPROCT.ctl} and {@code app/cbl/CBTRN03C.cbl}.</li>
- *   <li>{@code BatchPipelineOrchestrator} - the end-to-end stream with decider gating and the parallel
- *       split. Named as planned rather than present, so its absence is not mistaken for an omission in the
- *       plan: the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} is to be authored, and
- *       until it is, no bean may reference it.</li>
+ *   <li>{@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} - the end-to-end stream with decider
+ *       gating and the parallel split. An earlier revision of this entry named it as planned rather than
+ *       present so that its absence was not mistaken for an omission in the plan; that qualification is
+ *       withdrawn, because the class is now authored and beans may reference it.</li>
  * </ul>
  *
  * <p><strong>There are exactly six jobs. Never a seventh.</strong> {@code app/cbl/CBTRN01C.cbl} is folded
