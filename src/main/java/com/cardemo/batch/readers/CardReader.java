@@ -56,7 +56,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * The four headings below are this file's discharge of <b>Rule 1 clause E</b>, which requires every
  * component to carry &quot;a short README or docstring&quot; covering what it does, how to run, build and
  * test it, its key configuration and defaults, and its common failure modes. The package-scope document
- * {@code com.cardemo.batch.readers.package-info} states the contract the six readers share; the headings
+ * {@code com.cardemo.batch.readers.package-info} states the contract the seven readers share; the headings
  * below cover what is specific to this one and do not repeat it.
  *
  * <h2>What it does</h2>

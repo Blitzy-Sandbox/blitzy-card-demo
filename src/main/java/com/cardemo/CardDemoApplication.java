@@ -73,10 +73,11 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * (jobs <strong>3 / 6</strong>, processors 5, readers <strong>6 / 7</strong>, writers 3), {@code exception} 9
  * and {@code observability} 3.
  *
- * <p><strong>What is still to be authored</strong>, and nothing else: three batch jobs - the two remaining
- * dataset jobs and {@code BatchPipelineOrchestrator} - and one batch reader. Each is named individually in the
- * leaf document for its package. The <strong>controller layer is complete</strong>: all eight controllers are
- * authored and all seventeen operations of {@code app/csd/CARDDEMO.CSD} are exposed.
+ * <p><strong>What is still to be authored</strong>, and nothing else: two batch jobs -
+ * {@code CombineTransactionsJob} and {@code BatchPipelineOrchestrator}. Each is named individually in the leaf
+ * document for its package. The <strong>controller layer is complete</strong>: all eight controllers are
+ * authored and all seventeen operations of {@code app/csd/CARDDEMO.CSD} are exposed. The <strong>reader layer
+ * is likewise complete</strong>: all seven batch readers are authored.
  *
  * <p><strong>Finding M-09, severity Medium, RESOLVED.</strong> This paragraph previously reported six of eight
  * controllers, twelve of seventeen operations, one of six batch jobs, five of seven readers, and whole-tree

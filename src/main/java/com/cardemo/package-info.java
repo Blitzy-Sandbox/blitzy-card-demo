@@ -149,13 +149,14 @@
  * reader concludes that authored, tested code does not exist.
  *
  * <p><strong>What remains to be authored</strong>, taken from the same measurement as the bullets above and
- * from nothing else: <strong>three batch jobs and one batch reader</strong> - Each is named individually in the
- * {@code batch.jobs.CombineTransactionsJob}, {@code batch.jobs.TransactionReportJob},
- * {@code batch.jobs.BatchPipelineOrchestrator} and
- * {@code batch.readers.CombinedTransactionReader}.
- * document of the package that will own it, so that no planned type is mistaken for a delivered one. Every
- * other package in the list above is complete - notably the controller layer and the service layer, both of
- * which earlier revisions of this document reported as unfinished after they were done.
+ * from nothing else: <strong>two batch jobs</strong> - {@code batch.jobs.CombineTransactionsJob} and
+ * {@code batch.jobs.BatchPipelineOrchestrator}. Each is named individually in the package document of the
+ * package that will own it, so that no planned type is mistaken for a delivered one. An earlier revision of
+ * this paragraph also listed {@code batch.jobs.TransactionReportJob} and
+ * {@code batch.readers.CombinedTransactionReader}; both are authored, so those claims are withdrawn and the
+ * <strong>batch reader layer is complete at seven</strong>. Every other package in the list above is complete -
+ * notably the controller layer and the service layer, both of which earlier revisions of this document reported
+ * as unfinished after they were done.
  *
  * <p><strong>Whole-tree file totals are deliberately not restated here.</strong> A total changes with every
  * file added anywhere beneath this package, so it goes stale faster than any other figure in this document and

@@ -183,8 +183,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <p><b>What this reader does not own.</b> The ascending card-number ordering of
  * {@code SORT FIELDS=(TRAN-CARD-NUM,A)} ({@code app/proc/TRANREPT.prc:L44}) and the inclusive date filter
- * of {@code :L45-L46} belong to the planned {@code com.cardemo.batch.jobs.TransactionReportJob} and to
- * {@link com.cardemo.batch.processors.TransactionReportProcessor}, which is authored; the 133-byte report
+ * of {@code :L45-L46} belong to {@link com.cardemo.batch.jobs.TransactionReportJob} and to
+ * {@link com.cardemo.batch.processors.TransactionReportProcessor}, both of which are authored; the 133-byte report
  * line of {@code :L76} is emitted by that processor's own output path. This class supplies the stream they
  * consume. <b>No external sort process is spawned by anything in this file</b>: DFSORT becomes a
  * {@link java.util.Comparator} and {@code IDCAMS REPRO} becomes a bulk load, and neither invokes a shell.
@@ -242,9 +242,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <h2>How to run, build and test</h2>
  * The bean is {@code @StepScope}, so one instance exists per step execution and nothing runs at application
  * start: every profile sets {@code spring.batch.job.enabled: false}. The {@code Job} and {@code Step} that
- * drive it are declared by {@link com.cardemo.config.BatchConfig} and are launched by the planned
- * {@code com.cardemo.batch.jobs.TransactionReportJob} through the planned
- * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}.
+ * drive it are declared by {@link com.cardemo.config.BatchConfig} and are launched by
+ * {@link com.cardemo.batch.jobs.TransactionReportJob}, which is authored, and will in turn be sequenced by the
+ * planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}.
  *
  * <p>Build and static gates, from the repository root:
  * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The compiler runs at
@@ -681,9 +681,9 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     // ----------------------------------------------------------------------------------------------------
     // Trailing-sign overpunch table for app/cpy/CVTRA05Y.cpy. The sign of a zoned-decimal field is carried
     // by its LAST character, which encodes both the sign and the final digit. THIS CLASS IS THE CANONICAL
-    // OWNER of this decode for the CVTRA05Y layout: the planned
-    // com.cardemo.batch.readers.CombinedTransactionReader, which does not exist at this commit, is to reuse
-    // decodeSignedTransactionAmount rather than re-implement it, which is why that method is
+    // OWNER of this decode for the CVTRA05Y layout:
+    // com.cardemo.batch.readers.CombinedTransactionReader, which is now authored, reuses
+    // decodeSignedTransactionAmount rather than re-implementing it, which is why that method is
     // package-private. One codec per record layout, colocated with the reader that owns that layout, is the
     // repository convention; DailyTransactionReader owns the identically-shaped app/cpy/CVTRA06Y.cpy.
     // ----------------------------------------------------------------------------------------------------
@@ -2120,10 +2120,10 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * {@link BigDecimal}.
      * <p>
      * <b>THIS CLASS IS THE CANONICAL OWNER OF THIS DECODE FOR THE {@code CVTRA05Y} LAYOUT.</b> The method is
-     * package-private precisely so that the planned
-     * {@code com.cardemo.batch.readers.CombinedTransactionReader} - which does not exist at this commit and
+     * package-private precisely so that
+     * {@link CombinedTransactionReader} - which is now authored and
      * which reads the same 350-byte layout out of a concatenated input
-     * ({@code app/jcl/COMBTRAN.jcl:L43-L44}) - can <b>reuse</b> it rather than re-implement it. It is
+     * ({@code app/jcl/COMBTRAN.jcl:L43-L44}) - can <b>reuse</b> it rather than re-implement it, which it does. It is
      * deliberately <i>not</i> promoted to a class of its own: one codec per record layout, colocated with the
      * reader that owns that layout, is this repository's convention, and a separate codec class would also
      * exceed this package's file budget. {@link DailyTransactionReader} owns the identically-shaped

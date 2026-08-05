@@ -294,18 +294,19 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <ul>
  *   <li>An earlier revision of this bullet said that {@code batch/jobs/**},
  *       {@code batch/readers/**} and {@code batch/writers/**} are unplanned in this branch; that is no
- *       longer true and the claim is withdrawn. All three packages exist and are populated - three jobs,
- *       <b>six</b> readers and three writers. <b>Finding, severity Low, remediated:</b> this bullet
+ *       longer true and the claim is withdrawn. All three packages exist and are populated - <b>four</b> jobs,
+ *       <b>seven</b> readers and three writers. <b>Findings, severity Low, remediated:</b> this bullet
  *       previously reported five readers and named {@code batch/readers/TransactionBackupReader} among the
- *       types that were still absent. Both statements were wrong - that reader is authored, and it is the
- *       sixth - so the reader this step needs is present and only its wiring is outstanding. What remains
- *       genuinely absent is {@code batch/jobs/TransactionReportJob} and a report writer for the
- *       {@value #REPORT_LINE_LENGTH} character line, neither of which is among the authored
- *       {@code RejectWriter}, {@code StatementWriter} and {@code TransactionWriter}. Until those two are
- *       authored the concrete writer type and the chunk size this processor runs under are
- *       <strong>Not available</strong>; the reader type is {@code TransactionBackupReader}. Needed to close
- *       the gap: those two types, at which point the {@link ReportLines} carrier can be matched to the
- *       writer's item type.</li>
+ *       types that were still absent; both statements were wrong, that reader is authored, and it is the
+ *       sixth. This bullet then reported {@code batch/jobs/TransactionReportJob} and a report writer for the
+ *       {@value #REPORT_LINE_LENGTH} character line as still absent, and left the concrete writer type and the
+ *       chunk size <strong>Not available</strong>. That absence has ended and the claim is withdrawn:
+ *       {@link com.cardemo.batch.jobs.TransactionReportJob} is authored and it wires this step end to end -
+ *       reading through {@code TransactionBackupReader}, delegating page and control-break state to this
+ *       processor, and emitting the {@value #REPORT_LINE_LENGTH} character records through its own fixed-width
+ *       writer, so the {@link ReportLines} carrier is matched to that writer's item type. The report writer is
+ *       therefore owned by the job rather than being a fourth type in {@code batch/writers/**}, which still
+ *       holds exactly {@code RejectWriter}, {@code StatementWriter} and {@code TransactionWriter}.</li>
  *   <li>An earlier revision of this bullet said that
  *       {@code src/main/java/com/cardemo/batch/package-info.java} does not exist; that is no longer true
  *       and the claim is withdrawn. That file is authored, and it documents this package group at package

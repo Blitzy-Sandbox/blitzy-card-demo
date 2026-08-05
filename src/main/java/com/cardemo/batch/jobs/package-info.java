@@ -59,8 +59,8 @@
  * <h2>Current contents versus the target set</h2>
  *
  * <p>The Agent Action Plan specifies a five-stage pipeline plus an orchestrator - <strong>six</strong> types.
- * Measured 4 August 2026, <strong>three exist today</strong>. An earlier revision of this document recorded
- * one; that count is superseded, not merely restated.
+ * Measured 5 August 2026, <strong>four exist today</strong>. Earlier revisions of this document recorded one
+ * and then three; those counts are superseded, not merely restated.
  *
  * <p>Present:
  *
@@ -81,6 +81,13 @@
  *       table. That distinction is easy to get wrong: the source declares its transaction output file as
  *       sequential organisation and allocates a brand-new generation on every run, so interest transactions
  *       only reach the keyed cluster later, through the combine job's sort and bulk load.</li>
+ *   <li>{@link com.cardemo.batch.jobs.TransactionReportJob} from {@code app/jcl/TRANREPT.jcl},
+ *       {@code app/proc/TRANREPT.prc} and {@code app/cbl/CBTRN03C.cbl}. Backup, then a filtered sort by card
+ *       number with an inclusive date-range predicate, then report generation at 133 bytes per line. It reads
+ *       through {@link com.cardemo.batch.readers.TransactionBackupReader}, delegates page and control-break
+ *       state to {@link com.cardemo.batch.processors.TransactionReportProcessor}, and emits the 133-byte
+ *       records through its own fixed-width writer. The control break fires on the <strong>card number</strong>
+ *       while the emitted label reads &quot;Account Total&quot; - a source quirk reproduced, not repaired.</li>
  *   </ul>
  *
  * <p><strong>Planned and not yet authored</strong> - named so that their absence is not mistaken for an
@@ -92,12 +99,13 @@
  *       control cards, so the JCL is the source of truth. Concatenated input, sorted by transaction
  *       identifier ascending, then a bulk load. This is where duplicate-key exposure from a repeated interest
  *       date parameter must surface as a failure rather than a silent upsert.</li>
- *   <li>{@code TransactionReportJob} - <strong>Not available.</strong> From {@code app/jcl/TRANREPT.jcl},
- *       {@code app/proc/TRANREPT.prc} and {@code app/cbl/CBTRN03C.cbl}. Backup, then a filtered sort by card
- *       number with an inclusive date-range predicate, then report generation at 133 bytes per line.</li>
  *   <li>{@code BatchPipelineOrchestrator} - <strong>Not available.</strong> The end-to-end stream with
  *       decider gating and the parallel split.</li>
  *   </ul>
+ *
+ * <p><strong>An earlier revision of this document listed {@code TransactionReportJob} among the absent
+ * types.</strong> That job is authored and is listed above, so the claim is withdrawn: two types remain
+ * against the target of six.
  *
  * <p>Volatile counts are not restated elsewhere here; the authoritative dated inventory is section 0.4.5.1 of
  * {@code docs/technical-specifications.md}.

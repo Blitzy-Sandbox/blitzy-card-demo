@@ -613,13 +613,15 @@ final class InventoryCountGateTest {
         }
 
         @Test
-        @DisplayName("the batch leaves really are 3 jobs, 5 processors, 6 readers and 3 writers")
+        @DisplayName("the batch leaves really are 4 jobs, 5 processors, 7 readers and 3 writers")
         void theBatchLeavesMatchTheirDocumentedShape() {
             // Stated as present/target in both documents, so the PRESENT figure is what disk must agree with.
-            // Three jobs and one reader remain to be authored, and both documents now say exactly that.
-            assertThat(typesIn("src/main/java/com/cardemo/batch/jobs")).isEqualTo(3L);
+            // TransactionReportJob is the fourth concrete job, so the jobs leaf is 4 against a six-job target
+            // and two jobs remain to be authored. CombinedTransactionReader is the seventh and final reader,
+            // so the readers leaf is now complete at 7.
+            assertThat(typesIn("src/main/java/com/cardemo/batch/jobs")).isEqualTo(4L);
             assertThat(typesIn("src/main/java/com/cardemo/batch/processors")).isEqualTo(5L);
-            assertThat(typesIn("src/main/java/com/cardemo/batch/readers")).isEqualTo(6L);
+            assertThat(typesIn("src/main/java/com/cardemo/batch/readers")).isEqualTo(7L);
             assertThat(typesIn("src/main/java/com/cardemo/batch/writers")).isEqualTo(3L);
         }
 

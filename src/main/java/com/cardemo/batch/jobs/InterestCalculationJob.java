@@ -145,9 +145,10 @@ import io.awspring.cloud.s3.S3Operations;
  * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which <strong>is authored</strong>, so the
  * consequence is observable rather than hypothetical. An earlier revision of this paragraph described that
  * job as unauthored and this one as the only job {@code batch/jobs} holds; both statements are withdrawn.
- * The package now holds <strong>three of its six target jobs</strong> - this one,
- * {@code DailyTransactionPostingJob} and {@code StatementGenerationJob} - and what remains outstanding is
- * {@code CombineTransactionsJob}, {@code TransactionReportJob} and the planned
+ * The package now holds <strong>four of its six target jobs</strong> - this one,
+ * {@code DailyTransactionPostingJob}, {@code StatementGenerationJob} and
+ * {@code com.cardemo.batch.jobs.TransactionReportJob} - and what remains outstanding is
+ * {@code CombineTransactionsJob} and the planned
  * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. The lost final flush is the behaviour
  * of the system of record and it is reproduced exactly.
  * {@code InterestCalculationProcessor.updateAccountAtEndOfFile()} reproduces the branch faithfully so the

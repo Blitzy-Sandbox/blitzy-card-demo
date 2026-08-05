@@ -217,9 +217,10 @@ import org.springframework.stereotype.Repository;
  *   <li>The integration surface is correspondingly the batch tier: this repository is to be exercised
  *       through the transaction report job against a Testcontainers PostgreSQL 16 instance, not
  *       through the REST surface, because the REST surface has no path that reaches it.
- *       <strong>Partly not available:</strong> {@code com.cardemo.batch.jobs.TransactionReportJob} still
- *       does not exist, so the report-job surface above remains the surface the tests are <em>to</em> take.
- *       {@code src/test/java/com/cardemo/integration} does exist now, however, and
+ *       {@link com.cardemo.batch.jobs.TransactionReportJob} is now authored, so that report-job surface
+ *       exists rather than being one the tests are merely <em>to</em> take; an earlier revision of this bullet
+ *       recorded it as still absent and that claim is withdrawn.
+ *       {@code src/test/java/com/cardemo/integration} does exist now, and
  *       {@code RepositorySchemaAndFinderIntegrationTest} exercises this repository against a containerised
  *       PostgreSQL 16 instance, so it is no longer true that no tier reaches it at all. An earlier revision
  *       recorded both as absent.</li>
