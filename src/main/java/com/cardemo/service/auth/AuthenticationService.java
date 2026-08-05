@@ -50,6 +50,7 @@ import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.UserSecurityRepository;
 import com.cardemo.security.CardDemoUserDetailsService;
 import com.cardemo.security.JwtTokenProvider;
+import com.cardemo.service.shared.FileStatusMapper;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -820,8 +821,13 @@ public class AuthenticationService {
      * {@code EVALUATE WS-RESP-CD} at {@code :L221} has three arms - {@code WHEN 0} at {@code :L222},
      * {@code WHEN 13} at {@code :L247} and {@code WHEN OTHER} at {@code :L252} - where 13 is
      * {@code DFHRESP(NOTFND)}. There is consequently no file status to translate anywhere on this path, so
-     * the application's file-status mapper is deliberately not consulted: it maps two-character file
-     * statuses, not response codes, and pressing it into service here would misrepresent both.
+     * the application's file-status <em>translation</em> is deliberately not consulted: it maps two-character
+     * file statuses, not response codes, and pressing it into service here would misrepresent both. The
+     * mapper's static store-condition classifier
+     * {@link FileStatusMapper#classifyStoreFailure(Throwable)} <b>is</b> used, at exactly one site, and it
+     * answers a different question: which of the three response arms a failed read belongs to, read from the
+     * driver's SQLSTATE. It is reached statically rather than by injection precisely so that no file-status
+     * translation becomes reachable from this path.
      *
      * <p>The five outcomes, in the order the source establishes them:
      *
@@ -838,7 +844,12 @@ public class AuthenticationService {
      *   <li><b>Response 0 and the credential does not match.</b> {@code :L241-L246}. Note that this arm
      *       sets no error flag, unlike {@code :L248} and {@code :L253} which both do; the asymmetry is
      *       preserved rather than corrected.</li>
-     *   <li><b>Response 13, no such record.</b> {@code :L247-L251}. An empty lookup <i>is</i> this arm.</li>
+     *   <li><b>Response 13, no such record.</b> {@code :L247-L251}. An empty lookup <i>is</i> this arm, and so
+     *       is a read the store refused because the presented identifier is not a value its key column can
+     *       hold: {@code sec_usr_id} is {@code CHAR(8)} and PostgreSQL text types forbid {@code 0x00}, so a
+     *       {@code NUL} inside the identifier means no such row can exist and the read the source would have
+     *       performed is provably empty. Both render identically to a wrong password, because any
+     *       distinguishable outcome would tell an unauthenticated caller which of the two it hit.</li>
      *   <li><b>Any other response, recoverable.</b> {@code :L252-L256}, where the store itself could not be
      *       interrogated. The source repaints the screen, so a further attempt remains possible.</li>
      *   <li><b>Any other response, unrecoverable.</b> The same arm, reached when the condition is not a
@@ -914,6 +925,28 @@ public class AuthenticationService {
             throw new ValidationException(rendered, FIELD_PASSWORD, ValidationException.FailureKind.INVALID,
                     rejected);
         } catch (final InternalAuthenticationServiceException | DataAccessException unreadable) {
+            if (FileStatusMapper.classifyStoreFailure(unreadable)
+                    == FileStatusMapper.StoreFailureKind.INVALID_DATA) {
+                // The presented identifier is a value the key column cannot hold, so it is not that the store
+                // could not be read - it is that no row with this key can exist in it. SQLSTATE class 22 is
+                // reached here by a NUL inside the identifier: a COBOL X(08) key held LOW-VALUES happily, but
+                // sec_usr_id is CHAR(8) and PostgreSQL text types forbid 0x00, so the read the source would
+                // have performed is provably empty. That is DFHRESP(NOTFND), the WHEN 13 arm at
+                // app/cbl/COSGN00C.cbl:L247-L251, and NOT the WHEN OTHER arm at :L252-L256.
+                //
+                // Reporting it as WHEN OTHER answered 503 and told an UNAUTHENTICATED caller that the store
+                // was broken - false, and a signal it could raise at will with one byte. It also made the
+                // outcome distinguishable from a wrong password, which is exactly the disclosure the
+                // empty-lookup path a few lines above exists to prevent. This arm therefore renders through
+                // the same literal, the same field and the same status as every other credential refusal, and
+                // the condition stays diagnosable through the retained cause at WARN.
+                LOG.warn("Sign-on rejected for transaction {}: the presented identifier is not a value the {} "
+                        + "key column can hold, so no such record can exist.",
+                        TRANSACTION_NAME, USER_SECURITY_FILE, unreadable);
+                final String rendered = sendSignonScreen(MESSAGE_WRONG_PASSWORD, FIELD_PASSWORD);
+                throw new ValidationException(rendered, FIELD_PASSWORD,
+                        ValidationException.FailureKind.INVALID, unreadable);
+            }
             LOG.error("Sign-on failed for transaction {}: the {} store could not be read.",
                     TRANSACTION_NAME, USER_SECURITY_FILE, unreadable);
             final String rendered = sendSignonScreen(MESSAGE_UNABLE_TO_VERIFY, FIELD_USER_ID);

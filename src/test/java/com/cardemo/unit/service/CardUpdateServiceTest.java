@@ -1306,8 +1306,8 @@ final class CardUpdateServiceTest {
             assertThat(written.getEmbossedName()).hasSize(50).startsWith("ANNA LEE");
             assertThat(written.getActiveStatus()).isEqualTo("N");
             assertThat(written.getExpiraionDate())
-                    .as("assembled from the three components at :1477-1485")
-                    .isEqualTo("2099-12-28");
+                    .as("assembled from the three components at :1477-1485, with the day the snapshot's own")
+                    .isEqualTo("2099-12-" + STORED_DAY);
             assertThat(written.getAccountId()).isEqualTo(1L);
             // The two MOVEs of :1464-1465 have no counterpart. They wrote the never-assigned
             // CCUP-NEW-CVV-CD - left at SPACES by INITIALIZE CCUP-NEW-DETAILS at :586 - onto the record,
@@ -1315,6 +1315,53 @@ final class CardUpdateServiceTest {
             // loaded row and publishes no setter for that field, so the stored value survives; the two
             // properties are asserted by theVerificationClauseHasNoRequestOperandAndTheStoredValueSurvives()
             // and aSuccessfulRewritePreservesTheStoredVerificationValue().
+            //
+            // Note the day: "28" was submitted and STORED_DAY was written. The day is the one field of
+            // this map the source refuses to let a user change - see theSubmittedExpiryDayNeverReachesTheRow.
+        }
+
+        /**
+         * The submitted expiry day never reaches the row. The day the snapshot carries does.
+         *
+         * <p>The source says this in as many words. {@code 3200-SETUP-SCREEN-VARS} writes
+         * {@code CCUP-OLD-EXPDAY} into {@code EXPDAYO} on every arm - {@code :1110}, {@code :1123} and
+         * {@code :1127} - and at {@code :1120-1122} the new-value MOVE is present but <em>commented out</em>
+         * beneath the banner {@code 'MOVE OLD VALUES TO NON-DISPLAY FIELDS THAT WE ARE NOT ALLOWING USER TO
+         * CHANGE(FOR NOW)'}. {@code :1285} then sets {@code DFHBMDAR} on {@code EXPDAYC}, rendering the field
+         * dark. A 3270 returns what was sent, so {@code CCUP-NEW-EXPDAY} at {@code :621} can only ever hold
+         * the old day, which is why {@code :1471} may write it into the rewrite image at all - and why
+         * {@code COCRDSL.CPY} declares no {@code EXPDAYI} for the read map to publish.
+         *
+         * <p><strong>Finding, severity Major - remediated.</strong> The screen was the carrier and there is
+         * no screen, so the snapshot is. Trusting the request instead was destructive rather than merely
+         * divergent: a client echoing back a detail read - which cannot publish a day it does not carry -
+         * submitted none, and the {@code STRING} at {@code :1467-1474} composed an expiry with the day
+         * blank, erasing it from the stored record. Two seeded rows were found in that state.
+         */
+        @Test
+        @DisplayName("the submitted expiry day never reaches the row - :1120-1122, :1285")
+        void theSubmittedExpiryDayNeverReachesTheRow() {
+            // A FRESH entity per lookup. The write mutates the row it loaded, so a single shared instance
+            // would make the second submission's change comparison fail against the first one's result.
+            when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
+                    .thenAnswer(lookup -> Optional.of(storedCard()));
+            final ArgumentCaptor<Card> persisted = ArgumentCaptor.forClass(Card.class);
+
+            // Three submissions that differ only in the day: a wrong one, an absent one and a blank one.
+            for (final String submittedDay : new String[] {"28", null, "  "}) {
+                final CardUpdateRequest request =
+                        requestWith(matchingSnapshot(), "ANNA LEE", "N", "12", "2099", submittedDay);
+                service.updateCard(request, sealed(request));
+            }
+
+            verify(cardRepository, times(3)).save(persisted.capture());
+            assertThat(persisted.getAllValues())
+                    .as("every rewrite carries the snapshot's day, whatever was submitted")
+                    .extracting(Card::getExpiraionDate)
+                    .containsOnly("2099-12-" + STORED_DAY);
+            // And in particular none of them lost the day, which is the destructive outcome.
+            assertThat(persisted.getAllValues()).allSatisfy(written ->
+                    assertThat(written.getExpiraionDate()).hasSize(10).doesNotEndWith("-"));
         }
     }
 

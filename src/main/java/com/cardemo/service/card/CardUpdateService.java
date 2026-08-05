@@ -902,6 +902,7 @@ public class CardUpdateService {
     @Transactional(rollbackFor = Exception.class)
     public CardDto updateCard(final CardUpdateRequest request, final String snapshotToken) {
         Objects.requireNonNull(request, "request must not be null");
+        raiseIfIdentifiersUnusable(request, snapshotToken);
         final CardUpdateRequest.CardDetails authenticOldDetails =
                 this.snapshotTokenService.open(snapshotToken, SNAPSHOT_KIND,
                         snapshotRecordKey(request.cardNumber()), CardSnapshot.class).toDetails();
@@ -923,7 +924,7 @@ public class CardUpdateService {
         final UpdateContext validationPass =
                 new UpdateContext(request, ATTENTION_IDENTIFIER_ENTER, EntryMode.REENTER,
                         authenticOldDetails);
-        mainLine0000(validationPass);
+        final CardUpdateResult validationResult = mainLine0000(validationPass);
         if (validationPass.pendingFailure != null) {
             throw validationPass.pendingFailure;
         }
@@ -934,9 +935,20 @@ public class CardUpdateService {
         if (validationPass.changeAction != ChangeAction.CHANGES_OK_NOT_CONFIRMED) {
             // :680-683 found the two groups equal, so :681 set NO-CHANGES-DETECTED and :685-693 took the
             // early exit. The source redisplays with that message and writes nothing.
-            throw new ValidationException(validationPass.returnMessage.isEmpty()
-                    ? MSG_NO_CHANGES_DETECTED
-                    : validationPass.returnMessage);
+            //
+            // The redisplay is the answer, not a refusal. :972-976 evaluates
+            // IF INPUT-ERROR OR NO-CHANGES-DETECTED CONTINUE, which leaves the state machine in
+            // CCUP-SHOW-DETAILS - the same state a successful read leaves it in - so the task ends by
+            // painting the map again. The two conditions are OR'd precisely BECAUSE they are different:
+            // an input error additionally sets a FLG-*-NOT-OK marker and 3300 highlights the offending
+            // field, while a no-change outcome sets none and :1212-1214 places the cursor on the card
+            // name alongside FOUND-CARDS-FOR-ACCOUNT, which is an informational state. Reporting it as a
+            // rejection of the request would collapse that distinction and would tell a client to correct
+            // an input that is not wrong.
+            //
+            // The literal travels in the error-message field because :547 and :569 move WS-RETURN-MSG to
+            // CCARD-ERROR-MSG, and it is relayed byte for byte.
+            return validationResult.screen();
         }
         // Pass two, the confirmation pass. :417 shows PF05 is the only intent accepted while the state
         // machine holds CCUP-CHANGES-OK-NOT-CONFIRMED, and :988-991 is the only route to the write.
@@ -945,6 +957,103 @@ public class CardUpdateService {
         final CardUpdateResult result = mainLine0000(confirmationPass);
         raiseTerminalOutcome(confirmationPass);
         return result.screen();
+    }
+
+    /**
+     * Runs the source's own two identifier edits before the snapshot is consulted, so an omitted identifier
+     * is reported as the missing field it is.
+     *
+     * <p><strong>Finding, severity Major - remediated here.</strong> {@code PUT /api/cards} omitting the
+     * card number answered {@code 412 CARDDEMO-UPDATE-CONFLICT} - "the as-displayed snapshot could not be
+     * verified for this record" - and omitting the snapshot too answered {@code 428}. Neither names a field,
+     * and neither is true: nothing was stale and nothing had changed. The snapshot simply could not verify,
+     * because it is bound to a card number and there was no card number to bind it to.
+     *
+     * <p>The source does not have this problem, because it edits first. {@code 1200-EDIT-MAP-INPUTS.} at
+     * {@code app/cbl/COCRDUPC.cbl} opens with {@code IF CCUP-DETAILS-NOT-FETCHED} at {@code :645} and, on
+     * that arm, performs {@code 1210-EDIT-ACCOUNT} at {@code :647-648} and then {@code 1220-EDIT-CARD} at
+     * {@code :650-651}, producing {@code 'Account number not provided'}, {@code 'Card number not provided'}
+     * or, when both are blank, {@code 'No input received'} at {@code :656-659}. A request that carries no
+     * snapshot <em>is</em> that turn - the details have not been fetched - so those edits are exactly the
+     * ones it is owed. Opening the snapshot first made the whole arm unreachable and substituted a
+     * precondition failure for a field refusal.
+     *
+     * <p>What this does not change: a request whose identifiers are well formed and which carries no
+     * snapshot still answers {@code 428}, because the comparison genuinely cannot run without one, and one
+     * that carries both takes the ordinary path with no extra read. The order of the two checks is the only
+     * thing that moves, and it moves to the order the source uses.
+     *
+     * <p>The guard runs on <strong>every</strong> request, not only on one that omits a snapshot. A
+     * request carrying a snapshot but no card number would otherwise still be answered {@code 412}: the
+     * snapshot is sealed against the card number, so with none to seal against it cannot verify - which is
+     * a true statement about the token and a misleading one about the request.
+     *
+     * <p>It performs <strong>no input or output</strong>. {@code 1210-EDIT-ACCOUNT} and
+     * {@code 1220-EDIT-CARD} are pure edits over the submitted fields, so they are invoked directly rather
+     * than by driving a fetch turn through {@link #mainLine0000}. Two consequences are intended. A
+     * well-formed request that omits its snapshot is answered {@code 428} whether or not the card exists,
+     * because a caller that has not read is told to read rather than told what the read would have found.
+     * And the ordinary path costs nothing: no request pays for a second read to satisfy this check.
+     *
+     * <p>Only the <strong>card</strong> verdict is acted on. {@code :669-670} SETs both filter states valid
+     * on the second turn without re-editing either, and the card number is the one value that turn cannot
+     * proceed without, because the snapshot is sealed against it; the account identifier is recoverable from
+     * the snapshot and is therefore not re-demanded. The account verdict reaches the caller only through the
+     * both-blank message of {@code :656-659}, which is the source's own precedence.
+     *
+     * <p>The guard runs the state machine rather than re-testing the fields, so there is exactly one
+     * implementation of each edit and its message and cursor come from the paragraph that owns them. It
+     * cannot write: {@code DETAILS_NOT_FETCHED} never reaches {@code :988-991}, the only route to the
+     * update.
+     *
+     * @param request the received body; never null
+     * @param snapshotToken the sealed snapshot, or null or blank when the caller sent none
+     * @throws ValidationException naming the offending identifier when one is absent, blank or malformed
+     * @throws ConcurrentUpdateException with {@code CHANGES_NOT_CONFIRMED} when the identifiers are usable
+     * but no snapshot was presented
+     */
+    private void raiseIfIdentifiersUnusable(final CardUpdateRequest request, final String snapshotToken) {
+
+        // :647-651 - the two search-key edits of the CCUP-DETAILS-NOT-FETCHED arm, run on their own.
+        // They are pure: 1210-EDIT-ACCOUNT and 1220-EDIT-CARD read no dataset, so this pre-check reaches
+        // no repository and cannot answer a question about whether the record exists. That is deliberate.
+        // A caller who has not read cannot be told what a read would have found; it is told to read.
+        final UpdateContext editPass =
+                new UpdateContext(request, ATTENTION_IDENTIFIER_ENTER, EntryMode.REENTER, null);
+        editPass.changeAction = ChangeAction.DETAILS_NOT_FETCHED;
+        // :576 PERFORM 1100-RECEIVE-MAP first, exactly as every turn does: the edits read the received
+        // work fields, not the request record, so without it both filters would look blank on every
+        // request. It reaches no dataset either - it only moves the submitted map into the work area.
+        receiveMap1100(editPass);
+        editAccount1210(editPass);
+        editCard1220(editPass);
+
+        // Only the CARD verdict is acted on, and the account verdict only through the both-blank message.
+        // That asymmetry is the source's: :669-670 SETs both filter states valid on the second turn without
+        // re-editing either, because the screen had already validated them. Here the card number is the one
+        // value the turn genuinely cannot proceed without - the snapshot is sealed against it - while the
+        // account identifier is recoverable from the snapshot and is therefore not re-demanded.
+        if (editPass.cardFilterState == FieldEditState.IS_VALID) {
+            if (snapshotToken == null || snapshotToken.isBlank()) {
+                // The card is named. The snapshot is what is missing, and that is the condition the
+                // precondition status exists for.
+                throw new ConcurrentUpdateException(
+                        ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED,
+                        SnapshotTokenService.MISSING_TOKEN_MESSAGE);
+            }
+            return;
+        }
+
+        // :656-659 IF FLG-ACCTFILTER-BLANK AND FLG-CARDFILTER-BLANK SET NO-SEARCH-CRITERIA-RECEIVED - a
+        // message without an in-error flag of its own, so it is tested separately and takes precedence over
+        // the single-field prompts, exactly as the source's message guard does. The account is named because
+        // 1210 is the earlier of the two edits and the cursor rule reports the earlier field [:1212-1214].
+        if (editPass.accountFilterState == FieldEditState.BLANK
+                && editPass.cardFilterState == FieldEditState.BLANK) {
+            throw ValidationException.missingField(FIELD_ACCOUNT_ID, MSG_NO_SEARCH_CRITERIA_RECEIVED);
+        }
+
+        throw fieldFailure(editPass);
     }
 
     /**
@@ -1608,8 +1717,34 @@ public class CardUpdateService {
         //      clamp is not normalisation: EXPDAYI is PIC X(2) at COCRDUP.CPY:96 and the receiving item
         //      is PIC X(2) at :300, so the field geometry applies here exactly as it does to the six
         //      normalised fields. What :621 omits is the '*' and SPACES test, and that omission stands.
-        context.newExpiryDay = truncateToWidth(firstSupplied(received.expiryDay(),
+        //
+        //      WHAT CARRIES THE VALUE INTO EXPDAYI, AND WHY IT CANNOT BE THE REQUEST. The expiry day is
+        //      the one field of this map the source does not let a user change, and it says so in as many
+        //      words. 3200-SETUP-SCREEN-VARS writes CCUP-OLD-EXPDAY into EXPDAYO on EVERY arm - SHOW
+        //      DETAILS at :1110, CHANGES MADE at :1123 and WHEN OTHER at :1127 - and at :1120-1122 the
+        //      NEW-value MOVE is present but COMMENTED OUT, under the banner 'MOVE OLD VALUES TO
+        //      NON-DISPLAY FIELDS THAT WE ARE NOT ALLOWING USER TO CHANGE(FOR NOW)'. :1285 then sets
+        //      DFHBMDAR on EXPDAYC, so the field is rendered dark. The terminal returns what was sent, so
+        //      CCUP-NEW-EXPDAY at :621 can only ever hold the OLD day - which is why :1471 may write it
+        //      into the rewrite image safely, and why COCRDSL.CPY declares no EXPDAYI at all.
+        //
+        //      The screen was the carrier. Statelessly there is no screen, so the snapshot is the carrier:
+        //      the day is taken from the CCUP-OLD-EXPDAY leaf the constructor populated from the snapshot
+        //      this service opened. Trusting request.expiryDay() instead reproduces the MOVE and loses the
+        //      behaviour, and it is destructive rather than merely divergent - a caller echoing back a
+        //      detail read, which cannot publish a day it does not carry, would submit none and the STRING
+        //      at :1467-1474 would compose an expiry with the day blank, silently erasing it from the
+        //      stored record.
+        //
+        //      Finding, severity Major - remediated here. The submitted component is retained on the
+        //      request because COCRDUP.CPY declares the field and the DTO mirrors the map, and it is
+        //      echoed back on the response as the source echoes EXPDAYO; it simply never reaches the
+        //      rewrite image, exactly as :1120-1122 arranges.
+        final String submittedExpiryDay = truncateToWidth(firstSupplied(received.expiryDay(),
                 submittedDate == null ? null : submittedDate.expiryDay()), WIDTH_EXPIRY_DAY);
+        context.newExpiryDay = context.oldExpiryDay != null
+                ? context.oldExpiryDay
+                : submittedExpiryDay;
         // :623-628 EXPMONI -> CCUP-NEW-EXPMON. EXPMONI is PIC X(2) at COCRDUP.CPY:84.
         final String expiryMonth = truncateToWidth(firstSupplied(received.expiryMonth(),
                 submittedDate == null ? null : submittedDate.expiryMonth()), WIDTH_EXPIRY_MONTH);
@@ -1691,27 +1826,36 @@ public class CardUpdateService {
         context.cardFilterState = FieldEditState.IS_VALID;
         // :671-677 restore the seven CCUP-OLD-* values into the work fields, so that the comparison and
         //          the screen render against what the caller was actually shown.
-        final CardUpdateRequest.CardDetails snapshot = context.request.oldDetails();
-        final CardUpdateRequest.CardData snapshotData =
-                snapshot == null ? null : snapshot.cardData();
-        final CardUpdateRequest.ExpiraionDate snapshotDate =
-                snapshotData == null ? null : snapshotData.expiraionDate();
+        //
+        // The values come from the context's own CCUP-OLD-* leaves, which the constructor populated from
+        // the snapshot this service OPENED, and deliberately not from request.oldDetails().
+        //
+        // <p><strong>Finding, severity Major - remediated here.</strong> This paragraph previously read
+        // {@code context.request.oldDetails()}, and that group is ALWAYS null on a request that reaches
+        // here: the operation refuses a body-carried snapshot outright, because a caller-supplied
+        // precondition is not a precondition. So the seven work fields were being restored from nothing,
+        // the Regime A comparison at :680-683 compared the submitted group against an empty one, the
+        // groups never matched, NO-CHANGES-DETECTED was unreachable, and an identical resubmission ran
+        // straight through to the write - answering 'Changes committed to database' and incrementing the
+        // row's version although not one value had changed. The snapshot the service opened is the Rule 7
+        // substitution for the COMMAREA half the source restores at :396-400, so it is the only group
+        // entitled to stand in for CCUP-OLD-DETAILS here.
         // :671 MOVE CCUP-OLD-ACCTID TO CDEMO-ACCT-ID
-        context.commareaAccountId = parseDigits(snapshot == null ? null : snapshot.accountId());
+        context.commareaAccountId = context.oldAccountId;
         // :672 MOVE CCUP-OLD-CARDID TO CDEMO-CARD-NUM
-        context.commareaCardNumber = parseDigits(snapshot == null ? null : snapshot.cardNumber());
+        context.commareaCardNumber = context.oldCardNumber;
         // :673 MOVE CCUP-OLD-CRDNAME TO CARD-EMBOSSED-NAME
-        context.editEmbossedName = snapshotData == null ? null : snapshotData.cardholderName();
+        context.editEmbossedName = context.oldCardholderName;
         // :674 MOVE CCUP-OLD-CRDSTCD TO CARD-ACTIVE-STATUS
-        context.editCardStatus = snapshotData == null ? null : snapshotData.cardStatusCode();
+        context.editCardStatus = context.oldCardStatusCode;
         // :675 MOVE CCUP-OLD-EXPDAY TO CARD-EXPIRY-DAY
-        context.editExpiryDay = snapshotDate == null ? null : snapshotDate.expiryDay();
+        context.editExpiryDay = context.oldExpiryDay;
         // :676 MOVE CCUP-OLD-EXPMON TO CARD-EXPIRY-MONTH
-        context.editExpiryMonth = snapshotDate == null ? null : snapshotDate.expiryMonth();
+        context.editExpiryMonth = context.oldExpiryMonth;
         // :677 MOVE CCUP-OLD-EXPYEAR TO CARD-EXPIRY-YEAR
-        context.editExpiryYear = snapshotDate == null ? null : snapshotDate.expiryYear();
+        context.editExpiryYear = context.oldExpiryYear;
         // :680-683 Regime A. See checkCallerChangedAnything1200 for the group semantics.
-        if (checkCallerChangedAnything1200(context, snapshotData)) {
+        if (checkCallerChangedAnything1200(context)) {
             // :681 SET NO-CHANGES-DETECTED TO TRUE
             context.noChangesDetected = true;
             context.returnMessage = MSG_NO_CHANGES_DETECTED;
@@ -1776,22 +1920,18 @@ public class CardUpdateService {
      * ASCII letters, so a locale-sensitive fold would diverge from the source on {@code i} under a
      * Turkish default locale.</p>
      *
-     * @param context      the per-request state, holding the new group as normalised by {@code 1100}
-     * @param snapshotData the old group as displayed to the caller, possibly {@code null}
+     * @param context the per-request state, holding both the new group as normalised by {@code 1100} and
+     *     the {@code CCUP-OLD-*} leaves the constructor populated from the snapshot this service opened
      * @return {@code true} when the two groups are equal after folding, meaning nothing changed
      */
-    private boolean checkCallerChangedAnything1200(final UpdateContext context,
-                                                   final CardUpdateRequest.CardData snapshotData) {
+    private boolean checkCallerChangedAnything1200(final UpdateContext context) {
         final String newGroup = renderCardDataGroup(context.newCardholderName, context.newExpiryYear,
                 context.newExpiryMonth, context.newExpiryDay, context.newCardStatusCode);
-        final CardUpdateRequest.ExpiraionDate snapshotDate =
-                snapshotData == null ? null : snapshotData.expiraionDate();
-        final String oldGroup = renderCardDataGroup(
-                snapshotData == null ? null : snapshotData.cardholderName(),
-                snapshotDate == null ? null : snapshotDate.expiryYear(),
-                snapshotDate == null ? null : snapshotDate.expiryMonth(),
-                snapshotDate == null ? null : snapshotDate.expiryDay(),
-                snapshotData == null ? null : snapshotData.cardStatusCode());
+        // The old group is rendered from the context's own CCUP-OLD-* leaves, which came from the snapshot
+        // this service opened. Reading them from request.oldDetails() instead made the comparison
+        // tautologically false, because that group is always null here - see editMapInputs1200.
+        final String oldGroup = renderCardDataGroup(context.oldCardholderName, context.oldExpiryYear,
+                context.oldExpiryMonth, context.oldExpiryDay, context.oldCardStatusCode);
         return newGroup.toUpperCase(Locale.ROOT).equals(oldGroup.toUpperCase(Locale.ROOT));
     }
 
@@ -3233,8 +3373,10 @@ public class CardUpdateService {
         // :1466 MOVE CCUP-NEW-CRDNAME TO CARD-UPDATE-EMBOSSED-NAME
         card.setEmbossedName(padRight(context.newCardholderName, WIDTH_EMBOSSED_NAME));
         // :1467-1474 STRING CCUP-NEW-EXPYEAR '-' CCUP-NEW-EXPMON '-' CCUP-NEW-EXPDAY DELIMITED BY SIZE
-        //            INTO CARD-UPDATE-EXPIRAION-DATE - note that the CARRIED day is written even though
-        //            no paragraph validates it and 3200 always echoes the OLD one.
+        //            INTO CARD-UPDATE-EXPIRAION-DATE - the CARRIED day is written, and because 3200 echoes
+        //            the OLD day on every arm and :1120-1122 leaves the new-value MOVE commented out, the
+        //            carried day IS the old day. 1100 reproduces that carrier from the opened snapshot; see
+        //            the note at :621 there for why the request cannot be it.
         card.setExpiraionDate(assembleExpiraionDate(context.newExpiryYear, context.newExpiryMonth,
                 context.newExpiryDay));
         // :1475 MOVE CCUP-NEW-CRDSTCD TO CARD-UPDATE-ACTIVE-STATUS

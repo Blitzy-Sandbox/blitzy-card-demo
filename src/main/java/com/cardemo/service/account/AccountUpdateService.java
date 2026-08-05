@@ -34,10 +34,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -208,6 +210,23 @@ import com.cardemo.service.shared.ValidationLookupService;
  *     <td>Referential failure while writing</td>
  *     <td>{@code DataIntegrityException}</td>
  *     <td>Check the ten foreign keys of {@code V1__create_schema.sql}.</td>
+ *   </tr>
+ *   <tr>
+ *     <td>A value bound for a {@code NOT NULL} column arrived absent or empty, so the write image cannot
+ *         be built ({@code 9600-WRITE-PROCESSING} step four, {@code :3956-4059})</td>
+ *     <td>{@code ValidationException} naming the BMS field, with {@code FailureKind.BLANK} - or
+ *         {@code INVALID} for a monetary field that was transmitted but is unreadable; marker
+ *         {@link ChangeAction#SHOW_DETAILS}, and nothing written. A value that is present but unstorable
+ *         for any other reason - too wide, wrong scale, out of range - answers the same way at request
+ *         level, naming no field</td>
+ *     <td>Re-fetch with {@link #fetchForUpdate(String)} and resubmit <em>every</em> member of both detail
+ *         groups. A stateless caller must echo the whole map: {@code receiveField} normalises an absent
+ *         member and an empty string alike to {@code null}, exactly as an untransmitted 3270 field
+ *         arrived as {@code LOW-VALUES}, and a {@code CHAR} column cannot hold that. This is the one row
+ *         in this table that is a deviation rather than parity - the source stored {@code LOW-VALUES} and
+ *         the target's schema has no such value - and it is the deviation that replaced an abend on an
+ *         otherwise well-formed request. See {@link #requireStorableUpdateImage(UpdateContext)}, which
+ *         also records why the confirm turn still does not re-run the edit cascade.</td>
  *   </tr>
  *   <tr>
  *     <td>A marker and attention identifier combination the dispatch does not recognise
@@ -649,6 +668,16 @@ public class AccountUpdateService {
     /** {@code 1215-EDIT-MANDATORY}, {@code :1838-1842}. */
     private static final String SUFFIX_MUST_BE_SUPPLIED = " must be supplied.";
 
+    /**
+     * The phrase every <em>blank</em> arm of the edit cascade puts in {@code WS-RETURN-MSG}, {@value}.
+     *
+     * <p>Shared by {@link #SUFFIX_MUST_BE_SUPPLIED}, {@link #SUFFIX_AREA_CODE_SUPPLIED},
+     * {@link #SUFFIX_PREFIX_SUPPLIED}, {@link #SUFFIX_LINE_NUMBER_SUPPLIED} and
+     * {@link #CREDIT_LIMIT_IS_BLANK_MESSAGE}, and used by no other arm, which is what makes it a sound
+     * discriminator for {@link #isUnsuppliedFieldMessage(String)}.
+     */
+    private static final String UNSUPPLIED_FIELD_PHRASE = "must be supplied";
+
     /** {@code 1220-EDIT-YESNO}, {@code :1885-1889}. */
     private static final String SUFFIX_MUST_BE_Y_OR_N = " must be Y or N.";
 
@@ -810,6 +839,49 @@ public class AccountUpdateService {
 
     /** Label used for the primary-card-holder edit, {@code :1656}. */
     private static final String LABEL_PRIMARY_CARD_HOLDER = "Primary Card Holder";
+
+    /**
+     * Label for the second address line. The source carries this literal at {@code :1614} but
+     * <strong>commented out</strong>, under the explanatory comment {@code * Address Line 2 is optional}
+     * at {@code :1613} - so the field has no edit and never reaches
+     * {@code 1200-EDIT-MAP-INPUTS}'s shared label slot. The literal is reproduced verbatim from that
+     * commented line rather than invented, and is used only by
+     * {@link #requireStorableUpdateImage(UpdateContext)}.
+     */
+    private static final String LABEL_ADDRESS_LINE_2 = "Address Line 2";
+
+    /**
+     * Label for the account group identifier. Unlike every label above it, this text is
+     * <strong>not</strong> in the source: {@code ACCT-GROUP-ID} has no edit at all - it is absent from the
+     * edit cascade and from the thirty-nine {@code COPY CSSETATY REPLACING} marker expansions at
+     * {@code :3208-3437} - and {@code :4002} moves whatever arrived straight into the record. The text is
+     * derived from the copybook field name {@code ACCT-GROUP-ID PIC X(10)} at
+     * {@code app/cpy/CVACT01Y.cpy:L19} so that the diagnostic reads like its twenty-four siblings, and it
+     * is used only by {@link #requireStorableUpdateImage(UpdateContext)}.
+     */
+    private static final String LABEL_ACCOUNT_GROUP_ID = "Account Group Id";
+
+    /**
+     * Label for the government-issued identifier. As with the group identifier above, the source carries
+     * no literal for it: {@code CUST-GOVT-ISSUED-ID} has no edit, and {@code :4046} moves the submitted
+     * value in unexamined. Derived from {@code CUST-GOVT-ISSUED-ID PIC X(20)} at
+     * {@code app/cpy/CVCUS01Y.cpy}, and used only by
+     * {@link #requireStorableUpdateImage(UpdateContext)}.
+     */
+    private static final String LABEL_GOVERNMENT_ISSUED_ID = "Government Issued Id";
+
+    /**
+     * Request-level diagnostic for the safety net of {@link #writeProcessing9600(UpdateContext)}.
+     *
+     * <p>Deliberately names no field and reproduces no part of the entity's own refusal text. Those
+     * messages name the Java property, the COBOL picture clause, the column width and the table - for
+     * example {@code "groupId (ACCT-GROUP-ID PIC X(10)) must not be null: it maps to a NOT NULL CHAR(10)
+     * column of table account"} - and relaying that to a caller would publish the schema. The same
+     * CWE-209 posture is why {@code HttpMessageNotReadableException} answers with a fixed envelope and
+     * keeps the offending property in the log only.
+     */
+    private static final String UNSTORABLE_UPDATE_IMAGE_MESSAGE =
+            "One or more submitted values cannot be stored. Re-fetch the account and resubmit every field.";
 
     // ------------------------------------------------------------------------------------------------
     // Abend vocabulary. app/cpy/CSMSG02Y.cpy - internally titled CABENDD.CPY - declares
@@ -1652,10 +1724,34 @@ public class AccountUpdateService {
     /**
      * The REST write entry point, surfaced by {@code com.cardemo.controller.AccountController} under
      * {@code /api/accounts/*}. It drives the identical conversation as
-     * {@link #processRequest(AccountUpdateRequest, String, ChangeAction, EntryMode)} with PF05 as the
-     * attention identifier and {@code ACUP-CHANGES-OK-NOT-CONFIRMED} as the incoming marker - the one
-     * combination that reaches {@code 9600-WRITE-PROCESSING} through the {@code :2602-2603} branch of the
-     * decider - and then converts the legacy screen states into typed exceptions.
+     * {@link #processRequest(AccountUpdateRequest, String, ChangeAction, EntryMode)}, and it drives
+     * <strong>both</strong> of the screen turns the source needs to write, because one stateless call is
+     * all the caller gets.
+     *
+     * <h4>Why two turns, and why one is not enough</h4>
+     * <p>{@code COACTUPC} is pseudo-conversational and validates on a different turn from the one it writes
+     * on. Turn one arrives with {@code ACUP-SHOW-DETAILS} and Enter: {@code 1200-EDIT-MAP-INPUTS} runs
+     * {@code 1205-COMPARE-OLD-NEW} and then, when the operator changed something, the twenty-four field
+     * edits of {@code 1210} through {@code 1280}, and {@code :1671-1675} promotes the marker to
+     * {@code ACUP-CHANGES-OK-NOT-CONFIRMED} only when no edit failed. Turn two arrives with that promoted
+     * marker and PF05, and {@code :2602-2603} writes. The guard at {@code :1463-1468} -
+     * {@code IF NO-CHANGES-FOUND OR ACUP-CHANGES-OK-NOT-CONFIRMED OR ACUP-CHANGES-OKAYED-AND-DONE GO TO
+     * 1200-EDIT-MAP-INPUTS-EXIT} - is what stops turn two from re-running edits that turn one already
+     * performed.</p>
+     * <p>Entering the conversation directly at turn two, as this method once did, made that guard fire on
+     * <em>every</em> request: the edit cascade became unreachable, so an out-of-range FICO score, an
+     * impossible date, an unlisted state, country or NANPA area code and a negative credit limit were all
+     * written to the two datasets, and the {@code NO-CHANGES-DETECTED} outcome of {@code :2588} could never
+     * be reported because the decider's {@code ACUP-SHOW-DETAILS} arm was never evaluated. This method
+     * therefore performs turn one, inspects the marker the source itself would have carried forward, and
+     * performs turn two only when the source would have offered PF05. The guard is untouched; what changed
+     * is that both turns now happen, which is what collapsing a two-turn conversation onto one call
+     * means.</p>
+     * <p>Turn one is a pure computation over the submitted map and the sealed snapshot - it performs no
+     * read for update and no write - so running it costs one comparison pass and cannot affect the store.
+     * Both turns share the single {@code @Transactional} boundary, so the seven-step write sequence and its
+     * asymmetric rollback behave exactly as documented on {@link #writeProcessing9600}.</p>
+     *
      * <p>The order of the checks below is dictated by the source. {@code 1200-EDIT-MAP-INPUTS} runs before
      * {@code 2000-DECIDE-ACTION}, so an edit failure precludes a write; but the write's own failures also
      * raise {@code INPUT-ERROR} at {@code :3910} and {@code :3937}. Testing the retained typed failure
@@ -1714,17 +1810,49 @@ public class AccountUpdateService {
                 this.snapshotTokenService.open(snapshotToken, SNAPSHOT_KIND,
                         snapshotRecordKey(request.getAccountId()),
                         AccountUpdateRequest.OldDetails.class);
-        final UpdateContext context = new UpdateContext(request,
+
+        // TURN ONE - the ENTER turn on a displayed screen. ACUP-SHOW-DETAILS is the marker the source
+        // carries into it, which is precisely the marker :1463-1468 does NOT skip, so 1205-COMPARE-OLD-NEW
+        // runs and, when the user changed something, the whole 1210-1280 cascade runs behind it. On the way
+        // out :1671-1675 promotes the marker to ACUP-CHANGES-OK-NOT-CONFIRMED when no edit failed, and
+        // 2000-DECIDE-ACTION's :2585-2591 arm leaves it at ACUP-SHOW-DETAILS when an edit failed or when
+        // the comparison found nothing changed.
+        final UpdateContext validation = new UpdateContext(request,
+                ATTENTION_IDENTIFIER_ENTER,
+                ChangeAction.SHOW_DETAILS,
+                EntryMode.REENTER,
+                authenticOldDetails);
+        final AccountUpdateResult validated = mainLine0000(validation);
+        if (validation.pendingFailure != null) {
+            throw validation.pendingFailure;
+        }
+        if (validation.inputError) {
+            throw validationFailure(validation);
+        }
+        if (validation.changeAction != ChangeAction.CHANGES_OK_NOT_CONFIRMED) {
+            // NO-CHANGES-DETECTED. :1682 and :1769 set it, :2588's CONTINUE keeps ACUP-SHOW-DETAILS, and
+            // the write branch at :2602-2603 is never reached, so nothing is written. Returning the turn-one
+            // projection reports the source's own 'No change detected with respect to values fetched.'
+            // literal with applied false, rather than committing a rewrite the source declined to make.
+            return validated;
+        }
+
+        // TURN TWO - the PF05 confirmation turn, the one combination that reaches 9600-WRITE-PROCESSING
+        // through :2602-2603. A fresh context is used rather than the first one because the source's second
+        // turn re-receives the map into a re-initialised working storage: :1047 INITIALIZE ACUP-NEW-DETAILS
+        // and :1466 MOVE LOW-VALUES TO WS-NON-KEY-FLAGS both run again, and reusing the first context would
+        // carry the edit flags of a turn the source had already discarded into the write.
+        final UpdateContext write = new UpdateContext(request,
                 ATTENTION_IDENTIFIER_PFK05,
                 ChangeAction.CHANGES_OK_NOT_CONFIRMED,
                 EntryMode.REENTER,
                 authenticOldDetails);
-        final AccountUpdateResult result = mainLine0000(context);
-        if (context.pendingFailure != null) {
-            throw context.pendingFailure;
+        final AccountUpdateResult result = mainLine0000(write);
+        if (write.pendingFailure != null) {
+            throw write.pendingFailure;
         }
-        if (context.inputError) {
-            throw validationFailure(context);
+        if (write.inputError) {
+            throw validationFailure(write);
         }
         return result;
     }
@@ -5159,8 +5287,18 @@ public class AccountUpdateService {
             }
             // :3912 SET COULD-NOT-LOCK-ACCT-FOR-UPDATE - the outcome this method reports
             context.accountLockFailed = true;
-            retainFailure(context, classify(context, IO_STATUS_RECORD_NOT_FOUND, ACCOUNT_FILE_NAME,
-                    OPERATION_READ, accountReadCause));
+            // The source cannot tell these two apart - any non-normal RESP on the READ UPDATE sets the
+            // same flag - but the store can, and the two need different answers. An EMPTY result means the
+            // row is not there, which stays RecordNotFoundException. A THROWN result whose SQLSTATE says
+            // the lock could not be taken means the row IS there and is held by someone else, which is
+            // what Outcome.COULD_NOT_LOCK_ACCOUNT and its 423 exist for. Reporting "not found" for a row
+            // that demonstrably exists tells a caller to stop retrying when retrying is the remedy.
+            final Throwable accountLockCause = accountReadCause;
+            retainFailure(context, lockAware(accountLockCause,
+                    ConcurrentUpdateException.Outcome.COULD_NOT_LOCK_ACCOUNT,
+                    COULD_NOT_LOCK_ACCOUNT_FOR_UPDATE,
+                    () -> classify(context, IO_STATUS_RECORD_NOT_FOUND, ACCOUNT_FILE_NAME,
+                            OPERATION_READ, accountLockCause)));
             return;
         }
         // :3919 MOVE CDEMO-CUST-ID TO WS-CARD-RID-CUST-ID
@@ -5199,8 +5337,18 @@ public class AccountUpdateService {
             }
             // :3939 SET COULD-NOT-LOCK-CUST-FOR-UPDATE - set here, tested nowhere. See BLOCKER 5.2.
             context.customerLockFailed = true;
-            retainFailure(context, classify(context, IO_STATUS_RECORD_NOT_FOUND, CUSTOMER_FILE_NAME,
-                    OPERATION_READ, customerReadCause));
+            // The same distinction as the account guard above, and the same reason. Note what does NOT
+            // change: BLOCKER 5.2 is untouched, because classifyWriteOutcome2606 still never tests
+            // customerLockFailed, so the SCREEN outcome remains the WHEN OTHER success the source reports
+            // at :2613-2614. Only the typed failure the REST entry point rethrows becomes accurate, and
+            // Outcome.COULD_NOT_LOCK_CUSTOMER - declared with its own 409 mapping and until now
+            // unreachable - is what it was declared for.
+            final Throwable customerLockCause = customerReadCause;
+            retainFailure(context, lockAware(customerLockCause,
+                    ConcurrentUpdateException.Outcome.COULD_NOT_LOCK_CUSTOMER,
+                    COULD_NOT_LOCK_CUSTOMER_FOR_UPDATE,
+                    () -> classify(context, IO_STATUS_RECORD_NOT_FOUND, CUSTOMER_FILE_NAME,
+                            OPERATION_READ, customerLockCause)));
             return;
         }
         context.lockedAccount = account;
@@ -5212,10 +5360,35 @@ public class AccountUpdateService {
         if (context.dataWasChangedBeforeUpdate) {
             return;
         }
-        // :3956-4002 build the account update image
-        applyAccountUpdateImage(context, account);
-        // :4007-4059 build the customer update image
-        applyCustomerUpdateImage(context, customer);
+        // Every value the two images below are about to move must be storable. In CICS an untransmitted
+        // field arrived as LOW-VALUES and :3956-4059 moved it in unexamined, because a VSAM record holds
+        // binary zeros perfectly well. A PostgreSQL NOT NULL CHAR column does not, so the entity setters
+        // refuse it - and that refusal, left to itself, is an IllegalArgumentException on a path whose
+        // only handler is the abend funnel. Screening first turns it into the field-level answer the edit
+        // cascade would have given, which is the outcome the substrate change removed rather than a rule
+        // the source lacked. See requireStorableUpdateImage for the full reasoning.
+        if (!requireStorableUpdateImage(context)) {
+            return;
+        }
+        try {
+            // :3956-4002 build the account update image
+            applyAccountUpdateImage(context, account);
+            // :4007-4059 build the customer update image
+            applyCustomerUpdateImage(context, customer);
+        } catch (final IllegalArgumentException refusal) {
+            // The net behind the screen above, and the reason the abend path can no longer be reached
+            // from here at all: any width, scale or range refusal an entity setter can raise - not only
+            // the null case the screen covers - is reported rather than thrown. Nothing has been written
+            // at this point, so the single transaction boundary has nothing to back out, and the outcome
+            // is the same refused-write outcome the screen uses.
+            LOG.warn("CAUP refused an update: a submitted value cannot be stored in the column it maps "
+                    + "to. The property and the constraint are on the cause; neither is relayed to the "
+                    + "caller.", refusal);
+            context.dataWasChangedBeforeUpdate = true;
+            context.returnMessage = truncateReturnMessage(UNSTORABLE_UPDATE_IMAGE_MESSAGE);
+            retainFailure(context, new ValidationException(UNSTORABLE_UPDATE_IMAGE_MESSAGE, refusal));
+            return;
+        }
         // :4065-4071 EXEC CICS REWRITE FILE(ACCTDAT)
         try {
             this.accountRepository.save(account);
@@ -5370,6 +5543,208 @@ public class AccountUpdateService {
         }
         final Long parsed = parseKey(carried);
         return parsed != null && parsed.equals(bound);
+    }
+
+    /**
+     * Screens the twenty values the two update images are about to move for the one condition a
+     * PostgreSQL {@code NOT NULL} column cannot represent, and refuses the write with a field-level
+     * failure rather than letting it become an abend.
+     *
+     * <p>Not a paragraph of {@code app/cbl/COACTUPC.cbl}: like
+     * {@link #bindCustomerToAccount(UpdateContext)} it consumes none of the eighty-seven label methods.
+     * It exists because the substrate changed underneath step four of {@code 9600-WRITE-PROCESSING}.
+     *
+     * <h4>Why the source needs no such screen and this method does</h4>
+     * <p>On a 3270 an untransmitted field arrived as {@code LOW-VALUES}, and {@code :3956-4059} moved it
+     * into the update record unexamined - a VSAM record holds binary zeros in a {@code PIC X} field
+     * perfectly well, so the write succeeded. {@code receiveField} reproduces that arrival faithfully:
+     * {@code isLowValues} answers {@code true} for an absent member and for an all-{@code NUL} value, both
+     * of which normalise to {@code null} exactly as {@code LOW-VALUES}. An <em>empty</em> string is
+     * deliberately not one of them - {@code docs/api-contracts.md} section 11.2.1 publishes {@code ""} and
+     * {@code "*"} as the same instruction, this field was cleared, so it is received as the cleared value
+     * rather than as an absence. A {@code CHAR} column in PostgreSQL cannot store {@code null},
+     * so {@code Account.requireWidth} and {@code Customer.requireWidth} refuse it - correctly, and by
+     * design. What was wrong is where that refusal landed: an {@code IllegalArgumentException} raised
+     * inside the write is not a {@code CardDemoException}, so the funnel at {@code :862-864} took it to
+     * {@link #abendRoutine(UpdateContext, Throwable)} and the caller received abend {@code 9999} for
+     * having omitted one member of the payload.
+     *
+     * <p>Neither answer is parity, because the legacy answer is unavailable: the value the source stored
+     * cannot exist in the target's schema. Between the two available answers a field-level refusal is the
+     * one the program's own vocabulary already gives - {@code 1215-EDIT-MANDATORY} at {@code :1824-1852}
+     * and {@code 1225-EDIT-ALPHA-REQD} at {@code :1898-1951} answer an unsupplied required field with
+     * {@code BLANK} and {@code ' must be supplied.'} - so this method reuses that exact literal and that
+     * exact per-field tri-state rather than inventing a diagnostic. It is recorded as a deviation forced
+     * by the substrate, not presented as equivalence.
+     *
+     * <h4>What is deliberately NOT changed</h4>
+     * <p>The screen runs <strong>only here</strong>, inside the confirm turn's write, and adds no edit to
+     * {@code 1200-EDIT-MAP-INPUTS}. That matters: {@code :1433-1449} short-circuits the whole cascade when
+     * {@code ACUP-CHANGES-OK-NOT-CONFIRMED} is set, because the 3270 still held values the previous turn
+     * had already validated. Digits in a name and an all-blank group identifier are therefore accepted on
+     * the confirm turn, and they remain accepted - that is preserved parity and is not what this method
+     * addresses. Only the abend changes.
+     *
+     * <p>The three assembled values cannot reach here {@code null} and are not screened:
+     * {@code assembleDate}, {@code assemblePhoneNumber} and {@code assembledSsn} all run their components
+     * through {@code moveAlphanumeric}, which renders a {@code null} component as blanks exactly as a
+     * {@code MOVE} to a {@code PIC X} field would. Screening them would add an unreachable branch.
+     *
+     * <p>Order follows the two images statement for statement, so the field reported is the first one
+     * {@code :3956-4059} would have failed on - the same first-failure-wins discipline the edit cascade
+     * keeps through its {@code IF WS-RETURN-MSG-OFF} latches.
+     *
+     * <p>Side effects: nothing is read, locked or written. On a refusal the outcome flag, the return
+     * message and the retained typed failure are recorded on the context by
+     * {@link #refuseUnstorableField(UpdateContext, String, String, ValidationException)}, which is what
+     * makes {@code updateAccount} answer a field-level {@code 400} while the screen-parity
+     * {@code processRequest} keeps projecting the outcome instead of throwing.
+     *
+     * @param context the per-invocation state carrier
+     * @return {@code true} when every value is storable and the write may proceed, {@code false} when the
+     *         write has been refused and the caller must return immediately
+     */
+    private static boolean requireStorableUpdateImage(final UpdateContext context) {
+        // The account image, in the order of :3962-4002.
+        return requireSupplied(context, context.newActiveStatus,
+                        FIELD_ACCOUNT_STATUS, LABEL_ACCOUNT_STATUS)
+                && requireSuppliedAmount(context, context.newCurrentBalance,
+                        context.newCurrentBalanceText, FIELD_CURRENT_BALANCE, LABEL_CURRENT_BALANCE)
+                && requireSuppliedAmount(context, context.newCreditLimit,
+                        context.newCreditLimitText, FIELD_CREDIT_LIMIT, LABEL_CREDIT_LIMIT)
+                && requireSuppliedAmount(context, context.newCashCreditLimit,
+                        context.newCashCreditLimitText, FIELD_CASH_CREDIT_LIMIT,
+                        LABEL_CASH_CREDIT_LIMIT)
+                && requireSuppliedAmount(context, context.newCurrentCycleCredit,
+                        context.newCurrentCycleCreditText, FIELD_CURRENT_CYCLE_CREDIT,
+                        LABEL_CURRENT_CYCLE_CREDIT)
+                && requireSuppliedAmount(context, context.newCurrentCycleDebit,
+                        context.newCurrentCycleDebitText, FIELD_CURRENT_CYCLE_DEBIT,
+                        LABEL_CURRENT_CYCLE_DEBIT)
+                && requireSupplied(context, context.newGroupId,
+                        FIELD_ACCOUNT_GROUP_ID, LABEL_ACCOUNT_GROUP_ID)
+                // The customer image, in the order of :4010-4059.
+                && requireSupplied(context, context.newFirstName,
+                        FIELD_FIRST_NAME, LABEL_FIRST_NAME)
+                && requireSupplied(context, context.newMiddleName,
+                        FIELD_MIDDLE_NAME, LABEL_MIDDLE_NAME)
+                && requireSupplied(context, context.newLastName,
+                        FIELD_LAST_NAME, LABEL_LAST_NAME)
+                && requireSupplied(context, context.newAddressLine1,
+                        FIELD_ADDRESS_LINE_1, LABEL_ADDRESS_LINE_1)
+                && requireSupplied(context, context.newAddressLine2,
+                        FIELD_ADDRESS_LINE_2, LABEL_ADDRESS_LINE_2)
+                // :1329-1334 ACSCITYI feeds ADDR-LINE-3, so the city label owns the third line.
+                && requireSupplied(context, context.newAddressLine3, FIELD_CITY, LABEL_CITY)
+                && requireSupplied(context, context.newStateCode, FIELD_STATE_CODE, LABEL_STATE)
+                && requireSupplied(context, context.newCountryCode, FIELD_COUNTRY_CODE, LABEL_COUNTRY)
+                && requireSupplied(context, context.newZip, FIELD_ZIP, LABEL_ZIP)
+                && requireSupplied(context, context.newGovernmentIssuedId,
+                        FIELD_GOVERNMENT_ISSUED_ID, LABEL_GOVERNMENT_ISSUED_ID)
+                && requireSupplied(context, context.newEftAccountId,
+                        FIELD_EFT_ACCOUNT_ID, LABEL_EFT_ACCOUNT_ID)
+                && requireSupplied(context, context.newPrimaryCardHolderIndicator,
+                        FIELD_PRIMARY_CARD_HOLDER, LABEL_PRIMARY_CARD_HOLDER)
+                && requireSupplied(context, context.newFicoScore,
+                        FIELD_FICO_SCORE, LABEL_FICO_SCORE);
+    }
+
+    /**
+     * Refuses one unsupplied character value on behalf of
+     * {@link #requireStorableUpdateImage(UpdateContext)}.
+     *
+     * <p>{@code FailureKind.BLANK} is the deliberate choice over {@code INVALID}: it is the same
+     * distinction {@code app/cpy/CSSETATY.cpy} draws when it emits {@code '*'} for
+     * {@code FLG-(TESTVAR1)-BLANK} but not for {@code FLG-(TESTVAR1)-NOT-OK}, so an absent value stays
+     * distinguishable from a wrong one all the way out to the caller.
+     *
+     * @param context the per-invocation state carrier, on which the refusal is recorded
+     * @param value the value bound for a {@code NOT NULL CHAR} column, possibly {@code null}
+     * @param field the BMS symbolic-map field name of {@code app/cpy-bms/COACTUP.CPY}, which is the
+     *              vocabulary every other field-level failure from this bean already uses
+     * @param label the edit-cascade label, used to compose the source's own diagnostic
+     * @return {@code true} when the value is present, {@code false} when the write has been refused
+     */
+    private static boolean requireSupplied(final UpdateContext context,
+                                           final String value,
+                                           final String field,
+                                           final String label) {
+        if (value != null) {
+            return true;
+        }
+        return refuseUnstorableField(context, field, label + SUFFIX_MUST_BE_SUPPLIED,
+                ValidationException.missingField(field,
+                        truncateReturnMessage(label + SUFFIX_MUST_BE_SUPPLIED)));
+    }
+
+    /**
+     * Refuses one unusable monetary value on behalf of
+     * {@link #requireStorableUpdateImage(UpdateContext)}.
+     *
+     * <p>Two conditions reach {@code requireMoney} as {@code null} and they are not the same failure, so
+     * they are reported differently. The screen field absent altogether is {@code BLANK} and
+     * {@code ' must be supplied.'}, exactly as {@code 1250-EDIT-SIGNED-9V2} at {@code :2184-2199} reports
+     * it. A field that was transmitted but that {@code numvalC} could not read is {@code INVALID} and
+     * {@code ' is not valid'}, exactly as {@code :2201-2215} reports it. Collapsing the two would tell a
+     * caller who sent {@code "12.3.4"} that they sent nothing.
+     *
+     * @param context the per-invocation state carrier, on which the refusal is recorded
+     * @param amount the parsed amount, possibly {@code null}
+     * @param text   the screen image the amount was parsed from, possibly {@code null}
+     * @param field  the BMS symbolic-map field name
+     * @param label  the edit-cascade label
+     * @return {@code true} when the amount is usable, {@code false} when the write has been refused
+     */
+    private static boolean requireSuppliedAmount(final UpdateContext context,
+                                                 final BigDecimal amount,
+                                                 final String text,
+                                                 final String field,
+                                                 final String label) {
+        if (amount != null) {
+            return true;
+        }
+        final String message = text == null
+                ? label + SUFFIX_MUST_BE_SUPPLIED
+                : label + SUFFIX_IS_NOT_VALID;
+        final ValidationException failure = text == null
+                ? ValidationException.missingField(field, truncateReturnMessage(message))
+                : ValidationException.invalidField(field, truncateReturnMessage(message));
+        return refuseUnstorableField(context, field, message, failure);
+    }
+
+    /**
+     * Records one refused field on behalf of the two screens above and reports that the write must stop.
+     *
+     * <p>The outcome recorded is {@code DATA-WAS-CHANGED-BEFORE-UPDATE}, which
+     * {@link #classifyWriteOutcome2606(UpdateContext)} maps to {@code ACUP-SHOW-DETAILS}: nothing has been
+     * written and the caller is told to review the record and resubmit, which is exactly the remedy for a
+     * payload that omitted a field. The choice is the same one {@link #bindCustomerToAccount(UpdateContext)}
+     * makes and for the same reason - the alternative is the {@code WHEN OTHER} arm at {@code :2613-2614},
+     * which reports {@code CHANGES-OKAYED-AND-DONE}, and reporting success for a write that did not happen
+     * is the one answer that must not be given.
+     *
+     * <p>Reporting rather than throwing is what keeps the two public entry points' contracts intact:
+     * {@code updateAccount} rethrows the retained failure at {@code :1766-1768} and so answers a
+     * field-level {@code 400}, while the screen-parity {@code processRequest} continues to project the
+     * outcome instead of throwing. {@link #retainFailure(UpdateContext, CardDemoException)} keeps the
+     * first failure, matching the {@code IF WS-RETURN-MSG-OFF} first-error-wins latch of the edit cascade.
+     *
+     * @param context the per-invocation state carrier
+     * @param field   the BMS symbolic-map field name, logged but never the value it holds
+     * @param message the composed diagnostic, which names the field's label and no submitted value
+     * @param failure the typed failure to retain
+     * @return {@code false} always, so a caller can {@code return} it directly
+     */
+    private static boolean refuseUnstorableField(final UpdateContext context,
+                                                 final String field,
+                                                 final String message,
+                                                 final ValidationException failure) {
+        LOG.warn("CAUP refused an update: screen field {} arrived unusable, so the value bound for its "
+                + "NOT NULL column cannot be stored. {}", field, message);
+        context.dataWasChangedBeforeUpdate = true;
+        context.returnMessage = truncateReturnMessage(message);
+        retainFailure(context, failure);
+        return false;
     }
 
     /**
@@ -5699,12 +6074,22 @@ public class AccountUpdateService {
         context.abendCulprit = PROGRAM_NAME;
         // :4211-4218 EXEC CICS SEND FROM(ABEND-DATA) ... ERASE NOHANDLE, then HANDLE ABEND CANCEL.
         // Terminal I/O and handler cancellation have no stateless counterpart.
-        LOG.error("CAUP abend: code={} culprit={} reason={} message={}",
-                context.abendCode, context.abendCulprit, context.abendReason, context.abendMessage);
-        // :4220-4222 EXEC CICS ABEND ABCODE('9999') - the terminal code, distinct from ABEND-CODE
+        // :4220-4222 EXEC CICS ABEND ABCODE('9999') - the terminal code, distinct from ABEND-CODE.
+        // Resolved BEFORE the diagnostic is written, and this ordering is the point.
+        //
+        // FINDING, severity Informational - remediated here. The diagnostic used to be written first and
+        // to print the raw work-area field, so an abend that never moved a value into ABEND-CODE logged
+        // 'CAUP abend: code=null culprit=COACTUPC' while the response the same request received reported
+        // 9999. An operator correlating the two had no way to tell they were the same event, and a null
+        // where a four-character code belongs reads like a second, separate defect. The substitution the
+        // next three lines perform is exactly what the caller is told, so reporting the substituted value
+        // is reporting the truth; the raw field carried no information to lose, because the only value it
+        // can hold at this point is the blank the substitution replaces.
         final String payloadCode = isBlankOrLowValues(context.abendCode)
                 ? TERMINAL_ABEND_CODE
                 : context.abendCode;
+        LOG.error("CAUP abend: code={} culprit={} reason={} message={}",
+                payloadCode, context.abendCulprit, context.abendReason, context.abendMessage);
         // The payload order is (code, culprit, reason, message), matching CABENDD.CPY's own field order.
         if (cause == null) {
             return new FatalProcessingException(payloadCode, context.abendCulprit,
@@ -5815,9 +6200,21 @@ public class AccountUpdateService {
     }
 
     /**
-     * Tests for COBOL {@code LOW-VALUES}: a {@code null} reference, or a value composed entirely of
-     * {@code NUL} characters. A JSON client that faithfully echoes an untransmitted field sends either
+     * Tests for COBOL {@code LOW-VALUES}: a {@code null} reference, or a non-empty value composed entirely
+     * of {@code NUL} characters. A JSON client that faithfully echoes an untransmitted field sends either
      * shape, and both must read as "not supplied".
+     *
+     * <p><strong>A zero-length string is deliberately excluded.</strong> The empty string is the wire
+     * spelling of a field the operator <em>cleared</em>, which in a fixed-width symbolic map arrives as
+     * {@code SPACES}, not as {@code LOW-VALUES} - and {@link #isSpaces(String)} already reports it as such,
+     * so {@link #isBlankOrLowValues(String)} and every edit routine that depends on it keep their
+     * behaviour unchanged. Treating {@code ""} as {@code LOW-VALUES} here made {@link #receiveField(String)}
+     * answer {@code null}, and a {@code null} reaching a {@code PIC X(n)} entity setter is rejected as a
+     * {@code NOT NULL} violation - so clearing an unedited optional field such as {@code AADDGRPI},
+     * {@code ACSADL2I} or {@code ACSGOVTI} abended instead of blanking the column, even though every one of
+     * the fifty seeded accounts legitimately stores an all-blank {@code ACCT-GROUP-ID}. The NUL loop below
+     * is vacuously satisfied by an empty string, which is why the length test is explicit rather than
+     * implied.
      *
      * @param value the value to test, possibly {@code null}
      * @return {@code true} when the value stands for {@code LOW-VALUES}
@@ -5825,6 +6222,9 @@ public class AccountUpdateService {
     private static boolean isLowValues(final String value) {
         if (value == null) {
             return true;
+        }
+        if (value.isEmpty()) {
+            return false;
         }
         for (int index = 0; index < value.length(); index++) {
             if (value.charAt(index) != '\u0000') {
@@ -6650,6 +7050,44 @@ public class AccountUpdateService {
     }
 
     /**
+     * Chooses between the authored lock-failure outcome and the ordinary file-status mapping for a
+     * read-for-update that did not yield a row.
+     *
+     * <p>Not a paragraph of {@code app/cbl/COACTUPC.cbl}. The source has no such choice to make: a CICS
+     * {@code READ ... UPDATE} that cannot take the lock and one that finds nothing both return a non-normal
+     * {@code RESP}, and the guards at {@code :3907-3915} and {@code :3934-3942} set the same flag either
+     * way. A relational store distinguishes them, and the two need different answers - a row held by
+     * another transaction is worth retrying, a row that does not exist is not - so the distinction is
+     * honoured rather than discarded.
+     *
+     * <p>{@code PessimisticLockingFailureException} is the whole family Spring translates a failed lock
+     * acquisition into: {@code CannotAcquireLockException} for PostgreSQL's {@code lock_not_available}
+     * ({@code SQLSTATE 55P03}, which is what the bounded {@code lock_timeout} on the datasource produces),
+     * plus the deadlock and serialisation members. Anything else - a lost connection, a syntax fault, a
+     * constraint - is not a lock problem and falls through to the supplier, so no genuine I/O failure is
+     * relabelled as contention.
+     *
+     * <p>The outcome literals are the {@code 88}-level values of {@code :517-520} and are passed in by the
+     * caller so that each guard keeps its own, byte for byte.
+     *
+     * @param cause    the throwable the read raised, or {@code null} when the read simply found nothing
+     * @param outcome  the authored lock outcome for this guard
+     * @param message  the legacy literal for this guard
+     * @param fallback the ordinary file-status mapping, evaluated only when this was not a lock failure
+     * @return the failure to retain, never {@code null}
+     */
+    private static CardDemoException lockAware(final Throwable cause,
+                                               final ConcurrentUpdateException.Outcome outcome,
+                                               final String message,
+                                               final Supplier<CardDemoException> fallback) {
+        if (cause instanceof PessimisticLockingFailureException) {
+            return new ConcurrentUpdateException(outcome, message, cause);
+        }
+        return fallback.get();
+    }
+
+
+    /**
      * Retains the first typed failure of the request, mirroring the {@code IF WS-RETURN-MSG-OFF}
      * first-error-wins latch the read paragraphs apply to their messages. The legacy program cannot throw:
      * it keeps the message, sets {@code INPUT-ERROR} and carries on to redisplay the screen. A stateless
@@ -6673,15 +7111,50 @@ public class AccountUpdateService {
      * <p>{@code WS-RETURN-MSG} is the single message area, so only the first failing field is named - which
      * is the legacy behaviour and not a loss of information: the remaining failing fields are still
      * surfaced individually through the per-field attribute list.</p>
+     * <p>The field the exception carries is the one {@code 3009-SETUP-CURSOR-FIELD} resolved, because that
+     * paragraph's whole purpose is to answer "which field is wrong" and it answers it in the source's own
+     * evaluation order. Naming it turns the single message area into an addressable rejection without
+     * inventing a field the source does not identify; when the cursor was never resolved - a write-path
+     * {@code INPUT-ERROR} rather than an edit failure - the request as a whole is named instead.</p>
      *
-     * @param context the per-invocation state carrier; reads the retained message
+     * @param context the per-invocation state carrier; reads the retained message and the resolved cursor
      * @return the typed validation failure; never {@code null}
      */
     private static ValidationException validationFailure(final UpdateContext context) {
         final String message = isReturnMessageOff(context)
                 ? UNEXPECTED_DATA_SCENARIO_MESSAGE
                 : context.returnMessage;
-        return ValidationException.invalidField(REQUEST_FIELD, message);
+        final String field = context.cursorField == null ? REQUEST_FIELD : context.cursorField;
+        // An ABSENT value and a WRONG one are two different refusals and the corpus keeps them apart:
+        // app/cpy/CSSETATY.cpy emits '*' for FLG-(TESTVAR1)-BLANK but NOT for FLG-(TESTVAR1)-NOT-OK, so a
+        // field the operator never filled in is marked differently on the screen from one they filled in
+        // badly. Every blank arm of the cascade composes its diagnostic from the " must be supplied."
+        // family - :2114-2133 for a required alphanumeric, :2184-2199 for a signed amount, and the three
+        // telephone part suffixes - and no other arm uses that phrasing, so the latched message is what
+        // carries the distinction out to the caller. Reporting every refusal as INVALID would tell a
+        // caller who omitted a field that the value they did not send was wrong.
+        return isUnsuppliedFieldMessage(message)
+                ? ValidationException.missingField(field, message)
+                : ValidationException.invalidField(field, message);
+    }
+
+    /**
+     * Reports whether a latched diagnostic is one the cascade's <em>blank</em> arms compose, so that
+     * {@link #validationFailure(UpdateContext)} can preserve the distinction
+     * {@code app/cpy/CSSETATY.cpy} draws between {@code FLG-(TESTVAR1)-BLANK} and
+     * {@code FLG-(TESTVAR1)-NOT-OK}.
+     *
+     * <p>Decided on the message rather than on {@code alphanumericState}, and deliberately: that field is
+     * a per-field working variable which a later edit in the same cascade overwrites, whereas the message
+     * is latched once under {@code IF WS-RETURN-MSG-OFF} and is therefore the one artefact that still
+     * describes the <em>first</em> refusal at the point this method runs - which is the refusal the source
+     * parks its cursor on.
+     *
+     * @param message the latched {@code WS-RETURN-MSG} text, possibly {@code null}
+     * @return {@code true} when the message is one of the {@code " must be supplied."} family
+     */
+    private static boolean isUnsuppliedFieldMessage(final String message) {
+        return message != null && message.contains(UNSUPPLIED_FIELD_PHRASE);
     }
 
     /**

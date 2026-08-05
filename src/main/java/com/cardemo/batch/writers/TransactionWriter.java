@@ -49,7 +49,6 @@ import org.springframework.batch.item.ItemWriter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -1114,6 +1113,18 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      *
      * <p>Side effects: inserts one row per item and flushes the persistence context.
      *
+     * <p><strong>Finding F-8, severity Major - the collision is now recognised by {@code SQLSTATE}.</strong>
+     * This previously caught {@code org.springframework.dao.DuplicateKeyException} ahead of its supertype,
+     * which recognises a collision only when the persistence layer chose that subtype. For a batched flush it
+     * need not: the driver reports the batch and links the exception carrying the state of the entry that
+     * actually failed beneath it, so a genuine {@code TRAN-ID} collision could arrive as a plain integrity
+     * violation and be reported as a referential or check-constraint failure instead - losing exactly the
+     * identifier race this class exists to make observable. {@code FileStatusMapper.classifyStoreFailure}
+     * walks both chains and decides on the state, so either shape reaches
+     * {@link #duplicateIdentifier(List, DataAccessException)}. A value the store cannot hold stays on the
+     * constraint-violation arm: this is a batch writer, so an unstorable field is a defect in the input file
+     * image and belongs in the job's failure report, never on an HTTP response.
+     *
      * @param items the transactions to insert, never empty
      * @throws DuplicateRecordException if an identifier already exists
      * @throws DataIntegrityException if a referential or check constraint refuses a row
@@ -1122,12 +1133,17 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     private void persistChunk(List<? extends Transaction> items) {
         try {
             transactionRepository.saveAllAndFlush(items);
-        } catch (DuplicateKeyException cause) {
-            // Tested before DataIntegrityViolationException, which it extends: reversing the two would
-            // classify every collision as a plain constraint violation and lose the identifier race.
-            throw duplicateIdentifier(items, cause);
         } catch (DataIntegrityViolationException cause) {
-            throw constraintViolation(items, cause);
+            // Classified by SQLSTATE rather than by subtype. Catching DuplicateKeyException ahead of its
+            // supertype - which is what this did - recognises a collision only when the persistence layer
+            // chose that subtype, and for a BATCHED flush it need not: the state that identifies the failing
+            // entry is on an exception linked below the one thrown. Deciding on the state finds it either way,
+            // which is what keeps the identifier race observable here rather than mis-reported as a plain
+            // constraint violation. FileStatusMapper owns the decision; this method owns only the exception.
+            throw FileStatusMapper.classifyStoreFailure(cause)
+                    == FileStatusMapper.StoreFailureKind.DUPLICATE_KEY
+                    ? duplicateIdentifier(items, cause)
+                    : constraintViolation(items, cause);
         } catch (DataAccessException cause) {
             throw unexpectedStoreFailure(items, cause);
         }

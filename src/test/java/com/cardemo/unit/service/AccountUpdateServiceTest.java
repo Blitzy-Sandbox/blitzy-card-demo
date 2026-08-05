@@ -49,11 +49,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 
 import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.ConcurrentUpdateException;
@@ -742,6 +749,13 @@ final class AccountUpdateServiceTest {
     /** {@code ACSTNUMI} - unprotected at {@code :3529} and then re-protected at {@code :3531}. */
     private static final String FIELD_CUSTOMER_ID = "ACSTNUM";
 
+    /**
+     * The {@code ACSADL2I} value {@link #write()} substitutes so that the submitted map differs from the
+     * as-displayed snapshot and the conversation can legitimately reach PF05. See {@link #write()} for why
+     * this field, and only this field, is the right one to use for that.
+     */
+    private static final String CHANGED_ADDRESS_LINE_2 = "APT 2";
+
     /** {@code ACRDLIMI}. */
     private static final String FIELD_CREDIT_LIMIT = "ACRDLIM";
 
@@ -956,6 +970,33 @@ final class AccountUpdateServiceTest {
         this.customer = liveCustomer();
         this.snapshot = new Snapshot();
         this.screen = new Screen();
+        givenEveryEditCollaboratorAcceptsByDefault();
+    }
+
+    /**
+     * Declares an accepting verdict from each of the five edit collaborators, <em>leniently</em> and
+     * <em>first</em>.
+     *
+     * <p>Both properties are load-bearing. Declared first, any stubbing a test makes for itself is matched
+     * ahead of these, because Mockito matches the most recently declared stubbing first - so
+     * {@link #givenCalendarDateEditFailsFor(String)} and its siblings still decide their own outcomes.
+     * Declared leniently, {@link Strictness#STRICT_STUBS} does not object when a particular test never
+     * reaches one of them.
+     *
+     * <p>The reason a default is needed at all is that {@code updateAccount} drives
+     * {@code 1200-EDIT-MAP-INPUTS} as well as {@code 2000-DECIDE-ACTION} - the source validates on the
+     * Enter turn and writes on the PF05 turn, and a stateless caller gets one call for both. A test whose
+     * subject is the <em>write</em> would otherwise have to stub the entire edit cascade before it could
+     * reach the write, and an unstubbed collaborator would return {@code null} into
+     * {@code propagateDateOutcome} and abend, which is no test's intended outcome.
+     */
+    private void givenEveryEditCollaboratorAcceptsByDefault() {
+        final DateValidationService.EditOutcome valid = validDateOutcome();
+        lenient().when(this.dateValidationService.editDate(any(), any())).thenReturn(valid);
+        lenient().when(this.dateValidationService.editDateOfBirth(any(), any())).thenReturn(valid);
+        lenient().when(this.validationLookupService.isValidGeneralPurposeAreaCode(any())).thenReturn(true);
+        lenient().when(this.validationLookupService.isValidUsStateCode(any())).thenReturn(true);
+        lenient().when(this.validationLookupService.isValidStateZipCodeCombination(any())).thenReturn(true);
     }
 
     // =============================================================================================
@@ -1380,9 +1421,28 @@ final class AccountUpdateServiceTest {
     /**
      * The same confirming turn through the REST write entry point, which rethrows the retained typed
      * failure. Uses {@code updateAccount} so that the <em>internal</em> outcome is observable.
+     *
+     * <p><strong>Why this helper presents a changed field.</strong> {@code updateAccount} drives
+     * <em>both</em> legacy turns, because a stateless caller gets one call for a conversation the source
+     * spreads over two. The source cannot write when nothing changed: {@code :1682} and {@code :1769} set
+     * {@code NO-CHANGES-DETECTED}, {@code :2588}'s {@code CONTINUE} leaves the marker at
+     * {@code ACUP-SHOW-DETAILS}, and {@code :906-912} then classifies PF05 as invalid and coerces it to
+     * Enter at {@code :915}, so {@code 9600-WRITE-PROCESSING} is unreachable. Presenting an unchanged map
+     * here would therefore assert against a path the source does not have.
+     *
+     * <p>{@code ACSADL2I} is the field used to present the change, and it is chosen deliberately:
+     * {@code 1205-COMPARE-OLD-NEW} does compare it - {@code UPPER-CASE(TRIM(ACUP-NEW-CUST-ADDR-LINE-2))}
+     * against the old group at {@code :1729-1731} - while {@code 1200-EDIT-MAP-INPUTS} applies no edit to
+     * it at all, the source's own {@code MOVE 'Address Line 2'} being commented out at {@code :1607-1608}.
+     * It therefore changes the conversation's verdict without changing any field edit's verdict, which is
+     * exactly what these tests need. A test that has already arranged its own difference keeps it.
+     *
      * @return the projected outcome when no failure was retained
      */
     private AccountUpdateResult write() {
+        if (java.util.Objects.equals(this.screen.addressLine2, this.snapshot.addressLine2)) {
+            this.screen.addressLine2 = CHANGED_ADDRESS_LINE_2;
+        }
         final AccountUpdateRequest request = this.screen.build(null);
         return this.service.updateAccount(request, sealed(request.getAccountId(),
                 this.snapshot.build()));
@@ -2843,6 +2903,43 @@ final class AccountUpdateServiceTest {
                         + oldDetails.dateOfBirthMonth()
                         + oldDetails.dateOfBirthDay())
                 .isEqualTo(oldDetails.getDateOfBirth());
+    }
+
+    /**
+     * The abend diagnostic reports the code the caller is told, not the empty work-area field.
+     *
+     * <p>FINDING, severity Informational - remediated. The diagnostic used to be written before the
+     * substitution the exception payload performs, so an abend that never moved a value into
+     * {@code ABEND-CODE} logged {@code code=null} while the response reported {@code 9999}. An operator
+     * correlating a log line with a response had no way to see they were the same event.
+     */
+    @Test
+    @DisplayName(":4211 the abend diagnostic carries the same code the caller is told, never null")
+    void theAbendDiagnosticCarriesTheReportedCode() {
+        final Logger serviceLogger = (Logger) LoggerFactory.getLogger(AccountUpdateService.class);
+        final ListAppender<ILoggingEvent> captured = new ListAppender<>();
+        captured.start();
+        serviceLogger.addAppender(captured);
+        serviceLogger.setLevel(Level.TRACE);
+        try {
+            this.snapshot.dateOfBirth = "1980-01-15";
+
+            assertThatThrownBy(this::write).isInstanceOf(FatalProcessingException.class);
+
+            final String rendered = captured.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(line -> line.startsWith("CAUP abend:"))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("the abend produced no diagnostic at all"));
+            assertThat(rendered)
+                    .contains("code=" + ONLINE_ABEND_CODE)
+                    .doesNotContain("code=null")
+                    .contains("culprit=" + PROGRAM_NAME);
+        } finally {
+            serviceLogger.detachAppender(captured);
+            captured.stop();
+            serviceLogger.setLevel(null);
+        }
     }
 
     @Test
@@ -5842,28 +5939,190 @@ final class AccountUpdateServiceTest {
     }
 
     @Test
-    @DisplayName(":3350 an absent credit score reaches the NOT NULL column and abends there")
-    void anAbsentCreditScoreAbendsAtTheEntityGuard() {
+    @DisplayName(":3350 an absent credit score is refused as a field failure, never as an abend")
+    void anAbsentCreditScoreIsRefusedAsAFieldFailure() {
         // The numeric MOVE keeps "no value" distinct from "the value zero" and hands null onward, but
-        // CUST-FICO-CREDIT-SCORE is PIC 9(03) over a NOT NULL CHAR(3) column, so the entity refuses it.
-        // 1275-EDIT-FICO-SCORE - which would have caught it as a field error - does not run on a confirm
-        // turn, so the omission surfaces as an abend instead of a diagnostic.
+        // CUST-FICO-CREDIT-SCORE is PIC 9(03) over a NOT NULL CHAR(3) column, so the value the source
+        // stored - LOW-VALUES - has no representation at all in the target's schema.
         //
-        // Re-running the field edits on the write turn would catch it, but that is a
-        // behaviour change and therefore disclosed rather than applied. Preserved as-is; parity governs.
+        // This test previously asserted the abend that state produced, on the reasoning that re-running
+        // the field edits on the write turn would be a behaviour change. That reasoning still holds and
+        // the edits are still NOT re-run - see aNonNumericCreditScoreIsMovedAsAlphanumeric and
+        // aShortCreditScoreIsZeroFilledIntoTheEntity below and above, both unchanged. What changed is
+        // narrower: requireStorableUpdateImage screens for the ONE condition the column cannot hold, and
+        // reports it in the program's own vocabulary - the BLANK tri-state and ' must be supplied.' that
+        // 1215-EDIT-MANDATORY and 1225-EDIT-ALPHA-REQD already use. Since neither available answer is
+        // parity, the one that names the field beats the one that abends on a well-formed request.
         this.screen.ficoScore = null;
         givenAccountLocked();
         givenCustomerLocked();
 
-        assertThatThrownBy(this::confirm)
-                .isInstanceOf(FatalProcessingException.class)
-                .satisfies(thrown -> assertThat(thrown.getCause())
-                        .as("Clause B: the entity's own reason survives the abend translation")
-                        .isInstanceOf(IllegalArgumentException.class)
-                        .hasMessageContaining("CUST-FICO-CREDIT-SCORE"));
-        // The account rewrite precedes the customer image build, so the guard fires before either flush.
+        final AccountUpdateResult result = confirm();
+
+        assertThat(result.changeAction())
+                .as("a refused write reports SHOW-DETAILS - review and resubmit - and never the "
+                        + ":2613-2614 WHEN OTHER success it did not earn")
+                .isEqualTo(ChangeAction.SHOW_DETAILS);
+        assertThat(errorText(result))
+                .as("the source's own literal, composed from the :1545 label")
+                .isEqualTo("FICO Score must be supplied.");
+        assertThat(result.errorMessage())
+                .as("and projected through WS-RETURN-MSG PIC X(75) like every other diagnostic")
+                .hasSize(RETURN_MESSAGE_WIDTH);
+        // The screen runs BEFORE the account image is built, so neither entity is touched and neither
+        // repository is asked to write - a strictly earlier stop than the entity guard managed.
+        verify(this.accountRepository, never()).save(any());
         verify(this.accountRepository, never()).flush();
         verify(this.customerRepository, never()).save(any());
+        verify(this.customerRepository, never()).flush();
+    }
+
+    @Test
+    @DisplayName(":3350 the write entry point turns that same refusal into a named field failure")
+    void anAbsentCreditScoreReachesTheCallerAsANamedFieldFailure() {
+        // The companion to the test above, through the REST entry point: :1766-1768 rethrows the retained
+        // failure, so the caller receives the field name and the BLANK kind rather than abend 9999. The
+        // field is named in the BMS vocabulary of app/cpy-bms/COACTUP.CPY, which is what every other
+        // field-level failure from this bean already uses.
+        this.screen.ficoScore = null;
+        // No lock is arranged, and that absence is part of the assertion: the edit cascade of
+        // :1210-1280 runs on the single stateless turn, so an unsupplied required field is refused
+        // before 9600-WRITE-PROCESSING reads either record for update. Stubbing a read here would
+        // stub a call that never happens, which STRICT_STUBS correctly refuses.
+
+        assertThatThrownBy(this::write)
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("FICO Score must be supplied.")
+                .satisfies(thrown -> {
+                    final ValidationException typed = (ValidationException) thrown;
+                    assertThat(typed.getFieldName()).isEqualTo("ACSTFCO");
+                    assertThat(typed.getFailureKind())
+                            .as("CSSETATY emits '*' for BLANK and not for NOT-OK, so the distinction "
+                                    + "between absent and wrong survives out to the caller")
+                            .isEqualTo(ValidationException.FailureKind.BLANK);
+                })
+                .as("the abend funnel is not reached, so no FatalProcessingException is produced")
+                .isNotInstanceOf(FatalProcessingException.class);
+        verify(this.accountRepository, never()).save(any());
+        verify(this.customerRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName(":4002 an ABSENT group identifier is refused before the write")
+    void anAbsentGroupIdentifierIsRefused() {
+        // ACCT-GROUP-ID is the field a plain read-then-write-back reaches, because 49 of the 50 seeded
+        // accounts carry ten blanks in it. The blanks case is the control two tests below.
+        this.screen.accountGroupId = null;
+        givenAccountLocked();
+        givenCustomerLocked();
+
+        final AccountUpdateResult refused = confirm();
+
+        assertThat(refused.changeAction()).isEqualTo(ChangeAction.SHOW_DETAILS);
+        assertThat(errorText(refused)).isEqualTo("Account Group Id must be supplied.");
+        verify(this.accountRepository, never()).save(any());
+        verify(this.customerRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName(":4002 an EMPTY group identifier is the CLEARED marker and stores the blank image")
+    void anEmptyGroupIdentifierClearsTheFieldRatherThanAbending() {
+        // The empty string is the case a reader would not predict, and it is deliberately NOT the absent
+        // case. docs/api-contracts.md section 11.2.1 publishes "*" and "" as the same instruction - this
+        // field was cleared - so "" resolves to the space-filled clear value and the write proceeds, which
+        // is consistent with the control below: ACCT-GROUP-ID has no edit anywhere in the source, so
+        // blanks are legitimate stored content. What must never happen, and is what this test guards, is
+        // the abend the entity guard used to raise for exactly this input.
+        this.screen.accountGroupId = "";
+        givenAccountLocked();
+        givenCustomerLocked();
+
+        final AccountUpdateResult accepted = confirm();
+
+        assertThat(accepted.changeAction()).isEqualTo(ChangeAction.CHANGES_OKAYED_AND_DONE);
+        assertThat(this.account.getGroupId())
+                .as("cleared is received as the zero-length blank image and stored verbatim, never "
+                        + "as null and never as an abend. The column is CHAR(10) NOT NULL, which "
+                        + "pads it back to the ten blanks the control below writes, so the two "
+                        + "spellings of cleared converge in the row.")
+                .isNotNull()
+                .isEmpty();
+        verify(this.accountRepository).save(this.account);
+    }
+
+    @Test
+    @DisplayName(":4002 ten blanks in the group identifier still write, exactly as the seed holds them")
+    void tenBlanksInTheGroupIdentifierStillWrite() {
+        // The control for the test above, and the reason the screen tests null rather than blankness:
+        // ACCT-GROUP-ID has no edit anywhere in the source - it is absent from the cascade and from the
+        // thirty-nine COPY CSSETATY REPLACING expansions at :3208-3437 - so blanks are legitimate stored
+        // content. 49 of the 50 seeded accounts hold exactly this value, so a caller echoing back what
+        // the read returned MUST keep succeeding; refusing blankness here would break the common path.
+        this.screen.accountGroupId = "          ";
+        givenAccountLocked();
+        givenCustomerLocked();
+
+        final AccountUpdateResult accepted = confirm();
+
+        assertThat(accepted.changeAction()).isEqualTo(ChangeAction.CHANGES_OKAYED_AND_DONE);
+        assertThat(this.account.getGroupId()).isEqualTo("          ");
+        verify(this.accountRepository).save(this.account);
+    }
+
+    @Test
+    @DisplayName(":3964-3974 a transmitted but unreadable amount is INVALID, not BLANK")
+    void anUnreadableAmountIsReportedAsInvalidRatherThanAbsent() {
+        // numvalC cannot read this, so the amount arrives null exactly as an omitted field would, and
+        // requireMoney would refuse both identically. The two are not the same failure: :2184-2199
+        // reports an unsupplied amount with ' must be supplied.' and :2201-2215 reports an unreadable one
+        // with ' is not valid'. Telling a caller who sent "12.3.4" that they sent nothing would be wrong.
+        this.screen.currentBalance = "12.3.4";
+        // No lock is arranged, and that absence is part of the assertion: the edit cascade of
+        // :1210-1280 runs on the single stateless turn, so an unreadable amount is refused before
+        // 9600-WRITE-PROCESSING reads either record for update.
+
+        assertThatThrownBy(this::write)
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Current Balance is not valid")
+                .satisfies(thrown -> {
+                    final ValidationException typed = (ValidationException) thrown;
+                    assertThat(typed.getFieldName()).isEqualTo("ACURBAL");
+                    assertThat(typed.getFailureKind())
+                            .isEqualTo(ValidationException.FailureKind.INVALID);
+                });
+        verify(this.accountRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName(":3956-4059 an over-width value is caught by the net, not by the abend funnel")
+    void anOverWidthValueIsCaughtByTheSafetyNetRatherThanTheAbendFunnel() {
+        // The screen above covers the null condition, which is the one the substrate forces. The net
+        // behind it covers every other refusal an entity setter can raise - width, scale and range - so
+        // that no request-shaped input can reach abendRoutine from step four at all. The diagnostic is
+        // deliberately request level and names neither the property nor the column: the entity's own
+        // message carries both, and relaying it would publish the schema (CWE-209).
+        this.screen.firstName = "X".repeat(26);
+        givenAccountLocked();
+        givenCustomerLocked();
+
+        assertThatThrownBy(this::write)
+                .isInstanceOf(ValidationException.class)
+                .isNotInstanceOf(FatalProcessingException.class)
+                .hasMessageContaining("cannot be stored")
+                .satisfies(thrown -> {
+                    assertThat(thrown.getMessage())
+                            .as("no property name, no picture clause, no column width, no table name")
+                            .doesNotContain("CUST-FIRST-NAME")
+                            .doesNotContain("firstName")
+                            .doesNotContain("CHAR(25)")
+                            .doesNotContain("customer");
+                    assertThat(thrown.getCause())
+                            .as("Clause B: the entity's own reason survives on the cause for the log")
+                            .isInstanceOf(IllegalArgumentException.class)
+                            .hasMessageContaining("CUST-FIRST-NAME");
+                });
+        verify(this.customerRepository, never()).save(any());
+        verify(this.customerRepository, never()).flush();
     }
 
     @Test

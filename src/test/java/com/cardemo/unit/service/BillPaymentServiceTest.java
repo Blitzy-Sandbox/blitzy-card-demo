@@ -50,6 +50,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
@@ -74,6 +75,7 @@ import com.cardemo.service.shared.FileStatusMapper;
 import com.cardemo.unit.model.FixedClockProvider;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Arrays;
@@ -442,6 +444,23 @@ final class BillPaymentServiceTest {
     private static BillPaymentRequest request(final String accountId, final String confirmation) {
         return new BillPaymentRequest("CB00", null, null, "COBIL00C", null, null,
                 accountId, null, confirmation, null);
+    }
+
+    /**
+     * Builds the store failure a genuine {@code pk_transaction} collision produces, carrying its
+     * {@code SQLSTATE}.
+     *
+     * <p>Finding F-2. The duplicate outcome is now reached only for {@code SQLSTATE 23505}, because
+     * {@code org.springframework.dao.DataIntegrityViolationException} is the translation of {@code SQLSTATE}
+     * classes {@code 22} and {@code 23} alike and reporting all of them as the collision named a free
+     * identifier as taken. A state-less exception is a shape the store never produces.
+     *
+     * @return the collision, with the driver's exception as its cause exactly as the runtime chain has it
+     */
+    private static DataIntegrityViolationException uniqueViolation() {
+        return new DataIntegrityViolationException("tran_id primary key",
+                new SQLException("duplicate key value violates unique constraint \"pk_transaction\"",
+                        "23505"));
     }
 
     /**
@@ -1209,7 +1228,7 @@ final class BillPaymentServiceTest {
         void collisionSurfacesAsDuplicateRecordWithNoRetry() {
             arrangeConfirmedPayment(new BigDecimal("100.00"));
             when(transactionRepository.saveAndFlush(any(Transaction.class)))
-                    .thenThrow(new DataIntegrityViolationException("tran_id primary key"));
+                    .thenThrow(uniqueViolation());
 
             final BillPaymentResult result = enter(ACCOUNT_ID_TEXT, "Y");
 
@@ -1225,7 +1244,7 @@ final class BillPaymentServiceTest {
         void payBillRaisesTheCollision() {
             arrangeConfirmedPayment(new BigDecimal("100.00"));
             when(transactionRepository.saveAndFlush(any(Transaction.class)))
-                    .thenThrow(new DataIntegrityViolationException("tran_id primary key"));
+                    .thenThrow(uniqueViolation());
 
             assertThatExceptionOfType(DuplicateRecordException.class)
                     .isThrownBy(() -> service().payBill(ACCOUNT_ID_TEXT, "Y"))
@@ -1424,6 +1443,52 @@ final class BillPaymentServiceTest {
                     .isAssignableFrom(DuplicateKeyException.class);
             assertThat(result.outcome()).isEqualTo(PaymentOutcome.TRANSACTION_DUPLICATE);
             assertThat(result.message()).isEqualTo(MSG_TRANSACTION_DUPLICATE);
+        }
+
+        @Test
+        @DisplayName("an integrity condition that is not a collision takes WHEN OTHER, not the duplicate arm")
+        void anIntegrityConditionThatIsNotACollisionIsNotReportedAsOne() {
+            // This program assembles its record from the account row already in the store -
+            // MOVE ACCT-CURR-BAL TO TRAN-AMT at :224, the payment being always the full balance - so an
+            // unstorable value here is stored data that has become unstorable, which is the WHEN OTHER
+            // condition and not a request error. What it is emphatically not is a taken identifier.
+            arrangeConfirmedPayment(new BigDecimal("100.00"));
+            when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                    .thenThrow(new DataIntegrityViolationException("the column refused a stored value",
+                            new SQLException("invalid byte sequence for encoding \"UTF8\": 0x00", "22021")));
+
+            final BillPaymentResult result = enter(ACCOUNT_ID_TEXT, "Y");
+
+            assertThat(result.outcome())
+                    .as("a 409 naming a free identifier is the defect this pins")
+                    .isNotEqualTo(PaymentOutcome.TRANSACTION_DUPLICATE);
+            assertThat(result.message()).isNotEqualTo(MSG_TRANSACTION_DUPLICATE);
+        }
+
+        @Test
+        @DisplayName("a referential refusal is NOT a duplicate: it reports the write-failure literal instead")
+        void aReferentialRefusalIsNotReportedAsADuplicate() {
+            // This operation writes the account's cross-referenced card number into a column that
+            // fk04_transaction_card constrains, so a referential refusal is reachable here even though the
+            // type and category are the literals '02' and 2 of app/cbl/COBIL00C.cbl:220-221. Reporting it on
+            // the DUPKEY/DUPREC arm at :533-536 claimed the generated identifier was taken, which was false,
+            // and advised a retry that could never succeed.
+            arrangeConfirmedPayment(new BigDecimal("100.00"));
+            when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                    .thenThrow(new DataIntegrityViolationException("fk04_transaction_card",
+                            new SQLException("violates foreign key constraint "
+                                    + "\"fk04_transaction_card\"", "23503")));
+
+            final BillPaymentResult result = enter(ACCOUNT_ID_TEXT, "Y");
+
+            assertThat(result.outcome())
+                    .as("the source's WHEN OTHER arm at :539-548 owns this condition")
+                    .isEqualTo(PaymentOutcome.TRANSACTION_WRITE_FAILED);
+            assertThat(result.message())
+                    .isEqualTo(MSG_TRANSACTION_WRITE_FAILED)
+                    .isNotEqualTo(MSG_TRANSACTION_DUPLICATE);
+            assertThat(result.failure()).containsInstanceOf(DataIntegrityException.class);
+            verify(transactionRepository, times(1)).saveAndFlush(any(Transaction.class));
         }
 
         @Test

@@ -60,6 +60,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import javax.crypto.spec.SecretKeySpec;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
+import java.net.Socket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -212,6 +213,28 @@ public class OnlineTransactionE2ETest {
     private static final int SIGNING_KEY_BYTES = 48;
     private static final long CONTAINER_STARTUP_TIMEOUT_SECONDS = 300L;
     private static final Instant FIXED_INSTANT = Instant.parse("2022-06-10T19:27:53Z");
+    /**
+     * A ten-digit telephone number whose area code {@code 202} is listed in
+     * {@code VALID-GENERAL-PURP-CODE} ({@code app/cpy/CSLKPCDY.cpy}), so
+     * {@code 1260-EDIT-US-PHONE-NUM} accepts it. See {@link #accountUpdateBody(Map)} for why the seeded
+     * value cannot be echoed.
+     */
+    private static final String EDIT_ACCEPTED_PHONE_1 = "2025550100";
+
+    /** A second such number, area code {@code 212}, for {@code ACSPH2AI}. */
+    private static final String EDIT_ACCEPTED_PHONE_2 = "2125550199";
+
+    /**
+     * A state and postal code whose two-character combination {@code NC27} is listed in
+     * {@code VALID-US-STATE-ZIP-CD2-COMBO} ({@code app/cpy/CSLKPCDY.cpy}), so
+     * {@code 1280-EDIT-US-STATE-ZIP-CD} accepts the pair. The seeded state of account one is retained;
+     * only its postal code changes, because {@code NC12} is not a listed combination.
+     */
+    private static final String EDIT_ACCEPTED_STATE_CODE = "NC";
+
+    /** The postal code paired with {@link #EDIT_ACCEPTED_STATE_CODE}. */
+    private static final String EDIT_ACCEPTED_ZIP = "27601";
+
     private static final String REPORT_QUEUE_NAME = "carddemo-report-jobs.fifo";
     private static final String CORRELATION_VALUE = "e2e-online-surface";
     private static final String TRACE_PARENT_VALUE =
@@ -685,6 +708,32 @@ public class OnlineTransactionE2ETest {
                 state.get("cust_version"), state.get("cust_id"));
     }
 
+    /**
+     * Builds the fifty-four-field {@code COACTUP} map from one account's live state.
+     *
+     * <p><strong>Four members are deliberately not the seeded values.</strong> {@code PUT /api/accounts}
+     * runs {@code 1200-EDIT-MAP-INPUTS} - the twenty-four field edits of {@code 1210} through {@code 1280} -
+     * before it writes, and the corpus fixtures were generated without regard for those edits, so a
+     * byte-faithful echo of the seeded row is a payload the <em>source</em> would refuse:
+     * <ul>
+     *   <li>{@code app/data/ASCII/custdata.txt} carries area codes such as {@code 002}, {@code 034},
+     *       {@code 179} and {@code 373} that {@code 1260-EDIT-US-PHONE-NUM} rejects at
+     *       {@code app/cbl/COACTUPC.cbl:2297-2310}, because they are absent from
+     *       {@code VALID-GENERAL-PURP-CODE} in {@code app/cpy/CSLKPCDY.cpy}. Only 15 of the 50 seeded
+     *       customers carry two acceptable area codes.</li>
+     *   <li>The seeded state and postal code of account one, {@code NC} with {@code 12546}, form the
+     *       combination {@code NC12}, which {@code 1280-EDIT-US-STATE-ZIP-CD} rejects at
+     *       {@code app/cbl/COACTUPC.cbl:2536-2547} because {@code VALID-US-STATE-ZIP-CD2-COMBO} lists only
+     *       {@code NC27} and {@code NC28}.</li>
+     * </ul>
+     * The substitutes below are values those two lookup tables do contain, and the FICO score is already
+     * {@code 300} for the same reason - the seeded score of account one is {@code 274}, outside the
+     * {@code 300}-to-{@code 850} range {@code 1275-EDIT-FICO-SCORE} enforces. Nothing else is substituted,
+     * and the caller restores the row afterwards.
+     *
+     * @param state the live account and customer state
+     * @return the map to submit
+     */
     private ObjectNode accountUpdateBody(final Map<String, Object> state) {
         final String account = accountId(new BigDecimal(state.get("acct_id").toString()).longValueExact());
         final String customer =
@@ -694,8 +743,8 @@ public class OnlineTransactionE2ETest {
         final String reissueDate = text(state, "acct_reissue_date");
         final String birthDate = text(state, "cust_dob_yyyy_mm_dd");
         final String ssn = digits(text(state, "cust_ssn"));
-        final String phone1 = digits(text(state, "cust_phone_num_1"));
-        final String phone2 = digits(text(state, "cust_phone_num_2"));
+        final String phone1 = EDIT_ACCEPTED_PHONE_1;
+        final String phone2 = EDIT_ACCEPTED_PHONE_2;
         assertThat(ssn.length()).isEqualTo(9);
         assertThat(phone1.length()).isEqualTo(10);
         assertThat(phone2.length()).isEqualTo(10);
@@ -718,9 +767,9 @@ public class OnlineTransactionE2ETest {
                 .put("customerMiddleName", text(state, "cust_middle_name"))
                 .put("customerLastName", text(state, "cust_last_name"))
                 .put("addressLine1", text(state, "cust_addr_line_1"))
-                .put("addressStateCode", text(state, "cust_addr_state_cd"))
+                .put("addressStateCode", EDIT_ACCEPTED_STATE_CODE)
                 .put("addressLine2", text(state, "cust_addr_line_2"))
-                .put("addressZip", text(state, "cust_addr_zip").substring(0, 5))
+                .put("addressZip", EDIT_ACCEPTED_ZIP)
                 .put("addressCity", text(state, "cust_addr_line_3"))
                 .put("addressCountryCode", text(state, "cust_addr_country_cd"))
                 .put("phone1AreaCode", phone1.substring(0, 3))
@@ -756,9 +805,9 @@ public class OnlineTransactionE2ETest {
                 .put("addressLine1", text(state, "cust_addr_line_1"))
                 .put("addressLine2", text(state, "cust_addr_line_2"))
                 .put("addressLine3", text(state, "cust_addr_line_3"))
-                .put("addressStateCode", text(state, "cust_addr_state_cd"))
+                .put("addressStateCode", EDIT_ACCEPTED_STATE_CODE)
                 .put("addressCountryCode", text(state, "cust_addr_country_cd"))
-                .put("addressZip", text(state, "cust_addr_zip"))
+                .put("addressZip", EDIT_ACCEPTED_ZIP)
                 .put("phoneNumber1AreaCode", phone1.substring(0, 3))
                 .put("phoneNumber1Prefix", phone1.substring(3, 6))
                 .put("phoneNumber1LineNumber", phone1.substring(6))
@@ -1558,10 +1607,16 @@ public class OnlineTransactionE2ETest {
         assertThat(customMessage.path("startDate").asText()).isEqualTo("2022-05-01");
         assertThat(customMessage.path("endDate").asText()).isEqualTo("2022-05-31");
 
+        // The prompt arm answers 200 with nothing published, exactly as the decline arm below and as the
+        // billing and transaction-add confirmation gates do. CORPT00C grades none of its three
+        // non-publishing arms differently - each sets WS-ERR-FLG and performs SEND-TRNRPT-SCREEN
+        // (:464-474, :480-483, :484-493) - so only the arm carrying a value the one-byte CONFIRMI field
+        // cannot accept is a malformed request. See finding M-17.
         final ResponseEntity<String> prompt = request(
                 HttpMethod.POST, "/api/reports", reportRequest("monthly", ""), user);
-        assertThat(prompt.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(responseBody(prompt).path("detail").asText())
+        assertThat(prompt.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(responseBody(prompt).path("published").asBoolean()).isFalse();
+        assertThat(responseBody(prompt).path("message").asText())
                 .isEqualTo("Please confirm to print the Monthly report...");
 
         final ResponseEntity<String> declined = request(
@@ -1782,6 +1837,265 @@ public class OnlineTransactionE2ETest {
         assertThat(sourceText("app/cpy/COCOM01Y.cpy")).contains(
                 "CDEMO-FROM-TRANID", "CDEMO-TO-TRANID", "CDEMO-PGM-CONTEXT",
                 "CDEMO-LAST-MAP", "CDEMO-LAST-MAPSET");
+    }
+
+    /**
+     * Every media type the eight body operations cannot read is refused with {@code 415} in this
+     * application's own envelope, and only JSON is admitted.
+     *
+     * <p>Regression cover for the runtime finding that a wildcard or multipart {@code Content-Type} reached
+     * {@code org.springframework.http.HttpHeaders#setContentType} during argument resolution, where the
+     * resulting {@code IllegalArgumentException} was claimed by no {@code @ExceptionHandler} and escaped to
+     * the container as a {@code 500} carrying the framework's default error body - on eight routes, one of
+     * which is the anonymous sign-on. The three parsable-but-unreadable types were already answered
+     * {@code 415} but in that same default body, so no client-side handler written against the envelope
+     * could read them. All ten shapes are now one answer.
+     *
+     * <p>The sign-on route is used deliberately: it is the only body operation reachable without a
+     * credential, so a refusal there proves the screen runs ahead of authentication.
+     */
+    @Test
+    @Order(20)
+    @DisplayName("every unreadable media type is refused 415 in the authored envelope, JSON alone is admitted")
+    void unreadableMediaTypesAreRefusedWithTheAuthoredEnvelope() {
+        final String credentials = "{\"userId\":\"" + this.administrator.userId()
+                + "\",\"password\":\"" + this.administrator.credential() + "\"}";
+
+        for (final String declared : List.of("*/*", "application/*", "multipart/form-data",
+                "multipart/mixed", "text/plain", "application/xml", "foo/bar",
+                "application/x-www-form-urlencoded")) {
+
+            final ResponseEntity<String> refusal = postWithRawContentType(declared, credentials);
+
+            assertThat(refusal.getStatusCode())
+                    .describedAs("media type %s", declared)
+                    .isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+            final JsonNode problem = responseBody(refusal);
+            assertThat(problem.path("errorCode").asText()).isEqualTo("CARDDEMO-UNSUPPORTED-MEDIA-TYPE");
+            assertThat(problem.path("correlationId").asText()).isEqualTo(CORRELATION_VALUE);
+            // Nothing the caller sent is echoed back: neither the header nor the credential it carried.
+            assertThat(refusal.getBody()).doesNotContain(declared)
+                    .doesNotContain(this.administrator.credential());
+        }
+
+        // Two headers the media-type grammar cannot parse go over a raw socket, because the HTTP client this
+        // test uses parses the header itself before it sends and would refuse to transmit either.
+        for (final String declared : List.of("application/", "application/json, application/xml")) {
+            final String unparsable = exchangeRaw("POST /api/auth/signon HTTP/1.1\r\n"
+                    + "Host: localhost:" + this.port + "\r\n"
+                    + "Content-Type: " + declared + "\r\n"
+                    + "Content-Length: " + credentials.length() + "\r\n"
+                    + "Connection: close\r\n\r\n" + credentials);
+            assertThat(statusLineOf(unparsable))
+                    .describedAs("media type %s", declared)
+                    .startsWith("HTTP/1.1 415");
+            assertThat(unparsable).contains("CARDDEMO-UNSUPPORTED-MEDIA-TYPE");
+        }
+
+        // Bytes sent under no declared media type at all are refused too - a request that describes its body
+        // as nothing is not the same as the body-less request the deletion operation legitimately sends.
+        final String undeclared = exchangeRaw("POST /api/auth/signon HTTP/1.1\r\n"
+                + "Host: localhost:" + this.port + "\r\n"
+                + "Content-Length: " + credentials.length() + "\r\n"
+                + "Connection: close\r\n\r\n" + credentials);
+        assertThat(statusLineOf(undeclared)).startsWith("HTTP/1.1 415");
+        assertThat(undeclared).contains("CARDDEMO-UNSUPPORTED-MEDIA-TYPE");
+
+        // JSON, and the structured suffix form of JSON, are both still read.
+        for (final String declared : List.of("application/json", "application/json;charset=UTF-8",
+                "application/merge-patch+json")) {
+            assertThat(postWithRawContentType(declared, credentials).getStatusCode())
+                    .describedAs("media type %s", declared)
+                    .isEqualTo(HttpStatus.OK);
+        }
+    }
+
+    /**
+     * A chunked request body is ordinary HTTP/1.1 and is processed normally, and a badly framed one is a
+     * client error rather than a server failure.
+     *
+     * <p>Regression cover for the runtime finding that reported {@code 500} for every chunked body. The
+     * screen this asserts is the one the security chain applies: the request-body bound reads a length-less
+     * body itself, which is where the container decodes the chunk sizes, the terminating zero chunk and any
+     * trailer fields, so a framing failure surfaces inside the filter chain where no
+     * {@code @ExceptionHandler} can see it. Four framings are exercised through a raw socket, because no
+     * HTTP client abstraction lets a test send a deliberately broken chunk.
+     *
+     * <p>The assertion on the malformed framings is deliberately {@code 4xx} rather than one exact status:
+     * the container may itself refuse and commit a {@code 400} before the application sees the read failure,
+     * and which of the two answers first is a container detail. What matters, and what is asserted, is that
+     * neither is a {@code 5xx}.
+     */
+    @Test
+    @Order(21)
+    @DisplayName("chunked request bodies are read normally and a broken framing is a 4xx, never a 5xx")
+    void chunkedRequestBodiesAreReadAndBrokenFramingIsAClientError() {
+        final byte[] credentials = ("{\"userId\":\"" + this.administrator.userId()
+                + "\",\"password\":\"" + this.administrator.credential() + "\"}")
+                .getBytes(StandardCharsets.UTF_8);
+
+        final String wellFramed = exchangeRaw(chunkedSignOn(credentials, "0\r\n\r\n"));
+        assertThat(statusLineOf(wellFramed)).startsWith("HTTP/1.1 200");
+        assertThat(wellFramed).contains("\"token\"");
+
+        // A trailer section is legal and must not change the outcome.
+        final String withTrailers =
+                exchangeRaw(chunkedSignOn(credentials, "0\r\nX-Qa-Trailer: present\r\n\r\n"));
+        assertThat(statusLineOf(withTrailers)).startsWith("HTTP/1.1 200");
+
+        // A chunk extension is legal and must not change the outcome either.
+        final String withExtension = exchangeRaw("POST /api/auth/signon HTTP/1.1\r\n"
+                + "Host: localhost:" + this.port + "\r\n"
+                + "Content-Type: application/json\r\n"
+                + "Transfer-Encoding: chunked\r\n"
+                + "Connection: close\r\n\r\n"
+                + Integer.toHexString(credentials.length) + ";qa=1\r\n"
+                + new String(credentials, StandardCharsets.UTF_8) + "\r\n0\r\n\r\n");
+        assertThat(statusLineOf(withExtension)).startsWith("HTTP/1.1 200");
+
+        // A chunk size that is not hexadecimal is a client error and must never be a server failure.
+        final String brokenSize = exchangeRaw("POST /api/auth/signon HTTP/1.1\r\n"
+                + "Host: localhost:" + this.port + "\r\n"
+                + "Content-Type: application/json\r\n"
+                + "Transfer-Encoding: chunked\r\n"
+                + "Connection: close\r\n\r\nzz\r\nabcd\r\n0\r\n\r\n");
+        assertThat(statusLineOf(brokenSize)).doesNotContain(" 5");
+        assertThat(statusLineOf(brokenSize)).startsWith("HTTP/1.1 4");
+    }
+
+    /**
+     * A C0 or DEL control character is refused wherever it arrives, and never reaches the database.
+     *
+     * <p>Regression cover for the runtime finding that a {@code U+0000} inside untrusted input reached
+     * PostgreSQL, which refuses the bind with {@code SQLSTATE 22021}, and surfaced as an input-output failure
+     * on two operations and as an abend on a third - a client error reported as a store failure. The two
+     * halves of the screen are asserted separately because they answer in the two different shapes this
+     * application publishes: the request line yields a field-level refusal naming the parameter, and the body
+     * yields the read-failure envelope, whose property path goes to the log rather than to the response.
+     */
+    @Test
+    @Order(22)
+    @DisplayName("a control character in the request line or the body is refused, and no row is written")
+    void controlCharactersAreRefusedOnEveryInboundStringAndNothingIsWritten() {
+        final AuthenticatedSession admin = signOn(this.administrator);
+
+        // Sent over a raw socket because the HTTP client this test uses re-encodes a percent escape it is
+        // handed, which would deliver the literal text %00 rather than the character under test.
+        final String queryRefusal = exchangeRaw("GET /api/transactions/detail?transactionId=%00 HTTP/1.1\r\n"
+                + "Host: localhost:" + this.port + "\r\n"
+                + "Authorization: Bearer " + admin.token() + "\r\n"
+                + "Connection: close\r\n\r\n");
+        assertThat(statusLineOf(queryRefusal)).startsWith("HTTP/1.1 400");
+        assertThat(queryRefusal)
+                .contains("\"field\":\"transactionId\"")
+                .contains("\"failureKind\":\"INVALID\"")
+                .contains(WebConfig.CONTROL_CHARACTER_REJECTION_MESSAGE)
+                .contains("CARDDEMO-VALIDATION-REJECTED");
+
+        final String contaminated = "AB\u0000CD";
+        final TestIdentity refusedIdentity = newIdentity(UserType.USER);
+        final ObjectNode body = this.objectMapper.createObjectNode()
+                .put("firstName", contaminated)
+                .put("lastName", "E2ECTRL")
+                .put("userId", refusedIdentity.userId())
+                .put("password", refusedIdentity.credential())
+                .put("userType", "U");
+
+        final ResponseEntity<String> bodyRefusal =
+                request(HttpMethod.POST, "/api/admin/users", body, admin);
+        assertThat(bodyRefusal.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        // Not 409: a control character is invalid field content, never a duplicate identifier.
+        assertThat(responseBody(bodyRefusal).path("errorCode").asText())
+                .isNotEqualTo("CARDDEMO-DUPLICATE-RECORD");
+        assertThat(this.userSecurityRepository.existsById(refusedIdentity.userId())).isFalse();
+
+        // The same character in a path variable is refused too. Sent over a raw socket because the HTTP
+        // client this test uses re-encodes a percent escape in a path it is given, which would deliver the
+        // literal text rather than the character under test.
+        final String pathRefusal = exchangeRaw("GET /api/accounts/A%00B HTTP/1.1\r\n"
+                + "Host: localhost:" + this.port + "\r\n"
+                + "Authorization: Bearer " + admin.token() + "\r\n"
+                + "Connection: close\r\n\r\n");
+        assertThat(statusLineOf(pathRefusal)).startsWith("HTTP/1.1 4");
+
+        // And the corpus's LOW-VALUES sentinel is still admitted in a body, because an untransmitted 3270
+        // field arrived as NUL characters and app/cbl/COBIL00C.cbl gates its confirmation on exactly that.
+        // Screening it out would break the field contract the seventeen operations are built on.
+        final ObjectNode lowValues = billPaymentRequest(2L, "\u0000");
+        final ResponseEntity<String> sentinel =
+                request(HttpMethod.POST, "/api/billing/payments", lowValues, signOn(this.standardUser));
+        assertThat(sentinel.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(responseBody(sentinel).path("outcome").asText()).isEqualTo("CONFIRMATION_REQUIRED");
+    }
+
+    /**
+     * Posts a body under a caller-chosen {@code Content-Type} that the framework's header accessor would
+     * refuse to set.
+     *
+     * <p>{@code HttpHeaders#setContentType} rejects a wildcard, and a raw set is the only way a test can send
+     * one - which is the whole point, because that rejection is the defect being regression-tested.
+     *
+     * @param declared the exact header value to send
+     * @param body the request body, sent verbatim
+     * @return the response, with the correlation and conversation hygiene already asserted
+     */
+    private ResponseEntity<String> postWithRawContentType(final String declared, final String body) {
+        final HttpHeaders headers = requestHeaders(null);
+        headers.set(HttpHeaders.CONTENT_TYPE, declared);
+        final ResponseEntity<String> response = this.http.exchange("/api/auth/signon", HttpMethod.POST,
+                new HttpEntity<>(body, headers), String.class);
+        assertCorrelationAndConversationHygiene(response);
+        return response;
+    }
+
+    /**
+     * Composes one chunked sign-on request whose body is sent as a single chunk.
+     *
+     * @param body the body bytes to frame
+     * @param terminator the terminating chunk and any trailer section, written verbatim
+     * @return the complete request text
+     */
+    private String chunkedSignOn(final byte[] body, final String terminator) {
+        return "POST /api/auth/signon HTTP/1.1\r\n"
+                + "Host: localhost:" + this.port + "\r\n"
+                + "Content-Type: application/json\r\n"
+                + "Transfer-Encoding: chunked\r\n"
+                + "Connection: close\r\n\r\n"
+                + Integer.toHexString(body.length) + "\r\n"
+                + new String(body, StandardCharsets.UTF_8) + "\r\n"
+                + terminator;
+    }
+
+    /**
+     * Sends one raw HTTP request over a socket and returns everything the server wrote back.
+     *
+     * <p>Necessary because no HTTP client abstraction in the test classpath will send a deliberately broken
+     * chunk, and the defect being regression-tested lives in how the container decodes chunked framing.
+     *
+     * @param request the complete request text, including its terminating sequence
+     * @return the raw response text, headers and body together
+     */
+    private String exchangeRaw(final String request) {
+        try (Socket socket = new Socket("localhost", this.port)) {
+            socket.setSoTimeout(30_000);
+            socket.getOutputStream().write(request.getBytes(StandardCharsets.UTF_8));
+            socket.getOutputStream().flush();
+            return new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        } catch (final java.io.IOException transportFailure) {
+            throw new IllegalStateException("The raw HTTP exchange could not be completed.",
+                    transportFailure);
+        }
+    }
+
+    /**
+     * Extracts the status line from a raw response.
+     *
+     * @param rawResponse everything the server wrote back
+     * @return the first line, without its terminating sequence
+     */
+    private static String statusLineOf(final String rawResponse) {
+        final int end = rawResponse.indexOf("\r\n");
+        return end < 0 ? rawResponse : rawResponse.substring(0, end);
     }
 
     private void assertNoCredentialFields(final JsonNode payload) {

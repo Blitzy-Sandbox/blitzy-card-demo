@@ -579,9 +579,37 @@ spring:
   # composed URL wholesale without this file changing.
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT:5432}/${POSTGRES_DB}
-    username: ${POSTGRES_USER}
-    # No default, ever. An absent password must fail startup, not fall back.
-    password: ${POSTGRES_PASSWORD}
+    # ------------------------------------------------------------------------
+    # THE RUNTIME PRINCIPAL IS NOT THE BOOTSTRAP SUPERUSER (Rule 1 Clause D)
+    # ------------------------------------------------------------------------
+    # POSTGRES_USER is the cluster bootstrap role, and the official postgres
+    # image creates it as a SUPERUSER. A superuser ignores every grant, every
+    # row-level policy and every column privilege, so connecting the runtime as
+    # it gave the application far more authority than the eleven tables of
+    # V1__create_schema.sql require - it could create, drop and truncate
+    # anything and bypass RLS. "Principle of least privilege for
+    # tokens/credentials/config" forbids exactly that.
+    #
+    # CARDDEMO_DB_APP_* is a DML-only role: SELECT, INSERT, UPDATE and DELETE on
+    # the domain and Spring Batch tables plus sequence usage, and nothing else.
+    # spring.flyway below binds the separate DDL-owning migration role, so the
+    # only principal that may reshape the schema is the one that migrates it.
+    # docker-compose.yml provisions both, read only and idempotently.
+    #
+    # The fallback keeps an existing deployment working unchanged: with the
+    # variable unset this is exactly the previous behaviour. It is a TRANSITION
+    # AID, not the target state - application-prod.yml requires the role
+    # explicitly with no fallback, so a production start cannot silently run as
+    # the superuser. Note that the fallback fires only when the variable is
+    # ABSENT; a variable set to the empty string is used as given, which is why
+    # docker-compose.yml resolves its own default with Compose's `:-` form.
+    username: ${CARDDEMO_DB_APP_USER:${POSTGRES_USER}}
+    # The same one-level transition fallback as the user above, and NO literal
+    # default behind it: the chain terminates at POSTGRES_PASSWORD, which itself
+    # declares none. So an absent password still fails startup rather than
+    # resolving to a committed value - the fallback changes WHICH variable is
+    # read, never whether one is required.
+    password: ${CARDDEMO_DB_APP_PASSWORD:${POSTGRES_PASSWORD}}
     driver-class-name: org.postgresql.Driver
     hikari:
       # MINIMAL, DELIBERATELY UNTUNED. Connection-pool tuning is explicitly out
@@ -595,6 +623,58 @@ spring:
       maximum-pool-size: 10
       minimum-idle: 2
       connection-timeout: 30000
+      # ----------------------------------------------------------------------
+      # A BOUNDED WAIT FOR A ROW LOCK. This is not pool tuning.
+      # ----------------------------------------------------------------------
+      # app/cbl/COACTUPC.cbl:3894-3903 and :3921-3930 read the account and the
+      # customer FOR UPDATE, and :3907-3915 / :3934-3942 have a defined answer
+      # when the lock cannot be taken - the 88-level literals at :517-520,
+      # which classifyWriteOutcome2606 turns into ACUP-CHANGES-OKAYED-LOCK-ERROR.
+      # Reaching that answer requires the attempt to FAIL. PostgreSQL waits
+      # forever by default, so a row held by another transaction stalled the
+      # request indefinitely instead: the guard was unreachable, and with
+      # maximum-pool-size 10 a handful of stalled writers exhausted the pool.
+      #
+      # lock_timeout is the only lever that produces the legacy outcome. The
+      # JPA hint jakarta.persistence.lock.timeout does NOT work here: the
+      # PostgreSQL dialect cannot emit FOR UPDATE WAIT n - the engine offers
+      # only NOWAIT and SKIP LOCKED - so the hint is silently ignored. Expiry
+      # raises SQLSTATE 55P03, which Hibernate maps to LockTimeoutException and
+      # Spring to CannotAcquireLockException, a PessimisticLockingFailureException;
+      # AccountUpdateService.lockAware turns exactly that family into the
+      # authored lock outcome and everything else into the ordinary file-status
+      # mapping, so no genuine I/O failure is relabelled as contention.
+      #
+      # DELIVERED AS A CONNECTION STARTUP OPTION, AND connection-init-sql WOULD
+      # NOT WORK. This is the subtle part, so it is recorded rather than left to
+      # be rediscovered. `connection-init-sql: SET lock_timeout = ...` looks
+      # correct and is measurably useless here: PostgreSQL's SET is
+      # TRANSACTIONAL, and Hikari runs the init statement on a connection whose
+      # auto-commit is already off, so the driver wraps it - the server sees
+      #     BEGIN / SET lock_timeout = 5000 / ROLLBACK
+      # and the ROLLBACK reverts the setting to 0, which means WAIT FOREVER.
+      # Measured directly: with connection-init-sql the pooled session reported
+      # lock_timeout 0 and a contended write blocked for the full duration of
+      # the competing transaction, exactly as before the fix.
+      #
+      # The `options` data-source property is passed to the driver and applied
+      # by the server at CONNECTION STARTUP, before any transaction exists, so
+      # it cannot be rolled back and survives every commit, rollback and pool
+      # hand-back. Verified: after an explicit BEGIN/ROLLBACK the session still
+      # reports 5s.
+      #
+      # statement_timeout is deliberately NOT set: it would cap the batch
+      # stream, whose steps legitimately run long, and no source artefact
+      # publishes a statement-duration objective.
+      #
+      # The value is a WAIT CEILING, not a performance target. Five seconds is
+      # long enough that no uncontended write ever reaches it and short enough
+      # that a caller gets the authored 423 rather than a hung connection.
+      # Raise it through POSTGRES_LOCK_TIMEOUT_MS if a batch step must contend
+      # for a row an online writer holds; zero restores the unbounded wait and
+      # with it the defect, so it is not the default.
+      data-source-properties:
+        options: -c lock_timeout=${POSTGRES_LOCK_TIMEOUT_MS:5000}
       # Spring manages transaction boundaries; the driver must not commit for
       # us. app/cbl/COACTUPC.cbl:4098-4102 and app/cbl/CBTRN02C.cbl:424-465
       # both require a multi-statement unit of work.
@@ -659,6 +739,27 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+    # ------------------------------------------------------------------------
+    # MIGRATIONS RUN AS A DIFFERENT PRINCIPAL FROM REQUESTS (Rule 1 Clause D)
+    # ------------------------------------------------------------------------
+    # Flyway needs DDL - it creates eleven tables, three indexes and the history
+    # table - and the runtime needs none. Giving one role both is what let the
+    # application hold authority it never exercises, so spring.datasource above
+    # binds a DML-only role and the DDL-owning migration role is bound by
+    # spring.flyway.user in application-local.yml and application-prod.yml.
+    #
+    # IT IS DELIBERATELY NOT BOUND HERE, and the reason is mechanical rather
+    # than stylistic. Boot's FlywayAutoConfiguration derives a SEPARATE
+    # DataSource from the application one as soon as spring.flyway.user is
+    # non-null - the guard is a null check, not a blank check, so the property
+    # cannot be neutralised by setting it empty in a profile that must not have
+    # it. application-test.yml takes its address and its credentials from a
+    # Testcontainers container through @ServiceConnection, which supplies
+    # JdbcConnectionDetails and bypasses spring.datasource.* entirely; a
+    # migration user declared here would survive that bypass and send Flyway to
+    # a role the container has never created. Declaring it per profile keeps the
+    # split where a real role exists and keeps it out of the profile where one
+    # does not.
     # The schema must be empty or already under Flyway control. Baselining
     # would silently accept an unknown pre-existing schema.
     baseline-on-migrate: false
@@ -1700,8 +1801,8 @@ carddemo:
 # described it as "the masking of credentials, password hashes and social
 # security numbers", which reads as complete exclusion; the claim is withdrawn.
 # The primary control is that sensitive values are NEVER EMITTED - withheld at
-# the point of rendering rather than caught downstream. The decorator holds 22
-# <paths> field-name entries and 13 <valueMask> regex rules, and 6 of those 13
+# the point of rendering rather than caught downstream. The decorator holds 311
+# <paths> field-name entries and 17 <valueMask> regex rules, and 7 of those 17
 # fire only when a recognised label precedes the value: a bare 16-digit run is
 # indistinguishable from a TRAN-ID PIC X(16), a bare 9-digit run from the
 # PIC 9(09) counters displayed at app/cbl/CBTRN02C.cbl:L227-L228, and a bare
@@ -1709,6 +1810,13 @@ carddemo:
 # against rules R4, R11, R12 and R13. An unlabelled value of those kinds passes
 # through unmasked, by design, because masking on shape alone would corrupt the
 # output Gate 1 compares byte for byte.
+#
+# The two exceptions to that, R16 and R17, are gated on CONTEXT rather than on a
+# label or a shape: they fire only inside the (' and )=( sequences a JDBC driver
+# writes when it reports a rejected statement, which a census over src/main/java
+# shows appear in nothing this application itself emits. That is what makes them
+# safe where a bare digit-run rule would not be - see finding F-6 on the
+# SqlExceptionHelper level below.
 #
 # Levels are conservative on purpose. Hibernate, Spring Security, the AWS SDK
 # and the web request loggers are NOT raised: at DEBUG or TRACE they emit SQL
@@ -1737,6 +1845,43 @@ logging:
     # and for app/cpy/CSUSR01Y.cpy means the password hash.
     org.hibernate.SQL: WARN
     org.hibernate.orm.jdbc.bind: WARN
+    # ------------------------------------------------------------------------
+    # Finding F-6, severity Major (PCI), now closed. OFF, and it must stay OFF
+    # in every profile.
+    # ------------------------------------------------------------------------
+    # This logger is the one place a WARN floor was not enough. Hibernate's
+    # SqlExceptionHelper writes the DRIVER'S OWN MESSAGE at ERROR on every
+    # rejected statement, and for a batched insert that message is the entire
+    # statement with every bound value interpolated into it. The captured
+    # evidence, from a refused transaction insert:
+    #
+    #   Batch entry 0 insert into transaction (tran_amt,tran_card_num,...) values
+    #   (('2.34'::numeric),('7427684863423209'),...) was aborted: ERROR: duplicate
+    #   key value violates unique constraint "pk_transaction"
+    #
+    # The sixteen digits are CARD-NUM PIC X(16) at app/cpy/CVACT02Y.cpy:L5 in
+    # cleartext, and the same shape on app/cpy/CVCUS01Y.cpy carries CUST-SSN
+    # PIC 9(09) and the address lines. ERROR cannot be excluded by a level
+    # floor - a logger set to WARN still admits ERROR, since ERROR is the higher
+    # level - so suppressing this record requires OFF and nothing weaker.
+    #
+    # WHY THIS IS REACHABLE ON A PATH THAT IS NOT A DEFECT, which is why the
+    # remedy could not be "stop the failure happening". AAP section 0.7.4.1
+    # requires the racy descending-browse identifier of
+    # app/cbl/COTRN02C.cbl:L444-L451 to be KEPT and a collision to surface
+    # through the primary key. A collision is therefore an EXPECTED outcome of
+    # the prescribed design, and every one of them used to emit this record.
+    #
+    # WHAT IS NOT LOST. The application's own typed diagnostic is unaffected and
+    # is the sanctioned channel: each write site reports the condition, the
+    # logical file and - where it is safe - the colliding key, through
+    # com.cardemo loggers that the masking rules govern. The SQLSTATE the driver
+    # reported is classified by FileStatusMapper.classifyStoreFailure and drives
+    # the response, so it is observable through behaviour rather than only
+    # through this line. And logback-spring.xml rules R16 and R17 redact the same
+    # two shapes wherever they reach a rendered stack frame, which no logger
+    # level can control.
+    org.hibernate.engine.jdbc.spi.SqlExceptionHelper: "OFF"
     com.zaxxer.hikari: WARN
     # The SDK logs signing canonical requests and headers below WARN.
     software.amazon.awssdk: WARN

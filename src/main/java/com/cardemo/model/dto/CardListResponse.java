@@ -35,6 +35,7 @@ package com.cardemo.model.dto;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.function.BiFunction;
 
 /**
  * One page of the card list, as an HTTP response.
@@ -125,27 +126,45 @@ public record CardListResponse(
      *     may be null on a blank filler row, and never the full number
      * @param statusCode the row's active status as a raw one-character code, {@code CRDSTS01..07 PIC X(1)};
      *     may be null on a blank filler row
+     * @param cardKey an opaque, sealed, expiring reference to this row's card, or null on a blank filler
+     *     row. <strong>Finding, severity Major - remediated by this member.</strong> The source's list map
+     *     carries the full account number and the full card number in every row
+     *     ({@code ACCTNO01..07 PIC X(11)} and {@code CRDNUM01..07 PIC X(16)}), and a terminal operator
+     *     typed {@code S} or {@code U} beside a row to reach the detail or update screen. This projection
+     *     masks the card number - which is the right call for an HTTP surface, and it is now a labelled
+     *     deviation rather than a silent one - but masking alone left the documented
+     *     list-to-detail-to-update path <em>impossible</em>: both of those operations require the full
+     *     sixteen digits, and no operation ever disclosed them. This member restores the navigation
+     *     without restoring the disclosure. It is the Rule 7 substitution for row selection: the
+     *     {@code SELn} flag was screen state, and a stateless client needs a value it can send instead.
+     *     It is sealed with authenticated encryption, so a client cannot read a card number out of it,
+     *     cannot alter it and cannot manufacture one
      */
     public record CardListRowResponse(
             int rowNumber,
             String accountNumber,
             String maskedCardNumber,
-            String statusCode) {
+            String statusCode,
+            String cardKey) {
 
         /**
          * Projects one legacy row onto its response form, masking the card number.
          *
          * @param row the legacy row; must not be null
+         * @param cardKey the sealed reference the detail and update operations accept in place of the
+         *     undisclosed card number; may be null when the row carries no card, in which case there is
+         *     nothing to navigate to
          * @return the row response; never null
          * @throws NullPointerException if {@code row} is null
          */
-        public static CardListRowResponse of(final CardDto.CardListRow row) {
+        public static CardListRowResponse of(final CardDto.CardListRow row, final String cardKey) {
             Objects.requireNonNull(row, "row must not be null");
             return new CardListRowResponse(
                     row.getRowNumber(),
                     row.getAccountNumber(),
                     ApiMasking.maskCardNumber(row.getCardNumber()),
-                    row.getStatusCode());
+                    row.getStatusCode(),
+                    cardKey);
         }
     }
 
@@ -162,18 +181,27 @@ public record CardListResponse(
      * @param informationMessage the turn's information message, or null
      * @param errorMessage the turn's error message, or null
      * @param rowSelectionAvailable whether a row may be acted upon
+     * @param cardKeyMinter seals one row's opaque card reference from its account number and its card
+     *     number, in that order, returning null when the row carries no card. It is supplied rather than
+     *     performed here because sealing needs a key this package must not hold: a response type is a
+     *     projection, and giving it a cipher would put the signing key one import away from every DTO
      * @return the envelope; never null
-     * @throws NullPointerException if {@code page} is null
+     * @throws NullPointerException if {@code page} or {@code cardKeyMinter} is null
      */
     public static CardListResponse of(final PageResponse<CardDto.CardListRow> page,
                                       final String firstCursor,
                                       final String lastCursor,
                                       final String informationMessage,
                                       final String errorMessage,
-                                      final boolean rowSelectionAvailable) {
+                                      final boolean rowSelectionAvailable,
+                                      final BiFunction<String, String, String> cardKeyMinter) {
         Objects.requireNonNull(page, "page must not be null");
+        Objects.requireNonNull(cardKeyMinter, "cardKeyMinter must not be null");
         return new CardListResponse(
-                page.getRows().stream().map(CardListRowResponse::of).toList(),
+                page.getRows().stream()
+                        .map(row -> CardListRowResponse.of(row,
+                                cardKeyMinter.apply(row.getAccountNumber(), row.getCardNumber())))
+                        .toList(),
                 page.getPageNumber(),
                 page.getPageSize(),
                 page.isNextPageAvailable(),

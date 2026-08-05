@@ -32,6 +32,7 @@ import java.lang.reflect.RecordComponent;
 import java.time.Clock;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
@@ -2001,10 +2002,15 @@ final class UserSecurityDtoTest {
         @Test
         @DisplayName("carries no annotation, so no class-level constraint fires unconditionally")
         void carriesNoAnnotation() {
-            assertThat(UserDeleteScreen.class.getDeclaredAnnotations())
-                    .as("an outbound projection carries no declarative constraint; its widths are enforced "
-                            + "in the constructor, where no validator has to be invoked for them to hold")
-                    .isEmpty();
+            // Exactly one annotation, and it is a serialisation directive rather than a constraint:
+            // @JsonIgnoreProperties keeps the six chrome header fields off the wire (finding M-15) so
+            // this operation publishes the five business members section 16.4 documents, while all eleven
+            // fields of app/cpy-bms/COUSR03.CPY stay transcribed on the record. What this test forbids is
+            // a declarative CONSTRAINT: the widths are enforced in the constructor, where no validator
+            // has to be invoked for them to hold.
+            assertThat(Arrays.stream(UserDeleteScreen.class.getDeclaredAnnotations())
+                    .map(annotation -> annotation.annotationType().getName()))
+                    .containsExactly("com.fasterxml.jackson.annotation.JsonIgnoreProperties");
         }
 
         @Test

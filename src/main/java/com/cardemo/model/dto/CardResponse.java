@@ -99,6 +99,11 @@ import java.util.Objects;
  *     update, present on a read and <b>null on a write</b>. It is opaque: a client cannot read it, alter it
  *     undetected, use it for another card or use it indefinitely. It is the only way the update precondition
  *     can be satisfied, because the values it protects include ones this type must never emit
+ * @param cardKey the sealed, opaque reference to this card, present on a read and <b>null on a write</b>.
+ *     It says <em>which</em> card, where {@code snapshotToken} says <em>what was shown</em>; a client that
+ *     arrived by filter can continue by reference without retaining the number it supplied. It is not a
+ *     precondition and does not substitute for one. A write issues neither, because a caller intending a
+ *     further edit re-reads, and the re-read issues both afresh
  */
 public record CardResponse(
         String accountId,
@@ -109,7 +114,8 @@ public record CardResponse(
         String expiryYear,
         String informationMessage,
         String errorMessage,
-        String snapshotToken) {
+        String snapshotToken,
+        String cardKey) {
 
     /**
      * Builds the response for a card <b>read</b>, attaching the sealed snapshot the matching update will
@@ -118,10 +124,14 @@ public record CardResponse(
      * @param projection the service-produced card projection; must not be null
      * @param snapshotToken the sealed as-displayed snapshot; may be null only when the caller could not
      *     obtain one, in which case the client will be unable to update and the reason belongs in the log
+     * @param cardKey the opaque, sealed reference the update operation accepts in place of the card number
+     *     this response does not disclose; may be null, in which case a client that has the card number
+     *     already can still update, and one that does not cannot
      * @return the response; never null
      * @throws NullPointerException if {@code projection} is null
      */
-    public static CardResponse readOf(final CardDto projection, final String snapshotToken) {
+    public static CardResponse readOf(final CardDto projection, final String snapshotToken,
+                                      final String cardKey) {
         Objects.requireNonNull(projection, "projection must not be null");
         return new CardResponse(
                 projection.getAccountId(),
@@ -132,7 +142,8 @@ public record CardResponse(
                 projection.getExpiryYear(),
                 projection.getInformationMessage(),
                 projection.getErrorMessage(),
-                snapshotToken);
+                snapshotToken,
+                cardKey);
     }
 
     /**
@@ -146,6 +157,10 @@ public record CardResponse(
      * @throws NullPointerException if {@code projection} is null
      */
     public static CardResponse writeOf(final CardDto projection) {
-        return readOf(projection, null);
+        // No snapshot and no card reference. The rationale is one rationale, not two: a client that wants to
+        // edit again reads the card again, and that read issues both. Handing out a reference here would
+        // make it outlive the state it describes for no benefit.
+
+        return readOf(projection, null, null);
     }
 }

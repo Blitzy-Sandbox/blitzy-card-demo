@@ -615,6 +615,73 @@ final class DocumentationConsistencyTest {
         }
     }
 
+    /**
+     * An added guard has to be labelled where a caller will read it, not only where an implementer will.
+     *
+     * <p><strong>Finding, severity Medium - remediated, and this is the gate that keeps it remediated.</strong>
+     * The restriction of {@code USRTYPEI} to {@code 'A'} and {@code 'U'} is a guard the source does not have:
+     * {@code COUSR01C}'s only test on the field is
+     * {@code WHEN USRTYPEI OF COUSR1AI = SPACES OR LOW-VALUES} at {@code app/cbl/COUSR01C.cbl:142}, and every
+     * other value is moved straight onto the record at {@code :158}. Section 0.8.3 of the migration plan
+     * preserves an absent guard unless its removal is <em>explicitly labelled</em> as a deviation. It was
+     * labelled in both services' Javadoc and nowhere a caller would look, so the published contract described
+     * only the blank rejection and a reader met a message with no source locator and no explanation.
+     *
+     * <p>The two assertions below are deliberately different in kind. The first pins the label to the place
+     * the guard is enforced, so the reasoning cannot drift away from the code. The second pins it to the place
+     * the guard is <em>observed</em>, so it cannot be enforced without being published.
+     */
+    @Nested
+    @DisplayName("the added user-type guard is labelled where it is enforced AND where it is observed")
+    final class AddedGuardIsLabelled {
+
+        /** The message the guard publishes, which has no locator anywhere in the frozen corpus. */
+        private static final String GUARD_MESSAGE =
+                "User Type must be A for an administrator or U for a regular user";
+
+        /** The two services that enforce it, each mapping the byte onto the typed enumeration. */
+        private static final List<String> ENFORCING_SITES = List.of(
+                "src/main/java/com/cardemo/service/admin/UserAddService.java",
+                "src/main/java/com/cardemo/service/admin/UserUpdateService.java");
+
+        @Test
+        @DisplayName("every site that enforces it labels it as a deviation and says where it is published")
+        void everyEnforcingSiteLabelsIt() {
+            for (final String site : ENFORCING_SITES) {
+                final String content = String.join(" ", lines(site));
+                assertThat(content)
+                        .as("%s publishes the guard message, so it must also carry the label", site)
+                        .contains(GUARD_MESSAGE)
+                        .contains("Labelled deviation")
+                        .contains("Where the deviation is published");
+                assertThat(content)
+                        .as("%s must cite the source locator that proves the guard is an addition, or the "
+                                + "label is an assertion rather than evidence", site)
+                        .contains("app/cpy/COCOM01Y.cpy");
+            }
+        }
+
+        @Test
+        @DisplayName("the published contract carries the label, not merely the message")
+        void thePublishedContractCarriesTheLabel() {
+            final String contract = String.join(" ", lines("docs/api-contracts.md"));
+
+            assertThat(contract)
+                    .as("a caller reads the contract. Publishing the message without the label is exactly "
+                            + "the state this gate exists to prevent")
+                    .contains(GUARD_MESSAGE);
+            assertThat(contract)
+                    .as("the label must be a heading a reader can be pointed at, so both operations can "
+                            + "reference one place instead of restating it")
+                    .contains("Labelled deviation: `userType` is restricted to `A` and `U`");
+            assertThat(contract)
+                    .as("the label must show the guard is an ADDITION by citing the source test it is "
+                            + "absent from, and must state the blank check still runs first")
+                    .contains("app/cbl/COUSR01C.cbl:L142")
+                    .contains("ck_user_security_type");
+        }
+    }
+
     /** F19 - the retained-parity register stays bounded. */
     @Nested
     @DisplayName("the retained-parity register is bounded to three enumerated sites")

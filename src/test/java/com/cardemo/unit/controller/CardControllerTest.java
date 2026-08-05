@@ -140,6 +140,23 @@ class CardControllerTest {
     /** A second card number, so a two-row page proves masking on more than one row. */
     private static final String OTHER_CARD_NUMBER = "5500005555555559";
 
+    /**
+     * The purpose label a page cursor is sealed under, which includes the page it belongs to.
+     *
+     * <p>A cursor is scoped to its page deliberately. The source held the saved key and the page number in
+     * one commarea record - {@code WS-CA-FIRST-CARDKEY} at {@code app/cbl/COCRDLIC.cbl:L232-L234} and
+     * {@code WS-CA-SCREEN-NUM} at {@code :L237} both sit in {@code WS-THIS-PROGCOMMAREA} at {@code :L228} -
+     * so one could not arrive without the other. On the wire they are separate parameters and can be
+     * mismatched, which would return a page whose number and contents disagree. Binding the page into the
+     * purpose label makes the mismatch unrepresentable rather than merely discouraged.
+     *
+     * @param page the page the cursor positions
+     * @return the purpose label for that page
+     */
+    private static String cursorKind(final int page) {
+        return "card-list-cursor-page-" + page;
+    }
+
     /** The card-list service, mocked because this tier reaches no database. */
     @Mock
     private CardListService cardListService;
@@ -262,10 +279,14 @@ class CardControllerTest {
             assertThat(body).isNotNull();
             assertThat(body.firstCursor()).isNotNull().isNotEqualTo(CARD_NUMBER);
             assertThat(body.lastCursor()).isNotNull().isNotEqualTo(OTHER_CARD_NUMBER);
-            assertThat(snapshotTokenService.openCursor("card-list-cursor", body.firstCursor()))
+            assertThat(snapshotTokenService.openCursor(cursorKind(1), body.firstCursor()))
                     .isEqualTo(CARD_NUMBER);
-            assertThat(snapshotTokenService.openCursor("card-list-cursor", body.lastCursor()))
+            assertThat(snapshotTokenService.openCursor(cursorKind(1), body.lastCursor()))
                     .isEqualTo(OTHER_CARD_NUMBER);
+            // And under no other page's label, which is what makes the scoping load-bearing rather than
+            // decorative.
+            assertThatThrownBy(() -> snapshotTokenService.openCursor(cursorKind(2), body.firstCursor()))
+                    .isInstanceOf(ConcurrentUpdateException.class);
         }
 
         /**
@@ -276,9 +297,8 @@ class CardControllerTest {
         @DisplayName("a returned cursor is opened back to the saved key before the service sees it")
         void aReturnedCursorIsOpenedBeforeTheServiceSeesIt() {
             when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
-            final String sealedFirst = snapshotTokenService.sealCursor("card-list-cursor", CARD_NUMBER);
-            final String sealedLast =
-                    snapshotTokenService.sealCursor("card-list-cursor", OTHER_CARD_NUMBER);
+            final String sealedFirst = snapshotTokenService.sealCursor(cursorKind(1), CARD_NUMBER);
+            final String sealedLast = snapshotTokenService.sealCursor(cursorKind(1), OTHER_CARD_NUMBER);
 
             controller.listCards(null, null, "PAGE_FORWARD", "1", sealedFirst, sealedLast, "true", null);
 
@@ -292,16 +312,20 @@ class CardControllerTest {
         /**
          * A cursor this server did not seal is refused rather than used, which is what stops a caller from
          * positioning the browse on an arbitrary card number of its own choosing.
+         *
+         * <p>It is refused as a <em>rejected request</em> and not as a concurrency conflict. A snapshot that
+         * fails to verify says the record moved underneath the caller; a paging cursor that fails to verify
+         * says the caller sent something this server never issued, which is a different statement and
+         * belongs at {@code 400}. The field is named so the caller knows which of the two cursors is at
+         * fault.
          */
         @Test
         @DisplayName("a cursor this server did not seal is refused and the browse never runs")
         void anUnsealedCursorIsRefused() {
-            final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class,
+            final ValidationException failure = catchThrowableOfType(ValidationException.class,
                     () -> controller.listCards(null, null, null, null, CARD_NUMBER, null, null, null));
 
-            assertThat(failure.getOutcome())
-                    .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE);
+            assertThat(failure.getFieldName()).isEqualTo("firstKey");
             verifyNoInteractions(cardListService);
         }
 
@@ -316,9 +340,9 @@ class CardControllerTest {
             when(cardUpdateService.issueUpdateSnapshot(ACCOUNT_ID, CARD_NUMBER)).thenReturn("sealed");
             when(cardUpdateService.updateCard(any(), any())).thenReturn(detailProjection());
 
-            final CardResponse read = controller.getCardDetail(ACCOUNT_ID, CARD_NUMBER).getBody();
+            final CardResponse read = controller.getCardDetail(ACCOUNT_ID, CARD_NUMBER, null).getBody();
             final CardResponse written =
-                    controller.updateCard(updateRequest(null), "\"sealed\"").getBody();
+                    controller.updateCard(updateRequest(null), "\"sealed\"", null).getBody();
 
             assertThat(read).isNotNull();
             assertThat(written).isNotNull();
@@ -398,7 +422,7 @@ class CardControllerTest {
                     .thenReturn("sealed-snapshot-value");
 
             final ResponseEntity<CardResponse> response =
-                    controller.getCardDetail(ACCOUNT_ID, CARD_NUMBER);
+                    controller.getCardDetail(ACCOUNT_ID, CARD_NUMBER, null);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
             assertThat(response.getBody()).isNotNull();
@@ -415,7 +439,7 @@ class CardControllerTest {
         void theUpdateResponseIssuesNoSnapshot() {
             when(cardUpdateService.updateCard(any(), any())).thenReturn(detailProjection());
 
-            final CardResponse body = controller.updateCard(updateRequest(null), "\"token\"").getBody();
+            final CardResponse body = controller.updateCard(updateRequest(null), "\"token\"", null).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.snapshotToken()).isNull();
@@ -435,7 +459,7 @@ class CardControllerTest {
                     new CardUpdateRequest.ExpiraionDate("2099", "12", "28"), "Y"));
 
             final ValidationException failure = catchThrowableOfType(ValidationException.class,
-                    () -> controller.updateCard(updateRequest(supplied), "\"token\""));
+                    () -> controller.updateCard(updateRequest(supplied), "\"token\"", null));
 
             assertThat(failure.getFieldName()).isEqualTo("oldDetails");
             assertThat(failure.getMessage()).contains("If-Match");
@@ -451,9 +475,9 @@ class CardControllerTest {
         void everyIfMatchSpellingRelaysTheSameToken() {
             when(cardUpdateService.updateCard(any(), eq("abc"))).thenReturn(detailProjection());
 
-            controller.updateCard(updateRequest(null), "\"abc\"");
-            controller.updateCard(updateRequest(null), "W/\"abc\"");
-            controller.updateCard(updateRequest(null), "abc");
+            controller.updateCard(updateRequest(null), "\"abc\"", null);
+            controller.updateCard(updateRequest(null), "W/\"abc\"", null);
+            controller.updateCard(updateRequest(null), "abc", null);
 
             verify(cardUpdateService, org.mockito.Mockito.times(3)).updateCard(any(), eq("abc"));
         }
@@ -468,7 +492,7 @@ class CardControllerTest {
         void anAbsentIfMatchRelaysNull() {
             when(cardUpdateService.updateCard(any(), eq(null))).thenReturn(detailProjection());
 
-            controller.updateCard(updateRequest(null), null);
+            controller.updateCard(updateRequest(null), null, null);
 
             verify(cardUpdateService).updateCard(any(), eq(null));
         }
@@ -509,7 +533,9 @@ class CardControllerTest {
             when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
 
             controller.listCards(null, null, "SUBMIT", null, null, null, null, null);
-            controller.listCards(null, null, "PAGE_BACKWARD", null, null, null, null, null);
+            // A backward step carries the page it is moving back from. Page one is the top-of-file arm, so
+            // it needs no saved key - see BackwardPagingPrecondition for the whole matrix.
+            controller.listCards(null, null, "PAGE_BACKWARD", "1", null, null, null, null);
             controller.listCards(null, null, "PAGE_FORWARD", null, null, null, null, null);
 
             final ArgumentCaptor<CardListService.CardListRequest> captured =
@@ -773,6 +799,408 @@ class CardControllerTest {
         final byte[] keyMaterial = new byte[32];
         new SecureRandom().nextBytes(keyMaterial);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
+    }
+
+
+    /**
+     * A masked row has to remain a usable row. These tests pin the reference that makes it one.
+     *
+     * <p><strong>Finding, severity Medium - remediated.</strong> A list row published {@code rowNumber},
+     * {@code accountNumber}, {@code maskedCardNumber} and {@code statusCode}, and
+     * {@code GET /api/cards/detail} accepted none of them: it requires an eleven-digit account
+     * <em>and</em> a full sixteen-digit card number. An API-only client could therefore enumerate every
+     * page and still not reach a single card, and {@code PUT /api/cards} carrying no identifier answered a
+     * body-unreadable code that named neither the field nor the reason.
+     *
+     * <p>The 3270 row published the full number and an operator selected it in place
+     * [{@code app/cbl/COCRDLIC.cbl:L115-L116}]. Masking that column is a deliberate divergence, so the
+     * column's <em>function</em> has to be replaced rather than dropped: each row carries an opaque
+     * reference, sealed by the same construction that seals the snapshot, which both the detail and the
+     * update operation accept in place of the two filters.
+     *
+     * <p>What these tests are careful to prove is not merely that the reference works, but that it cannot
+     * be abused: it is opaque, it is scoped to its own purpose so a paging cursor cannot stand in for it,
+     * it refuses to coexist with a filter rather than silently preferring one, and it is not a
+     * substitute for the write precondition.
+     */
+    @Nested
+    @DisplayName("a masked row stays traversable - the opaque row reference")
+    class RowReferenceContract {
+
+        /**
+         * Every row carries a reference, and none of them is, or contains, the card number it refers to.
+         */
+        @Test
+        @DisplayName("every row carries an opaque reference that is not the card number")
+        void everyRowCarriesAnOpaqueReference() {
+            when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
+
+            final CardListResponse body = controller.listCards(null, null, null, null, null, null, null,
+                    null).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.rows()).allSatisfy(r -> assertThat(r.cardKey())
+                    .isNotNull()
+                    .isNotBlank()
+                    .doesNotContain(CARD_NUMBER)
+                    .doesNotContain(OTHER_CARD_NUMBER)
+                    .doesNotContain(ACCOUNT_ID));
+            assertThat(body.rows()).extracting(CardListResponse.CardListRowResponse::cardKey)
+                    .doesNotHaveDuplicates();
+        }
+
+        /**
+         * The reference resolves to the row's own account and card number before the service is entered, so
+         * the two edits the source runs first see exactly the values a filter pair would have supplied.
+         */
+        @Test
+        @DisplayName("a row's reference resolves to that row's account and card number")
+        void aRowReferenceResolvesToThatRowsIdentifiers() {
+            when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
+            when(cardDetailService.viewCardDetail(ACCOUNT_ID, CARD_NUMBER))
+                    .thenReturn(detailProjection());
+            when(cardUpdateService.issueUpdateSnapshot(ACCOUNT_ID, CARD_NUMBER)).thenReturn("sealed");
+            final String reference = controller.listCards(null, null, null, null, null, null, null, null)
+                    .getBody().rows().getFirst().cardKey();
+
+            controller.getCardDetail(null, null, reference);
+
+            verify(cardDetailService).viewCardDetail(ACCOUNT_ID, CARD_NUMBER);
+        }
+
+        /**
+         * The detail read issues a reference of its own, so a client that arrived by filter can continue by
+         * reference without having to keep the number it was given.
+         */
+        @Test
+        @DisplayName("the detail read issues a reference of its own")
+        void theDetailReadIssuesItsOwnReference() {
+            when(cardDetailService.viewCardDetail(ACCOUNT_ID, CARD_NUMBER))
+                    .thenReturn(detailProjection());
+            when(cardUpdateService.issueUpdateSnapshot(ACCOUNT_ID, CARD_NUMBER)).thenReturn("sealed");
+
+            final CardResponse read = controller.getCardDetail(ACCOUNT_ID, CARD_NUMBER, null).getBody();
+
+            assertThat(read).isNotNull();
+            assertThat(read.cardKey()).isNotNull().isNotBlank().doesNotContain(CARD_NUMBER);
+            assertThat(read.toString()).doesNotContain(CARD_NUMBER);
+        }
+
+        /**
+         * A write issues neither a reference nor a snapshot: it consumes the precondition, and a caller that
+         * intends a further edit re-reads, which issues both afresh. Publishing a stale pair would invite a
+         * second write against a snapshot the first one invalidated.
+         */
+        @Test
+        @DisplayName("the update response issues no reference and no snapshot")
+        void theUpdateResponseIssuesNeither() {
+            when(cardUpdateService.updateCard(any(), any())).thenReturn(detailProjection());
+
+            final CardResponse written =
+                    controller.updateCard(updateRequest(null), "\"sealed\"", null).getBody();
+
+            assertThat(written).isNotNull();
+            assertThat(written.cardKey()).isNull();
+            assertThat(written.snapshotToken()).isNull();
+        }
+
+        /**
+         * On the update, the reference supplies the two identifiers and nothing else. Every other component
+         * of the submitted body has to survive untouched, or the caller's edit would be silently altered by
+         * the act of routing it.
+         */
+        @Test
+        @DisplayName("on an update the reference replaces only the two identifiers")
+        void onUpdateTheReferenceReplacesOnlyTheIdentifiers() {
+            when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
+            when(cardUpdateService.updateCard(any(), any())).thenReturn(detailProjection());
+            final String reference = controller.listCards(null, null, null, null, null, null, null, null)
+                    .getBody().rows().getFirst().cardKey();
+            final CardUpdateRequest submitted = new CardUpdateRequest(null, null, null, null, null, null,
+                    null, null, "MARY JONES", "N", "06", "2031", "15",
+                    null, null, null, null, null, null);
+
+            controller.updateCard(submitted, "\"sealed\"", reference);
+
+            final ArgumentCaptor<CardUpdateRequest> captured =
+                    ArgumentCaptor.forClass(CardUpdateRequest.class);
+            verify(cardUpdateService).updateCard(captured.capture(), eq("sealed"));
+            final CardUpdateRequest relayed = captured.getValue();
+            assertThat(relayed.accountId()).isEqualTo(ACCOUNT_ID);
+            assertThat(relayed.cardNumber()).isEqualTo(CARD_NUMBER);
+            assertThat(relayed.cardholderName()).isEqualTo("MARY JONES");
+            assertThat(relayed.cardStatusCode()).isEqualTo("N");
+            assertThat(relayed.expiryMonth()).isEqualTo("06");
+            assertThat(relayed.expiryYear()).isEqualTo("2031");
+            assertThat(relayed.expiryDay()).isEqualTo("15");
+        }
+
+        /**
+         * A reference alongside either filter is two different statements of which card is meant. It is
+         * refused rather than resolved by precedence, because a precedence rule silently discards half of
+         * what the caller asked for.
+         */
+        @Test
+        @DisplayName("a reference alongside either filter is refused, naming the reference")
+        void aReferenceAlongsideAFilterIsRefused() {
+            when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
+            final String reference = controller.listCards(null, null, null, null, null, null, null, null)
+                    .getBody().rows().getFirst().cardKey();
+
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.getCardDetail(ACCOUNT_ID, null, reference)).getFieldName())
+                    .isEqualTo("cardKey");
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.getCardDetail(null, CARD_NUMBER, reference)).getFieldName())
+                    .isEqualTo("cardKey");
+            verifyNoInteractions(cardDetailService);
+        }
+
+        /**
+         * A reference this server did not seal is refused, which is what stops a caller from naming a card
+         * it was never shown.
+         */
+        @Test
+        @DisplayName("a forged reference is refused and no read runs")
+        void aForgedReferenceIsRefused() {
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.getCardDetail(null, null, "not-a-reference")).getFieldName())
+                    .isEqualTo("cardKey");
+            verifyNoInteractions(cardDetailService);
+        }
+
+        /**
+         * A page cursor is authentic - this server sealed it - and is still refused as a card reference,
+         * because it was sealed for a different purpose. Without that scoping, one authentic token would be
+         * accepted anywhere another was expected.
+         */
+        @Test
+        @DisplayName("an authentic page cursor is refused as a card reference")
+        void aPageCursorIsRefusedAsACardReference() {
+            final String cursor = snapshotTokenService.sealCursor(cursorKind(1), CARD_NUMBER);
+
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.getCardDetail(null, null, cursor)).getFieldName())
+                    .isEqualTo("cardKey");
+            verifyNoInteractions(cardDetailService);
+        }
+
+        /**
+         * The reference is not a precondition. Supplying one on an update does not excuse the missing
+         * {@code If-Match}: the reference says which card, the snapshot says what the caller was shown, and
+         * the comparison the source performs needs both.
+         */
+        @Test
+        @DisplayName("a reference does not substitute for the write precondition")
+        void aReferenceIsNotAPrecondition() {
+            when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
+            when(cardUpdateService.updateCard(any(), any())).thenReturn(detailProjection());
+            final String reference = controller.listCards(null, null, null, null, null, null, null, null)
+                    .getBody().rows().getFirst().cardKey();
+            final CardUpdateRequest submitted = new CardUpdateRequest(null, null, null, null, null, null,
+                    null, null, "MARY JONES", "N", "06", "2031", "15",
+                    null, null, null, null, null, null);
+
+            controller.updateCard(submitted, null, reference);
+
+            final ArgumentCaptor<CardUpdateRequest> captured =
+                    ArgumentCaptor.forClass(CardUpdateRequest.class);
+            verify(cardUpdateService).updateCard(captured.capture(), eq(null));
+            assertThat(captured.getValue().cardNumber()).isEqualTo(CARD_NUMBER);
+        }
+    }
+
+    /**
+     * The positioning state a backward step needs, and what happens when it is not sent.
+     *
+     * <p><strong>Finding, severity Medium - remediated.</strong>
+     * {@code GET /api/cards?action=PAGE_BACKWARD} with no saved key answered {@code 502} with an
+     * input-output failure code, reporting a store problem for what was a malformed request.
+     *
+     * <p>The cause is in the source and is structural rather than accidental. {@code 9100-READ-BACKWARDS}
+     * [{@code app/cbl/COCRDLIC.cbl:L1264}] has <strong>no end-of-data arm</strong>: its
+     * {@code EVALUATE WS-RESP-CD} [{@code :L1304-L1318}] carries {@code DFHRESP(NORMAL)},
+     * {@code DFHRESP(DUPREC)} and {@code WHEN OTHER} only, so a backward read from an unpositioned browse
+     * is a file error <em>by construction</em>. That state is unreachable in the source because the saved
+     * key and the page number are fields of one commarea record [{@code :L228-L237}], so one could not
+     * arrive without the other. Putting them on the wire separated them, which turned a commarea invariant
+     * into a request precondition - and a precondition has to be checked.
+     *
+     * <p>The remedy is at the boundary, not in the browse: {@code 9100-READ-BACKWARDS} is left transcribed
+     * exactly and no end-of-data arm is invented for it.
+     */
+    @Nested
+    @DisplayName("backward paging states its precondition instead of failing as input-output")
+    class BackwardPagingPrecondition {
+
+        /**
+         * No page at all names the page. It is the one value a backward step cannot infer: there is no
+         * page to move back from.
+         */
+        @Test
+        @DisplayName("a backward step with no page names the page, and the browse never runs")
+        void aBackwardStepWithNoPageNamesThePage() {
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.listCards(null, null, "PAGE_BACKWARD", null, null, null, null, null))
+                    .getFieldName()).isEqualTo("page");
+            verifyNoInteractions(cardListService);
+        }
+
+        /**
+         * Beyond the first page the saved key is required, and it is named rather than defaulted. Defaulting
+         * it is precisely what produced the input-output failure.
+         */
+        @Test
+        @DisplayName("a backward step beyond the first page names the missing saved key")
+        void aBackwardStepBeyondTheFirstPageNamesTheKey() {
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.listCards(null, null, "PAGE_BACKWARD", "2", null, null, null, null))
+                    .getFieldName()).isEqualTo("firstKey");
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.listCards(null, null, "PAGE_BACKWARD", "2", "   ", null, "true",
+                            null)).getFieldName()).isEqualTo("firstKey");
+            verifyNoInteractions(cardListService);
+        }
+
+        /**
+         * Backward from the first page is not refused. The source re-reads forward from a space-filled key
+         * and reports its top-of-page literal, which is an ordinary successful turn, so no precondition is
+         * imposed on the one page that genuinely has no predecessor.
+         */
+        @Test
+        @DisplayName("backward from the first page is admitted, with no saved key")
+        void backwardFromTheFirstPageIsAdmitted() {
+            when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
+
+            controller.listCards(null, null, "PAGE_BACKWARD", "1", null, null, null, null);
+
+            final ArgumentCaptor<CardListService.CardListRequest> captured =
+                    ArgumentCaptor.forClass(CardListService.CardListRequest.class);
+            verify(cardListService).listCards(captured.capture());
+            assertThat(captured.getValue().attentionIdentifier).isEqualTo("PF07");
+            assertThat(captured.getValue().firstCardNumber).isNull();
+        }
+
+        /**
+         * A cursor minted for one page is refused when presented as another's. Honouring it would return a
+         * page whose reported number and actual contents disagree, which is worse than refusing it.
+         */
+        @Test
+        @DisplayName("a cursor minted for another page is refused, naming the key")
+        void aCursorMintedForAnotherPageIsRefused() {
+            final String pageOneKey = snapshotTokenService.sealCursor(cursorKind(1), CARD_NUMBER);
+
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.listCards(null, null, "PAGE_BACKWARD", "2", pageOneKey, null, null,
+                            null)).getFieldName()).isEqualTo("firstKey");
+            verifyNoInteractions(cardListService);
+        }
+
+        /**
+         * And the matching pair round-trips, so the scoping refuses only mismatches.
+         */
+        @Test
+        @DisplayName("a cursor presented with its own page opens back to the saved key")
+        void aCursorPresentedWithItsOwnPageOpens() {
+            when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
+            final String pageTwoKey = snapshotTokenService.sealCursor(cursorKind(2), CARD_NUMBER);
+
+            controller.listCards(null, null, "PAGE_BACKWARD", "2", pageTwoKey, null, null, null);
+
+            final ArgumentCaptor<CardListService.CardListRequest> captured =
+                    ArgumentCaptor.forClass(CardListService.CardListRequest.class);
+            verify(cardListService).listCards(captured.capture());
+            assertThat(captured.getValue().firstCardNumber).isEqualTo(CARD_NUMBER);
+        }
+
+        /**
+         * A forward step imposes none of this. It positions from the last key and, absent one, re-reads from
+         * the top - an ordinary outcome, not an error - so the precondition is placed only where the source
+         * lacks an end-of-data arm.
+         */
+        @Test
+        @DisplayName("a forward step with no state at all is still admitted")
+        void aForwardStepWithNoStateIsAdmitted() {
+            when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
+
+            controller.listCards(null, null, "PAGE_FORWARD", null, null, null, null, null);
+
+            verify(cardListService).listCards(any());
+        }
+    }
+
+    /**
+     * A page past the first must arrive with the cursor that addresses it.
+     *
+     * <p>The page number is a display counter, not an address:
+     * {@code action=PAGE_FORWARD&page=8} with no cursor used to answer {@code 200} reporting
+     * {@code pageNumber=8} while serving page one's seven rows, and {@code action=SUBMIT&page=8} did the
+     * same. A response that reports a page it did not serve cannot be acted on, so the incomplete request is
+     * refused and the cursor that completes it is named.
+     */
+    @Nested
+    @DisplayName("a page past the first is refused without the cursor that addresses it")
+    class ForwardPagingPrecondition {
+
+        /**
+         * Forward past the first page needs the last key: that is the position being advanced from.
+         */
+        @Test
+        @DisplayName("a forward step past the first page names the missing last key")
+        void aForwardStepPastTheFirstPageNamesTheLastKey() {
+            final ValidationException refused = catchThrowableOfType(ValidationException.class,
+                    () -> controller.listCards(null, null, "PAGE_FORWARD", "8", null, null, null, null));
+
+            assertThat(refused.getFieldName()).isEqualTo("lastKey");
+            assertThat(refused.getFailureKind()).isEqualTo(ValidationException.FailureKind.BLANK);
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.listCards(null, null, "PAGE_FORWARD", "2", null, "   ", "true", null))
+                    .getFieldName()).isEqualTo("lastKey");
+            verifyNoInteractions(cardListService);
+        }
+
+        /**
+         * Any other action redisplays the named page, so it needs the first key instead. This is the arm that
+         * {@code action=SUBMIT&page=8} took.
+         */
+        @Test
+        @DisplayName("a redisplay past the first page names the missing first key")
+        void aRedisplayPastTheFirstPageNamesTheFirstKey() {
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.listCards(null, null, "SUBMIT", "8", null, null, null, null))
+                    .getFieldName()).isEqualTo("firstKey");
+            verifyNoInteractions(cardListService);
+        }
+
+        /**
+         * The first page, and a request naming no page at all, are admitted untouched: a space-filled key
+         * positions the browse at the start of the file, which is what the source intends.
+         */
+        @Test
+        @DisplayName("the first page and an unnamed page are admitted with no cursor")
+        void theFirstPageAndAnUnnamedPageAreAdmitted() {
+            when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
+
+            controller.listCards(null, null, "PAGE_FORWARD", "1", null, null, null, null);
+            controller.listCards(null, null, "PAGE_FORWARD", null, null, null, null, null);
+            controller.listCards(null, null, "SUBMIT", "1", null, null, null, null);
+
+            verify(cardListService, org.mockito.Mockito.times(3)).listCards(any());
+        }
+
+        /**
+         * And a complete forward request still runs, so the precondition refuses only the incomplete one.
+         */
+        @Test
+        @DisplayName("a forward step carrying its last key runs the browse")
+        void aForwardStepCarryingItsLastKeyRuns() {
+            when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
+            final String pageTwoKey = snapshotTokenService.sealCursor(cursorKind(2), CARD_NUMBER);
+
+            controller.listCards(null, null, "PAGE_FORWARD", "2", null, pageTwoKey, "true", null);
+
+            verify(cardListService).listCards(any());
+        }
     }
 
 }

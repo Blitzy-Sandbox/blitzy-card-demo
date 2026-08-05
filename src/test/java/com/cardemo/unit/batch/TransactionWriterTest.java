@@ -62,6 +62,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Locale;
 import org.junit.jupiter.api.AfterEach;
@@ -119,9 +120,12 @@ import org.springframework.dao.DuplicateKeyException;
  * <li><b>Blocker.</b> A failure in group 3 or group 4 means the emitted bytes no longer match the mainframe's.
  * Every subsequent record in the file shifts, so the parity comparison fails wholesale.</li>
  * <li><b>Blocker.</b> A failure in group 5 means a duplicate identifier is no longer distinguished from a
- * plain constraint violation, or is being silently absorbed. {@code DuplicateKeyException} extends
- * {@code DataIntegrityViolationException}, so the catch order is load-bearing: reversing the two classifies
- * every collision as a generic violation and loses the identifier race.</li>
+ * plain constraint violation, or is being silently absorbed. The distinction is drawn on {@code SQLSTATE}
+ * {@code 23505} through {@code FileStatusMapper.classifyStoreFailure} rather than on which exception subtype
+ * the persistence layer chose. Catching {@code DuplicateKeyException} ahead of its supertype - which is what
+ * the writer used to do - recognises a collision only when that subtype was chosen, and for a BATCHED flush it
+ * need not be: the driver reports the batch and links the exception carrying the state of the failing entry
+ * beneath it. Both shapes are asserted in group 5 for exactly that reason.</li>
  * <li><b>High.</b> A failure in group 7 means a lost object write would be reported as a clean run.</li>
  * <li><b>High.</b> A failure in group 2 means the writer would compose an object key from an absent job
  * instance, so two runs could collide on one key.</li>
@@ -799,6 +803,25 @@ class TransactionWriterTest {
                         assertThat(failure.getMessage())
                                 .contains("0000000000000001, 0000000000000002");
                     });
+        }
+
+        @Test
+        @DisplayName("a batched collision, whose state is linked below the thrown exception, is still a duplicate")
+        void aBatchedCollisionIsRecognisedByItsSqlState() {
+            // Finding F-8. This is the shape a batched flush produces: a generic integrity violation whose
+            // own state says nothing, carrying the failing entry's state on a linked exception underneath.
+            // Recognition by subtype misses it entirely and reports it as a referential or check-constraint
+            // failure, losing the identifier race this group exists to pin.
+            Mockito.when(repository.saveAllAndFlush(Mockito.anyList()))
+                    .thenThrow(new DataIntegrityViolationException("batch entry 0 was refused",
+                            new SQLException("batch failed", "40001",
+                                    new SQLException("duplicate key value violates unique constraint "
+                                            + "\"pk_transaction\"", "23505"))));
+
+            assertThatExceptionOfType(DuplicateRecordException.class)
+                    .isThrownBy(() -> writer.write(chunk(posted())))
+                    .satisfies(failure -> assertThat(failure.getMessage())
+                            .contains("Duplicate TRAN-ID rejected by the insert into"));
         }
 
         @Test

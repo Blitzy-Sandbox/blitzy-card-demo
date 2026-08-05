@@ -579,4 +579,78 @@ class TransactionControllerTest {
                     .doesNotContainKeys("ioStatus", "expandedStatus", "logicalFile", "operation");
         }
     }
+
+    /**
+     * A navigation past the first page must arrive with the cursor that addresses it, and a blank identifier
+     * on the detail operation reports blankness.
+     *
+     * <p>{@code action=PAGE_FORWARD&page=5} with no cursor used to answer {@code 200} reporting
+     * {@code pageNumber=5} with an empty row list, which a client cannot distinguish from an exhausted
+     * browse. And a whitespace-only {@code transactionId} used to report failure kind {@code INVALID} while
+     * an absent one reported {@code BLANK}, although {@code :147} tests {@code SPACES OR LOW-VALUES} in one
+     * arm and carries one message for both.
+     */
+    @Nested
+    @DisplayName("paging preconditions and the blank-identifier kind")
+    class PagingPreconditionAndBlankKind {
+
+        @Test
+        @DisplayName("a forward step past the first page names the missing last key")
+        void aForwardStepPastTheFirstPageNamesTheLastKey() {
+            final ValidationException refused = catchThrowableOfType(ValidationException.class,
+                    () -> controller.listTransactions(null, "PAGE_FORWARD", "5", null, null, null,
+                            principal));
+
+            assertThat(refused.getFieldName()).isEqualTo("lastKey");
+            assertThat(refused.getFailureKind()).isEqualTo(ValidationException.FailureKind.BLANK);
+            verifyNoInteractions(transactionListService);
+        }
+
+        @Test
+        @DisplayName("a backward step past the first page names the missing first key")
+        void aBackwardStepPastTheFirstPageNamesTheFirstKey() {
+            assertThat(catchThrowableOfType(ValidationException.class,
+                    () -> controller.listTransactions(null, "PAGE_BACKWARD", "5", null, "  ", null,
+                            principal)).getFieldName()).isEqualTo("firstKey");
+            verifyNoInteractions(transactionListService);
+        }
+
+        /**
+         * The enter-key arm restarts the browse from the search key and always answers the first page, so it
+         * cannot report a page it did not serve and is admitted with any page number. The first page and an
+         * absent page are admitted for every action.
+         */
+        @Test
+        @DisplayName("the enter-key arm, the first page and an unnamed page are admitted with no cursor")
+        void theEnterKeyArmAndTheFirstPageAreAdmitted() {
+            when(transactionListService.submitScreen(any(), any(), any(), any(), any()))
+                    .thenReturn(listScreen(null));
+
+            controller.listTransactions(null, "SUBMIT", "5", null, null, null, principal);
+            controller.listTransactions(null, "PAGE_FORWARD", "1", null, null, null, principal);
+            controller.listTransactions(null, "PAGE_BACKWARD", null, null, null, null, principal);
+
+            verify(transactionListService, times(3)).submitScreen(any(), any(), any(), any(), any());
+        }
+
+        /**
+         * Absent and whitespace-only are one failure, and both are blank. The message both carry is
+         * {@code 'Tran ID can NOT be empty...'}, so neither can be an "invalid value".
+         */
+        @Test
+        @DisplayName("an absent and a whitespace-only identifier both report BLANK")
+        void anAbsentAndAWhitespaceIdentifierBothReportBlank() {
+            for (final String presented : new String[] {null, "", " ", "   "}) {
+                final ValidationException refused = catchThrowableOfType(ValidationException.class,
+                        () -> controller.getTransactionDetail(presented, principal));
+
+                assertThat(refused.getFieldName()).isEqualTo("transactionId");
+                assertThat(refused.getFailureKind())
+                        .as("app/cbl/COTRN01C.cbl:147 tests SPACES OR LOW-VALUES in a single arm")
+                        .isEqualTo(ValidationException.FailureKind.BLANK);
+            }
+            verifyNoInteractions(transactionDetailService);
+        }
+    }
+
 }

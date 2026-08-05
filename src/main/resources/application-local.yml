@@ -409,10 +409,23 @@ spring:
     # default because only the host and database segments are new here.
     # Database name default matches docker-compose.yml:54.
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:carddemo}
-    # Matches docker-compose.yml:55 POSTGRES_USER: ${POSTGRES_USER:-carddemo}.
-    # A role name is not a credential; the password below it is, and is
+    # A role name is not a credential; the password behind it is, and is
     # inherited from the base with no default - see DELIBERATE OMISSIONS.
-    username: ${POSTGRES_USER:carddemo}
+    #
+    # THE LEAST-PRIVILEGE ROLE COMES FIRST HERE TOO, and it has to: this is the
+    # profile docker-compose.yml activates, so a plain ${POSTGRES_USER} here
+    # would keep every local run connected as the cluster BOOTSTRAP role - which
+    # the postgres image creates as a SUPERUSER - no matter what the base
+    # profile says. The order is the same as the base's: the DML-only runtime
+    # role if it is supplied, otherwise the bootstrap role so that an existing
+    # volume keeps working. docker-compose.yml provisions the role and resolves
+    # its own default with Compose's `:-`, which unlike Spring's `:` treats an
+    # empty value as unset.
+    #
+    # The final ${POSTGRES_USER:carddemo} default matches
+    # docker-compose.yml's POSTGRES_USER: ${POSTGRES_USER:-carddemo}.
+    username: ${CARDDEMO_DB_APP_USER:${POSTGRES_USER:carddemo}}
+    password: ${CARDDEMO_DB_APP_PASSWORD:${POSTGRES_PASSWORD}}
 
   batch:
     jdbc:
@@ -439,6 +452,25 @@ spring:
       initialize-schema: always
 
   flyway:
+    # ------------------------------------------------------------------------
+    # Migrations run as the DDL-owning role, requests as the DML-only one
+    # ------------------------------------------------------------------------
+    # The other half of the split declared on spring.datasource above. Flyway
+    # creates the eleven tables, the three indexes and its own history table;
+    # the runtime creates nothing, so the two do not need the same authority and
+    # a superuser satisfies neither requirement well.
+    #
+    # Declared HERE and in application-prod.yml rather than in the base, because
+    # Boot derives a separate DataSource as soon as this property is non-null
+    # and application-test.yml must keep the credentials @ServiceConnection
+    # injects from its Testcontainers container. The base profile records the
+    # full reasoning.
+    #
+    # The fallback is the bootstrap role, so a volume created before these roles
+    # existed still migrates and still validates. docker-compose.yml provisions
+    # both roles on first initialisation of a fresh volume.
+    user: ${CARDDEMO_DB_MIGRATION_USER:${POSTGRES_USER:carddemo}}
+    password: ${CARDDEMO_DB_MIGRATION_PASSWORD:${POSTGRES_PASSWORD}}
     placeholders:
       # OPENS the demonstration-user gate that application.yml closes. This is
       # one of the very few keys in this profile that changes behaviour rather

@@ -44,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -55,6 +56,7 @@ import static org.mockito.Mockito.when;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -94,6 +96,8 @@ import com.cardemo.service.admin.UserAddService;
 import com.cardemo.service.admin.UserAddService.AttentionIdentifier;
 import com.cardemo.service.admin.UserAddService.UserAddScreen;
 import com.cardemo.service.shared.FileStatusMapper;
+
+import jakarta.persistence.EntityManager;
 
 /**
  * Unit tests for {@code com.cardemo.service.admin.UserAddService}, the Java replacement for
@@ -574,6 +578,18 @@ class UserAddServiceTest {
     @Mock
     private PasswordEncoder encoder;
 
+    /**
+     * The persistence context. A double, so no database is reached.
+     *
+     * <p>The insert goes through {@link EntityManager#persist(Object)} rather than
+     * {@code JpaRepository.save}, because {@code save} would take the {@code merge} path for an
+     * assigned-identifier entity and could update a row a concurrent create had just committed - replacing its
+     * password hash. Every assertion about the written record therefore verifies this double, and the
+     * repository double is verified only for the existence probe.
+     */
+    @Mock
+    private EntityManager entityManager;
+
     /** The real mapper: a pure function with a no-argument constructor, so nothing is gained by faking it. */
     private FileStatusMapper fileStatusMapper;
 
@@ -583,7 +599,8 @@ class UserAddServiceTest {
     @BeforeEach
     void setUp() {
         this.fileStatusMapper = new FileStatusMapper();
-        this.service = new UserAddService(this.repository, this.encoder, this.fileStatusMapper, FIXED_CLOCK);
+        this.service = new UserAddService(this.repository, this.encoder, this.fileStatusMapper,
+                this.entityManager, FIXED_CLOCK);
     }
 
     // ----------------------------------------------------------------------------------------------------
@@ -602,9 +619,37 @@ class UserAddServiceTest {
                 + DIGEST_FIELD_MARKER + SYNTHETIC_SALT + SYNTHETIC_BODY;
     }
 
+    /**
+     * The {@code SQLSTATE} of a unique or primary-key violation, {@value}.
+     *
+     * <p>Restated here rather than referenced from the component under test, so that a silent change to the
+     * value the component classifies on fails a test rather than passing one.
+     */
+    private static final String SQLSTATE_UNIQUE_VIOLATION = "23505";
+
+    /**
+     * The {@code SQLSTATE} PostgreSQL reports for a {@code U+0000} in a character column, {@value} -
+     * {@code character_not_in_repertoire}, a member of the class {@code 22} data exceptions.
+     */
+    private static final String SQLSTATE_CHARACTER_NOT_IN_REPERTOIRE = "22021";
+
+    /** The {@code SQLSTATE} of a check-constraint violation, {@value}: class {@code 23} but not a duplicate. */
+    private static final String SQLSTATE_CHECK_VIOLATION = "23514";
+
     /** @return the digest the contract accepts: BCrypt at strength 10, 60 characters. */
     private static String contractualDigest() {
         return digestWithCost(CONTRACTUAL_COST_FACTOR);
+    }
+
+    /**
+     * Builds the store failure an unstorable value produces, carrying the {@code SQLSTATE} given.
+     *
+     * @param sqlState the state to report, one of the class {@code 22} data-exception members
+     * @return the refusal, with the driver's exception as its cause
+     */
+    private static DataIntegrityViolationException dataException(final String sqlState) {
+        return new DataIntegrityViolationException("the column refused the supplied value",
+                new SQLException("invalid byte sequence for encoding \"UTF8\": 0x00", sqlState));
     }
 
     /**
@@ -641,11 +686,52 @@ class UserAddServiceTest {
         when(this.encoder.encode(credential)).thenReturn(contractualDigest());
     }
 
-    /** @return the single record handed to {@code saveAndFlush}. */
+    /** @return the single record handed to {@code persist}. */
     private UserSecurity captureSaved() {
         final ArgumentCaptor<UserSecurity> captor = ArgumentCaptor.forClass(UserSecurity.class);
-        verify(this.repository).saveAndFlush(captor.capture());
+        verify(this.entityManager).persist(captor.capture());
         return captor.getValue();
+    }
+
+    /**
+     * Builds the failure a real unique violation arrives as, with the SQLSTATE the driver reports.
+     *
+     * <p>Realistic rather than convenient: the service now classifies a store failure from the driver's
+     * SQLSTATE rather than from the translated exception type, because Spring maps a duplicate key, a check
+     * refusal and an unrepresentable value all onto {@code DataIntegrityViolationException}. A stub carrying no
+     * SQLSTATE would exercise only the fallback and would prove nothing about the condition it names.
+     * PostgreSQL reports {@code 23505 unique_violation}.
+     *
+     * @param detail the message the driver would carry
+     * @return the translated failure, with a SQLSTATE-bearing cause
+     */
+    private static DataIntegrityViolationException uniqueViolation(final String detail) {
+        return new DataIntegrityViolationException(detail,
+                new SQLException(detail, SQLSTATE_UNIQUE_VIOLATION));
+    }
+
+    /**
+     * Builds the failure a real check-constraint refusal arrives as: PostgreSQL {@code 23514 check_violation}.
+     *
+     * @param detail the message the driver would carry
+     * @return the translated failure, with a SQLSTATE-bearing cause
+     */
+    private static DataIntegrityViolationException checkViolation(final String detail) {
+        return new DataIntegrityViolationException(detail,
+                new SQLException(detail, SQLSTATE_CHECK_VIOLATION));
+    }
+
+    /**
+     * Builds the failure an unrepresentable value arrives as: PostgreSQL
+     * {@code 22021 invalid byte sequence for encoding "UTF8": 0x00}, which is what a {@code NUL} inside a name
+     * produces. A COBOL {@code X(20)} field held that byte; a PostgreSQL text column cannot.
+     *
+     * @param detail the message the driver would carry
+     * @return the translated failure, with a SQLSTATE-bearing cause
+     */
+    private static DataIntegrityViolationException invalidByteSequence(final String detail) {
+        return new DataIntegrityViolationException(detail,
+                new SQLException(detail, SQLSTATE_CHARACTER_NOT_IN_REPERTOIRE));
     }
 
     /**
@@ -753,7 +839,7 @@ class UserAddServiceTest {
                     });
 
             // The write is suppressed by :153 IF NOT ERR-FLG-ON, so nothing is probed, hashed or inserted.
-            verifyNoInteractions(repository, encoder);
+            verifyNoInteractions(repository, encoder, entityManager);
         }
 
         @Test
@@ -766,7 +852,7 @@ class UserAddServiceTest {
                     .withMessage(LAST_NAME_REQUIRED)
                     .satisfies(thrown -> assertThat(thrown.getFieldName()).isEqualTo(FIELD_LAST_NAME));
 
-            verifyNoInteractions(repository, encoder);
+            verifyNoInteractions(repository, encoder, entityManager);
         }
 
         @Test
@@ -779,7 +865,7 @@ class UserAddServiceTest {
                     .withMessage(USER_ID_REQUIRED)
                     .satisfies(thrown -> assertThat(thrown.getFieldName()).isEqualTo(FIELD_USER_ID));
 
-            verifyNoInteractions(repository, encoder);
+            verifyNoInteractions(repository, encoder, entityManager);
         }
 
         @Test
@@ -797,7 +883,7 @@ class UserAddServiceTest {
                     });
 
             // An empty credential never reaches the encoder, so no digest of blanks can be persisted.
-            verifyNoInteractions(repository, encoder);
+            verifyNoInteractions(repository, encoder, entityManager);
         }
 
         @Test
@@ -810,7 +896,7 @@ class UserAddServiceTest {
                     .withMessage(USER_TYPE_REQUIRED)
                     .satisfies(thrown -> assertThat(thrown.getFieldName()).isEqualTo(FIELD_USER_TYPE));
 
-            verifyNoInteractions(repository, encoder);
+            verifyNoInteractions(repository, encoder, entityManager);
         }
 
         @Test
@@ -993,7 +1079,7 @@ class UserAddServiceTest {
                     });
 
             verify(encoder).encode(PRESENTED_CREDENTIAL);
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, never()).persist(any(UserSecurity.class));
         }
 
         @Test
@@ -1007,7 +1093,7 @@ class UserAddServiceTest {
                 final PasswordEncoder freshEncoder = mock(PasswordEncoder.class);
                 when(freshEncoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
                 final UserAddService fresh = new UserAddService(freshRepository, freshEncoder,
-                        new FileStatusMapper(), FIXED_CLOCK);
+                        new FileStatusMapper(), mock(EntityManager.class), FIXED_CLOCK);
                 final UserCreateRequest submitted = request(FIRST_NAME, LAST_NAME, NEW_USER_ID, code);
 
                 assertThatExceptionOfType(ValidationException.class)
@@ -1019,7 +1105,7 @@ class UserAddServiceTest {
                                     .isEqualTo(ValidationException.FailureKind.INVALID);
                         });
 
-                verify(freshRepository, never()).saveAndFlush(any(UserSecurity.class));
+                verify(freshRepository, never()).save(any(UserSecurity.class));
             }
         }
 
@@ -1059,6 +1145,43 @@ class UserAddServiceTest {
         }
 
         @Test
+        @DisplayName("the credential is hashed EXACTLY as submitted, never folded - :157")
+        void theCredentialIsHashedExactlyAsSubmitted() {
+            // THE ASYMMETRY THIS PINS IS THE SOURCE'S, AND IT IS A TRAP.
+            //
+            // The write moves the field onto the record unchanged: MOVE PASSWDI OF COUSR1AI TO SEC-USR-PWD
+            // at app/cbl/COUSR01C.cbl:157, with no FUNCTION UPPER-CASE anywhere in the program. Sign-on
+            // folds what it is given before comparing: MOVE FUNCTION UPPER-CASE(PASSWDI ...) TO WS-USER-PWD
+            // at app/cbl/COSGN00C.cbl:135-136, compared at :223. The two therefore never agree unless the
+            // stored value already equals its own upper-case form - so a credential containing a lower-case
+            // letter can be SET and can never be USED.
+            //
+            // It is preserved, because folding here would widen the credential set the system accepts and
+            // parity is the contract. It is disclosed instead: docs/api-contracts.md carries the warning on
+            // both write operations and finding M-11 in the Medium register. This test exists so the
+            // asymmetry cannot be "tidied up" without a deliberate decision - folding the argument would
+            // make this assertion fail, which is the point.
+            //
+            // Note also that app/csd/CARDDEMO.CSD declares no UCTRAN, so the terminal did not fold the input
+            // either. The quirk is live in the source rather than masked by the transaction monitor, and it
+            // goes unnoticed only because all ten seeded credentials are already upper-case
+            // [app/jcl/DUSRSECJ.jcl].
+            final String mixedCase = "Pw1234xy";
+            when(repository.existsById(NEW_USER_ID)).thenReturn(false);
+            when(encoder.encode(mixedCase)).thenReturn(contractualDigest());
+
+            service.addUser(validRequest(), mixedCase);
+
+            final ArgumentCaptor<String> presented = ArgumentCaptor.forClass(String.class);
+            verify(encoder).encode(presented.capture());
+            assertThat(presented.getValue())
+                    .as("the encoder must receive the submitted bytes. Folding them here would silently "
+                            + "change which credentials the system accepts")
+                    .isEqualTo(mixedCase)
+                    .isNotEqualTo(mixedCase.toUpperCase(java.util.Locale.ROOT));
+        }
+
+        @Test
         @DisplayName("a credential past eight characters is REFUSED, never truncated and never hashed whole")
         void credentialPastTheBoundaryIsRefused() {
             // THIS TEST ONCE ASSERTED THE OPPOSITE, and the reasoning it carried was wrong twice over.
@@ -1093,7 +1216,7 @@ class UserAddServiceTest {
                     });
 
             verifyNoInteractions(encoder);
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, never()).persist(any(UserSecurity.class));
         }
 
         @Test
@@ -1177,7 +1300,7 @@ class UserAddServiceTest {
             final Throwable thrown = catchAddFailure(validRequest(), PRESENTED_CREDENTIAL);
 
             assertAbend(thrown);
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, never()).persist(any(UserSecurity.class));
         }
 
         @Test
@@ -1186,7 +1309,7 @@ class UserAddServiceTest {
             when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn("");
 
             assertAbend(catchAddFailure(validRequest(), PRESENTED_CREDENTIAL));
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, never()).persist(any(UserSecurity.class));
         }
 
         @Test
@@ -1195,7 +1318,7 @@ class UserAddServiceTest {
             when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn(null);
 
             assertAbend(catchAddFailure(validRequest(), PRESENTED_CREDENTIAL));
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, never()).persist(any(UserSecurity.class));
         }
 
         /**
@@ -1345,7 +1468,7 @@ class UserAddServiceTest {
             when(freshRepository.existsById(interiorBlank)).thenReturn(false);
             when(freshEncoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
             final UserAddService fresh = new UserAddService(freshRepository, freshEncoder,
-                    new FileStatusMapper(), FIXED_CLOCK);
+                    new FileStatusMapper(), mock(EntityManager.class), FIXED_CLOCK);
 
             final UserAddScreen truncated = fresh.addUser(
                     request(FIRST_NAME, LAST_NAME, interiorBlank, TYPE_USER), PRESENTED_CREDENTIAL);
@@ -1414,7 +1537,7 @@ class UserAddServiceTest {
             assertThat(stored.getPasswordHash()).isEqualTo(contractualDigest()); // :157
             assertThat(stored.getSecUsrType()).isEqualTo(UserType.ADMIN);       // :158
 
-            verify(repository, times(1)).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, times(1)).persist(any(UserSecurity.class));
         }
     }
 
@@ -1436,7 +1559,7 @@ class UserAddServiceTest {
                         assertThat(thrown.getCollidingKey()).isEqualTo(NEW_USER_ID);
                     });
 
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, never()).persist(any(UserSecurity.class));
         }
 
         @Test
@@ -1447,10 +1570,10 @@ class UserAddServiceTest {
             // them into different results would break parity. The identical collapse appears in
             // app/cbl/COBIL00C.cbl:533-536.
             final DataIntegrityViolationException collision =
-                    new DataIntegrityViolationException("unique violation on the USRSEC primary key");
+                    uniqueViolation("unique violation on the USRSEC primary key");
             when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
             when(repository.existsById(NEW_USER_ID)).thenReturn(false);
-            when(repository.saveAndFlush(any(UserSecurity.class))).thenThrow(collision);
+            doThrow(collision).when(entityManager).persist(any(UserSecurity.class));
 
             assertThatExceptionOfType(DuplicateRecordException.class)
                     .isThrownBy(() -> service.addUser(validRequest(), PRESENTED_CREDENTIAL))
@@ -1469,14 +1592,35 @@ class UserAddServiceTest {
 
             final UserSecurityRepository freshRepository = mock(UserSecurityRepository.class);
             final PasswordEncoder freshEncoder = mock(PasswordEncoder.class);
+            final EntityManager freshEntityManager = mock(EntityManager.class);
             when(freshEncoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
             when(freshRepository.existsById(NEW_USER_ID)).thenReturn(false);
-            when(freshRepository.saveAndFlush(any(UserSecurity.class)))
-                    .thenThrow(new DataIntegrityViolationException("concurrent insert"));
+            doThrow(uniqueViolation("concurrent insert"))
+                    .when(freshEntityManager).persist(any(UserSecurity.class));
             final UserAddService fresh = new UserAddService(freshRepository, freshEncoder,
-                    new FileStatusMapper(), FIXED_CLOCK);
+                    new FileStatusMapper(), freshEntityManager, FIXED_CLOCK);
 
             assertThat(catchDuplicate(fresh).getMessage()).isEqualTo(viaProbe).isEqualTo(DUPLICATE_USER_ID);
+        }
+
+        @Test
+        @DisplayName("the create path INSERTS: it can never update a row a concurrent create just committed")
+        void theCreatePathCanNeverDegradeIntoAnUpdate() {
+            // JpaRepository.save decides between persist and merge from whether the entity looks new, and
+            // UserSecurity carries an assigned eight-character identifier with no @Version, so it never looks
+            // new: save always took the merge path, which selects first and UPDATES when it finds a row. Two
+            // concurrent creates of the same identifier therefore both answered 201 and left one row, the
+            // second having overwritten the first - INCLUDING ITS BCRYPT PASSWORD HASH. EntityManager.persist
+            // has no such branch, so the primary key decides the race and exactly one caller can win.
+            arrangeWriteSucceeds(NEW_USER_ID, PRESENTED_CREDENTIAL);
+
+            service.addUser(validRequest(), PRESENTED_CREDENTIAL);
+
+            verify(entityManager).persist(any(UserSecurity.class));
+            verify(entityManager).flush();
+            verify(repository).existsById(NEW_USER_ID);
+            verifyNoMoreInteractions(repository);
+            verifyNoMoreInteractions(entityManager);
         }
 
         @Test
@@ -1512,8 +1656,61 @@ class UserAddServiceTest {
             catchDuplicate(service);
 
             verify(repository, times(1)).existsById(NEW_USER_ID);
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
             verifyNoMoreInteractions(repository);
+            verifyNoInteractions(entityManager);
+        }
+
+        @Test
+        @DisplayName("a value the column cannot store is a 400, NOT a 409 naming a free identifier")
+        void unstorableValueIsARequestErrorAndNeverAFalseDuplicate() {
+            // Finding F-2. org.springframework.dao.DataIntegrityViolationException is the translation of
+            // SQLSTATE classes 22 AND 23 alike, so the unconditional duplicate arm this replaces answered
+            // 409 'User ID already exist...' for an identifier the caller could prove was free - and the
+            // actual defect in the request was never reported at all. Classification separates them.
+            when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
+            when(repository.existsById(NEW_USER_ID)).thenReturn(false);
+            doThrow(dataException(SQLSTATE_CHARACTER_NOT_IN_REPERTOIRE))
+                    .when(entityManager).persist(any(UserSecurity.class));
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.addUser(validRequest(), PRESENTED_CREDENTIAL))
+                    .satisfies(thrown -> {
+                        assertThat(thrown.getMessage())
+                                .as("the sentence quotes no submitted value: neither the identifier the "
+                                        + "caller chose nor the credential it presented may be echoed")
+                                .doesNotContain(NEW_USER_ID)
+                                .doesNotContain(PRESENTED_CREDENTIAL);
+                        assertThat(thrown)
+                                .as("a 409 here is the defect this test pins: the identifier is free and no "
+                                        + "row was written")
+                                .isNotInstanceOf(DuplicateRecordException.class);
+                        assertThat(thrown.getFieldName())
+                                .as("""
+                                    the field named is the one the source's own cursor names on this arm - \
+                                    MOVE -1 TO FNAMEL at app/cbl/COUSR01C.cbl:272 - rather than a column \
+                                    name derived from the driver's text, which must not be relayed.""")
+                                .isEqualTo(FIELD_FIRST_NAME);
+                    })
+                    .withCauseInstanceOf(DataIntegrityViolationException.class);
+        }
+
+        @Test
+        @DisplayName("an integrity condition that is not a duplicate takes the WHEN OTHER arm, not the 409")
+        void otherIntegrityConditionsTakeTheHardFailureArm() {
+            // The source's write guard has exactly two arms: the duplicate condition and WHEN OTHER. A
+            // referential or check-constraint refusal is the second one, and reporting it as the first would
+            // tell the caller its key is taken when nothing about a key was violated.
+            when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
+            when(repository.existsById(NEW_USER_ID)).thenReturn(false);
+            doThrow(new DataIntegrityViolationException("a check constraint refused the row",
+                    new SQLException("check constraint", SQLSTATE_CHECK_VIOLATION)))
+                    .when(entityManager).persist(any(UserSecurity.class));
+
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> service.addUser(validRequest(), PRESENTED_CREDENTIAL))
+                    .satisfies(thrown -> assertThat(thrown)
+                            .as("anything but the duplicate answer; a 409 here is the defect F-2 reports")
+                            .isNotInstanceOf(DuplicateRecordException.class));
         }
 
         /**
@@ -1546,7 +1743,7 @@ class UserAddServiceTest {
 
             assertConcreteType(thrown, "FileAccessException");
             assertThat(thrown).hasCause(cause);
-            verify(repository).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager).persist(any(UserSecurity.class));
         }
 
         @Test
@@ -1572,12 +1769,12 @@ class UserAddServiceTest {
 
             when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
             when(repository.existsById(NEW_USER_ID)).thenReturn(false);
-            when(repository.saveAndFlush(any(UserSecurity.class))).thenThrow(cause);
+            doThrow(cause).when(entityManager).persist(any(UserSecurity.class));
             when(capturingMapper.toException(anyString(), anyString(), anyString(), any()))
                     .thenReturn(Optional.of(translated));
 
             final UserAddService withCapture =
-                    new UserAddService(repository, encoder, capturingMapper, FIXED_CLOCK);
+                    new UserAddService(repository, encoder, capturingMapper, entityManager, FIXED_CLOCK);
 
             assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> withCapture.addUser(validRequest(), PRESENTED_CREDENTIAL))
@@ -1626,12 +1823,12 @@ class UserAddServiceTest {
 
             when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
             when(repository.existsById(NEW_USER_ID)).thenReturn(false);
-            when(repository.saveAndFlush(any(UserSecurity.class))).thenThrow(cause);
+            doThrow(cause).when(entityManager).persist(any(UserSecurity.class));
             when(decliningMapper.toException(anyString(), anyString(), anyString(), any()))
                     .thenReturn(Optional.empty());
 
             final UserAddService withDecline =
-                    new UserAddService(repository, encoder, decliningMapper, FIXED_CLOCK);
+                    new UserAddService(repository, encoder, decliningMapper, entityManager, FIXED_CLOCK);
 
             final Throwable thrown = catchHardFailure(withDecline);
 
@@ -1671,10 +1868,60 @@ class UserAddServiceTest {
          *
          * @param cause the data-access failure the store will raise
          */
+        @Test
+        @DisplayName("a check-constraint refusal is NOT a duplicate: it reports :270's literal instead")
+        void aConstraintRefusalIsNotReportedAsADuplicate() {
+            // The defect this test pins. Spring maps a duplicate key, a check refusal and an unrepresentable
+            // value all onto DataIntegrityViolationException, so treating that one type as DFHRESP(DUPREC)
+            // answered 'User ID already exist...' for an identifier that was in fact free, with no row
+            // created. app/cbl/COUSR01C.cbl:267-273 is the arm that owns a write failure the program cannot
+            // name, and its literal is the one that must be reported.
+            arrangeHardFailure(checkViolation("violates check constraint ck_user_security_type"));
+
+            final Throwable thrown = catchHardFailure(service);
+
+            assertConcreteType(thrown, "DataIntegrityException");
+            assertThat(thrown)
+                    .as("the arm's own literal at :270-271 is unchanged; only the typed failure differs")
+                    .hasMessage(UNABLE_TO_ADD);
+            assertThat(thrown.getMessage()).isNotEqualTo(DUPLICATE_USER_ID);
+            assertThat(thrown).isNotInstanceOf(DuplicateRecordException.class);
+        }
+
+        @Test
+        @DisplayName("a value the column cannot represent is a malformed request naming :272's field")
+        void anUnrepresentableValueNamesTheFirstNameField() {
+            // A NUL inside a name: a COBOL X(20) field held that byte, a PostgreSQL text column cannot, so
+            // PostgreSQL answers 22021. The row was never written and the identifier is free, which is why
+            // reporting a duplicate was doubly wrong. The field named is FNAME because :272 is where this arm
+            // parks the cursor.
+            arrangeHardFailure(invalidByteSequence("invalid byte sequence for encoding UTF8: 0x00"));
+
+            final Throwable thrown = catchHardFailure(service);
+
+            assertConcreteType(thrown, "ValidationException");
+            assertThat(thrown).hasMessage(UNABLE_TO_ADD);
+            assertThat(((ValidationException) thrown).getFailureKind())
+                    .isEqualTo(ValidationException.FailureKind.INVALID);
+            assertThat(((ValidationException) thrown).getFieldName())
+                    .as(":272 MOVE -1 TO FNAMEL is what names this field")
+                    .isEqualTo("firstName");
+        }
+
+        @Test
+        @DisplayName("a unique violation still takes the duplicate arm, so the collision is not lost")
+        void aUniqueViolationStillTakesTheDuplicateArm() {
+            arrangeHardFailure(uniqueViolation("duplicate key value violates unique constraint"));
+
+            assertThatExceptionOfType(DuplicateRecordException.class)
+                    .isThrownBy(() -> service.addUser(validRequest(), PRESENTED_CREDENTIAL))
+                    .withMessage(DUPLICATE_USER_ID);
+        }
+
         private void arrangeHardFailure(final RuntimeException cause) {
             when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
             when(repository.existsById(NEW_USER_ID)).thenReturn(false);
-            when(repository.saveAndFlush(any(UserSecurity.class))).thenThrow(cause);
+            doThrow(cause).when(entityManager).persist(any(UserSecurity.class));
         }
 
         /**
@@ -1963,7 +2210,7 @@ class UserAddServiceTest {
             final UserAddScreen screen = service.openWithoutContext();
 
             assertThat(screen.navigationTarget()).isEqualTo(SIGN_ON_PROGRAM);
-            verifyNoInteractions(repository, encoder);
+            verifyNoInteractions(repository, encoder, entityManager);
         }
 
         @Test
@@ -1981,7 +2228,7 @@ class UserAddServiceTest {
             assertThat(screen.navigationTarget())
                     .as("the opening display transfers nowhere")
                     .isNull();
-            verifyNoInteractions(repository, encoder);
+            verifyNoInteractions(repository, encoder, entityManager);
         }
 
         @Test
@@ -1996,7 +2243,7 @@ class UserAddServiceTest {
             assertThat(screen.navigationTarget())
                     .as("the admin menu, not sign-on - the two targets must not be confused")
                     .isNotEqualTo(SIGN_ON_PROGRAM);
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, never()).persist(any(UserSecurity.class));
             verifyNoInteractions(encoder);
         }
 
@@ -2014,7 +2261,7 @@ class UserAddServiceTest {
             assertThat(screen.errorMessage()).isEmpty();
             assertThat(screen.cursorField()).isEqualTo(CURSOR_FIRST_NAME);
             assertThat(screen.navigationTarget()).isNull();
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, never()).persist(any(UserSecurity.class));
             verifyNoInteractions(encoder);
         }
 
@@ -2033,7 +2280,7 @@ class UserAddServiceTest {
             assertThat(screen.messageColour())
                     .as("an unrecognised key is not a success, so the green discriminator is absent")
                     .isNotEqualTo(GREEN);
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, never()).persist(any(UserSecurity.class));
             verifyNoInteractions(encoder);
         }
 
@@ -2047,7 +2294,7 @@ class UserAddServiceTest {
 
             assertThat(viaSubmit.errorMessage()).isEqualTo(ADDED_PREFIX + NEW_USER_ID + ADDED_SUFFIX);
             assertThat(viaSubmit.messageColour()).isEqualTo(GREEN);
-            verify(repository).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager).persist(any(UserSecurity.class));
         }
 
         @Test
@@ -2061,7 +2308,7 @@ class UserAddServiceTest {
                     .isEqualTo(CURSOR_FIRST_NAME);
             assertThat(service.submitScreen(AttentionIdentifier.OTHER, null, null).errorMessage())
                     .isEqualTo(INVALID_KEY);
-            verifyNoInteractions(repository, encoder);
+            verifyNoInteractions(repository, encoder, entityManager);
         }
 
         @Test
@@ -2070,7 +2317,7 @@ class UserAddServiceTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> service.submitScreen(null, validRequest(), PRESENTED_CREDENTIAL))
                     .withMessageContaining("aid");
-            verifyNoInteractions(repository, encoder);
+            verifyNoInteractions(repository, encoder, entityManager);
         }
 
         @Test
@@ -2082,7 +2329,7 @@ class UserAddServiceTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> service.addUser(null, PRESENTED_CREDENTIAL))
                     .withMessageContaining("request");
-            verifyNoInteractions(repository, encoder);
+            verifyNoInteractions(repository, encoder, entityManager);
         }
 
         @Test
@@ -2216,7 +2463,7 @@ class UserAddServiceTest {
                     });
 
             verifyNoInteractions(encoder);
-            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager, never()).persist(any(UserSecurity.class));
         }
 
         @Test
@@ -2250,7 +2497,7 @@ class UserAddServiceTest {
             assertThat(refusalFor(FIRST_NAME, LAST_NAME, NEW_USER_ID, "")).isEqualTo(USER_TYPE_REQUIRED);
             assertThat(refusalFor(FIRST_NAME, LAST_NAME, NEW_USER_ID, " ")).isEqualTo(USER_TYPE_REQUIRED);
 
-            verifyNoInteractions(encoder, repository);
+            verifyNoInteractions(encoder, repository, entityManager);
         }
 
         @Test
@@ -2264,7 +2511,7 @@ class UserAddServiceTest {
                     .isEqualTo(LAST_NAME_REQUIRED);
             assertThat(refusalFor(FIRST_NAME, LAST_NAME, LOW_VALUES, TYPE_USER))
                     .isEqualTo(USER_ID_REQUIRED);
-            verifyNoInteractions(encoder, repository);
+            verifyNoInteractions(encoder, repository, entityManager);
         }
 
         @Test
@@ -2323,10 +2570,10 @@ class UserAddServiceTest {
                     .map(constructor -> Arrays.asList(constructor.getParameterTypes()))
                     .orElseThrow(() -> new AssertionError("no public constructor was found"));
 
-            assertThat(parameterTypes).hasSize(4);
+            assertThat(parameterTypes).hasSize(5);
             assertThat(parameterTypes.stream().map(Class::getSimpleName).collect(Collectors.toList()))
                     .containsExactlyInAnyOrder("UserSecurityRepository", "PasswordEncoder",
-                            "FileStatusMapper", "Clock")
+                            "FileStatusMapper", "EntityManager", "Clock")
                     .noneMatch(name -> name.contains("Authentication"))
                     .noneMatch(name -> name.contains("Security") && !name.equals("UserSecurityRepository"))
                     .noneMatch(name -> name.contains("Token"))
@@ -2337,13 +2584,20 @@ class UserAddServiceTest {
         @DisplayName("every collaborator is mandatory, so the bean cannot start half wired")
         void everyCollaboratorIsMandatory() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new UserAddService(null, encoder, fileStatusMapper, FIXED_CLOCK));
+                    .isThrownBy(() -> new UserAddService(null, encoder, fileStatusMapper, entityManager,
+                            FIXED_CLOCK));
             assertThatNullPointerException()
-                    .isThrownBy(() -> new UserAddService(repository, null, fileStatusMapper, FIXED_CLOCK));
+                    .isThrownBy(() -> new UserAddService(repository, null, fileStatusMapper, entityManager,
+                            FIXED_CLOCK));
             assertThatNullPointerException()
-                    .isThrownBy(() -> new UserAddService(repository, encoder, null, FIXED_CLOCK));
+                    .isThrownBy(() -> new UserAddService(repository, encoder, null, entityManager,
+                            FIXED_CLOCK));
             assertThatNullPointerException()
-                    .isThrownBy(() -> new UserAddService(repository, encoder, fileStatusMapper, null));
+                    .isThrownBy(() -> new UserAddService(repository, encoder, fileStatusMapper, null,
+                            FIXED_CLOCK));
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new UserAddService(repository, encoder, fileStatusMapper, entityManager,
+                            null));
         }
 
         @Test
@@ -2456,7 +2710,7 @@ class UserAddServiceTest {
 
             // The identifier crosses the boundary as a typed argument, which is the binding itself.
             verify(repository).existsById(NEW_USER_ID);
-            verify(repository).saveAndFlush(any(UserSecurity.class));
+            verify(entityManager).persist(any(UserSecurity.class));
         }
 
         @Test
@@ -2485,7 +2739,7 @@ class UserAddServiceTest {
             }
 
             final ArgumentCaptor<UserSecurity> saved = ArgumentCaptor.forClass(UserSecurity.class);
-            verify(repository, times(seededIdentifiers.size())).saveAndFlush(saved.capture());
+            verify(entityManager, times(seededIdentifiers.size())).persist(saved.capture());
 
             assertThat(saved.getAllValues())
                     .hasSize(seededIdentifiers.size())

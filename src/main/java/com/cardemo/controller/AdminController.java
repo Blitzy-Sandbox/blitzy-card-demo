@@ -53,6 +53,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
@@ -423,6 +424,15 @@ public class AdminController {
     private static final String LAST_KEY_PARAMETER = "lastKey";
 
     /**
+     * The first page the browse can serve: one.
+     *
+     * <p>Zero is the unstarted browse the service reports before any page has been sent, so the first
+     * <em>served</em> page is one. Both are positions a space-filled key reaches without a cursor, which is
+     * why {@link #requirePositioningCursor} admits them.
+     */
+    private static final int FIRST_PAGE_NUMBER = 1;
+
+    /**
      * The request-parameter name of the next-page flag, {@code CDEMO-CU00-NEXT-PAGE-FLG} at
      * {@code app/cbl/COUSR00C.cbl:L71-L73}, which the source tests before it pages forward.
      */
@@ -507,6 +517,16 @@ public class AdminController {
 
     /** Problem-detail title for a user identifier that is already taken. */
     private static final String DUPLICATE_PROBLEM_TITLE = "User identifier already taken";
+
+    /**
+     * Problem title used when a constraint other than the primary key refused the write.
+     *
+     * <p>Deliberately distinct from {@value #DUPLICATE_PROBLEM_TITLE}. A KSDS could refuse a keyed write only
+     * for a key that already existed, so {@code app/cbl/COUSR01C.cbl} has one duplicate arm and one catch-all;
+     * a relational table refuses the same row for constraints VSAM never had, and reporting one of those as
+     * "identifier already taken" states something false about an identifier that is in fact free.
+     */
+    private static final String INTEGRITY_PROBLEM_TITLE = "User write refused by a constraint";
 
     /** Problem-detail title for a security file that is not available. */
     private static final String UNAVAILABLE_PROBLEM_TITLE = "Security file unavailable";
@@ -669,6 +689,15 @@ public class AdminController {
 
     /** Stable error code meaning that the key the operation would have created is already present. */
     private static final String ERROR_CODE_DUPLICATE = "CARDDEMO-DUPLICATE-RECORD";
+
+    /**
+     * Stable error code meaning that a constraint of the user security schema refused the write.
+     *
+     * <p>The same code {@code AccountController} and {@code TransactionController} publish for the same
+     * condition, and the one {@code docs/api-contracts.md} section 8.2 documents against a constraint refusal,
+     * so every write surface answers it identically.
+     */
+    private static final String ERROR_CODE_CONSTRAINT = "CARDDEMO-CONSTRAINT-REFUSED";
 
     /** Stable error code meaning that a required data store could not be reached; the request is retryable. */
     private static final String ERROR_CODE_UNAVAILABLE = "CARDDEMO-RESOURCE-UNAVAILABLE";
@@ -916,6 +945,14 @@ public class AdminController {
         // never declared.
         final UserListAction action = resolveAction(actionToken);
 
+        // Validated BEFORE the enter-key short-circuit below, and the ordering is the point: a control
+        // token this operation declares is either accepted or refused, never silently ignored. The
+        // enter-key arm does not USE the page number - PROCESS-ENTER-KEY forces the counter to zero - but
+        // ignoring a nine-digit value on that arm while refusing it on the other two published one domain
+        // rule and enforced it on two thirds of the operation. The same reasoning the comment above gives
+        // for not converting a token applies to not discarding one.
+        final int page = requireDigits(pageToken, PAGE_PARAMETER, MAXIMUM_PAGE_TOKEN_DIGITS);
+
         if (action == UserListAction.SUBMIT) {
             // PROCESS-ENTER-KEY forces CDEMO-CU00-PAGE-NUM to zero at app/cbl/COUSR00C.cbl:227 and pages
             // forward, so the answer is always page one and the echoed cursor is irrelevant on this arm.
@@ -925,7 +962,7 @@ public class AdminController {
         }
 
         final UserListService.UserListRequest request = new UserListService.UserListRequest(
-                requireDigits(pageToken, PAGE_PARAMETER, MAXIMUM_PAGE_TOKEN_DIGITS),
+                page,
                 requireBooleanToken(nextPageToken, NEXT_PAGE_PARAMETER),
                 firstKey,
                 lastKey,
@@ -933,7 +970,65 @@ public class AdminController {
                 echoedRows(requireDigits(rowCountToken, ROW_COUNT_PARAMETER,
                         MAXIMUM_ROW_COUNT_TOKEN_DIGITS)));
 
+        requirePositioningCursor(action, page, firstKey, lastKey);
+
         return ResponseEntity.ok(publishableList(pageUserList(action, request)));
+    }
+
+    /**
+     * Refuses a navigation that names a page past the first without carrying the cursor that addresses it.
+     *
+     * <p><strong>Finding, severity Minor - remediated here.</strong>
+     * {@code GET /api/admin/users?action=PAGE_FORWARD&page=5} with no cursor answered {@code 200}
+     * reporting {@code pageNumber=5} with an <strong>empty</strong> row list, and the backward spelling did
+     * likewise. A response that reports a page it did not serve cannot be acted on: a client cannot
+     * distinguish "there is nothing on page five" from "you did not tell me where page five is".
+     *
+     * <p><strong>The page number is a counter, not an address.</strong> {@code CDEMO-CU00-PAGE-NUM} at
+     * {@code app/cbl/COUSR00C.cbl} is what the heading displays; what positions the browse is the saved
+     * first or last user identifier that the {@code DFHPF7} and {@code DFHPF8} arms move into the record key
+     * before restarting it. The source cannot exhibit the disagreement, because the counter and both keys
+     * are written into the COMMAREA by the same send. Transformation Rule 7 moves that state onto the wire,
+     * where the parts arrive independently and can therefore disagree - which is what turns a COMMAREA
+     * invariant into a request precondition that has to be checked.
+     *
+     * <p><strong>What is deliberately left admitted.</strong> {@code SUBMIT} never reaches here: it returns
+     * above through the dedicated entry point, because {@code PROCESS-ENTER-KEY} forces the page counter to
+     * zero at {@code app/cbl/COUSR00C.cbl:227} and always answers the first page. The first page and an
+     * absent page are admitted for the same reason - a space-filled key positions at the start of the
+     * browse, which is what the source intends.
+     *
+     * <p>Static and side-effect free.
+     *
+     * @param action the resolved navigation action; never null
+     * @param page the resolved page number
+     * @param firstKey the first-row cursor as bound from the request, or null when it was absent
+     * @param lastKey the last-row cursor as bound from the request, or null when it was absent
+     * @throws ValidationException with failure kind {@code BLANK}, naming the cursor the request omitted
+     */
+    private static void requirePositioningCursor(final UserListAction action, final int page,
+            final String firstKey, final String lastKey) {
+
+        if (action == UserListAction.SUBMIT || page <= FIRST_PAGE_NUMBER) {
+            return;
+        }
+
+        if (action == UserListAction.PAGE_FORWARD) {
+            if (lastKey == null || lastKey.isBlank()) {
+                throw ValidationException.missingField(LAST_KEY_PARAMETER,
+                        "lastKey must be supplied on a forward request past the first page, because it is"
+                                + " the position being advanced from. Return the lastUserId the previous"
+                                + " response reported, alongside its pageNumber");
+            }
+            return;
+        }
+
+        if (firstKey == null || firstKey.isBlank()) {
+            throw ValidationException.missingField(FIRST_KEY_PARAMETER,
+                    "firstKey must be supplied on a backward request past the first page, because it is the"
+                            + " position being moved back from. Return the firstUserId the previous response"
+                            + " reported, alongside its pageNumber");
+        }
     }
 
     /**
@@ -1503,6 +1598,55 @@ public class AdminController {
     }
 
     /**
+     * Maps a constraint refusal that is <em>not</em> a duplicate key onto {@code 409 Conflict}.
+     *
+     * <p><strong>Why this handler exists.</strong> {@code WRITE-USER-SEC-FILE} at
+     * {@code app/cbl/COUSR01C.cbl}:250-274 has one duplicate arm - {@code DFHRESP(DUPKEY)} at {@code :260} and
+     * {@code DFHRESP(DUPREC)} at {@code :261} sharing a body - and one {@code WHEN OTHER} at {@code :267}.
+     * {@code V1__create_schema.sql} declares constraints on {@code user_security} that the KSDS did not,
+     * {@code ck_user_security_type} among them, and a refusal by one of those is a condition the source could
+     * not encounter. Folding it onto the duplicate arm answered {@code 'User ID already exist...'} for an
+     * identifier that was free, with no row created - a statement about the store that was simply untrue. This
+     * handler is where that ends.</p>
+     *
+     * <p>{@code 409} rather than {@code 400}: the body is well formed and its fields individually valid, and
+     * what refuses the row is the state of the schema. {@code docs/api-contracts.md} section 8.2 documents
+     * {@value #ERROR_CODE_CONSTRAINT} against exactly this condition, and both other write surfaces answer it
+     * the same way.</p>
+     *
+     * <p><strong>The relation and the constraint name are logged, not returned.</strong> Together they map the
+     * store, either may change with any migration, and a caller can act on neither. The operator has both at
+     * {@code WARN} - the relation in the message and the constraint on the retained cause - joined to the
+     * caller's report by the {@code correlationId} the body carries. No user identifier and no credential
+     * reaches either the body or the log line.</p>
+     *
+     * @param violation the constraint refusal; its constraint name and relation may each be null.
+     * @return {@code 409 Conflict} carrying the exception's own message, the stable error code and the
+     *         correlation identifier
+     */
+    @ExceptionHandler(DataIntegrityException.class)
+    public ResponseEntity<ProblemDetail> handleDataIntegrity(final DataIntegrityException violation) {
+
+        final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle(INTEGRITY_PROBLEM_TITLE);
+
+        final String violationMessage = violation.getMessage();
+        if (violationMessage != null) {
+            problem.setDetail(violationMessage);
+        }
+
+        // The relation is named and the constraint is not, for the reason given on the transaction surface's
+        // counterpart: the retained cause carries the driver's own message, which names both the constraint
+        // and the offending key, and it is logged with this entry.
+        LOG.warn("Refused a user administration request with 409: a constraint on relation {} refused the "
+                + "write. This is NOT a duplicate identifier and the request is not retryable as submitted",
+                violation.getRelation(), violation);
+
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(withPublicEnvelope(problem, ERROR_CODE_CONSTRAINT));
+    }
+
+    /**
      * Maps an unavailable security file onto {@code 503 Service Unavailable}.
      *
      * <p>The translation of file status {@code '35'} and of {@code DFHRESP(NOTOPEN)}. The condition is
@@ -1859,7 +2003,8 @@ public class AdminController {
 
         final UserUpdateService.UserUpdateScreen screen;
         try {
-            screen = this.userUpdateService.updateUser(request, NO_CLIENT_SNAPSHOT);
+            screen = this.userUpdateService.updateUser(withIdentityFrom(request, userId),
+                    NO_CLIENT_SNAPSHOT);
         } catch (final CardDemoException modelled) {
             throw modelled;
         } catch (final RuntimeException unexpected) {
@@ -1926,6 +2071,51 @@ public class AdminController {
     }
 
     /**
+     * Supplies the addressed identifier to a body that did not name one, reproducing
+     * {@code app/cbl/COUSR02C.cbl:L102-L103}.
+     *
+     * <p><strong>Finding, severity Major - remediated here.</strong> The body was previously relayed
+     * unchanged, so a request carrying the documented shape - the identifier in the path only - was refused
+     * with {@code 'User ID can NOT be empty...'} and the operation could be reached only by duplicating the
+     * identifier inside the body, which nothing documents.
+     *
+     * <p><strong>Why the path is the right source, from the source.</strong> On first entry the program does
+     * not wait for an operator to type the identifier: {@code :L100-L107} tests
+     * {@code CDEMO-CU02-USR-SELECTED}, the identifier the user-list screen put in the commarea, moves it into
+     * {@code USRIDINI OF COUSR2AI} and only then performs {@code PROCESS-ENTER-KEY}. The screen field is
+     * therefore a <em>carrier</em> of the navigation context, not its origin. In this surface the navigation
+     * context is the path segment, which is why {@code USRIDINI} may be omitted from the body and why
+     * {@link #requireIdentifiersAgree} still refuses a body that names a different user.
+     *
+     * <p>What this does not weaken: {@code PROCESS-ENTER-KEY}'s empty-identifier rejection at
+     * {@code :L146-L151} is untouched and still reachable, because it fires whenever the identifier the
+     * service receives is blank - which, on the screen, was the case only when the commarea carried no
+     * selection either. A path segment cannot be blank and still match this route, so on this surface the
+     * condition it guards is the one the source guarded: nothing selected and nothing typed.
+     *
+     * <p>Only the identifier is substituted. The other eleven declared members travel exactly as sent,
+     * because {@code :L102-L103} is one MOVE into one field and touches nothing else - in particular it does
+     * not clear the four data fields, which {@code :L158-L161} does separately and only after the edit
+     * passes.
+     *
+     * @param request the twelve declared fields of the update screen, as submitted.
+     * @param userId the identifier from the path, which addresses the record.
+     * @return the same request when it already names an identifier, otherwise a copy naming the addressed
+     * one, never null
+     */
+    private static UserUpdateRequest withIdentityFrom(final UserUpdateRequest request,
+            final String userId) {
+
+        if (request.userId() != null && !request.userId().isBlank()) {
+            return request;
+        }
+        return new UserUpdateRequest(request.transactionName(), request.title01(), request.currentDate(),
+                request.programName(), request.title02(), request.currentTime(), userId,
+                request.firstName(), request.lastName(), request.password(), request.userType(),
+                request.errorMessage());
+    }
+
+    /**
      * Refuses a request whose body names a different user than its path does.
      *
      * <p>Both places are part of the contract - the path addresses the record and
@@ -1935,9 +2125,11 @@ public class AdminController {
      * the source would have treated as two different keys.</p>
      *
      * <p>A body member that is null or blank is <em>not</em> a disagreement. It is the absent and the blank
-     * state of the three-state model, and it is relayed unchanged so that the source's own empty-identifier
-     * rejection at {@code app/cbl/COUSR02C.cbl:L180-L185} fires exactly as it did on the screen rather than
-     * being pre-empted by a rule the source does not have.</p>
+     * state of the three-state model, and it is admitted rather than refused - {@link #withIdentityFrom} then
+     * fills it from the path exactly as {@code app/cbl/COUSR02C.cbl:L102-L103} fills {@code USRIDINI} from
+     * the commarea selection. The source's own empty-identifier rejection at {@code :L146-L151} and
+     * {@code :L180-L185} is not pre-empted: it still fires whenever the identifier the service receives is
+     * blank, which on this surface means the same thing it meant on the screen.</p>
      *
      * @param pathIdentifier the identifier from the path, which addresses the record.
      * @param bodyIdentifier the identifier the body carried, possibly null or blank.
@@ -2105,9 +2297,9 @@ public class AdminController {
             }
         }
         throw ValidationException.invalidField(ACTION_PARAMETER,
-                ACTION_PARAMETER + " must be exactly '" + UserListAction.SUBMIT.token() + "', '"
-                        + UserListAction.PAGE_BACKWARD.token() + "' or '"
-                        + UserListAction.PAGE_FORWARD.token() + "'");
+                "action must be exactly 'SUBMIT', 'PAGE_BACKWARD' or 'PAGE_FORWARD';"
+                        + " no alias, no padding and no other case is accepted. The same three tokens spell"
+                        + " the same three navigations on every list operation of this API");
     }
 
     /**
@@ -2172,7 +2364,7 @@ public class AdminController {
          * {@code :L227} and pages forward, so the answer is always page one whatever cursor was echoed. This
          * is the default, so a client that supplies no action at all gets the first page.
          */
-        SUBMIT("submit", UserListService.AttentionIdentifier.ENTER),
+        SUBMIT("SUBMIT", UserListService.AttentionIdentifier.ENTER),
 
         /**
          * Page backward. The transcription of the {@code DFHPF7} arm at
@@ -2181,7 +2373,7 @@ public class AdminController {
          * reports its top-of-page advisory at {@code :L250-L252} and returns the same page, and so does this
          * action.
          */
-        PAGE_BACKWARD("page-backward", UserListService.AttentionIdentifier.PF7),
+        PAGE_BACKWARD("PAGE_BACKWARD", UserListService.AttentionIdentifier.PF7),
 
         /**
          * Page forward. The transcription of the {@code DFHPF8} arm at
@@ -2190,7 +2382,7 @@ public class AdminController {
          * reports its bottom-of-page advisory at {@code :L272-L274} without reading anything, and so does
          * this action.
          */
-        PAGE_FORWARD("page-forward", UserListService.AttentionIdentifier.PF8);
+        PAGE_FORWARD("PAGE_FORWARD", UserListService.AttentionIdentifier.PF8);
 
         /** The token a client presents for this action, matched exactly. */
         private final String requestToken;

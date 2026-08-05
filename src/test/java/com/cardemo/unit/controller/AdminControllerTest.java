@@ -39,7 +39,10 @@ package com.cardemo.unit.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import com.cardemo.controller.AdminController;
 import com.cardemo.exception.DuplicateRecordException;
@@ -49,6 +52,7 @@ import com.cardemo.exception.FileUnavailableException;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.UserUpdateRequest;
+import com.cardemo.model.dto.UserUpdateResponse;
 import com.cardemo.service.admin.UserAddService;
 import com.cardemo.service.admin.UserDeleteService;
 import com.cardemo.service.admin.UserListService;
@@ -62,6 +66,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -298,8 +303,13 @@ class AdminControllerTest {
     @DisplayName("every control token is matched exactly rather than converted")
     class ControlTokenStrictness {
 
+        // The three declared spellings are now SUBMIT, PAGE_BACKWARD and PAGE_FORWARD - the same three
+        // this API's other two list operations declare. The former lower-cased and hyphenated spellings
+        // therefore belong here, among the refusals, rather than among the accepted tokens: one API
+        // publishing two vocabularies for one navigation was the defect this closes.
         @ParameterizedTest
-        @ValueSource(strings = {"SUBMIT", " submit", "submit ", "page_forward", "PAGE-FORWARD", "1", "bogus"})
+        @ValueSource(strings = {"submit", " SUBMIT", "SUBMIT ", "page_forward", "PAGE-FORWARD",
+            "page-forward", "page-backward", "Submit", "1", "bogus"})
         @DisplayName("an action token that is not one of the three exact spellings is refused")
         void anInexactActionTokenIsRefused(final String token) {
             assertThatExceptionOfType(ValidationException.class)
@@ -364,6 +374,148 @@ class AdminControllerTest {
                                 .isEqualTo(ValidationException.FailureKind.INVALID);
                     });
             assertNothingWasReached();
+        }
+    }
+
+    /**
+     * Which of the two places the addressed identifier comes from, and what happens when they disagree.
+     *
+     * <p><strong>Finding, severity Medium - remediated.</strong> The documented body for
+     * {@code PUT /api/admin/users/&#123;userId&#125;} carries no {@code userId} - the path variable is the key -
+     * and that shape was refused with {@code 'User ID can NOT be empty...'}. The operation was reachable only
+     * by duplicating the identifier inside the body, which nothing documents.
+     *
+     * <p>The source settles which place wins. On first entry {@code COUSR02C} does not wait for an operator
+     * to type the identifier: {@code app/cbl/COUSR02C.cbl:L100-L107} tests
+     * {@code CDEMO-CU02-USR-SELECTED} - the value the user-list screen left in the commarea - moves it into
+     * {@code USRIDINI OF COUSR2AI} and only then performs {@code PROCESS-ENTER-KEY}. The screen field carried
+     * the navigation context; it did not originate it. Here the path segment is that context.
+     */
+    @Nested
+    @DisplayName("the addressed identifier comes from the path, and the body may not contradict it")
+    class AddressedIdentifier {
+
+        /**
+         * Builds the twelve declared members of the update screen, with the identifier under test.
+         *
+         * @param bodyIdentifier the identifier the body carries, or null to omit it
+         * @return a populated request
+         */
+        private UserUpdateRequest bodyNaming(final String bodyIdentifier) {
+            return new UserUpdateRequest("CU02", "CardDemo", "08/04/26", "COUSR02C", "Update User",
+                    "10:15:30", bodyIdentifier, "Ada", "Lovelace", "Sw0rdf1sh", "U", null);
+        }
+
+        /**
+         * Stubs the service so the update completes, and returns what it was asked to update.
+         *
+         * @return the captor holding the request the service received
+         */
+        private ArgumentCaptor<UserUpdateRequest> stubbedService() {
+            when(userUpdateService.updateUser(any(), any())).thenReturn(
+                    new UserUpdateService.UserUpdateScreen("CU02", "CardDemo", "08/04/26", "COUSR02C",
+                            "Update User", "10:15:30", USER_ID, "Ada", "Lovelace", "U",
+                            "User has been updated ...", null, null, null, false, true));
+            return ArgumentCaptor.forClass(UserUpdateRequest.class);
+        }
+
+        /**
+         * The documented shape works: no identifier in the body, and the service is asked to update the one
+         * the path addressed.
+         */
+        @Test
+        @DisplayName("an omitted body identifier is filled from the path - :L102-L103")
+        void anOmittedBodyIdentifierIsFilledFromThePath() {
+            final ArgumentCaptor<UserUpdateRequest> captured = stubbedService();
+
+            final ResponseEntity<UserUpdateResponse> response =
+                    controller().updateUser(USER_ID, bodyNaming(null));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+            verify(userUpdateService).updateUser(captured.capture(), any());
+            assertThat(captured.getValue().userId())
+                    .as("the service must be asked to update the record the path addressed, not to reject a "
+                            + "field the caller was never asked to send")
+                    .isEqualTo(USER_ID);
+        }
+
+        /**
+         * A blank body identifier is the same condition as an absent one - it is not a disagreement, and it
+         * is not the source's empty-identifier rejection either, because the path supplied one.
+         */
+        @ParameterizedTest
+        @ValueSource(strings = {"", " ", "        "})
+        @DisplayName("a blank body identifier is filled from the path too, not refused")
+        void aBlankBodyIdentifierIsFilledFromThePath(final String blank) {
+            final ArgumentCaptor<UserUpdateRequest> captured = stubbedService();
+
+            controller().updateUser(USER_ID, bodyNaming(blank));
+
+            verify(userUpdateService).updateUser(captured.capture(), any());
+            assertThat(captured.getValue().userId()).isEqualTo(USER_ID);
+        }
+
+        /**
+         * An agreeing identifier is relayed as sent. Both places are part of the contract, so neither is
+         * dropped when they say the same thing.
+         */
+        @Test
+        @DisplayName("an agreeing body identifier is relayed unchanged")
+        void anAgreeingBodyIdentifierIsRelayedUnchanged() {
+            final ArgumentCaptor<UserUpdateRequest> captured = stubbedService();
+
+            controller().updateUser(USER_ID, bodyNaming(USER_ID));
+
+            verify(userUpdateService).updateUser(captured.capture(), any());
+            assertThat(captured.getValue().userId()).isEqualTo(USER_ID);
+        }
+
+        /**
+         * Only the identifier is substituted. {@code :L102-L103} is one MOVE into one field; in particular it
+         * does not clear the four data fields, which {@code :L158-L161} does separately and only after the
+         * edit passes. A substitution that touched anything else would silently alter the caller's edit.
+         */
+        @Test
+        @DisplayName("filling the identifier alters no other declared member")
+        void fillingTheIdentifierAltersNoOtherMember() {
+            final ArgumentCaptor<UserUpdateRequest> captured = stubbedService();
+            final UserUpdateRequest submitted = bodyNaming(null);
+
+            controller().updateUser(USER_ID, submitted);
+
+            verify(userUpdateService).updateUser(captured.capture(), any());
+            final UserUpdateRequest relayed = captured.getValue();
+            assertThat(relayed.transactionName()).isEqualTo(submitted.transactionName());
+            assertThat(relayed.title01()).isEqualTo(submitted.title01());
+            assertThat(relayed.currentDate()).isEqualTo(submitted.currentDate());
+            assertThat(relayed.programName()).isEqualTo(submitted.programName());
+            assertThat(relayed.title02()).isEqualTo(submitted.title02());
+            assertThat(relayed.currentTime()).isEqualTo(submitted.currentTime());
+            assertThat(relayed.firstName()).isEqualTo(submitted.firstName());
+            assertThat(relayed.lastName()).isEqualTo(submitted.lastName());
+            assertThat(relayed.password()).isEqualTo(submitted.password());
+            assertThat(relayed.userType()).isEqualTo(submitted.userType());
+            assertThat(relayed.errorMessage()).isEqualTo(submitted.errorMessage());
+        }
+
+        /**
+         * And the source's own empty-identifier rejection is not bypassed: it fires whenever the identifier
+         * the service receives is blank, which is now exactly when the path is blank as well. A blank path
+         * cannot match this route in the running application, so the guard is asserted at the seam rather
+         * than through a request that cannot be made.
+         */
+        @Test
+        @DisplayName("a blank path supplies nothing, so the source's own rejection still governs")
+        void aBlankPathSuppliesNothing() {
+            final ArgumentCaptor<UserUpdateRequest> captured = stubbedService();
+
+            controller().updateUser("   ", bodyNaming(null));
+
+            verify(userUpdateService).updateUser(captured.capture(), any());
+            assertThat(captured.getValue().userId())
+                    .as("nothing is invented. The blank travels to the service, which applies the source's "
+                            + "own 'User ID can NOT be empty...' at :L146-L151")
+                    .isEqualTo("   ");
         }
     }
 
@@ -487,4 +639,59 @@ class AdminControllerTest {
                     .doesNotContain("record changed");
         }
     }
+
+    /**
+     * A navigation past the first page must arrive with the cursor that addresses it.
+     *
+     * <p>{@code action=PAGE_FORWARD&page=5} with no cursor used to answer {@code 200} reporting
+     * {@code pageNumber=5} with an empty row list, which a client cannot distinguish from an exhausted
+     * browse.
+     */
+    @Nested
+    @DisplayName("a page past the first is refused without the cursor that addresses it")
+    class PagingPrecondition {
+
+        @Test
+        @DisplayName("a forward step past the first page names the missing last key")
+        void aForwardStepPastTheFirstPageNamesTheLastKey() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> controller().listUsers("PAGE_FORWARD", null, "5", null, null, null,
+                            null))
+                    .satisfies(refused -> {
+                        assertThat(refused.getFieldName()).isEqualTo("lastKey");
+                        assertThat(refused.getFailureKind())
+                                .isEqualTo(ValidationException.FailureKind.BLANK);
+                    });
+            verifyNoInteractions(userListService);
+        }
+
+        /**
+         * The page token is refused on the enter-key arm too, although that arm does not use it. Ignoring a
+         * nine-digit page on one arm while refusing it on the other two published one domain rule and
+         * enforced it on two thirds of the operation.
+         */
+        @Test
+        @DisplayName("a page outside the declared domain is refused on every arm, enter-key included")
+        void aPageOutsideTheDomainIsRefusedOnEveryArm() {
+            for (final String action : new String[] {null, "SUBMIT", "PAGE_FORWARD", "PAGE_BACKWARD"}) {
+                assertThatExceptionOfType(ValidationException.class)
+                        .as("action=%s must refuse a nine-digit page", action)
+                        .isThrownBy(() -> controller().listUsers(action, null, "999999999", null, null,
+                                null, null))
+                        .satisfies(refused -> assertThat(refused.getFieldName()).isEqualTo("page"));
+            }
+            verifyNoInteractions(userListService);
+        }
+
+        @Test
+        @DisplayName("a backward step past the first page names the missing first key")
+        void aBackwardStepPastTheFirstPageNamesTheFirstKey() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> controller().listUsers("PAGE_BACKWARD", null, "5", "   ", null, null,
+                            null))
+                    .satisfies(refused -> assertThat(refused.getFieldName()).isEqualTo("firstKey"));
+            verifyNoInteractions(userListService);
+        }
+    }
+
 }

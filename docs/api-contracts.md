@@ -91,7 +91,7 @@ page:
 | Session state | **None.** No cookie, no server-side session, no screen state — see [§5](#5-stateless-identity-the-commarea-has-no-server-side-successor) |
 | Correlation | Send or receive `X-Correlation-Id`; it is echoed into every error body and every log line |
 | Token signing key | Resolved from an environment variable in **every** Spring profile, with **no committed default**; the application fails fast when it is absent |
-| Operational endpoints | Spring Boot Actuator exposes `health`, `info` and `prometheus` only; the metrics scrape endpoint requires its own dedicated authority and is not part of the 17 business operations |
+| Operational endpoints | Spring Boot Actuator exposes `health`, `info` and `prometheus` only; the metrics scrape endpoint requires its own dedicated authority and is not part of the 17 business operations — see [§2.2](#22-operational-endpoints-and-the-scrape-credential) |
 
 There is **no user interface** in scope. The target surface is REST/JSON plus Actuator.
 The 3270 terminal and its BMS mapsets are consumed **as field contracts only** — no
@@ -153,6 +153,51 @@ Card 3 · Transaction 3 · Billing 1 · Report 1 · Admin 4**.
 
 Program line counts were verified with `wc -l` at `7756d89`. Symbolic-map field counts were
 verified by machine count of the `<name>I` data items in each `app/cpy-bms/*.CPY` member.
+
+---
+
+### 2.2 Operational endpoints, and the scrape credential
+
+Three Actuator endpoints are exposed and no others. Everything else — `env`, `beans`,
+`metrics`, `loggers`, `threaddump`, `heapdump`, `mappings`, `configprops`, `shutdown` — is
+unreachable, anonymously or with any credential this service issues.
+
+| Endpoint | Anonymous | Notes |
+|---|:--:|---|
+| `GET /actuator/health` (and `/health/liveness`, `/health/readiness`) | **yes** | Deliberately anonymous, so a container probe works before any credential exists |
+| `GET /actuator/info` | **yes** | |
+| `GET /actuator/prometheus` | **no** | HTTP Basic, carrying its own private authority. `GET` only |
+
+**`/actuator/prometheus` answers `401` to every caller until a scrape credential is
+configured, and that is the intended behaviour, not a fault.** The credential is two
+environment variables, `METRICS_SCRAPE_USERNAME` and `METRICS_SCRAPE_PASSWORD`, and **both**
+must be non-blank. With either half blank the endpoint holds **zero** principals and refuses
+everyone — so a deployment that forgets the credential loses metrics *visibly*, within one
+scrape interval, instead of publishing them anonymously. `.env.example` carries both variables
+with the credential deliberately empty, and the reasoning, at the point of definition.
+
+Two consequences are worth stating because each has been mistaken for a defect:
+
+* **A bearer token does not work here, not even an administrator's.** This path has its own
+  filter chain, its own authentication manager and its own principal, entirely isolated from
+  business identity. Conversely the scrape credential buys nothing on `/api/*`.
+* **The user name is a cross-file contract.** `observability/prometheus.yml` carries it as a
+  literal, because Prometheus performs no environment substitution on its configuration file.
+  Change it in one place and it must change in the other.
+
+Verify a configured deployment with:
+
+```bash
+curl -u "$METRICS_SCRAPE_USERNAME:$METRICS_SCRAPE_PASSWORD" \
+     http://localhost:8080/actuator/prometheus | grep '^carddemo_'
+```
+
+A refusal carries the same envelope as every other refusal on this service —
+`application/problem+json`, `CARDDEMO-AUTHENTICATION-REQUIRED`, a `correlationId` — plus
+`WWW-Authenticate: Basic realm="carddemo-metrics-scrape"`. The body deliberately does **not**
+say whether a credential is configured; that is deployment state, and an anonymous caller has
+no claim on it. The **log** says so plainly, naming both configuration keys when neither is
+set, which is where an operator should look.
 
 ---
 
@@ -420,8 +465,8 @@ parameters:
 
 | Parameter | Meaning | Accepted values |
 |---|---|---|
-| `action` | Which way to move, replacing the attention-identifier arms of the source | An exact token; no alias and no other spelling |
-| `page` | Current page number, replacing the COMMAREA page-number field | **Digits only** |
+| `action` | Which way to move, replacing the attention-identifier arms of the source | Exactly `SUBMIT`, `PAGE_BACKWARD` or `PAGE_FORWARD`; no alias, no padding and no other case |
+| `page` | Current page number, replacing the COMMAREA page-number field | **Digits only**, within the domain of the operation's own counter (below) |
 | `firstKey` | Key at the top of the page just shown, for backward paging | Opaque, echoed from the previous response |
 | `lastKey` | Key at the bottom of the page just shown, for forward paging | Opaque, echoed from the previous response |
 | `nextPageAvailable` | The next-page flag from the previous response | Exactly `true` or `false` |
@@ -433,10 +478,87 @@ would silently accept instructions the operation never declared, so every contro
 every paging operation is matched literally instead. A boolean parameter therefore accepts
 **only** `true` and `false`; `page` accepts **only** digits. Anything else is a `400`.
 
+**One vocabulary, three operations.** All three paging operations accept the same three
+tokens, spelled the same way. `GET /api/admin/users` formerly declared `submit`,
+`page-backward` and `page-forward` while the other two declared the upper-case forms, so one
+API published two vocabularies for one navigation and each rejected the other's spelling; the
+admin operation now declares the same three tokens as its siblings (finding M-13). An absent
+`action` is the same as `SUBMIT` on every one of the three.
+
 Response metadata carries the page number and a next-page flag, derived from the
 per-program COMMAREA page fields plus the map's own `PAGENUM X(8)` (`COTRN00`, `COUSR00`)
-or `PAGENO X(3)` (`COCRDLI`) field. Page numbering is bounded by the width of that screen
-field: a page number that cannot be rendered in the declared field is refused.
+or `PAGENO X(3)` (`COCRDLI`) field. Page numbering is bounded by **the COMMAREA counter the
+program maintains**, which is narrower than the map slot on the card list, and a page number
+outside that domain is refused with `400`:
+
+| Operation | Accepted `page` | Bounded by | Locator |
+|---|---|---|---|
+| [List cards](#121-list-cards) | `0`–`9` | `WS-CA-SCREEN-NUM PIC 9(1)` — the map slot `PAGENO` is `X(3)`, but the counter written into it is one digit | [`app/cbl/COCRDLIC.cbl:L237`] |
+| [List transactions](#131-list-transactions) | `0`–`99999999` | `CDEMO-CT00-PAGE-NUM PIC 9(08)` | [`app/cbl/COTRN00C.cbl:L65`] |
+| [List users](#161-list-users) | `0`–`99999999` | `CDEMO-CU00-PAGE-NUM PIC 9(08)` | [`app/cbl/COUSR00C.cbl`] |
+
+Zero is accepted on all three: it is what an unstarted browse reports, so a client echoing
+back the metadata it was given is not refused for it.
+
+**The positioning state is indivisible: echo all of it, or none of it.** In the source these
+values were fields of one COMMAREA record, written together by a single send and read back
+together by a single receive — a page number could not arrive without its key, because there
+was no way to send one without the other. Statelessness puts them on the wire as separate
+parameters, and separate parameters can arrive apart. They still mean nothing apart:
+
+* Send `action` with `page`, `firstKey`, `lastKey` and `nextPageAvailable` **exactly as the
+  previous response published them** (`firstCursor` → `firstKey`, `lastCursor` → `lastKey`,
+  `pageNumber` → `page`). A first request sends `action` alone, or nothing at all.
+* Omitting `nextPageAvailable` on a forward step is not an error and not a `400`. It means
+  what it says — *no next page is known to exist* — so the operation re-reads from the top of
+  the current page instead of advancing. A forward walk that appears not to progress is
+  almost always this.
+* **Asking to page backward from beyond the first page without `firstKey` is refused with
+  `400` naming `firstKey`**, and asking to page backward with no `page` at all is refused
+  with `400` naming `page`. This is a genuine precondition rather than a courtesy check:
+  `COCRDLIC`'s backward browse has **no end-of-data arm** — its response `EVALUATE`
+  [`app/cbl/COCRDLIC.cbl:L1304-L1318`] carries only `NORMAL`, `DUPREC` and `WHEN OTHER` — so
+  a backward read from an unpositioned browse is an I/O failure *by construction*. In the
+  source that state was unreachable, because the key and the page number are **fields of one
+  record**: `WS-CA-FIRST-CARDKEY` [`:L232-L234`] and `WS-CA-SCREEN-NUM` [`:L237`] both sit in
+  `WS-THIS-PROGCOMMAREA` [`:L228`], so there was no way to return one without the other. On
+  the wire they are separable, so the invariant the COMMAREA enforced by its shape becomes a
+  precondition that has to be checked — and it is refused as the malformed request it is
+  rather than reported as a store failure.
+* **Naming a page past the first without the cursor that addresses it is refused with `400`
+  naming that cursor** — `lastKey` on a forward step, `firstKey` on any other. This is the
+  same COMMAREA-invariant-becomes-precondition shape as the bullet above, and it is checked
+  for the same reason: **the page number is a display counter, not an address.** What
+  positions a browse is the saved key the `DFHPF7` / `DFHPF8` arms move into the record key
+  before restarting it; the counter only feeds the heading. With no key the space-filled field
+  positions at the start of the file, so `GET /api/cards?action=PAGE_FORWARD&page=8` used to
+  answer `200` reporting `pageNumber=8` while serving **page one's seven rows**, and the two
+  ten-row operations answered `200` reporting `pageNumber=5` with an **empty** row array
+  (finding M-14). Either way the response reported a page it had not served, which a client
+  cannot act on and cannot distinguish from an exhausted browse. The first page, and a request
+  naming no page at all, are admitted with no cursor.
+* `SUBMIT` on the two ten-row operations always answers the **first** page whatever `page`
+  says, and is therefore never refused for a missing cursor: the enter-key paragraph forces
+  the counter to zero [`app/cbl/COUSR00C.cbl:L227`] and re-reads from the search key. On the
+  card list `SUBMIT` redisplays the page it is given, so there it does need `firstKey`. A
+  `page` value **outside the declared domain is still refused on that arm**, even though the
+  arm does not use it: a control token the operation declares is either accepted or refused,
+  never silently discarded, which is the same rule that stops a token being converted.
+* Backward paging **from the first page** is not refused: it is the ordinary top-of-file arm
+  and answers `200` with the top-of-page literal.
+* A cursor is **sealed to the page it was minted for**. Presenting page 1's cursor as page
+  2's is refused with `400`, not silently honoured — an accepted mismatch would return a page
+  whose number and contents disagree.
+
+**A browse filter and a record key are validated differently, and deliberately.**
+`GET /api/cards?accountFilter=…` accepts an all-zero value and a value wider than eleven
+digits, while `GET /api/accounts/00000000000` and `…/000000000011` are both refused. The two
+are not the same kind of input. The filter is the source's own browse filter: `COCRDLIC`
+treats an all-zero or space-filled filter as *no filter* and starts the browse at the top of
+the file, so refusing it would remove the unfiltered browse. The path variable is an exact
+record key read with `READ … EQUAL`, where a value the key cannot hold has no matching record
+and is a client error. Both behaviours are faithful; the asymmetry is in the source, not in
+the translation.
 
 ### 7.2 Boundary behaviour
 
@@ -459,8 +581,13 @@ outcome, never an error (see [§8.2](#82-global-failure-and-status-mapping)).
 
 ## 8. Error-response envelope
 
-One shape, used by every operation. Error bodies are **RFC 9457 / RFC 7807 problem
-details** served as `application/problem+json`.
+One shape, used by every operation **and by every refusal decided before an operation is
+reached**. Error bodies are **RFC 9457 / RFC 7807 problem details** served as
+`application/problem+json`. There is no path through this application — not an unreadable
+`Content-Type`, not an unsatisfiable `Accept`, not a wrong method, not a request the servlet
+container refuses while it is still parsing the request line — that answers with a different
+body shape, a different media type, or no body at all. [§8.5](#85-refusals-decided-before-an-operation-is-reached)
+names the four boundaries that make that true and what each one can and cannot carry.
 
 ```json
 {
@@ -503,7 +630,16 @@ support request and the corresponding log records can be found.
 
 ### 8.1 Stable error codes
 
-Match on `errorCode`. These ten values are the complete set.
+Match on `errorCode`. These **nineteen** values are the complete set, and the table is
+exhaustive by construction — every `CARDDEMO-` literal that exists anywhere in
+`src/main/java` appears in exactly one row below.
+
+They fall into three groups, and the group tells you where the refusal was decided, which
+in turn tells you which optional members the body can carry.
+
+**Group A — an operation refused the request.** The controller that owns the operation
+answered. These bodies carry `instance`, and the validation ones additionally carry `field`
+and `failureKind`.
 
 | `errorCode` | Typical status | Raised when |
 |---|--:|---|
@@ -512,11 +648,35 @@ Match on `errorCode`. These ten values are the complete set.
 | `CARDDEMO-RECORD-NOT-FOUND` | `404` | A record the operation required was absent |
 | `CARDDEMO-DUPLICATE-RECORD` | `409` | A key already exists |
 | `CARDDEMO-UPDATE-CONFLICT` | `409`, `412`, `423`, `428` | A concurrency precondition failed — see [§11.2.6](#1126-outcome-markers-and-status-mapping) |
-| `CARDDEMO-CONSTRAINT-REFUSED` | `409` / `422` | A referential constraint refused the write |
+| `CARDDEMO-CONSTRAINT-REFUSED` | `409` / `422` | A referential, check or not-null constraint refused the write — see [§8.2.1](#821-a-vsam-write-had-one-failure-mode-a-table-has-four) |
 | `CARDDEMO-RESOURCE-UNAVAILABLE` | `503` | A required store or queue could not be opened |
 | `CARDDEMO-IO-FAILURE` | `502` | The store was reachable but the read or write failed |
 | `CARDDEMO-PROCESSING-ABEND` | `500` | The operation ended the way the legacy abend routine ended the task |
-| `CARDDEMO-INTERNAL-FAILURE` | `500` | A typed failure no other mapper on the controller claims |
+| `CARDDEMO-INTERNAL-FAILURE` | `500`, `501` | A typed failure no other mapper on the controller claims, or a container-level failure at or above `500` |
+
+**Group B — the request never got as far as an operation's own logic.** The body was
+rejected, or the caller was not entitled to the operation at all. These carry `instance`
+but never `field` or `failureKind`, because no field was reached.
+
+| `errorCode` | Typical status | Raised when |
+|---|--:|---|
+| `CARDDEMO-AUTHENTICATION-REQUIRED` | `401` | No usable bearer token accompanied a request to a protected operation |
+| `CARDDEMO-AUTHORIZATION-DENIED` | `403` | A token was valid but its role does not admit the path and method — **including every path this API does not publish**, which is denied rather than reported as absent |
+| `CARDDEMO-REQUEST-BODY-UNREADABLE` | `400` | The body could not be deserialised: malformed JSON, or a value past one of the JSON parser bounds (nesting depth, string, number, name and document length) that are applied before deserialisation |
+| `CARDDEMO-REQUEST-BODY-TOO-LARGE` | `413` | The body declared or streamed more than 16 384 bytes, refused before authentication |
+
+**Group C — refused at the framework or protocol boundary**, before any operation was
+selected. These carry neither `instance`, `field` nor `failureKind`; see
+[§8.5](#85-refusals-decided-before-an-operation-is-reached) for why, and for the precise
+boundary each one comes from.
+
+| `errorCode` | Typical status | Raised when |
+|---|--:|---|
+| `CARDDEMO-UNSUPPORTED-MEDIA-TYPE` | `415` | The request declared a `Content-Type` this application cannot read — a concrete type it does not accept, a **non-concrete** one such as `*/*` or `application/*+json`, an unparseable one, or none at all on an operation that needs a body. An `Accept` **response** header names the one type that would have worked |
+| `CARDDEMO-NOT-ACCEPTABLE` | `406` | No `Accept` value the caller offered can be satisfied. This application produces `application/json` and `application/problem+json` only |
+| `CARDDEMO-METHOD-NOT-ALLOWED` | `405`, `501` | The path is published but not for that method (`405`, with an `Allow` header), or the method is not implemented by the connector at all (`501`, `CONNECT` being the reachable case) |
+| `CARDDEMO-RESOURCE-NOT-FOUND` | `404` | Nothing is mapped to the path. Largely unreachable: an unpublished path is denied as `CARDDEMO-AUTHORIZATION-DENIED` first, which is the fail-closed choice and is deliberate |
+| `CARDDEMO-REQUEST-REJECTED` | `400` | The request was refused at the protocol boundary — an illegal character in the request target, or a method outside the HTTP firewall's allowed set such as `TRACE`. **The body deliberately says nothing about which**, for the reason given in [§8.5](#85-refusals-decided-before-an-operation-is-reached) |
 
 ### 8.2 Global failure and status mapping
 
@@ -529,13 +689,57 @@ in the corpus uses.
 | `FILE STATUS '00'` / `DFHRESP(NORMAL)` | — | `200` / `201` / `202` | Success |
 | `FILE STATUS '10'` / `DFHRESP(ENDFILE)` | — | `200` | **End of data is a control outcome, never an error.** It terminates a browse loop and, at the identifier-generation sites, is an accepted path that yields a first identifier of `1` |
 | `FILE STATUS '23'` / `DFHRESP(NOTFND)` | `RecordNotFoundException` | `404` | The general rule. **Two batch sites are exceptions** where a not-found status is an accepted *create* path rather than an error; both are in the batch tier and neither is reachable from any operation on this page |
-| `FILE STATUS '22'` / `DFHRESP(DUPREC)` | `DuplicateRecordException` | `409` | A key collision |
+| `FILE STATUS '22'` / `DFHRESP(DUPREC)` | `DuplicateRecordException` | `409` | A key collision, and **only** a key collision — see [§8.2.1](#821-a-vsam-write-had-one-failure-mode-a-table-has-four) |
 | `FILE STATUS '35'` / `DFHRESP(NOTOPEN)` | `FileUnavailableException` | `503` | Store or queue unavailable; safe to retry |
 | `FILE STATUS '9x'` | `FileAccessException` | `502` | Physical or logical I/O failure. The exception carries the **four-character expanded status** the legacy `9910-DISPLAY-IO-STATUS` renderer produced; that rendering is logged, not published |
 | Snapshot comparison detected a change | `ConcurrentUpdateException` | `409` / `412` / `423` / `428` | Which of the four depends on the outcome — [§11.2.6](#1126-outcome-markers-and-status-mapping) |
-| Referential failure across the foreign keys | `DataIntegrityException` | `409` / `422` | A constraint refused the write |
+| A constraint other than a unique key refused the write | `DataIntegrityException` | `409` | A foreign key, a check constraint or a `NOT NULL` column refused the row. **Not retryable as submitted** — see [§8.2.1](#821-a-vsam-write-had-one-failure-mode-a-table-has-four) |
+| A submitted value the column cannot represent | `ValidationException` | `400` | Reported against the field the source's own cursor names on its `WHEN OTHER` arm — see [§8.2.1](#821-a-vsam-write-had-one-failure-mode-a-table-has-four) |
 | Field validation | `ValidationException` | `400` | Plus `401` at sign-on for a refused credential |
 | Anything unexpected | `FatalProcessingException` | `500` | See below |
+
+#### 8.2.1 A VSAM write had one failure mode; a table has four
+
+A VSAM KSDS could refuse a keyed write for exactly one reason a COBOL program cared to name —
+the key was already present, reported as `DFHRESP(DUPKEY)` or `DFHRESP(DUPREC)`. Everything
+else fell into each program's single `WHEN OTHER` arm. That is why `WRITE-USER-SEC-FILE`
+[`app/cbl/COUSR01C.cbl:250-274`], `WRITE-TRANSACT-FILE` [`app/cbl/COTRN02C.cbl:722-748`] and
+its bill-payment counterpart [`app/cbl/COBIL00C.cbl:512-548`] each evaluate exactly three
+arms and no more.
+
+`V1__create_schema.sql` declares ten foreign keys and five check constraints that VSAM did
+not have, and PostgreSQL additionally refuses values a fixed-width COBOL field held happily —
+a `NUL` byte inside a name, for instance, because a PostgreSQL text column forbids `0x00`.
+Those conditions are *not* key collisions, and reporting them as one stated something false
+about the key and advised a retry that could never succeed.
+
+The condition is therefore read from the **driver's SQLSTATE**, not from the exception type
+the framework chose, because the framework maps all of the following onto one type:
+
+| SQLSTATE | Condition | Java exception | HTTP | Retryable |
+|---|---|---|--:|---|
+| `23505` | Unique or primary-key violation | `DuplicateRecordException` | `409` | Yes — the identifier-generation race is designed to be retried |
+| `23503`, `23502`, `23514`, other class `23` | A foreign key, `NOT NULL` or check constraint refused the row | `DataIntegrityException` | `409` | **No** — correct the request or the stored data |
+| class `22` | A submitted value cannot be represented in its column | `ValidationException` | `400` | **No** — correct the value |
+| anything else | The store could not be interrogated | `FileAccessException` | `502` | Yes |
+
+**The source-visible outcome is unchanged by this distinction.** Each program's `WHEN OTHER`
+arm still sets its error flag, moves its own literal — `'Unable to Add User...'`
+[`app/cbl/COUSR01C.cbl:270-271`], `'Unable to Add Transaction...'`
+[`app/cbl/COTRN02C.cbl:745-746`], `'Unable to Add Bill pay Transaction...'`
+[`app/cbl/COBIL00C.cbl:543-544`] — and parks its own cursor. What the SQLSTATE selects is only
+which typed failure carries that unchanged outcome outwards, and therefore which status the
+caller sees. The constraint name, the relation and the offending value are logged and never
+returned: together the first two are a map of the store, and the third may be a card number.
+
+The same reading applies to the one *read* that can be refused this way. Sign-on folds an
+unknown identifier and a wrong password into one indistinguishable outcome by design
+[`app/cbl/COSGN00C.cbl:241-251`]. `sec_usr_id` is `CHAR(8)`, so an identifier carrying a
+`NUL` is a value the key column cannot hold and therefore a key no row can have: the read the
+source would have performed is provably empty, which is `DFHRESP(NOTFND)`, the `WHEN 13` arm.
+It is answered `401` with the same body as every other refused credential, not `503` — which
+would have told an unauthenticated caller that the store was broken, and would have made the
+outcome distinguishable from a wrong password.
 
 `FatalProcessingException` is the abend path. Its payload is the four abend work-area fields
 of `app/cpy/CSMSG02Y.cpy` — which is internally titled `CABENDD.CPY` and is the **abend**
@@ -589,6 +793,52 @@ is a handled, documented outcome, not an unhandled exception.
   committed default, and the application fails fast when it is absent.
 * All AWS interaction targets **LocalStack**. There are zero live AWS credentials in this
   repository and no code path reaches a real AWS endpoint.
+
+### 8.5 Refusals decided before an operation is reached
+
+Seventeen operations answer every refusal they own from an `@ExceptionHandler` declared on the
+controller that owns them. That covers everything a controller method can be *reached* to
+refuse — and it is deliberately where those refusals live, so that status selection is
+reviewable next to the paragraph it reproduces.
+
+It cannot cover a refusal decided **before** a controller method is selected, and four such
+boundaries exist. Each one now renders the same envelope; each is listed with what it can and
+cannot carry, because the differences are contractual rather than accidental.
+
+| # | Boundary | Refuses | Publishes | Cannot publish |
+|--:|---|---|---|---|
+| 1 | **`Content-Type` screen** — runs after a handler is mapped, before the body is read | A declared `Content-Type` that is not a concrete type and subtype: `*/*`, `application/*`, `application/*+json`, `*/json` | `415`, `CARDDEMO-UNSUPPORTED-MEDIA-TYPE`, an `Accept` response header, and the request's own `correlationId` | `instance`, `field`, `failureKind` — no field was bound |
+| 2 | **Framework exception resolver** — consulted when the mapping itself refused, so no controller exists to ask | A concrete `Content-Type` the operation does not accept; an unsatisfiable `Accept`; a method the path does not publish; an unmapped path | `415` / `406` / `405` / `404` with the matching code, an `Allow` header on a `405`, and the request's own `correlationId` | `instance`, `field`, `failureKind` |
+| 3 | **HTTP-firewall rejection handler** | A method outside Spring Security's allowed set — `TRACE`, and any non-standard verb | `400`, `CARDDEMO-REQUEST-REJECTED`, any `Allow` header an earlier layer added, and the request's own `correlationId` | **Why** it was rejected — see below |
+| 4 | **Container error report** — the only layer reached when the connector refuses a request while still parsing it | An illegal character in the request target, such as `%00`; a method the connector does not implement | The matching code and a **minted** `correlationId`, written to the log against the status and target | The request's own `correlationId` — no filter ran, so none exists; and `instance` |
+
+Three properties of this design are worth stating explicitly, because each is a deliberate
+trade rather than an oversight.
+
+**A wildcard `Content-Type` is a `415`, not a `500`.** This is not the mechanism a reader
+expects. A wildcard *request* type **satisfies** a `consumes` condition, because media-type
+compatibility is asked in the direction "does the mapping's type include the request's",
+so the handler is selected and the failure surfaces one layer further in, as an
+`IllegalArgumentException` from the header parser. Mapping that exception type to a status
+globally would turn every programming error in the application into a `4xx`, so the screen
+happens where the fact is unambiguous instead: a declared type that is not concrete. The
+wildcard case and the `text/plain` case consequently answer **identically**, which is the
+point — they are the same condition.
+
+**A firewall rejection says nothing about why.** `TRACE` is refused twice over: the connector
+refuses it because `allowTrace` is false, and the HTTP firewall refuses the resulting error
+dispatch as well. The published body names neither the method nor the offending character,
+because that value is supplied by the caller and echoing it would both reflect input and
+describe the firewall's rules to whoever is probing them. The reason is written to the log,
+against a `correlationId` the caller also receives — so the refusal is diagnosable without
+being self-documenting to an attacker.
+
+**An unpublished path is a `403`, not a `404`.** `GET /api/nosuchthing` and
+`GET /api/accounts/00000000001/extra` answer `403` with `CARDDEMO-AUTHORIZATION-DENIED`. That
+is fail-closed by design: the authorization rules enumerate the seventeen published
+path-and-method pairs and deny everything else, so an unknown path is refused before anything
+can discover whether it exists. `CARDDEMO-RESOURCE-NOT-FOUND` therefore exists but is
+largely unreachable, and it is claimed so that a future permitted path cannot open a gap.
 
 ---
 
@@ -773,9 +1023,18 @@ read from the token's `role` claim — the stateless replacement for `CDEMO-USER
 
 | JSON member | Derived from | Notes |
 |---|---|---|
+| `menuType` | Which of the two option tables answered | `MAIN` here, `ADMIN` on [§10.2](#102-admin-menu). A response discriminator, not a screen field — one type serves both menus, and this is how a client tells them apart |
 | `optionCount` | `CDEMO-MENU-OPT-COUNT PIC 9(02) VALUE 10` [`app/cpy/COMEN02Y.cpy:L21`] | **10.** The bound on the array |
 | `options[].optionNumber` | `PIC 9(02)` per row | 1 … 10 |
-| `options[].optionName` | `PIC X(35)` per row | The caption, e.g. `Account View` |
+| `options[].optionName` | `PIC X(35)` per row | The caption, e.g. `Account View`, **space-padded to the declared 35** |
+| `options[].userTypeCode` | `CDEMO-MENU-OPT-USRTYPE PIC X(01)` [`app/cpy/COMEN02Y.cpy:L92`] | The eligibility byte the gate below reads. `U` on all ten in the shipped table — see finding L-3 |
+
+**`options[].programName` is not published**, although the option table declares it and the
+record transcribes it. It is the operand of `EXEC CICS XCTL PROGRAM(...)`, the dispatch
+mechanism [§10.0](#100-preamble-not-an-operation-option-dispatch-does-not-survive-into-the-target)
+replaces with URL navigation, and it was reaching the wire as `COACTVWC`, `COUSR00C` and
+their siblings (finding M-15). Navigate with the table in §10.0 instead; it maps each option
+number to the URL that replaces its program.
 
 Option rows beyond the count are **not** returned even though the map declares twelve slots
 and the table declares `OCCURS 12 TIMES` [`app/cpy/COMEN02Y.cpy:L88`].
@@ -824,8 +1083,20 @@ and the table declares `OCCURS 12 TIMES` [`app/cpy/COMEN02Y.cpy:L88`].
 |---|--:|---|
 | No authenticated principal | `401` | Empty |
 | Token carries neither recognised authority, so no user class could be resolved | `403` | Empty |
-| Option validation refused | `400` | `CARDDEMO-VALIDATION-REJECTED` with the literal above |
 | Abend or unclaimed typed failure | `500` | `CARDDEMO-PROCESSING-ABEND` / `CARDDEMO-INTERNAL-FAILURE` |
+
+**There is no `400` on either menu operation, and the three gates above cannot produce one.**
+This table used to publish an "option validation refused → `400`" row; no request can reach
+it (finding M-16). Both operations take **no input at all** — no path variable, no query
+parameter, no body — because
+[§10.0](#100-preamble-not-an-operation-option-dispatch-does-not-survive-into-the-target)
+removes option dispatch: there is nothing for a caller to get wrong. The gates and their
+literals are documented above because they are the source behaviour these two programs
+contain and the traceability contract requires them to be transcribed and cited, not because
+a client can trigger them. Two of the three could not be exercised even by a dispatch
+endpoint with the **shipped** data: no user-type byte is `'A'` (finding L-3), and neither
+option table contains a program name beginning `DUMMY`, so the placeholder arm has no
+reachable input either.
 
 ### 10.2 Admin menu
 
@@ -851,9 +1122,16 @@ target the user-administration programs, so the whole list is administrator-only
 
 | JSON member | Derived from | Notes |
 |---|---|---|
+| `menuType` | Which of the two option tables answered | `ADMIN` here |
 | `optionCount` | `CDEMO-ADMIN-OPT-COUNT PIC 9(02) VALUE 4` [`app/cpy/COADM02Y.cpy:L20`] | **4** |
 | `options[].optionNumber` | `PIC 9(02)` per row | 1 … 4 |
-| `options[].optionName` | `PIC X(35)` per row | e.g. `User List (Security)` |
+| `options[].optionName` | `PIC X(35)` per row | e.g. `User List (Security)`, space-padded to 35 |
+
+An admin option row carries **no `userTypeCode`**, while a main-menu row does. That is the
+source's own asymmetry, not an omission: `app/cpy/COADM02Y.cpy:L45-L48` declares three
+sub-fields per row and no user-type byte, because the whole menu is administrator-only.
+`options[].programName` is not published here either, for the reason given in
+[§10.1](#101-main-menu).
 
 The admin option table declares `OCCURS 9 TIMES` [`app/cpy/COADM02Y.cpy:L45`] while the map
 declares twelve slots and the count field says four. **Four is the bound.** Unlike the main
@@ -1383,11 +1661,17 @@ The account filter is served by a derived finder standing in for the card altern
 
 **Response — `200 OK`.** Seven row groups maximum. Per row:
 
-| Map field (row *n*) | PIC | Meaning |
-|---|---|---|
-| `ACCTNOnI` | `X(11)` | Account number |
-| `CRDNUMnI` | `X(16)` | Card number |
-| `CRDSTSnI` | `X(1)` | Card status |
+| Map field (row *n*) | PIC | Meaning | Published as |
+|---|---|---|---|
+| `ACCTNOnI` | `X(11)` | Account number | in full |
+| `CRDNUMnI` | `X(16)` | Card number | **masked** — see [§12.1.1](#1211-labelled-deviation-a-list-row-masks-the-card-number-and-carries-a-handle-instead) |
+| `CRDSTSnI` | `X(1)` | Card status | in full |
+
+Each row additionally carries one member that is **not** a map field:
+
+| Row member | Notes |
+|---|---|
+| `cardKey` | An opaque, sealed, server-issued reference to *that row's* card, accepted in place of the two filters by [`GET /api/cards/detail`](#122-view-card) and [`PUT /api/cards`](#123-update-card). See [§12.1.1](#1211-labelled-deviation-a-list-row-masks-the-card-number-and-carries-a-handle-instead) |
 
 Plus paging metadata per [§7](#7-pagination-contract), and the two message fields
 `INFOMSGI X(45)` and `ERRMSGI X(78)`.
@@ -1405,11 +1689,53 @@ Plus paging metadata per [§7](#7-pagination-contract), and the two message fiel
 update a row — the source prompts exactly that with
 `'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD'` [`app/cbl/COCRDLIC.cbl:L115-L116`].
 `CRDSTPnI` was a row-type marker driving screen attributes. In REST the equivalent of
-selecting a row is **following a URL**: a client reads `CRDNUMnI` from the row and calls
-[`GET /api/cards/detail`](#122-view-card) or [`PUT /api/cards`](#123-update-card). Neither
-column appears in a request or a response, and **no bulk-selection endpoint exists**, because
-the source has none: it refuses multiple selections outright with
+selecting a row is **following a reference**: a client takes the row's `cardKey` and calls
+[`GET /api/cards/detail`](#122-view-card) or [`PUT /api/cards`](#123-update-card) with it.
+Neither column appears in a request or a response, and **no bulk-selection endpoint exists**,
+because the source has none: it refuses multiple selections outright with
 `'PLEASE SELECT ONLY ONE RECORD TO VIEW OR UPDATE'` [`:L123-L124`].
+
+#### 12.1.1 Labelled deviation: a list row masks the card number and carries a handle instead
+
+The 3270 list showed the full sixteen-digit card number in `CRDNUMnI`, and an operator
+selected a row by typing next to it. This API **does not publish the full number on a list
+row** — it publishes a masked rendering — which is a deliberate divergence from strict parity
+and is recorded here rather than left for a reader to discover.
+
+**Why.** A list is a bulk disclosure: one authorised read returns seven card numbers, and
+walking the pages returns every card the caller may see. The primary account number is
+regulated data, and the target's own log configuration masks it
+([§8.4](#84-credentials-and-secrets)); publishing in a response body what is scrubbed from a
+log line would be incoherent. The detail operation, which discloses one card the caller has
+already named, publishes it in full.
+
+**What replaces it.** Masking on its own would break the one thing the column existed for:
+without the number, none of the values a row discloses is accepted by any other card
+operation, so a client reading only this API could reach a row and then go no further. Each
+row therefore carries `cardKey` — the account number and the card number sealed together by
+the same authenticated construction that seals the snapshot token
+([§11.2.3](#1123-why-the-snapshot-is-sealed-and-server-issued)) — and both
+`GET /api/cards/detail` and `PUT /api/cards` accept it in place of the two filters.
+
+**What the handle is and is not.**
+
+* It is **opaque**: it carries no readable card number, and it is not a URL, a row index or a
+  database identifier.
+* It is **scoped**: it is sealed under its own purpose label, so a paging cursor cannot be
+  presented as a card reference and a card reference cannot be presented as a paging cursor.
+  Either substitution is refused with `400` naming `cardKey`.
+* It is **unambiguous**: presenting `cardKey` *together with* `accountFilter` or `cardFilter`
+  is refused with `400` naming `cardKey`, because two different statements of which card is
+  meant is not a request the operation can honour.
+* It is **not a precondition**. A handle says which card; the snapshot token
+  ([§12.2](#122-view-card)) says what the caller was shown. An update needs both.
+* It is **not durable**: treat it as valid for the conversation in which it was issued. A
+  client that has kept one across a restart re-reads the list.
+
+**What is unchanged.** The two filters continue to work exactly as the source specifies, in
+the source's own order — `2210-EDIT-ACCOUNT` then `2220-EDIT-CARD` — because a `cardKey` is
+resolved into those two values *before* the operation runs. Nothing downstream of the
+resolution can tell which form the caller used.
 
 **Side effects.** None.
 
@@ -1457,9 +1783,17 @@ Authorization: Bearer <token>
 |---|---|---|:--:|---|
 | `accountFilter` | `ACCTSIDI` | `X(11)` | see below | Eleven-digit non-zero number when supplied |
 | `cardFilter` | `CARDSIDI` | `X(16)` | see below | Sixteen-digit number when supplied |
+| `cardKey` | — | — | see below | A row reference from [`GET /api/cards`](#121-list-cards), accepted **instead of** the two filters |
 
 At least one filter must be supplied: with neither, the source answers
 `'No input received'` [`app/cbl/COCRDSLC.cbl:L143`].
+
+**Or one `cardKey`, which is the same request said differently.** A `cardKey` from a list row
+([§12.1.1](#1211-labelled-deviation-a-list-row-masks-the-card-number-and-carries-a-handle-instead))
+is resolved into the two filters before the operation runs, so it satisfies the
+at-least-one-filter rule and every edit below still executes in the source's order. Supplying
+`cardKey` **together with** either filter is refused with `400` naming `cardKey`; a reference
+that does not verify, or that was sealed for another purpose, is refused the same way.
 
 **Response — `200 OK`.**
 
@@ -1489,6 +1823,7 @@ Plus, as on account view, the write precondition:
 |---|---|
 | `snapshotToken` | The sealed, opaque, server-issued as-displayed snapshot required by [§12.3](#123-update-card) |
 | `ETag` (response **header**) | The same token, quoted |
+| `cardKey` | A fresh row reference to this same card, so a client that arrived by filter can continue by reference. It says *which* card; `snapshotToken` says *what was shown*. They are not interchangeable |
 
 `FKEYSI X(75)` is function-key chrome and is excluded.
 
@@ -1576,22 +1911,73 @@ card version mutates the record it is comparing. Both are preserved as written.
 
 | Map field | PIC | Required | Notes |
 |---|---|:--:|---|
-| `ACCTSIDI` | `X(11)` | **yes** | Eleven-digit non-zero number |
-| `CARDSIDI` | `X(16)` | **yes** | Sixteen-digit number |
+| `ACCTSIDI` | `X(11)` | **yes**, or a `cardKey` | Eleven-digit non-zero number |
+| `CARDSIDI` | `X(16)` | **yes**, or a `cardKey` | Sixteen-digit number |
 | `CRDNAMEI` | `X(50)` | **yes** | Alphabetic and spaces only |
 | `CRDSTCDI` | `X(1)` | **yes** | `Y` or `N` |
 | `EXPMONI` | `X(2)` | **yes** | 1 – 12 |
 | `EXPYEARI` | `X(4)` | **yes** | |
-| `EXPDAYI` | `X(2)` | **yes** | **Present on this map, absent from the view map** |
+| `EXPDAYI` | `X(2)` | no | **Present on this map, absent from the view map** - and **echoed, never applied**; see [§12.3.1](#1231-the-expiry-day-is-not-a-changeable-field) |
 | `INFOMSGI` | `X(40)` | no | |
 | `ERRMSGI` | `X(80)` | no | |
 
 Plus the six chrome header fields and the function-key chrome `FKEYSI X(21)` and
 `FKEYSCI X(18)`.
 
+**Request — query parameter.**
+
+| Parameter | Required | Notes |
+|---|:--:|---|
+| `cardKey` | no | A row reference from [`GET /api/cards`](#121-list-cards) or [`GET /api/cards/detail`](#122-view-card). When supplied it **supplies the two identifiers**, overriding whatever the body carries for them; every other body field is used as sent |
+
+The reference travels as a query parameter and **not** as a body member, deliberately: the
+body is fixed at the seventeen map fields plus the two snapshot groups, and a routing
+reference is not a map field. Nothing about the identifier edits changes — a `cardKey` is
+resolved into `ACCTSIDI` and `CARDSIDI` before the operation runs, so the same edits see the
+same two values.
+
+**Identifiers are edited before the precondition is judged.** The source's
+`CCUP-DETAILS-NOT-FETCHED` arm runs `1210-EDIT-ACCOUNT` and then `1220-EDIT-CARD`
+[`app/cbl/COCRDUPC.cbl:L645-L661`] before anything is read, so a request naming no card is
+refused for naming no card. That order is preserved even when an `If-Match` is present: a
+request with an unusable identifier answers `400` naming the field — `'No input received'`
+when both are absent — rather than `412`. Answering `412` there would be a true statement
+about the token (a snapshot sealed against a card number cannot verify when there is no card
+number to seal against) and a misleading one about the request.
+
 **Response — `200 OK`.** The updated card in the same shape as
-[§12.2](#122-view-card), less the snapshot token: a successful write consumes the
-precondition, so a caller intending a further update fetches a fresh one.
+[§12.2](#122-view-card), less the snapshot token and less the row reference: a successful
+write consumes the precondition, so a caller intending a further update re-reads, and the
+re-read issues both afresh.
+
+#### 12.3.1 The expiry day is not a changeable field
+
+`EXPDAYI` is declared on this map, is accepted on the request and is echoed on the response —
+and **never reaches the stored record**. The day written is the one the snapshot carries.
+This is not a restriction added in the target; it is what the source does, and the source
+says so in as many words.
+
+`3200-SETUP-SCREEN-VARS` writes `CCUP-OLD-EXPDAY` into `EXPDAYO` on **every** arm — the
+show-details arm at [`app/cbl/COCRDUPC.cbl:L1110`], the changes-made arm at [`:L1123`] and the
+fall-through arm at [`:L1127`]. On the changes-made arm the new-value move exists but is
+**commented out**, immediately beneath the banner:
+
+```cobol
+*               MOVE OLD VALUES TO NON-DISPLAY FIELDS
+*               THAT WE ARE NOT ALLOWING USER TO CHANGE(FOR NOW)
+*               MOVE CCUP-NEW-EXPDAY     TO EXPDAYO  OF CCRDUPAO
+                MOVE CCUP-OLD-EXPDAY     TO EXPDAYO  OF CCRDUPAO
+```
+
+[`:L1119-L1123`]. And [`:L1285`] sets `DFHBMDAR` on `EXPDAYC`, which renders the field dark.
+A 3270 returns what was sent, so `CCUP-NEW-EXPDAY` at [`:L621`] can only ever hold the old
+day — which is precisely why [`:L1471`] may write it into the rewrite image safely, and why
+`COCRDSL.CPY` declares no `EXPDAYI` for the read map to publish
+([§12.2](#122-view-card)).
+
+**The screen was the carrier of that value.** There is no screen here, so the sealed snapshot
+is the carrier instead. The consequence for a caller is simple: send the day or omit it, it
+makes no difference; to change a card's expiry, change the **month** and the **year**.
 
 **Side effects.** One card row is written, inside a transaction.
 
@@ -1644,6 +2030,8 @@ writes one dataset. The account operation has two, one per dataset
 |---|--:|---|
 | Field validation refused | `400` | `CARDDEMO-VALIDATION-REJECTED` |
 | Request body carried an as-displayed snapshot group | `400` | `CARDDEMO-VALIDATION-REJECTED` |
+| No identifier supplied — neither body identifiers nor `cardKey`, so `'No input received'` | `400` | `CARDDEMO-VALIDATION-REJECTED` |
+| `cardKey` supplied alongside a filter, or one that does not verify | `400` | `CARDDEMO-VALIDATION-REJECTED` |
 | Card or account absent | `404` | `CARDDEMO-RECORD-NOT-FOUND` |
 | `If-Match` absent, so no precondition was presented | `428` | `CARDDEMO-UPDATE-CONFLICT` |
 | Presented snapshot does not verify — `Record changed by some one else. Please review` | `412` | `CARDDEMO-UPDATE-CONFLICT` |
@@ -1652,7 +2040,17 @@ writes one dataset. The account operation has two, one per dataset
 | Store unavailable / read failure / abend | `503` / `502` / `500` | per [§8.2](#82-global-failure-and-status-mapping) |
 
 `No change detected with respect to values fetched.` is **not** an error: the record already
-matched the submission, so nothing needed writing. It is a `200` carrying that literal.
+matched the submission, so nothing needed writing. It is a `200` carrying that literal, in
+`errorMessage`, because `WS-RETURN-MSG` is moved to `CCARD-ERROR-MSG`
+[`app/cbl/COCRDUPC.cbl:L547`, `:L569`] — the field the source uses, not the severity it
+implies. **No row is written and no version is incremented**; the outcome is a redisplay,
+which is why `:L972-L976` leaves the state machine in `CCUP-SHOW-DETAILS` and `:L1212-L1214`
+places the cursor with the informational arms rather than with the `FLG-*-NOT-OK` ones.
+
+One presentational consequence follows from the source and is not a defect: the redisplayed
+embossed name is **upper-cased**, because `9300-CHECK-CHANGE-IN-REC` folds it in place
+[`:L1499-L1501`] and the redisplay renders the folded work area. The stored row keeps its own
+casing, as a re-read shows.
 
 ---
 
@@ -2218,8 +2616,16 @@ The literal names the legacy queue rather than the SQS queue, and that is delibe
 string is part of the contract a legacy-aware client may already match on, so it is relayed
 as written rather than modernised.
 
-**Failure and status mapping.** Validation and confirmation refusals `400`; queue
-unavailable `503`; queue write failure `502`; abend `500`.
+**Failure and status mapping.** Date validation refusals `400`; queue unavailable `503`;
+queue write failure `502`; abend `500`. **Of the confirmation gate's four arms only one is a
+`400`** — the arm that carries a value the one-byte field cannot accept. The prompt arm and
+the decline arm are both `200` with nothing published, matching
+[bill payment](#141-bill-payment) and [transaction add](#133-add-transaction), whose
+confirmation gates answer `200` on the same condition. The prompt arm used to answer `400`
+(finding M-17), which made one API contradict itself on its own handshake: three operations
+share the gate, and asking a caller to confirm is the operation working, not the caller
+failing. `CORPT00C` grades none of the three non-publishing arms differently — each sets
+`WS-ERR-FLG` and performs `SEND-TRNRPT-SCREEN` [`:L464-L493`].
 
 ---
 
@@ -2328,6 +2734,17 @@ first name, last name, user type, and the source's message
 **Side effects.** One user row inserted, with the password stored **only** as a BCrypt
 strength-10 hash.
 
+> **A password is stored exactly as submitted, and sign-on folds what it is given — so a
+> password must equal its own upper-case form to be usable.** Both halves are the source's.
+> The write moves the field onto the record unchanged — `MOVE PASSWDI OF COUSR1AI TO
+> SEC-USR-PWD` [`app/cbl/COUSR01C.cbl:L157`], and `MOVE PASSWDI OF COUSR2AI TO SEC-USR-PWD`
+> [`app/cbl/COUSR02C.cbl:L228`] — while sign-on upper-cases the presented value before
+> comparing it, `MOVE FUNCTION UPPER-CASE(PASSWDI …) TO WS-USER-PWD`
+> [`app/cbl/COSGN00C.cbl:L135-L136`], and compares at [`:L223`]. Setting `Pw1234xy` therefore
+> stores `Pw1234xy` and sign-on will only ever offer `PW1234XY`, which does not match: the
+> account is created or updated successfully and **can never be signed on to**. Use a password
+> with no lower-case letters. See [§18.2](#182-medium), finding M-11.
+
 **Validation order — preserved exactly, because order determines which message the client
 sees first** [`app/cbl/COUSR01C.cbl:L118-L146`]:
 
@@ -2339,6 +2756,43 @@ sees first** [`app/cbl/COUSR01C.cbl:L118-L146`]:
 
 A caller who omits both the first name and the password is told about the **first name**.
 
+#### 16.2.1 Labelled deviation: `userType` is restricted to `A` and `U`
+
+This API accepts **only** `A` or `U` in `userType`, on this operation and on
+[§16.3](#163-update-user). Anything else is refused with `400`,
+`CARDDEMO-VALIDATION-REJECTED`, `field: "userType"` and the detail
+`User Type must be A for an administrator or U for a regular user`. The comparison is
+**case-sensitive**: `a` and `u` are refused.
+
+**This is an added guard, and the source has none.** `COUSR01C`'s only test on the field is
+`WHEN USRTYPEI OF COUSR1AI = SPACES OR LOW-VALUES` [`app/cbl/COUSR01C.cbl:L142`]; every other
+value, including a lower-case letter or a digit, is moved straight onto the record by
+[`:L158`]. The literal `'User Type must be…'` appears nowhere in the corpus. Under
+§0.8.3 of the migration plan an absent guard is preserved unless its removal is explicitly
+labelled as a deviation, so it is labelled here rather than left for a reader to discover.
+
+**Why it is nonetheless kept, in three parts.** First, the byte is not data in the target — it
+is an **authorisation input**. `CDEMO-USER-TYPE` declares exactly two condition names, `'A'`
+and `'U'` [`app/cpy/COCOM01Y.cpy:L26-L28`], and the migration plan maps them onto the role
+model ([§5.1](#51-role-model)). A third value produces a principal with **no** role, which
+fails closed but silently, so a user could be created who can sign on and reach nothing.
+
+Second, the restriction already exists one layer down and cannot be avoided: the schema
+declares `CONSTRAINT ck_user_security_type CHECK (sec_usr_type IN ('A', 'U'))`, itself derived
+from those same two condition names. Removing the application guard would not admit a third
+value — it would convert a `400` that **names the field** into a `409`
+`CARDDEMO-CONSTRAINT-REFUSED` that names nothing, which is worse for the caller and no more
+faithful.
+
+Third, it changes no outcome the source could reach in practice: the seeded population is five
+`A` and five `U` rows and nothing else [`app/jcl/DUSRSECJ.jcl`], so no legacy behaviour depends
+on a third value being storable.
+
+**What is *not* deviated from.** The blank rejection is the source's own, in the source's own
+order and wording — `'User Type can NOT be empty...'` [`:L144`] — and it still fires **before**
+the domain check, so a caller omitting the field is told it is empty rather than told about the
+domain. Absent, empty and all-blank are all that condition.
+
 **Exact observable literals.** The five above, plus:
 
 | Literal | Locator |
@@ -2347,12 +2801,18 @@ A caller who omits both the first name and the password is told about the **firs
 | `Unable to Add User...` | [`:L270`] |
 | `User <id> has been added ...` | [`:L255-L257`] |
 
+One literal published by this operation has **no source locator**, and that is the whole point
+of [§16.2.1](#1621-labelled-deviation-usertype-is-restricted-to-a-and-u):
+`User Type must be A for an administrator or U for a regular user`.
+
 **Failure and status mapping.**
 
 | Outcome | Status | `errorCode` |
 |---|--:|---|
 | Any field blank | `400` | `CARDDEMO-VALIDATION-REJECTED` |
+| `userType` present but neither `A` nor `U` — **added guard**, see [§16.2.1](#1621-labelled-deviation-usertype-is-restricted-to-a-and-u) | `400` | `CARDDEMO-VALIDATION-REJECTED` |
 | Identifier already taken — `User ID already exist...` | **`409`** | `CARDDEMO-DUPLICATE-RECORD` |
+| Data refused by a constraint other than the key — `Unable to Add User...` | `409` | `CARDDEMO-CONSTRAINT-REFUSED` |
 | Store unavailable / write failure / abend | `503` / `502` / `500` | per [§8.2](#82-global-failure-and-status-mapping) |
 
 ### 16.3 Update user
@@ -2376,16 +2836,42 @@ Content-Type: application/json
 | Kind | Name | Map field | PIC | Required |
 |---|---|---|---|:--:|
 | Path variable | `userId` | `USRIDINI` | `X(8)` | **yes** — the lookup key |
+| Body | user id | `USRIDINI` | `X(8)` | no — and if present it **must equal the path** |
 | Body | first name | `FNAMEI` | `X(20)` | **yes** |
 | Body | last name | `LNAMEI` | `X(20)` | **yes** |
 | Body | password | `PASSWDI` | `X(8)` | **yes** — see below |
-| Body | user type | `USRTYPEI` | `X(1)` | **yes** |
+| Body | user type | `USRTYPEI` | `X(1)` | **yes** — `A` or `U` only, see [§16.2.1](#1621-labelled-deviation-usertype-is-restricted-to-a-and-u) |
+
+**The identifier comes from the path. The body need not repeat it, and must not contradict
+it.** `USRIDINI` is a declared member of the map, so it is accepted in the body — but it is
+optional there, and the path supplies it when the body omits it. This is the source's own
+arrangement rather than a REST convenience: on first entry `COUSR02C` does not wait for an
+operator to type the identifier, it tests `CDEMO-CU02-USR-SELECTED` — the value the user-list
+screen left in the commarea — moves it into `USRIDINI` and only then runs its edit
+[`app/cbl/COUSR02C.cbl:L100-L107`]. The screen field was a *carrier* of the navigation context,
+not its origin, and here the path segment is that context.
+
+A body that names a **different** user is refused with `400` and `field: "userId"`: the path
+addresses the record and the body declares the same field, so preferring either one would
+rewrite a record the caller did not address. The comparison is exact — nothing is trimmed and
+nothing is case-folded, because `COUSR02C` folds neither.
 
 > **An empty password does *not* mean "leave it unchanged". It is rejected.** This was
 > derived from the source rather than assumed: `COUSR02C` applies the same blank check to the
 > password as to every other field and answers `'Password can NOT be empty...'`
 > [`app/cbl/COUSR02C.cbl:L200`]. **The password must be supplied on every update**, and the
 > stored hash is therefore always rewritten from it when it differs.
+
+> **A password is stored exactly as submitted, and sign-on folds what it is given — so a
+> password must equal its own upper-case form to be usable.** Both halves are the source's.
+> The write moves the field onto the record unchanged — `MOVE PASSWDI OF COUSR1AI TO
+> SEC-USR-PWD` [`app/cbl/COUSR01C.cbl:L157`], and `MOVE PASSWDI OF COUSR2AI TO SEC-USR-PWD`
+> [`app/cbl/COUSR02C.cbl:L228`] — while sign-on upper-cases the presented value before
+> comparing it, `MOVE FUNCTION UPPER-CASE(PASSWDI …) TO WS-USER-PWD`
+> [`app/cbl/COSGN00C.cbl:L135-L136`], and compares at [`:L223`]. Setting `Pw1234xy` therefore
+> stores `Pw1234xy` and sign-on will only ever offer `PW1234XY`, which does not match: the
+> account is created or updated successfully and **can never be signed on to**. Use a password
+> with no lower-case letters. See [§18.2](#182-medium), finding M-11.
 
 **Response — `200 OK`.** The updated user **without any password member**, plus the source's
 message.
@@ -2400,6 +2886,10 @@ differs**, see below.
 3. `'Last Name can NOT be empty...'` [`:L194`]
 4. `'Password can NOT be empty...'` [`:L200`]
 5. `'User Type can NOT be empty...'` [`:L206`]
+
+Then, and only then, the added domain check of
+[§16.2.1](#1621-labelled-deviation-usertype-is-restricted-to-a-and-u) — so a caller who omits
+`userType` is told it is empty, not told about the domain.
 
 **Read-modify-write with change detection.** After the record is read
 [`:L217`, with the `EXEC CICS READ` itself at `:L322-L331`], the source compares **four**
@@ -2464,8 +2954,23 @@ The confirmation replaces the source's `WHEN DFHPF5` arm, which performs `DELETE
 it the source prompts `'Press PF5 key to delete this user ...'` [`:L283`] and **nothing is
 destroyed**.
 
-**Response — `200 OK`.** The identifier, first name, last name, user type and the source's
-message `'User <id> has been deleted ...'` [`:L318-L320`].
+**Response — `200 OK`.** Exactly five members: the identifier, first name, last name, user
+type and the source's message `'User <id> has been deleted ...'` [`:L318-L320`].
+
+| JSON member | Map field | PIC |
+|---|---|---|
+| `userIdInput` | `USRIDINI` | `X(8)` |
+| `firstName` | `FNAMEI` | `X(20)` |
+| `lastName` | `LNAMEI` | `X(20)` |
+| `userType` | `USRTYPEI` | `X(1)` |
+| `errorMessage` | `ERRMSGI` | `X(78)` — carries the success message on this arm, as the source does |
+
+This operation used to serialize all eleven map fields, so it was the only one of the
+seventeen that put the six chrome header fields on the wire — including `programName`, which
+is the `XCTL` operand (finding M-15). They are excluded now, exactly as
+[§4.2](#42-presentation-chrome-excluded-from-every-json-contract) states for every operation.
+The components remain on the record type, because the map declares eleven fields and the
+field contract is what that type exists to hold; what changed is only the body.
 
 > **No password field appears on this map either.** `COUSR03.CPY` declares 11 input fields:
 > the six chrome header fields plus `USRIDINI X(8)`, `FNAMEI X(20)`, `LNAMEI X(20)`,
@@ -2707,6 +3212,322 @@ account.**
   check `changeAction` and `errorMessage`. Adding the missing `WHEN` arm is a behaviour
   change requiring approval.
 
+**M-4 — A wildcard request `Content-Type` produced `500 Internal Server Error` on every
+body-binding operation, unauthenticated.**
+
+* **Severity: Medium.** A caller needed no credential: `POST /api/auth/signon` with
+  `Content-Type: application/*+json` answered `500` with Spring's default error body, and so
+  did the other six write operations. A `500` on a caller-side mistake both misreports whose
+  fault it is and gives an unauthenticated caller a cheap way to fill the error log.
+* **Locator.** Not a source finding — this condition has no COBOL counterpart, because a
+  3270 terminal cannot declare a media type. The mechanism is in the framework: a wildcard
+  *request* type **satisfies** a `consumes` condition, so the handler is selected and the
+  header parser then rejects the wildcard as an `IllegalArgumentException`, which is a `500`.
+* **Status. Remediated.** A `Content-Type` screen runs after the handler is mapped and before
+  the body is read, and raises the condition the request actually is. All seven operations now
+  answer `415` with `CARDDEMO-UNSUPPORTED-MEDIA-TYPE`, an `Accept` response header and the
+  full envelope — **byte-identically** to the `text/plain` case, because they are the same
+  condition. Documented at
+  [§8.5](#85-refusals-decided-before-an-operation-is-reached).
+* **Remediation.** Complete. `IllegalArgumentException` was deliberately **not** mapped to a
+  status globally: that would turn every programming error in the application into a `4xx`.
+
+**M-5 — Four boundaries answered outside the error envelope, one of them with an HTML page
+naming the container.**
+
+* **Severity: Medium.** A client cannot rely on one error shape if some refusals arrive
+  without `errorCode`, without `correlationId`, or without a body at all — the `406` had no
+  body **and** no `Content-Type`, and `GET /api/accounts/000000000%00` returned a
+  `text/html` page disclosing the servlet container and its version.
+* **Locator.** Not a source finding. Four distinct boundaries, enumerated with what each can
+  carry at [§8.5](#85-refusals-decided-before-an-operation-is-reached).
+* **Status. Remediated.** Every boundary now renders the same envelope as
+  `application/problem+json`, and the container's HTML report is replaced rather than merely
+  silenced — turning it off would have removed the disclosure but left an empty body, which
+  is the inconsistency being closed. `§8.1` was also corrected: it claimed ten error codes
+  were the complete set while nineteen were published.
+* **Remediation.** Complete. Three constraints were honoured rather than worked around: no
+  global advice was introduced, no ninth class was added to the controller package, and
+  neither the HTTP firewall's allowed-method set nor the connector's `allowTrace` was widened
+  to make a refusal prettier. The one residual asymmetry is contractual and documented: a
+  refusal decided before any filter ran carries a **minted** `correlationId`, written to the
+  log, because the request's own identifier does not yet exist at that point.
+
+**M-6 — A card list row disclosed no value any other card operation would accept, so
+`list -> detail -> update` was not traversable by an API-only client.**
+
+* **Severity: Medium.** Every one of the four values a row published — `rowNumber`,
+  `accountNumber`, `maskedCardNumber`, `statusCode` — was refused by
+  `GET /api/cards/detail`, which requires an eleven-digit account **and** a full sixteen-digit
+  card number. A client could enumerate the whole list and still not reach a single card, and
+  `PUT /api/cards` with no identifier answered `CARDDEMO-REQUEST-BODY-UNREADABLE`, which
+  named neither the field nor the reason.
+* **Locator.** Not a source finding: the 3270 row published the full card number and an
+  operator selected it in place [`app/cbl/COCRDLIC.cbl:L115-L116`]. The gap is a consequence
+  of masking that column in the target — a deliberate divergence — without supplying anything
+  in its place.
+* **Status. Remediated.** Each row now carries an opaque, sealed, purpose-scoped `cardKey`
+  accepted by both the detail and the update operation in place of the two filters, and a
+  request naming no card is refused with `400` naming `accountId` and the source's own
+  `'No input received'`. The masking itself is **kept and now labelled** rather than reverted.
+  Documented at
+  [§12.1.1](#1211-labelled-deviation-a-list-row-masks-the-card-number-and-carries-a-handle-instead),
+  [§12.2](#122-view-card) and [§12.3](#123-update-card).
+* **Remediation.** Complete. The reference is a **query parameter, not a body member**: the
+  update body is fixed at the seventeen map fields plus the two snapshot groups, and widening
+  it would have broken that contract to solve a routing problem.
+
+**M-7 — Paging backward without the positioning state answered `502` with
+`CARDDEMO-IO-FAILURE`.**
+
+* **Severity: Medium.** `GET /api/cards?action=PAGE_BACKWARD` with no `firstKey` reported a
+  store failure for what was a malformed request, so a caller was told to retry or escalate
+  when the fix was to send the parameter. It also made a caller-side omission look like an
+  infrastructure incident in the log.
+* **Locator.** `9100-READ-BACKWARDS` [`app/cbl/COCRDLIC.cbl:L1264`] has **no end-of-data
+  arm**: its `EVALUATE WS-RESP-CD` [`:L1304-L1318`] carries `NORMAL`, `DUPREC` and
+  `WHEN OTHER` only, so an unpositioned backward read is a file error by construction. That
+  state is unreachable in the source because the key and the page number are fields of one
+  COMMAREA record [`:L228-L237`]; putting them on the wire separated them.
+* **Status. Remediated at the boundary, with the browse left transcribed exactly.** The
+  precondition is checked before the read: an absent `page` is `400` naming `page`, an absent
+  `firstKey` beyond the first page is `400` naming `firstKey`, and a cursor minted for another
+  page is refused rather than honoured. Backward paging **from** the first page is unchanged
+  and still answers `200` with the top-of-page literal. `9100-READ-BACKWARDS` itself was not
+  edited and no end-of-data arm was invented. Documented at
+  [§7.1](#71-paging-parameters).
+* **Remediation.** Complete. Clients must echo `action`, `page`, `firstKey`, `lastKey` and
+  `nextPageAvailable` together, as [§7.1](#71-paging-parameters) now sets out.
+
+**M-8 — The expiry day was taken from the request, so a read-modify-write round trip erased
+it.**
+
+* **Severity: Medium.** `GET /api/cards/detail` cannot publish an expiry day — `COCRDSL.CPY`
+  declares no `EXPDAYI` — so a client echoing a detail read back to `PUT /api/cards`
+  submitted none, and the `STRING` at [`app/cbl/COCRDUPC.cbl:L1467-L1474`] composed an expiry
+  with the day blank. The stored value was silently erased, and the affected row still looked
+  plausible: a ten-character column holding `2023-03-` reads as a date until it is measured.
+  Two seeded rows were found in that state and were restored from
+  `app/data/ASCII/carddata.txt`.
+* **Locator.** The day is a field the source refuses to let a user change, and says so:
+  `3200-SETUP-SCREEN-VARS` echoes `CCUP-OLD-EXPDAY` on every arm [`:L1110`, `:L1123`,
+  `:L1127`], the new-value move at [`:L1120-L1122`] is **commented out** beneath the banner
+  `'MOVE OLD VALUES TO NON-DISPLAY FIELDS THAT WE ARE NOT ALLOWING USER TO CHANGE(FOR NOW)'`,
+  and [`:L1285`] renders the field dark with `DFHBMDAR`. A terminal returns what was sent, so
+  `CCUP-NEW-EXPDAY` at [`:L621`] can only ever be the old day.
+* **Status. Remediated.** The screen was the carrier of that value; statelessly the sealed
+  snapshot is. The submitted component is still accepted and still echoed, exactly as the
+  source echoes `EXPDAYO`, and simply never reaches the rewrite image. Documented at
+  [§12.3.1](#1231-the-expiry-day-is-not-a-changeable-field).
+* **Remediation.** Complete. The field was **not** removed from the request: `COCRDUP.CPY`
+  declares it and the DTO mirrors the map. To change an expiry, change the month and the year.
+
+**M-9 — `PUT /api/admin/users/{userId}` could not succeed with its documented body.**
+
+* **Severity: Medium.** The documented shape — the identifier in the path only — was refused
+  with `400`, `field: "userId"` and `'User ID can NOT be empty...'`. The operation was reachable
+  **only** by duplicating the identifier inside the body, which nothing documented, so a client
+  written from this contract could not update a user at all.
+* **Locator.** The controller validated path-and-body agreement and then relayed the **body**
+  to the service, so a body that named no identifier reached the source's empty-identifier
+  rejection. The source does not work that way: on first entry `COUSR02C` tests
+  `CDEMO-CU02-USR-SELECTED` and moves it into `USRIDINI` before running any edit
+  [`app/cbl/COUSR02C.cbl:L100-L107`]. The screen field carried the navigation context; it did
+  not originate it.
+* **Status. Remediated.** The path identifier is supplied when the body omits it, reproducing
+  that MOVE and nothing else — the other eleven members travel exactly as sent. The agreement
+  check is unchanged, so a body naming a different user is still refused, and the source's
+  empty-identifier rejection at [`:L146-L151`] is untouched and still reachable. Documented at
+  [§16.3](#163-update-user).
+* **Remediation.** Complete. Either form now works: omit the body identifier, or send one that
+  agrees.
+
+**M-10 — The restriction of `userType` to `A` and `U` was an added guard, unlabelled.**
+
+* **Severity: Medium.** Not a functional defect — the guard is correct and is retained — but an
+  unlabelled divergence from strict parity is exactly what §0.8.3 of the migration plan forbids,
+  and a reader comparing the two systems would find a published literal with no source locator
+  and no explanation.
+* **Locator.** `COUSR01C`'s only test on the field is
+  `WHEN USRTYPEI OF COUSR1AI = SPACES OR LOW-VALUES` [`app/cbl/COUSR01C.cbl:L142`]; every other
+  value is moved straight onto the record by [`:L158`]. The literal
+  `User Type must be A for an administrator or U for a regular user` appears nowhere in the
+  corpus.
+* **Status. Retained and now labelled**, with the reasoning published rather than implied: the
+  byte is an authorisation input mapped from the two condition names of
+  [`app/cpy/COCOM01Y.cpy:L26-L28`], the same domain is already enforced by
+  `ck_user_security_type`, and removing the application guard would turn a `400` naming the
+  field into a `409` naming nothing. Documented at
+  [§16.2.1](#1621-labelled-deviation-usertype-is-restricted-to-a-and-u), referenced from
+  [§16.2](#162-add-user) and [§16.3](#163-update-user).
+* **Remediation.** Complete as a documentation obligation. Relaxing the guard is a behaviour
+  change requiring approval, and would not admit a third value anyway — the schema constraint
+  would refuse it less informatively.
+
+**M-11 — A password containing a lower-case letter can be set but never used.**
+
+* **Severity: Medium.** An administrator can create or update a user with, say, `Pw1234xy`, be
+  told `User <id> has been added ...` or `... has been updated ...`, and have produced an
+  account that **cannot be signed on to**. Nothing in either response indicates it, and the
+  failure surfaces later as an ordinary `401` indistinguishable from a typo.
+* **Locator.** The asymmetry is entirely the source's. The write stores the field unchanged —
+  `MOVE PASSWDI OF COUSR1AI TO SEC-USR-PWD` [`app/cbl/COUSR01C.cbl:L157`] and
+  `MOVE PASSWDI OF COUSR2AI TO SEC-USR-PWD` [`app/cbl/COUSR02C.cbl:L228`] — while sign-on
+  upper-cases what it is given before comparing,
+  `MOVE FUNCTION UPPER-CASE(PASSWDI …) TO WS-USER-PWD` [`app/cbl/COSGN00C.cbl:L135-L136`],
+  comparing at [`:L223`]. The two never agree unless the stored value already equals its own
+  upper-case form. Note that `app/csd/CARDDEMO.CSD` declares **no** `UCTRAN`, so the terminal
+  did not fold the input either — the quirk is live in the source, not masked by the transaction
+  monitor. It goes unnoticed because all ten seeded passwords are the literal `PASSWORD`
+  [`app/jcl/DUSRSECJ.jcl`], which is already upper-case.
+* **Status. Preserved deliberately**, and now disclosed. Folding on the write, or refusing a
+  lower-case password, would each change which credentials the system accepts, and parity is the
+  contract. What is corrected is the silence: both write operations now carry the warning
+  ([§16.2](#162-add-user), [§16.3](#163-update-user)) and the sign-on section already stated its
+  half ([§9.1](#91-sign-on)).
+* **Remediation.** Clients should supply passwords with no lower-case letters. Folding the
+  password on the write would make every stored credential usable and is the obvious repair, but
+  it is a behaviour change requiring approval — it would also silently widen the accepted
+  credential set for existing rows.
+
+**M-12 — `/actuator/prometheus` refused every caller with a body that named no cause.**
+
+* **Severity: Medium.** The refusal was correct — the endpoint fails closed until a scrape
+  credential is configured — but it was unreadable: Spring's default body
+  (`timestamp`, `status`, `error`, `path`) under `Content-Type: application/json`, with no
+  `errorCode`, no `correlationId` and a detail that said nothing. A missing credential and a
+  missing route were indistinguishable from outside, and a review concluded the endpoint had no
+  matcher declared at all. It has one, and a credentialled scrape returns `200` with the four
+  named business counters.
+* **Locator.** Not a source finding; the corpus has no instrumentation. The mechanism is
+  mechanical and recurs: `BasicAuthenticationEntryPoint` refuses via
+  `HttpServletResponse.sendError`, which forwards to the registered error page, and
+  `BasicErrorController` renders the body — so anything written afterwards is discarded. Its
+  bearer counterpart sets the status directly, which is why the business chain's envelope worked
+  and this one's did not. The same trap produced the zero-length request-rejection body in M-5.
+* **Status. Remediated**, in three parts. The challenge now sets the status and the
+  `WWW-Authenticate` header directly and writes the standard envelope, so a refusal carries
+  `CARDDEMO-AUTHENTICATION-REQUIRED` and a `correlationId`. Its detail describes **this** chain —
+  HTTP Basic, not a bearer token — because the shared detail directed a scraper to the sign-on
+  operation, which this chain refuses outright. And the realm names the endpoint
+  (`carddemo-metrics-scrape`) instead of the framework's literal `Realm`. A non-`GET` reaches the
+  chain's deny-all and now answers `403` in the envelope **without** advertising
+  `WWW-Authenticate: Bearer`, which a Basic-only endpoint had no business sending. Documented at
+  [§2.2](#22-operational-endpoints-and-the-scrape-credential).
+* **Remediation.** Complete. **No security relaxation:** the endpoint is still credentialled,
+  still `GET`-only, still refuses bearer tokens, still fails closed when unconfigured, and no
+  other Actuator path became reachable. The body still declines to say whether a credential is
+  configured — that fact goes to the log, naming both configuration keys.
+
+**M-13 — One API published two action-token vocabularies for one navigation.**
+
+* **Severity: Medium.** `GET /api/cards` and `GET /api/transactions` accepted
+  `SUBMIT | PAGE_BACKWARD | PAGE_FORWARD` and refused any other spelling, while
+  `GET /api/admin/users` accepted `submit | page-backward | page-forward` and refused *those*
+  three. Each list operation therefore rejected the vocabulary its siblings required, and a
+  client that learned one had to unlearn it for the third — with a `400` naming a token it had
+  just been told to use.
+* **Locator.** Not a source finding. The tokens are an API invention: the source dispatches on
+  `EIBAID` attention identifiers (`DFHENTER`, `DFHPF7`, `DFHPF8`), which have no spelling to
+  inherit, so nothing in the corpus favoured either form.
+* **Status. Remediated.** The admin operation now declares the same three tokens as its two
+  siblings, so the whole surface has one vocabulary. Matching stays exact on all three — no
+  alias, no padding, no case fold — because a normalising converter on a control token accepts
+  instructions the operation never declared. The former spellings are now refused there, which
+  is the point: two vocabularies were the defect. Documented at
+  [§7.1](#71-paging-parameters).
+* **Remediation.** Complete.
+
+**M-14 — A page past the first was served without the cursor that addresses it, and the
+response reported a page it had not served.**
+
+* **Severity: Medium.** `GET /api/cards?action=PAGE_FORWARD&page=8` with no cursor answered
+  `200` reporting `pageNumber=8` while serving **page one's seven rows**;
+  `action=SUBMIT&page=8` did the same. The two ten-row operations answered `200` reporting
+  `pageNumber=5` with an **empty** row array. A client could not tell an advance from a
+  re-serve, nor an exhausted browse from an unpositioned one, and a client keying its next
+  request off the reported number could not terminate.
+* **Locator.** The page number is a display counter, not an address. What positions a browse is
+  the saved key the `DFHPF7` / `DFHPF8` arms move into the record key before the `STARTBR`;
+  `WS-CA-SCREEN-NUM` [`app/cbl/COCRDLIC.cbl:L237`] and its two siblings only feed the heading.
+  With no key the space-filled field positions at the start of the file. The source cannot
+  exhibit the disagreement because the counter and both keys are fields of one COMMAREA record
+  written by a single send, so a task holding a counter past the first necessarily held the key
+  that addresses it — the same invariant M-7 turned into a precondition, on the other direction
+  of travel.
+* **Status. Remediated.** A request naming a page past the first must carry the cursor that
+  addresses it — `lastKey` forward, `firstKey` otherwise — or it is refused with `400` naming
+  that cursor. The first page and an unnamed page are admitted with no cursor, and the
+  enter-key arm of the two ten-row operations is exempt because it always answers the first
+  page [`app/cbl/COUSR00C.cbl:L227`]. No browse changed. Documented at
+  [§7.1](#71-paging-parameters).
+* **Remediation.** Complete.
+
+**M-15 — Two operations published legacy screen chrome, including the `XCTL` operand.**
+
+* **Severity: Medium.** Both menu operations put `options[].programName` on the wire —
+  `COACTVWC`, `COUSR00C` and their siblings — and the delete-user confirmation serialized all
+  eleven of its map fields, so it was the only one of the seventeen operations to publish
+  `transactionName`, `title01`, `title02`, `currentDate`, `currentTime` and `programName`. Both
+  contradicted [§4.2](#42-presentation-chrome-excluded-from-every-json-contract), which states
+  the six chrome fields are excluded from every operation, and both handed a client the one
+  piece of state Transformation Rule 7 exists to remove.
+* **Locator.** The option tables do declare a program name
+  [`app/cpy/COMEN02Y.cpy:L91`, `app/cpy/COADM02Y.cpy:L48`] and `COUSR03.CPY` does declare
+  eleven fields, so the components belong on the record types. What does not belong on the wire
+  is what the program name is *for*: it is the operand of `EXEC CICS XCTL PROGRAM(...)`
+  [`app/cbl/COMEN01C.cbl:L152-L156`], and `app/cpy/COCOM01Y.cpy`'s routing members are mapped
+  to "no equivalent — routing is URL-based" for exactly that reason.
+* **Status. Remediated.** The excluded members are suppressed from JSON only. Every component,
+  its width check and its copybook citation stay on the record, so the field contract and the
+  460-field budget are untouched; the delete response is now the five members
+  [§16.4](#164-delete-user) documents, and a menu response carries option-table data with no
+  routing state. Navigate with the table in
+  [§10.0](#100-preamble-not-an-operation-option-dispatch-does-not-survive-into-the-target).
+* **Remediation.** Complete.
+
+**M-16 — Both menu operations published a `400` outcome no request could reach.**
+
+* **Severity: Medium.** [§10.1](#101-main-menu) and [§10.2](#102-admin-menu) each carried an
+  "option validation refused → `400 CARDDEMO-VALIDATION-REJECTED`" row. Neither operation
+  accepts any input — no path variable, no query parameter, no body — so there is nothing a
+  caller can get wrong and the row could never occur. A published status a client must handle
+  but can never observe is worse than silence: it invites dead error-handling code.
+* **Locator.** The option-selection paragraphs exist and are transcribed
+  [`app/cbl/COMEN01C.cbl:L127-L162`, `app/cbl/COADM01C.cbl:L124-L148`], but option dispatch has
+  no target operation by design
+  ([§10.0](#100-preamble-not-an-operation-option-dispatch-does-not-survive-into-the-target)),
+  and the operation inventory is fixed at seventeen
+  ([§2](#2-operation-inventory-why-there-are-exactly-17)), so no route may be added to reach
+  them. Two of the three gates could not be exercised even then with the shipped data: no
+  user-type byte is `'A'` (L-3) and neither option table contains a program name beginning
+  `DUMMY`.
+* **Status. Remediated.** The rows are removed and the reason is stated where they were, with
+  the gates retained above them as the transcribed source behaviour the traceability contract
+  requires. No route was added and no behaviour changed.
+* **Remediation.** Complete.
+
+**M-17 — The report confirmation prompt answered `400`, contradicting the API's own two other
+confirmation gates.**
+
+* **Severity: Medium.** `POST /api/reports` with a period selected and no `confirmation`
+  answered `400`, although [§15.1](#151-submit-transaction-report) documents `200` with
+  `'Please confirm to print the <name> report...'`, and although
+  [bill payment](#141-bill-payment) and [transaction add](#133-add-transaction) both answer
+  `200` on the identical condition. One API graded the same handshake two different ways.
+* **Locator.** `CORPT00C`'s confirmation gate has four arms and grades none of the three
+  non-publishing ones differently: the blank arm [`:L464-L474`], the `N` arm [`:L480-L483`] and
+  the `WHEN OTHER` arm [`:L484-L493`] each set `WS-ERR-FLG` and perform
+  `SEND-TRNRPT-SCREEN`. Only the fourth carries a value the one-byte `CONFIRMI` field cannot
+  accept, which is the only one of the three that is a malformed request.
+* **Status. Remediated.** The prompt arm returns the screen with the source's composed literal
+  and publishes nothing, as the decline arm already did. Two details of the source are kept
+  that distinguish it from the decline arm: the form is **not** cleared — [`:L464`] has no
+  `PERFORM INITIALIZE-ALL-FIELDS`, so a caller may simply add its confirmation and resend —
+  and the cursor **is** placed on the confirmation field [`:L470`]. The `WHEN OTHER` arm
+  remains `400`.
+* **Remediation.** Complete.
+
 ### 18.3 Low
 
 **L-1 — The source's sign-on messages distinguish an unknown identifier from a wrong
@@ -2757,6 +3578,63 @@ option table.**
   options are available to a standard user** — is documented at
   [§10.1](#101-main-menu) and is why [§5.1](#51-role-model) grants both roles to every
   non-administrator operation.
+
+**L-4 — The card update's no-change arm was unreachable, so an identical resubmission wrote
+the row again.**
+
+* **Severity: Low.** No data was corrupted — the row was rewritten with the values it already
+  held — but the optimistic-locking version was incremented on every resubmission, which
+  invalidates any snapshot another caller holds and answers `200 'Changes committed to
+  database'` for a request that committed nothing. It also contradicted this document, which
+  already specified the `200` and the literal.
+* **Locator.** The source arm is real and reachable: `NO-CHANGES-DETECTED`
+  [`app/cbl/COCRDUPC.cbl:L188`], grouped with the informational cursor arms at
+  [`:L1212-L1214`] and leaving the state machine in `CCUP-SHOW-DETAILS` at [`:L972-L976`].
+  The target restored its comparison baseline from the *request body's* snapshot group, which
+  is refused outright on this operation and so was always absent, leaving the comparison to
+  run against an empty group and never match.
+* **Status. Remediated.** The baseline is taken from the snapshot the server itself opened, so
+  the arm fires: an identical resubmission answers `200` with
+  `'No change detected with respect to values fetched.'` in `errorMessage`, writes no row and
+  leaves the version untouched. Documented at [§12.3](#123-update-card).
+* **Remediation.** Complete. The redisplayed embossed name is upper-cased, which is the
+  source's own in-place fold [`:L1499-L1501`] and not a change to stored data.
+
+**L-5 — The account-update abend diagnostic reported `code=null` while the response reported
+`9999`.**
+
+* **Severity: Low.** Diagnostic only; no request outcome was affected. The log line read
+  `CAUP abend: code=null culprit=COACTUPC` for an abend whose response body carried abend code
+  `9999`, so an operator correlating the two had no way to see they were the same event, and a
+  null where a four-character code belongs reads like a second, separate defect.
+* **Locator.** `ABEND-ROUTINE` moves a value into `ABEND-CODE` on only some paths; the terminal
+  code comes from `EXEC CICS ABEND ABCODE('9999')` [`app/cbl/COACTUPC.cbl:L4220-L4222`], which
+  is a different field. The exception payload already substituted the terminal code for a blank
+  work-area field — the diagnostic was simply written *before* that substitution and printed the
+  raw field.
+* **Status. Remediated.** The substitution is resolved first and the diagnostic reports the code
+  the caller is told. Nothing is lost: the only value the raw field can hold at that point is
+  the blank the substitution replaces. Pinned by a log-content assertion.
+* **Remediation.** Complete.
+
+**L-6 — A whitespace-only transaction identifier was reported as an invalid value rather than a
+blank one.**
+
+* **Severity: Low.** `GET /api/transactions/detail` with no `transactionId` reported failure
+  kind `BLANK`, while `transactionId=` and `transactionId=%20%20` reported `INVALID` — although
+  all three carry the same message, `'Tran ID can NOT be empty...'`. Telling a client its value
+  was invalid when what was detected is that there was no value in it inverts the meaning of the
+  two kinds, and it disagreed with the account-view identifier, which reports `BLANK` for a
+  whitespace-only value.
+* **Locator.** The source draws no distinction and cannot: `:147` is a single arm,
+  `WHEN TRNIDINI OF COTRN1AI = SPACES OR LOW-VALUES` — the field a terminal left untouched and
+  the field a terminal filled with blanks are tested together, produce one message and set one
+  cursor [`app/cbl/COTRN01C.cbl:L146-L152`].
+* **Status. Remediated.** Both arms report `BLANK`. `INVALID` is reserved for what it names: a
+  value that was supplied and does not conform — which on this operation is not refused at all,
+  because the program has no numeric edit and a non-conforming identifier flows into the read
+  and returns `404`.
+* **Remediation.** Complete.
 
 ### 18.4 Not available
 

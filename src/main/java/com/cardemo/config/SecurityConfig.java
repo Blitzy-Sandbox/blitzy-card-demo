@@ -67,13 +67,14 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.InvalidMediaTypeException;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -970,6 +971,44 @@ public class SecurityConfig {
     /** The stable machine-readable code every authentication refusal carries, {@value}. */
     private static final String ERROR_CODE_AUTHENTICATION_REQUIRED = "CARDDEMO-AUTHENTICATION-REQUIRED";
 
+    /**
+     * The detail the metrics scrape refusal carries, {@value}.
+     *
+     * <p>It is deliberately <em>not</em> {@link #AUTHENTICATION_PROBLEM_DETAIL}. That detail directs a caller
+     * to the sign-on operation and to a bearer token, and doing so here would be actively misleading: this
+     * chain accepts neither. A bearer token - even a valid administrator's - is refused, because the two
+     * credential stores are isolated on purpose.
+     *
+     * <p>It names what the endpoint expects and nothing about why this particular attempt failed. In
+     * particular it does not disclose whether a scrape principal is configured at all, which is deployment
+     * state an anonymous caller has no claim on; that distinction is written to the log instead, where the
+     * operator who needs it is looking.
+     */
+    private static final String SCRAPE_AUTHENTICATION_PROBLEM_DETAIL =
+            "This endpoint requires HTTP Basic credentials carrying the metrics scrape authority. A bearer "
+                    + "token is not accepted here.";
+
+    /**
+     * The realm the metrics scrape challenge names, {@value}.
+     *
+     * <p>The framework's default realm is the literal {@code Realm}, which tells an operator debugging a
+     * failing scrape nothing about which credential is being asked for. Naming it after the endpoint's
+     * purpose costs nothing and discloses nothing - the realm is a label, not a secret.
+     */
+    private static final String SCRAPE_REALM = "carddemo-metrics-scrape";
+
+    /**
+     * The detail a metrics scrape refusal after authentication carries, {@value}.
+     *
+     * <p>Again not the shared {@link #AUTHORIZATION_PROBLEM_DETAIL}, which speaks of a presented <em>token</em>
+     * - a word with no meaning on a chain that authenticates HTTP Basic credentials. It covers both routes to
+     * this handler, the method restriction and the authority requirement, and like its sibling it names
+     * neither the authority nor the accepted method set.
+     */
+    private static final String SCRAPE_AUTHORIZATION_PROBLEM_DETAIL =
+            "The presented credentials do not carry the authority this endpoint requires, or the request "
+                    + "method is not one it serves.";
+
     /** The title every authorisation refusal carries, {@value}. */
     private static final String AUTHORIZATION_PROBLEM_TITLE = "Authorization denied";
 
@@ -1000,6 +1039,39 @@ public class SecurityConfig {
 
     /** The stable machine-readable code every oversized-body refusal carries, {@value}. */
     private static final String ERROR_CODE_PAYLOAD_TOO_LARGE = "CARDDEMO-REQUEST-BODY-TOO-LARGE";
+
+    /** The title every unusable-media-type refusal carries, {@value}. */
+    private static final String MEDIA_TYPE_PROBLEM_TITLE = "Unsupported media type";
+
+    /**
+     * The fixed detail every unusable-media-type refusal carries, {@value}.
+     *
+     * <p>It names the one media type the seventeen operations accept and nothing about what arrived. The
+     * offending header is written to the {@code WARN} log instead, where it is subject to the masking
+     * configuration and reachable from the correlation identifier, so no attacker-chosen text is echoed
+     * back on the response.
+     */
+    private static final String MEDIA_TYPE_PROBLEM_DETAIL =
+            "This operation reads only application/json request bodies.";
+
+    /** The stable machine-readable code every unusable-media-type refusal carries, {@value}. */
+    private static final String ERROR_CODE_UNSUPPORTED_MEDIA_TYPE = "CARDDEMO-UNSUPPORTED-MEDIA-TYPE";
+
+    /** The title every unreadable-body refusal carries, {@value}. */
+    private static final String MALFORMED_BODY_PROBLEM_TITLE = "Request body could not be read";
+
+    /**
+     * The fixed detail every unreadable-body refusal carries, {@value}.
+     *
+     * <p>Deliberately identical in shape to the controllers' own unreadable-body sentence: a caller that
+     * framed its body wrongly gets the same class of answer whether the failure surfaced while the transfer
+     * encoding was being decoded or while the JSON was being parsed.
+     */
+    private static final String MALFORMED_BODY_PROBLEM_DETAIL =
+            "The request body could not be read. Send a complete, correctly framed body and retry.";
+
+    /** The stable machine-readable code every unreadable-body refusal carries, {@value}. */
+    private static final String ERROR_CODE_MALFORMED_BODY = "CARDDEMO-MALFORMED-REQUEST-BODY";
 
     /**
      * The value published for the correlation identifier when the request carries none, {@value}.
@@ -1175,7 +1247,17 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .requestCache(cache -> cache.requestCache(new NullRequestCache()))
                 .authenticationManager(new ProviderManager(provider))
-                .httpBasic(Customizer.withDefaults())
+                // The challenge carries the same problem envelope every other refusal on this service
+                // carries. Before this, it answered Spring's default body - no errorCode, no
+                // correlationId - so a failing scrape produced a 401 that named no cause and could not be
+                // joined to a log record. That is what made this endpoint look unreachable rather than
+                // unconfigured. See ScrapeAuthenticationEntryPoint.
+                .httpBasic(basic -> basic.authenticationEntryPoint(
+                        new ScrapeAuthenticationEntryPoint(scrapePrincipal != null)))
+                .exceptionHandling(handling -> handling
+                        .authenticationEntryPoint(
+                                new ScrapeAuthenticationEntryPoint(scrapePrincipal != null))
+                        .accessDeniedHandler(new ScrapeAccessDeniedHandler()))
                 // GET only. A scrape never writes, and leaving other methods to the deny-all below keeps
                 // the reachable surface equal to the documented surface.
                 .authorizeHttpRequests(authorize -> authorize
@@ -1328,6 +1410,11 @@ public class SecurityConfig {
                 // security headers, and BEFORE the security context and the bearer filter so it applies to
                 // an anonymous request. See RequestBodyLimitFilter for why the position is the whole point.
                 .addFilterAfter(new RequestBodyLimitFilter(), HeaderWriterFilter.class)
+                // The media-type screen, placed AFTER the body bound so the two refusals are ordered
+                // size-then-shape, and likewise after the header writer and before the bearer filter so an
+                // anonymous request is screened too. See RequestMediaTypeFilter for why screening here is
+                // what stops an unusable Content-Type reaching argument resolution.
+                .addFilterAfter(new RequestMediaTypeFilter(), RequestBodyLimitFilter.class)
                 .addFilterAfter(jwtAuthenticationFilter, SecurityContextHolderFilter.class)
                 .authorizeHttpRequests(authorize -> authorize
 
@@ -1773,6 +1860,133 @@ public class SecurityConfig {
     }
 
     /**
+     * The metrics scrape challenge: an HTTP Basic challenge that answers inside the problem envelope.
+     *
+     * <p><strong>Finding, severity Minor - remediated here.</strong> {@code /actuator/prometheus} answered
+     * {@code 401} to every caller in an environment where no scrape credential is configured, which is the
+     * correct, fail-closed outcome. What was wrong was the <em>answer</em>: Spring's default body, carrying
+     * {@code timestamp}, {@code status}, {@code error} and {@code path} and none of {@code errorCode},
+     * {@code correlationId} or a usable detail, under {@code Content-Type: application/json} rather than
+     * {@code application/problem+json}. A reviewer reading that body could not tell a missing matcher from a
+     * missing credential, and concluded the endpoint had no route at all.
+     *
+     * <p><strong>Why the framework's Basic entry point is NOT delegated to, when the bearer one is.</strong>
+     * {@code BearerTokenAuthenticationEntryPoint} sets the status and the {@code WWW-Authenticate} header
+     * directly, which leaves the body free for {@link #writeProblemDetail} to write - that is why
+     * {@link ProblemDetailAuthenticationEntryPoint} can delegate. {@code BasicAuthenticationEntryPoint}
+     * instead calls {@code HttpServletResponse.sendError}, and {@code sendError} inside a Boot application
+     * forwards to the registered error page: {@code BasicErrorController} then renders
+     * {@code timestamp status error path} and that is the body the caller receives, whatever is written
+     * afterwards. Delegating here therefore cannot work, and appeared to work while the body was being
+     * silently discarded.
+     *
+     * <p>So the status and the header are set on the response directly. The header is not decoration - it is
+     * what makes a Basic challenge a Basic challenge, and clients including Prometheus key their
+     * credential-presenting behaviour on it - so it is written to the byte, in the {@code Basic realm="..."}
+     * form RFC 7617 fixes, rather than approximated.
+     *
+     * <p>This is the same trap as the request-rejection handler, which produced a zero-length body for the
+     * same reason. The general rule it yields: <em>on any path that owes a response body, never call
+     * {@code sendError}</em>.
+     *
+     * <p><strong>What it discloses, and what it refuses to.</strong> The caller is told what the endpoint
+     * expects. The caller is <em>not</em> told whether a scrape principal exists, because that is deployment
+     * state and an anonymous request has no claim on it. The operator who does need it gets it from the log
+     * line below, which states plainly whether the credential is configured - the single fact that separates
+     * "your credentials are wrong" from "this deployment has no scrape credential at all", and the fact whose
+     * absence turned a configuration gap into a suspected defect.
+     */
+    private static final class ScrapeAuthenticationEntryPoint implements AuthenticationEntryPoint {
+
+        /**
+         * The challenge header, in the {@code Basic realm="..."} form of RFC 7617 section 2.
+         *
+         * <p>Built once, from {@link #SCRAPE_REALM}, so the realm has a single spelling. The realm is quoted
+         * because RFC 7617 requires a quoted-string, and {@link #SCRAPE_REALM} is a literal containing
+         * neither a quote nor a backslash, so no escaping is needed and none is performed.
+         */
+        private static final String CHALLENGE_HEADER_VALUE = "Basic realm=\"" + SCRAPE_REALM + "\"";
+
+        /** Whether a scrape principal is configured, reported to the log and never to the caller. */
+        private final boolean principalConfigured;
+
+        /**
+         * Builds the challenge for a chain that either has a principal or has none.
+         *
+         * @param principalConfigured whether {@link #scrapePrincipalFrom} produced a principal
+         */
+        private ScrapeAuthenticationEntryPoint(final boolean principalConfigured) {
+            super();
+            this.principalConfigured = principalConfigured;
+        }
+
+        @Override
+        public void commence(final HttpServletRequest request, final HttpServletResponse response,
+                final AuthenticationException authenticationException) throws IOException {
+
+            // setStatus, never sendError. See the class documentation: sendError forwards to the error page
+            // and the body written below would be replaced by the container's own.
+            response.setStatus(HttpStatus.UNAUTHORIZED.value());
+            response.setHeader(HttpHeaders.WWW_AUTHENTICATE, CHALLENGE_HEADER_VALUE);
+
+            if (this.principalConfigured) {
+                LOG.warn("Refused a metrics scrape of {} with {}. A scrape principal IS configured, so the"
+                        + " presented credentials did not match it", request.getRequestURI(),
+                        response.getStatus());
+            } else {
+                LOG.warn("Refused a metrics scrape of {} with {}. NO scrape principal is configured, so this"
+                        + " endpoint refuses every caller until both {} and {} are set", request
+                        .getRequestURI(), response.getStatus(), KEY_SCRAPE_USERNAME, KEY_SCRAPE_PASSWORD);
+            }
+
+            writeProblemDetail(response, statusOf(response, HttpStatus.UNAUTHORIZED),
+                    AUTHENTICATION_PROBLEM_TITLE, SCRAPE_AUTHENTICATION_PROBLEM_DETAIL,
+                    ERROR_CODE_AUTHENTICATION_REQUIRED);
+        }
+    }
+
+    /**
+     * The metrics scrape refusal after authentication: {@code 403}, enveloped, and silent about bearer tokens.
+     *
+     * <p>{@link ProblemDetailAccessDeniedHandler} cannot serve this chain, for two reasons that both matter.
+     * It delegates to {@code BearerTokenAccessDeniedHandler}, which writes {@code WWW-Authenticate: Bearer} -
+     * so a caller refused by an endpoint that accepts <em>only</em> HTTP Basic was being told to present a
+     * bearer token. And its detail speaks of "the presented token", a word with no meaning here. Both are the
+     * same class of defect as the one this whole chain was fixed for: a refusal that describes a mechanism the
+     * endpoint does not use is worse than a refusal that says nothing, because it sends the reader somewhere
+     * false.
+     *
+     * <p>No {@code WWW-Authenticate} header is written. RFC 7235 defines that header for {@code 401}; the
+     * bearer variant on a {@code 403} is an RFC 6750 extension for {@code insufficient_scope}, and HTTP Basic
+     * has no counterpart. Omitting it is the correct answer rather than an omission.
+     *
+     * <p>The status is set directly for the same reason as in {@link ScrapeAuthenticationEntryPoint}: on any
+     * path that owes a response body, {@code sendError} forwards to the error page and the body is replaced.
+     */
+    private static final class ScrapeAccessDeniedHandler implements AccessDeniedHandler {
+
+        /** Required so the enclosing class controls instantiation. */
+        private ScrapeAccessDeniedHandler() {
+            super();
+        }
+
+        @Override
+        public void handle(final HttpServletRequest request, final HttpServletResponse response,
+                final AccessDeniedException accessDeniedException) throws IOException {
+
+            response.setStatus(HttpStatus.FORBIDDEN.value());
+
+            LOG.warn("Refused an authenticated metrics scrape of {} {} with {}. Neither the required"
+                    + " authority nor the served method set is disclosed to the caller",
+                    request.getMethod(), request.getRequestURI(), response.getStatus());
+
+            writeProblemDetail(response, statusOf(response, HttpStatus.FORBIDDEN),
+                    AUTHORIZATION_PROBLEM_TITLE, SCRAPE_AUTHORIZATION_PROBLEM_DETAIL,
+                    ERROR_CODE_AUTHORIZATION_DENIED);
+        }
+    }
+
+    /**
      * Answers an unauthorised request with the framework's own headers <em>and</em> the shared problem body.
      *
      * <p>The counterpart of {@link ProblemDetailAuthenticationEntryPoint} for a principal that authenticated
@@ -1922,10 +2136,27 @@ public class SecurityConfig {
             }
 
             if (declaredLength < 0L && mayCarryBody(request)) {
-                // One byte past the bound is read on purpose: it is what distinguishes a body that is exactly
-                // at the bound, which is admitted, from one that is over it, which is refused. Nothing beyond
-                // that byte is ever read, so the allocation is bounded whatever the caller sends.
-                final byte[] captured = readAtMost(request.getInputStream(), MAX_BODY_BYTES + 1L);
+                final byte[] captured;
+                try {
+                    // One byte past the bound is read on purpose: it is what distinguishes a body that is
+                    // exactly at the bound, which is admitted, from one that is over it, which is refused.
+                    // Nothing beyond that byte is ever read, so the allocation is bounded whatever the caller
+                    // sends.
+                    captured = readAtMost(request.getInputStream(), MAX_BODY_BYTES + 1L);
+                } catch (final IOException unreadable) {
+                    // A length-less body is a transfer-encoded one, so this read is where the container
+                    // decodes the chunked framing - the chunk sizes, the terminating zero chunk and any
+                    // trailer fields. Reading here rather than letting a message converter read is what
+                    // makes the bound apply before the chain runs, but it also means a framing failure
+                    // surfaces INSIDE the security chain, where no @ExceptionHandler can see it: without
+                    // this arm it escaped to the container and was answered with the framework's default
+                    // error body, carrying neither the error code nor the correlation identifier, on a
+                    // route that may be reached anonymously. Refusing here keeps a malformed body a client
+                    // error with the shared envelope, and keeps the diagnostic on a log stream the caller
+                    // cannot read.
+                    refuseUnreadable(response, unreadable);
+                    return;
+                }
                 if (captured.length > MAX_BODY_BYTES) {
                     refuse(response, declaredLength);
                     return;
@@ -2008,6 +2239,195 @@ public class SecurityConfig {
 
             writeProblemDetail(response, HttpStatus.PAYLOAD_TOO_LARGE, PAYLOAD_PROBLEM_TITLE,
                     PAYLOAD_PROBLEM_DETAIL, ERROR_CODE_PAYLOAD_TOO_LARGE);
+        }
+
+        /**
+         * Refuses one body that could not be read with the shared problem envelope.
+         *
+         * <p>{@code 400 Bad Request} rather than {@code 500}: the request never reached an operation, and
+         * what went wrong is the caller's framing of its own body - a chunk length that does not match the
+         * bytes that followed, a connection that ended mid-body, or a trailer section the container could
+         * not parse. Answering it as a server failure both misinforms the caller and lets an unauthenticated
+         * request drive server-error records, which is precisely the condition this arm removes.
+         *
+         * <p>The cause is logged at {@code WARN} with its type and message and never relayed to the caller,
+         * for the same reason the controllers keep parser text out of their bodies: a framing diagnostic can
+         * quote the fragment it stopped on, and these routes carry credentials and personal data.
+         *
+         * @param response the response to refuse on, never {@code null}
+         * @param unreadable the read failure, retained as the log's cause so no root cause is discarded
+         * @throws IOException if the refusal cannot be written
+         */
+        private static void refuseUnreadable(final HttpServletResponse response, final IOException unreadable)
+                throws IOException {
+
+            LOG.warn("Refused a request body with {}: it could not be read. Read failure {}",
+                    HttpStatus.BAD_REQUEST.value(), unreadable.getClass().getSimpleName());
+            LOG.debug("Cause chain of the unreadable request body", unreadable);
+
+            writeProblemDetail(response, HttpStatus.BAD_REQUEST, MALFORMED_BODY_PROBLEM_TITLE,
+                    MALFORMED_BODY_PROBLEM_DETAIL, ERROR_CODE_MALFORMED_BODY);
+        }
+    }
+
+    /**
+     * Screens the {@code Content-Type} of every request that may carry a body, and refuses anything the
+     * seventeen operations cannot read before the request reaches argument resolution.
+     *
+     * <p><strong>Why this exists.</strong> All eight body-accepting operations consume {@code application/json}
+     * and nothing else. Three shapes of {@code Content-Type} used to be answered wrongly:</p>
+     * <ul>
+     *   <li>A <strong>wildcard</strong> type or subtype - {@code *&#47;*}, {@code application&#47;*} - reached
+     *       {@code org.springframework.http.HttpHeaders#setContentType}, which rejects a wildcard with an
+     *       {@code IllegalArgumentException}. That was thrown during argument resolution, before the mapped
+     *       method was entered and before any bean validation ran, and no {@code @ExceptionHandler} in the
+     *       controller package claims {@code IllegalArgumentException}, so it escaped to the container as a
+     *       {@code 500} carrying the framework's default error body - on eight routes, one of which is the
+     *       anonymous sign-on.</li>
+     *   <li>A <strong>media type with no JSON reader</strong> - {@code multipart/form-data},
+     *       {@code multipart/mixed} - reached the same code path with the same outcome.</li>
+     *   <li>A <strong>parsable but unreadable</strong> type - {@code text/plain}, {@code application/xml} -
+     *       produced the correct {@code 415} but in the framework's default body rather than this
+     *       application's envelope, so no client-side handler written against the envelope could read it.</li>
+     * </ul>
+     *
+     * <p>Screening here answers all three identically and correctly: {@code 415 Unsupported Media Type} in the
+     * shared problem envelope that {@link SecurityConfig#writeProblemDetail} composes, with the error code and
+     * the correlation identifier a caller needs and none of the request echoed back.
+     *
+     * <p><strong>Why a filter rather than an exception handler.</strong> Two reasons, both structural. First,
+     * a refusal written here happens inside the original dispatch, so the correlation identifier
+     * {@code com.cardemo.observability.CorrelationIdFilter} placed in the logging context is still present -
+     * whereas a failure that escapes to the container is rendered on an {@code ERROR} dispatch after that
+     * context has been cleared, which is why the previous {@code 500} records carried an empty correlation
+     * identifier while the response itself carried a real one. Second, the condition is a property of the
+     * request rather than of any one operation: one screen covers all eight routes and cannot be forgotten on
+     * a ninth.
+     *
+     * <p><strong>What it deliberately does not do.</strong> A request that carries <em>no body content</em> is
+     * passed through whatever it declares or omits: a body-less {@code DELETE} legitimately sends no
+     * {@code Content-Type}, so refusing on the header's absence alone would break the user deletion operation,
+     * and a {@code POST} with no body at all is already answered by the controller's own missing-body refusal.
+     * Only a request that sends bytes while describing them as nothing is refused - see
+     * {@link #carriesBodyContent(HttpServletRequest)}. The four methods this application never reads a body
+     * from are skipped for the same reason they are skipped by the body bound. Nothing about the response body
+     * of a successful request is affected: content negotiation on the way out is unchanged.
+     *
+     * <p><strong>Position in the chain is load-bearing</strong>, exactly as it is for the body bound.
+     * Registered after {@link RequestBodyLimitFilter} so an oversized body is still refused as oversized
+     * rather than as an unusable media type, after
+     * {@link org.springframework.security.web.header.HeaderWriterFilter} so a refusal still carries the
+     * default security headers, and before the bearer filter so it governs anonymous requests - the sign-on
+     * route being the one that most needs it.
+     */
+    private static final class RequestMediaTypeFilter extends OncePerRequestFilter {
+
+        /**
+         * Creates the filter.
+         *
+         * <p>Stated explicitly rather than left implicit, for the same reason
+         * {@link RequestBodyLimitFilter#RequestBodyLimitFilter()} is: the build's Javadoc gate treats an
+         * undocumented default constructor as a warning and escalates every warning to a failure. It holds no
+         * state and has nothing to configure - the one media type this application reads is a compile-time
+         * constant of the framework.
+         */
+        private RequestMediaTypeFilter() {
+            super();
+        }
+
+        @Override
+        protected void doFilterInternal(
+                final HttpServletRequest request,
+                final HttpServletResponse response,
+                final FilterChain filterChain) throws ServletException, IOException {
+
+            final String declared = request.getContentType();
+            final boolean absent = declared == null || declared.isBlank();
+
+            if (mayCarryBody(request) && (absent ? carriesBodyContent(request) : !isReadable(declared))) {
+                // The header is logged and never relayed. It is caller-supplied text, so it belongs on a
+                // stream that the masking configuration governs rather than in a response body.
+                LOG.warn("Refused a request with {}: the declared media type is not one this application "
+                                + "reads. Declared [{}]",
+                        HttpStatus.UNSUPPORTED_MEDIA_TYPE.value(), declared);
+
+                writeProblemDetail(response, HttpStatus.UNSUPPORTED_MEDIA_TYPE, MEDIA_TYPE_PROBLEM_TITLE,
+                        MEDIA_TYPE_PROBLEM_DETAIL, ERROR_CODE_UNSUPPORTED_MEDIA_TYPE);
+                return;
+            }
+
+            filterChain.doFilter(request, response);
+        }
+
+        /**
+         * Whether a request's method admits a body this application would read.
+         *
+         * <p>The same rule the body bound applies, and for the same reason: the four excluded methods have no
+         * body semantics on any route here, and an unrecognised method is treated as one that may carry a
+         * body, which is the direction that keeps the screen applied.
+         *
+         * @param request the request being screened, never {@code null}
+         * @return {@code true} when the method may carry a body this application reads
+         */
+        private static boolean mayCarryBody(final HttpServletRequest request) {
+            final String method = request.getMethod();
+            return method != null && !BODYLESS_METHODS.contains(method);
+        }
+
+        /**
+         * Whether a request actually carries body content, used only when it declared no media type.
+         *
+         * <p>This is what keeps the screen from breaking the one operation that legitimately sends no
+         * {@code Content-Type}: the user deletion route is a {@code DELETE} carrying no body, and a
+         * body-less request has nothing to interpret, so there is no media type to require. A request that
+         * <em>does</em> send bytes while stating nothing about them is refused instead of guessed at, which is
+         * the same posture the three refusals of {@link #isReadable(String)} take.
+         *
+         * <p>Both framings are recognised: a declared length above zero, and a transfer-encoded body, which
+         * declares no length at all. A declared length of zero is a body-less request whatever the method.
+         *
+         * @param request the request being screened, never {@code null}
+         * @return {@code true} when the request carries bytes it did not describe
+         */
+        private static boolean carriesBodyContent(final HttpServletRequest request) {
+            return request.getContentLengthLong() > 0L
+                    || request.getHeader(HttpHeaders.TRANSFER_ENCODING) != null;
+        }
+
+        /**
+         * Whether a declared media type is one this application can read a request body as.
+         *
+         * <p>Three refusals, in order. A header the media-type grammar cannot parse at all - {@code
+         * application/} is the shortest example - is refused rather than guessed at. A header carrying a
+         * wildcard in its type or subtype is refused because a request states what it <em>is</em> sending,
+         * not what it would accept, and because that is exactly the shape the framework's header accessor
+         * throws on. Anything else is admitted only when the registered JSON reader would claim it: type
+         * {@code application} with subtype {@code json} or with a {@code +json} structured suffix, which is
+         * precisely the {@code application/*+json} range that reader publishes.
+         *
+         * <p>Parameters are not consulted, so a charset or a version parameter neither admits nor refuses a
+         * type on its own. A comma-separated list is refused, because a request has exactly one body and
+         * therefore exactly one media type; the grammar rejects the comma, so the first refusal claims it.
+         *
+         * @param declared the raw header value, never {@code null} and never blank
+         * @return {@code true} when a body of that media type can be read by one of the operations
+         */
+        private static boolean isReadable(final String declared) {
+            final MediaType parsed;
+            try {
+                parsed = MediaType.parseMediaType(declared);
+            } catch (final InvalidMediaTypeException unparsable) {
+                return false;
+            }
+            if (parsed.isWildcardType() || parsed.isWildcardSubtype()) {
+                return false;
+            }
+            if (!MediaType.APPLICATION_JSON.getType().equalsIgnoreCase(parsed.getType())) {
+                return false;
+            }
+            final String subtype = parsed.getSubtype().toLowerCase(Locale.ROOT);
+            return subtype.equals(MediaType.APPLICATION_JSON.getSubtype())
+                    || subtype.endsWith("+" + MediaType.APPLICATION_JSON.getSubtype());
         }
     }
 

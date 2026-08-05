@@ -120,7 +120,8 @@ import jakarta.validation.Valid;
  *     <td>{@code 400}</td>
  *     <td>{@code ValidationException}: no period selector, more than one period selector resolved to a
  *         rejected period, a blank or out-of-range custom-range component, an assembled date the date
- *         validator rejects, or a confirmation that is blank or unrecognised</td>
+ *         validator rejects, or a confirmation the one-byte field does not accept. A <em>blank</em>
+ *         confirmation is not here: it is the prompt, and it answers {@code 200}</td>
  *     <td>The {@code detail} carries the legacy message literal verbatim and the {@code field} property
  *         names the symbolic-map field the 3270 cursor would have been parked on. {@code failureKind}
  *         separates a blank value from a wrong one</td>
@@ -139,9 +140,11 @@ import jakarta.validation.Valid;
  *   </tr>
  *   <tr>
  *     <td>{@code 200}</td>
- *     <td>The confirmation was declined, so nothing was published</td>
- *     <td>Expected. This is a distinct outcome from a rejection and from a success, and it is deliberately
- *         neither {@code 202} nor {@code 400}</td>
+ *     <td>The confirmation was declined, or it was blank and the operation is prompting for it. Neither
+ *         published anything</td>
+ *     <td>Expected. Both are distinct from a rejection and from a success, and both are deliberately
+ *         neither {@code 202} nor {@code 400}. The prompt carries the source's own
+ *         {@code Please confirm to print the ... report...} literal in {@code errorMessage}</td>
  *   </tr>
  *   <tr>
  *     <td>{@code 502}</td>
@@ -680,8 +683,10 @@ public class ReportController {
      *   <tr>
      *     <td>blank</td>
      *     <td>{@code :L464-L472}</td>
-     *     <td>{@code 400}, detail {@code Please confirm to print the } then the report name then
-     *         {@code  report...}, {@code failureKind} of a blank value</td>
+     *     <td>{@code 200}, {@code errorMessage} of {@code Please confirm to print the } then the report name
+     *         then {@code  report...}, the submitted period preserved and the cursor on the confirmation
+     *         field. It is a prompt, not a rejection - the source's three non-publishing arms share one
+     *         mechanism, and the two sibling confirmation gates answer {@code 200} on the same condition</td>
      *   </tr>
      *   <tr>
      *     <td>{@code 'Y'} or {@code 'y'}</td>

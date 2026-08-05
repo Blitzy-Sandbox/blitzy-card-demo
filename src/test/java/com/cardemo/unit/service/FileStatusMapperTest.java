@@ -69,9 +69,13 @@ import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.service.shared.FileStatusMapper;
 import java.io.IOException;
+import java.sql.BatchUpdateException;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -83,6 +87,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 
 /**
  * Executable specification for {@code com.cardemo.service.shared.FileStatusMapper}, the one place in the
@@ -1886,6 +1893,354 @@ class FileStatusMapperTest {
                         .as("%s must not carry the environment-specific literal [%s]", description, needle)
                         .doesNotContain(needle);
             }
+        }
+    }
+
+
+    @Nested
+    @DisplayName("8. Store condition discrimination: the SQLSTATE decides, not the translated type")
+    class StoreConditionDiscrimination {
+
+        /** PostgreSQL {@code unique_violation}. */
+        private static final String SQLSTATE_UNIQUE = "23505";
+
+        /** PostgreSQL {@code foreign_key_violation}. */
+        private static final String SQLSTATE_FOREIGN_KEY = "23503";
+
+        /** PostgreSQL {@code not_null_violation}. */
+        private static final String SQLSTATE_NOT_NULL = "23502";
+
+        /** PostgreSQL {@code check_violation}. */
+        private static final String SQLSTATE_CHECK = "23514";
+
+        /** PostgreSQL {@code character_not_in_repertoire}, raised by a NUL bound to a text column. */
+        private static final String SQLSTATE_INVALID_BYTE_SEQUENCE = "22021";
+
+        @Test
+        @DisplayName("a unique violation is the ONLY condition classified as a duplicate key")
+        void onlyAUniqueViolationIsADuplicate() {
+            assertThat(FileStatusMapper.classifyStoreFailure(translated(SQLSTATE_UNIQUE)))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY);
+        }
+
+        @ParameterizedTest(name = "SQLSTATE {0} is a constraint refusal, not a duplicate key")
+        @ValueSource(strings = {SQLSTATE_FOREIGN_KEY, SQLSTATE_NOT_NULL, SQLSTATE_CHECK, "23000", "23001"})
+        @DisplayName("every other class 23 state is a constraint refusal")
+        void otherIntegrityStatesAreConstraintRefusals(String sqlState) {
+            // This is the whole point of the classification. A KSDS could refuse a keyed write only for a key
+            // that already existed, so app/cbl/COTRN02C.cbl:735-741 and app/cbl/COUSR01C.cbl:260-266 each have
+            // one duplicate arm; V1__create_schema.sql declares ten foreign keys and five check constraints
+            // that VSAM did not. Folding those onto the duplicate arm reported "already taken" for a key that
+            // was free and advised a retry that could never succeed.
+            assertThat(FileStatusMapper.classifyStoreFailure(translated(sqlState)))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED);
+        }
+
+        @ParameterizedTest(name = "SQLSTATE {0} is an unrepresentable value")
+        @ValueSource(strings = {SQLSTATE_INVALID_BYTE_SEQUENCE, "22001", "22003", "22P02"})
+        @DisplayName("every class 22 state is an unrepresentable value, which is a malformed request")
+        void dataExceptionsAreInvalidData(String sqlState) {
+            assertThat(FileStatusMapper.classifyStoreFailure(translated(sqlState)))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.INVALID_DATA);
+        }
+
+        @ParameterizedTest(name = "SQLSTATE {0} is an I/O condition")
+        @ValueSource(strings = {"08006", "08003", "57014", "40001", "53300"})
+        @DisplayName("connection, cancellation and resource states stay I/O conditions - the only retryable one")
+        void everythingElseIsAnIoError(String sqlState) {
+            assertThat(FileStatusMapper.classifyStoreFailure(translated(sqlState)))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.IO_ERROR);
+        }
+
+        @Test
+        @DisplayName("the SQLSTATE is found through getNextException, where a batched failure hides it")
+        void theNextExceptionChainIsWalked() {
+            // pgjdbc reports a batched statement failure as a BatchUpdateException whose own state is not the
+            // failing statement's; the statement's own state is reachable only through getNextException. A walk
+            // of the cause chain alone therefore finds nothing, which would silently downgrade every batched
+            // integrity failure to an I/O condition.
+            SQLException batch = new BatchUpdateException("Batch entry 0 ... was aborted",
+                    "00000", new int[] {Statement.EXECUTE_FAILED});
+            batch.setNextException(new SQLException("violates foreign key constraint", SQLSTATE_FOREIGN_KEY));
+
+            assertThat(FileStatusMapper.classifyStoreFailure(
+                    new DataIntegrityViolationException("batched insert", batch)))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED);
+        }
+
+        @Test
+        @DisplayName("the SQLSTATE is found several links down a cause chain")
+        void theCauseChainIsWalkedToItsEnd() {
+            Throwable deep = new DataIntegrityViolationException("outer",
+                    new IllegalStateException("middle", new SQLException("inner", SQLSTATE_CHECK)));
+
+            assertThat(FileStatusMapper.classifyStoreFailure(deep))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED);
+        }
+
+        @Test
+        @DisplayName("a self-referencing chain terminates rather than looping")
+        void aSelfReferencingChainTerminates() {
+            SQLException looping = new SQLException("looping", (String) null);
+            looping.setNextException(looping);
+
+            assertThat(FileStatusMapper.classifyStoreFailure(looping))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.IO_ERROR);
+        }
+
+        @Test
+        @DisplayName("a chain longer than the cap terminates rather than running unbounded")
+        void anOverlongChainTerminates() {
+            SQLException head = new SQLException("link", (String) null);
+            SQLException tail = head;
+            for (int link = 0; link < 200; link++) {
+                SQLException next = new SQLException("link", (String) null);
+                tail.setNextException(next);
+                tail = next;
+            }
+
+            assertThat(FileStatusMapper.classifyStoreFailure(head))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.IO_ERROR);
+        }
+
+        @Test
+        @DisplayName("with no SQLSTATE anywhere, a DuplicateKeyException is still a duplicate key")
+        void theFallbackHonoursTheNarrowerType() {
+            assertThat(FileStatusMapper.classifyStoreFailure(
+                    new DuplicateKeyException("no state carried")))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY);
+        }
+
+        @Test
+        @DisplayName("with no SQLSTATE anywhere, a bare integrity violation is NOT assumed to be a duplicate")
+        void theFallbackRefusesToAssumeADuplicate() {
+            // The conflation this classification exists to end must not survive in the fallback either.
+            assertThat(FileStatusMapper.classifyStoreFailure(
+                    new DataIntegrityViolationException("no state carried")))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED);
+        }
+
+        @Test
+        @DisplayName("null, an unrelated failure and a stateless one are all I/O conditions, never null")
+        void unclassifiableInputYieldsIoError() {
+            assertThat(FileStatusMapper.classifyStoreFailure(null))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.IO_ERROR);
+            assertThat(FileStatusMapper.classifyStoreFailure(new IllegalStateException("unrelated")))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.IO_ERROR);
+            assertThat(FileStatusMapper.classifyStoreFailure(new SQLException("no state", (String) null)))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.IO_ERROR);
+            assertThat(FileStatusMapper.classifyStoreFailure(new SQLException("short state", "2")))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.IO_ERROR);
+        }
+
+        @Test
+        @DisplayName("the four kinds are the whole partition, and none is dropped")
+        void theKindsArePreciselyFour() {
+            assertThat(FileStatusMapper.StoreFailureKind.values())
+                    .containsExactly(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY,
+                            FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED,
+                            FileStatusMapper.StoreFailureKind.INVALID_DATA,
+                            FileStatusMapper.StoreFailureKind.IO_ERROR);
+        }
+
+        @Test
+        @DisplayName("the classifier is static, so a bean that must not inject the mapper can still use it")
+        void theClassifierIsStatic() throws NoSuchMethodException {
+            // AuthenticationService documents that the file-status TRANSLATION is deliberately unreachable
+            // from its path, because that program evaluates response codes rather than file statuses. It still
+            // has to decide which response arm a failed read belongs to, so the classifier is reached
+            // statically - which keeps the translation out of reach while making the decision available.
+            Method classifier = FileStatusMapper.class.getMethod("classifyStoreFailure", Throwable.class);
+
+            assertThat(Modifier.isStatic(classifier.getModifiers())).isTrue();
+            assertThat(Modifier.isPublic(classifier.getModifiers())).isTrue();
+        }
+
+        /**
+         * Wraps a SQLSTATE in the shape Spring's translation delivers it in.
+         *
+         * @param sqlState the five character state the driver reported
+         * @return the translated failure carrying it
+         */
+        private static DataAccessException translated(String sqlState) {
+            return new DataIntegrityViolationException("statement failed",
+                    new SQLException("driver detail", sqlState));
+        }
+    }
+
+    /**
+     * The store-failure classification, which is the same decision asked from the other direction.
+     *
+     * <p><strong>Findings F-2 and F-8, severity Major - this group pins the remediation.</strong> Four write
+     * sites caught {@code org.springframework.dao.DataIntegrityViolationException} and reported it
+     * unconditionally as the duplicate condition. That one type is the translation of {@code SQLSTATE} classes
+     * {@code 22} and {@code 23} alike, so a value the column could not hold was answered {@code 409} naming an
+     * identifier that was in fact free, and - from the other side - the duplicate answer AAP section 0.7.4.1
+     * requires for the retained identifier race depended on a subtype choice that is not a property of the
+     * persistence layer. Deciding on the state fixes both directions at once.
+     */
+    @Nested
+    @DisplayName("8. The store failure classification: only 23505 is a duplicate, and class 22 is a request error")
+    class StoreFailureClassification {
+
+        /**
+         * Sole constructor, invoked by the test framework.
+         */
+        StoreFailureClassification() {
+            // Nothing to establish: the classification is a static, stateless decision.
+        }
+
+        @Test
+        @DisplayName("the published constants are the states classified on, so a silent change fails a test")
+        void thePublishedStatesAreTheOnesClassifiedOn() {
+            assertThat(FileStatusMapper.SQLSTATE_UNIQUE_VIOLATION)
+                    .as("SQL/Foundation unique_violation, which PostgreSQL reports verbatim")
+                    .isEqualTo("23505");
+            assertThat(FileStatusMapper.SQLSTATE_CLASS_DATA_EXCEPTION)
+                    .as("the class prefix, not a whole state: 22021, 22001 and 22P02 are all members")
+                    .isEqualTo("22")
+                    .hasSize(2);
+            assertThat(FileStatusMapper.SQLSTATE_CLASS_INTEGRITY)
+                    .as("the class prefix whose one duplicate member is the state above; every other "
+                            + "member is a constraint the KSDS did not have")
+                    .isEqualTo("23")
+                    .hasSize(2);
+        }
+
+        @Test
+        @DisplayName("a unique violation is the duplicate condition, wherever in the chain its state sits")
+        void aUniqueViolationIsADuplicateAtEveryDepth() {
+            assertThat(FileStatusMapper.classifyStoreFailure(
+                    new SQLException("duplicate key", FileStatusMapper.SQLSTATE_UNIQUE_VIOLATION)))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY);
+
+            assertThat(FileStatusMapper.classifyStoreFailure(new DataIntegrityViolationException("refused",
+                    new SQLException("duplicate key", FileStatusMapper.SQLSTATE_UNIQUE_VIOLATION))))
+                    .as("one link down: the shape a single-row flush produces")
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY);
+
+            assertThat(FileStatusMapper.classifyStoreFailure(new DataIntegrityViolationException("batch refused",
+                    new SQLException("batch entry 0 failed", "40001",
+                            new SQLException("duplicate key",
+                                    FileStatusMapper.SQLSTATE_UNIQUE_VIOLATION)))))
+                    .as("""
+                        three links down and behind a state that is NOT the duplicate: the shape a batched \
+                        flush produces, where the driver reports the batch and links the failing entry's \
+                        exception beneath it.""")
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY);
+        }
+
+        @Test
+        @DisplayName("a linked exception carrying the duplicate state is found sideways as well as downwards")
+        void aLinkedExceptionIsAlsoWalked() {
+            SQLException batch = new SQLException("batch update failed", "40000");
+            batch.setNextException(
+                    new SQLException("duplicate key", FileStatusMapper.SQLSTATE_UNIQUE_VIOLATION));
+
+            assertThat(FileStatusMapper.classifyStoreFailure(new DataIntegrityViolationException("refused", batch)))
+                    .as("getNextException is where a driver actually puts the failing entry of a batch")
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY);
+        }
+
+        @Test
+        @DisplayName("an explicit duplicate translation is honoured even with no state at all")
+        void anExplicitDuplicateTranslationIsHonoured() {
+            assertThat(FileStatusMapper.classifyStoreFailure(new DuplicateKeyException("pk_transaction")))
+                    .as("""
+                        a second, independent signal of the same condition. When the data access layer has \
+                        already decided the failure is a duplicate, that decision is not downgraded because \
+                        the driver reported no state.""")
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY);
+        }
+
+        @Test
+        @DisplayName("every class 22 member is invalid field content, and none of them is a duplicate")
+        void classTwentyTwoIsInvalidFieldContent() {
+            for (String state : List.of("22021", "22001", "22P02", "22007")) {
+                assertThat(FileStatusMapper.classifyStoreFailure(new DataIntegrityViolationException("refused",
+                        new SQLException("data exception", state))))
+                        .as("SQLSTATE %s", state)
+                        .isEqualTo(FileStatusMapper.StoreFailureKind.INVALID_DATA);
+            }
+        }
+
+        @Test
+        @DisplayName("a class 23 condition that is not 23505 is the guard's ELSE arm, not a duplicate")
+        void otherIntegrityViolationsAreTheElseArm() {
+            for (String state : List.of("23502", "23503", "23514")) {
+                assertThat(FileStatusMapper.classifyStoreFailure(new DataIntegrityViolationException("refused",
+                        new SQLException("integrity", state))))
+                        .as("""
+                            SQLSTATE %s: a not-null, referential or check violation. The source's write guard \
+                            has exactly two arms - the duplicate condition and WHEN OTHER - and this is the \
+                            second one. Reporting it as the first tells a caller its key is taken when \
+                            nothing about a key was violated. The WHEN OTHER arm is named rather than \
+                            pooled, so a caller is told a constraint refused the row instead of being \
+                            invited to retry a store failure that never happened.""", state)
+                        .isEqualTo(FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED);
+            }
+        }
+
+        @Test
+        @DisplayName("a failure with no state, and a null failure, are the ELSE arm and never a duplicate")
+        void absentEvidenceIsNotEvidenceOfADuplicate() {
+            assertThat(FileStatusMapper.classifyStoreFailure(null))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.IO_ERROR);
+            assertThat(FileStatusMapper.classifyStoreFailure(new IOException("not a store failure at all")))
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.IO_ERROR);
+            assertThat(FileStatusMapper.classifyStoreFailure(
+                    new DataIntegrityViolationException("no state at all")))
+                    .as("with no state anywhere the translated type is all there is, and an integrity "
+                            + "violation that is not an explicit duplicate is a refused constraint by "
+                            + "elimination - never the duplicate answer, which is what this pins")
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED)
+                    .isNotEqualTo(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY);
+            assertThat(FileStatusMapper.classifyStoreFailure(new DataIntegrityViolationException("blank state",
+                    new SQLException("no state", "  "))))
+                    .as("a blank state is skipped rather than tested, so no test has to defend against one")
+                    .isNotEqualTo(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY);
+        }
+
+        @Test
+        @DisplayName("a self-referential cause chain terminates instead of hanging the failure handler")
+        void aCyclicChainTerminates() {
+            SQLException looping = new SQLException("looping", "40000");
+            looping.setNextException(looping);
+
+            assertThatCode(() -> FileStatusMapper.classifyStoreFailure(
+                    new DataIntegrityViolationException("refused", looping)))
+                    .as("""
+                        a cause chain is untrusted input like any other, and a failure handler is the worst \
+                        possible place for an unbounded loop: it is indistinguishable from a hung request.""")
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("classification is a pure function: the same failure classifies identically every time")
+        void classificationIsPure() {
+            DataIntegrityViolationException failure = new DataIntegrityViolationException("refused",
+                    new SQLException("duplicate key", FileStatusMapper.SQLSTATE_UNIQUE_VIOLATION));
+
+            assertThat(FileStatusMapper.classifyStoreFailure(failure))
+                    .isEqualTo(FileStatusMapper.classifyStoreFailure(failure))
+                    .isEqualTo(FileStatusMapper.classifyStoreFailure(failure));
+        }
+
+        @Test
+        @DisplayName("the conditions are exactly four: the corpus's duplicate arm and its WHEN OTHER, split")
+        void thereAreExactlyFourConditions() {
+            assertThat(FileStatusMapper.StoreFailureKind.values())
+                    .as("""
+                        DUPLICATE_KEY is the source's one named write-guard arm and IO_ERROR is its WHEN \
+                        OTHER. CONSTRAINT_REFUSED and INVALID_DATA are labelled additions that name two \
+                        conditions the corpus could not have: a foreign key or check constraint the KSDS \
+                        never declared, and a value that fitted its PIC clause yet a character column \
+                        cannot hold. Both are reported so a caller is never invited to retry a request \
+                        that can only fail again.""")
+                    .containsExactly(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY,
+                            FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED,
+                            FileStatusMapper.StoreFailureKind.INVALID_DATA,
+                            FileStatusMapper.StoreFailureKind.IO_ERROR);
         }
     }
 

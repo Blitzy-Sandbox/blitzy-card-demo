@@ -2194,7 +2194,8 @@ public class ReportSubmissionService {
      * @param period  the resolved period, whose report name the blank-confirmation prompt names
      * @return empty when the publish happened and the caller should compose the success notice; a screen when
      *         the confirmation was declined, which ends the turn
-     * @throws ValidationException when the confirmation is blank or unrecognised
+     * @throws ValidationException when the confirmation is a supplied value the one-byte field does not
+     *     accept; a blank confirmation is a prompt and returns a screen instead
      * @throws FileAccessException when the publish fails
      */
     private Optional<ReportSubmissionScreen> submitJobToIntrdr(
@@ -2208,8 +2209,27 @@ public class ReportSubmissionService {
         // ' report...' DELIMITED BY SIZE INTO WS-MESSAGE; MOVE 'Y' TO WS-ERR-FLG;
         // MOVE -1 TO CONFIRML; PERFORM SEND-TRNRPT-SCREEN.
         if (blankOrLowValues(gate)) {
-            throw ValidationException.missingField(CURSOR_CONFIRM,
-                    MSG_CONFIRM_PREFIX + period.reportName() + MSG_CONFIRM_SUFFIX);
+            // A REDISPLAY, NOT A REJECTION - and this arm previously threw.
+            //
+            // The source gives all three non-publishing arms the same mechanism: STATE 1 here, STATE 3 for
+            // 'N' at :L480-L483 and STATE 4 for anything else at :L484-L493 each MOVE 'Y' TO WS-ERR-FLG and
+            // each PERFORM SEND-TRNRPT-SCREEN. Nothing in the program distinguishes them by severity. What
+            // distinguishes them is what the caller DID: a blank gate is the operation asking a question,
+            // 'N' is the caller answering it, and any other character is a value the one-byte field does not
+            // accept. Only the third is a malformed request, so only the third stays a 400.
+            //
+            // Answering 400 to the prompt also disagreed with the two sibling confirmation gates -
+            // com.cardemo.service.billing.BillPaymentService and
+            // com.cardemo.service.transaction.TransactionAddService both answer 200 on their blank arm - so
+            // one API had two contradictory conventions for one legacy idiom.
+            //
+            // Two details of STATE 1 differ from STATE 3 and are preserved. The form is NOT cleared: :L464
+            // has no PERFORM INITIALIZE-ALL-FIELDS, so the caller's period selection survives and the
+            // confirmation can simply be added. And the cursor IS placed, by MOVE -1 TO CONFIRML at :L470,
+            // which STATE 3 does not do.
+            return Optional.of(sendTrnrptScreen(mapArea,
+                    MSG_CONFIRM_PREFIX + period.reportName() + MSG_CONFIRM_SUFFIX, true, false,
+                    CURSOR_CONFIRM));
         }
 
         // :L476 IF NOT ERR-FLG-ON, structural. :L477 EVALUATE TRUE.

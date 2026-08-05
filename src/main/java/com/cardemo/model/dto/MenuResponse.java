@@ -25,6 +25,7 @@
  */
 package com.cardemo.model.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -388,6 +389,19 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * One main-menu entry: the four sub-fields of {@code CDEMO-MENU-OPT} at {@code app/cpy/COMEN02Y.cpy:88-92}.
      *
+     * <p><strong>The target program is transcribed but not published.</strong>
+     *
+     * <p>FINDING, severity Minor - remediated here. {@code programName} was serialized onto the wire, so a
+     * menu response disclosed the legacy program identities {@code COACTVWC}, {@code COUSR00C} and their
+     * siblings. It is transcribed on this record because the option table genuinely declares it, and it is
+     * excluded from the JSON because of what it is for: it is the operand of
+     * {@code EXEC CICS XCTL PROGRAM(...)}, the dispatch mechanism Transformation Rule 7 replaces with
+     * URL-addressed navigation. {@code app/cpy/COCOM01Y.cpy}'s routing members are mapped to "no
+     * equivalent - routing is URL-based" for the same reason, and publishing the program name would hand a
+     * client the one piece of routing state the migration set out to remove - and couple it to a COBOL
+     * identifier that no longer addresses anything. The exclusion is by
+     * {@code @JsonIgnoreProperties}, which leaves the component, its validation and its citation intact.
+     *
      * @param optionNumber the display number, {@code CDEMO-MENU-OPT-NUM PIC 9(02)} at
      * {@code app/cpy/COMEN02Y.cpy:89}.
      * @param optionName the caption, {@code CDEMO-MENU-OPT-NAME PIC X(35)} at {@code app/cpy/COMEN02Y.cpy:90}.
@@ -396,6 +410,7 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
      * @param userTypeCode the eligibility gate, {@code CDEMO-MENU-OPT-USRTYPE PIC X(01)} at
      * {@code app/cpy/COMEN02Y.cpy:92}.
      */
+    @JsonIgnoreProperties("programName")
     public record MainMenuOption(
             int optionNumber,
             String optionName,
@@ -429,12 +444,26 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
      * One admin-menu entry: the three sub-fields of {@code CDEMO-ADMIN-OPT} at
      * {@code app/cpy/COADM02Y.cpy:45-48}.
      *
+     * <p><strong>The target program is transcribed but not published.</strong>
+     *
+     * <p>FINDING, severity Minor - remediated here. {@code programName} was serialized onto the wire, so a
+     * menu response disclosed the legacy program identities {@code COACTVWC}, {@code COUSR00C} and their
+     * siblings. It is transcribed on this record because the option table genuinely declares it, and it is
+     * excluded from the JSON because of what it is for: it is the operand of
+     * {@code EXEC CICS XCTL PROGRAM(...)}, the dispatch mechanism Transformation Rule 7 replaces with
+     * URL-addressed navigation. {@code app/cpy/COCOM01Y.cpy}'s routing members are mapped to "no
+     * equivalent - routing is URL-based" for the same reason, and publishing the program name would hand a
+     * client the one piece of routing state the migration set out to remove - and couple it to a COBOL
+     * identifier that no longer addresses anything. The exclusion is by
+     * {@code @JsonIgnoreProperties}, which leaves the component, its validation and its citation intact.
+     *
      * @param optionNumber the display number, {@code CDEMO-ADMIN-OPT-NUM PIC 9(02)} at
      * {@code app/cpy/COADM02Y.cpy:46}.
      * @param optionName the caption, {@code CDEMO-ADMIN-OPT-NAME PIC X(35)} at {@code app/cpy/COADM02Y.cpy:47}.
      * @param programName the target program, {@code CDEMO-ADMIN-OPT-PGMNAME PIC X(08)} at
      * {@code app/cpy/COADM02Y.cpy:48}.
      */
+    @JsonIgnoreProperties("programName")
     public record AdminMenuOption(
             int optionNumber,
             String optionName,

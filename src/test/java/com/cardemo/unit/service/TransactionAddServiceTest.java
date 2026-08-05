@@ -52,6 +52,7 @@ import static org.mockito.Mockito.when;
 
 import com.cardemo.config.WebConfig;
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
@@ -75,6 +76,7 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.util.Arrays;
 import java.util.List;
@@ -477,6 +479,20 @@ final class TransactionAddServiceTest {
     /** {@code app/cbl/COTRN02C.cbl:738-739}, the shared {@code DUPKEY}/{@code DUPREC} branch. */
     private static final String MSG_DUPLICATE_TRANSACTION = "Tran ID already exist...";
 
+    /**
+     * The {@code SQLSTATE} of a unique or primary-key violation, {@value}.
+     *
+     * <p>Restated here rather than referenced from the component under test, so that a silent change to the
+     * value the duplicate answer depends on fails a test rather than passing one.
+     */
+    private static final String SQLSTATE_UNIQUE_VIOLATION = "23505";
+
+    /**
+     * The {@code SQLSTATE} PostgreSQL reports for a {@code U+0000} in a character column, {@value} -
+     * {@code character_not_in_repertoire}, a member of the class {@code 22} data exceptions.
+     */
+    private static final String SQLSTATE_CHARACTER_NOT_IN_REPERTOIRE = "22021";
+
     /** {@code app/cbl/COTRN02C.cbl:745-746}. */
     private static final String MSG_ADD_FAILURE = "Unable to Add Transaction...";
 
@@ -839,6 +855,37 @@ final class TransactionAddServiceTest {
      */
     private void emptyTransactionFile() {
         when(this.transactionRepository.findFirstByOrderByTransactionIdDesc()).thenReturn(Optional.empty());
+    }
+
+    /**
+     * Builds the store failure a genuine {@code pk_transaction} collision produces, carrying its
+     * {@code SQLSTATE}.
+     *
+     * <p>Finding F-8. AAP section 0.7.4.1 requires the racy descending-browse identifier to be kept and the
+     * primary key constraint to surface a collision as the duplicate condition. That guarantee now rests on
+     * {@code SQLSTATE} {@value #SQLSTATE_UNIQUE_VIOLATION} rather than on which exception subtype the
+     * persistence layer chose, because the one Spring type covers classes {@code 22} and {@code 23} alike -
+     * so a state-less exception is a shape the store never produces and asserting against it would pass
+     * against the unconditional duplicate mapping this classification replaces.
+     *
+     * @return the collision, with the driver's exception as its cause exactly as the runtime chain has it
+     */
+    private static DataIntegrityViolationException uniqueViolation() {
+        return new DataIntegrityViolationException("tran_id primary key",
+                new SQLException("duplicate key value violates unique constraint \"pk_transaction\"",
+                        SQLSTATE_UNIQUE_VIOLATION));
+    }
+
+    /**
+     * Builds the store failure an unstorable value produces: {@code SQLSTATE}
+     * {@value #SQLSTATE_CHARACTER_NOT_IN_REPERTOIRE}, a class {@code 22} data exception.
+     *
+     * @return the refusal, with the driver's exception as its cause
+     */
+    private static DataIntegrityViolationException unstorableValue() {
+        return new DataIntegrityViolationException("the column refused the supplied value",
+                new SQLException("invalid byte sequence for encoding \"UTF8\": 0x00",
+                        SQLSTATE_CHARACTER_NOT_IN_REPERTOIRE));
     }
 
     /**
@@ -1791,7 +1838,7 @@ final class TransactionAddServiceTest {
             acceptBothDates();
             emptyTransactionFile();
             when(transactionRepository.saveAndFlush(any(Transaction.class)))
-                    .thenThrow(new DataIntegrityViolationException("tran_id primary key"));
+                    .thenThrow(uniqueViolation());
             final TransactionAddService service = service();
             final TransactionAddRequest submitted = request().build();
 
@@ -1811,13 +1858,67 @@ final class TransactionAddServiceTest {
         }
 
         @Test
+        @DisplayName("the collision is recognised by SQLSTATE, so the 409 of AAP 0.7.4.1 cannot become an abend")
+        void theCollisionIsRecognisedByItsSqlStateAndNotByASubtype() {
+            // Finding F-8. A collision reported as a plain DataIntegrityViolationException - which is what a
+            // batched flush produces, the state sitting on an exception linked below the one thrown - used to
+            // depend on that exception TYPE alone to reach the duplicate arm. Deciding on the state instead
+            // means the answer holds whatever subtype the provider chose, and nothing about the collision can
+            // reach the WHEN OTHER arm and be reported as a store failure or an abend.
+            resolveAccountBranch();
+            acceptBothDates();
+            emptyTransactionFile();
+            when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                    .thenThrow(new DataIntegrityViolationException("batched insert refused",
+                            new SQLException("batch entry 0 failed", "40001",
+                                    new SQLException("duplicate key value violates unique constraint",
+                                            SQLSTATE_UNIQUE_VIOLATION))));
+            final TransactionAddService service = service();
+            final TransactionAddRequest submitted = request().build();
+
+            assertThatExceptionOfType(DuplicateRecordException.class)
+                    .as("the state is three links down the chain, which is where a batched flush puts it")
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, submitted,
+                            ORIGIN_PROGRAM))
+                    .withMessage(MSG_DUPLICATE_TRANSACTION);
+        }
+
+        @Test
+        @DisplayName("a value the column cannot store is a request error, never a false Tran ID collision")
+        void anUnstorableValueIsNotReportedAsACollision() {
+            // Finding F-2 on this operation. 'Tran ID already exist...' asserts something specific and
+            // actionable: the identifier is taken. A value the column could not hold says nothing about any
+            // identifier, and reporting it as that answer sends the caller to regenerate an identifier that
+            // was never the problem.
+            resolveAccountBranch();
+            acceptBothDates();
+            emptyTransactionFile();
+            when(transactionRepository.saveAndFlush(any(Transaction.class))).thenThrow(unstorableValue());
+            final TransactionAddService service = service();
+            final TransactionAddRequest submitted = request().build();
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, submitted,
+                            ORIGIN_PROGRAM))
+                    .satisfies(failure -> {
+                        assertThat(failure.getMessage())
+                                .as("no submitted value is echoed: the request carries an amount, a card "
+                                        + "number and a merchant address")
+                                .doesNotContain(SYNTHETIC_CARD_NUMBER)
+                                .isNotEqualTo(MSG_DUPLICATE_TRANSACTION);
+                        assertThat(failure).isNotInstanceOf(DuplicateRecordException.class);
+                    })
+                    .withCauseInstanceOf(DataIntegrityViolationException.class);
+        }
+
+        @Test
         @DisplayName("no retry loop follows a collision: exactly one write is attempted")
         void noRetryLoopFollowsACollision() {
             resolveAccountBranch();
             acceptBothDates();
             emptyTransactionFile();
             when(transactionRepository.saveAndFlush(any(Transaction.class)))
-                    .thenThrow(new DataIntegrityViolationException("tran_id primary key"));
+                    .thenThrow(uniqueViolation());
             final TransactionAddService service = service();
             final TransactionAddRequest submitted = request().build();
 
@@ -1894,6 +1995,85 @@ final class TransactionAddServiceTest {
                     .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, submitted,
                             ORIGIN_PROGRAM))
                     .withMessage(MSG_ADD_FAILURE);
+        }
+
+        @Test
+        @DisplayName("a referential refusal is NOT a duplicate: it reports the WHEN OTHER literal instead")
+        void aReferentialRefusalIsNotReportedAsADuplicate() {
+            // The defect this test pins. app/cbl/COTRN02C.cbl:323-333 validates the type and category codes for
+            // emptiness and numeric content only - there is no lookup against TRANTYPE or TRANCATG anywhere in
+            // the program - so a KSDS accepted a type code of 99 and no arm of WRITE-TRANSACT-FILE could ever
+            // see a referential refusal. V1__create_schema.sql declares fk05_transaction_type and
+            // fk06_transaction_category, and folding their refusal onto the DUPKEY/DUPREC arm at :735-741 told
+            // the caller that the identifier this service had just generated was already taken and to retry.
+            // It was not taken, and a retry could never succeed.
+            resolveAccountBranch();
+            acceptBothDates();
+            emptyTransactionFile();
+            when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                    .thenThrow(new DataIntegrityViolationException("fk05_transaction_type",
+                            new SQLException("violates foreign key constraint "
+                                    + "\"fk05_transaction_type\"", "23503")));
+            final TransactionAddService service = service();
+            final TransactionAddRequest submitted = request().build();
+
+            assertThatExceptionOfType(DataIntegrityException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, submitted,
+                            ORIGIN_PROGRAM))
+                    .as("the arm's own literal at :745-746 is unchanged; only the typed failure differs")
+                    .withMessage(MSG_ADD_FAILURE)
+                    .satisfies(failure -> {
+                        assertThat(failure.getRelation()).isEqualTo("TRANSACT");
+                        assertThat(failure.getMessage())
+                                .as("the duplicate literal must not be reported for this condition")
+                                .isNotEqualTo(MSG_DUPLICATE_TRANSACTION);
+                        assertThat(failure.getCause()).isInstanceOf(DataIntegrityViolationException.class);
+                    });
+        }
+
+        @Test
+        @DisplayName("a value the column cannot represent is a malformed request, not a conflict")
+        void anUnrepresentableValueIsAValidationRefusal() {
+            resolveAccountBranch();
+            acceptBothDates();
+            emptyTransactionFile();
+            when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                    .thenThrow(new DataIntegrityViolationException("invalid byte sequence",
+                            new SQLException("invalid byte sequence for encoding \"UTF8\": 0x00",
+                                    "22021")));
+            final TransactionAddService service = service();
+            final TransactionAddRequest submitted = request().build();
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, submitted,
+                            ORIGIN_PROGRAM))
+                    .withMessage(MSG_ADD_FAILURE)
+                    .satisfies(failure -> {
+                        assertThat(failure.getFailureKind())
+                                .isEqualTo(ValidationException.FailureKind.INVALID);
+                        assertThat(failure.getFieldName())
+                                .as("the field named is the one :747 parks the cursor on")
+                                .isEqualTo("accountId");
+                    });
+        }
+
+        @Test
+        @DisplayName("exactly one write is attempted for a refusal too: there is no upsert and no retry")
+        void aRefusalIsAlsoTerminal() {
+            resolveAccountBranch();
+            acceptBothDates();
+            emptyTransactionFile();
+            when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                    .thenThrow(new DataIntegrityViolationException("fk06_transaction_category",
+                            new SQLException("violates foreign key constraint", "23503")));
+            final TransactionAddService service = service();
+            final TransactionAddRequest submitted = request().build();
+
+            assertThatExceptionOfType(DataIntegrityException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, submitted,
+                            ORIGIN_PROGRAM));
+
+            verify(transactionRepository, times(1)).saveAndFlush(any(Transaction.class));
         }
     }
 
@@ -2917,7 +3097,7 @@ final class TransactionAddServiceTest {
             acceptBothDates();
             emptyTransactionFile();
             when(transactionRepository.saveAndFlush(any(Transaction.class)))
-                    .thenThrow(new DataIntegrityViolationException("tran_id primary key"));
+                    .thenThrow(uniqueViolation());
             final TransactionAddService service = service();
             final TransactionAddRequest submitted = request().build();
 
@@ -3245,4 +3425,5 @@ final class TransactionAddServiceTest {
             verifyNoInteractions(cardCrossReferenceRepository, dateValidationService);
         }
     }
+
 }

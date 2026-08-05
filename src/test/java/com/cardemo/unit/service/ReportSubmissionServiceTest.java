@@ -2035,24 +2035,36 @@ class ReportSubmissionServiceTest {
         @Test
         @DisplayName("a blank gate re-prompts naming the MONTHLY report, byte exactly")
         void aBlankGateNamesTheMonthlyReport() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("")))
-                    .withMessage("Please confirm to print the Monthly report...")
-                    .satisfies(failure -> {
-                        assertThat(failure.getFieldName())
-                                .as(":472 MOVE -1 TO CONFIRML OF CORPT0AI")
-                                .isEqualTo(CURSOR_CONFIRM);
-                        assertThat(failure.getFailureKind())
-                                .isEqualTo(ValidationException.FailureKind.BLANK);
-                    });
+            // A REDISPLAY, NOT A THROW. All three non-publishing arms - :464 blank, :480 'N' and :484
+            // anything else - MOVE 'Y' TO WS-ERR-FLG and PERFORM SEND-TRNRPT-SCREEN, so nothing in the
+            // program grades them by severity. A blank gate is the operation ASKING; only a value the
+            // one-byte field cannot accept is a malformed request. The two sibling confirmation gates
+            // answer 200 on this same condition, so throwing here made one API contradict itself.
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(""));
+
+            assertThat(screen.form().errorMessage())
+                    .isEqualTo("Please confirm to print the Monthly report...");
+            assertThat(screen.errorFlagOn())
+                    .as(":470 MOVE 'Y' TO WS-ERR-FLG")
+                    .isTrue();
+            assertThat(screen.successHighlight()).isFalse();
+            assertThat(screen.cursorField())
+                    .as(":470 MOVE -1 TO CONFIRML OF CORPT0AI - unlike the 'N' arm, which sets no cursor")
+                    .isEqualTo(CURSOR_CONFIRM);
+            assertThat(screen.form().monthlySelected())
+                    .as(":464 has no PERFORM INITIALIZE-ALL-FIELDS, so the submitted period SURVIVES and "
+                            + "the caller can simply add the confirmation. The 'N' arm does clear it")
+                    .isEqualTo("Y");
+            verifyNoInteractions(sqsTemplate, snsTemplate);
         }
 
         @Test
         @DisplayName("a blank gate re-prompts naming the YEARLY report, byte exactly")
         void aBlankGateNamesTheYearlyReport() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, yearlyRequest("")))
-                    .withMessage("Please confirm to print the Yearly report...");
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, yearlyRequest(""))
+                    .form().errorMessage())
+                    .isEqualTo("Please confirm to print the Yearly report...");
         }
 
         @Test
@@ -2060,30 +2072,28 @@ class ReportSubmissionServiceTest {
         void aBlankGateNamesTheCustomReport() {
             arrangeDateValidatorAccepts();
 
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequestConfirmedWith("")))
-                    .withMessage("Please confirm to print the Custom report...");
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith(""))
+                    .form().errorMessage())
+                    .isEqualTo("Please confirm to print the Custom report...");
         }
 
         @Test
         @DisplayName("the prompt is composed from the source's two DELIMITED BY SIZE literals")
         void thePromptIsComposedFromTheTwoLiterals() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("")))
-                    .withMessage(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX)
-                    .satisfies(failure -> assertThat(failure.getMessage())
-                            .as("WS-REPORT-NAME is PIC X(10) but :468 composes it DELIMITED BY SPACE, so no "
-                                    + "padding may survive into the message")
-                            .doesNotContain("Monthly   "));
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(""))
+                    .form().errorMessage())
+                    .isEqualTo(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX)
+                    .as("WS-REPORT-NAME is PIC X(10) but :468 composes it DELIMITED BY SPACE, so no "
+                            + "padding may survive into the message")
+                    .doesNotContain("Monthly   ");
         }
 
         @Test
         @DisplayName("an absent gate re-prompts on the same message, LOW-VALUES being blank too")
         void anAbsentGateRePrompts() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(null)))
-                    .withMessage(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX);
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(null))
+                    .form().errorMessage())
+                    .isEqualTo(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX);
         }
 
         @Test
@@ -2091,10 +2101,9 @@ class ReportSubmissionServiceTest {
         void thePromptIsOnlyReachableAfterTheDatesAreComputed() {
             arrangeDateValidatorAccepts();
 
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequestConfirmedWith("")))
-                    .withMessage(MSG_CONFIRM_PREFIX + REPORT_NAME_CUSTOM + MSG_CONFIRM_SUFFIX);
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith(""))
+                    .form().errorMessage())
+                    .isEqualTo(MSG_CONFIRM_PREFIX + REPORT_NAME_CUSTOM + MSG_CONFIRM_SUFFIX);
 
             // The handshake sits at :464, inside SUBMIT-JOB-TO-INTRDR, which :435 performs only after both
             // date validations have passed. Both calls therefore precede the prompt.
@@ -2234,25 +2243,25 @@ class ReportSubmissionServiceTest {
         @Test
         @DisplayName("a gate BEGINNING WITH A SPACE re-prompts; the empty quoted segment is unreachable")
         void aGateBeginningWithASpaceRePrompts() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(" Y")))
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(" Y"))
+                    .form().errorMessage())
                     .as("a secondary description of this program expects the WHEN OTHER STRING at :485-490 "
                             + "to emit an empty quoted segment here, because :487 composes CONFIRMI "
                             + "DELIMITED BY SPACE. It cannot: CONFIRMI is PIC X(1), so a value whose first "
                             + "character is a space IS all spaces in that field, and the blank guard at "
                             + ":464 fires first")
-                    .withMessage(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX)
-                    .satisfies(failure -> assertThat(failure.getMessage())
-                            .doesNotContain("\"\" is not a valid value to confirm..."));
+                    .isEqualTo(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX)
+                    .doesNotContain("\"\" is not a valid value to confirm...");
             verifyNoInteractions(sqsTemplate);
         }
 
         @Test
         @DisplayName("every message-bearing arm of the handshake points the cursor at the confirmation field")
         void everyMessageBearingArmPointsAtTheConfirmationField() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("")))
-                    .satisfies(failure -> assertThat(failure.getFieldName()).isEqualTo(CURSOR_CONFIRM));
+            // The blank arm carries its cursor on the screen; the invalid arm carries it on the rejection.
+            // Both name the same field, which is the property under test.
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("")).cursorField())
+                    .isEqualTo(CURSOR_CONFIRM);
 
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("1")))
@@ -2460,10 +2469,9 @@ class ReportSubmissionServiceTest {
         @DisplayName("nothing is published when the confirmation was declined or unrecognised")
         void nothingIsPublishedWhenTheConfirmationFailed() {
             service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("N"));
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(""));
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("1")));
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("")));
 
             verifyNoInteractions(sqsTemplate, snsTemplate);
         }

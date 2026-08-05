@@ -24,6 +24,7 @@
  */
 package com.cardemo.model.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.List;
 
 /**
@@ -541,6 +542,20 @@ public record UserSecurityDto(
      * directly, so {@code toString} emits only the originating program name, for the same reason
      * {@link UserSecurityDto#toString()} does.
      *
+     * <p><strong>The six recurring header fields are transcribed but not published.</strong>
+     *
+     * <p>FINDING, severity Minor - remediated here. This record was serialized whole, so the delete
+     * response was the only one of the seventeen operations that put {@code transactionName},
+     * {@code title01}, {@code title02}, {@code currentDate}, {@code currentTime} and {@code programName} on
+     * the wire. Those six are the screen chrome every one of the seventeen symbolic maps repeats, and they
+     * are excluded from the JSON contract in every other operation: they are constants, a clock reading and
+     * a COBOL program identity, none of which is data the caller asked for and the last of which is the
+     * dispatch operand Transformation Rule 7 replaces. Excluding them here leaves exactly the five members
+     * this operation's published contract declares - {@code userIdInput}, {@code firstName},
+     * {@code lastName}, {@code userType} and {@code errorMessage} - while the components, their widths and
+     * their citations stay on the record, because the map does declare all eleven and the field contract is
+     * what this type exists to hold.
+     *
      * @param transactionName the four-character transaction identifier, {@code TRNNAMEI PIC X(4)} at
      *                        {@code app/cpy-bms/COUSR03.CPY}:24; may be {@code null} when absent
      * @param title01         the first title line of the screen header, {@code TITLE01I PIC X(40)} at
@@ -573,6 +588,8 @@ public record UserSecurityDto(
      *                        {@code app/cpy-bms/COUSR03.CPY}:84; may be {@code null} when the request
      *                        succeeded
      */
+    @JsonIgnoreProperties({"transactionName", "title01", "currentDate", "programName", "title02",
+        "currentTime"})
     public record UserDeleteScreen(
             String transactionName,
             String title01,

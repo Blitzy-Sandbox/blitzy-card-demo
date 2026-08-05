@@ -361,7 +361,34 @@ spring:
   # anywhere in this profile: Rule 1 Clause B forbids swallowing a failure,
   # and a migration that fails must stop the process rather than leave a
   # production schema half applied.
+  # --------------------------------------------------------------------------
+  # The runtime principal, REQUIRED here with no fallback
+  # --------------------------------------------------------------------------
+  # The base profile falls back to POSTGRES_USER when the least-privilege role
+  # is unset, which keeps an existing local volume working. Production gets no
+  # such courtesy: POSTGRES_USER is the cluster BOOTSTRAP role and the postgres
+  # image creates it as a SUPERUSER, so inheriting that fallback here would let
+  # a production deployment serve every request with an account that ignores
+  # every grant, every row-level policy and every column privilege.
+  #
+  # Restating the two names WITHOUT a default turns that into a startup
+  # failure: an unresolvable placeholder aborts property resolution, so the
+  # process cannot come up as the superuser by omission. Same reasoning as the
+  # JWT signing key - a security control whose absence must stop the process
+  # rather than quietly degrade it. The role needs SELECT, INSERT, UPDATE and
+  # DELETE on the eleven domain tables and the Spring Batch metadata tables,
+  # plus USAGE, SELECT and UPDATE on their sequences; the full grant set is in
+  # .env.example and in docker-compose.yml's provisioning script.
+  datasource:
+    username: ${CARDDEMO_DB_APP_USER}
+    password: ${CARDDEMO_DB_APP_PASSWORD}
+
   flyway:
+    # PIN, and the other half of the split above. Flyway owns the DDL and the
+    # runtime does not; requiring a SEPARATE principal here is what stops one
+    # credential holding both. No fallback, for the same fail-fast reason.
+    user: ${CARDDEMO_DB_MIGRATION_USER}
+    password: ${CARDDEMO_DB_MIGRATION_PASSWORD}
     # PIN. Baselining would make Flyway ACCEPT an unknown pre-existing schema
     # and record it as version 1 without checking a single object, so a
     # database shaped by something other than V1__create_schema.sql would pass
@@ -584,8 +611,8 @@ management:
 #
 # That masking is a BACKSTOP and not the control, so it must not be read as
 # complete exclusion. Non-emission is the primary control - sensitive values are
-# withheld at the point of rendering and never handed to a logger - because 6 of
-# the decorator's 13 <valueMask> rules are label anchored and cannot fire on a
+# withheld at the point of rendering and never handed to a logger - because 7 of
+# the decorator's 17 <valueMask> rules are label anchored and cannot fire on a
 # bare value. The reasons are recorded
 # in logback-spring.xml itself: a bare 16-digit run is indistinguishable from a
 # TRAN-ID, a bare 9-digit run from the PIC 9(09) batch counters, and a bare
@@ -625,3 +652,13 @@ logging:
     # PIC 9(09) from app/cpy/CVCUS01Y.cpy:17 and the BCrypt hash of
     # SEC-USR-PWD PIC X(08) from app/cpy/CSUSR01Y.cpy:21.
     org.hibernate.orm.jdbc.bind: WARN
+    # PIN of the base value, and the one place a floor is not enough. Finding
+    # F-6, severity Major (PCI): SqlExceptionHelper writes the driver's own
+    # message at ERROR on every rejected statement, and for a batched insert
+    # that message carries every bound value - including CARD-NUM PIC X(16)
+    # from app/cpy/CVACT02Y.cpy:5 in cleartext. A level floor cannot exclude
+    # ERROR, because ERROR is above every level a floor could name, so this is
+    # OFF rather than WARN. Restated here for the same reason the two lines
+    # above are: production must not depend on a parent value staying where it
+    # is. The base configuration carries the full evidence and the reasoning.
+    org.hibernate.engine.jdbc.spi.SqlExceptionHelper: "OFF"

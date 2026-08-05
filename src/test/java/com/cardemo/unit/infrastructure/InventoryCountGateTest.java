@@ -97,7 +97,7 @@ import org.springframework.web.bind.annotation.PutMapping;
  *       which makes a ninth controller a failure here rather than an omission.
  *   </ul>
  */
-@DisplayName("Counted claims, held as gates: 636 seed rows, 29 DTOs, 64 exception handlers")
+@DisplayName("Counted claims, held as gates: 636 seed rows, 29 DTOs, 67 exception handlers")
 final class InventoryCountGateTest {
 
     /** An {@code INSERT INTO <table>} statement at the start of a line. */
@@ -126,10 +126,23 @@ final class InventoryCountGateTest {
      * error-serialization finding: those two conditions are raised before a mapped method is entered, so they
      * were escaping to the framework's default handling and answering in a shape that carried neither
      * {@code errorCode} nor {@code correlationId}. {@code MenuController} binds no body and correctly gains
-     * neither. The per-controller split below is what makes the total impossible to reach by two compensating
+     * neither. That is the 64 this constant held.
+     *
+     * <p>It is 67 because {@code AdminController}, {@code BillingController} and
+     * {@code TransactionController} each gained a {@code DataIntegrityException} handler, which
+     * {@code AccountController} already carried. A VSAM KSDS
+     * could refuse a keyed write only for a key that already existed, so each of
+     * {@code app/cbl/COUSR01C.cbl}:250-274 and {@code app/cbl/COTRN02C.cbl}:722-748 has one duplicate arm and
+     * one catch-all; {@code V1__create_schema.sql} declares constraints on {@code user_security} and three
+     * foreign keys on {@code transaction} that VSAM did not, and folding a refusal by one of those onto the
+     * duplicate arm reported "already taken" for a key that was free and advised a retry that could never
+     * succeed. {@code BillingController} inserts into the same {@code transaction} relation, so it carried the
+     * identical defect. Three handlers, one per write surface that lacked one, is the whole of the growth.
+     *
+     * <p>The per-controller split below is what makes the total impossible to reach by two compensating
      * errors, and it is why this constant is stated as a total <em>and</em> broken out.
      */
-    private static final int EXPECTED_HANDLER_COUNT = 64;
+    private static final int EXPECTED_HANDLER_COUNT = 67;
 
     /**
      * The route total the eight controllers publish between them.
@@ -159,18 +172,27 @@ final class InventoryCountGateTest {
      * {@code @RequestBody} parameter anywhere, so neither condition can arise on it and declaring a handler for
      * them would be unreachable code.
      *
+     * <p>The three rows at ten are the three write surfaces that can be refused by a constraint the frozen
+     * VSAM corpus did not have, and each declares a {@code DataIntegrityException} handler for it:
+     * {@code AccountController} for the ten foreign keys the account and customer relations head,
+     * {@code AdminController} for {@code ck_user_security_type} and its siblings, and
+     * {@code TransactionController} for {@code fk04_transaction_card}, {@code fk05_transaction_type} and
+     * {@code fk06_transaction_category}, and {@code BillingController} for the same three because it inserts
+     * into the same relation. {@code CardController} stays at nine because the card update rewrites an existing
+     * row and inserts nothing.
+     *
      * @return one entry per controller
      */
     private static Map<Class<?>, Integer> expectedHandlersPerController() {
         final Map<Class<?>, Integer> expected = new LinkedHashMap<>();
         expected.put(AccountController.class, 10);
-        expected.put(AdminController.class, 9);
+        expected.put(AdminController.class, 10);
         expected.put(AuthController.class, 8);
-        expected.put(BillingController.class, 9);
+        expected.put(BillingController.class, 10);
         expected.put(CardController.class, 9);
         expected.put(MenuController.class, 3);
         expected.put(ReportController.class, 7);
-        expected.put(TransactionController.class, 9);
+        expected.put(TransactionController.class, 10);
         return expected;
     }
 

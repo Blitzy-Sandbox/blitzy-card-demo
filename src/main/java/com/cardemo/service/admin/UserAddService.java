@@ -34,12 +34,12 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
@@ -50,6 +50,9 @@ import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.repository.UserSecurityRepository;
 import com.cardemo.service.shared.FileStatusMapper;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceException;
 
 /**
  * The user-add screen: five operator fields validated in one fixed order, then a single keyed insert into the
@@ -598,9 +601,36 @@ public class UserAddService {
 
     /**
      * The {@code USRSEC} cluster, reached through its {@code JpaRepository} contract: one existence probe on
-     * the eight-character primary key, and one insert.
+     * the eight-character primary key.
      */
     private final UserSecurityRepository userSecurityRepository;
+
+    /**
+     * The persistence context, used for one thing only: to issue the insert as an <em>insert</em>.
+     *
+     * <p><strong>Why the repository cannot be used for the write.</strong> {@code JpaRepository.save} decides
+     * between {@code persist} and {@code merge} from whether the entity looks new, and
+     * {@link UserSecurity} carries an <em>assigned</em> eight-character identifier and no {@code @Version}
+     * column, so it never looks new: {@code save} therefore always takes the {@code merge} path, which selects
+     * the row first and issues an {@code UPDATE} when it finds one. That turns a create into an overwrite. The
+     * window is real and was observed: two concurrent creates of the same identifier both answered
+     * {@code 201} and left one row, because the second request's {@code merge} selected the row the first had
+     * just committed and updated it - <em>including its BCrypt password hash</em>. That is silent credential
+     * replacement by an operation whose whole contract is to refuse a key that already exists.
+     *
+     * <p>{@link EntityManager#persist(Object)} has no such branch. It schedules an {@code INSERT} and nothing
+     * else, so a key that is already present can only fail the primary key, which is precisely the
+     * {@code DFHRESP(DUPKEY)} condition {@code app/cbl/COUSR01C.cbl:L260} names. The existence probe is kept
+     * for the sequential case, because it is what reproduces the source's message without waiting on a
+     * constraint, but it is the {@code INSERT} that is authoritative.
+     *
+     * <p>This mirrors {@code com.cardemo.service.transaction.TransactionDetailService}, which injects the same
+     * interface for the one facility its repository cannot express. The repository interface is owned by the
+     * repository package and is deliberately not modified from this file; in particular no statement here
+     * names the credential column, so the projection ban documented on
+     * {@link UserSecurityRepository} continues to hold unchanged.
+     */
+    private final EntityManager entityManager;
 
     /**
      * The BCrypt encoder published by {@code com.cardemo.config.SecurityConfig} at strength 10. Consumed,
@@ -631,18 +661,22 @@ public class UserAddService {
      *                               {@code PasswordEncoder} abstraction so that this bean neither names an
      *                               implementation nor pins a cost factor
      * @param fileStatusMapper       the shared file-status-to-exception mapper; must not be {@code null}
+     * @param entityManager          the persistence context, used solely to issue the insert as an insert so a
+     *                               create can never become an update; must not be {@code null}
      * @param clock                  the time source for the screen header; must not be {@code null}
      * @throws NullPointerException if any argument is {@code null}
      */
     public UserAddService(final UserSecurityRepository userSecurityRepository,
             final PasswordEncoder passwordEncoder,
             final FileStatusMapper fileStatusMapper,
+            final EntityManager entityManager,
             final Clock clock) {
 
         this.userSecurityRepository =
                 Objects.requireNonNull(userSecurityRepository, "userSecurityRepository must not be null");
         this.passwordEncoder = Objects.requireNonNull(passwordEncoder, "passwordEncoder must not be null");
         this.fileStatusMapper = Objects.requireNonNull(fileStatusMapper, "fileStatusMapper must not be null");
+        this.entityManager = Objects.requireNonNull(entityManager, "entityManager must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -1224,7 +1258,7 @@ public class UserAddService {
                 work.errFlgOn = true;                            // :269 MOVE 'Y' TO WS-ERR-FLG
                 work.message = UNABLE_TO_ADD_MESSAGE;            // :270-271 'Unable to Add User...'
                 work.cursorField = CURSOR_FIELD_FIRST_NAME;      // :272 MOVE -1 TO FNAMEL
-                retainFailure(work, classify(work, work.ioStatus, WRITE_OPERATION));
+                retainFailure(work, writeFailure(work));
                 sendUsraddScreen(work);                          // :273 PERFORM SEND-USRADD-SCREEN
             }
         }
@@ -1282,20 +1316,35 @@ public class UserAddService {
      * {@link #writeUserSecFile} can evaluate exactly the three response arms the source evaluates.
      *
      * <p><strong>Why an existence probe precedes the insert.</strong> {@code EXEC CICS WRITE} fails on a
-     * key that is already present; {@code JpaRepository.save} does not - it would treat the row as detached
-     * and issue an update, silently overwriting a user and their credential. One
-     * {@code existsById} therefore reproduces the condition the source relies on. That is the whole of the
-     * cost: one probe and one insert, no loop and no poll.
+     * key that is already present, and the probe is what reproduces that condition - and the source's own
+     * message for it - in the ordinary sequential case without waiting on a constraint. That is the whole of
+     * the cost: one probe and one insert, no loop and no poll.
      *
      * <p>The probe is not a substitute for the constraint. Between the probe and the flush a concurrent
-     * request can insert the same key, so the flush is guarded too and the resulting integrity violation
+     * request can insert the same key, so the flush is guarded too and the resulting unique violation
      * takes <strong>the same single branch</strong>, carrying the original as its cause. Both routes are the
      * one shared body of {@code :262-266}, which is what {@code DFHRESP(DUPKEY)} at {@code :260} and
      * {@code DFHRESP(DUPREC)} at {@code :261} share in the source.
      *
-     * <p>{@code saveAndFlush} rather than {@code save} is deliberate: the violation must surface inside this
-     * method, where the condition can be classified, rather than at commit time where it would escape the
+     * <p><strong>{@link EntityManager#persist(Object)} rather than {@code JpaRepository.save}, and this is
+     * load-bearing.</strong> {@code save} would take the {@code merge} path for this entity and could
+     * therefore <em>update</em> a row a concurrent request had just created, answering the second caller
+     * {@code 201} while replacing the first caller's stored password hash. {@code persist} schedules an
+     * {@code INSERT} and only an {@code INSERT}, so the primary key decides the race and exactly one caller
+     * can succeed. The field Javadoc on {@link #entityManager} records the observed failure in full.
+     *
+     * <p>The flush is explicit for the same reason {@code saveAndFlush} was: the violation must surface inside
+     * this method, where the condition can be classified, rather than at commit time where it would escape the
      * response evaluation entirely.
+     *
+     * <p><strong>Only a unique violation is a duplicate.</strong> The condition is read from the driver's
+     * SQLSTATE by {@link FileStatusMapper#classifyStoreFailure(Throwable)} rather than from the translated
+     * exception type, because Spring maps a duplicate key, a check-constraint refusal and a value the column
+     * cannot represent all onto {@code DataIntegrityViolationException}. Treating that one type as
+     * {@code DFHRESP(DUPREC)} reported {@code 'User ID already exist...'} for a {@code NUL} byte in a name -
+     * an identifier that was in fact free, and a row that was never created. Anything that is not a unique
+     * violation now takes the source's own {@code WHEN OTHER} arm at {@code :267-273}, whose message is
+     * {@code 'Unable to Add User...'} and whose cursor is {@code FNAMEL}.
      *
      * <p><strong>An unmappable digest is an abend, not a response code.</strong> The entity rejects any
      * password hash that is not BCrypt at strength ten. That can only happen if the injected encoder is
@@ -1306,6 +1355,8 @@ public class UserAddService {
      *
      * @param work the per-invocation work area, carrying the populated record fields and the digest
      * @throws FatalProcessingException if the digest the injected encoder produced is not BCrypt strength ten
+     * @throws ValidationException if the store refuses a supplied value as unstorable rather than as a
+     *     duplicate, which is a request error and is answered {@code 400}
      */
     private void insertUserSecurityRecord(final ScreenWorkArea work) {
         if (this.userSecurityRepository.existsById(work.secUsrId)) {
@@ -1325,16 +1376,27 @@ public class UserAddService {
         }
 
         try {
-            this.userSecurityRepository.saveAndFlush(record);
+            this.entityManager.persist(record);
+            this.entityManager.flush();
             recordResponse(work, CICS_RESP_NORMAL, IO_STATUS_SUCCESS);
-        } catch (final DataIntegrityViolationException cause) {
-            // A concurrent insert of the same key. Same condition, same single branch as the probe above.
-            LOG.debug("USRSEC write rejected: the user identifier was inserted concurrently");
+        } catch (final DataAccessException | PersistenceException cause) {
+            // Both hierarchies are caught because the write goes through the persistence context rather than
+            // the repository: Spring's translation is applied on repository beans, so a constraint refusal
+            // raised by persist or flush arrives as the JPA exception it was, and only the read path above
+            // arrives already translated. Neither may be allowed to escape unclassified.
             work.ioFailureCause = cause;
-            recordResponse(work, CICS_RESP_DUPREC, IO_STATUS_DUPLICATE_KEY);
-        } catch (final DataAccessException cause) {
-            LOG.warn("USRSEC write failed with a data-access error", cause);
-            work.ioFailureCause = cause;
+            work.storeFailureKind = FileStatusMapper.classifyStoreFailure(cause);
+            if (work.storeFailureKind == FileStatusMapper.StoreFailureKind.DUPLICATE_KEY) {
+                // A concurrent insert of the same key. Same condition, same single branch as the probe above.
+                LOG.debug("USRSEC write rejected: the user identifier was inserted concurrently");
+                recordResponse(work, CICS_RESP_DUPREC, IO_STATUS_DUPLICATE_KEY);
+                return;
+            }
+            // Not a key collision. The identifier is free and no row was written; the source's WHEN OTHER arm
+            // owns this outcome. The kind is named so an operator can tell a refused constraint from a value
+            // the column cannot hold from an unreachable store, none of which the response code distinguishes.
+            LOG.warn("USRSEC write failed and the condition is not a key collision: {}",
+                    work.storeFailureKind, cause);
             recordResponse(work, CICS_RESP_IOERR, IO_STATUS_IO_ERROR);
         }
     }
@@ -1407,6 +1469,20 @@ public class UserAddService {
      * <p>The message names the field and never the value: the value is attacker-supplied, and echoing
      * unvalidated input is how a message becomes an injection vector.
      *
+     * <p><strong>Where the deviation is published.</strong> Labelling it here is necessary and was not
+     * sufficient: a caller reads the contract, not the source. It is therefore also published in
+     * {@code docs/api-contracts.md} at the heading <em>Labelled deviation: userType is restricted to A and
+     * U</em>, referenced from both the add-user and the update-user operations, together with the two facts
+     * that make removing the guard pointless as well as unwise - the schema already declares
+     * {@code CONSTRAINT ck_user_security_type CHECK (sec_usr_type IN ('A', 'U'))} from those same two
+     * condition names, so relaxing this check would convert a {@code 400} that names the field into a
+     * {@code 409} that names nothing; and the seeded population is five {@code 'A'} rows and five
+     * {@code 'U'} rows [{@code app/jcl/DUSRSECJ.jcl}], so no legacy behaviour depends on a third value being
+     * storable.
+     *
+     * <p>The blank check is untouched and still runs FIRST, so a caller who omits the field is told it is
+     * empty rather than told about the domain. That ordering is the source's.
+     *
      * @param userType the value of {@code USRTYPEI PIC X(1)}; already proven non-blank by the check at
      *                 {@code :142}
      * @return the mapped user type
@@ -1415,6 +1491,65 @@ public class UserAddService {
     private static UserType resolveUserType(final String userType) {
         return UserType.fromCode(userType).orElseThrow(() -> ValidationException.invalidField(
                 FIELD_USER_TYPE, "User Type must be A for an administrator or U for a regular user"));
+    }
+
+    /**
+     * Chooses the typed failure that carries the {@code WHEN OTHER} arm of
+     * {@code app/cbl/COUSR01C.cbl}:267-273 outwards, from the store condition
+     * {@link #insertUserSecurityRecord} classified.
+     *
+     * <p>The arm itself is unchanged by this choice and is reproduced in full before this method is called:
+     * {@code WS-ERR-FLG} is set at {@code :269}, {@code 'Unable to Add User...'} is moved at {@code :270-271}
+     * and the cursor is parked on {@code FNAMEL} at {@code :272}. What varies is only which exception type
+     * carries that outcome to the caller, and therefore which status the controller answers - a decision the
+     * source never had to make, because a 3270 has one failure presentation and a KSDS had one failure mode
+     * this program could name.
+     *
+     * <p>The three outcomes:
+     *
+     * <ul>
+     *   <li>{@link FileStatusMapper.StoreFailureKind#CONSTRAINT_REFUSED} - a constraint
+     *       {@code V1__create_schema.sql} declares and VSAM did not, such as
+     *       {@code ck_user_security_type}, refused the row. That is a conflict between the request and the
+     *       schema rather than a malformed request, reported as {@link DataIntegrityException} and answered
+     *       {@code 409}. The relation is carried on the exception for the log; the constraint name is left on
+     *       the retained cause.</li>
+     *   <li>{@link FileStatusMapper.StoreFailureKind#INVALID_DATA} - a submitted value cannot be represented in
+     *       its column at all, of which a {@code NUL} inside a name is the reachable case. That is a malformed
+     *       request, reported as {@link ValidationException} against {@value #FIELD_FIRST_NAME} - the field the
+     *       source's own cursor names on this arm - and answered {@code 400}.</li>
+     *   <li>{@link FileStatusMapper.StoreFailureKind#IO_ERROR} - the store could not be reached, or reported a
+     *       condition neither of the above describes. This is the only one of the three a retry can resolve,
+     *       and it keeps the existing status translation and its {@code 5xx}.</li>
+     * </ul>
+     *
+     * <p>None of the three messages carries a submitted value, and the credential never reaches any of them:
+     * the digest is not on the work area's message path and the offending value travels only on the retained
+     * cause, which is logged through the masking configuration rather than returned.
+     *
+     * <p>The recorded cause is consumed on the two new arms exactly as {@link #classify} consumes it, so it
+     * cannot be attached twice.
+     *
+     * @param work the per-invocation work area, carrying the classified condition and any recorded cause
+     * @return the typed exception to retain; never {@code null}
+     */
+    private CardDemoException writeFailure(final ScreenWorkArea work) {
+        if (work.storeFailureKind == FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED) {
+            final Throwable cause = work.ioFailureCause;
+            work.ioFailureCause = null;
+            LOG.warn("USRSEC write was refused by a constraint the KSDS did not have; the identifier is free "
+                    + "and no row was written", cause);
+            return new DataIntegrityException(UNABLE_TO_ADD_MESSAGE, null, USRSEC_FILE, cause);
+        }
+        if (work.storeFailureKind == FileStatusMapper.StoreFailureKind.INVALID_DATA) {
+            final Throwable cause = work.ioFailureCause;
+            work.ioFailureCause = null;
+            LOG.warn("USRSEC write carried a value its column cannot represent; the identifier is free and no "
+                    + "row was written", cause);
+            return new ValidationException(UNABLE_TO_ADD_MESSAGE, FIELD_FIRST_NAME,
+                    ValidationException.FailureKind.INVALID, cause);
+        }
+        return classify(work, work.ioStatus, WRITE_OPERATION);
     }
 
     /**
@@ -1694,6 +1829,20 @@ public class UserAddService {
 
         /** The same condition as a file status, in the vocabulary {@code FileStatusMapper} speaks. */
         private String ioStatus = IO_STATUS_SUCCESS;
+
+        /**
+         * Which store condition the insert raised, as
+         * {@link FileStatusMapper#classifyStoreFailure(Throwable)} read it from the driver's SQLSTATE.
+         *
+         * <p>It has no counterpart in {@code app/cbl/COUSR01C.cbl}. {@code WS-RESP-CD} carried everything CICS
+         * could say about a failed {@code EXEC CICS WRITE} against a KSDS, and a KSDS could only refuse a key
+         * that already existed. A relational table refuses the same row for conditions VSAM never had, so this
+         * field carries what the response code cannot, and the {@code WHEN OTHER} arm of
+         * {@code WRITE-USER-SEC-FILE} reads it to choose which typed failure carries that arm's own unchanged
+         * message and cursor outwards.
+         */
+        private FileStatusMapper.StoreFailureKind storeFailureKind =
+                FileStatusMapper.StoreFailureKind.IO_ERROR;
 
         /** {@code TRNNAMEO} of {@code COUSR1AO}. */
         private String transactionName;

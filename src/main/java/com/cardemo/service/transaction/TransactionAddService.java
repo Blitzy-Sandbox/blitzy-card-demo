@@ -34,12 +34,12 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cardemo.config.WebConfig;
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
@@ -1984,9 +1984,13 @@ public class TransactionAddService {
      *       outcome is preserved.</li>
      *   <li>Duplicate, {@code :735-741}: {@code DUPKEY} and {@code DUPREC} share one branch reporting
      *       {@code 'Tran ID already exist...'}. This is where the retained identifier race surfaces, as
-     *       {@link DuplicateRecordException}.</li>
+     *       {@link DuplicateRecordException}. It is reached only for a genuine key collision - see
+     *       {@link #execTransactWrite} for why a constraint refusal must not arrive here.</li>
      *   <li>Anything else, {@code :742-748}: display the response codes and report
-     *       {@code 'Unable to Add Transaction...'}.</li>
+     *       {@code 'Unable to Add Transaction...'}. The arm is one arm in the source and stays one arm here;
+     *       {@link #writeFailure} only chooses which typed failure carries it outwards, because the three
+     *       store conditions that reach it are genuinely different and a 3270 never had to tell them
+     *       apart.</li>
      * </ul>
      * <p>
      * What has no counterpart: {@code MOVE DFHGREEN TO ERRMSGC} at {@code :727} sets a 3270 colour attribute
@@ -2023,9 +2027,62 @@ public class TransactionAddService {
         work.errFlag = true;
         work.wsMessage = ADD_FAILURE_MESSAGE;
         work.cursorField = CURSOR_ACCOUNT_ID;
-        work.pendingFailure =
-                accessFailure(work, OPERATION_WRITE, LOGICAL_FILE_TRANSACT, ADD_FAILURE_MESSAGE);
+        work.pendingFailure = writeFailure(work);
         sendTrnaddScreen(work);
+    }
+
+    /**
+     * Chooses the typed failure that carries the {@code WHEN OTHER} arm of
+     * {@code app/cbl/COTRN02C.cbl:742-748} outwards, from the store condition
+     * {@link #execTransactWrite} classified.
+     *
+     * <p>The arm itself is unchanged by this choice and is reproduced in full before this method is called:
+     * {@code WS-ERR-FLG} is set at {@code :744}, {@code 'Unable to Add Transaction...'} is moved at
+     * {@code :745-746} and the cursor is parked on the account field at {@code :747}. What varies is only
+     * which exception type carries that outcome to the caller, and therefore which status the controller
+     * answers - a decision the source never had to make because a 3270 has one failure presentation.
+     *
+     * <p>The three outcomes and why each is right:
+     *
+     * <ul>
+     *   <li>{@link FileStatusMapper.StoreFailureKind#CONSTRAINT_REFUSED} - one of the three foreign keys
+     *       this relation carries refused the row, so the submitted type code, category code or card number
+     *       names nothing that exists. That is a conflict between the request and the state of the store,
+     *       reported as {@link DataIntegrityException} and answered {@code 409} with
+     *       {@code CARDDEMO-CONSTRAINT-REFUSED}. The constraint name and the relation stay in the log rather
+     *       than the body, exactly as on the account write, because together they map the schema.</li>
+     *   <li>{@link FileStatusMapper.StoreFailureKind#INVALID_DATA} - a submitted value cannot be represented
+     *       in its column at all, which is a malformed request rather than a conflict, reported as
+     *       {@link ValidationException} against the field the source's own cursor names and answered
+     *       {@code 400}.</li>
+     *   <li>{@link FileStatusMapper.StoreFailureKind#IO_ERROR} - the store could not be reached or reported
+     *       a condition neither of the above describes. This is the only one of the three where a retry is
+     *       rational, and it keeps {@link FileAccessException} and its {@code 5xx}.</li>
+     * </ul>
+     *
+     * <p>No value from the record reaches any of the three messages: the amount, the card number and the
+     * merchant fields are never named, and the constraint detail travels only on the retained cause.
+     *
+     * @param work the per-invocation work area, carrying the classified condition and the originating cause.
+     * @return the exception to retain; never {@code null}.
+     */
+    private CardDemoException writeFailure(final ScreenWorkArea work) {
+        if (work.storeFailureKind == FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED) {
+            logIoDiagnostic(work, OPERATION_WRITE, LOGICAL_FILE_TRANSACT);
+            LOG.warn("{} WRITE on dataset '{}' was refused by a constraint the KSDS did not have; the "
+                    + "submitted type code, category code or card number names no existing row",
+                    TRANSACTION_ID, LOGICAL_FILE_TRANSACT);
+            return new DataIntegrityException(ADD_FAILURE_MESSAGE, null, LOGICAL_FILE_TRANSACT,
+                    work.ioFailureCause);
+        }
+        if (work.storeFailureKind == FileStatusMapper.StoreFailureKind.INVALID_DATA) {
+            logIoDiagnostic(work, OPERATION_WRITE, LOGICAL_FILE_TRANSACT);
+            LOG.warn("{} WRITE on dataset '{}' carried a value the column cannot represent", TRANSACTION_ID,
+                    LOGICAL_FILE_TRANSACT);
+            return new ValidationException(ADD_FAILURE_MESSAGE, FIELD_ACCOUNT_ID,
+                    ValidationException.FailureKind.INVALID, work.ioFailureCause);
+        }
+        return accessFailure(work, OPERATION_WRITE, LOGICAL_FILE_TRANSACT, ADD_FAILURE_MESSAGE);
     }
 
     // ================================================================================================
@@ -2208,19 +2265,37 @@ public class TransactionAddService {
      * the corpus abend idiom's non-local termination. It is reachable when this service is invoked directly
      * with a request that bypassed bean validation.
      * </p>
+     * <p>
+     * <strong>Only a genuine key collision reports {@code DFHRESP(DUPREC)}.</strong> A KSDS could refuse a
+     * keyed write for exactly one reason the source names - the key was already present - so the source's
+     * duplicate arm is correct for that condition and for no other. {@code V1__create_schema.sql} declares
+     * {@code fk04_transaction_card}, {@code fk05_transaction_type} and {@code fk06_transaction_category} on
+     * this relation, none of which VSAM had, and a refusal by one of them is not a key collision: reporting it
+     * as one told a caller that the identifier this service generated was taken and invited a retry that can
+     * never succeed, while hiding the type or category code that was actually wrong. The condition is
+     * therefore read from the driver's SQLSTATE by
+     * {@link FileStatusMapper#classifyStoreFailure(Throwable)} and only
+     * {@link FileStatusMapper.StoreFailureKind#DUPLICATE_KEY} takes the duplicate arm; every other condition
+     * takes the {@code WHEN OTHER} arm at {@code app/cbl/COTRN02C.cbl:742-748}, which is where the source
+     * itself puts a write failure it cannot name, carrying that arm's own
+     * {@code 'Unable to Add Transaction...'} unchanged.
+     * </p>
      *
      * @param work the per-invocation work area.
      * @return the {@code DFHRESP} equivalent: normal, duplicate record, or an I/O error.
+     * @throws ValidationException if the store refuses a supplied value as unstorable, which is a request
+     *     error rather than either of the conditions the source's write guard can express
      */
     private int execTransactWrite(final ScreenWorkArea work) {
         try {
             this.transactionRepository.saveAndFlush(work.tranRecord.toEntity());
             return recordResponse(work, CICS_RESP_NORMAL, IO_STATUS_SUCCESS);
-        } catch (final DataIntegrityViolationException cause) {
-            work.ioFailureCause = cause;
-            return recordResponse(work, CICS_RESP_DUPREC, IO_STATUS_DUPLICATE_KEY);
         } catch (final DataAccessException cause) {
             work.ioFailureCause = cause;
+            work.storeFailureKind = FileStatusMapper.classifyStoreFailure(cause);
+            if (work.storeFailureKind == FileStatusMapper.StoreFailureKind.DUPLICATE_KEY) {
+                return recordResponse(work, CICS_RESP_DUPREC, IO_STATUS_DUPLICATE_KEY);
+            }
             return recordResponse(work, CICS_RESP_IOERR, IO_STATUS_IO_ERROR);
         } catch (final IllegalArgumentException cause) {
             LOG.error("{} rejected the assembled TRAN-RECORD for dataset '{}': {}",
@@ -2808,6 +2883,19 @@ public class TransactionAddService {
 
         /** The originating data access failure, preserved as the cause of any exception raised from it. */
         Throwable ioFailureCause;
+
+        /**
+         * Which store condition the last failing command raised, as
+         * {@link FileStatusMapper#classifyStoreFailure(Throwable)} read it from the driver's SQLSTATE.
+         *
+         * <p>It has no counterpart in {@code app/cbl/COTRN02C.cbl}: the source's {@code WS-RESP-CD} carried
+         * everything CICS could tell it about a failed {@code EXEC CICS WRITE}, and a KSDS could only be
+         * refused for a key that already existed. The relational store refuses the same statement for
+         * conditions VSAM never had, so this field carries the distinction the response code cannot, and the
+         * {@code WHEN OTHER} arm of {@code WRITE-TRANSACT-FILE} reads it to choose which typed failure carries
+         * the arm's own unchanged message outwards.
+         */
+        FileStatusMapper.StoreFailureKind storeFailureKind = FileStatusMapper.StoreFailureKind.IO_ERROR;
 
         /** {@code WS-TRAN-AMT-N PIC S9(9)V99}, {@code app/cbl/COTRN02C.cbl:58}. */
         BigDecimal wsTranAmtN;

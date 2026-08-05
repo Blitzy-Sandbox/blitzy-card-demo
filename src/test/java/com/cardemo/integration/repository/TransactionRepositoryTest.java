@@ -46,6 +46,7 @@ package com.cardemo.integration.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import java.math.BigDecimal;
 import java.time.ZoneOffset;
@@ -67,6 +68,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.repository.TransactionRepository;
+import com.cardemo.service.shared.FileStatusMapper;
 
 /**
  * Integration coverage for {@link TransactionRepository}, a {@code JpaRepository<Transaction, String>},
@@ -662,6 +664,32 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                     .as("the driver's own exception is preserved as the root cause rather than swallowed")
                     .isNotNull()
                     .hasMessageContaining(primaryKeyName);
+        }
+
+        @Test
+        @DisplayName("PRESERVED RACE - the REAL driver's collision classifies as a duplicate, not as a "
+                + "generic integrity failure")
+        void theRealCollisionClassifiesAsADuplicate() {
+            // Finding F-8, against the real driver rather than a mock. AAP section 0.7.4.1 requires the
+            // collision to be answered as the duplicate condition, and the write sites now recognise it by
+            // SQLSTATE 23505 rather than by exception subtype - which is not a property of the persistence
+            // layer, varying by provider, by dialect and by whether the insert was batched. This asserts the
+            // state really is reachable from what the repository throws, which no mock can establish.
+            final String cardNumber = seededCardNumbers().getFirst();
+            final String reused = identifier(2L);
+            transactionRepository.save(transaction(reused, cardNumber, pointOfSaleSource,
+                    new BigDecimal("12.34"), batchTimestamp(0L)));
+            flushAndClear();
+            final Transaction collision = transaction(reused, cardNumber, systemSource,
+                    new BigDecimal("56.78"), batchTimestamp(0L));
+
+            final Throwable refused = catchThrowable(() -> transactionRepository.saveAndFlush(collision));
+
+            assertThat(FileStatusMapper.classifyStoreFailure(refused))
+                    .as("the walk has to find SQLSTATE %s in whatever chain the provider actually built; if "
+                            + "this fails, every duplicate becomes a store failure and the prescribed 409 "
+                            + "becomes a 502", FileStatusMapper.SQLSTATE_UNIQUE_VIOLATION)
+                    .isEqualTo(FileStatusMapper.StoreFailureKind.DUPLICATE_KEY);
         }
     }
 

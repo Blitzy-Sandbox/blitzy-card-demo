@@ -40,7 +40,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.cardemo.config.WebConfig;
+import com.fasterxml.jackson.core.JacksonException;
 import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.Filter;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
@@ -48,9 +52,13 @@ import java.lang.reflect.Constructor;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageConverter;
@@ -59,6 +67,14 @@ import org.springframework.http.converter.json.MappingJackson2HttpMessageConvert
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.web.firewall.RequestRejectedException;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.servlet.HandlerExceptionResolver;
+import org.springframework.web.servlet.ModelAndView;
+import org.springframework.web.servlet.mvc.support.DefaultHandlerExceptionResolver;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * The bounds an untrusted request body is subject to before anything deserializes it.
@@ -478,6 +494,444 @@ class RequestBoundaryHardeningTest {
                             + "own default of 1000")
                     .isGreaterThan(3)
                     .isLessThan(1000);
+        }
+    }
+
+    /**
+     * The control-character screen over a request body, and the boundary it must not cross.
+     *
+     * <p><strong>Finding F-1, severity Major - these tests pin both halves of the remediation.</strong> A
+     * {@code U+0000} inside a JSON string travelled unexamined from an inbound body into a character column,
+     * where PostgreSQL refused the byte sequence; the refusal surfaced as an input-output failure on
+     * {@code PUT /api/admin/users/{userId}} and as an abend on {@code POST /api/admin/users} rather than as the
+     * field-level {@code 400} it is.
+     *
+     * <p><strong>The second test here is the one that matters most, and it exists because the first fix was
+     * wrong.</strong> Registering the screen on {@code getObjectMapper()} put it on the application-wide
+     * {@code ObjectMapper} bean, which three other consumers share deliberately: the queue boundary, the
+     * snapshot token reader and the lookup table loader. None reads an inbound request, and the queue boundary
+     * is contracted to carry hostile text by <em>escaping</em> it rather than by refusing it - so the leak broke
+     * a round trip that is supposed to succeed. The screen therefore rides on a copy handed back to the
+     * converter. A test that only checked the screen fires would have passed against the broken version.
+     */
+    @Nested
+    @DisplayName("the control-character screen, and the mapper boundary it must not cross")
+    class TheControlCharacterScreen {
+
+        /** A value carrying a NUL among ordinary characters - the exact shape the finding reported. */
+        private static final String MIXED_WITH_NUL = "{\"userId\":\"AB\\u0000CD\"}";
+
+        /** The same document with no control character in it, to prove the screen is not simply refusing. */
+        private static final String CLEAN = "{\"userId\":\"ABCD\"}";
+
+        /**
+         * The binding target, a map of string to string.
+         *
+         * <p>Typed rather than raw, and string-valued rather than {@code Object}-valued, because the screen
+         * wraps the deserializer Jackson chose for {@code String} - so a target whose values are untyped would
+         * be read as {@code TextNode} instances by a different deserializer and would not exercise the screen
+         * at all. That is the same reason it fires on a request type's {@code String} field and does not fire
+         * when something reads a body as an untyped tree.
+         */
+        private static final TypeReference<Map<String, String>> STRING_VALUES = new TypeReference<>() { };
+
+        /**
+         * Sole constructor, invoked by the test framework.
+         */
+        TheControlCharacterScreen() {
+            // JUnit instantiates a @Nested class per test; no state to establish.
+        }
+
+        /**
+         * Runs the configuration over one Jackson converter and returns that converter.
+         *
+         * @return the converter after {@code extendMessageConverters} has been applied to it
+         */
+        private MappingJackson2HttpMessageConverter configuredConverter() {
+            final MappingJackson2HttpMessageConverter jackson =
+                    new MappingJackson2HttpMessageConverter();
+            final List<HttpMessageConverter<?>> converters = new ArrayList<>(List.of(jackson));
+            new WebConfig().extendMessageConverters(converters);
+            return jackson;
+        }
+
+        @Test
+        @DisplayName("a control character mixed into an inbound string value is refused by the parser")
+        void aControlCharacterInABodyIsRefused() {
+            final ObjectMapper inbound = configuredConverter().getObjectMapper();
+
+            assertThatExceptionOfType(JacksonException.class)
+                    .as("""
+                        the refusal has to be raised inside the parser, because that is what makes Jackson \
+                        decorate it with the property path and Spring turn it into the read failure every \
+                        controller already answers with a 400 naming the field.""")
+                    .isThrownBy(() -> inbound.readValue(MIXED_WITH_NUL, STRING_VALUES))
+                    .withMessageContaining("control characters");
+        }
+
+        @Test
+        @DisplayName("the screen reaches the converter's mapper and NOT the shared bean it was copied from")
+        void theScreenDoesNotLeakOntoTheSharedMapper() throws Exception {
+            final MappingJackson2HttpMessageConverter jackson =
+                    new MappingJackson2HttpMessageConverter();
+            final ObjectMapper shared = jackson.getObjectMapper();
+            final List<HttpMessageConverter<?>> converters = new ArrayList<>(List.of(jackson));
+
+            new WebConfig().extendMessageConverters(converters);
+
+            assertThat(jackson.getObjectMapper())
+                    .as("the converter must be given the screened copy, or the body screen does not run at all")
+                    .isNotSameAs(shared);
+
+            assertThat(shared.readValue(MIXED_WITH_NUL, STRING_VALUES))
+                    .as("""
+                        the mapper the converter started from must still read hostile text unchanged. The \
+                        queue boundary, the snapshot token reader and the lookup loader are handed the shared \
+                        bean on purpose, and the queue boundary is documented to ESCAPE hostile text rather \
+                        than refuse it - registering the screen on the shared bean broke that round trip.""")
+                    .containsEntry("userId", "AB\u0000CD");
+        }
+
+        @Test
+        @DisplayName("a clean body still binds, and the parser bounds ride on the same copy")
+        void aCleanBodyIsUntouchedAndStillBounded() throws Exception {
+            final MappingJackson2HttpMessageConverter jackson = configuredConverter();
+            final ObjectMapper inbound = jackson.getObjectMapper();
+
+            assertThat(inbound.readValue(CLEAN, STRING_VALUES))
+                    .as("the screen must be invisible to every value that carries no control character")
+                    .containsEntry("userId", "ABCD");
+
+            assertThat(inbound.getFactory().streamReadConstraints().getMaxNestingDepth())
+                    .as("""
+                        the copy has to carry the parser bounds too. Relying on the copy constructor to \
+                        propagate them would make a bound that can silently lapse on a library upgrade.""")
+                    .isEqualTo(WebConfig.MAX_JSON_NESTING_DEPTH);
+        }
+    }
+
+    @Nested
+    @DisplayName("the framework boundary - refusals decided before, or instead of, a controller method")
+    class FrameworkBoundary {
+
+        /** The six members every refusal publishes, whichever boundary produced it. */
+        private static final List<String> ENVELOPE_MEMBERS =
+                List.of("\"type\"", "\"title\"", "\"status\"", "\"detail\"", "\"errorCode\"",
+                        "\"correlationId\"");
+
+        /**
+         * Renders a refusal through the real resolver and hands back the response it wrote.
+         *
+         * @param failure the exception to resolve; never null
+         * @return the response the resolver wrote onto, or null when it declined the exception
+         */
+        private MockHttpServletResponse resolve(final Exception failure) {
+            final MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/transactions");
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+            final ModelAndView answered = new WebConfig.FrameworkBoundaryExceptionResolver()
+                    .resolveException(request, response, null, failure);
+            return answered == null ? null : response;
+        }
+
+        /**
+         * Asserts that a body is the refusal envelope and nothing else.
+         *
+         * @param body the response body to inspect; never null
+         */
+        private void assertIsEnvelope(final String body) {
+            assertThat(body).as("a refusal must carry the same six members from every boundary")
+                    .contains(ENVELOPE_MEMBERS);
+            assertThat(body).as("the correlation identifier must be a value, never the empty string")
+                    .doesNotContain("\"correlationId\":\"\"");
+        }
+
+        @Test
+        @DisplayName("a wildcard Content-Type is refused before the body is read, not after")
+        void aWildcardContentTypeIsRefusedBeforeTheBodyIsRead() {
+            final MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/auth/signon");
+            request.setContentType("application/*+json");
+
+            assertThatExceptionOfType(HttpMediaTypeNotSupportedException.class)
+                    .as("""
+                            A wildcard request type SATISFIES a consumes condition, because MediaType.includes \
+                            asks whether the mapping's type is compatible with the request's rather than the \
+                            other way round. The handler is therefore selected and the failure surfaces inside \
+                            the argument resolver as a bare IllegalArgumentException, which is a 500. \
+                            Screening it here turns the condition into the 415 it actually is.""")
+                    .isThrownBy(() -> new WebConfig.ConcreteContentTypeInterceptor()
+                            .preHandle(request, new MockHttpServletResponse(), new Object()));
+        }
+
+        @Test
+        @DisplayName("every non-concrete shape is refused, including the plus-suffixed wildcard")
+        void everyNonConcreteShapeIsRefused() {
+            for (final String declared : List.of("*/*", "application/*", "application/*+json", "*/json")) {
+                final MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/api/cards");
+                request.setContentType(declared);
+
+                assertThatExceptionOfType(HttpMediaTypeNotSupportedException.class)
+                        .as("declared type %s is not concrete", declared)
+                        .isThrownBy(() -> new WebConfig.ConcreteContentTypeInterceptor()
+                                .preHandle(request, new MockHttpServletResponse(), new Object()));
+            }
+        }
+
+        @Test
+        @DisplayName("a concrete Content-Type is admitted, so the screen cannot break a working request")
+        void aConcreteContentTypeIsAdmitted() throws Exception {
+            for (final String declared : List.of("application/json", "application/json;charset=UTF-8",
+                    "text/plain")) {
+                final MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/api/cards");
+                request.setContentType(declared);
+
+                assertThat(new WebConfig.ConcreteContentTypeInterceptor()
+                        .preHandle(request, new MockHttpServletResponse(), new Object()))
+                        .as("""
+                                %s is concrete. Whether the operation can READ it is the mapping's decision, \
+                                not this screen's - text/plain is refused one layer earlier, and this screen \
+                                must not duplicate that judgement.""", declared)
+                        .isTrue();
+            }
+        }
+
+        @Test
+        @DisplayName("an absent or blank Content-Type is not this screen's business")
+        void anAbsentContentTypeIsAdmitted() throws Exception {
+            final MockHttpServletRequest absent = new MockHttpServletRequest("GET", "/api/cards");
+
+            assertThat(new WebConfig.ConcreteContentTypeInterceptor()
+                    .preHandle(absent, new MockHttpServletResponse(), new Object()))
+                    .as("a request without content legitimately declares no type; the mapping already "
+                            + "refuses an absent type for an operation that needs a body")
+                    .isTrue();
+
+            final MockHttpServletRequest blank = new MockHttpServletRequest("GET", "/api/cards");
+            blank.addHeader(HttpHeaders.CONTENT_TYPE, "   ");
+
+            assertThat(new WebConfig.ConcreteContentTypeInterceptor()
+                    .preHandle(blank, new MockHttpServletResponse(), new Object()))
+                    .as("a blank header is indistinguishable from an absent one and is treated the same")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("the screen stands aside on an ERROR dispatch, so a refusal cannot re-enter it")
+        void theScreenStandsAsideOnAnErrorDispatch() throws Exception {
+            final MockHttpServletRequest request = new MockHttpServletRequest("POST", "/error");
+            request.setDispatcherType(DispatcherType.ERROR);
+            request.setContentType("*/*");
+
+            assertThat(new WebConfig.ConcreteContentTypeInterceptor()
+                    .preHandle(request, new MockHttpServletResponse(), new Object()))
+                    .as("the original request's wildcard type is still on the ERROR dispatch; refusing it "
+                            + "again while a refusal is being rendered would be circular")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("an unparseable Content-Type becomes a 415 rather than a 500")
+        void anUnparseableContentTypeBecomesA415() {
+            final MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/transactions");
+            request.addHeader(HttpHeaders.CONTENT_TYPE, "application/");
+
+            assertThatExceptionOfType(HttpMediaTypeNotSupportedException.class)
+                    .as("not reachable through the mapping today, which refuses it first, but the screen "
+                            + "must not convert a malformed header into an internal error if it ever is")
+                    .isThrownBy(() -> new WebConfig.ConcreteContentTypeInterceptor()
+                            .preHandle(request, new MockHttpServletResponse(), new Object()));
+        }
+
+        @Test
+        @DisplayName("an unreadable media type is answered 415, enveloped, and advertises what would work")
+        void anUnreadableMediaTypeIsAnswered415() throws Exception {
+            final MockHttpServletResponse response = resolve(new HttpMediaTypeNotSupportedException(
+                    MediaType.TEXT_PLAIN, List.of(MediaType.APPLICATION_JSON)));
+
+            assertThat(response).isNotNull();
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE.value());
+            assertThat(response.getContentType()).isEqualTo(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+            assertThat(response.getHeader(HttpHeaders.ACCEPT))
+                    .as("RFC 9110 asks a 415 to say what would have been acceptable")
+                    .isEqualTo(MediaType.APPLICATION_JSON_VALUE);
+            assertThat(response.getContentAsString()).contains("CARDDEMO-UNSUPPORTED-MEDIA-TYPE");
+            assertIsEnvelope(response.getContentAsString());
+        }
+
+        @Test
+        @DisplayName("an unsatisfiable Accept is answered 406 WITH a body, which it previously had not")
+        void anUnsatisfiableAcceptIsAnswered406WithABody() throws Exception {
+            final MockHttpServletResponse response =
+                    resolve(new HttpMediaTypeNotAcceptableException(List.of(MediaType.APPLICATION_JSON)));
+
+            assertThat(response).isNotNull();
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.NOT_ACCEPTABLE.value());
+            assertThat(response.getContentType())
+                    .as("""
+                            The reason the 406 was empty is that the error render could not be negotiated \
+                            either. Declaring the type explicitly takes negotiation out of the refusal path, \
+                            which is the only way the body can exist at all.""")
+                    .isEqualTo(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+            assertThat(response.getContentAsString()).contains("CARDDEMO-NOT-ACCEPTABLE");
+            assertIsEnvelope(response.getContentAsString());
+        }
+
+        @Test
+        @DisplayName("a wrong method is answered 405, enveloped, and keeps the Allow header")
+        void aWrongMethodIsAnswered405AndKeepsAllow() throws Exception {
+            final MockHttpServletResponse response = resolve(new HttpRequestMethodNotSupportedException(
+                    "GET", Set.of(HttpMethod.PUT.name(), HttpMethod.DELETE.name())));
+
+            assertThat(response).isNotNull();
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED.value());
+            assertThat(response.getHeader(HttpHeaders.ALLOW))
+                    .as("the Allow header is the one piece of information that makes a 405 actionable")
+                    .contains("PUT")
+                    .contains("DELETE");
+            assertThat(response.getContentAsString()).contains("CARDDEMO-METHOD-NOT-ALLOWED");
+            assertIsEnvelope(response.getContentAsString());
+        }
+
+        @Test
+        @DisplayName("an unmapped path is answered 404 and enveloped")
+        void anUnmappedPathIsAnswered404() throws Exception {
+            final MockHttpServletResponse response =
+                    resolve(new NoResourceFoundException(HttpMethod.GET, "/api/nosuchthing"));
+
+            assertThat(response).isNotNull();
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.NOT_FOUND.value());
+            assertThat(response.getContentAsString()).contains("CARDDEMO-RESOURCE-NOT-FOUND");
+            assertIsEnvelope(response.getContentAsString());
+        }
+
+        @Test
+        @DisplayName("the resolver claims exactly four conditions and declines everything else")
+        void theResolverClaimsExactlyFourConditions() {
+            assertThat(resolve(new IllegalStateException("a programming error")))
+                    .as("""
+                            This is what keeps the resolver from becoming a general-purpose handler. An \
+                            exception a controller owns must reach that controller's own @ExceptionHandler, \
+                            and an exception nobody owns must stay a 500 rather than be dressed up as a 4xx.""")
+                    .isNull();
+            assertThat(resolve(new IllegalArgumentException("a bad argument"))).isNull();
+            assertThat(resolve(new RuntimeException("anything at all"))).isNull();
+        }
+
+        @Test
+        @DisplayName("the resolver is inserted after the controller handlers and before the default one")
+        void theResolverIsInsertedInThePositionThatPreservesControllerHandlers() {
+            final List<HandlerExceptionResolver> resolvers = new ArrayList<>();
+            final HandlerExceptionResolver controllerHandlers = (rq, rs, h, e) -> null;
+            final HandlerExceptionResolver responseStatus = (rq, rs, h, e) -> null;
+            resolvers.add(controllerHandlers);
+            resolvers.add(responseStatus);
+            resolvers.add(new DefaultHandlerExceptionResolver());
+
+            new WebConfig().extendHandlerExceptionResolvers(resolvers);
+
+            assertThat(resolvers).hasSize(4);
+            assertThat(resolvers.get(0))
+                    .as("""
+                            Position zero is ExceptionHandlerExceptionResolver, which is what consults the \
+                            sixty-seven controller-local @ExceptionHandler methods. Inserting ahead of it \
+                            would silently disable every one of them, so the insertion point is not a \
+                            cosmetic choice.""")
+                    .isSameAs(controllerHandlers);
+            assertThat(resolvers.get(2))
+                    .as("and immediately before the default resolver, which would otherwise have answered "
+                            + "first with a body outside the envelope")
+                    .isInstanceOf(WebConfig.FrameworkBoundaryExceptionResolver.class);
+            assertThat(resolvers.get(3)).isInstanceOf(DefaultHandlerExceptionResolver.class);
+        }
+
+        @Test
+        @DisplayName("with no default resolver present the framework resolver is appended, not dropped")
+        void withNoDefaultResolverPresentTheResolverIsAppended() {
+            final List<HandlerExceptionResolver> resolvers = new ArrayList<>();
+            resolvers.add((rq, rs, h, e) -> null);
+
+            new WebConfig().extendHandlerExceptionResolvers(resolvers);
+
+            assertThat(resolvers).hasSize(2);
+            assertThat(resolvers.get(1))
+                    .as("nothing downstream can pre-empt it in that shape, so appending is correct; the "
+                            + "alternative of not registering at all would reopen the gap silently")
+                    .isInstanceOf(WebConfig.FrameworkBoundaryExceptionResolver.class);
+        }
+
+        @Test
+        @DisplayName("a firewall rejection writes its own body instead of calling sendError")
+        void aFirewallRejectionWritesItsOwnBody() throws Exception {
+            final MockHttpServletRequest request = new MockHttpServletRequest("TRACE", "/api/accounts");
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+
+            new WebConfig.ProblemJsonRequestRejectedHandler()
+                    .handle(request, response, new RequestRejectedException("method TRACE is not allowed"));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST.value());
+            assertThat(response.getContentType()).isEqualTo(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+            assertThat(response.getContentAsString()).contains("CARDDEMO-REQUEST-REJECTED");
+            assertIsEnvelope(response.getContentAsString());
+            assertThat(response.getErrorMessage())
+                    .as("""
+                            sendError is what broke this case. The connector refuses TRACE with sendError, \
+                            which dispatches to the error page; the firewall then refuses that dispatch too, \
+                            and a second sendError inside an error dispatch has nowhere to go, so it commits \
+                            a zero-length body. Writing the body directly is the fix.""")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("a firewall rejection publishes nothing about why it was rejected")
+        void aFirewallRejectionPublishesNothingAboutWhy() throws Exception {
+            final String probe = "method PROPFIND is not allowed and neither is %00";
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+
+            new WebConfig.ProblemJsonRequestRejectedHandler().handle(
+                    new MockHttpServletRequest("PROPFIND", "/api/accounts"), response,
+                    new RequestRejectedException(probe));
+
+            assertThat(response.getContentAsString())
+                    .as("""
+                            The exception message names the offending method or character, which is \
+                            attacker-supplied. Echoing it would both reflect input and describe the \
+                            firewall's rules to whoever is probing them. It goes to the log instead.""")
+                    .doesNotContain("PROPFIND")
+                    .doesNotContain("%00")
+                    .doesNotContain(probe);
+        }
+
+        @Test
+        @DisplayName("the envelope declares no charset, so it matches the controllers character for character")
+        void theEnvelopeDeclaresNoCharset() {
+            final MockHttpServletResponse response =
+                    resolve(new HttpMediaTypeNotAcceptableException(List.of(MediaType.APPLICATION_JSON)));
+
+            assertThat(response).isNotNull();
+            assertThat(response.getContentType())
+                    .as("""
+                            A charset parameter would make these refusals differ from the ones the eight \
+                            controllers publish, which is the very inconsistency being closed. The document \
+                            is ASCII by construction, and RFC 8259 fixes JSON's encoding regardless.""")
+                    .isEqualTo("application/problem+json")
+                    .doesNotContain("charset");
+        }
+
+        @Test
+        @DisplayName("a committed response is left alone rather than written over")
+        void aCommittedResponseIsLeftAlone() {
+            final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/cards");
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+            response.setCommitted(true);
+
+            final ModelAndView answered = new WebConfig.FrameworkBoundaryExceptionResolver()
+                    .resolveException(request, response, null,
+                            new HttpMediaTypeNotAcceptableException(List.of(MediaType.APPLICATION_JSON)));
+
+            assertThat(answered)
+                    .as("the exception is still claimed - the status the client already saw stands - but "
+                            + "nothing is written, because nothing can be")
+                    .isNotNull();
+            assertThat(response.getContentAsByteArray()).isEmpty();
         }
     }
 }

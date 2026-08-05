@@ -1143,8 +1143,11 @@
           than '-' is unaffected, which is why R1 and R11 through R13 have never
           hit this, and ordinary '${var:-default}' substitution elsewhere in
           this file continues to work normally - the hazard is specifically the
-          sequence '?:-'. All fifteen rules in this file were re-verified
-          through a real Joran configuration pass after this was found.
+          sequence '?:-'. Every rule in this file was re-verified through a real
+          Joran configuration pass after this was found, and the two rules added
+          since - R16 and R17 - were written and checked against the same
+          hazard: neither contains '?:-' and neither references a property
+          inside its pattern.
 
           The account segment is optional in a legitimate ARN - an S3 bucket ARN
           is arn:aws:s3:::bucket - so \d{12} is required by this rule rather than
@@ -1199,6 +1202,138 @@
         <valueMask>
           <value><![CDATA[(?<=/)\d{12}(?=/)]]></value>
           <mask>${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R16. The value of a single-quoted literal sitting in a parenthesised
+          SQL parameter position, which is how a JDBC driver renders a whole
+          record image when it reports a rejected statement.
+
+          FINDING F-6, SEVERITY MAJOR (PCI). This is the rule the runtime
+          assessment asked for and the reason it is needed is that no rule above
+          could reach the disclosure. A refused insert surfaced through
+          org.hibernate.engine.jdbc.spi.SqlExceptionHelper as, verbatim from the
+          captured log:
+
+            Batch entry 0 insert into transaction (tran_amt,tran_card_num,...,
+            tran_id) values (('2.34'::numeric),('7427684863423209'),
+            ('1'::numeric),...,('QAG2      '),('01'),('0'::int8),
+            ('0000000996722789')) was aborted: ERROR: duplicate key value ...
+
+          The sixteen digits in the second value position are CARD-NUM
+          PIC X(16) at app/cpy/CVACT02Y.cpy:L5 in full cleartext. R11 cannot
+          see it: R11 requires a card LABEL adjacent to the digits, and here the
+          column list sits dozens of characters away with no ':' or '=' anywhere
+          near the value, which is exactly the adjacency R11 is built on. The
+          <paths> layer cannot see it either, because that layer keys on JSON
+          field names and this whole statement is the VALUE of one field.
+
+          WHY THIS RULE IS NOT A BARE PAN SHAPE RULE. The assessment suggested a
+          keyless thirteen to nineteen digit rule gated by a Luhn check. A
+          regular expression cannot compute Luhn, and a bare digit-run rule is
+          precisely what the R11 note forbids, because TRAN-ID PIC X(16) at
+          app/cpy/CVTRA05Y.cpy:L5 is the same shape and our own diagnostics name
+          transaction identifiers deliberately. The gate used instead is
+          CONTEXTUAL and stronger than a checksum: the two characters (' occur
+          in driver statement text and in nothing else this application emits.
+          Verified by census over src/main/java at this commit: no log message,
+          format string or exception message anywhere in the tree contains the
+          sequence (' - so this rule cannot fire on anything the application
+          itself writes, and it therefore cannot touch a parity line.
+
+          WHY THE WHOLE LITERAL IS REDACTED AND NOT JUST THE DIGITS. The finding
+          names two disclosures, the card number and the RECORD IMAGE, and the
+          image is the wider of the two: the same statement shape on
+          app/cpy/CVCUS01Y.cpy carries CUST-SSN PIC 9(09) at :L15 and the three
+          address lines, and on app/cpy/CSUSR01Y.cpy it carries the password
+          hash. Masking only a digit shape would leave every one of those in
+          place. What survives is the part an operator needs and none of the
+          part they must not have: the table name, the column list and the
+          statement's structure are outside the quotes and are untouched.
+
+          The bound of 4096 is the same defensive ceiling every other bounded
+          class in this file uses; the widest record this project can render is
+          the 500-byte CUSTDATA image. The class is possessive and negated on
+          the quote character, so the match ends at the first closing quote and
+          there is nothing to backtrack for - the lookbehind and lookahead are
+          both fixed width and cost nothing.
+
+          THIS RULE IS THE NET, NOT THE PRIMARY CONTROL. Emission is stopped at
+          source by logging.level.org.hibernate.engine.jdbc.spi.SqlExceptionHelper
+          in the application configuration resource, which is where the finding's
+          third remedy lives. This rule exists because the same statement text
+          also reaches a rendered stack frame whenever the application logs a
+          store failure with its cause, and no logger level can reach that.
+        -->
+        <valueMask>
+          <value><![CDATA[(?<=\(')[^']{1,4096}+(?=')]]></value>
+          <mask>${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R17. The key value of a PostgreSQL constraint-violation detail, the
+          companion shape to R16 from the same finding and the same captured log:
+
+            duplicate key value violates unique constraint "pk_transaction"
+              Detail: Key (tran_id)=(0000000996722789) already exists.
+
+          Here the value carries no quotes at all, so R16 cannot see it, and the
+          column name is a label the driver writes in its own syntax rather than
+          in the "name": "value" shape every labelled rule above keys on. The key
+          of a constraint on this schema can be a card number - the cross
+          reference and the card cluster are both keyed on CARD-NUM PIC X(16) at
+          app/cpy/CVACT02Y.cpy:L5 - so the disclosure is the same class as R16's.
+
+          The gate is the three characters )=( which, like R16's, occur in driver
+          text and nowhere in anything this application writes: verified by the
+          same census over src/main/java. The COLUMN NAME is deliberately left
+          visible, because knowing WHICH constraint was violated is the whole
+          diagnostic value of the line and a column name discloses nothing.
+
+          THE WIDTH FLOOR OF NINE IS DELIBERATE. Every key value this schema can
+          disclose is at least nine characters wide: CUST-SSN PIC 9(09) at
+          app/cpy/CVCUS01Y.cpy:L17, CUST-ID PIC 9(09) at :L5, ACCT-ID PIC 9(11)
+          at app/cpy/CVACT01Y.cpy:L5, and CARD-NUM and TRAN-ID both PIC X(16).
+          A referential detail, by contrast, reports the code that was not
+          found - TRAN-TYPE-CD PIC X(02) at app/cpy/CVTRA03Y.cpy:L5 and
+          TRAN-CAT-CD PIC 9(04) at app/cpy/CVTRA04Y.cpy:L6 - and that half of a
+          foreign key diagnosis is the most useful half there is. Two characters
+          cannot be an identifier, an account number or a social security
+          number, so withholding it would cost the diagnosis everything and
+          protect nothing. The floor keeps both properties at once.
+
+          Our own typed diagnostic is unaffected and remains the sanctioned
+          channel for the colliding key: DuplicateRecordException carries it, and
+          the four write sites report it through their own message rather than
+          through the driver's.
+        -->
+        <valueMask>
+          <value><![CDATA[(?<=\)=\()[^)]{9,4096}+(?=\))]]></value>
+          <mask>${REDACTION}</mask>
+        </valueMask>
+
+        <!--
+          R18. THE FAILING ROW IMAGE OF A POSTGRESQL CONSTRAINT VIOLATION.
+
+          PostgreSQL attaches a DETAIL line to a check, not null and unique
+          violation that reproduces the ENTIRE offending tuple:
+
+            Detail: Failing row contains (1, Immanuel, Madeline, Kessler,
+              618 Deshaun Route, ..., 020973888, ..., 274, 1).
+
+          The values are positional and unlabelled, so no label based rule can
+          reach them and no shape based rule can distinguish the social
+          security number from the account identifier beside it. The whole
+          image is therefore withheld from the marker to the end of the line.
+
+          What survives is everything a diagnosis needs: the constraint name,
+          the relation name and the SQLState all sit BEFORE this marker in the
+          same message. Anchored on the literal phrase, so the scan rejects
+          ordinary text immediately.
+        -->
+        <valueMask>
+          <value><![CDATA[(?i)(Failing row contains)[^\n]*]]></value>
+          <mask>$1 ${REDACTION}</mask>
         </valueMask>
       </jsonGeneratorDecorator>
 

@@ -41,24 +41,70 @@
  */
 package com.cardemo.config;
 
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.databind.BeanDescription;
+import com.fasterxml.jackson.databind.DeserializationConfig;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.Module;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.deser.BeanDeserializerModifier;
+import com.fasterxml.jackson.databind.deser.std.DelegatingDeserializer;
+import com.fasterxml.jackson.databind.module.SimpleModule;
+import jakarta.servlet.DispatcherType;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.io.Writer;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.StringJoiner;
+import java.util.UUID;
 
+import org.apache.catalina.Container;
+import org.apache.catalina.connector.Request;
+import org.apache.catalina.connector.Response;
+import org.apache.catalina.core.StandardHost;
+import org.apache.catalina.valves.ErrorReportValve;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
+import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.format.FormatterRegistry;
 import org.springframework.format.Printer;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.InvalidMediaTypeException;
+import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.json.AbstractJackson2HttpMessageConverter;
+import org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer;
+import org.springframework.security.web.firewall.RequestRejectedException;
+import org.springframework.security.web.firewall.RequestRejectedHandler;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.servlet.HandlerExceptionResolver;
+import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.ModelAndView;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import org.springframework.web.servlet.mvc.support.DefaultHandlerExceptionResolver;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import com.cardemo.exception.ValidationException;
+import com.cardemo.observability.CorrelationIdFilter;
 
 /**
  * Web-layer configuration: the request-binding half of the CICS-to-REST substitution.
@@ -121,8 +167,13 @@ import com.cardemo.exception.ValidationException;
  *       single-page front end or component library anywhere in scope, and the <b>441</b> BMS input fields
  *       are consumed as data-transfer-object field contracts only. That total is a recount of the seventeen
  *       symbolic maps under {@code app/cpy-bms/}, in which {@code COACTVW} contributes 37.</li>
- *   <li><b>No message converter and no second object mapper.</b> The auto-configured converter is sufficient,
- *       so registering one would duplicate configuration that the application configuration resource owns.</li>
+ *   <li><b>No message converter, and no second object mapper <em>configuration</em>.</b> The auto-configured
+ *       converter is sufficient, so registering one would duplicate configuration that the application
+ *       configuration resource owns. What {@link #extendMessageConverters(List)} does hand each Jackson
+ *       converter is a {@link com.fasterxml.jackson.databind.ObjectMapper#copy()} of the shared bean carrying
+ *       one additional inbound screen - not a mapper configured here. Every {@code spring.jackson.*} setting is
+ *       inherited by that copy rather than restated, and the copy exists only so the screen cannot reach the
+ *       three consumers of the shared bean that read something other than an inbound request body.</li>
  *   <li><b>No global default page size and no pagination argument resolver.</b> See the pagination note.</li>
  *   <li><b>No string-to-temporal converter of any kind.</b> See the timestamp note.</li>
  *   <li><b>No {@code @ControllerAdvice}, {@code @ExceptionHandler} or {@code @ResponseStatus}.</b> Mapping a
@@ -372,6 +423,73 @@ public class WebConfig implements WebMvcConfigurer {
      * limit visible to a reader of this class rather than only to a reader of the security configuration.
      */
     public static final int MAX_JSON_DOCUMENT_LENGTH = 16384;
+
+    /**
+     * The sentence every control-character refusal publishes, {@value}.
+     *
+     * <p><strong>Finding, severity High - remediated here.</strong> The 3270 data stream a BMS map received
+     * could not carry a C0 control character: the terminal transmitted a field's declared width in the host
+     * code page, and the one non-printing value the corpus reasons about is {@code LOW-VALUES}, which
+     * {@code app/cbl/COACTUPC.cbl:1290} sets deliberately to mean "the operator did not transmit this field".
+     * HTTP and JSON impose no such limit, so a caller may put {@code U+0000} inside any string, and
+     * PostgreSQL's UTF-8 encoding cannot store one: the driver refuses the bind with {@code SQLSTATE 22021},
+     * which surfaced as an input-output failure or an abend - a client error reported as a store failure,
+     * which Rule 1 Clause A forbids.
+     *
+     * <p>The sentence names neither the value nor the offending character. The request DTOs of the operations
+     * this guards carry a social security number, a date of birth, two telephone numbers and, on the
+     * administration routes, a password, so a refusal must not quote what arrived. The offending property or
+     * parameter name is published - that is a schema name the caller already knows - and the position is
+     * written to the log.
+     *
+     * <p><strong>One value is admitted deliberately, and only in a request body:</strong> a string composed
+     * entirely of {@code NUL} characters is the corpus's {@code LOW-VALUES}, which means "the operator did not
+     * transmit this field". See {@link #isLowValues(String)} for the field contract that requires it. The
+     * request line takes no such exception, because a URL has no untransmitted-field convention.
+     */
+    public static final String CONTROL_CHARACTER_REJECTION_MESSAGE =
+            "Value must not contain control characters";
+
+    /**
+     * The exclusive upper bound of the C0 control range, namely 32.
+     *
+     * <p>Every code point below {@code U+0020} is a C0 control. Written as the boundary rather than as a set
+     * so no member can be forgotten: {@code U+0000} is the one PostgreSQL refuses outright, but a carriage
+     * return or a line feed inside a fixed-width field is equally unrepresentable on a 3270 and equally
+     * capable of splitting one log record into two.
+     */
+    private static final int FIRST_PRINTABLE_CHARACTER = 0x20;
+
+    /**
+     * The DEL control character, {@code U+007F}.
+     *
+     * <p>Excluded alongside the C0 range because it is a control character that sits <em>above</em> the
+     * printable ASCII block and so is missed by a bound test alone.
+     */
+    private static final char DELETE_CHARACTER = 0x7F;
+
+    /**
+     * The field name published when a control character is found in the request path rather than in a named
+     * parameter, {@value}.
+     */
+    private static final String REQUEST_PATH_FIELD_NAME = "path";
+
+    /**
+     * The name published when a control character is found in a query-parameter <em>name</em>, {@value}.
+     *
+     * <p>A parameter whose own name is unusable has no name worth publishing, so the location is published
+     * instead. Echoing the name back would relay attacker-chosen bytes onto the response.
+     */
+    private static final String QUERY_PARAMETER_FIELD_NAME = "queryParameter";
+
+    /** The separator between query-string pairs, {@value}. */
+    private static final String QUERY_PAIR_SEPARATOR = "&";
+
+    /** The separator between a query-parameter name and its value, {@value}. */
+    private static final char QUERY_VALUE_SEPARATOR = '=';
+
+    /** The value {@link #indexOfControlCharacter(String)} returns when a value is clean, {@value}. */
+    private static final int NO_CONTROL_CHARACTER = -1;
 
     /**
      * Logger for this configuration. A {@code static final} holder, so no mutable static state exists here.
@@ -655,6 +773,7 @@ public class WebConfig implements WebMvcConfigurer {
                 AMOUNT_EDITED_MASK);
     }
 
+
     /**
      * Bounds what the JSON parser will accept from a request body, at the parser rather than at the type.
      *
@@ -672,11 +791,33 @@ public class WebConfig implements WebMvcConfigurer {
      *
      * <p>Every value below is derived from the field contracts of {@code app/cpy-bms}, not chosen for
      * roundness; the reasoning for each is on its constant. The converters are reached through the list Spring
-     * hands over, so the constraints apply to the very {@code ObjectMapper} that binds
-     * {@code @RequestBody} - configuring a mapper of our own would leave the one actually in use untouched.
+     * hands over, so the constraints reach the very mapper that binds {@code @RequestBody} rather than one
+     * configured on the side, which would have left the one actually in use untouched.
      *
-     * <p>Side effects: mutates the parser factory of the JSON converters in the list Spring owns, once, during
-     * context refresh. Performs no input or output and starts no thread.
+     * <p><strong>Finding F-1, severity Major - the body half of the control-character screen is registered
+     * here.</strong> Its request-line half is {@link #addInterceptors(InterceptorRegistry)}; both refuse the
+     * same character set for the reason recorded on {@link #CONTROL_CHARACTER_REJECTION_MESSAGE}. A
+     * {@code U+0000} inside a JSON string used to travel unexamined from the body into a character column,
+     * where PostgreSQL refused the byte sequence and the refusal surfaced as an input-output failure or an
+     * abend rather than as the field-level {@code 400} it is.
+     *
+     * <p><strong>Why the screen rides on a copy of the mapper and not on the mapper itself - read this before
+     * simplifying it away.</strong> {@link AbstractJackson2HttpMessageConverter#getObjectMapper()} returns the
+     * application-wide {@code ObjectMapper} bean, and three other consumers share that bean deliberately: the
+     * queue boundary, whose message converter is handed it in {@code AwsConfig}; the snapshot token service,
+     * which reads a token this application itself wrote; and the lookup table loader, which reads classpath
+     * resources. None of the three reads an inbound request, and the queue boundary in particular is
+     * <em>documented to carry hostile text safely by escaping it</em> rather than by refusing it. Registering
+     * the screen on the shared bean silently changed all three - the queue boundary began refusing a body it is
+     * contracted to round-trip. So the screen is registered on {@link ObjectMapper#copy()} of the shared bean
+     * and that copy is handed straight back to this converter: the inbound binding gets the screen, and every
+     * other consumer of the bean is left exactly as it was. The parser bounds are applied twice, once to the
+     * shared bean so nothing that shares it loses a bound it already had, and once to the copy so the bound
+     * cannot lapse on a library whose copy constructor stops carrying it.
+     *
+     * <p>Side effects: mutates the parser factory of the JSON converters in the list Spring owns and replaces
+     * each such converter's mapper with a screened copy, once, during context refresh. The list itself is
+     * neither reordered nor added to. Performs no input or output and starts no thread.
      *
      * @param converters the message converters Spring has already assembled; never null
      */
@@ -694,20 +835,157 @@ public class WebConfig implements WebMvcConfigurer {
         int constrained = 0;
         for (final HttpMessageConverter<?> converter : converters) {
             if (converter instanceof AbstractJackson2HttpMessageConverter jacksonConverter) {
-                jacksonConverter.getObjectMapper().getFactory().setStreamReadConstraints(constraints);
+                final ObjectMapper shared = jacksonConverter.getObjectMapper();
+                shared.getFactory().setStreamReadConstraints(constraints);
+
+                // The second half of the control-character screen, whose first half is the request-line
+                // interceptor of addInterceptors. It rides on a copy of the shared mapper rather than on the
+                // shared mapper itself, and the copy is handed straight back to this converter, so the screen
+                // reaches exactly one thing: the binding of an inbound @RequestBody. See the scoping note in
+                // this method's documentation for the three other consumers of the shared bean that must not
+                // inherit it. A copy rather than a mapper built here, so every setting spring.jackson.*
+                // establishes is inherited rather than reasserted; the constraints are restated on the copy
+                // because a bound that depends on a copy constructor carrying it is a bound that can silently
+                // lapse on a library upgrade.
+                final ObjectMapper inbound = shared.copy();
+                inbound.getFactory().setStreamReadConstraints(constraints);
+                inbound.registerModule(controlCharacterScreen());
+                jacksonConverter.setObjectMapper(inbound);
                 constrained++;
             }
         }
 
         LOGGER.debug(
                 "Applied JSON stream-read constraints to {} Jackson converter(s): nesting depth {}, string "
-                        + "length {}, number length {}, name length {}, document length {}",
+                        + "length {}, number length {}, name length {}, document length {}; and gave each a "
+                        + "screened copy of the shared mapper that refuses a control character in any inbound "
+                        + "string value, leaving the shared mapper itself unscreened",
                 constrained,
                 MAX_JSON_NESTING_DEPTH,
                 MAX_JSON_STRING_LENGTH,
                 MAX_JSON_NUMBER_LENGTH,
                 MAX_JSON_NAME_LENGTH,
                 MAX_JSON_DOCUMENT_LENGTH);
+    }
+
+    /**
+     * Builds the Jackson module that refuses a control character in any JSON string value.
+     *
+     * <p>It wraps whatever deserializer Jackson already chose for {@code String} rather than replacing it, so
+     * every coercion rule the existing configuration establishes - single-value-as-array unwrapping, embedded
+     * binary handling, the refusal of a structured value where a string is expected - is preserved exactly and
+     * only the additional check is added. Replacing the deserializer outright would have re-specified all of
+     * that by omission, and the operations' validation matrix depends on it.
+     *
+     * <p>The refusal is raised through the deserialization context, which is what makes Jackson decorate it
+     * with the property path before it leaves the parser. Spring turns it into a read failure, and every
+     * controller already answers a read failure with {@code 400} and its own envelope, writing the path to the
+     * log rather than to the body.
+     *
+     * <p><strong>Register this on a mapper that binds inbound request bodies and on nothing else.</strong> The
+     * module screens every {@code String} the mapper it is registered on will ever read, which is what the
+     * inbound boundary wants and what no other reader does - see the scoping note on
+     * {@link #extendMessageConverters(List)}.
+     *
+     * @return a module registering the screen; a fresh instance per call, so no mutable state is shared
+     */
+    private static Module controlCharacterScreen() {
+        final SimpleModule module = new SimpleModule("CardDemoControlCharacterScreen");
+        module.setDeserializerModifier(new BeanDeserializerModifier() {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public JsonDeserializer<?> modifyDeserializer(
+                    final DeserializationConfig config,
+                    final BeanDescription description,
+                    final JsonDeserializer<?> deserializer) {
+
+                if (String.class.equals(description.getBeanClass())) {
+                    return new ControlCharacterFreeStringDeserializer(deserializer);
+                }
+                return deserializer;
+            }
+        });
+        return module;
+    }
+
+    /**
+     * Returns the index of the first C0 or DEL control character in a value, or {@link #NO_CONTROL_CHARACTER}
+     * when there is none.
+     *
+     * <p>The index rather than a boolean, because the position is what an operator needs in the log to find the
+     * offending byte in a payload that must not itself be logged. Iterating over {@code char} values is
+     * sufficient and correct here: every code point this method refuses is in the Basic Multilingual Plane and
+     * below {@code U+0080}, so no surrogate pair can hide one.
+     *
+     * @param candidate the value to scan; may be null, which is clean by definition because an absent value
+     *                  carries no character at all
+     * @return the zero-based index of the first refused character, or {@link #NO_CONTROL_CHARACTER}
+     */
+    private static int indexOfControlCharacter(final String candidate) {
+        if (candidate == null) {
+            return NO_CONTROL_CHARACTER;
+        }
+        for (int index = 0; index < candidate.length(); index++) {
+            final char character = candidate.charAt(index);
+            if (character < FIRST_PRINTABLE_CHARACTER || character == DELETE_CHARACTER) {
+                return index;
+            }
+        }
+        return NO_CONTROL_CHARACTER;
+    }
+
+    /**
+     * Reports whether a value is the corpus's {@code LOW-VALUES}: non-empty and composed entirely of
+     * {@code NUL} characters.
+     *
+     * <p><strong>This exception is a field contract, not a loophole, and the body half of the screen depends on
+     * it.</strong> A 3270 field the operator did not transmit reached a BMS program as {@code LOW-VALUES}, and
+     * the corpus tests for exactly that: {@code app/cbl/COBIL00C.cbl} gates its confirmation on
+     * {@code IF CONFIRMI = LOW-VALUES OR SPACES}, and {@code app/cbl/COACTUPC.cbl:1290} sets a field to
+     * {@code LOW-VALUES} deliberately to mean "not supplied". A JSON client that faithfully echoes an
+     * untransmitted field therefore sends a value of {@code NUL} characters, and both that shape and an empty
+     * string must read as "not supplied" - which is why
+     * {@code com.cardemo.service.account.AccountUpdateService} normalises the same shape to null on its way in.
+     * Refusing it would break the sentinel the seventeen operations are built on.
+     *
+     * <p>What is refused is a control character <em>mixed with other content</em> - {@code AB\u0000CD} - which
+     * no terminal could have produced, which no field contract describes, and which PostgreSQL refuses to
+     * store. The request line takes no such exception: a URL has no untransmitted-field convention, so a
+     * {@code NUL} anywhere in a path or a query parameter is refused outright.
+     *
+     * @param candidate the value to test; must not be null
+     * @return {@code true} when {@code candidate} is non-empty and every one of its characters is {@code NUL}
+     */
+    private static boolean isLowValues(final String candidate) {
+        if (candidate.isEmpty()) {
+            return false;
+        }
+        for (int index = 0; index < candidate.length(); index++) {
+            if (candidate.charAt(index) != '\u0000') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Percent-decodes one query-string token, falling back to the token itself when the escaping is malformed.
+     *
+     * <p>A malformed escape is not this screen's concern: the container and the security firewall answer that,
+     * and turning it into a validation refusal here would change the status of requests this remediation was
+     * not asked to touch. Returning the raw token still lets the scan see a <em>literal</em> control character,
+     * so the fallback narrows the screen rather than disabling it.
+     *
+     * @param token the raw token as it appeared in the query string; must not be null
+     * @return the decoded token, or {@code token} unchanged when it cannot be decoded
+     */
+    private static String decodeQueryToken(final String token) {
+        try {
+            return URLDecoder.decode(token, StandardCharsets.UTF_8);
+        } catch (final IllegalArgumentException malformedEscape) {
+            return token;
+        }
     }
 
     /**
@@ -1102,6 +1380,983 @@ public class WebConfig implements WebMvcConfigurer {
                     .append(DECIMAL_POINT)
                     .append(padded, AMOUNT_MASK_INTEGER_DIGITS, padded.length())
                     .toString();
+        }
+    }
+
+    /**
+     * Refuses a C0 or DEL control character anywhere in the request line, before any operation is entered.
+     *
+     * <p>The request-line half of the screen documented on {@link #CONTROL_CHARACTER_REJECTION_MESSAGE}; the
+     * body half is the Jackson module registered by {@link WebConfig#extendMessageConverters(java.util.List)}.
+     * Three locations are scanned, in the order a reader would expect them to matter:</p>
+     * <ol>
+     *   <li>the request URI, so a control character reaching a path variable is refused;</li>
+     *   <li>each query-parameter <em>name</em>, because a name is bound as text just as a value is;</li>
+     *   <li>each query-parameter <em>value</em>, which is the location the transaction-detail operation was
+     *       reached through.</li>
+     * </ol>
+     *
+     * <p>The refusal is a {@code com.cardemo.exception.ValidationException}, so the answer is the controller's
+     * own {@code 400} envelope carrying the parameter name in its {@code field} member - the same shape a
+     * caller already receives when a service refuses a field, rather than a second dialect of refusal. The
+     * value is never quoted back; the position goes to the log.
+     *
+     * <p>Stateless and therefore thread-safe: it holds no field, so one instance serves every request thread.
+     */
+    private static final class ControlCharacterRequestInterceptor implements HandlerInterceptor {
+
+        /**
+         * Creates the screen.
+         *
+         * <p>Stated explicitly rather than left implicit because the build's Javadoc gate treats an
+         * undocumented default constructor as a warning and escalates every warning to a failure. There is
+         * nothing to inject: the refused character set is a compile-time constant of the enclosing class.
+         */
+        private ControlCharacterRequestInterceptor() {
+            super();
+        }
+
+        @Override
+        public boolean preHandle(
+                final HttpServletRequest request,
+                final HttpServletResponse response,
+                final Object handler) {
+
+            screen(decodeQueryToken(request.getRequestURI()), REQUEST_PATH_FIELD_NAME);
+
+            final String query = request.getQueryString();
+            if (query == null || query.isEmpty()) {
+                return true;
+            }
+
+            for (final String pair : query.split(QUERY_PAIR_SEPARATOR, -1)) {
+                if (pair.isEmpty()) {
+                    continue;
+                }
+                final int separator = pair.indexOf(QUERY_VALUE_SEPARATOR);
+                final String rawName = separator < 0 ? pair : pair.substring(0, separator);
+                final String name = decodeQueryToken(rawName);
+
+                // The name is screened against a fixed location rather than against itself, so an unusable
+                // name is never echoed onto the response.
+                screen(name, QUERY_PARAMETER_FIELD_NAME);
+
+                if (separator >= 0) {
+                    screen(decodeQueryToken(pair.substring(separator + 1)), name);
+                }
+            }
+            return true;
+        }
+
+        /**
+         * Refuses one value when it carries a control character, and returns silently otherwise.
+         *
+         * @param candidate the decoded value to scan; may be null, which is clean
+         * @param fieldName the name published in the refusal's {@code field} member; never the value
+         * @throws ValidationException when {@code candidate} carries a C0 or DEL character
+         */
+        private static void screen(final String candidate, final String fieldName) {
+            final int offendingIndex = indexOfControlCharacter(candidate);
+            if (offendingIndex == NO_CONTROL_CHARACTER) {
+                return;
+            }
+            LOGGER.warn("Refused a request with 400: {} carries a control character at index {}",
+                    fieldName, offendingIndex);
+            throw ValidationException.invalidField(fieldName, CONTROL_CHARACTER_REJECTION_MESSAGE);
+        }
+    }
+
+    /**
+     * Refuses a C0 or DEL control character in any JSON string value, wrapping the deserializer Jackson chose.
+     *
+     * <p>The body half of the screen documented on {@link #CONTROL_CHARACTER_REJECTION_MESSAGE}. It delegates
+     * every decision about <em>how</em> a string is read and adds only the check, so the request DTOs' accepted
+     * input is unchanged except for the characters that could never have reached a BMS field and cannot be
+     * stored in a PostgreSQL character column.
+     *
+     * <p>The refusal is reported through the deserialization context so Jackson attaches the property path,
+     * which reaches the log through the controller's read-failure handler. Neither the value nor the offending
+     * character is put on the response, for the reason recorded on the message constant.
+     */
+    private static final class ControlCharacterFreeStringDeserializer extends DelegatingDeserializer {
+
+        /** Serialisation identity, required because the base type is serializable. */
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * Wraps one string deserializer.
+         *
+         * @param delegate the deserializer Jackson selected for {@code String}; never null
+         */
+        ControlCharacterFreeStringDeserializer(final JsonDeserializer<?> delegate) {
+            super(delegate);
+        }
+
+        @Override
+        protected JsonDeserializer<?> newDelegatingInstance(final JsonDeserializer<?> replacement) {
+            return new ControlCharacterFreeStringDeserializer(replacement);
+        }
+
+        @Override
+        public Object deserialize(final JsonParser parser, final DeserializationContext context)
+                throws IOException {
+
+            final Object value = super.deserialize(parser, context);
+            if (value instanceof String text) {
+                final int offendingIndex = indexOfControlCharacter(text);
+                if (offendingIndex != NO_CONTROL_CHARACTER && !isLowValues(text)) {
+                    LOGGER.warn("Refused a request body with 400: a string value carries a control character "
+                            + "at index {}", offendingIndex);
+                    return context.reportInputMismatch(String.class, CONTROL_CHARACTER_REJECTION_MESSAGE);
+                }
+            }
+            return value;
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // The framework boundary: refusals raised before, or instead of, a controller method
+    //
+    // Seventeen operations answer every refusal they own with an RFC 7807 ProblemDetail carrying an
+    // errorCode and the request's correlationId, declared as an @ExceptionHandler on the controller that
+    // owns the operation. That covers every failure a controller method can be reached to produce.
+    //
+    // It cannot cover a refusal decided BEFORE a controller method is selected. Three of those exist and
+    // every one of them was answered outside the envelope:
+    //
+    //   1. A request declaring a non-concrete Content-Type - "application/*+json", "*/*", "application/*".
+    //      A wildcard request type is COMPATIBLE with a consumes condition, so RequestMappingHandlerMapping
+    //      selects the handler; the failure then happens inside the argument resolver, where
+    //      HttpHeaders.setContentType rejects the wildcard, and a bare IllegalArgumentException became a
+    //      500. A caller could provoke that unauthenticated, on POST /api/auth/signon.
+    //   2. A request declaring a concrete but unreadable Content-Type - "text/plain", "application/xml",
+    //      the empty string, or none at all. RequestMappingHandlerMapping raises
+    //      HttpMediaTypeNotSupportedException during the MAPPING phase, so handler is null, no controller
+    //      is consulted and Spring's default 415 body was returned instead of the envelope.
+    //   3. An Accept header this API cannot satisfy. HttpMediaTypeNotAcceptableException produced a 406
+    //      with NO body and NO Content-Type at all, because the error render could not be negotiated
+    //      either.
+    //
+    // Why this is not global advice. @ControllerAdvice, @RestControllerAdvice and a
+    // ResponseEntityExceptionHandler subclass are prohibited in this application, and the prohibition is
+    // asserted by a test that scans every main source. That prohibition is about where an operation's OWN
+    // refusals are declared: they belong on the controller that owns the operation, so that status
+    // selection is reviewable next to the paragraph it reproduces. Conditions 2 and 3 are not any
+    // operation's refusal - condition 2 is decided before an operation has been chosen, and no controller
+    // can ever be reached to answer it. A HandlerExceptionResolver is the one extension point Spring
+    // consults with handler == null, so it is the only mechanism that can close the gap at all; it is a
+    // distinct extension point rather than advice, it declares no @ExceptionHandler, and it claims exactly
+    // four exception types and returns null for everything else, so it cannot intercept a refusal a
+    // controller owns.
+    //
+    // Ordering is load bearing. The resolver is inserted immediately BEFORE
+    // DefaultHandlerExceptionResolver and therefore AFTER ExceptionHandlerExceptionResolver, so every one
+    // of the controller-local handlers still wins. Inserting it at the head of the list would silently
+    // disable them.
+    // ------------------------------------------------------------------------------------------------
+
+    /**
+     * The single media type this application reads and writes, used both to advertise what a rejected
+     * {@code Content-Type} should have been and to serialise the refusal itself.
+     */
+    private static final MediaType SUPPORTED_REQUEST_MEDIA_TYPE = MediaType.APPLICATION_JSON;
+
+    /**
+     * The separator RFC 9110 prescribes for the {@code Allow} header's comma-separated method list. Written
+     * as a constant because the header is assembled by hand rather than through {@code HttpHeaders}: the
+     * refusal is rendered onto the raw {@link HttpServletResponse}, which has no typed header accessor.
+     */
+    private static final String ALLOW_HEADER_SEPARATOR = ", ";
+
+    /** The member name every refusal carries so a client can branch on the cause without parsing prose. */
+    private static final String ERROR_CODE_PROPERTY = "errorCode";
+
+    /** The member name every refusal carries so a client can quote one token back to support. */
+    private static final String CORRELATION_ID_PROPERTY = "correlationId";
+
+    /**
+     * The value published for {@link #CORRELATION_ID_PROPERTY} when no identifier is in scope. The literal
+     * matches the one the eight controllers publish, so the member is never absent and never null.
+     */
+    private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
+
+    /**
+     * The {@code type} member of every refusal rendered here. {@code about:blank} is the RFC 7807 default
+     * and is what {@link org.springframework.http.ProblemDetail} emits for the controller-owned refusals,
+     * so a client sees one shape whichever boundary refused it.
+     */
+    private static final String PROBLEM_TYPE_BLANK = "about:blank";
+
+    /** {@code errorCode} for a request whose {@code Content-Type} this application cannot read. */
+    private static final String ERROR_CODE_UNSUPPORTED_MEDIA_TYPE = "CARDDEMO-UNSUPPORTED-MEDIA-TYPE";
+
+    /** {@code errorCode} for a request whose {@code Accept} header this application cannot satisfy. */
+    private static final String ERROR_CODE_NOT_ACCEPTABLE = "CARDDEMO-NOT-ACCEPTABLE";
+
+    /** {@code errorCode} for a path that is mapped but not for the method the caller used. */
+    private static final String ERROR_CODE_METHOD_NOT_ALLOWED = "CARDDEMO-METHOD-NOT-ALLOWED";
+
+    /** {@code errorCode} for a path no operation is mapped to. */
+    private static final String ERROR_CODE_RESOURCE_NOT_FOUND = "CARDDEMO-RESOURCE-NOT-FOUND";
+
+    /**
+     * {@code errorCode} for a request the servlet container itself refused, before any application code
+     * ran - an illegal character in the request target, for instance, or a method the connector forbids.
+     */
+    private static final String ERROR_CODE_REQUEST_REJECTED = "CARDDEMO-REQUEST-REJECTED";
+
+    /**
+     * {@code errorCode} for a container-level failure with a 5xx status. The spelling is deliberately the
+     * one the eight controllers already publish for an unexpected failure, because the condition is the
+     * same one seen from one layer further out.
+     */
+    private static final String ERROR_CODE_INTERNAL_FAILURE = "CARDDEMO-INTERNAL-FAILURE";
+
+    /** Title of the 415 refusal. */
+    private static final String TITLE_UNSUPPORTED_MEDIA_TYPE = "Unsupported media type";
+
+    /** Detail of the 415 refusal; names the one media type that would have worked. */
+    private static final String DETAIL_UNSUPPORTED_MEDIA_TYPE =
+            "The request declared a Content-Type this operation cannot read. Send application/json with a "
+                    + "concrete type and subtype.";
+
+    /** Title of the 406 refusal. */
+    private static final String TITLE_NOT_ACCEPTABLE = "Not acceptable";
+
+    /** Detail of the 406 refusal. */
+    private static final String DETAIL_NOT_ACCEPTABLE =
+            "This application produces application/json and application/problem+json only. Send an Accept "
+                    + "header that admits one of them.";
+
+    /** Title of the 405 refusal. */
+    private static final String TITLE_METHOD_NOT_ALLOWED = "Method not allowed";
+
+    /** Detail of the 405 refusal; the Allow header carries the methods that would have worked. */
+    private static final String DETAIL_METHOD_NOT_ALLOWED =
+            "The request method is not supported for this path. The Allow header lists the methods that are.";
+
+    /** Title of the 404 refusal. */
+    private static final String TITLE_RESOURCE_NOT_FOUND = "Not found";
+
+    /** Detail of the 404 refusal. */
+    private static final String DETAIL_RESOURCE_NOT_FOUND = "No operation is mapped to this path.";
+
+    /** Title of a container-level 4xx refusal that is none of the four conditions named above. */
+    private static final String TITLE_REQUEST_REJECTED = "Request rejected";
+
+    /**
+     * Detail of a container-level 4xx refusal. It deliberately says nothing about WHICH character or header
+     * was at fault: the request never reached application code, so the only honest statement is that it was
+     * refused at the boundary, and a precise one would echo attacker-supplied bytes back.
+     */
+    private static final String DETAIL_REQUEST_REJECTED =
+            "The request was refused at the protocol boundary before it reached the application.";
+
+    /**
+     * Title of the {@code 501 Not Implemented} refusal. Distinguished from the generic 5xx title because the
+     * only way this application reaches 501 is a request method the connector does not implement -
+     * {@code CONNECT} being the reachable case - and reporting that as an internal error would blame the
+     * server for the client's choice of method.
+     */
+    private static final String TITLE_METHOD_NOT_IMPLEMENTED = "Method not implemented";
+
+    /** Detail of the {@code 501 Not Implemented} refusal. */
+    private static final String DETAIL_METHOD_NOT_IMPLEMENTED =
+            "The request method is not implemented by this application.";
+
+    /** Title of a container-level 5xx failure. */
+    private static final String TITLE_INTERNAL_FAILURE = "Internal server error";
+
+    /** Detail of a container-level 5xx failure; carries no diagnostic, exactly as the controllers do not. */
+    private static final String DETAIL_INTERNAL_FAILURE =
+            "The request could not be completed. Quote the correlationId when reporting this.";
+
+    /**
+     * Registers the two request screens every one of the seventeen operations passes through: the
+     * {@code Content-Type} screen that turns condition 1 above into a 415, and the control-character
+     * screen that guards every path variable and query parameter.
+     *
+     * <p>It is an interceptor rather than a filter because it must run <em>after</em> a handler has been
+     * mapped and <em>before</em> the argument resolver reads the body. At that point the failure carries the
+     * {@link org.springframework.web.method.HandlerMethod} with it, which is what lets Spring resolve it
+     * through the normal exception path rather than as an unhandled error.
+     *
+     *
+     * <p><strong>The control-character screen is the second registration, and it covers the request line.</strong>
+     * Its request-body half is the Jackson module of {@link #extendMessageConverters(List)}. Both refuse the
+     * same character set for the same reason, recorded on {@link #CONTROL_CHARACTER_REJECTION_MESSAGE}: a C0
+     * or DEL character cannot be stored in a PostgreSQL character column, cannot have reached a BMS field, and
+     * used to surface as an input-output failure or an abend rather than as the refusal it is.
+     *
+     * <p><strong>Why an interceptor rather than a filter for that half too.</strong> A refusal raised from
+     * {@code preHandle} is resolved by the same handler-exception machinery a mapped method's failure is, so a
+     * {@code com.cardemo.exception.ValidationException} raised here reaches the controller's own
+     * {@code @ExceptionHandler} and is answered with that controller's envelope - carrying the offending
+     * parameter name in the {@code field} member, exactly as a field-level refusal raised inside a service is.
+     * A filter placed earlier could only have written a generic envelope, and this class is deliberately not an
+     * advice type: it declares no {@code @ControllerAdvice}, no {@code @ExceptionHandler} and no
+     * {@code @ResponseStatus}, so no error-handling behaviour is centralised away from the controllers.
+     *
+     * <p><strong>Why the query string is parsed rather than read through the parameter map.</strong> Asking a
+     * request for its parameters makes the container parse the body when the media type is
+     * {@code application/x-www-form-urlencoded}, which would consume the body before the message converter
+     * could read it. Parsing {@link jakarta.servlet.http.HttpServletRequest#getQueryString()} touches the
+     * request line only, so no body is consumed on any route and the screen cannot change what an operation
+     * receives.
+     *
+     * <p><strong>Order is deliberate.</strong> The media-type screen is registered first because whether a
+     * request is admissible at all is decided before what its fields carry: a request whose declared type this
+     * API cannot read is refused 415 without its field content ever being examined.
+     *
+     * <p>Side effects: mutates only the registry Spring owns and calls once during context refresh. Neither
+     * interceptor performs any input or output, opens a resource or starts a thread, and neither holds state -
+     * each is registered once and shared across every request thread.
+     *
+     * @param registry the interceptor registry Spring owns; never null
+     */
+    @Override
+    public void addInterceptors(final InterceptorRegistry registry) {
+        registry.addInterceptor(new ConcreteContentTypeInterceptor());
+        registry.addInterceptor(new ControlCharacterRequestInterceptor());
+        LOGGER.debug("Registered the control-character screen over the request path and query string; the C0 "
+                + "range below {} and DEL are refused with a field-level 400", FIRST_PRINTABLE_CHARACTER);
+    }
+
+    /**
+     * Inserts {@link FrameworkBoundaryExceptionResolver} immediately before
+     * {@link DefaultHandlerExceptionResolver}, so the four framework-boundary refusals carry the envelope
+     * while every controller-local {@code @ExceptionHandler} keeps precedence.
+     *
+     * <p>Spring hands over the list it assembled, which is
+     * {@code [ExceptionHandlerExceptionResolver, ResponseStatusExceptionResolver,
+     * DefaultHandlerExceptionResolver]}. Appending would be useless - the default resolver would already
+     * have answered - and prepending would be actively harmful, because it would take precedence over the
+     * controller-local handlers. The insertion point is found by type rather than by index so that a change
+     * in the framework's default list cannot silently move it.
+     *
+     * <p>Side effects: mutates the resolver list Spring owns, once, during context refresh. Performs no
+     * input or output and starts no thread.
+     *
+     * @param resolvers the exception resolvers Spring has already assembled; never null
+     */
+    @Override
+    public void extendHandlerExceptionResolvers(final List<HandlerExceptionResolver> resolvers) {
+
+        int insertAt = -1;
+        for (int index = 0; index < resolvers.size(); index++) {
+            if (resolvers.get(index) instanceof DefaultHandlerExceptionResolver) {
+                insertAt = index;
+                break;
+            }
+        }
+
+        if (insertAt < 0) {
+            // No default resolver is present, so nothing downstream can pre-empt this one and appending is
+            // correct. Recorded at WARN because it means the framework's default list changed shape.
+            LOGGER.warn("No DefaultHandlerExceptionResolver found among {} resolver(s); appending the "
+                    + "framework-boundary resolver at the end of the list", resolvers.size());
+            resolvers.add(new FrameworkBoundaryExceptionResolver());
+            return;
+        }
+
+        resolvers.add(insertAt, new FrameworkBoundaryExceptionResolver());
+        LOGGER.debug("Inserted the framework-boundary exception resolver at position {} of {}", insertAt,
+                resolvers.size());
+    }
+
+    /**
+     * Replaces the container's HTML error report with the same refusal envelope.
+     *
+     * <p>Some refusals never reach the servlet at all. A request target containing a {@code %00} escape is
+     * rejected by the connector while it is still parsing the request line, so no filter runs, no
+     * correlation identifier exists, and the response was rendered by Tomcat's own
+     * {@link ErrorReportValve} as an HTML page naming the container and its version. That is both an
+     * envelope gap and a needless disclosure of the runtime's identity.
+     *
+     * <p>The valve class is substituted rather than merely silenced. Turning the report off would remove the
+     * disclosure but leave an empty body, which is what the 406 already did and is exactly the
+     * inconsistency being closed.
+     *
+     * <p>Side effects: sets one property on the Tomcat {@code Host} during context creation, before the host
+     * starts, which is what makes the substitution take effect. Performs no input or output and starts no
+     * thread.
+     *
+     * @return the customizer that installs the JSON-rendering error report valve; never null
+     */
+    @Bean
+    public WebServerFactoryCustomizer<TomcatServletWebServerFactory> problemJsonErrorReportValve() {
+        return factory -> factory.addContextCustomizers(context -> {
+            final Container parent = context.getParent();
+            if (parent instanceof StandardHost host) {
+                host.setErrorReportValveClass(ProblemJsonErrorReportValve.class.getName());
+                LOGGER.info("Container-level error reporting will render {} instead of an HTML page",
+                        MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+            } else {
+                // Not reachable with the embedded Tomcat this application pins, and deliberately not fatal:
+                // a missing envelope on a pre-servlet refusal must not stop the application from starting.
+                LOGGER.warn("Servlet context parent is {}, not a StandardHost; container-level errors will "
+                        + "keep the container's own rendering",
+                        parent == null ? "absent" : parent.getClass().getName());
+            }
+        });
+    }
+
+    /**
+     * Makes Spring Security's HTTP-firewall rejection carry the refusal envelope.
+     *
+     * <p><strong>Finding, severity Minor - remediated here.</strong> {@code TRACE}, and any method outside
+     * the firewall's allowed set, answered {@code 400 Bad Request} with no body and no
+     * {@code Content-Type} at all. The mechanism is a double refusal, and it is worth writing down because
+     * the obvious remedies all address the wrong layer:
+     *
+     * <ol>
+     *   <li>The connector refuses {@code TRACE} first, because {@code allowTrace} is false. It does so with
+     *       {@code sendError}, which sets the status, adds an {@code Allow} header and dispatches to Spring
+     *       Boot's registered {@code /error} page.</li>
+     *   <li>That error dispatch is still a {@code TRACE} request, so
+     *       {@code StrictHttpFirewall} refuses it a second time. The default
+     *       {@code HttpStatusRequestRejectedHandler} answers with {@code sendError} as well - but a
+     *       {@code sendError} inside an error dispatch has nowhere left to dispatch to, so it commits the
+     *       response with a zero-length body.</li>
+     * </ol>
+     *
+     * <p>By the time any Tomcat valve or Spring resolver could contribute a body, the response is committed
+     * and nothing can be written. Widening the firewall's allowed methods, or setting {@code allowTrace},
+     * would give the body back by admitting a request that is currently refused twice over - trading a
+     * hardened default for the cosmetics of a refusal, which the least-privilege standard this application
+     * is built to does not permit.
+     *
+     * <p>The actual root cause is narrower than either: the rejection handler writes its answer with
+     * {@code sendError} instead of writing a body. Replacing it fixes every rejected method at once - the
+     * refusal stays exactly as strict, no method list is duplicated anywhere, and the policy remains
+     * entirely the firewall's.
+     *
+     * <p>Side effects: sets one collaborator on the security builder during context refresh. Performs no
+     * input or output and starts no thread.
+     *
+     * @return the customizer that installs the enveloping rejection handler; never null
+     */
+    @Bean
+    public WebSecurityCustomizer problemJsonRequestRejectedHandler() {
+        return web -> web.requestRejectedHandler(new ProblemJsonRequestRejectedHandler());
+    }
+
+    /**
+     * Renders the refusal envelope onto a response, byte for byte the shape the eight controllers publish.
+     *
+     * <p>The document is assembled by hand rather than through Jackson, and that is a deliberate choice
+     * rather than an omission. Every value in it is either a compile-time constant declared above or a
+     * correlation identifier constrained to {@code [A-Za-z0-9_-]}, so no value can require JSON escaping and
+     * none can be attacker-shaped. Assembling it by hand means this method has no dependency on an
+     * {@code ObjectMapper} bean, which matters because it is called from a Tomcat valve that runs outside
+     * the Spring request scope entirely.
+     *
+     * <p>Member order matches {@link org.springframework.http.ProblemDetail}'s serialisation - {@code type},
+     * {@code title}, {@code status}, {@code detail}, then the two extension members - so a client comparing
+     * two refusals byte for byte sees the same ordering from both boundaries.
+     *
+     * @param status        the HTTP status being reported
+     * @param title         the short, human-readable summary; must be a constant of this class
+     * @param detail        the explanation; must be a constant of this class
+     * @param errorCode     the machine-readable code; must be a constant of this class
+     * @param correlationId the identifier to publish; may be null or empty, in which case
+     *                      {@link #CORRELATION_ID_UNAVAILABLE} is published instead
+     * @return the complete JSON document; never null and never empty
+     */
+    private static String renderProblemEnvelope(final int status, final String title, final String detail,
+            final String errorCode, final String correlationId) {
+
+        return "{\"type\":\"" + PROBLEM_TYPE_BLANK
+                + "\",\"title\":\"" + title
+                + "\",\"status\":" + status
+                + ",\"detail\":\"" + detail
+                + "\",\"" + ERROR_CODE_PROPERTY + "\":\"" + errorCode
+                + "\",\"" + CORRELATION_ID_PROPERTY + "\":\"" + safeCorrelationId(correlationId)
+                + "\"}";
+    }
+
+    /**
+     * Reduces a correlation identifier to the character set the envelope can carry without escaping.
+     *
+     * <p>{@code CorrelationIdFilter} already admits only {@code [A-Za-z0-9_-]}, bounded at 64 characters, so
+     * in practice this method returns its argument unchanged. It exists because the envelope is assembled by
+     * string concatenation: if the constraint upstream were ever relaxed, a value containing a quotation
+     * mark would produce a malformed document rather than a merely surprising one. Any character outside the
+     * set is dropped, and an argument that is null, empty or reduced to nothing yields
+     * {@link #CORRELATION_ID_UNAVAILABLE}.
+     *
+     * @param correlationId the identifier to sanitise; may be null
+     * @return a value safe to embed in a JSON string literal; never null and never empty
+     */
+    private static String safeCorrelationId(final String correlationId) {
+
+        if (correlationId == null || correlationId.isEmpty()) {
+            return CORRELATION_ID_UNAVAILABLE;
+        }
+
+        final StringBuilder kept = new StringBuilder(correlationId.length());
+        for (int index = 0; index < correlationId.length(); index++) {
+            final char character = correlationId.charAt(index);
+            final boolean permitted = character >= 'A' && character <= 'Z'
+                    || character >= 'a' && character <= 'z'
+                    || character >= '0' && character <= '9'
+                    || character == '_' || character == '-';
+            if (permitted) {
+                kept.append(character);
+            }
+        }
+
+        return kept.length() == 0 ? CORRELATION_ID_UNAVAILABLE : kept.toString();
+    }
+
+    /**
+     * Reads the correlation identifier the request filter placed in the logging context.
+     *
+     * @return the identifier, or {@link #CORRELATION_ID_UNAVAILABLE} when none is in scope
+     */
+    private static String currentCorrelationId() {
+        final String fromContext = MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID);
+        return fromContext == null || fromContext.isEmpty() ? CORRELATION_ID_UNAVAILABLE : fromContext;
+    }
+
+    /**
+     * Maps a container-level HTTP status onto the {@code errorCode} the envelope publishes for it.
+     *
+     * <p>Only statuses the container can produce on its own are distinguished. Everything else in the 4xx
+     * range collapses onto {@link #ERROR_CODE_REQUEST_REJECTED} and everything at or above 500 onto
+     * {@link #ERROR_CODE_INTERNAL_FAILURE}, because at this layer nothing more specific is known: the
+     * request did not reach the application, so there is no operation whose refusal this could be.
+     *
+     * @param status the status the container set
+     * @return the code to publish; never null
+     */
+    private static String containerErrorCode(final int status) {
+        return switch (status) {
+            case HttpServletResponse.SC_NOT_FOUND -> ERROR_CODE_RESOURCE_NOT_FOUND;
+            case HttpServletResponse.SC_METHOD_NOT_ALLOWED -> ERROR_CODE_METHOD_NOT_ALLOWED;
+            case HttpServletResponse.SC_NOT_ACCEPTABLE -> ERROR_CODE_NOT_ACCEPTABLE;
+            case HttpServletResponse.SC_UNSUPPORTED_MEDIA_TYPE -> ERROR_CODE_UNSUPPORTED_MEDIA_TYPE;
+            case HttpServletResponse.SC_NOT_IMPLEMENTED -> ERROR_CODE_METHOD_NOT_ALLOWED;
+            default -> status >= HttpServletResponse.SC_INTERNAL_SERVER_ERROR
+                    ? ERROR_CODE_INTERNAL_FAILURE
+                    : ERROR_CODE_REQUEST_REJECTED;
+        };
+    }
+
+    /**
+     * Returns the title that accompanies {@link #containerErrorCode(int)} for a container-level status.
+     *
+     * @param status the status the container set
+     * @return the title to publish; never null
+     */
+    private static String containerTitle(final int status) {
+        return switch (status) {
+            case HttpServletResponse.SC_NOT_FOUND -> TITLE_RESOURCE_NOT_FOUND;
+            case HttpServletResponse.SC_METHOD_NOT_ALLOWED -> TITLE_METHOD_NOT_ALLOWED;
+            case HttpServletResponse.SC_NOT_ACCEPTABLE -> TITLE_NOT_ACCEPTABLE;
+            case HttpServletResponse.SC_UNSUPPORTED_MEDIA_TYPE -> TITLE_UNSUPPORTED_MEDIA_TYPE;
+            case HttpServletResponse.SC_NOT_IMPLEMENTED -> TITLE_METHOD_NOT_IMPLEMENTED;
+            default -> status >= HttpServletResponse.SC_INTERNAL_SERVER_ERROR
+                    ? TITLE_INTERNAL_FAILURE
+                    : TITLE_REQUEST_REJECTED;
+        };
+    }
+
+    /**
+     * Returns the detail that accompanies {@link #containerErrorCode(int)} for a container-level status.
+     *
+     * @param status the status the container set
+     * @return the detail to publish; never null
+     */
+    private static String containerDetail(final int status) {
+        return switch (status) {
+            case HttpServletResponse.SC_NOT_FOUND -> DETAIL_RESOURCE_NOT_FOUND;
+            case HttpServletResponse.SC_METHOD_NOT_ALLOWED -> DETAIL_METHOD_NOT_ALLOWED;
+            case HttpServletResponse.SC_NOT_ACCEPTABLE -> DETAIL_NOT_ACCEPTABLE;
+            case HttpServletResponse.SC_UNSUPPORTED_MEDIA_TYPE -> DETAIL_UNSUPPORTED_MEDIA_TYPE;
+            case HttpServletResponse.SC_NOT_IMPLEMENTED -> DETAIL_METHOD_NOT_IMPLEMENTED;
+            default -> status >= HttpServletResponse.SC_INTERNAL_SERVER_ERROR
+                    ? DETAIL_INTERNAL_FAILURE
+                    : DETAIL_REQUEST_REJECTED;
+        };
+    }
+
+    /**
+     * Refuses a request whose declared {@code Content-Type} is not a concrete type and subtype.
+     *
+     * <p><strong>Finding, severity Major - remediated here.</strong> {@code POST /api/auth/signon} with
+     * {@code Content-Type: application/*+json} answered {@code 500 Internal Server Error} with Spring's
+     * default error body, and so did the other six body-binding operations. A caller needed no credential to
+     * provoke it. The mechanism is specific and worth stating, because it is not the mechanism a reader
+     * expects: a wildcard request type <em>satisfies</em> a {@code consumes} condition, because
+     * {@code MediaType.includes} is asked whether the mapping's type is compatible with the request's rather
+     * than the other way round. So the mapping matches, the handler is selected, and the failure surfaces
+     * one layer further in - {@code ServletServerHttpRequest.getHeaders()} calls
+     * {@code HttpHeaders.setContentType}, which asserts that the type is concrete and throws
+     * {@link IllegalArgumentException}. An unhandled {@link IllegalArgumentException} is a 500, and rightly
+     * so: mapping that exception type to a status globally would turn every programming error in the
+     * application into a 4xx.
+     *
+     * <p>The screen therefore happens where the fact is unambiguous - a declared {@code Content-Type} that
+     * is not concrete - and it raises the exception the condition actually is,
+     * {@link HttpMediaTypeNotSupportedException}, which
+     * {@link FrameworkBoundaryExceptionResolver} renders as a 415 inside the envelope. The result is that
+     * the wildcard case and the {@code text/plain} case answer identically, which is the point: they are the
+     * same condition.
+     *
+     * <p>Scope. A request that declares no {@code Content-Type} at all is not touched here - that is a
+     * legitimate shape for a request without content, and the mapping already refuses it for an operation
+     * that needs a body. A request on the {@code ERROR} dispatch is not touched either, so a refusal cannot
+     * re-enter this screen while it is being rendered. Everything else with a declared type is screened
+     * regardless of method, because a wildcard {@code Content-Type} is never a valid description of content
+     * that was actually sent.
+     *
+     * <p>Thread safety: stateless and immutable, so the single registered instance is safe for concurrent
+     * dispatch.
+     */
+    public static final class ConcreteContentTypeInterceptor implements HandlerInterceptor {
+
+        /** Creates the screen. Public because the MVC registry instantiates one per context. */
+        public ConcreteContentTypeInterceptor() {
+            // No state to establish.
+        }
+
+        /**
+         * Rejects a non-concrete declared {@code Content-Type} before the body is read.
+         *
+         * <p>Side effects: none on success. On refusal it throws and writes nothing itself, leaving the
+         * rendering to the resolver so that one code path produces every 415.
+         *
+         * @param request  the request being dispatched; never null
+         * @param response the response, untouched by this method; never null
+         * @param handler  the handler Spring selected; never null
+         * @return true, always, when the request is admitted
+         * @throws HttpMediaTypeNotSupportedException when the declared type is absent-valued, unparseable,
+         *                                            or not a concrete type and subtype
+         */
+        @Override
+        public boolean preHandle(final HttpServletRequest request, final HttpServletResponse response,
+                final Object handler) throws HttpMediaTypeNotSupportedException {
+
+            if (request.getDispatcherType() == DispatcherType.ERROR) {
+                return true;
+            }
+
+            final String declared = request.getContentType();
+            if (declared == null || declared.isBlank()) {
+                return true;
+            }
+
+            final MediaType parsed;
+            try {
+                parsed = MediaType.parseMediaType(declared);
+            } catch (final InvalidMediaTypeException malformed) {
+                // Not reachable through the mapping - an unparseable type is refused there first - but the
+                // screen must not turn a malformed header into a 500 if the mapping ever stops matching.
+                throw new HttpMediaTypeNotSupportedException(malformed.getMessage());
+            }
+
+            if (parsed.isWildcardType() || parsed.isWildcardSubtype()) {
+                throw new HttpMediaTypeNotSupportedException(parsed,
+                        List.of(SUPPORTED_REQUEST_MEDIA_TYPE));
+            }
+
+            return true;
+        }
+    }
+
+    /**
+     * Renders the four framework-boundary refusals inside the application's refusal envelope.
+     *
+     * <p>It claims exactly four exception types and returns {@code null} for every other, which is what
+     * keeps it from becoming a general-purpose handler: a refusal that a controller owns is never seen here,
+     * because {@code ExceptionHandlerExceptionResolver} runs first and this resolver is inserted after it.
+     *
+     * <dl>
+     *   <dt>{@link HttpMediaTypeNotSupportedException} - 415</dt>
+     *   <dd>Raised by the mapping for a concrete but unreadable type, and by
+     *       {@link ConcreteContentTypeInterceptor} for a non-concrete one. Both render identically, and an
+     *       {@code Accept} response header names the one type that would have worked.</dd>
+     *   <dt>{@link HttpMediaTypeNotAcceptableException} - 406</dt>
+     *   <dd>Raised when no converter can write the negotiated type. The response {@code Content-Type} is
+     *       set explicitly, because the whole reason the body was empty before is that content negotiation
+     *       could not choose one; declaring it removes the negotiation from the error path.</dd>
+     *   <dt>{@link HttpRequestMethodNotSupportedException} - 405</dt>
+     *   <dd>Raised when the path matched but the method did not. The {@code Allow} header is carried
+     *       through, so the refusal keeps the one piece of information that makes it actionable.</dd>
+     *   <dt>{@link NoResourceFoundException} - 404</dt>
+     *   <dd>Raised when nothing is mapped. Largely unreachable in this application, because the security
+     *       chain denies an unknown path first and answers 403 with the envelope already; it is claimed so
+     *       that a future permitted path cannot open a gap.</dd>
+     * </dl>
+     *
+     * <p>Thread safety: stateless and immutable, so the single registered instance is safe for concurrent
+     * dispatch.
+     */
+    public static final class FrameworkBoundaryExceptionResolver implements HandlerExceptionResolver {
+
+        /** Creates the resolver. Public because it is registered into the MVC resolver list. */
+        public FrameworkBoundaryExceptionResolver() {
+            // No state to establish.
+        }
+
+        /**
+         * Answers one of the four framework-boundary refusals, or declines.
+         *
+         * <p>Side effects: on a claimed exception it sets the status, the {@code Content-Type}, one advisory
+         * header and the body, then flushes. On any other exception it does nothing at all.
+         *
+         * @param request  the request being dispatched; never null
+         * @param response the response to render onto; never null
+         * @param handler  the handler, which is null when the failure preceded handler selection
+         * @param failure  the exception raised; never null
+         * @return an empty {@link ModelAndView} when this resolver answered, so that no view is rendered
+         *         over the body it wrote; null when the exception is not one of the four
+         */
+        @Override
+        public ModelAndView resolveException(final HttpServletRequest request,
+                final HttpServletResponse response, final Object handler, final Exception failure) {
+
+            final HttpStatus status;
+            final String title;
+            final String detail;
+            final String errorCode;
+
+            if (failure instanceof HttpMediaTypeNotSupportedException) {
+                status = HttpStatus.UNSUPPORTED_MEDIA_TYPE;
+                title = TITLE_UNSUPPORTED_MEDIA_TYPE;
+                detail = DETAIL_UNSUPPORTED_MEDIA_TYPE;
+                errorCode = ERROR_CODE_UNSUPPORTED_MEDIA_TYPE;
+                response.setHeader(HttpHeaders.ACCEPT, SUPPORTED_REQUEST_MEDIA_TYPE.toString());
+            } else if (failure instanceof HttpMediaTypeNotAcceptableException) {
+                status = HttpStatus.NOT_ACCEPTABLE;
+                title = TITLE_NOT_ACCEPTABLE;
+                detail = DETAIL_NOT_ACCEPTABLE;
+                errorCode = ERROR_CODE_NOT_ACCEPTABLE;
+            } else if (failure instanceof HttpRequestMethodNotSupportedException wrongMethod) {
+                status = HttpStatus.METHOD_NOT_ALLOWED;
+                title = TITLE_METHOD_NOT_ALLOWED;
+                detail = DETAIL_METHOD_NOT_ALLOWED;
+                errorCode = ERROR_CODE_METHOD_NOT_ALLOWED;
+                final Set<HttpMethod> allowed = wrongMethod.getSupportedHttpMethods();
+                if (allowed != null && !allowed.isEmpty()) {
+                    final StringJoiner methods = new StringJoiner(ALLOW_HEADER_SEPARATOR);
+                    for (final HttpMethod method : allowed) {
+                        methods.add(method.name());
+                    }
+                    response.setHeader(HttpHeaders.ALLOW, methods.toString());
+                }
+            } else if (failure instanceof NoResourceFoundException) {
+                status = HttpStatus.NOT_FOUND;
+                title = TITLE_RESOURCE_NOT_FOUND;
+                detail = DETAIL_RESOURCE_NOT_FOUND;
+                errorCode = ERROR_CODE_RESOURCE_NOT_FOUND;
+            } else {
+                return null;
+            }
+
+            final String correlationId = currentCorrelationId();
+            LOGGER.warn("Refused {} {} at the framework boundary with {}: errorCode {}, condition {}",
+                    request.getMethod(), request.getRequestURI(), status.value(), errorCode,
+                    failure.getClass().getSimpleName());
+
+            if (response.isCommitted()) {
+                // Nothing can be written over a committed response. Reported so the gap is visible rather
+                // than silent, and the status the client already saw is the one that stands.
+                LOGGER.warn("Response for correlationId {} was already committed; the refusal envelope could "
+                        + "not be written", correlationId);
+                return new ModelAndView();
+            }
+
+            final byte[] body = renderProblemEnvelope(status.value(), title, detail, errorCode,
+                    correlationId).getBytes(StandardCharsets.UTF_8);
+
+            response.setStatus(status.value());
+            // No charset parameter, and none is needed: the document is ASCII by construction - every value
+            // in it is a constant of this class or a correlation identifier restricted to [A-Za-z0-9_-] - and
+            // RFC 8259 fixes JSON's encoding at UTF-8 regardless. Declaring one would also make this refusal
+            // differ, character for character in its Content-Type, from the ones the eight controllers
+            // publish, which is the very inconsistency being closed here.
+            response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+            response.setContentLength(body.length);
+
+            try {
+                response.getOutputStream().write(body);
+                response.flushBuffer();
+            } catch (final IOException broken) {
+                // The client went away mid-write. There is no response left to salvage and nothing to
+                // escalate to, so it is recorded and swallowed - rethrowing would only produce a second,
+                // equally unwritable failure.
+                LOGGER.warn("Could not write the refusal envelope for correlationId {}: {}", correlationId,
+                        broken.getMessage());
+            }
+
+            return new ModelAndView();
+        }
+    }
+
+    /**
+     * Renders the container's own error reports as the application's refusal envelope instead of HTML.
+     *
+     * <p><strong>Finding, severity Minor - remediated here.</strong>
+     * {@code GET /api/accounts/000000000%00} answered {@code 400 Bad Request} with
+     * {@code Content-Type: text/html} and a page naming the servlet container and its version. The request
+     * is rejected by the connector while the request target is still being parsed, so no filter, no servlet
+     * and no Spring resolver ever runs: this valve is the only place the response can be shaped. The same is
+     * true of any status the container sets with an empty body, {@code TRACE} being the other case this
+     * application can reach.
+     *
+     * <p>What it does not do. It never writes HTML, under any circumstance - if the envelope cannot be
+     * written the body stays empty, which is strictly better than disclosing the runtime. It writes nothing
+     * when the response is already committed, when content has already been written, or when another layer
+     * has already reported the error, which are the same three guards
+     * {@link ErrorReportValve#report(Request, Response, Throwable)} applies; this preserves the ordinary
+     * path, where Spring Boot's registered {@code /error} page has already produced a body and this valve
+     * must keep its hands off it.
+     *
+     * <p>Correlation. A pre-servlet refusal has no correlation identifier, because the filter that mints one
+     * never ran. Rather than publish nothing, one is minted here and written to the log alongside the status
+     * and the request target, so the identifier in the client's hands does resolve to a log entry.
+     *
+     * <p>Thread safety: stateless beyond what {@link ErrorReportValve} itself holds, and reached on the
+     * request thread only.
+     */
+    public static final class ProblemJsonErrorReportValve extends ErrorReportValve {
+
+        /**
+         * Creates the valve. Public and no-argument because Tomcat instantiates it reflectively from the
+         * class name set on the {@code Host}.
+         */
+        public ProblemJsonErrorReportValve() {
+            super();
+        }
+
+        /**
+         * Writes the refusal envelope for a container-level error, or leaves the response alone.
+         *
+         * <p>Side effects: sets the {@code Content-Type} and writes the body when all three guards pass.
+         *
+         * @param request   the connector request; never null
+         * @param response  the connector response; never null
+         * @param throwable the failure, when the error came from an exception rather than a status; may be
+         *                  null
+         */
+        @Override
+        protected void report(final Request request, final Response response, final Throwable throwable) {
+
+            final int status = response.getStatus();
+            if (status < HttpServletResponse.SC_BAD_REQUEST || response.getContentWritten() > 0L
+                    || response.isCommitted()) {
+                return;
+            }
+
+            // The superclass has a third guard, "!response.setErrorReported()", and it is deliberately not
+            // reproduced as a guard here - only as the side effect below. That flag is set by the first
+            // sendError on the response, whether or not anything was subsequently written, so it does not
+            // answer the question that matters, which is whether a BODY already exists. A TRACE request is
+            // the case that proves it: the connector refuses the method with sendError, which sets the flag
+            // and dispatches to the error page; the error dispatch is then refused as well, so nothing is
+            // ever written, and honouring the flag would leave the caller with a bare status and no
+            // envelope - which is exactly the gap being closed. getContentWritten() answers the real
+            // question, and it is checked above. The flag is still set, so that nothing downstream reports
+            // the same error a second time.
+            response.setErrorReported();
+
+            final String mdcCorrelationId = MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID);
+            final String correlationId = mdcCorrelationId == null || mdcCorrelationId.isEmpty()
+                    ? UUID.randomUUID().toString()
+                    : mdcCorrelationId;
+
+            LOGGER.warn("Container refused a request with {} before it reached the application: "
+                            + "correlationId {}, errorCode {}", status, correlationId,
+                    containerErrorCode(status));
+            if (throwable != null) {
+                LOGGER.debug("Cause of the container-level refusal for correlationId {}", correlationId,
+                        throwable);
+            }
+
+            try {
+                // Character encoding is left alone for the reason given in the resolver: the document is
+                // ASCII by construction, so every encoding the container can choose produces identical
+                // bytes, and declaring a charset parameter would make this refusal's Content-Type differ
+                // from the one the controllers publish.
+                response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+                final Writer reporter = response.getReporter();
+                if (reporter != null) {
+                    reporter.write(renderProblemEnvelope(status, containerTitle(status),
+                            containerDetail(status), containerErrorCode(status), correlationId));
+                    reporter.flush();
+                }
+            } catch (final IOException | IllegalStateException unwritable) {
+                // The response cannot be written to. The status the container set still reaches the client;
+                // only the body is lost. Deliberately not escalated - and deliberately never falling back
+                // to super.report(), which would write the HTML page this class exists to remove.
+                LOGGER.warn("Could not write the container-level refusal envelope for correlationId {}: {}",
+                        correlationId, unwritable.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Answers a Spring Security HTTP-firewall rejection with the refusal envelope instead of a bare status.
+     *
+     * <p>It writes the body itself rather than delegating to {@code sendError}, and that is the whole point:
+     * a {@code sendError} on a request that is already being dispatched to the error page commits the
+     * response with nothing in it, which is precisely the gap
+     * {@link WebConfig#problemJsonRequestRejectedHandler()} documents.
+     *
+     * <p>The status stays {@code 400 Bad Request}, matching the handler this replaces, and the detail is a
+     * constant. Nothing about WHY the request was rejected is published: the exception's message names the
+     * offending method or character, which is attacker-supplied, and echoing it would both reflect input and
+     * describe the firewall's rules to whoever is probing them. The reason is written to the log instead,
+     * against a correlation identifier the caller also receives.
+     *
+     * <p>Thread safety: stateless and immutable, so the single registered instance is safe for concurrent
+     * dispatch.
+     */
+    public static final class ProblemJsonRequestRejectedHandler implements RequestRejectedHandler {
+
+        /** Creates the handler. Public because it is installed on the security builder. */
+        public ProblemJsonRequestRejectedHandler() {
+            // No state to establish.
+        }
+
+        /**
+         * Writes the refusal envelope for a firewall rejection.
+         *
+         * <p>Side effects: sets the status, the {@code Content-Type} and the body, then flushes. Any
+         * {@code Allow} header an earlier layer added is left in place, so a rejected method keeps the one
+         * piece of advice that makes the refusal actionable.
+         *
+         * @param request   the rejected request; never null
+         * @param response  the response to render onto; never null
+         * @param rejection the rejection, whose message is logged but never published; never null
+         * @throws IOException when the response cannot be written
+         */
+        @Override
+        public void handle(final HttpServletRequest request, final HttpServletResponse response,
+                final RequestRejectedException rejection) throws IOException {
+
+            final String correlationId = currentCorrelationId();
+            LOGGER.warn("Firewall rejected {} {} with {}: errorCode {}, reason {}", request.getMethod(),
+                    request.getRequestURI(), HttpStatus.BAD_REQUEST.value(), ERROR_CODE_REQUEST_REJECTED,
+                    rejection.getMessage());
+
+            if (response.isCommitted()) {
+                LOGGER.warn("Response for correlationId {} was already committed; the firewall refusal "
+                        + "envelope could not be written", correlationId);
+                return;
+            }
+
+            final byte[] body = renderProblemEnvelope(HttpStatus.BAD_REQUEST.value(), TITLE_REQUEST_REJECTED,
+                    DETAIL_REQUEST_REJECTED, ERROR_CODE_REQUEST_REJECTED, correlationId)
+                    .getBytes(StandardCharsets.UTF_8);
+
+            response.setStatus(HttpStatus.BAD_REQUEST.value());
+            response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+            response.setContentLength(body.length);
+            response.getOutputStream().write(body);
+            response.flushBuffer();
         }
     }
 }

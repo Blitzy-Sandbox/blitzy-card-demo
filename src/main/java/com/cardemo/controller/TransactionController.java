@@ -49,6 +49,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
@@ -357,6 +358,15 @@ public class TransactionController {
     private static final int LOWEST_PAGE_NUMBER = 0;
 
     /**
+     * The first page the browse can serve: one.
+     *
+     * <p>Zero is the unstarted browse {@code TransactionListState} reports before any page has been sent, so
+     * the first <em>served</em> page is one. Both are positions a space-filled key reaches without a cursor,
+     * which is why {@link #requirePositioningCursor} admits them.
+     */
+    private static final int FIRST_PAGE_NUMBER = 1;
+
+    /**
      * Highest accepted page number: 99999999, the full domain of
      * {@code CDEMO-CT00-PAGE-NUM PIC 9(08)} at {@code app/cbl/COTRN00C.cbl:L65}. Eight digits, so eight
      * nines. The bound is asserted rather than assumed because the counter is unsigned and unclamped in the
@@ -434,6 +444,16 @@ public class TransactionController {
 
     /** Problem title used when a generated identifier collided. */
     private static final String DUPLICATE_PROBLEM_TITLE = "Transaction identifier already taken";
+
+    /**
+     * Problem title used when a constraint other than the primary key refused the write.
+     *
+     * <p>Deliberately distinct from {@value #DUPLICATE_PROBLEM_TITLE}. The two conditions were one arm in the
+     * source because a KSDS had only one of them; they are separated here because a duplicate key is retryable
+     * and a referential refusal is not, and telling a caller to retry something that can never succeed is the
+     * defect this title exists to end.
+     */
+    private static final String INTEGRITY_PROBLEM_TITLE = "Transaction write refused by a constraint";
 
     /** Problem title used when the transaction store is unreachable or an access against it failed. */
     private static final String STORE_PROBLEM_TITLE = "Transaction store unavailable";
@@ -544,6 +564,20 @@ public class TransactionController {
             "The transaction identifier generated for this request was already taken. Retry the request.";
 
     /**
+     * The fixed detail returned when a constraint other than the primary key refused the write.
+     *
+     * <p>It names the three request fields a caller can act on and nothing else. The relation, the constraint
+     * name and the offending value all stay on the log line, reachable through the {@code correlationId} the
+     * body carries, because a constraint name paired with a relation name is a map of the store and the value
+     * may be a card number. Crucially it does <em>not</em> tell the caller to retry: the three foreign keys
+     * {@code V1__create_schema.sql} declares on this relation cannot be satisfied by repeating the same
+     * request, which is exactly what the duplicate-key detail above would have wrongly advised.
+     */
+    private static final String INTEGRITY_PROBLEM_DETAIL =
+            "The transaction type, category or card number submitted with this request names no existing "
+                    + "record, so the transaction was not written. Correct the request and resubmit.";
+
+    /**
      * The single detail published when the framework's bean validation refuses the request body.
      *
      * <p>Fixed, and deliberately naming no field. The framework's binding result carries a field error per
@@ -573,6 +607,15 @@ public class TransactionController {
      * Stable error code meaning that the key the operation generated was already taken.
      */
     private static final String ERROR_CODE_DUPLICATE = "CARDDEMO-DUPLICATE-RECORD";
+
+    /**
+     * Stable error code meaning that a constraint of the transaction schema refused the write.
+     *
+     * <p>The same code {@code AccountController} publishes for the same condition, and the one
+     * {@code docs/api-contracts.md} section 8.2 already documents against a referential refusal, so the two
+     * write surfaces answer a constraint refusal identically.
+     */
+    private static final String ERROR_CODE_CONSTRAINT = "CARDDEMO-CONSTRAINT-REFUSED";
 
     /**
      * Stable error code meaning that a required data store or queue could not be reached; the request is retryable.
@@ -862,6 +905,7 @@ public class TransactionController {
         final boolean nextPageAvailable = requireBooleanToken(nextPageToken);
 
         requirePageWithinBrowseDomain(page);
+        requirePositioningCursor(action, page, firstKey, lastKey);
 
         // The four extension fields of 05 CDEMO-CT00-INFO (app/cbl/COTRN00C.cbl:L62-L68), rebuilt from the
         // wire rather than from a session. They are placed exactly as received: only the service is
@@ -1323,6 +1367,56 @@ public class TransactionController {
     }
 
     /**
+     * Maps a constraint refusal that is <em>not</em> a duplicate key onto {@code 409 Conflict}.
+     *
+     * <p><strong>Why this handler exists at all.</strong> {@code app/cbl/COTRN02C.cbl} writes
+     * {@code TRANSACT} as a VSAM KSDS, which could refuse a keyed write for exactly one reason the program
+     * names - the key was already present - so {@code WRITE-TRANSACT-FILE} has one duplicate arm at
+     * {@code :735-741} and one catch-all at {@code :742-748}. {@code V1__create_schema.sql} declares
+     * {@code fk04_transaction_card}, {@code fk05_transaction_type} and {@code fk06_transaction_category} on
+     * the same relation, and a refusal by one of those is a condition the source could not encounter and
+     * therefore did not name. Answering it with the duplicate-key body told a caller that the identifier this
+     * service generated was taken - which was false - and advised a retry that can never succeed, while
+     * withholding the one thing the caller could act on. This handler is where that ends.</p>
+     *
+     * <p>{@code 409} rather than {@code 400}: the request is well-formed and the values are individually
+     * valid, and what refuses it is the state of the store, which is a conflict rather than a malformed
+     * request. {@code docs/api-contracts.md} section 8.2 documents
+     * {@value #ERROR_CODE_CONSTRAINT} against exactly this condition, and
+     * {@code AccountController.handleDataIntegrity} already answers it the same way, so both write surfaces
+     * are consistent.</p>
+     *
+     * <p><strong>The relation and the constraint name are logged, not returned.</strong> Together they
+     * disclose a table and a named constraint on it, which is a map of the store rather than anything a caller
+     * can act on, and either may change with any migration so neither could be part of an API contract. The
+     * operator has both at {@code WARN} - the relation in the message and the constraint on the retained
+     * cause - joined to the caller's report by the {@code correlationId} the body carries.</p>
+     *
+     * @param violation the constraint refusal; its constraint name and relation may each be null.
+     * @return {@code 409 Conflict} carrying the fixed detail, the stable error code and the correlation
+     *         identifier
+     */
+    @ExceptionHandler(DataIntegrityException.class)
+    public ResponseEntity<ProblemDetail> handleDataIntegrity(final DataIntegrityException violation) {
+
+        final ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, INTEGRITY_PROBLEM_DETAIL);
+        problem.setTitle(INTEGRITY_PROBLEM_TITLE);
+
+        // The relation is named; the constraint is not, because DataIntegrityException carries it only when
+        // the throwing site could name it portably and this one cannot. The retained cause carries the
+        // driver's own message, which names the constraint and the offending key, and it is logged with this
+        // entry under the same correlation identifier - so nothing is lost and the four characters "null"
+        // never reach a log line.
+        LOG.warn("Answered transaction {} with 409: a constraint on relation {} refused the write. This is "
+                + "NOT the duplicate-key race of app/cbl/COTRN02C.cbl:L444-L449 and the request is not "
+                + "retryable as submitted", ADD_TRANSACTION_ID, violation.getRelation(), violation);
+
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(withPublicEnvelope(problem, ERROR_CODE_CONSTRAINT));
+    }
+
+    /**
      * Maps an unopenable resource onto {@code 503 Service Unavailable}.
      *
      * <p>The translation of legacy file status {@code '35'}. Distinct from a failed access against an open
@@ -1695,6 +1789,65 @@ public class TransactionController {
     }
 
     /**
+     * Refuses a navigation that names a page past the first without carrying the cursor that addresses it.
+     *
+     * <p><strong>Finding, severity Minor - remediated here.</strong>
+     * {@code GET /api/transactions?action=PAGE_FORWARD&page=5} with no cursor answered {@code 200}
+     * reporting {@code pageNumber=5} with an <strong>empty</strong> row list, and the same request at
+     * {@code page=27} did likewise. A response that reports a page it did not serve cannot be acted on: a
+     * client cannot distinguish "there is nothing on page five" from "you did not tell me where page five
+     * is", and a client that keys its next request off the reported number never terminates.
+     *
+     * <p><strong>The page number is a counter, not an address.</strong>
+     * {@code CDEMO-CT00-PAGE-NUM PIC 9(08)} at {@code app/cbl/COTRN00C.cbl:L65} is what the heading
+     * displays; what positions the browse is the saved first or last transaction identifier that
+     * {@code WHEN DFHPF7} and {@code WHEN DFHPF8} at {@code :L125} and {@code :L130} move into the record
+     * key before restarting it. The source cannot exhibit the disagreement, because the counter and both
+     * keys are written into the COMMAREA by the same send: a task holding a counter past the first
+     * necessarily held the key that addresses it. Transformation Rule 7 moves that state onto the wire,
+     * where the parts arrive independently and can therefore disagree, which is what turns a COMMAREA
+     * invariant into a request precondition that has to be checked. Checking it leaves the browse exactly
+     * as transcribed and answers the incomplete request as the client error it is.
+     *
+     * <p><strong>What is deliberately left admitted.</strong> {@code SUBMIT} is excluded: the enter-key
+     * paragraph restarts the browse from the search key and always answers the first page, so it cannot
+     * report a page it did not serve. The first page and an absent page are excluded for the same reason -
+     * a space-filled key positions at the start of the browse, which is what the source intends.
+     *
+     * <p>Static and side-effect free.
+     *
+     * @param action the resolved navigation action; never null
+     * @param page the resolved page number
+     * @param firstKey the first-row cursor as bound from the request, or null when it was absent
+     * @param lastKey the last-row cursor as bound from the request, or null when it was absent
+     * @throws ValidationException with failure kind {@code BLANK}, naming the cursor the request omitted
+     */
+    private static void requirePositioningCursor(final TransactionListAction action, final int page,
+            final String firstKey, final String lastKey) {
+
+        if (action == TransactionListAction.SUBMIT || page <= FIRST_PAGE_NUMBER) {
+            return;
+        }
+
+        if (action == TransactionListAction.PAGE_FORWARD) {
+            if (lastKey == null || lastKey.isBlank()) {
+                throw ValidationException.missingField("lastKey",
+                        "lastKey must be supplied on a forward request past the first page, because it is"
+                                + " the position being advanced from. Return the lastCursor the previous"
+                                + " response reported, alongside its pageNumber");
+            }
+            return;
+        }
+
+        if (firstKey == null || firstKey.isBlank()) {
+            throw ValidationException.missingField("firstKey",
+                    "firstKey must be supplied on a backward request past the first page, because it is the"
+                            + " position being moved back from. Return the firstCursor the previous response"
+                            + " reported, alongside its pageNumber");
+        }
+    }
+
+    /**
      * Resolves the enumerated navigation action from its raw token, accepting nothing but an exact match.
      *
      * <p>The framework's default enum binding trims its input, so {@code " SUBMIT "} would bind as
@@ -1814,12 +1967,21 @@ public class TransactionController {
      * refusal and never a lookup that returns nothing. Reproducing that ordering here is what keeps
      * {@code 400} and {@code 404} meaning different things on this operation.</p>
      *
-     * <p><strong>Absent and blank are answered separately, and neither is coerced into the other.</strong> A
-     * missing parameter is reported with failure kind {@code BLANK} through {@code missingField}, a supplied
-     * but whitespace-only value with {@code INVALID} through {@code invalidField}. That is the three-state
-     * model - satisfied, unsatisfied and blank - that {@code app/cpy/CSSETATY.cpy} imposes through its
-     * parameterised template, and collapsing the two would tell a client "you sent nothing" when it had in
-     * fact sent something wrong.</p>
+     * <p><strong>Absent and whitespace-only are the same failure, and both are {@code BLANK}.</strong>
+     *
+     * <p>FINDING, severity Informational - remediated here. A whitespace-only value used to be reported with
+     * failure kind {@code INVALID} while an absent parameter was reported {@code BLANK}, which inverted the
+     * meaning of the two kinds on this operation: the message both arms carry is
+     * {@code 'Tran ID can NOT be empty...'}, so labelling one of them "invalid" told a client its value was
+     * wrong when what the operation had actually detected was that there was no value in it.
+     *
+     * <p>The source draws no distinction and cannot. {@code :147} is a single arm,
+     * {@code WHEN TRNIDINI OF COTRN1AI = SPACES OR LOW-VALUES}: {@code LOW-VALUES} is the field a terminal
+     * left untouched and {@code SPACES} is the field a terminal filled with blanks, and the two are tested
+     * together, produce one message and set one cursor. Reproducing that as one outcome is the parity
+     * answer, and it is also what the rest of this API already does - the account-view identifier reports
+     * {@code BLANK} for a whitespace-only value on the same reasoning. {@code INVALID} is reserved for what
+     * it names: a value that was supplied and does not conform.</p>
      *
      * <p>{@code isBlank} is used rather than {@code trim().isEmpty()} so that every Unicode whitespace form is
      * treated alike, and no locale is consulted, so the outcome cannot vary with the default locale. Static
@@ -1830,11 +1992,8 @@ public class TransactionController {
      */
     private static void requireTransactionIdSupplied(final String transactionId) {
 
-        if (transactionId == null) {
+        if (transactionId == null || transactionId.isBlank()) {
             throw ValidationException.missingField(TRANSACTION_ID_FIELD, TRANSACTION_ID_REQUIRED_MESSAGE);
-        }
-        if (transactionId.isBlank()) {
-            throw ValidationException.invalidField(TRANSACTION_ID_FIELD, TRANSACTION_ID_REQUIRED_MESSAGE);
         }
     }
 

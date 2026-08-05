@@ -1803,6 +1803,20 @@ public class UserUpdateService {
      * use". The message names the field and never the value: echoing unvalidated input is how a message becomes
      * an injection vector.
      *
+     * <p><strong>Where the deviation is published.</strong> Labelling it here is necessary and was not
+     * sufficient: a caller reads the contract, not the source. It is therefore also published in
+     * {@code docs/api-contracts.md} at the heading <em>Labelled deviation: userType is restricted to A and
+     * U</em>, referenced from both the add-user and the update-user operations, together with the two facts
+     * that make removing the guard pointless as well as unwise - the schema already declares
+     * {@code CONSTRAINT ck_user_security_type CHECK (sec_usr_type IN ('A', 'U'))} from those same two
+     * condition names, so relaxing this check would convert a {@code 400} that names the field into a
+     * {@code 409} that names nothing; and the seeded population is five {@code 'A'} rows and five
+     * {@code 'U'} rows [{@code app/jcl/DUSRSECJ.jcl}], so no legacy behaviour depends on a third value being
+     * storable.
+     *
+     * <p>The blank check is untouched and still runs FIRST, so a caller who omits the field is told it is
+     * empty rather than told about the domain. That ordering is the source's.
+     *
      * @param userType the value of {@code USRTYPEI PIC X(1)}, already proven non-blank at {@code :204}
      * @return the mapped user type
      * @throws ValidationException if the character is neither {@code 'A'} nor {@code 'U'}

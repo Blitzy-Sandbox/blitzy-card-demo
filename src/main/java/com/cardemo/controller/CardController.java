@@ -311,6 +311,59 @@ public class CardController {
     private static final int LOWEST_SCREEN_NUMBER = 0;
 
     /**
+     * The screen number of the first page, {@code CA-FIRST-PAGE} at {@code app/cbl/COCRDLIC.cbl:L237}.
+     *
+     * <p>Distinct from {@link #LOWEST_SCREEN_NUMBER}, and the distinction is load bearing: the field's
+     * <em>domain</em> starts at zero because {@code WS-CA-SCREEN-NUM} is {@code PIC 9(1)} and wraps, but the
+     * first page is one. A request that omits the page parameter therefore resolves to zero, which is a
+     * legitimate wrapped page number and is <b>not</b> the first page - which is precisely why a backward
+     * request must state the page it is moving back from rather than defaulting.
+     */
+    private static final int FIRST_SCREEN_NUMBER = 1;
+
+    /** The request-parameter name of the previous-page cursor. */
+    private static final String FIRST_KEY_FIELD = "firstKey";
+
+    /** The request-parameter name of the next-page cursor. */
+    private static final String LAST_KEY_FIELD = "lastKey";
+
+    /** Separates the browse name from the page number in a page-bound cursor kind. */
+    private static final String CURSOR_KIND_PAGE_SEPARATOR = "-page-";
+
+    /** The request-parameter name of the opaque row reference. */
+    private static final String CARD_KEY_FIELD = "cardKey";
+
+    /**
+     * The seal kind of an opaque row reference.
+     *
+     * <p>Distinct from the page-cursor kinds and from {@code CardUpdateService.SNAPSHOT_KIND}, because the
+     * kind is authenticated additional data: a reference cannot be presented as a cursor, a cursor cannot be
+     * presented as a reference, and neither can be presented as an as-displayed snapshot.
+     */
+    private static final String CARD_HANDLE_KIND = "card-row-reference";
+
+    /**
+     * The record key every row reference is sealed under.
+     *
+     * <p>A constant rather than the row's own identifiers, and deliberately: the reference exists precisely
+     * because the caller does <em>not</em> hold those identifiers, so binding the seal to them would demand
+     * the value the reference is standing in for. Confidentiality comes from the encryption, integrity from
+     * the authentication tag, and scope from the kind above.
+     */
+    private static final String CARD_HANDLE_RECORD_KEY = "card-row";
+
+    /**
+     * The width of the account identifier inside a sealed row reference, {@code ACCTNO PIC X(11)}.
+     *
+     * <p>The payload is the account identifier followed by the card number, both at their declared widths,
+     * so the split offset is a field contract rather than a parsing convention and no separator is needed.
+     */
+    private static final int HANDLE_ACCOUNT_ID_WIDTH = 11;
+
+    /** The width of the card number inside a sealed row reference, {@code CARDSID PIC X(16)}. */
+    private static final int HANDLE_CARD_NUMBER_WIDTH = 16;
+
+    /**
      * The longest page token accepted before the value is parsed at all.
      *
      * <p>Two digits rather than one on purpose: the single-digit domain is enforced by
@@ -773,6 +826,8 @@ public class CardController {
         final boolean nextPageAvailable = requireBooleanToken(nextPageToken);
 
         requirePageWithinScreenNumberDomain(page);
+        requireBackwardPagingState(action, pageToken, page, firstKey);
+        requirePositioningCursor(action, page, firstKey, lastKey);
 
         // The commarea halves of :L327-L331, rebuilt from the wire rather than from a session. The two
         // filters are placed exactly as received, because 2210-EDIT-ACCOUNT and 2220-EDIT-CARD are the
@@ -794,8 +849,8 @@ public class CardController {
                 page,
                 LAST_PAGE_NOT_SHOWN,
                 nextPageAvailable,
-                this.snapshotTokenService.openCursor(CARD_LIST_CURSOR_KIND, firstKey),
-                this.snapshotTokenService.openCursor(CARD_LIST_CURSOR_KIND, lastKey),
+                openPageCursor(page, FIRST_KEY_FIELD, firstKey),
+                openPageCursor(page, LAST_KEY_FIELD, lastKey),
                 List.of(),
                 null,
                 null);
@@ -895,6 +950,10 @@ public class CardController {
      * verbatim, with absent, blank and populated kept distinct.
      * @param cardFilter the card filter as typed, or null when the parameter was absent; relayed verbatim
      * on the same terms. Protected data: never logged and never echoed into a diagnostic.
+     * @param cardKey an opaque row reference taken from a card-list row or from an earlier detail
+     * response, or null when the caller supplied the two filters directly. When present it supplies BOTH
+     * filters and neither may accompany it, because a client that has one of these has no need to compose
+     * the other and a request carrying both is ambiguous about which the caller meant
      * @return {@code 200 OK} with the masked card detail projection and the sealed as-displayed snapshot,
      * the latter also published as the {@code ETag}; never null
      * @throws ValidationException if either filter is absent, blank or not exactly the required number of
@@ -906,17 +965,30 @@ public class CardController {
     @GetMapping(DETAIL_PATH)
     public ResponseEntity<CardResponse> getCardDetail(
             @RequestParam(name = "accountFilter", required = false) final String accountFilter,
-            @RequestParam(name = "cardFilter", required = false) final String cardFilter) {
+            @RequestParam(name = "cardFilter", required = false) final String cardFilter,
+            @RequestParam(name = CARD_KEY_FIELD, required = false) final String cardKey) {
 
-        final CardDto detail = retrieveCardDetail(accountFilter, cardFilter);
+        // An opaque row reference stands in for the two filters, and the filters are relayed unchanged when
+        // it is absent. Resolving it here rather than in the service is deliberate: the service reproduces
+        // 2210-EDIT-ACCOUNT and 2220-EDIT-CARD and must go on receiving exactly what the map field would
+        // have carried, so the reference is turned back into those two values before it sees them - and the
+        // two edits then run on them, in the source's order, exactly as for a hand-composed request.
+        final CardHandle handle = openCardHandle(cardKey, accountFilter, cardFilter);
+        final String resolvedAccountFilter = handle == null ? accountFilter : handle.accountId();
+        final String resolvedCardFilter = handle == null ? cardFilter : handle.cardNumber();
+
+        final CardDto detail = retrieveCardDetail(resolvedAccountFilter, resolvedCardFilter);
 
         // The as-displayed snapshot the matching update requires. It is produced by the update service,
         // because that service owns CCUP-OLD-DETAILS and because the snapshot includes the card
         // verification value of app/cbl/COCRDUPC.cbl:L294 - a value that must never reach this class in a
         // readable form, let alone a response. What comes back is one opaque string.
         final String snapshotToken =
-                this.cardUpdateService.issueUpdateSnapshot(accountFilter, cardFilter);
-        final CardResponse response = CardResponse.readOf(detail, snapshotToken);
+                this.cardUpdateService.issueUpdateSnapshot(resolvedAccountFilter, resolvedCardFilter);
+        // The response carries a reference of its own, so a client that arrived here from a list row can
+        // reach the update without ever holding the card number.
+        final CardResponse response = CardResponse.readOf(detail, snapshotToken,
+                sealCardHandle(detail.getAccountId(), detail.getCardNumber()));
 
         LOG.debug("Served transaction {} program {}: detail returned for one card with a sealed snapshot",
                 CARD_DETAIL_TRANSACTION_ID, CARD_DETAIL_PROGRAM);
@@ -997,6 +1069,9 @@ public class CardController {
      * @return {@code 200 OK} with the refreshed and masked card detail projection; never null
      * @throws ValidationException if an edit paragraph refuses a field
      * @throws RecordNotFoundException if the card row is absent
+     * @param cardKey an opaque row reference taken from a card-list row or a detail response, or null when
+     * the body carries the account identifier and the card number itself. When present it supplies both, and
+     * the body must not also carry either
      * @throws ConcurrentUpdateException if the update was abandoned for any of the recorded outcomes
      * @throws FatalProcessingException if the update fails for any reason other than a typed CardDemo
      * failure
@@ -1004,11 +1079,18 @@ public class CardController {
     @PutMapping
     public ResponseEntity<CardResponse> updateCard(
             @Valid @RequestBody final CardUpdateRequest request,
-            @RequestHeader(name = HttpHeaders.IF_MATCH, required = false) final String ifMatch) {
+            @RequestHeader(name = HttpHeaders.IF_MATCH, required = false) final String ifMatch,
+            @RequestParam(name = CARD_KEY_FIELD, required = false) final String cardKey) {
 
         rejectBodyCarriedSnapshot(request);
 
-        final CardDto updated = applyCardUpdate(request, unquotedETag(ifMatch));
+        // The row reference arrives as a request parameter and NOT as a body member, and that is a contract
+        // constraint rather than a style choice: app/cpy-bms/COCRDUP.CPY declares exactly seventeen input
+        // fields, transformation Rule 6 fixes the body to those seventeen plus the two snapshot groups, and
+        // a nineteen-component request record is what that rule means here. The reference is a transport
+        // concern - it identifies WHICH card the body applies to - so it belongs beside If-Match, which
+        // carries the other server-issued value for the same reason.
+        final CardDto updated = applyCardUpdate(withIdentityFrom(request, cardKey), unquotedETag(ifMatch));
 
         LOG.debug("Served transaction {} program {}: one card row updated",
                 CARD_UPDATE_TRANSACTION_ID, CARD_UPDATE_PROGRAM);
@@ -1465,12 +1547,16 @@ public class CardController {
                     CARD_LIST_ABEND_MESSAGE);
         }
         final PageResponse<CardDto.CardListRow> page = result.page;
+        // Each cursor is sealed for the page it describes, so the pair a client hands back cannot silently
+        // address a different page than the page number it hands back with it. See openPageCursor.
+        final String cursorKind = cursorKindFor(page.getPageNumber());
         return CardListResponse.of(page,
-                this.snapshotTokenService.sealCursor(CARD_LIST_CURSOR_KIND, page.getFirstKey()),
-                this.snapshotTokenService.sealCursor(CARD_LIST_CURSOR_KIND, page.getLastKey()),
+                this.snapshotTokenService.sealCursor(cursorKind, page.getFirstKey()),
+                this.snapshotTokenService.sealCursor(cursorKind, page.getLastKey()),
                 result.informationMessage,
                 result.errorMessage,
-                !result.rowSelectionProtected);
+                !result.rowSelectionProtected,
+                this::sealCardHandle);
     }
 
     /**
@@ -1524,6 +1610,53 @@ public class CardController {
             throw new FatalProcessingException(ABEND_CODE, CARD_UPDATE_PROGRAM, CARD_UPDATE_ABEND_REASON,
                     CARD_UPDATE_ABEND_MESSAGE, unexpected);
         }
+    }
+
+    /**
+     * Returns the request with its two identifiers taken from an opaque row reference, when one was sent.
+     *
+     * <p>A record has no wither, so a new one is constructed with all nineteen components: the seventeen map
+     * fields relayed unchanged, the two snapshot groups relayed unchanged, and only the account identifier
+     * and the card number substituted. Copying the components explicitly rather than mutating is what keeps
+     * the "passed through verbatim" property of this operation true - nothing is trimmed, folded or
+     * reformatted on the way past.
+     *
+     * <p>Side effects: none. Returns the argument itself when no reference was sent, so the ordinary path
+     * allocates nothing.
+     *
+     * @param request the received body; must not be null
+     * @param cardKey the raw row reference, or null when the body carries the identifiers
+     * @return the request to hand to the service; never null
+     * @throws ValidationException with failure kind {@code INVALID} when the body also carries an identifier,
+     * or when the reference does not verify
+     */
+    private CardUpdateRequest withIdentityFrom(final CardUpdateRequest request, final String cardKey) {
+
+        final CardHandle handle = openCardHandle(cardKey, request.accountId(), request.cardNumber());
+        if (handle == null) {
+            return request;
+        }
+
+        return new CardUpdateRequest(
+                request.transactionName(),
+                request.title01(),
+                request.currentDate(),
+                request.programName(),
+                request.title02(),
+                request.currentTime(),
+                handle.accountId(),
+                handle.cardNumber(),
+                request.cardholderName(),
+                request.cardStatusCode(),
+                request.expiryMonth(),
+                request.expiryYear(),
+                request.expiryDay(),
+                request.informationMessage(),
+                request.errorMessage(),
+                request.functionKeys(),
+                request.functionKeysContinued(),
+                request.oldDetails(),
+                request.newDetails());
     }
 
     /**
@@ -1733,6 +1866,317 @@ public class CardController {
                             + " inclusive, the domain of the single-digit screen number the card list"
                             + " browse maintains");
         }
+    }
+
+    /**
+     * Refuses a backward-paging request that does not carry the position it is asking to move back from.
+     *
+     * <p><strong>Finding, severity Major - remediated here.</strong>
+     * {@code GET /api/cards?action=PAGE_BACKWARD} with no cursors answered
+     * {@code 502 CARDDEMO-IO-FAILURE}, titled "Card data store input-output failure", and logged
+     * {@code status 032 on file CARDDAT during READ}. Nothing had failed. The store was healthy and the
+     * read did exactly what it was asked to do; the request was incomplete.
+     *
+     * <p>Why it surfaced as a store failure is worth stating, because the browse itself is correct.
+     * {@code 9100-READ-BACKWARDS.} at {@code app/cbl/COCRDLIC.cbl:L1264} has <em>no</em> end-of-file arm:
+     * its {@code EVALUATE WS-RESP-CD} at {@code :L1304-L1318} carries {@code DFHRESP(NORMAL)},
+     * {@code DFHRESP(DUPREC)} and {@code WHEN OTHER}, so exhausting the file at the priming
+     * {@code READPREV} of {@code :L1294-L1302} is a file error by construction. That is not an oversight in
+     * the source - in the source it is <em>unreachable</em>. {@code 1000-SEND-MAP.} writes
+     * {@code WS-CA-FIRST-CARDKEY} and {@code WS-CA-SCREEN-NUM} into the COMMAREA together, so a task that
+     * held a screen number past the first page necessarily held a first key with records before it. The two
+     * could not disagree.
+     *
+     * <p>A stateless request supplies them independently, so they can. Transformation Rule 7 moves that
+     * paging state onto the wire, and moving state onto the wire is exactly what turns a COMMAREA invariant
+     * into a request precondition that has to be <em>checked</em>. Checking it here keeps
+     * {@code 9100-READ-BACKWARDS} transcribed exactly as written - no end-of-file arm is invented, no
+     * {@code WHEN OTHER} behaviour is altered - and answers the incomplete request as the client error it
+     * is.
+     *
+     * <p>The first page is not affected and must not be. {@code WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE} at
+     * {@code app/cbl/COCRDLIC.cbl:L439-L445} re-reads <em>forward</em> from the first key and redisplays
+     * the current page with {@code 'NO PREVIOUS PAGES TO DISPLAY'} from {@code :L901-L904}. That path needs
+     * no cursor - the space-filled key positions the browse at the start of the file - so a backward
+     * request on page one is admitted exactly as before.
+     *
+     * @param action the resolved navigation action; never null
+     * @param pageToken the raw page parameter, or null when it was absent - the raw form matters, because
+     * an absent page defaults to zero and zero is not the first page
+     * @param page the resolved page number
+     * @param firstKey the raw sealed first-page cursor, or null when it was absent
+     * @throws ValidationException with failure kind {@code BLANK}, naming {@code page} when a backward
+     * request omitted the page it is moving back from, and naming {@code firstKey} when it omitted the
+     * cursor that addresses it
+     */
+    private static void requireBackwardPagingState(final CardListAction action, final String pageToken,
+            final int page, final String firstKey) {
+
+        if (action != CardListAction.PAGE_BACKWARD) {
+            return;
+        }
+
+        if (pageToken == null) {
+            throw ValidationException.missingField(PAGE_FIELD,
+                    "page must be supplied on a backward request, because it is the page being moved back"
+                            + " from. Return the pageNumber the previous response reported");
+        }
+
+        if (page == FIRST_SCREEN_NUMBER) {
+            // The first page needs no cursor: the source re-reads forward from a space-filled key and
+            // reports that there are no previous pages.
+            return;
+        }
+
+        if (firstKey == null || firstKey.isBlank()) {
+            throw ValidationException.missingField(FIRST_KEY_FIELD,
+                    "firstKey must be supplied on a backward request past the first page, because it is the"
+                            + " position being moved back from. Return the firstCursor the previous response"
+                            + " reported, alongside its pageNumber");
+        }
+    }
+
+    /**
+     * Refuses any request that names a page past the first without carrying the cursor that addresses it.
+     *
+     * <p><strong>Finding, severity Minor - remediated here.</strong>
+     * {@code GET /api/cards?action=PAGE_FORWARD&page=8} with no cursor answered {@code 200} reporting
+     * {@code pageNumber=8} while serving <em>page one's seven rows</em>, and
+     * {@code action=SUBMIT&page=8} did the same. A response that reports a page number it did not serve is
+     * unusable: a client cannot tell whether it advanced, and a client that keys its next request off the
+     * reported number never terminates.
+     *
+     * <p><strong>Why the browse cannot position from a page number alone.</strong> The page number is a
+     * display counter, not an address. {@code WS-CA-SCREEN-NUM} at {@code app/cbl/COCRDLIC.cbl} is a
+     * {@code PIC 9(1)} the program increments for the heading; what positions the browse is
+     * {@code WS-CA-FIRST-CARDKEY} or {@code WS-CA-LAST-CARDKEY}, which
+     * {@code 9000-READ-FORWARD.} and {@code 9100-READ-BACKWARDS.} move into the record key before the
+     * {@code STARTBR}. With no key the space-filled field positions at the start of the file, which is why
+     * the browse served page one. The source cannot exhibit the disagreement because
+     * {@code 1000-SEND-MAP.} writes the counter and both keys into the COMMAREA together, so a task
+     * holding a screen number past the first necessarily held the key that addresses it.
+     *
+     * <p>Transformation Rule 7 moves that state onto the wire, where the parts arrive independently and can
+     * therefore disagree. This is the same COMMAREA-invariant-becomes-request-precondition shape as
+     * {@link #requireBackwardPagingState}, and it is answered the same way: the incomplete request is
+     * refused, naming the cursor that would complete it, rather than served with a number that is not true.
+     * Nothing in the browse changes.
+     *
+     * <p><strong>Which cursor completes which action.</strong> A forward request advances past the position
+     * it is showing, so it needs {@code lastKey}. Every other action redisplays or moves back from that
+     * position, so it needs {@code firstKey}. The first page needs neither, because a space-filled key
+     * positions at the start of the file exactly as the source intends - so first-page requests, and
+     * requests that name no page at all, are admitted untouched.
+     *
+     * @param action the resolved navigation action; never null
+     * @param page the resolved page number
+     * @param firstKey the raw sealed first-page cursor, or null when it was absent
+     * @param lastKey the raw sealed last-page cursor, or null when it was absent
+     * @throws ValidationException with failure kind {@code BLANK}, naming the cursor the request omitted
+     */
+    private static void requirePositioningCursor(final CardListAction action, final int page,
+            final String firstKey, final String lastKey) {
+
+        if (page <= FIRST_SCREEN_NUMBER) {
+            // The first page, and an absent page, position at the start of the file with no cursor at all.
+            return;
+        }
+
+        if (action == CardListAction.PAGE_FORWARD) {
+            if (lastKey == null || lastKey.isBlank()) {
+                throw ValidationException.missingField(LAST_KEY_FIELD,
+                        "lastKey must be supplied on a forward request past the first page, because it is"
+                                + " the position being advanced from. Return the lastCursor the previous"
+                                + " response reported, alongside its pageNumber");
+            }
+            return;
+        }
+
+        if (firstKey == null || firstKey.isBlank()) {
+            throw ValidationException.missingField(FIRST_KEY_FIELD,
+                    "firstKey must be supplied when a page past the first is named, because it is the"
+                            + " position being redisplayed. Return the firstCursor the previous response"
+                            + " reported, alongside its pageNumber");
+        }
+    }
+
+    /**
+     * Opens one sealed page cursor, bound to the page number the request presented it with.
+     *
+     * <p>The cursor is sealed for a page and reopened for a page, so a cursor minted for page one cannot be
+     * presented as page five's. Without that binding the pair is independently forgeable in the only way
+     * that matters: page five plus page one's first key sends the backward browse to a key with nothing
+     * before it, which lands in the same {@code WHEN OTHER} arm
+     * {@link #requireBackwardPagingState} exists to keep out of reach - and reports a datastore failure
+     * that did not happen. Binding them makes the mismatch a refusal at the boundary instead.
+     *
+     * <p>A verification failure is reported as a rejected <em>request</em> rather than as a concurrency
+     * conflict. {@code SnapshotTokenService} raises
+     * {@link ConcurrentUpdateException} for a snapshot that cannot be verified, and for a record snapshot
+     * that is the right answer - the remedy is to read the record again. For a page cursor it is not: a
+     * cursor that does not verify against the page it arrived with was never issued for that page, so the
+     * remedy is to page again from a response, and the field that is wrong has a name.
+     *
+     * @param page the page number the request presented
+     * @param field the request-parameter name to report if verification fails
+     * @param sealedCursor the raw parameter value, or null when it was absent - an absent cursor is a
+     * legitimate first request and yields null
+     * @return the recovered browse key, or null when no cursor was presented
+     * @throws ValidationException with failure kind {@code INVALID} when a cursor was presented and does
+     * not verify for that page
+     */
+    private String openPageCursor(final int page, final String field, final String sealedCursor) {
+
+        try {
+            return this.snapshotTokenService.openCursor(cursorKindFor(page), sealedCursor);
+        } catch (final ConcurrentUpdateException unverifiable) {
+            LOG.warn("Refused transaction {} program {}: the {} cursor does not verify for page {}",
+                    CARD_LIST_TRANSACTION_ID, CARD_LIST_PROGRAM, field, page);
+            LOG.debug("Cursor verification failure for transaction {}", CARD_LIST_TRANSACTION_ID,
+                    unverifiable);
+            throw ValidationException.invalidField(field,
+                    "the paging cursor was not issued for the page it was presented with. Page again from a"
+                            + " response, returning its firstCursor, lastCursor and pageNumber together");
+        }
+    }
+
+    /**
+     * Returns the seal kind for the cursors of one page.
+     *
+     * <p>One kind per page, because the kind is authenticated additional data: a token sealed under one kind
+     * cannot open under another, which is what makes the page number and the cursor inseparable.
+     *
+     * @param page the page the cursor describes
+     * @return the kind; never null and never blank
+     */
+    private static String cursorKindFor(final int page) {
+        return CARD_LIST_CURSOR_KIND + CURSOR_KIND_PAGE_SEPARATOR + page;
+    }
+
+    /**
+     * Seals one row's account identifier and card number into an opaque reference.
+     *
+     * <p><strong>Finding, severity Major - remediated by this method and its opener.</strong> The list, the
+     * detail and the update operations were individually correct and collectively unusable. The source's
+     * list map carries the full card number in every row and a terminal operator typed {@code S} or
+     * {@code U} beside one to reach the next screen; this projection masks it, which is right for an HTTP
+     * surface and is now a labelled deviation rather than a silent one. But detail and update both require
+     * all sixteen digits, and no operation ever disclosed them, so an API-only client could see a list and
+     * go nowhere from it.
+     *
+     * <p>The reference restores the navigation without restoring the disclosure. It is the Rule 7
+     * substitution for row selection - the {@code SELn} flag was screen state, and a stateless client needs
+     * a value it can send back instead of a cursor position. What it is <em>not</em> is a second way to
+     * identify a card: a client that holds the card number keeps using it, unchanged, and the two forms are
+     * mutually exclusive on a request rather than merged.
+     *
+     * <p>Both components are written at their declared map widths, so the reference has a fixed length and
+     * the opener splits it by offset rather than by scanning for a separator - which also means no value
+     * inside it can be confused for a delimiter.
+     *
+     * <p>Side effects: none. Performs no input or output.
+     *
+     * @param accountId the row's account identifier, or null on a blank filler row
+     * @param cardNumber the row's card number, or null on a blank filler row
+     * @return the sealed reference, or null when either component is absent or blank - a row with no card
+     * has nothing to navigate to, and a reference that cannot round trip must not be issued
+     */
+    private String sealCardHandle(final String accountId, final String cardNumber) {
+
+        if (accountId == null || accountId.isBlank() || cardNumber == null || cardNumber.isBlank()) {
+            return null;
+        }
+
+        final String payload = pad(accountId, HANDLE_ACCOUNT_ID_WIDTH)
+                + pad(cardNumber, HANDLE_CARD_NUMBER_WIDTH);
+        return this.snapshotTokenService.seal(CARD_HANDLE_KIND, CARD_HANDLE_RECORD_KEY, payload);
+    }
+
+    /**
+     * Opens an opaque row reference, refusing a request that supplies a filter alongside it.
+     *
+     * <p>The two forms are mutually exclusive on purpose. A reference already determines both filters, so a
+     * request carrying a reference <em>and</em> a filter is stating the same thing twice and is ambiguous
+     * about which the caller meant when they differ - and silently preferring one would let a caller pair
+     * somebody else's reference with their own account number.
+     *
+     * <p>Side effects: none. Performs no input or output.
+     *
+     * @param cardKey the raw reference, or null when the caller supplied filters instead
+     * @param accountFilter the account filter as received, used only to detect the ambiguous shape
+     * @param cardFilter the card filter as received, used only to detect the ambiguous shape
+     * @return the recovered pair, or null when no reference was presented
+     * @throws ValidationException with failure kind {@code INVALID} when a filter accompanies the reference,
+     * or when the reference does not verify - a reference is server-issued, so one that fails to open was
+     * altered, expired or minted for something else, and in every case the remedy is to read the list again
+     */
+    private CardHandle openCardHandle(final String cardKey, final String accountFilter,
+            final String cardFilter) {
+
+        if (cardKey == null || cardKey.isBlank()) {
+            return null;
+        }
+
+        if (accountFilter != null || cardFilter != null) {
+            throw ValidationException.invalidField(CARD_KEY_FIELD,
+                    "cardKey supplies both the account number and the card number, so accountFilter and"
+                            + " cardFilter must not accompany it. Send the reference alone, or send the two"
+                            + " filters without it");
+        }
+
+        final String payload;
+        try {
+            payload = this.snapshotTokenService.open(cardKey, CARD_HANDLE_KIND, CARD_HANDLE_RECORD_KEY,
+                    String.class);
+        } catch (final ConcurrentUpdateException unverifiable) {
+            LOG.warn("Refused transaction {} program {}: the row reference does not verify",
+                    CARD_DETAIL_TRANSACTION_ID, CARD_DETAIL_PROGRAM);
+            LOG.debug("Row reference verification failure for transaction {}",
+                    CARD_DETAIL_TRANSACTION_ID, unverifiable);
+            throw ValidationException.invalidField(CARD_KEY_FIELD,
+                    "the row reference could not be verified. Read the card list again and use a reference"
+                            + " from the current response");
+        }
+
+        if (payload == null || payload.length() != HANDLE_ACCOUNT_ID_WIDTH + HANDLE_CARD_NUMBER_WIDTH) {
+            // Only reachable if a reference sealed by an incompatible version of this class were presented;
+            // the seal itself guarantees the bytes are ours, not that they are the shape we now expect.
+            LOG.warn("Refused transaction {} program {}: a verified row reference carried an unexpected shape",
+                    CARD_DETAIL_TRANSACTION_ID, CARD_DETAIL_PROGRAM);
+            throw ValidationException.invalidField(CARD_KEY_FIELD,
+                    "the row reference could not be interpreted. Read the card list again and use a"
+                            + " reference from the current response");
+        }
+
+        return new CardHandle(payload.substring(0, HANDLE_ACCOUNT_ID_WIDTH),
+                payload.substring(HANDLE_ACCOUNT_ID_WIDTH));
+    }
+
+    /**
+     * Right-pads a value to a declared map width, so a sealed reference has a fixed length.
+     *
+     * @param value the value to pad; must not be null
+     * @param width the declared width
+     * @return the value at exactly {@code width} characters, truncated if it was longer
+     */
+    private static String pad(final String value, final int width) {
+        if (value.length() >= width) {
+            return value.substring(0, width);
+        }
+        return value + " ".repeat(width - value.length());
+    }
+
+    /**
+     * The two identifiers a sealed row reference carries.
+     *
+     * <p>A private nested record rather than a type under {@code model.dto}: it never crosses the wire in
+     * either direction - what crosses is the sealed string - so it is an implementation detail of this
+     * class and publishing it would enlarge the documented surface for no caller's benefit.
+     *
+     * @param accountId the account identifier, at its declared width
+     * @param cardNumber the card number, at its declared width
+     */
+    private record CardHandle(String accountId, String cardNumber) {
     }
 
     /**

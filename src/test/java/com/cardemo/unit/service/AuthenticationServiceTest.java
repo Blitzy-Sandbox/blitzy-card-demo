@@ -67,6 +67,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -93,6 +94,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.InternalAuthenticationServiceException;
@@ -1558,6 +1561,55 @@ class AuthenticationServiceTest {
                     .satisfies(failure -> {
                         assertThat(failure.getLogicalFileName()).isEqualTo(USER_SECURITY_FILE);
                         assertThat(failure.getCause()).isSameAs(timedOut);
+                    });
+        }
+
+        @Test
+        @DisplayName("an identifier the key column cannot hold is WHEN 13, not WHEN OTHER")
+        void anUnrepresentableIdentifierIsTheNotFoundArm() {
+            // The defect this test pins. A NUL inside the identifier is refused by the store itself with
+            // SQLSTATE 22021, because sec_usr_id is CHAR(8) and PostgreSQL text types forbid 0x00. That is not
+            // "the store could not be read": it means no row with this key can exist, so the read the source
+            // would have performed is provably empty - DFHRESP(NOTFND), the WHEN 13 arm at :247-251.
+            //
+            // Answering WHEN OTHER told an UNAUTHENTICATED caller that the store was broken, which was false
+            // and which one byte could provoke at will; worse, it made the outcome DISTINGUISHABLE from a
+            // wrong password, which is exactly the disclosure this program's folded arms exist to prevent.
+            final DataIntegrityViolationException unrepresentable = new DataIntegrityViolationException(
+                    "invalid byte sequence",
+                    new SQLException("invalid byte sequence for encoding \"UTF8\": 0x00", "22021"));
+            when(cardDemoUserDetailsService.authenticate(anyString(), anyString()))
+                    .thenThrow(unrepresentable);
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.signOn(signOnRequest("A\u0000B", PRESENTED_CREDENTIAL)))
+                    .satisfies(failure -> {
+                        assertThat(failure.getFailureKind())
+                                .as("the same kind the wrong-password arm reports, so the two are "
+                                        + "indistinguishable to a caller")
+                                .isEqualTo(ValidationException.FailureKind.INVALID);
+                        assertThat(failure.getFieldName()).isEqualTo(FIELD_PASSWD);
+                        assertThat(failure.getMessage())
+                                .as("the WHEN OTHER literal must NOT be reported for this condition")
+                                .isNotEqualTo(MESSAGE_UNABLE_TO_VERIFY);
+                        assertThat(failure.getCause()).isSameAs(unrepresentable);
+                    });
+        }
+
+        @Test
+        @DisplayName("a genuine connectivity failure still reaches WHEN OTHER, so 5xx is not lost")
+        void aConnectivityFailureStillReachesTheStoreUnreadableArm() {
+            final DataAccessResourceFailureException unreachable =
+                    new DataAccessResourceFailureException("connection refused",
+                            new SQLException("connection refused", "08006"));
+            when(cardDemoUserDetailsService.authenticate(PRESENTED_USER_ID, PRESENTED_CREDENTIAL))
+                    .thenThrow(unreachable);
+
+            assertThatExceptionOfType(FileAccessException.class)
+                    .isThrownBy(() -> service.signOn(signOnRequest(PRESENTED_USER_ID, PRESENTED_CREDENTIAL)))
+                    .satisfies(failure -> {
+                        assertThat(failure.getMessage()).isEqualTo(MESSAGE_UNABLE_TO_VERIFY);
+                        assertThat(failure.getCause()).isSameAs(unreachable);
                     });
         }
 

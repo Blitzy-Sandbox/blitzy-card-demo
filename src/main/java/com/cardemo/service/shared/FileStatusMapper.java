@@ -33,7 +33,10 @@ import com.cardemo.exception.FileAccessException;
 import com.cardemo.exception.FileUnavailableException;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.model.enums.FileStatus;
+import java.sql.SQLException;
 import java.util.Optional;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 /**
@@ -96,6 +99,30 @@ import org.springframework.stereotype.Component;
  *   <li>anything else - {@code com.cardemo.exception.FatalProcessingException}, abend code
  *       {@value com.cardemo.exception.FatalProcessingException#BATCH_ABEND_CODE} and process return code
  *       {@value com.cardemo.exception.FatalProcessingException#BATCH_RETURN_CODE}.</li>
+ *   </ul>
+ *
+ * <h2>The store failure map, which is the other direction of the same decision</h2>
+ *
+ * <p>The map above answers "which exception does this {@code FILE STATUS} mean". A relational store does not
+ * report a {@code FILE STATUS}, so the target needs the question asked the other way round as well: "which
+ * condition of the guard did this store failure just raise". {@link #classifyStoreFailure(Throwable)} is that
+ * decision and it lives here for the same reason the other one does - so it is made once rather than at each
+ * of the four write sites, which is where it was previously made four times and wrongly.
+ *
+ * <ul>
+ *   <li>{@code SQLSTATE} {@value #SQLSTATE_UNIQUE_VIOLATION}, or an explicit duplicate translation from the
+ *       data access layer - {@link StoreFailureKind#DUPLICATE_KEY}, the only route to {@code FILE STATUS '22'}
+ *       and to {@code DFHRESP(DUPREC)}.</li>
+ *   <li>{@code SQLSTATE} class {@value #SQLSTATE_CLASS_INTEGRITY} other than
+ *       {@value #SQLSTATE_UNIQUE_VIOLATION} - {@link StoreFailureKind#CONSTRAINT_REFUSED}, the guard's
+ *       {@code WHEN OTHER} arm reached because the store enforced a foreign key, a check constraint or a
+ *       {@code NOT NULL} column that the KSDS never had.</li>
+ *   <li>{@code SQLSTATE} class {@value #SQLSTATE_CLASS_DATA_EXCEPTION} - {@link
+ *       StoreFailureKind#INVALID_DATA}, a request error with <strong>no counterpart in the
+ *       corpus</strong>, because a value that fitted its {@code PIC} clause was storable by construction.</li>
+ *   <li>anything else, including a failure carrying no state at all -
+ *       {@link StoreFailureKind#IO_ERROR}, the guard's {@code ELSE} arm and the only condition for which a
+ *       retry is a rational response.</li>
  *   </ul>
  *
  * <h2>The two guard shapes, and why one class cannot serve both with one method</h2>
@@ -294,6 +321,14 @@ import org.springframework.stereotype.Component;
  *       {@link #requireCategoryBalanceReadSuccess(String)} and branch on the returned flag.</li>
  *   <li>A corrupt read silently accepted anywhere outside the statement file service means {@code '04'}
  *       leaked into a general path. Remedy: only the two file service methods may accept it.</li>
+ *   <li>A {@code 409} naming an identifier the caller can prove is free means a write site reported a store
+ *       failure as a duplicate without classifying it. Remedy: pass the caught throwable through
+ *       {@link #classifyStoreFailure(Throwable)} and answer the duplicate arm only for
+ *       {@link StoreFailureKind#DUPLICATE_KEY}.</li>
+ *   <li>{@link #classifyStoreFailure(Throwable)} answering {@link StoreFailureKind#IO_ERROR} for a
+ *       collision the store log clearly shows means the throwable it was given had already been re-wrapped
+ *       and no longer carries the driver's exception. Remedy: classify at the {@code catch}, before
+ *       wrapping.</li>
  *   <li>A {@code FatalProcessingException} whose message reads {@code (absent)} where a status should be,
  *       and whose expansion reads {@code  032}, means the caller passed {@code null} or an empty status.
  *       That is reported rather than absorbed by design: the renderer is total and normalises the value
@@ -467,6 +502,39 @@ public class FileStatusMapper {
     private static final String ABSENT_VALUE = "(absent)";
 
     /**
+     * The {@code SQLSTATE} of a unique or primary key constraint violation, {@value}.
+     *
+     * <p>This is the <em>only</em> store condition that means what {@code DFHRESP(DUPREC)} and
+     * {@code FILE STATUS '22'} mean. It is defined by SQL/Foundation as {@code unique_violation} within class
+     * {@code 23}, integrity constraint violation, and PostgreSQL reports it verbatim.
+     */
+    public static final String SQLSTATE_UNIQUE_VIOLATION = "23505";
+
+    /**
+     * The {@code SQLSTATE} class of a data exception, {@value}.
+     *
+     * <p>Class {@code 22} covers every way a <em>value</em> is unusable rather than a <em>constraint</em> being
+     * broken: {@code 22021} character not in repertoire, which is what PostgreSQL reports for a
+     * {@code U+0000} in a character column; {@code 22001} string data right truncation; {@code 22P02} invalid
+     * text representation. Every member of the class means the caller supplied field content the column cannot
+     * hold, which is a request error and not a store failure.
+     */
+    public static final String SQLSTATE_CLASS_DATA_EXCEPTION = "22";
+
+    /**
+     * The number of links {@link #classifyStoreFailure(Throwable)} will follow along each of the two chains
+     * it walks - {@link Throwable#getCause()} and {@link SQLException#getNextException()} - {@value}.
+     *
+     * <p>Bounded rather than unbounded because both chains are untrusted input like any other: a
+     * self-referential or cyclic chain would otherwise loop forever inside a failure handler, which is the
+     * worst possible place to hang. The self-reference guard catches the one-element cycle and this cap
+     * catches every longer one. Thirty two is far beyond the four links the deepest real chain has -
+     * {@code DataIntegrityViolationException} to Hibernate's {@code JDBCException} to the driver's
+     * {@code SQLException} to its linked exception.
+     */
+    private static final int MAX_CAUSE_DEPTH = 32;
+
+    /**
      * Creates the stateless mapper.
      */
     public FileStatusMapper() {
@@ -519,6 +587,8 @@ public class FileStatusMapper {
         }
         return APPL_FAILURE;
     }
+
+
 
     /**
      * Decides which exception a raw file status maps to, without throwing it.
@@ -848,5 +918,256 @@ public class FileStatusMapper {
      */
     private static String orPlaceholder(String value, String placeholder) {
         return value == null || value.isBlank() ? placeholder : value;
+    }
+
+    // ================================================================================================
+    // Store condition discrimination.
+    //
+    // Not a paragraph of any program. This is the mechanism that stands in for the RESP value CICS
+    // handed back from EXEC CICS WRITE and EXEC CICS READ against a VSAM KSDS. A KSDS could fail a
+    // keyed write for exactly one reason a program cared to name - the key was already present, which
+    // CICS reported as DFHRESP(DUPKEY) or DFHRESP(DUPREC) - and everything else fell into the
+    // programs' WHEN OTHER arm. A relational store fails the same statement for several reasons that
+    // are genuinely different from one another and from a duplicate key, and it names which one in the
+    // SQLSTATE. Collapsing them all onto the duplicate arm reports a referential refusal, a check
+    // refusal and an unrepresentable value as "the key already exists", which is not merely imprecise
+    // but actively misleading: it invites a retry that can never succeed.
+    //
+    // The classification below is therefore the target side of the source's WHEN OTHER arm rather than
+    // a replacement for it. Each caller keeps its own source literal, its own cursor field and its own
+    // screen assembly exactly as the source writes them; what this method decides is only WHICH typed
+    // exception - and therefore which HTTP status - carries that unchanged outcome outwards.
+    // ================================================================================================
+
+    /**
+     * The conditions a keyed write or a keyed read can raise in the relational store, in the vocabulary
+     * the COBOL response arms distinguish.
+     *
+     * <p>The four constants are the complete partition of the space, and each maps onto exactly one arm of
+     * the source's {@code EVALUATE WS-RESP-CD}:
+     *
+     * <ul>
+     *   <li>{@link #DUPLICATE_KEY} is {@code DFHRESP(DUPKEY)} at {@code app/cbl/COUSR01C.cbl:L260} and
+     *       {@code DFHRESP(DUPREC)} at {@code :L261}, and the shared branch of
+     *       {@code app/cbl/COTRN02C.cbl:735-741}. It is the one condition a KSDS could raise on a write
+     *       that the source names, so it is the one condition that keeps the duplicate arm.</li>
+     *   <li>{@link #CONSTRAINT_REFUSED} is the source's {@code WHEN OTHER} arm reached because the store
+     *       enforced a rule the KSDS never had. {@code V1__create_schema.sql} declares ten foreign keys
+     *       and five check constraints that VSAM did not, so this condition is target-only by
+     *       construction and cannot be traced to a response code the source ever saw.</li>
+     *   <li>{@link #INVALID_DATA} is the same {@code WHEN OTHER} arm reached because a supplied value
+     *       cannot be represented at all - SQLSTATE class {@code 22}, of which
+     *       {@code 22021 invalid byte sequence for encoding "UTF8": 0x00} is the reachable member, raised
+     *       by a {@code NUL} inside a value bound to a text column. A fixed-width COBOL field held that
+     *       byte happily, which is why the source has no arm for it.</li>
+     *   <li>{@link #IO_ERROR} is the {@code WHEN OTHER} arm reached because the store could not be
+     *       interrogated - a connection, timeout or resource condition. This is the only member for which
+     *       a retry is a rational response, and it is the only member that keeps a {@code 5xx} status.</li>
+     * </ul>
+     */
+    public enum StoreFailureKind {
+
+        /**
+         * The key presented to an insert is already present: SQLSTATE
+         * {@value FileStatusMapper#SQLSTATE_UNIQUE_VIOLATION}, or a unique or primary-key constraint named by
+         * the driver.
+         *
+         * <p>The only condition that may be reported as {@code FILE STATUS '22'} and answered {@code 409}.
+         * AAP section 0.7.4.1 requires exactly this for the retained identifier generation race: the racy
+         * descending browse is kept and the primary key constraint surfaces a collision as a duplicate record
+         * condition. {@code app/cbl/COUSR01C.cbl:L260-L261}, {@code app/cbl/COTRN02C.cbl:L735} and
+         * {@code app/cbl/COBIL00C.cbl:L533} are the three {@code DUPKEY} sites in the corpus.
+         */
+        DUPLICATE_KEY,
+
+        /**
+         * A constraint other than a unique key refused the statement: a foreign key, a check constraint or
+         * a {@code NOT NULL} column, which is SQLSTATE class {@code 23} excluding {@code 23505}.
+         */
+        CONSTRAINT_REFUSED,
+
+        /**
+         * A supplied value cannot be represented in the column it was bound to: SQLSTATE class
+         * {@value FileStatusMapper#SQLSTATE_CLASS_DATA_EXCEPTION}.
+         *
+         * <p>A request error, and a <strong>labelled addition</strong> rather than parity: a census of
+         * {@code app/cbl} at {@code 7756d89} finds no guard for it, because no such condition existed. The
+         * terminal delivered a fixed width field and a value that fitted its {@code PIC} clause was storable
+         * by construction. Reporting it as a duplicate tells a caller its identifier is taken when it is
+         * free; reporting it as an I/O condition tells a caller the store is broken when the request was.
+         */
+        INVALID_DATA,
+
+        /**
+         * The store could not be interrogated, or reported a condition none of the above describes.
+         */
+        IO_ERROR
+    }
+
+    /**
+     * SQLSTATE class {@code 23}, {@code integrity_constraint_violation}, {@value}: {@code 23502} not null,
+     * {@code 23503} foreign key, {@code 23514} check, and the generic {@code 23000}.
+     *
+     * <p>Published alongside {@link #SQLSTATE_UNIQUE_VIOLATION} because the two together are the whole of the
+     * distinction the classification exists to draw: {@value #SQLSTATE_UNIQUE_VIOLATION} is the one member of
+     * this class that is a duplicate key, and every other member is a constraint the KSDS never had.
+     */
+    public static final String SQLSTATE_CLASS_INTEGRITY = "23";
+
+    /** The width of the SQLSTATE class, which is the first two of its five characters, {@value}. */
+    private static final int SQLSTATE_CLASS_LENGTH = 2;
+
+    /**
+     * Decides which store condition a data-access failure represents, by reading the SQLSTATE the driver
+     * reported rather than by inspecting the exception type the translator chose.
+     *
+     * <p><strong>Findings F-2 and F-8, severity Major, and finding 4, severity Major - this method is the
+     * remediation of all three.</strong> Four write sites caught
+     * {@code org.springframework.dao.DataIntegrityViolationException} and mapped it <em>unconditionally</em>
+     * to {@code DFHRESP(DUPREC)}. So a value the column could not hold was reported as
+     * {@code 409 CARDDEMO-DUPLICATE-RECORD} naming an identifier that was in fact free, a referential refusal
+     * was reported as a collision with a retry hint that could never succeed, and - from the other side - the
+     * duplicate answer AAP section 0.7.4.1 requires for the retained identifier race depended on a subtype
+     * choice that is not a property of the persistence layer. Deciding on the state fixes every direction at
+     * once.
+     *
+     * <p><strong>Why the SQLSTATE and not the exception type.</strong> Spring's translation maps SQLSTATE
+     * class {@code 22} and class {@code 23} alike onto {@code DataIntegrityViolationException}, so the
+     * exception type cannot separate a duplicate key from a foreign-key refusal from an unrepresentable
+     * value. The SQLSTATE can, it is standardised in its first two characters, and PostgreSQL publishes the
+     * full five. Reading it is therefore the only classification that is both correct and portable.
+     *
+     * <p><strong>Why both chains are walked.</strong> The SQLSTATE is not on the exception the caller
+     * catches. A batched statement fails as a Spring {@code DataIntegrityViolationException} wrapping a
+     * Hibernate {@code ConstraintViolationException} wrapping a {@link java.sql.BatchUpdateException}, and
+     * the driver puts the failing statement's own state on a further exception reachable only through
+     * {@link SQLException#getNextException()}. So the walk descends the cause chain, and at every
+     * {@link SQLException} it finds it also walks that exception's next-exception chain. The first
+     * recognised state wins; both walks are depth-capped and both guard against a self-referencing link.
+     *
+     * <p><strong>A state that is present but unrecognised is an I/O condition, not a fallback.</strong> If the
+     * driver reported a SQLSTATE and it is in neither class {@code 22} nor class {@code 23}, then the driver has
+     * already answered the question: the condition is neither a constraint nor an unrepresentable value, so it
+     * is {@link StoreFailureKind#IO_ERROR} and the type-based fallback is not consulted. This distinction
+     * matters, because the type-based fallback would otherwise convict a connection or cancellation failure of
+     * being a constraint refusal purely because of how it happened to be wrapped.
+     *
+     * <p><strong>Why there is a fallback at all.</strong> If no SQLSTATE is reachable anywhere - a translator
+     * that discarded it, or a failure raised above the driver - the decision falls back on the translated type,
+     * which is strictly less precise but never less safe: {@code DuplicateKeyException} is a duplicate key
+     * by definition, a {@code DataIntegrityViolationException} that is not one is a constraint refusal by
+     * elimination, and anything else is an I/O condition. The fallback deliberately does not answer
+     * {@link StoreFailureKind#DUPLICATE_KEY} for a bare integrity violation, because that is precisely the
+     * conflation this method exists to end.
+     *
+     * <p>Side effects: none. A pure function of the throwable it is given, performing no I/O, holding no
+     * state and logging nothing - the call site owns the diagnostic, as it owns the {@code DFHRESP}
+     * vocabulary.
+     *
+     * <p><b>Failure modes.</b> Severity <b>High</b>: passing the exception the repository call site
+     * <em>rethrew</em> rather than the one it caught, which discards the driver's exception and yields
+     * {@link StoreFailureKind#IO_ERROR} for every condition. Remedy: classify the caught throwable, before
+     * wrapping. Severity <b>Low</b>: a store other than PostgreSQL that reports a unique violation with a
+     * vendor specific state; the type-based fallback below covers it.
+     *
+     * @param failure the failure a data-access attempt raised, which may be {@code null}
+     * @return the condition it represents; {@link StoreFailureKind#IO_ERROR} when nothing more specific can
+     * be established, and never {@code null}
+     */
+    public static StoreFailureKind classifyStoreFailure(Throwable failure) {
+        boolean sawSqlState = false;
+        Throwable current = failure;
+        int depth = 0;
+        while (current != null && depth < MAX_CAUSE_DEPTH) {
+            if (current instanceof SQLException sqlFailure) {
+                StoreFailureKind fromDriver = classifySqlExceptionChain(sqlFailure);
+                if (fromDriver != null) {
+                    return fromDriver;
+                }
+                sawSqlState |= carriesAnySqlState(sqlFailure);
+            }
+            Throwable next = current.getCause();
+            current = next == current ? null : next;
+            depth++;
+        }
+        if (sawSqlState) {
+            return StoreFailureKind.IO_ERROR;
+        }
+        if (failure instanceof DuplicateKeyException) {
+            return StoreFailureKind.DUPLICATE_KEY;
+        }
+        if (failure instanceof DataIntegrityViolationException) {
+            return StoreFailureKind.CONSTRAINT_REFUSED;
+        }
+        return StoreFailureKind.IO_ERROR;
+    }
+
+    /**
+     * Walks one {@link SQLException} and every exception linked to it through
+     * {@link SQLException#getNextException()}, returning the condition the first recognised SQLSTATE names.
+     *
+     * @param head the first exception of the chain, never {@code null}
+     * @return the condition the chain names, or {@code null} when no exception in it carries a SQLSTATE this
+     * class recognises
+     */
+    private static StoreFailureKind classifySqlExceptionChain(SQLException head) {
+        SQLException current = head;
+        int depth = 0;
+        while (current != null && depth < MAX_CAUSE_DEPTH) {
+            StoreFailureKind recognised = classifySqlState(current.getSQLState());
+            if (recognised != null) {
+                return recognised;
+            }
+            SQLException next = current.getNextException();
+            current = next == current ? null : next;
+            depth++;
+        }
+        return null;
+    }
+
+    /**
+     * Reports whether any exception in one next-exception chain carries a SQLSTATE at all, so that a state the
+     * driver supplied but this class does not distinguish suppresses the type-based fallback.
+     *
+     * @param head the first exception of the chain, never {@code null}
+     * @return {@code true} when at least one link carries a non-blank SQLSTATE
+     */
+    private static boolean carriesAnySqlState(SQLException head) {
+        SQLException current = head;
+        int depth = 0;
+        while (current != null && depth < MAX_CAUSE_DEPTH) {
+            String sqlState = current.getSQLState();
+            if (sqlState != null && !sqlState.isBlank()) {
+                return true;
+            }
+            SQLException next = current.getNextException();
+            current = next == current ? null : next;
+            depth++;
+        }
+        return false;
+    }
+
+    /**
+     * Maps one SQLSTATE onto the condition it names.
+     *
+     * @param sqlState the five character SQLSTATE, which may be {@code null} or shorter than its class
+     * @return the condition it names, or {@code null} when it is absent, too short, or in a class this
+     * classification does not distinguish
+     */
+    private static StoreFailureKind classifySqlState(String sqlState) {
+        if (sqlState == null || sqlState.length() < SQLSTATE_CLASS_LENGTH) {
+            return null;
+        }
+        if (SQLSTATE_UNIQUE_VIOLATION.equals(sqlState)) {
+            return StoreFailureKind.DUPLICATE_KEY;
+        }
+        String stateClass = sqlState.substring(0, SQLSTATE_CLASS_LENGTH);
+        if (SQLSTATE_CLASS_INTEGRITY.equals(stateClass)) {
+            return StoreFailureKind.CONSTRAINT_REFUSED;
+        }
+        if (SQLSTATE_CLASS_DATA_EXCEPTION.equals(stateClass)) {
+            return StoreFailureKind.INVALID_DATA;
+        }
+        return null;
     }
 }

@@ -45,6 +45,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
@@ -423,6 +424,29 @@ public class BillingController {
     private static final String DUPLICATE_PROBLEM_TITLE = "Bill payment transaction identifier collided";
 
     /**
+     * Problem title used when a constraint other than the primary key refused the transaction insert.
+     *
+     * <p>Deliberately distinct from {@value #DUPLICATE_PROBLEM_TITLE}: a collided identifier is retryable and a
+     * referential refusal is not, and the two were one arm in {@code app/cbl/COBIL00C.cbl} only because a VSAM
+     * KSDS had no referential constraints to refuse a row with.
+     */
+    private static final String INTEGRITY_PROBLEM_TITLE = "Bill payment write refused by a constraint";
+
+    /**
+     * The fixed detail returned when a constraint other than the primary key refused the transaction insert.
+     *
+     * <p>For this operation the reachable constraint is {@code fk04_transaction_card}: the transaction type and
+     * category are the literals {@code '02'} and {@code 2} of {@code app/cbl/COBIL00C.cbl:220-221} and both are
+     * seeded, while the card number comes from the account's cross-reference. The detail therefore states the
+     * condition without naming the relation, the constraint or the card number, all three of which stay on the
+     * log line reachable through the {@code correlationId} the body carries. It does not advise a retry,
+     * because repeating the request cannot satisfy the constraint.
+     */
+    private static final String INTEGRITY_PROBLEM_DETAIL =
+            "The account's cross-referenced card does not name a card record, so no payment transaction was "
+                    + "written. This requires the stored cross-reference to be corrected.";
+
+    /**
      * The problem-detail title for an unavailable dataset.
      */
     private static final String UNAVAILABLE_PROBLEM_TITLE = "Bill payment dataset unavailable";
@@ -572,6 +596,14 @@ public class BillingController {
      * Stable error code meaning that the key the operation generated was already taken.
      */
     private static final String ERROR_CODE_DUPLICATE = "CARDDEMO-DUPLICATE-RECORD";
+
+    /**
+     * Stable error code meaning that a constraint of the transaction schema refused the write.
+     *
+     * <p>The same code the account, transaction and user-administration surfaces publish for the same
+     * condition, and the one {@code docs/api-contracts.md} section 8.2 documents against it.
+     */
+    private static final String ERROR_CODE_CONSTRAINT = "CARDDEMO-CONSTRAINT-REFUSED";
 
     /**
      * Stable error code meaning that a required data store or queue could not be reached; the request is retryable.
@@ -1083,6 +1115,44 @@ public class BillingController {
 
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(withPublicEnvelope(problem, ERROR_CODE_DUPLICATE));
+    }
+
+    /**
+     * Maps a constraint refusal that is <em>not</em> a duplicate key onto {@code 409 Conflict}.
+     *
+     * <p><strong>Why this handler exists.</strong> {@code WRITE-TRANSACT-FILE} at
+     * {@code app/cbl/COBIL00C.cbl:512}-{@code :548} has one duplicate arm and one catch-all, because a VSAM
+     * KSDS could refuse a keyed write only for a key that already existed. {@code V1__create_schema.sql}
+     * declares three foreign keys on {@code transaction}, and the card number this operation writes comes from
+     * the account's cross-reference rather than from a literal, so a referential refusal is reachable.
+     * Answering it with the duplicate-key body claimed the generated identifier was taken - which was false -
+     * and advised a retry that could never succeed.</p>
+     *
+     * <p>{@code 409} rather than {@code 400}: the request named a valid account and the refusal comes from the
+     * state of the store. The relation is logged and never returned, and the constraint name reaches the log only on the
+     * retained cause, because together they map the schema; the card number is neither logged nor
+     * returned.</p>
+     *
+     * @param violation the constraint refusal; its constraint name and relation may each be null.
+     * @return {@code 409 Conflict} carrying the fixed detail, the stable error code and the correlation
+     *         identifier
+     */
+    @ExceptionHandler(DataIntegrityException.class)
+    public ResponseEntity<ProblemDetail> handleDataIntegrity(final DataIntegrityException violation) {
+
+        final ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, INTEGRITY_PROBLEM_DETAIL);
+        problem.setTitle(INTEGRITY_PROBLEM_TITLE);
+
+        // The relation is named and the constraint is not, for the reason given on the transaction surface's
+        // counterpart: the retained cause carries the driver's own message, which names both the constraint
+        // and the offending key, and it is logged with this entry.
+        LOG.warn("Refused transaction {} with 409: a constraint on relation {} refused the write. This is NOT "
+                + "the identifier collision of app/cbl/COBIL00C.cbl:211-218 and the request is not retryable "
+                + "as submitted", TRANSACTION_ID, violation.getRelation(), violation);
+
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(withPublicEnvelope(problem, ERROR_CODE_CONSTRAINT));
     }
 
     /**

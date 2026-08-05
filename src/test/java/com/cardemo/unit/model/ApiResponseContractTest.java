@@ -55,11 +55,13 @@ import com.cardemo.model.dto.BillPaymentResponse;
 import com.cardemo.model.dto.CardDto;
 import com.cardemo.model.dto.CardListResponse;
 import com.cardemo.model.dto.CardResponse;
+import com.cardemo.model.dto.MenuResponse;
 import com.cardemo.model.dto.PageResponse;
 import com.cardemo.model.dto.ReportSubmissionResponse;
 import com.cardemo.model.dto.TransactionDto;
 import com.cardemo.model.dto.TransactionListResponse;
 import com.cardemo.model.dto.TransactionResponse;
+import com.cardemo.model.dto.UserSecurityDto;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
@@ -215,7 +217,7 @@ class ApiResponseContractTest {
             final CardDto detail = CardDto.detail("CCDL", "T1", "01/15/26", "COCRDSLC", "T2", "10:30:00",
                     "00000000011", CARD_NUMBER, "ANNA LEE", "Y", "12", "2099", null, null, null);
 
-            final String json = MAPPER.writeValueAsString(CardResponse.readOf(detail, "sealed-token"));
+            final String json = MAPPER.writeValueAsString(CardResponse.readOf(detail, "sealed-token", "sealed-reference"));
 
             assertThat(json).doesNotContain(CARD_NUMBER);
             assertThat(json).contains(MASKED_CARD_NUMBER);
@@ -242,12 +244,20 @@ class ApiResponseContractTest {
                     List.of(row), 1, CardDto.CARD_LIST_PAGE_SIZE, true, CARD_NUMBER, CARD_NUMBER);
 
             final CardListResponse envelope = CardListResponse.of(page, "sealed-first", "sealed-last",
-                    "You are already at the top of the page...", "Search key is not valid", false);
+                    "You are already at the top of the page...", "Search key is not valid", false,
+                    (accountId, cardNumber) -> "sealed-reference");
             final String json = MAPPER.writeValueAsString(envelope);
 
             assertThat(json)
-                    .as("neither the rows nor the cursors may carry a primary account number")
+                    .as("neither the rows, the cursors nor the opaque row references may carry a "
+                            + "primary account number")
                     .doesNotContain(CARD_NUMBER);
+            assertThat(envelope.rows()).singleElement()
+                    .extracting(CardListResponse.CardListRowResponse::cardKey)
+                    .as("the reference is what makes the masked row navigable at all: detail and "
+                            + "update both require the sixteen digits this row does not disclose, so "
+                            + "without it a client can see the list and go nowhere from it")
+                    .isEqualTo("sealed-reference");
             assertThat(envelope.rows()).singleElement()
                     .extracting(CardListResponse.CardListRowResponse::maskedCardNumber)
                     .isEqualTo(MASKED_CARD_NUMBER);
@@ -321,6 +331,67 @@ class ApiResponseContractTest {
         void nullRowListBecomesEmpty() {
             assertThat(new CardListResponse(null, 1, 7, false, null, null, null, null, true).rows()).isEmpty();
             assertThat(new TransactionListResponse(null, 1, 10, false, null, null, null).rows()).isEmpty();
+        }
+    }
+
+    /**
+     * The six recurring header fields of the seventeen symbolic maps, and the {@code XCTL} operand, are
+     * transcribed on the field-contract types and excluded from every JSON body.
+     *
+     * <p>Two operations used to publish them - the delete-user confirmation put all six on the wire, and both
+     * menu option records put the program name there. Both are closed by {@code @JsonIgnoreProperties}, which
+     * keeps the component, its width check and its copybook citation while removing it from the body. These
+     * tests assert the body, because the body is the contract.
+     */
+    @Nested
+    @DisplayName("Screen chrome and routing state never reach a JSON body")
+    class ChromeExclusion {
+
+        /** The six fields {@code app/cpy-bms/*.CPY} repeats on every map, by JSON member name. */
+        private static final List<String> CHROME_MEMBERS = List.of("transactionName", "title01", "title02",
+                "currentDate", "currentTime", "programName");
+
+        @Test
+        @DisplayName("The delete-user confirmation publishes exactly its five business members")
+        void deleteUserPublishesFiveMembers() throws Exception {
+            final UserSecurityDto.UserDeleteScreen screen = new UserSecurityDto.UserDeleteScreen(
+                    "CU03", "      AWS Mainframe Modernization       ", "08/05/26", "COUSR03C",
+                    "              CardDemo                  ", "04:38:05",
+                    "USER0001", "LAWRENCE", "THOMAS", "U", "User USER0001 has been deleted ...");
+
+            final String json = MAPPER.writeValueAsString(screen);
+
+            assertThat(CHROME_MEMBERS).allSatisfy(member -> assertThat(json)
+                    .as("chrome member %s must not reach the body", member)
+                    .doesNotContain("\"" + member + "\""));
+            assertThat(json).doesNotContain("COUSR03C").doesNotContain("CardDemo");
+            assertThat(MAPPER.readTree(json).fieldNames()).toIterable()
+                    .as("api-contracts.md documents a five-member response for this operation")
+                    .containsExactlyInAnyOrder("userIdInput", "firstName", "lastName", "userType",
+                            "errorMessage");
+        }
+
+        @Test
+        @DisplayName("Neither menu publishes the XCTL target, and both keep their option-table data")
+        void neitherMenuPublishesTheXctlTarget() throws Exception {
+            final String main = MAPPER.writeValueAsString(MenuResponse.mainMenu());
+            final String admin = MAPPER.writeValueAsString(MenuResponse.adminMenu());
+
+            assertThat(main).doesNotContain("programName").doesNotContain("COACTVWC");
+            assertThat(admin).doesNotContain("programName").doesNotContain("COUSR00C");
+            assertThat(main).contains("optionNumber").contains("optionName").contains("userTypeCode");
+            assertThat(admin).contains("optionNumber").contains("optionName");
+        }
+
+        @Test
+        @DisplayName("The excluded components remain on the records, because the copybooks declare them")
+        void theExcludedComponentsRemainOnTheRecords() {
+            assertThat(MenuResponse.MAIN_MENU_OPTIONS.get(0).programName()).isEqualTo("COACTVWC");
+            assertThat(Arrays.stream(UserSecurityDto.UserDeleteScreen.class.getRecordComponents())
+                    .map(RecordComponent::getName))
+                    .as("all eleven fields of app/cpy-bms/COUSR03.CPY stay transcribed")
+                    .contains("transactionName", "title01", "programName", "userIdInput", "errorMessage")
+                    .hasSize(11);
         }
     }
 

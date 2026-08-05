@@ -2066,13 +2066,17 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
             final String queueUrl = provisionScopedFifoQueue("confirm-blank");
             final ReportSubmissionService service = serviceOn(clock(), queueNameOf(queueUrl));
 
-            final Throwable rejected = catchThrowable(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                    form(selectorSet, null, null, null, null, null, null, null, null, null)));
+            // A redisplay, not a rejection: :464 sets the error flag and sends the screen, exactly as the
+            // 'N' arm at :480-483 does, so the prompt is the operation asking rather than the caller
+            // failing. See finding M-17.
+            final ReportSubmissionService.ReportSubmissionScreen prompted =
+                    service.submitScreen(AttentionIdentifier.ENTER,
+                            form(selectorSet, null, null, null, null, null, null, null, null, null));
 
-            assertThat(rejected)
-                    .isInstanceOf(ValidationException.class)
-                    .hasMessage("Please confirm to print the " + reportNameMonthly + " report...");
-            assertThat(((ValidationException) rejected).getFieldName())
+            assertThat(prompted.form().errorMessage())
+                    .isEqualTo("Please confirm to print the " + reportNameMonthly + " report...");
+            assertThat(prompted.errorFlagOn()).isTrue();
+            assertThat(prompted.cursorField())
                     .as("MOVE -1 TO CONFIRML at app/cbl/CORPT00C.cbl:472")
                     .isEqualTo("CONFIRML");
             assertThat(receiveAndDelete(queueUrl, maxReceiveBatch, emptyReceiveWait)).isEmpty();

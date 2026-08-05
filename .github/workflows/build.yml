@@ -264,6 +264,169 @@ jobs:
           if-no-files-found: ignore
 
   # --------------------------------------------------------------------------
+  # PACKAGED-ARTIFACT SMOKE. Runs the jar the Dockerfile ships, not the tree
+  # the tests compiled.
+  #
+  # WHY THIS JOB EXISTS AND WHY THE verify JOB CANNOT REPLACE IT. Every test
+  # tier above runs from an exploded classpath: Surefire and Failsafe put
+  # target/classes and the dependency jars on the class path directly, so the
+  # nested-jar layout of the executable archive - BOOT-INF/classes,
+  # BOOT-INF/lib/*.jar, BOOT-INF/classpath.idx and the Spring Boot loader that
+  # reads them - is never exercised. A runtime assessment reported 500 for every
+  # chunked request body against the packaged jar while the same request
+  # answered 200 from an exploded classpath, which is precisely the class of
+  # defect the exploded tiers cannot see. Whatever the cause in any single
+  # environment, the structural gap is real and this job closes it: the artifact
+  # that ships is started and exercised.
+  #
+  # THE THREE CHECKS ARE THE THREE THINGS THAT WERE REPORTED BROKEN, plus a
+  # happy path so a green result cannot come from an application that refuses
+  # everything:
+  #   1. a chunked POST to the anonymous sign-on must not be a 5xx;
+  #   2. a wildcard Content-Type must be 415 in the authored envelope, never a
+  #      500 with the framework's default body;
+  #   3. the same sign-on with a well-framed JSON body must succeed.
+  #
+  # PostgreSQL is a service container because Flyway owns the schema and
+  # Hibernate validates against it at startup, so the jar cannot boot without
+  # one. The image is the same major line docker-compose.yml pins and is pinned
+  # by digest here for the same reason every other reference in this file is.
+  # LocalStack is deliberately NOT started: none of the three checks touches S3
+  # or SQS, and the readiness group - not liveness, and not the routes under
+  # test - is the only thing that would report on them.
+  # --------------------------------------------------------------------------
+  packaged-artifact-smoke:
+    name: Packaged-jar smoke (framing, media type, happy path)
+    needs: verify
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_DB: carddemo
+          POSTGRES_USER: carddemo
+          POSTGRES_PASSWORD: carddemo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U carddemo -d carddemo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Build the executable JAR
+        run: ./mvnw -B -ntp -DskipTests -Ddependency-check.skip=true clean package
+
+      - name: Start the packaged JAR
+        env:
+          SPRING_PROFILES_ACTIVE: local
+          SERVER_PORT: "18080"
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5432"
+          POSTGRES_DB: carddemo
+          POSTGRES_USER: carddemo
+          POSTGRES_PASSWORD: carddemo
+          # A throwaway value generated per run. It is 32 bytes because HS256
+          # requires it, and it never leaves this job.
+          JWT_SIGNING_KEY: ci-smoke-signing-key-of-at-least-32-bytes
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_REGION: us-east-1
+          AWS_ENDPOINT_URL: http://localhost:4566
+        run: |
+          set -euo pipefail
+          jar="$(ls target/carddemo-*.jar | head -n 1)"
+          echo "Starting ${jar}"
+          nohup java -jar "${jar}" > smoke.log 2>&1 &
+          echo "$!" > smoke.pid
+          for _ in $(seq 1 90); do
+            if curl -sf -m 2 http://localhost:18080/actuator/health/liveness > /dev/null 2>&1; then
+              echo "The packaged jar is serving."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the packaged jar did not start within 180 seconds."
+          tail -n 120 smoke.log
+          exit 1
+
+      - name: Smoke the packaged JAR
+        run: |
+          set -euo pipefail
+          creds='{"userId":"ADMIN001","password":"PASSWORD"}'
+
+          # 1. A chunked body must be read like any other. Anything in the 5xx
+          #    range is the reported defect and fails the job.
+          chunked="$(printf '%s' "${creds}" \
+            | curl -sS -o smoke-chunked.out -w '%{http_code}' \
+                -X POST http://localhost:18080/api/auth/signon \
+                -H 'Content-Type: application/json' \
+                -H 'Transfer-Encoding: chunked' --data-binary @-)"
+          echo "chunked sign-on -> ${chunked}"
+          case "${chunked}" in
+            5*) echo "::error::a chunked request body answered ${chunked} against the packaged jar."
+                cat smoke-chunked.out; exit 1;;
+          esac
+
+          # 2. A wildcard Content-Type must be 415 in the authored envelope.
+          media="$(printf '%s' "${creds}" \
+            | curl -sS -o smoke-media.out -w '%{http_code}' \
+                -X POST http://localhost:18080/api/auth/signon \
+                -H 'Content-Type: */*' --data-binary @-)"
+          echo "wildcard media type -> ${media}"
+          if [ "${media}" != "415" ]; then
+            echo "::error::a wildcard Content-Type answered ${media}, expected 415."
+            cat smoke-media.out; exit 1
+          fi
+          if ! grep -q 'CARDDEMO-UNSUPPORTED-MEDIA-TYPE' smoke-media.out; then
+            echo "::error::the 415 body is not the authored problem envelope."
+            cat smoke-media.out; exit 1
+          fi
+
+          # 3. The happy path, so a green result cannot come from an application
+          #    that refuses everything.
+          happy="$(printf '%s' "${creds}" \
+            | curl -sS -o smoke-happy.out -w '%{http_code}' \
+                -X POST http://localhost:18080/api/auth/signon \
+                -H 'Content-Type: application/json' --data-binary @-)"
+          echo "well-framed sign-on -> ${happy}"
+          if [ "${happy}" != "200" ]; then
+            echo "::error::the well-framed sign-on answered ${happy}, expected 200."
+            cat smoke-happy.out; exit 1
+          fi
+          grep -q '"token"' smoke-happy.out || {
+            echo "::error::the sign-on response carried no token."; cat smoke-happy.out; exit 1; }
+          echo "Packaged-artifact smoke passed."
+
+      - name: Stop the packaged JAR and publish its log
+        if: always()
+        run: |
+          set -u
+          if [ -f smoke.pid ]; then kill "$(cat smoke.pid)" 2>/dev/null || true; fi
+          if [ -f smoke.log ]; then tail -n 200 smoke.log; fi
+
+      - name: Upload the smoke log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packaged-artifact-smoke-log
+          path: |
+            smoke.log
+            smoke-*.out
+          if-no-files-found: ignore
+
+  # --------------------------------------------------------------------------
   # OWASP dependency-check. Kept as its own job because the NVD feed update
   # dominates the run time and needs its own cache. A High/Critical finding
   # (CVSS >= 7) fails the job; an unavailable feed is reported as a blocker

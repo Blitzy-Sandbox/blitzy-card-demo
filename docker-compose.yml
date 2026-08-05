@@ -397,6 +397,27 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
       POSTGRES_USER: ${POSTGRES_USER:-carddemo}
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env - copy .env.example and choose a local value}"
+      # Least privilege for the runtime principal. application.yml binds
+      # spring.datasource to the APP pair and spring.flyway to the MIGRATION
+      # pair, each falling back to POSTGRES_USER/POSTGRES_PASSWORD when unset so
+      # that an existing volume keeps working; application-prod.yml requires all
+      # four with no fallback. Passing them through here is what lets the app
+      # container stop connecting as the bootstrap SUPERUSER.
+      #
+      # The fallback is resolved HERE rather than in application.yml because
+      # Compose's `:-` treats an EMPTY value as unset while Spring's `${a:b}`
+      # does not - it applies its default only when the property is absent, so a
+      # blank variable would arrive as a blank username. Resolving it here means
+      # the container always receives a usable pair. The nested fallback needs no
+      # `:?` guard of its own: POSTGRES_PASSWORD carries one four lines above, on
+      # this same service, so an unset password already stops the stack there.
+      CARDDEMO_DB_APP_USER: ${CARDDEMO_DB_APP_USER:-${POSTGRES_USER:-carddemo}}
+      CARDDEMO_DB_APP_PASSWORD: "${CARDDEMO_DB_APP_PASSWORD:-${POSTGRES_PASSWORD}}"
+      CARDDEMO_DB_MIGRATION_USER: ${CARDDEMO_DB_MIGRATION_USER:-${POSTGRES_USER:-carddemo}}
+      CARDDEMO_DB_MIGRATION_PASSWORD: "${CARDDEMO_DB_MIGRATION_PASSWORD:-${POSTGRES_PASSWORD}}"
+      # The ceiling on waiting for a ROW lock; see application.yml's
+      # connection-init-sql. Without it a held row stalled a request forever.
+      POSTGRES_LOCK_TIMEOUT_MS: ${POSTGRES_LOCK_TIMEOUT_MS:-5000}
       # HS256 refuses key material shorter than 32 bytes, and no default is
       # committed anywhere in this repository for it.
       JWT_SIGNING_KEY: "${JWT_SIGNING_KEY:?set JWT_SIGNING_KEY in .env to at least 32 bytes of key material}"
@@ -558,6 +579,16 @@ services:
       # are reachable only from inside this container, which publishes no
       # shell and mounts no socket outward.
       POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      # Consumed ONLY by the postgres-least-privilege-roles init script below,
+      # which runs as the bootstrap superuser on first initialisation and
+      # provisions a DML-only runtime role plus a DDL-only migration role. When
+      # either password is unset the script logs why and exits 0, leaving the
+      # bootstrap superuser in place - so an existing deployment never breaks,
+      # it simply keeps the finding open until the values are supplied.
+      CARDDEMO_DB_APP_USER: ${CARDDEMO_DB_APP_USER:-carddemo_app}
+      CARDDEMO_DB_APP_PASSWORD: ${CARDDEMO_DB_APP_PASSWORD:-}
+      CARDDEMO_DB_MIGRATION_USER: ${CARDDEMO_DB_MIGRATION_USER:-carddemo_migrator}
+      CARDDEMO_DB_MIGRATION_PASSWORD: ${CARDDEMO_DB_MIGRATION_PASSWORD:-}
       # Deterministic collation and encoding. C ordering is byte ordering,
       # which is what the fixed-width uppercase and numeric keys inherited
       # from the copybooks sort by; a locale-dependent collation would make
@@ -581,6 +612,14 @@ services:
       - "${CARDDEMO_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    configs:
+      # Read only, and named with a numeric prefix so the entrypoint runs it
+      # before anything else that might be added to that directory later. A .sh
+      # and not a .sql so it can read the role passwords from the environment
+      # above rather than carry them as literals in this file.
+      - source: postgres-least-privilege-roles
+        target: /docker-entrypoint-initdb.d/10-least-privilege-roles.sh
+        mode: 0555
     healthcheck:
       # Over TCP on purpose. Without -h, pg_isready answers over the Unix
       # socket, which the entrypoint has already opened during the
@@ -954,4 +993,118 @@ volumes:
 configs:
   prometheus-scrape-password:
     content: "${METRICS_SCRAPE_PASSWORD:?set METRICS_SCRAPE_PASSWORD in .env - copy .env.example and generate a value, e.g. openssl rand -base64 32}"
+
+  # ==========================================================================
+  # LEAST PRIVILEGE FOR THE RUNTIME DATABASE PRINCIPAL (Rule 1 Clause D)
+  # ==========================================================================
+  # The official postgres image creates POSTGRES_USER as a CLUSTER SUPERUSER,
+  # and a superuser ignores every grant, every row-level policy and every
+  # column privilege. Connecting the application as that role gave the runtime
+  # far more authority than the eleven tables of V1__create_schema.sql need -
+  # it could create, drop and truncate anything, read every catalogue and
+  # bypass RLS - which is the opposite of "principle of least privilege for
+  # tokens/credentials/config".
+  #
+  # This script splits that authority in three: a DML-only runtime role, a
+  # DDL-owning migration role for Flyway, and the bootstrap superuser used for
+  # neither. It is delivered as an INLINE CONFIG rather than a checked-in file
+  # so that no new artefact enters the tree for it.
+  #
+  # WHAT IT DELIBERATELY DOES NOT DO. It creates NO table, NO index, NO
+  # sequence and NO row. Those belong to Flyway's exactly three migrations, and
+  # this file must not bypass them. Roles and privileges are CLUSTER-level
+  # objects that sit outside Flyway's remit entirely, and Flyway could not own
+  # them even in principle: it cannot create the role it connects as.
+  #
+  # It is idempotent - every CREATE is guarded and every GRANT is repeatable -
+  # so `docker compose up` converges however many times it runs.
+  #
+  # STANDARD IMAGE BEHAVIOUR TO KNOW: /docker-entrypoint-initdb.d runs ONLY
+  # when the data directory is empty. On a volume that already exists, apply it
+  # once by hand - the command is in .env.example. This is a shell script and
+  # not a .sql file precisely so that it can read the role passwords from the
+  # container environment instead of carrying them as literals.
+  postgres-least-privilege-roles:
+    content: |
+      #!/bin/sh
+      # Provisions the least-privilege application role and the migration role.
+      # Runs as the bootstrap superuser, on first initialisation of the data
+      # directory only. Idempotent; creates roles and grants exclusively.
+      set -eu
+
+      APP_USER="$${CARDDEMO_DB_APP_USER:-carddemo_app}"
+      APP_PASSWORD="$${CARDDEMO_DB_APP_PASSWORD:-}"
+      MIGRATION_USER="$${CARDDEMO_DB_MIGRATION_USER:-carddemo_migrator}"
+      MIGRATION_PASSWORD="$${CARDDEMO_DB_MIGRATION_PASSWORD:-}"
+
+      if [ -z "$$APP_PASSWORD" ] || [ -z "$$MIGRATION_PASSWORD" ]; then
+        echo "carddemo: CARDDEMO_DB_APP_PASSWORD or CARDDEMO_DB_MIGRATION_PASSWORD is unset;" >&2
+        echo "carddemo: skipping least-privilege role creation. The application will fall back" >&2
+        echo "carddemo: to POSTGRES_USER, which is a SUPERUSER. Set both in .env to close that." >&2
+        exit 0
+      fi
+
+      psql --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB" \
+           --set ON_ERROR_STOP=on --no-psqlrc \
+           --set app_user="$$APP_USER" --set app_password="$$APP_PASSWORD" \
+           --set migration_user="$$MIGRATION_USER" --set migration_password="$$MIGRATION_PASSWORD" \
+           <<'SQL'
+      -- Create each role only if it is absent. \gexec is used rather than a DO
+      -- block because psql does NOT interpolate its variables inside a
+      -- dollar-quoted body, so :'app_user' would arrive at the server as the
+      -- literal text rather than as the role name.
+      SELECT format('CREATE ROLE %I LOGIN', :'app_user')
+       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app_user')
+      \gexec
+      SELECT format('CREATE ROLE %I LOGIN', :'migration_user')
+       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'migration_user')
+      \gexec
+
+      -- The runtime principal: LOGIN only, and explicitly none of the five
+      -- attributes the finding reported as true on the bootstrap role.
+      ALTER ROLE :"app_user" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+                                  NOREPLICATION NOBYPASSRLS INHERIT
+                                  PASSWORD :'app_password';
+
+      -- Flyway's principal: owns the schema and may reshape it, never serves a
+      -- request. Also NOSUPERUSER - DDL inside one schema needs no superuser.
+      ALTER ROLE :"migration_user" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+                                        NOREPLICATION NOBYPASSRLS INHERIT
+                                        PASSWORD :'migration_password';
+
+      -- Connect and schema privileges. PUBLIC's default CREATE on schema public
+      -- is revoked so that only the migration role may reshape it; that default
+      -- is precisely what lets any role add a table.
+      REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+      GRANT CONNECT ON DATABASE :"DBNAME" TO :"app_user", :"migration_user";
+      GRANT USAGE ON SCHEMA public TO :"app_user";
+      GRANT USAGE, CREATE ON SCHEMA public TO :"migration_user";
+
+      -- DML for the runtime, across the eleven domain tables, the Spring Batch
+      -- metadata tables and flyway_schema_history alike. No CREATE, no DROP,
+      -- no ALTER, no TRUNCATE and no REFERENCES.
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app_user";
+      GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"app_user";
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO :"migration_user";
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO :"migration_user";
+
+      -- On a first initialisation the tables do not exist yet: Flyway creates
+      -- them after this script runs. Default privileges are therefore the part
+      -- that actually matters, because they apply to everything the named
+      -- creator makes LATER - so the runtime role can use V1's eleven tables
+      -- without this script ever running again. Declared for both possible
+      -- creators: the migration role, and the connected bootstrap role for the
+      -- fallback case where Flyway still connects as it. :"USER" is psql's own
+      -- variable for the connected user.
+      ALTER DEFAULT PRIVILEGES FOR ROLE :"migration_user" IN SCHEMA public
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_user";
+      ALTER DEFAULT PRIVILEGES FOR ROLE :"migration_user" IN SCHEMA public
+        GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO :"app_user";
+      ALTER DEFAULT PRIVILEGES FOR ROLE :"USER" IN SCHEMA public
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_user";
+      ALTER DEFAULT PRIVILEGES FOR ROLE :"USER" IN SCHEMA public
+        GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO :"app_user";
+      SQL
+
+      echo "carddemo: provisioned $$APP_USER (DML only) and $$MIGRATION_USER (DDL) as NOSUPERUSER."
 

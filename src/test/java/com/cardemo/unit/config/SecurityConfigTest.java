@@ -787,6 +787,153 @@ class SecurityConfigTest {
         }
     }
 
+    /**
+     * The scrape refusal has to be readable, because an unreadable one was mistaken for a missing route.
+     *
+     * <p><strong>Finding, severity Minor - remediated.</strong> A review concluded that
+     * {@code /actuator/prometheus} was "denied to every caller" with no matcher declared. The matcher was
+     * there and the credentialled scrape worked; what was missing was any way to tell that from the response.
+     * The refusal carried Spring's default body - {@code timestamp status error path} under
+     * {@code application/json} - with no {@code errorCode}, no {@code correlationId} and no usable detail, so
+     * a missing credential and a missing route looked identical from outside.
+     *
+     * <p>The cause was mechanical and is worth naming, because it recurs:
+     * {@code BasicAuthenticationEntryPoint} refuses via {@code HttpServletResponse.sendError}, which forwards
+     * to the registered error page, and {@code BasicErrorController} renders the body - so anything written
+     * afterwards is discarded. Its bearer counterpart sets the status directly, which is why the business
+     * chain's enveloping worked and this one's did not.
+     *
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    @Test
+    @DisplayName("F-S06: an anonymous scrape refusal carries the same problem envelope as every other refusal")
+    void metricsScrapeRefusalCarriesTheEnvelope() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environmentWithScrapeCredential())) {
+            final Outcome anonymous = call(ctx, "GET", "/actuator/prometheus", null);
+
+            assertThat(anonymous.status()).isEqualTo(401);
+            assertThat(anonymous.contentType())
+                    .as("the envelope is a media type as much as a shape. Answering application/json is how "
+                            + "this refusal escaped the contract in the first place")
+                    .startsWith("application/problem+json");
+            assertThat(anonymous.body())
+                    .as("a caller must be able to act on the code and an operator must be able to join the "
+                            + "response to a log record")
+                    .contains("\"errorCode\":\"CARDDEMO-AUTHENTICATION-REQUIRED\"")
+                    .contains("\"correlationId\":")
+                    .doesNotContain("\"timestamp\"");
+            assertThat(anonymous.body())
+                    .as("the detail must describe THIS chain. Directing a scraper to the sign-on operation "
+                            + "and a bearer token - which this chain refuses outright - is the misdirection "
+                            + "that made the endpoint look unreachable")
+                    .contains("HTTP Basic")
+                    .doesNotContain("sign-on");
+            assertThat(anonymous.challenge())
+                    .as("the realm must name the endpoint's purpose. The framework default is the literal "
+                            + "'Realm', which tells an operator debugging a failing scrape nothing")
+                    .startsWith("Basic realm=")
+                    .contains("carddemo-metrics-scrape");
+        }
+    }
+
+    /**
+     * The refusal must not disclose whether the deployment has a scrape credential at all. That is deployment
+     * state, and an anonymous caller has no claim on it - so the two refusals must be indistinguishable.
+     *
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    @Test
+    @DisplayName("F-S06: the refusal is identical whether or not a credential is configured")
+    void metricsScrapeRefusalDisclosesNothingAboutConfiguration() throws Exception {
+        final String configured;
+        final String absent;
+        try (AnnotationConfigWebApplicationContext ctx = context(environmentWithScrapeCredential())) {
+            configured = call(ctx, "GET", "/actuator/prometheus", null).body();
+        }
+        try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
+            absent = call(ctx, "GET", "/actuator/prometheus", null).body();
+        }
+
+        // The correlation identifier is per request by construction, so it is the one field that must differ.
+        assertThat(withoutCorrelationId(absent))
+                .as("an anonymous caller must not be able to probe whether a scrape credential exists. The "
+                        + "distinction is written to the log instead, where the operator who needs it looks")
+                .isEqualTo(withoutCorrelationId(configured));
+    }
+
+    /**
+     * A non-GET reaches the chain's deny-all. It must answer inside the envelope, and it must not advertise a
+     * mechanism this chain does not accept.
+     *
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    @Test
+    @DisplayName("F-S06: a non-GET scrape is refused 403 in the envelope, and advertises no bearer challenge")
+    void metricsScrapeRefusesOtherMethodsInTheEnvelope() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environmentWithScrapeCredential())) {
+            final Outcome posted = basicRequest(ctx, "POST", "/actuator/prometheus", SCRAPE_USER,
+                    SCRAPE_PASSWORD);
+
+            assertThat(posted.status())
+                    .as("a scrape never writes, so every other method falls to the chain's deny-all")
+                    .isEqualTo(403);
+            assertThat(posted.reachedApplication()).isFalse();
+            assertThat(posted.contentType()).startsWith("application/problem+json");
+            assertThat(posted.body())
+                    .contains("\"errorCode\":\"CARDDEMO-AUTHORIZATION-DENIED\"")
+                    .contains("\"correlationId\":");
+            assertThat(posted.body())
+                    .as("the detail must not speak of a token. This chain authenticates HTTP Basic "
+                            + "credentials and knows nothing of tokens")
+                    .doesNotContain("token");
+            assertThat(posted.challenge())
+                    .as("RFC 7235 defines WWW-Authenticate for 401. The bearer variant on a 403 is an RFC "
+                            + "6750 extension with no Basic counterpart, so telling a Basic-only caller "
+                            + "'Bearer' here is worse than saying nothing")
+                    .isNull();
+        }
+    }
+
+    /**
+     * Strips the per-request correlation identifier so two refusal bodies can be compared for everything else.
+     *
+     * @param body the problem envelope as written
+     * @return the same text with the correlation identifier's value replaced by a fixed marker
+     */
+    private static String withoutCorrelationId(final String body) {
+        return body.replaceAll("\"correlationId\":\"[^\"]*\"", "\"correlationId\":\"-\"");
+    }
+
+    /**
+     * Dispatches a request with HTTP Basic credentials and an arbitrary method.
+     *
+     * @param ctx the configured context
+     * @param method the HTTP method
+     * @param uri the request path
+     * @param user the user name to present
+     * @param password the credential to present
+     * @return the outcome of the dispatch
+     * @throws Exception if the mock layer cannot dispatch
+     */
+    private static Outcome basicRequest(final AnnotationConfigWebApplicationContext ctx,
+                                       final String method,
+                                       final String uri,
+                                       final String user,
+                                       final String password) throws Exception {
+        final Filter chain = ctx.getBean("springSecurityFilterChain", Filter.class);
+        final MockHttpServletRequest request = new MockHttpServletRequest(method, uri);
+        request.setServletPath(uri);
+        request.setRequestURI(uri);
+        request.addHeader("Authorization", "Basic " + Base64.getEncoder().encodeToString(
+                (user + ":" + password).getBytes(StandardCharsets.UTF_8)));
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+        final MockFilterChain terminal = new MockFilterChain();
+        chain.doFilter(request, response, terminal);
+        return new Outcome(response.getStatus(), terminal.getRequest() != null,
+                request.getSession(false) != null, response.getHeader("WWW-Authenticate"),
+                response.getContentType(), response.getContentAsString());
+    }
+
     @Test
     @DisplayName("a standard user reaches the eleven ordinary transactions and is refused the admin surface")
     void standardUserSurface() throws Exception {

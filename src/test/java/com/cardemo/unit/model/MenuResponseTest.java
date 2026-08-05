@@ -981,13 +981,24 @@ class MenuResponseTest {
         }
 
         @Test
-        @DisplayName("carries no annotation anywhere, so no class-level constraint fires unconditionally")
+        @DisplayName("carries no constraint annotation, so no class-level rule fires unconditionally")
         void carriesNoAnnotation() {
             assertThat(ReflectionCensus.declaredAnnotationTypeNames(MenuResponse.class)).isEmpty();
             assertThat(ReflectionCensus.declaredAnnotationTypeNames(MenuType.class)).isEmpty();
             assertThat(ReflectionCensus.declaredAnnotationTypeNames(MenuOption.class)).isEmpty();
-            assertThat(ReflectionCensus.declaredAnnotationTypeNames(MainMenuOption.class)).isEmpty();
-            assertThat(ReflectionCensus.declaredAnnotationTypeNames(AdminMenuOption.class)).isEmpty();
+
+            // The two option records carry exactly ONE annotation each, and it is a serialisation
+            // directive rather than a rule: @JsonIgnoreProperties keeps the XCTL operand off the wire
+            // (finding M-15) while leaving the component, its width check and its copybook citation on
+            // the record. What this test exists to forbid is a class-level CONSTRAINT - a jakarta
+            // validation annotation that would evaluate every field at once and report a different
+            // message set than the ordered chain the source runs. Asserted by name, so a constraint
+            // cannot be added here later without this failing.
+            for (final Class<?> optionRecord : new Class<?>[] {MainMenuOption.class,
+                AdminMenuOption.class}) {
+                assertThat(ReflectionCensus.declaredAnnotationTypeNames(optionRecord))
+                        .containsExactly("com.fasterxml.jackson.annotation.JsonIgnoreProperties");
+            }
         }
 
         @Test
@@ -1992,7 +2003,9 @@ class MenuResponseTest {
             assertThat(ReflectionCensus.declaredAnnotationTypeNames(MenuResponse.class))
                     .as("no class-level constraint annotation exists to fire unconditionally")
                     .isEmpty();
-            assertThat(ReflectionCensus.declaredAnnotationTypeNames(MainMenuOption.class)).isEmpty();
+            assertThat(ReflectionCensus.declaredAnnotationTypeNames(MainMenuOption.class))
+                    .as("the option record's sole annotation is a serialisation directive, not a rule")
+                    .containsExactly("com.fasterxml.jackson.annotation.JsonIgnoreProperties");
         }
     }
 

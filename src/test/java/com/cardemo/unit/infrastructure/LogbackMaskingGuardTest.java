@@ -312,6 +312,93 @@ class LogbackMaskingGuardTest {
     }
 
     @Nested
+    @DisplayName("Driver-rendered bound values and failing-row images (R16, R17)")
+    class DriverRenderedValues {
+
+        /**
+         * The shape {@code org.postgresql.util.PSQLException} builds for a failed batch: the statement
+         * re-rendered with its parameters inlined as {@code column=('value')}. Hibernate's
+         * {@code SqlExceptionHelper} logs it at ERROR, so it reaches the encoder on any failed write. The
+         * digits below are synthetic.
+         */
+        private static final String BATCHED_CUSTOMER_UPDATE =
+                "Batch entry 0 update customer set cust_addr_line_1=('618 Deshaun Route'),"
+                        + "cust_pri_card_holder_ind=('X'),cust_ssn=('020973888'),"
+                        + "cust_fico_credit_score=('274'),version=('1'::int8) "
+                        + "where cust_id=('1'::int8) was aborted: "
+                        + "ERROR: new row for relation \"customer\" violates check constraint "
+                        + "\"ck_customer_pri_card_holder_ind\"  Call getNextException to see other errors.";
+
+        @Test
+        @DisplayName("a bare nine-digit SSN inlined by the driver is withheld, and so is every sibling value")
+        void driverInlinedCustomerValuesAreWithheld() {
+            String masked = maskAll(BATCHED_CUSTOMER_UPDATE);
+
+            assertThat(masked)
+                    .as("AAP 0.7.7 and Rule 1 Clause D make SSN masking mandatory on every path, and the "
+                            + "label-keyed rules cannot reach a value separated from its column by \"=('\"")
+                    .doesNotContain("020973888")
+                    .doesNotContain("618 Deshaun Route")
+                    .doesNotContain("274");
+            assertThat(masked)
+                    .as("everything a diagnosis acts on survives: the relation, the constraint name and "
+                            + "the statement text")
+                    .contains("update customer set")
+                    .contains("cust_ssn=(")
+                    .contains("relation \\\"customer\\\"".replace("\\\"", "\""))
+                    .contains("ck_customer_pri_card_holder_ind");
+        }
+
+        @Test
+        @DisplayName("a sixteen-digit primary account number inlined by the driver is withheld")
+        void driverInlinedCardNumberIsWithheld() {
+            // Reproduced live: a foreign-key violation on the transaction insert published the PAN in
+            // clear, because R11 requires a label and the driver writes cardNum=('...') instead.
+            String masked = maskAll("Batch entry 0 insert into transaction (tran_amt,tran_card_num,"
+                    + "tran_cat_cd) values (('1.00'::numeric),('9680294154603697'),('1'::numeric)) "
+                    + "was aborted");
+
+            assertThat(masked).doesNotContain("9680294154603697");
+            assertThat(masked).contains("insert into transaction").contains("tran_card_num");
+        }
+
+        @Test
+        @DisplayName("the failing-row image is withheld while the constraint diagnosis survives")
+        void failingRowImageIsWithheld() {
+            String masked = maskAll("ERROR: new row for relation \"customer\" violates check constraint "
+                    + "\"ck_customer_ssn_numeric\"  Detail: Failing row contains "
+                    + "(1, Immanuel, Madeline, Kessler, 618 Deshaun Route, 020973888, 274, 1).");
+
+            assertThat(masked)
+                    .as("the tuple is positional and unlabelled, so no shape rule can tell the social "
+                            + "security number from the identifier beside it; the whole image goes")
+                    .doesNotContain("020973888")
+                    .doesNotContain("Immanuel");
+            assertThat(masked)
+                    .as("the relation and the constraint name sit before the marker and must survive")
+                    .contains("ck_customer_ssn_numeric")
+                    .contains("Failing row contains");
+        }
+
+        @ParameterizedTest
+        @CsvSource({
+            // PostgreSQL's referential detail carries no quotes, so it stays readable - and it is the most
+            // useful half of a foreign-key diagnosis.
+            "'Detail: Key (tran_type_cd)=(99) is not present in table \"transaction_type\".',"
+                    + "unquoted referential key detail",
+            // Every com.cardemo event renders its values with plain quotes or none, never wrapped in
+            // parentheses, so no application message is touched.
+            "'CT02 WRITE on dataset ''TRANSACT'' failed: resp=14 reas=0',application dataset diagnostic",
+            "'TRANSACTIONS PROCESSED : 000000300',the first counter DISPLAY line",
+            "'TRANSACTIONS REJECTED  : 000000002',the second counter DISPLAY line",
+        })
+        @DisplayName("neither new rule touches a diagnosis that carries no inlined literal")
+        void neitherRuleOverReaches(String value, String description) {
+            assertThat(maskAll(value)).as(description).isEqualTo(value);
+        }
+    }
+
+    @Nested
     @DisplayName("Nothing else is over-redacted")
     class NothingElseIsOverRedacted {
 
@@ -378,6 +465,114 @@ class LogbackMaskingGuardTest {
             assertThat(configText.split("<useSimpleClassName>false</useSimpleClassName>", -1))
                     .as("both throwableClassName and throwableRootCauseClassName must set it")
                     .hasSizeGreaterThanOrEqualTo(3);
+        }
+    }
+
+    /**
+     * The driver-statement rules R16 and R17.
+     *
+     * <p>A rejected insert reaches the log through Hibernate's {@code SqlExceptionHelper} carrying the
+     * driver's own message, and for a batched statement that message is every bound value interpolated
+     * into the SQL text - including {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} in
+     * cleartext. No rule above this one could reach it: the labelled card rule needs its label adjacent
+     * to the digits, and the field-name layer keys on JSON names while here the whole statement is the
+     * value of a single field.
+     *
+     * <p>The two rules are gated on the sequences {@code ('} and {@code )=(}, which occur in driver text
+     * and in nothing this application emits. The last two tests are what make that gate trustworthy:
+     * they assert the parity output and the application's own identifier diagnostics pass through
+     * untouched, which a bare digit-run rule could not do because {@code TRAN-ID PIC X(16)} has exactly
+     * the same shape as a card number.
+     */
+    @Nested
+    @DisplayName("Driver statement text is redacted")
+    class DriverStatementTextIsRedacted {
+
+        @Test
+        @DisplayName("the card number inside a batched insert's value list is redacted")
+        void theCardNumberInABatchedInsertIsRedacted() {
+            // Verbatim shape from the captured runtime evidence, abbreviated in the middle only.
+            String value = "Batch entry 0 insert into transaction (tran_amt,tran_card_num,tran_id) "
+                    + "values (('2.34'::numeric),('7427684863423209'),('0000000996722789')) was aborted: "
+                    + "ERROR: duplicate key value violates unique constraint \"pk_transaction\"";
+
+            String masked = maskAll(value);
+
+            assertThat(masked)
+                    .as("the sixteen digit PAN is the disclosure the finding names")
+                    .doesNotContain("7427684863423209");
+            assertThat(masked)
+                    .as("the record image is the wider half of the same disclosure: the same statement "
+                            + "shape on app/cpy/CVCUS01Y.cpy carries CUST-SSN and the address lines, so "
+                            + "every quoted value goes, not only the ones that look like a card number")
+                    .doesNotContain("0000000996722789")
+                    .doesNotContain("2.34");
+            assertThat(masked)
+                    .as("what an operator needs survives: the table, the column list and the condition")
+                    .contains("insert into transaction (tran_amt,tran_card_num,tran_id)")
+                    .contains("duplicate key value violates unique constraint");
+        }
+
+        @Test
+        @DisplayName("the key value of a constraint-violation detail is redacted, the column name is not")
+        void theConstraintDetailKeyValueIsRedacted() {
+            String value = "ERROR: duplicate key value violates unique constraint \"pk_transaction\"  "
+                    + "Detail: Key (tran_id)=(0000000996722789) already exists.";
+
+            String masked = maskAll(value);
+
+            assertThat(masked)
+                    .as("a unique constraint on this schema can be keyed on CARD-NUM, so no key value "
+                            + "reported by the driver may stay in the log")
+                    .doesNotContain("0000000996722789");
+            assertThat(masked)
+                    .as("which constraint was violated, and on which column, is the whole diagnostic "
+                            + "value of the line and is preserved")
+                    .contains("pk_transaction")
+                    .contains("Key (tran_id)=")
+                    .contains("already exists.");
+        }
+
+        @Test
+        @DisplayName("an unquoted identifier with no driver context is passed through")
+        void theGateIsContextualAndNotAShapeRule() {
+            // If either rule degraded into a bare digit-run redactor this would fail, and with it every
+            // transaction identifier in every diagnostic this application writes would be unreadable.
+            String value = "Refused a transaction add: identifier 0000000996722789 is taken on TRANSACT";
+
+            assertThat(maskAll(value)).isEqualTo(value);
+        }
+
+        @Test
+        @DisplayName("the parity literals survive both new rules byte for byte")
+        void theParityLiteralsSurviveTheNewRules() {
+            // Re-checked against the two rules that are gated on context rather than on a label: none of
+            // these lines contains a parenthesised quote or a constraint detail at all, so none is touched.
+            for (String value : List.of("FILE STATUS IS: NNNN0023", "FILE STATUS IS: NNNN9001",
+                    "TRANSACTIONS PROCESSED :000000012", "TRANSACTIONS REJECTED  :000000002",
+                    "START OF EXECUTION OF PROGRAM CBTRN02C",
+                    "END OF EXECUTION OF PROGRAM CBTRN02C")) {
+                assertThat(maskAll(value)).as("parity line [%s]", value).isEqualTo(value);
+            }
+        }
+
+        @Test
+        @DisplayName("both new rules are present, hazard free and free of property references")
+        void bothNewRulesArePresentAndHazardFree() {
+            List<String> contextual = valueRules.stream()
+                    .map(ValueRule::source)
+                    .filter(source -> source.contains("(?<=\\(')") || source.contains("(?<=\\)=\\("))
+                    .toList();
+
+            assertThat(contextual)
+                    .as("both rules must be present: R16 on the quoted literal, R17 on the detail key")
+                    .hasSize(2);
+            for (String source : contextual) {
+                assertThat(source)
+                        .as("logback truncates a rule from ':-' onward when it follows a '?', which fails "
+                                + "the whole appender and would leave no masking layer at all")
+                        .doesNotContain(TRUNCATION_HAZARD);
+            }
         }
     }
 }

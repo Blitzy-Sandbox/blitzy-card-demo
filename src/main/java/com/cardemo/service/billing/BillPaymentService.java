@@ -36,11 +36,11 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
@@ -1680,8 +1680,7 @@ public class BillPaymentService {
                 context.screen.cursor = CursorField.ACCOUNT_ID;
                 context.messageKind = MessageKind.ERROR;
                 retainFailure(context, PaymentOutcome.TRANSACTION_WRITE_FAILED,
-                        accessFailure(context, ioStatus, TRANSACT_FILE, OPERATION_WRITE,
-                                MSG_TRANSACTION_WRITE_FAILED));
+                        transactWriteFailure(context, ioStatus));
                 sendBillpayScreen(context);
             }
         }
@@ -1916,19 +1915,33 @@ public class BillPaymentService {
      * the rejection preserved as the cause, which routes it to the source's {@code WHEN OTHER} arm rather than
      * letting an untyped exception escape.</p>
      *
+     * <p><strong>Only a unique violation reports the duplicate condition.</strong> A KSDS could refuse a keyed
+     * write for exactly one reason this program names, so the duplicate arm is correct for that condition and
+     * for no other. {@code V1__create_schema.sql} declares {@code fk04_transaction_card},
+     * {@code fk05_transaction_type} and {@code fk06_transaction_category} on this relation, none of which VSAM
+     * had, and the card number written here comes from the account's cross-reference rather than from a
+     * literal, so a referential refusal is reachable. Reporting it as a duplicate claimed the generated
+     * identifier was taken - false - and invited a retry that can never succeed. The condition is therefore
+     * read from the driver's SQLSTATE by {@link FileStatusMapper#classifyStoreFailure(Throwable)} and only
+     * {@link FileStatusMapper.StoreFailureKind#DUPLICATE_KEY} takes the duplicate arm; the rest take the
+     * source's own {@code WHEN OTHER} arm, whose message is
+     * {@value #MSG_TRANSACTION_WRITE_FAILED}.</p>
+     *
      * @param context the per-invocation working storage
      * @return {@code '00'} on success, {@code '22'} on a duplicate, {@code '90'} on any other failure
      */
     private String execTransactWrite(final PaymentContext context) {
         context.ioFailureCause = null;
+        context.storeFailureKind = FileStatusMapper.StoreFailureKind.IO_ERROR;
         try {
             this.transactionRepository.saveAndFlush(context.tranRecord.toEntity());
             return recordResponse(context, CICS_RESP_NORMAL, IO_STATUS_SUCCESS);
-        } catch (final DataIntegrityViolationException failure) {
-            context.ioFailureCause = failure;
-            return recordResponse(context, CICS_RESP_DUPREC, IO_STATUS_DUPLICATE_KEY);
         } catch (final DataAccessException failure) {
             context.ioFailureCause = failure;
+            context.storeFailureKind = FileStatusMapper.classifyStoreFailure(failure);
+            if (context.storeFailureKind == FileStatusMapper.StoreFailureKind.DUPLICATE_KEY) {
+                return recordResponse(context, CICS_RESP_DUPREC, IO_STATUS_DUPLICATE_KEY);
+            }
             return recordResponse(context, CICS_RESP_IOERR, IO_STATUS_IO_ERROR);
         } catch (final IllegalArgumentException failure) {
             context.ioFailureCause = failure;
@@ -2046,6 +2059,45 @@ public class BillPaymentService {
         }
         return new FileAccessException(screenMessage, ioStatus, logicalFileName, operation,
                 context.ioFailureCause);
+    }
+
+    /**
+     * Chooses the typed failure that carries the {@code WHEN OTHER} arm of
+     * {@code app/cbl/COBIL00C.cbl:539}-{@code :548} outwards, from the store condition
+     * {@link #execTransactWrite} classified.
+     *
+     * <p>The arm is unchanged by this choice and is reproduced in full before this method is called: the error
+     * flag is set, {@value #MSG_TRANSACTION_WRITE_FAILED} is moved and the cursor is parked on the account
+     * field. What varies is only which exception type - and therefore which status - carries that outcome
+     * outwards, a decision the source never had to make.
+     *
+     * <p>A {@link FileStatusMapper.StoreFailureKind#CONSTRAINT_REFUSED} condition means one of the three
+     * foreign keys on {@code transaction} refused the row, which for this operation can only be
+     * {@code fk04_transaction_card}: the type and category codes are the literals {@code '02'} and {@code 2}
+     * from {@code app/cbl/COBIL00C.cbl:220-221} and both are seeded, whereas the card number is taken from the
+     * account's cross-reference and may name a card that is not in the card relation. That is a conflict
+     * between the stored data and the schema rather than an unreachable store, so it is reported as
+     * {@link DataIntegrityException} and answered {@code 409} rather than as an I/O failure and a {@code 5xx}
+     * that invites a pointless retry. Every other condition keeps the existing access failure.
+     *
+     * <p>No amount, card number or identifier reaches the message; the constraint detail travels only on the
+     * retained cause.
+     *
+     * @param context  the per-invocation working storage, carrying the classified condition and any cause
+     * @param ioStatus the file status the write recorded
+     * @return the exception to retain; never {@code null}
+     */
+    private CardDemoException transactWriteFailure(final PaymentContext context, final String ioStatus) {
+        if (context.storeFailureKind == FileStatusMapper.StoreFailureKind.CONSTRAINT_REFUSED) {
+            logIoDiagnostic(context, ioStatus, TRANSACT_FILE, OPERATION_WRITE);
+            LOG.warn("Bill payment WRITE on dataset '{}' was refused by a constraint the KSDS did not have; "
+                    + "the account's cross-referenced card names no row in the card relation",
+                    TRANSACT_FILE);
+            return new DataIntegrityException(MSG_TRANSACTION_WRITE_FAILED, null, TRANSACT_FILE,
+                    context.ioFailureCause);
+        }
+        return accessFailure(context, ioStatus, TRANSACT_FILE, OPERATION_WRITE,
+                MSG_TRANSACTION_WRITE_FAILED);
     }
 
     /* ---------------------------------------------------------------------------------------------------
@@ -3209,6 +3261,18 @@ public class BillPaymentService {
          * earlier fault's cause.
          */
         private RuntimeException ioFailureCause;
+
+        /**
+         * Which store condition the last failing write raised, as
+         * {@link FileStatusMapper#classifyStoreFailure(Throwable)} read it from the driver's SQLSTATE.
+         *
+         * <p>It has no counterpart in {@code app/cbl/COBIL00C.cbl}: {@code WS-RESP-CD} carried everything CICS
+         * could report about a keyed write to a KSDS, and a KSDS could only refuse a key that already existed.
+         * Reset alongside {@link #ioFailureCause} at the start of the write executor, so a later attempt cannot
+         * inherit an earlier condition.
+         */
+        private FileStatusMapper.StoreFailureKind storeFailureKind =
+                FileStatusMapper.StoreFailureKind.IO_ERROR;
 
         /** {@code CDEMO-TO-PROGRAM} at {@code :281}: the resolved transfer target. */
         private String toProgram;
