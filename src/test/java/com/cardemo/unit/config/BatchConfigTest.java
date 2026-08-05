@@ -53,6 +53,7 @@ import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Customer;
 import com.cardemo.model.entity.Transaction;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.CustomerRepository;
@@ -71,14 +72,24 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.JobInstance;
+import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.StepScope;
+import org.springframework.batch.core.job.flow.Flow;
+import org.springframework.batch.core.job.flow.JobExecutionDecider;
 import org.springframework.batch.core.scope.context.StepSynchronizationManager;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
 
@@ -96,8 +107,13 @@ import org.springframework.stereotype.Component;
  * {@code spring.main.allow-bean-definition-overriding: false} turns into a startup failure. Those tests
  * therefore assert the absence of the factory and construct the processor directly, which is exactly how a
  * step-scoped component is unit tested.
+ *
+ * <p>The bean inventory this class pins is the four dataset bindings plus the one job-instance diagnostic
+ * context listener. It also pins the <em>absence</em> of any {@code Job}, {@code Step}, {@code Flow} or
+ * {@code JobExecutionDecider} bean, because the six configuration classes in {@code com.cardemo.batch.jobs}
+ * are the designated definition sites for those and a second definition would abort startup.
  */
-@DisplayName("BatchConfig - the four CBSTM03B dataset bindings, and no report processor factory")
+@DisplayName("BatchConfig - four CBSTM03B dataset bindings, one job listener, and no job or processor bean")
 class BatchConfigTest {
 
     /** A window size small enough that the tests can observe more than one window. */
@@ -185,14 +201,30 @@ class BatchConfigTest {
             // regression guard: it fails the moment either registration is reintroduced alongside the
             // other, which is a failure a slice test would otherwise only surface as a startup error.
             assertThat(Arrays.stream(BatchConfig.class.getDeclaredMethods()).map(Method::getName))
-                    .as("BatchConfig owns the four FileService.Dataset bindings and nothing else; every "
-                            + "reader, processor and writer under batch/** registers by @Component")
+                    .as("BatchConfig owns the four FileService.Dataset bindings and the job-instance "
+                            + "diagnostic context listener; every reader, processor and writer under "
+                            + "batch/** registers by @Component")
                     .doesNotContain("transactionReportProcessor");
             assertThat(Arrays.stream(BatchConfig.class.getDeclaredMethods())
                     .filter(method -> method.isAnnotationPresent(Bean.class))
                     .map(Method::getReturnType))
-                    .as("the only bean type this class contributes is the DD binding")
-                    .containsOnly(FileService.Dataset.class);
+                    .as("the bean types this class contributes are the DD binding and the one job listener, "
+                            + "and nothing that any batch/** component already registers for itself")
+                    .containsOnly(FileService.Dataset.class, JobExecutionListener.class);
+        }
+
+        @Test
+        @DisplayName("no Job, Step or Flow bean is declared here: the six job classes are the definition sites")
+        void noJobStepOrFlowBeanIsDeclaredHere() {
+            // spring.main.allow-bean-definition-overriding is false, so a Job declared both here and in
+            // com.cardemo.batch.jobs would abort startup. The remedy is always to remove the duplicate from
+            // BatchConfig rather than from the job class, because the job classes are the designated
+            // definition sites. This assertion is what keeps that decision from being quietly reversed.
+            assertThat(Arrays.stream(BatchConfig.class.getDeclaredMethods())
+                    .filter(method -> method.isAnnotationPresent(Bean.class))
+                    .map(Method::getReturnType))
+                    .as("job identity, step topology and flow composition belong to com.cardemo.batch.jobs")
+                    .doesNotContain(Job.class, Step.class, Flow.class, JobExecutionDecider.class);
         }
 
         @Test
@@ -245,6 +277,185 @@ class BatchConfigTest {
             final TransactionReportProcessor second = newProcessor();
 
             assertThat(first).isNotSameAs(second);
+        }
+    }
+
+    @Nested
+    @DisplayName("The container accepts this class with overriding disabled, and gets the inventory it expects")
+    class ContainerRegistration {
+
+        /**
+         * The class under test in a real container, with overriding disabled exactly as the base profile sets
+         * it, so a colliding definition fails here rather than at deployment.
+         *
+         * <p>Collaborators are mocked because the assertion is about the bean inventory, not about data
+         * access. The two properties are supplied because the bucket key deliberately carries no inline
+         * default: an environment that has not named a bucket must fail rather than read from somewhere
+         * nobody chose.
+         */
+        private final ApplicationContextRunner runner = new ApplicationContextRunner()
+                .withAllowBeanDefinitionOverriding(false)
+                .withUserConfiguration(BatchConfig.class, StubCollaborators.class)
+                .withPropertyValues(
+                        "carddemo.batch.dataset-window-size=100",
+                        "carddemo.aws.s3.batch-output-bucket=carddemo-batch-output");
+
+        @Test
+        @DisplayName("four dataset bindings and exactly one job listener are contributed")
+        void fourBindingsAndOneListenerAreContributed() {
+            runner.run(context -> {
+                assertThat(context).hasNotFailed();
+                assertThat(context.getBeansOfType(FileService.Dataset.class))
+                        .as("one binding per DD of app/cbl/CBSTM03B.CBL:L58-L78")
+                        .hasSize(FileService.Dd.values().length);
+                assertThat(context.getBeansOfType(JobExecutionListener.class))
+                        .as("the job-instance diagnostic context contribution, and no competing listener")
+                        .containsOnlyKeys("jobInstanceMdcListener");
+            });
+        }
+
+        @Test
+        @DisplayName("no Job, Step or decider bean reaches the container from here")
+        void noJobStepOrDeciderBeanReachesTheContainer() {
+            runner.run(context -> {
+                assertThat(context.getBeansOfType(Job.class))
+                        .as("the six classes of com.cardemo.batch.jobs are the definition sites")
+                        .isEmpty();
+                assertThat(context.getBeansOfType(Step.class)).isEmpty();
+                assertThat(context.getBeansOfType(JobExecutionDecider.class)).isEmpty();
+            });
+        }
+
+        @Test
+        @DisplayName("the registered bindings satisfy the file service inventory in a live container")
+        void theRegisteredBindingsSatisfyTheInventory() {
+            runner.run(context -> {
+                final FileService service = new FileService(new FileStatusMapper(),
+                        List.copyOf(context.getBeansOfType(FileService.Dataset.class).values()));
+                service.afterPropertiesSet();
+                for (final FileService.Dd dd : FileService.Dd.values()) {
+                    assertThat(service.isBound(dd)).as("%s", dd.ddName()).isTrue();
+                }
+            });
+        }
+
+        @Test
+        @DisplayName("a non-positive window size fails the context rather than defaulting silently")
+        void aNonPositiveWindowSizeFailsTheContext() {
+            runner.withPropertyValues("carddemo.batch.dataset-window-size=0")
+                    .run(context -> assertThat(context).hasFailed());
+        }
+
+        /** The collaborators the bean methods take, as mocks: the inventory is what is under test. */
+        @Configuration(proxyBeanMethods = false)
+        static class StubCollaborators {
+
+            /** @return a mocked object store */
+            @Bean
+            S3Operations objectStorage() {
+                return mock(S3Operations.class);
+            }
+
+            /** @return a mocked account cluster */
+            @Bean
+            AccountRepository accountRepository() {
+                return mock(AccountRepository.class);
+            }
+
+            /** @return a mocked customer cluster */
+            @Bean
+            CustomerRepository customerRepository() {
+                return mock(CustomerRepository.class);
+            }
+
+            /** @return a mocked cross-reference cluster */
+            @Bean
+            CardCrossReferenceRepository cardCrossReferenceRepository() {
+                return mock(CardCrossReferenceRepository.class);
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("The job-instance diagnostic context listener establishes one key and leaks none")
+    class JobInstanceMdcListener {
+
+        /** A job instance identifier standing in for a real run. */
+        private static final long INSTANCE_ID = 4242L;
+
+        /** A value an enclosing scope might already have established on the thread. */
+        private static final String FOREIGN_VALUE = "99";
+
+        /**
+         * Builds an execution the way the framework hands one to a listener.
+         *
+         * @param instanceId the job instance identifier
+         * @return a job execution carrying that instance
+         */
+        private JobExecution execution(final long instanceId) {
+            return new JobExecution(new JobInstance(Long.valueOf(instanceId), "POSTTRAN"), null, null);
+        }
+
+        /** Leaves the diagnostic context exactly as the test found it, whatever the test did to it. */
+        @AfterEach
+        void clearDiagnosticContext() {
+            MDC.remove(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID);
+        }
+
+        @Test
+        @DisplayName("before-job publishes the instance identifier under the shared key, not a re-spelling")
+        void beforeJobPublishesTheInstanceIdentifier() {
+            batchConfig.jobInstanceMdcListener().beforeJob(execution(INSTANCE_ID));
+
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("the key is CorrelationIdFilter's own constant, so it has one definition")
+                    .isEqualTo(Long.toString(INSTANCE_ID));
+        }
+
+        @Test
+        @DisplayName("after-job removes what it established, so nothing leaks onto a pooled thread")
+        void afterJobRemovesWhatItEstablished() {
+            final JobExecutionListener listener = batchConfig.jobInstanceMdcListener();
+
+            listener.beforeJob(execution(INSTANCE_ID));
+            listener.afterJob(execution(INSTANCE_ID));
+
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("a leaked entry would mislabel an unrelated later run on the same pooled thread")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("after-job puts back a value it did not establish, rather than discarding it")
+        void afterJobRestoresAValueItDidNotEstablish() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID, FOREIGN_VALUE);
+
+            batchConfig.jobInstanceMdcListener().afterJob(execution(INSTANCE_ID));
+
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("the entry belonged to an enclosing scope, which is owed a restore and not a removal")
+                    .isEqualTo(FOREIGN_VALUE);
+        }
+
+        @Test
+        @DisplayName("an execution carrying no instance is skipped rather than raising or clearing")
+        void anExecutionWithNoInstanceIsSkipped() {
+            final JobExecutionListener listener = batchConfig.jobInstanceMdcListener();
+            MDC.put(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID, FOREIGN_VALUE);
+
+            listener.beforeJob(new JobExecution(Long.valueOf(INSTANCE_ID)));
+
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("a diagnostic aid must never fail, nor destroy an entry, over a missing instance")
+                    .isEqualTo(FOREIGN_VALUE);
+        }
+
+        @Test
+        @DisplayName("the listener is stateless, so one instance serves concurrent runs")
+        void theListenerIsStateless() {
+            assertThat(batchConfig.jobInstanceMdcListener().getClass().getDeclaredFields())
+                    .as("a field would be shared mutable state across every job the singleton is registered on")
+                    .isEmpty();
         }
     }
 

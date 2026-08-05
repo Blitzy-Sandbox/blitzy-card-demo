@@ -181,9 +181,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *   <li><em>{@code @EnableBatchProcessing} added to this class</em> - the single most likely regression in
  *       this file, which is why it is called out here. On Spring Boot 3.x that annotation <em>disables</em>
  *       Boot's Spring Batch auto-configuration, so the {@code JobRepository}, {@code JobLauncher} and
- *       {@code JobExplorer} beans that the authored batch layer needs - and that the authored
- *       {@code com.cardemo.config.BatchConfig} and the planned
- *       {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} will depend on - silently disappear.
+ *       {@code JobExplorer} beans that the authored batch layer needs - and that
+ *       {@code com.cardemo.config.BatchConfig} and
+ *       {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} depend on - silently disappear.
  *       Remedy: remove
  *       it and rely on auto-configuration. This class therefore carries {@code @SpringBootApplication} and
  *       nothing else.</li>

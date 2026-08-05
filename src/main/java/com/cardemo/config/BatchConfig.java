@@ -2,30 +2,58 @@
  * ******************************************************************
  * Program     : BatchConfig.java
  * Application : CardDemo
- * Type        : Java Spring Configuration (batch wiring)
+ * Type        : Java Spring Configuration (batch layer)
  * Function    : Registers the batch collaborators that cannot register
- *               themselves - the four repository backed dataset bindings
- *               that stand in for the CBSTM03B file access subprogram's
- *               four DD names. The step scoped report processor is NOT
- *               registered here: it carries @Component @StepScope itself,
- *               and a factory of the same derived bean name could not
- *               coexist with it.
- * Source      : app/cbl/CBTRN03C.cbl:L127-L137 (WS-REPORT-VARS, the six
+ *               themselves, and documents the topology of the five stage
+ *               pipeline the job classes declare. Two bean groups: the four
+ *               repository backed dataset bindings that stand in for the
+ *               CBSTM03B file access subprogram's four DD names, and the
+ *               job instance MDC contribution that batch events carry
+ *               because CorrelationIdFilter is HTTP scoped. The six Job
+ *               beans, the step scoped report processor, the chunk sizes
+ *               and the JobExecutionDecider are NOT registered here - see
+ *               the class documentation for where each one lives and why.
+ * Source      : app/jcl/POSTTRAN.jcl (45 lines; CBTRN02C at :L23 with no
+ *                 COND, DALYREJS LRECL=430 at :L34-L38)
+ *               + app/jcl/INTCALC.jcl (44 lines; CBACT04C at :L22 with
+ *                 PARM='2022071800', SYSTRAN LRECL=350 at :L37-L41)
+ *               + app/jcl/COMBTRAN.jcl (52 lines; SORT at :L22 over a
+ *                 concatenated SORTIN, then IDCAMS REPRO at :L41-L48)
+ *               + app/jcl/CREASTMT.JCL (97 lines, CRLF; 5 steps, the only
+ *                 three COND=(0,NE) gates in the corpus at :L56, :L66 and
+ *                 :L79, KEYS(32 0) at :L30, OUTREC projection at :L54)
+ *               + app/jcl/TRANREPT.jcl (84 lines) + app/proc/TRANREPT.prc
+ *                 (82 lines) + app/proc/REPROC.prc (32 lines)
+ *               + app/ctl/REPROCT.ctl (15 lines; one REPRO control card)
+ *               + app/cbl/CBTRN02C.cbl:L227-L231 (RC 4 iff the reject
+ *                 count exceeds zero) and :L707-L710 (abend code 999)
+ *               + app/cbl/CBTRN01C.cbl:L29-L58 (six SELECT statements, no
+ *                 WRITE, REWRITE or DELETE anywhere: a step, not a job)
+ *               + app/cbl/CBACT04C.cbl:L188-L222 (the control break and
+ *                 its end of file flush) and :L518-L520 with :L216 (the
+ *                 reachable empty paragraph the topology must still reach)
+ *               + app/cbl/CBTRN03C.cbl:L127-L137 (WS-REPORT-VARS, the six
  *                 per-run state items that forbid a singleton)
- *               + app/proc/TRANREPT.prc:L60-L78 (the report step and its
- *                 two SYMNAMES driven reporting dates)
  *               + app/cbl/CBSTM03B.CBL:L58-L97 (the four DD names, their
  *                 access modes, key widths and FILE STATUS groups)
  *               + app/cbl/CBSTM03A.CBL:L71-L83 (the CALL contract whose
- *                 WS-M03B-FLDT carries the record image)
- *               + app/jcl/CREASTMT.JCL:L47-L60 (the sort that fixes the
- *                 TRNXFILE order and the KEYS(32 0) work cluster)
+ *                 WS-M03B-FLDT carries the record image) and :L225-L233
+ *                 (the 51 by 10 table whose 510 ceiling streaming removes)
+ *               + app/cpy/CSMSG02Y.cpy:L21-L29, internally titled
+ *                 CABENDD.CPY (the four abend work areas, carrying the
+ *                 COBOL sequence numbers 001200 through 002000)
  *               + app/cpy/CVACT01Y.cpy + app/cpy/CVCUS01Y.cpy
  *                 + app/cpy/CVACT03Y.cpy + app/cpy/COSTM01.CPY (the four
  *                 record layouts the bindings render)
  *               @ 7756d89
- * Replaces    : the JCL EXEC PGM step definitions of the batch stream and
- *               the static CALL 'CBSTM03B' linkage
+ * Replaces    : JES2 initiators, the JCL EXEC PGM step definitions of the
+ *               batch stream, DFSORT, IDCAMS REPRO, COND=(0,NE) step
+ *               gating and the static CALL 'CBSTM03B' linkage
+ * Note        : app/jcl/CREASTMT.JCL uses an UPPERCASE extension and is the
+ *               only uppercase member of app/jcl - a case sensitive *.jcl
+ *               glob drops it and statement generation disappears from
+ *               scope entirely. Every pattern over that directory must be
+ *               matched case insensitively.
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -51,6 +79,7 @@ import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Customer;
 import com.cardemo.model.enums.FileStatus;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.CustomerRepository;
@@ -72,6 +101,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.scope.context.StepContext;
 import org.springframework.batch.core.scope.context.StepSynchronizationManager;
 import org.springframework.batch.item.ExecutionContext;
@@ -79,11 +110,18 @@ import org.springframework.data.domain.PageRequest;
 
 /**
  * Wiring for the batch tier: the four dataset bindings that give the {@code CBSTM03B} translation something
- * to read.
+ * to read, and the job instance diagnostic context that batch events are labelled with.
+ *
+ * <p>This class is the configuration seam of the five stage pipeline
+ * {@code POSTTRAN -> INTCALC -> COMBTRAN -> (CREASTMT || TRANREPT)}. It owns the shared infrastructure the
+ * jobs consume; it deliberately owns none of their identity. The section below on what this class does
+ * <strong>not</strong> declare is as load bearing as the one on what it does, because
+ * {@code spring.main.allow-bean-definition-overriding} is {@code false} and a bean declared in two places is
+ * a startup failure rather than a redundancy.
  *
  * <h2>What it does</h2>
  *
- * <p>One group of beans, which exists because the collaborators concerned cannot correctly register
+ * <p>Two groups of beans, both of which exist because the collaborators concerned cannot correctly register
  * themselves.
  *
  * <ol>
@@ -106,7 +144,177 @@ import org.springframework.data.domain.PageRequest;
  *       These four beans are the data access, one per DD, each backed by the repository that replaced the
  *       corresponding VSAM cluster. Without them the service dispatches into nothing and the statement
  *       processor fails on its first operation.</li>
+ *   <li><strong>The job instance diagnostic context contribution,</strong>
+ *       {@link #jobInstanceMdcListener()}. {@code com.cardemo.observability.CorrelationIdFilter} is HTTP
+ *       scoped and batch execution never passes through it, so the {@code jobInstanceId} key that batch
+ *       events carry alongside {@code correlationId}, {@code traceId} and {@code spanId} has to be
+ *       established by the batch layer. The observability package is deliberately not permitted a listener
+ *       of its own, so the shared declaration belongs here. It is one bean and there is no second listener
+ *       of any kind in this class: no {@code StepExecutionListener}, no {@code ItemReadListener}, no
+ *       {@code SkipListener} and no {@code ChunkListener}, because no cited source behaviour asks for
+ *       one.</li>
  *   </ol>
+ *
+ * <h2>What this class does NOT declare, and where each one lives</h2>
+ *
+ * <p>Five things a reader might expect here are declared elsewhere, and each absence is a decision rather
+ * than an omission.
+ *
+ * <dl>
+ *   <dt>The six {@code Job} beans</dt>
+ *   <dd>{@code com.cardemo.batch.jobs.DailyTransactionPostingJob},
+ *       {@code com.cardemo.batch.jobs.InterestCalculationJob},
+ *       {@code com.cardemo.batch.jobs.CombineTransactionsJob},
+ *       {@code com.cardemo.batch.jobs.StatementGenerationJob},
+ *       {@code com.cardemo.batch.jobs.TransactionReportJob} and
+ *       {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} are each a {@code @Configuration} class
+ *       declaring its own {@code Job}, and each is the designated definition site for it. That is why this
+ *       class declares none.
+ *       <p><strong>Conflict resolution, stated so it is not rediscovered by debugging:</strong>
+ *       {@code spring.main.allow-bean-definition-overriding} is {@code false}, so a duplicate {@code Job}
+ *       bean definition throws {@code BeanDefinitionOverrideException} at startup rather than silently
+ *       shadowing. If that happens, the correct remedy is to remove the duplicate from {@code BatchConfig},
+ *       <strong>not</strong> from the job class, because the job classes are the designated definition
+ *       sites.</p></dd>
+ *   <dt>The step topology and the chunk sizes</dt>
+ *   <dd>Each job declares its own {@code Step} and {@code Flow} beans under its own bean name constants, and
+ *       binds its own chunk size through a two level fallback described under the configuration table below.
+ *       A chunk size is a commit interval and a tunable, never a parity contract: no program in
+ *       {@code app/cbl} commits per record.</dd>
+ *   <dt>The {@code JobExecutionDecider}</dt>
+ *   <dd>Declared by the jobs that need one, for the reason developed under the gating section below: the
+ *       source's step gating is not where a reader would guess.</dd>
+ *   <dt>The step scoped report processor</dt>
+ *   <dd>See the block comment before the bean methods. {@code TransactionReportProcessor} carries
+ *       {@code @Component @StepScope} itself and a factory here would derive a colliding bean name.</dd>
+ *   <dt>Cloud clients, persistence and log masking</dt>
+ *   <dd>{@code com.cardemo.config.AwsConfig} constructs the object store, queue and topic clients and owns
+ *       every bucket, queue and topic binding. {@code com.cardemo.config.JpaConfig} owns the persistence and
+ *       migration settings. {@code com.cardemo.observability.MetricsConfig} owns the four named counters.
+ *       {@code src/main/resources/logback-spring.xml} owns secret masking, profile invariantly. None of the
+ *       four is redeclared here, and no dependency is added here: version pinning is discharged by the root
+ *       {@code pom.xml}.</dd>
+ *   </dl>
+ *
+ * <h2>Exactly six jobs, and never a seventh</h2>
+ *
+ * <p>The pipeline is {@code POSTTRAN}, then {@code INTCALC}, then {@code COMBTRAN}, then the two independent
+ * terminal branches {@code CREASTMT} and {@code TRANREPT} composed with a split, plus the orchestrator that
+ * composes the whole stream. Two groups of programs look like candidates for a job of their own and are not.
+ *
+ * <ul>
+ *   <li><strong>{@code CBTRN01C} is a step, never a job.</strong> {@code app/cbl/CBTRN01C.cbl} is 491 lines
+ *       and read only: it declares six {@code SELECT} statements at {@code :L29-L58} and its complete verb
+ *       inventory is {@code OPEN}, {@code READ}, {@code CLOSE} and {@code DISPLAY}, with no {@code WRITE},
+ *       {@code REWRITE} or {@code DELETE} anywhere in it. <strong>No member of {@code app/jcl} executes
+ *       it</strong>, so it has no distinct job to be translated from, and inventing one would be inventing
+ *       control flow. It contributes pre-flight validation and diagnostic logic as an explicitly labelled
+ *       read-only step inside the posting job.</li>
+ *   <li><strong>The four simple readers are verification steps.</strong> {@code app/cbl/CBACT01C.cbl} (193
+ *       lines), {@code CBACT02C.cbl} (178), {@code CBACT03C.cbl} (178) and {@code CBCUS01C.cbl} (178) have a
+ *       verb inventory of {@code OPEN}, {@code READ} and {@code CLOSE} only. Their JCL members are
+ *       {@code READACCT}, {@code READCARD}, {@code READXREF} and {@code READCUST}. They become read-only
+ *       verification steps wired through the four readers in {@code com.cardemo.batch.readers}, not four
+ *       more jobs.</li>
+ *   </ul>
+ *
+ * <h2>{@code COND=(0,NE)} gating: three sites, all inside one member</h2>
+ *
+ * <p>This is narrower than the phrase "COND gating" suggests, and the difference decides where a decider may
+ * legitimately appear. {@code COND=(0,NE)} occurs at exactly three sites in the whole corpus, all of them in
+ * {@code app/jcl/CREASTMT.JCL}: {@code STEP020} at {@code :L56}, {@code STEP030} at {@code :L66} and
+ * {@code STEP040} at {@code :L79}. {@code DELDEF01} at {@code :L22} and {@code STEP010} at {@code :L44}
+ * carry none, and {@code app/jcl/POSTTRAN.jcl}, {@code app/jcl/INTCALC.jcl}, {@code app/jcl/COMBTRAN.jcl}
+ * and {@code app/jcl/TRANREPT.jcl} contain no {@code COND} at all.
+ *
+ * <p><strong>The consequence is load bearing.</strong> Gating derived from {@code COND} exists only
+ * <em>within</em> the statement generation job. Everywhere else the gating is <em>between</em> jobs and
+ * belongs to the orchestrator. A decider added to a job whose source carries no {@code COND} would be
+ * invented control flow, so none is.
+ *
+ * <h2>The return code mapping, and why two of its outcomes must not be conflated</h2>
+ *
+ * <p>Return codes 0, 4, 8 and 12 map onto completed, completed-with-rejects, failed and abend. The mapping
+ * is exhaustive and every unmatched value has a defined behaviour; there is no silent default to continue.
+ *
+ * <ul>
+ *   <li><strong>Return code 4 is set if and only if the reject count exceeds zero.</strong> The per-record
+ *       loop of {@code app/cbl/CBTRN02C.cbl} runs at {@code :L202-L234}, and {@code :L227-L231} is the sole
+ *       determinant: after every file closes, the processed and rejected counts are displayed and
+ *       {@code MOVE 4 TO RETURN-CODE} executes exactly when {@code WS-REJECT-COUNT} is greater than zero.
+ *       There is no second condition, no threshold, no percentage and no warning band, and none may be
+ *       added.</li>
+ *   <li><strong>An abend is code 999 with return code 12.</strong> {@code 9999-ABEND-PROGRAM} at
+ *       {@code app/cbl/CBTRN02C.cbl:L707-L710} displays an abend message, zeroes a timing field, moves 999
+ *       into the abend code and calls the language environment abend service. It surfaces as
+ *       {@code com.cardemo.exception.FatalProcessingException}, whose field set comes from
+ *       {@code app/cpy/CSMSG02Y.cpy:L21-L29} - a copybook internally titled
+ *       {@code CABENDD.CPY}, carrying the COBOL sequence numbers 001200 through 002000, and holding
+ *       {@code ABEND-CODE X(4)}, {@code ABEND-CULPRIT X(8)},
+ *       {@code ABEND-REASON X(50)} and {@code ABEND-MSG X(72)}. It is <strong>not</strong> a message
+ *       copybook, and reading it as one loses the abend field set.</li>
+ *   <li><strong>Return code 4 and return code 12 are independent paths.</strong> A run with rejects is a
+ *       completed run with a distinguishable exit status; a run that abends is a failure. Conflating them
+ *       makes a routine reject look like an outage, and letting a reject drive a failure makes the pipeline
+ *       stop on data the source accepted.</li>
+ *   <li><strong>Reject codes are business outcomes and are never thrown.</strong>
+ *       {@code com.cardemo.model.enums.RejectCode} is a closed enumeration of exactly five constants - 100,
+ *       101, 102, 103 and 109 - each carrying its exact literal description. They drive an exit status.</li>
+ *   </ul>
+ *
+ * <h2>DFSORT and IDCAMS become in-process Java, and no external process is spawned</h2>
+ *
+ * <p>{@code java.util.Comparator} replaces DFSORT and {@code JdbcTemplate.batchUpdate} replaces IDCAMS
+ * {@code REPRO}. Nothing shells out: {@code Runtime.exec} and {@code ProcessBuilder} appear nowhere in the
+ * batch tier, which is both an architectural requirement and an independent rule obligation, since the rule
+ * set names the {@code exec} family among the risky patterns to flag. A comparator must also be total and
+ * stable so that a sort is reproducible run to run, and stateless so that it is safe to share. For the same
+ * reason no untrusted payload is ever deserialised as Java - an object store payload and a queue message
+ * body are parsed, never handed to an {@code ObjectInputStream} - and no SQL or JPQL is assembled by string
+ * concatenation.
+ *
+ * <p>Three sort specifications are reproduced.
+ *
+ * <ul>
+ *   <li>The report sort, {@code app/jcl/TRANREPT.jcl:L41-L48} and {@code app/proc/TRANREPT.prc:L39-L46}:
+ *       card number ascending, with an <strong>inclusive</strong> string date range over the ten character
+ *       prefix of the processing timestamp. The symbols place the card number at offset 263 for sixteen
+ *       zoned-decimal characters and the processing date at offset 305 for ten characters.</li>
+ *   <li>The combine sort, {@code app/jcl/COMBTRAN.jcl:L28-L30}: transaction identifier ascending over a
+ *       <strong>concatenated</strong> input of two generations, the transaction backup at {@code :L24} and
+ *       the interest output at {@code :L26}.</li>
+ *   <li>The statement sort, {@code app/jcl/CREASTMT.JCL:L53-L54}: card number then identifier, plus a record
+ *       projection.</li>
+ *   </ul>
+ *
+ * <p><strong>The statement projection silently truncates two bytes, and that is reproduced rather than
+ * corrected.</strong> {@code OUTREC FIELDS=(1:263,16,17:1,262,279:279,50)} emits a sixteen byte card number,
+ * then 262 bytes of the record head, then fifty bytes taken from offset 279 - which is the whole twenty-six
+ * byte originating timestamp plus only the <em>first twenty-four</em> of the twenty-six processing timestamp
+ * bytes, and drops the twenty byte trailing filler entirely. The projected processing timestamp therefore
+ * arrives as a twenty-four character value padded to twenty-six. Repairing it would change the emitted bytes
+ * and break the parity comparison against the frozen corpus, so it is owed an entry in the planned
+ * {@code DECISION_LOG.md} instead.
+ *
+ * <p>Record geometry is a byte contract and not a preference, because the parity comparison is made on the
+ * emitted bytes: a wrong length is a wrong output even when every field value is right. The five lengths are
+ * 430 for a reject record - 350 data bytes plus an 80 byte trailer of a four digit reason code and a 76
+ * character description, {@code app/cbl/CBTRN02C.cbl:L176-L182} confirmed by
+ * {@code app/jcl/POSTTRAN.jcl:L36} - then 350 for a transaction or interest record, 133 for a report line,
+ * 100 for a markup statement line and 80 for a text statement line.
+ *
+ * <h2>Batch metadata tables come from the framework, and never from a fourth migration</h2>
+ *
+ * <p>The {@code BATCH_*} metadata tables are created by the framework's own schema script through
+ * {@code spring.batch.jdbc.initialize-schema}, which the local and test profiles set to {@code always} and
+ * the production profile keeps at {@code never} under the least privilege standard. There are exactly three
+ * migrations and this class adds no fourth, nor any batch metadata to the first: a validation gate asserts
+ * that the first migration creates exactly eleven tables, so adding metadata there fails it.
+ *
+ * <p>{@code spring.batch.job.enabled} is {@code false}, so jobs do not run at startup. Launching is
+ * explicit: the orchestrator, or the queue listener that replaces the JES2 internal reader driven by
+ * {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} in {@code app/cbl/CORPT00C.cbl}. This class therefore declares no
+ * runner, no scheduler and nothing annotated to fire on startup.
  *
  * <h2>The record-image contract, and why these bindings render fixed-width text</h2>
  *
@@ -142,17 +350,55 @@ import org.springframework.data.domain.PageRequest;
  *
  * <h2>Key configuration and defaults</h2>
  *
+ * <p>Every key is reached through Spring property binding. This class calls {@code System.getenv} nowhere,
+ * assumes no absolute host path, and relies on no default charset, locale or time zone.
+ *
  * <table border="1">
- *   <caption>Configuration this class reads</caption>
+ *   <caption>Configuration this class binds directly</caption>
  *   <tr><th>Key</th><th>Default</th><th>Meaning</th></tr>
- *   <tr><td>{@code jobParameters['startDate']}</td><td>none</td>
- *       <td>{@code WS-START-DATE}, the inclusive lower bound of the report period</td></tr>
- *   <tr><td>{@code jobParameters['endDate']}</td><td>none</td>
- *       <td>{@code WS-END-DATE}, the inclusive upper bound of the report period</td></tr>
  *   <tr><td>{@code carddemo.batch.dataset-window-size}</td><td>{@value #DEFAULT_WINDOW_SIZE}</td>
  *       <td>Rows fetched per keyset window by the two sequential bindings. Affects memory and round trips
- *           only; it cannot affect the emitted output, because the order is fixed independently of it</td></tr>
+ *           only; it cannot affect the emitted output, because the order is fixed independently of it. Must
+ *           be positive: a non-positive value is refused by name rather than defaulted silently</td></tr>
+ *   <tr><td>{@code carddemo.aws.s3.batch-output-bucket}</td><td><strong>none</strong> - an unset value
+ *       fails fast</td>
+ *       <td>The bucket the statement sort step publishes its projected work object to, and the same key
+ *           {@code StatementGenerationJob} publishes it under. Deliberately without an inline default so an
+ *           unconfigured environment cannot silently read from somewhere no operator named</td></tr>
  * </table>
+ *
+ * <table border="1">
+ *   <caption>Configuration this class honours but does not bind or redeclare</caption>
+ *   <tr><th>Key</th><th>Value in force</th><th>Why it matters here</th></tr>
+ *   <tr><td>{@code spring.main.allow-bean-definition-overriding}</td><td>{@code false}</td>
+ *       <td>Makes a duplicate bean definition a startup failure. It is the reason the ownership rules above
+ *           are rules rather than preferences</td></tr>
+ *   <tr><td>{@code spring.batch.job.enabled}</td><td>{@code false} (framework default {@code true})</td>
+ *       <td>Jobs do not auto-launch. Not a defect: launching is explicit</td></tr>
+ *   <tr><td>{@code spring.batch.jdbc.initialize-schema}</td>
+ *       <td>{@code never} at base and in production, {@code always} in local and test</td>
+ *       <td>Creates the {@code BATCH_*} metadata tables from the framework's own script. No migration
+ *           creates them</td></tr>
+ *   <tr><td>{@code carddemo.batch.chunk-size}</td><td>{@code 100}</td>
+ *       <td>The middle level of each job's two level chunk-size fallback. Each job reads its own
+ *           {@code carddemo.batch.<id>.chunk-size} first, falls back to this, and only then to its own
+ *           constant. Giving a per-job key a value in a profile resolves the first level and stops this
+ *           global one reaching that job, which is why the per-job keys are named in the profile without
+ *           values</td></tr>
+ *   <tr><td>{@code carddemo.batch.jobs.<id>.name}</td>
+ *       <td>the JCL member name: {@code POSTTRAN}, {@code INTCALC}, {@code COMBTRAN}, {@code CREASTMT},
+ *           {@code TRANREPT}</td>
+ *       <td>Bound by each job class, not here, so the identity has one owner</td></tr>
+ * </table>
+ *
+ * <p>Two run parameters are deliberately <strong>not</strong> properties. The interest date, which
+ * {@code app/jcl/INTCALC.jcl:L22} passes as {@code PARM='2022071800'}, is a job parameter: it is ten numeric
+ * characters - eight date digits followed by two zeros, with no separators - and is <em>not</em> an ISO date,
+ * because {@code app/cbl/CBACT04C.cbl:L175-L181} receives it as a linkage parameter and concatenates it into
+ * generated transaction identifiers. The report period bounds, which
+ * {@code app/jcl/TRANREPT.jcl:L43-L44} supplies as {@code PARM-START-DATE} and {@code PARM-END-DATE}, are job
+ * parameters for the same reason, and are also the body of the queue message that reproduces the 80 byte
+ * parameter record.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -174,7 +420,105 @@ import org.springframework.data.domain.PageRequest;
  *   <dd>The two sequential streams disagreed on order. Check that nothing reordered the statement sort:
  *       the transaction stream must be card-then-identifier ascending and the cross-reference stream must
  *       be card ascending, or the source's early exit ends the scan too soon.</dd>
+ *   <dt>Startup fails with {@code BeanDefinitionOverrideException} naming a job bean</dt>
+ *   <dd>Two definitions of the same {@code Job} exist and {@code spring.main.allow-bean-definition-overriding}
+ *       is {@code false}. Remove the duplicate from {@code BatchConfig}, <strong>not</strong> from the job
+ *       class: the six classes in {@code com.cardemo.batch.jobs} are the designated definition sites. The
+ *       same applies to a step, a flow or a processor whose derived bean name collides with a
+ *       {@code @Component}.</dd>
+ *   <dt>A job fails on a missing {@code BATCH_JOB_INSTANCE} or {@code BATCH_STEP_EXECUTION} table</dt>
+ *   <dd>{@code spring.batch.jdbc.initialize-schema} is {@code never} in the active profile, which is
+ *       deliberate at base and in production. Run under the local or test profile, or provision the
+ *       framework's own schema script out of band. Do <strong>not</strong> add a migration for it: the
+ *       migration set is closed at three and a gate asserts the first one creates exactly eleven
+ *       tables.</dd>
+ *   <dt>No job runs at startup and no error appears</dt>
+ *   <dd>Expected and by design: {@code spring.batch.job.enabled} is {@code false}. Launch through the
+ *       orchestrator or by publishing to the report queue that replaces the JES2 internal reader. Adding a
+ *       runner, a scheduler or a startup hook to "fix" this reintroduces the behaviour the flag exists to
+ *       suppress - every job running on every boot.</dd>
+ *   <dt>The combine load step fails on a duplicate key</dt>
+ *   <dd>The interest run was repeated with the same date parameter, so it minted colliding transaction
+ *       identifiers: {@code app/cbl/CBACT04C.cbl} concatenates the ten character date with a run-sequential
+ *       suffix, and {@code app/jcl/COMBTRAN.jcl:L48} then loads the combined generation into the transaction
+ *       cluster. Surfacing it as a duplicate-record failure is correct; a silent upsert would hide a repeated
+ *       run and is never the remedy. Re-run the interest job with the intended date.</dd>
+ *   <dt>A batch log line carries no {@code jobInstanceId}</dt>
+ *   <dd>The job was launched without the listener of {@link #jobInstanceMdcListener()} or an equivalent
+ *       registered on it. A listener bean is not applied to a job implicitly - neither the batch framework
+ *       nor the Boot auto-configuration collects listener beans - so it takes effect only where a job builder
+ *       registers it.</dd>
  *   </dl>
+ *
+ * <h2>Findings this class carries, by severity</h2>
+ *
+ * <dl>
+ *   <dt>Blocker</dt>
+ *   <dd>"Correcting" the two byte truncation of the statement projection, or matching {@code app/jcl} with a
+ *       case sensitive {@code *.jcl} pattern. The first changes the emitted bytes and fails the parity
+ *       comparison; the second drops {@code app/jcl/CREASTMT.JCL} and removes statement generation from
+ *       scope with no error raised anywhere.</dd>
+ *   <dt>High</dt>
+ *   <dd>A seventh job; promoting {@code CBTRN01C} or any of the four simple readers to a job; a fourth
+ *       migration or batch metadata in the first; a diagnostic context key left behind on a pooled thread;
+ *       and conflating return code 4 with return code 12.</dd>
+ *   <dt>Medium</dt>
+ *   <dd>Two legacy naming defects that are left as they are, because repairing either would change behaviour
+ *       the parity comparison measures. {@code app/jcl/TRANREPT.jcl} names two different steps
+ *       {@code STEP05R}, at {@code :L23} and {@code :L37}, which {@code app/proc/TRANREPT.prc:L21} shows was
+ *       meant to be {@code STEP01R}. And the markup statement record length is 80 in the pre-delete step at
+ *       {@code app/jcl/CREASTMT.JCL:L69} but 100 in the execution step at {@code :L94}; the 100 is
+ *       authoritative, independently confirmed by the hundred character field at
+ *       {@code app/cbl/CBSTM03A.CBL:L149}. Also medium: {@code carddemo.batch.jobs.<id>.enabled},
+ *       {@code carddemo.batch.jobs.creastmt.steps} and {@code carddemo.batch.jobs.tranrept.name} are
+ *       declared in the profile but bound by nothing, the last because the report job binds
+ *       {@code carddemo.batch.tranrept.name} instead. The remedy is to give them a consumer or withdraw
+ *       them, and in either case to keep the one spelling; introducing a second binding here would create
+ *       exactly the drift the profile warns against, and binding them into a bean nothing consumes would be
+ *       dead code.</dd>
+ *   <dt>Low</dt>
+ *   <dd>{@code app/proc/TRANREPT.prc:L1} and {@code app/proc/REPROC.prc:L1} both declare
+ *       {@code //REPROC PROC}, so the internal procedure name of the first differs from the member name that
+ *       {@code EXEC PROC=TRANREPT} resolves. And {@code app/jcl/CREASTMT.JCL:L90} is a corrupted DD line,
+ *       carrying fragments of a {@code DCB} and a data set name spliced into a {@code SPACE} parameter. Both
+ *       are left exactly as found.</dd>
+ *   </dl>
+ *
+ * <p>Each preserved defect above is owed an entry in the planned {@code DECISION_LOG.md}, and each source
+ * paragraph named in this class is owed a row in the planned {@code TRACEABILITY_MATRIX.md}. Neither register
+ * exists at this commit, so the obligation is stated rather than the fact.
+ *
+ * <h2>Not available</h2>
+ *
+ * <p>Four things a reader may look for are genuinely absent from the source, and are stated as absent rather
+ * than filled in with an invention.
+ *
+ * <ul>
+ *   <li><strong>{@code app/jcl/COMBTRAN.jcl} has no COBOL program.</strong> Its logic is entirely SORT and
+ *       IDCAMS control cards, so the JCL itself is the source of truth for that job. What would be needed to
+ *       remove this gap is a program that does not exist.</li>
+ *   <li><strong>{@code CBTRN01C} has no distinct JCL job.</strong> No member of {@code app/jcl} executes it,
+ *       which is why it is a step of the posting job rather than a job.</li>
+ *   <li><strong>{@code app/jcl/CBADMCDJ.jcl}, {@code app/jcl/OPENFIL.jcl} and {@code app/jcl/CLOSEFIL.jcl}
+ *       have no Java analogue.</strong> The first installs the CICS resource definitions and is superseded
+ *       by {@code com.cardemo.config.SecurityConfig}; the latter two manage online data set availability and
+ *       are superseded by {@code com.cardemo.observability.HealthIndicators}. None of the three contributes a
+ *       step here.</li>
+ *   <li><strong>No throughput or latency objective exists anywhere in the source.</strong> The corpus
+ *       publishes no service level, so the performance gate records a measured baseline and not a target. No
+ *       chunk size service level and no throughput threshold is invented here, and the chunk sizes are
+ *       tunables rather than contracts.</li>
+ *   </ul>
+ *
+ * <h2>A labelled deviation, not parity</h2>
+ *
+ * <p>{@code app/cbl/CBSTM03A.CBL:L225-L233} declares the statement working set as a fixed table of 51 card
+ * entries holding ten transactions each - a hard ceiling of 510 - and the building loop increments both
+ * indices with no bounds check whatsoever, so a 511th transaction overran storage silently. The Java
+ * translation streams instead, which removes the silent corruption but is a behaviour change at scale and is
+ * therefore labelled as a deviation rather than presented as equivalence. The replacement bound fails loudly
+ * instead of truncating. This is owed an entry in the planned {@code DECISION_LOG.md}, and the legacy ceiling
+ * is owed a row in the planned {@code TRACEABILITY_MATRIX.md} as the historical capacity limit.
  *
  * <h2>Thread safety and state</h2>
  *
@@ -347,6 +691,98 @@ public class BatchConfig {
     @Bean
     public FileService.Dataset acctFileDataset(final AccountRepository accountRepository) {
         return new AcctFileDataset(accountRepository);
+    }
+
+    /**
+     * The job instance contribution to the diagnostic context, and the only listener this class declares.
+     *
+     * <p><strong>Purpose.</strong> Batch events must be labelled with the job instance identifier alongside
+     * the {@code correlationId}, {@code traceId} and {@code spanId} trio, because that identifier is what
+     * makes a run's logs correlatable with its output objects: the batch writers derive their object-storage
+     * key prefixes from the same value, and those deterministic per-run prefixes are what replace the
+     * generation data group bases of the frozen job stream.
+     * {@code com.cardemo.observability.CorrelationIdFilter} is HTTP scoped and batch execution never reaches
+     * it, and the observability package is deliberately not permitted a listener of its own, so the shared
+     * declaration belongs here.
+     *
+     * <p><strong>The key is reused, never re-spelled.</strong> The value is written through
+     * {@code CorrelationIdFilter.propagateJobInstanceId(String)}, so the key name has exactly one definition
+     * in the application and the log-injection guard on the value is applied in exactly one place. Nothing
+     * else is put into the diagnostic context here: no credential, token, hash, card number, government
+     * identifier or any other sensitive value, and the masking in
+     * {@code src/main/resources/logback-spring.xml} is neither duplicated nor weakened.
+     *
+     * <p><strong>Inputs and outputs.</strong> Takes no argument and returns a stateless singleton. It holds no
+     * field, no counter and no thread local, which is why one instance may be registered on any number of
+     * jobs running concurrently.
+     *
+     * <p><strong>Side effects.</strong> Mutates exactly one diagnostic context entry on the thread the job
+     * runs on, and leaves every other entry untouched.
+     *
+     * <p><strong>Why an anonymous class and not a lambda.</strong>
+     * {@code org.springframework.batch.core.JobExecutionListener} declares two methods and both are
+     * {@code default}, so it has no abstract method and is not a functional interface: a lambda for it does
+     * not compile. An anonymous class is the closest available form and, being declared inside this file, adds
+     * no file to the package.
+     *
+     * <p><strong>Registration is explicit, and that is worth knowing before debugging an absent key.</strong>
+     * Neither the batch framework nor the Boot auto-configuration collects {@code JobExecutionListener} beans,
+     * so a listener takes effect only where a job builder registers it. Each of the six job classes registers
+     * its own nested listener, because each additionally emits the {@code DISPLAY} messages of the program it
+     * translates and those messages differ per job; every one of them writes this same key through the same
+     * helper rather than through a literal. This bean is the shared declaration the diagnostic context
+     * contract names, and the registration point for a job composed without a listener of its own.
+     *
+     * <p><strong>Error modes.</strong> A diagnostic aid must never fail the job it is labelling, so an
+     * execution that carries no job instance - which a malformed or partially constructed execution can - is
+     * skipped rather than raising. The clearing call in the after-job callback is the <em>first</em> statement
+     * of that callback, so no earlier statement can throw and leave the entry behind on a pooled thread; a
+     * leaked entry would mislabel an unrelated later run on the same thread. Clearing is also narrowed to what
+     * this listener established: if the entry holds some other value when the job ends, that value belongs to
+     * an enclosing scope and is put back rather than discarded.
+     *
+     * @return the stateless job instance diagnostic context listener, never {@code null}
+     */
+    @Bean
+    public JobExecutionListener jobInstanceMdcListener() {
+        return new JobExecutionListener() {
+
+            @Override
+            public void beforeJob(final JobExecution jobExecution) {
+                final String jobInstanceId = jobInstanceIdOf(jobExecution);
+                if (jobInstanceId != null) {
+                    CorrelationIdFilter.propagateJobInstanceId(jobInstanceId);
+                }
+            }
+
+            @Override
+            public void afterJob(final JobExecution jobExecution) {
+                // Clear first, unconditionally, so nothing above can throw and leave the entry behind.
+                final String held = CorrelationIdFilter.propagateJobInstanceId(null);
+                final String jobInstanceId = jobInstanceIdOf(jobExecution);
+                if (held != null && !held.equals(jobInstanceId)) {
+                    // The entry was not the one this listener established, so an enclosing scope owns it.
+                    CorrelationIdFilter.propagateJobInstanceId(held);
+                }
+            }
+        };
+    }
+
+    /**
+     * The diagnostic context value for an execution, or {@code null} when there is none to publish.
+     *
+     * <p>Rendered with {@link Long#toString(long)} because that is exactly the grammar
+     * {@code CorrelationIdFilter.propagateJobInstanceId(String)} accepts - an optionally negative run of
+     * decimal digits - so the value can never be rejected by the guard that protects the log format.
+     *
+     * @param jobExecution the execution being labelled, which may be {@code null}
+     * @return the decimal job instance identifier, or {@code null} if the execution or its instance is absent
+     */
+    private static String jobInstanceIdOf(final JobExecution jobExecution) {
+        if (jobExecution == null || jobExecution.getJobInstance() == null) {
+            return null;
+        }
+        return Long.toString(jobExecution.getJobInstance().getInstanceId());
     }
 
     // =============================================================================================

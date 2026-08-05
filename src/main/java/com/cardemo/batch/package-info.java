@@ -225,9 +225,10 @@
  *       first write. This is the single most valuable configuration choice in the layer, because a widened
  *       numeric column is otherwise invisible until a parity comparison finds it.</li>
  *   <li>{@code carddemo.batch.chunk-size} - {@code 100}; each reader additionally carries its own
- *       {@code page-size}, also {@code 100}. Chunk sizes, step topology and decider wiring live in
- *       {@code com.cardemo.config.BatchConfig}; the object-storage and queue clients in
- *       {@code com.cardemo.config.AwsConfig}.</li>
+ *       {@code page-size}, also {@code 100}. Each job binds its own chunk size, and declares its own step
+ *       topology and any decider it needs; {@code com.cardemo.config.BatchConfig} contributes the shared
+ *       infrastructure those jobs consume and documents the pipeline topology, while the object-storage and
+ *       queue clients live in {@code com.cardemo.config.AwsConfig}.</li>
  *   <li>{@code carddemo.batch.jobs.posttran.name}, {@code .intcalc.name}, {@code .combtran.name},
  *       {@code .creastmt.name} and {@code .tranrept.name} - the five legacy job names {@code POSTTRAN},
  *       {@code INTCALC}, {@code COMBTRAN}, {@code CREASTMT} and {@code TRANREPT}, kept as the Spring Batch

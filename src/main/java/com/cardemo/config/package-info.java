@@ -76,11 +76,19 @@
  * authored, so the absence note is withdrawn rather than left to mislead:
  *
  * <ul>
- *   <li>{@link com.cardemo.config.BatchConfig} carries the {@code Job}, {@code Step} and {@code Flow}
- *       topology, the chunk sizes, and the {@code JobExecutionDecider} that replaces JCL
- *       {@code COND=(0,NE)} gating. Derived from {@code app/jcl/POSTTRAN.jcl},
- *       {@code app/jcl/INTCALC.jcl}, {@code app/jcl/TRANREPT.jcl}, {@code app/jcl/COMBTRAN.jcl} and
- *       {@code app/jcl/CREASTMT.JCL}.</li>
+ *   <li>{@link com.cardemo.config.BatchConfig} is the configuration seam of the batch tier, derived from
+ *       {@code app/jcl/POSTTRAN.jcl}, {@code app/jcl/INTCALC.jcl}, {@code app/jcl/TRANREPT.jcl},
+ *       {@code app/jcl/COMBTRAN.jcl} and {@code app/jcl/CREASTMT.JCL}. It contributes the shared
+ *       infrastructure the jobs consume - the four {@code CBSTM03B} dataset bindings and the job-instance
+ *       diagnostic context listener - and documents the topology of the five-stage pipeline.
+ *       <p>It deliberately declares no {@code Job}, {@code Step}, {@code Flow} or
+ *       {@code JobExecutionDecider} bean. Each of the six configuration classes in
+ *       {@code com.cardemo.batch.jobs} declares its own, and is the designated definition site for it;
+ *       because {@code spring.main.allow-bean-definition-overriding} is {@code false}, a second definition
+ *       would abort startup rather than shadow silently. Gating derived from {@code COND=(0,NE)} is narrower
+ *       than it appears - the construct occurs at three sites, all inside {@code app/jcl/CREASTMT.JCL} - so
+ *       an intra-job decider belongs only to the statement job, and every other stage boundary is gated
+ *       between jobs by the orchestrator.</p></li>
  *   <li>{@link com.cardemo.config.ObservabilityConfig} carries tracing and metric registration and
  *       publishes the application's single {@link java.time.Clock} bean, which every time-dependent
  *       service and processor injects. The three classes in {@code com.cardemo.observability} remain

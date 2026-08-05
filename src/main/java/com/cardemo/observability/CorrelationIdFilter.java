@@ -297,9 +297,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * declared here are nevertheless the shared contract for the whole application, and batch events carry one
  * additional key: {@link #MDC_KEY_JOB_INSTANCE_ID}. It is published on this class as the single point of
  * definition, and <strong>the batch layer is responsible for putting it into MDC</strong> -
- * {@code com.cardemo.batch}, which the <strong>planned</strong> {@code com.cardemo.config.BatchConfig} will
- * wire. Deliberately, no {@code JobExecutionListener}, scheduler or other batch component is added to this
- * file.
+ * {@code com.cardemo.config.BatchConfig} declares the shared {@code JobExecutionListener} that establishes
+ * it, and each job configuration in {@code com.cardemo.batch.jobs} registers a listener that writes the same
+ * key through the helpers below rather than through a literal. Deliberately, no
+ * {@code JobExecutionListener}, scheduler or other batch component is added to this file.
  *
  * <p>The key matters because it is what makes a run's logs correlatable with its output objects: the batch
  * writers derive their object-storage key prefixes from the same job instance identifier that tags the
@@ -505,9 +506,10 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
      * <p><strong>This class never sets this key</strong> - it is HTTP-scoped and batch execution does not
      * pass through it. The constant exists here because this is the single point of definition for the
      * application's MDC key contract, and {@code logback-spring.xml} passes this one key through by name
-     * as the marker that an event is a batch event. Populating it is the responsibility of
-     * {@code com.cardemo.batch}, which the <strong>planned</strong> {@code com.cardemo.config.BatchConfig}
-     * will wire. It is a published
+     * as the marker that an event is a batch event. Populating it is the responsibility of the batch layer:
+     * {@code com.cardemo.config.BatchConfig} declares the shared {@code JobExecutionListener} that
+     * establishes it, and every job configuration in {@code com.cardemo.batch.jobs} writes it through
+     * {@link #propagateJobInstanceId(String)}. It is a published
      * contract constant, not dead code: the batch writers key their object-storage prefixes off the same
      * job instance identifier, which is what makes a run's logs and its output objects correlatable.
      */
