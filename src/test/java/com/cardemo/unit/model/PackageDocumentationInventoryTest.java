@@ -112,13 +112,27 @@ class PackageDocumentationInventoryTest {
      * assertions immediately below keep the list itself honest: each entry must really be type-less, and each
      * entry must really be documented. An intermediate package that is neither cannot hide here.
      *
-     * <p>{@code com/cardemo/model} and {@code com/cardemo/batch} are deliberately <em>absent</em> from this
-     * list. Their leaves are cohesive enough to document themselves, so a container document there would be a
-     * summary with nothing to summarise. {@code com/cardemo/service} is different in kind: it spans nine leaves
-     * and 21 beans translated from 17 separate COBOL programs, and the invariants that bind all 21 are what its
-     * document holds.
+     * <p>{@code com/cardemo/model} is deliberately <em>absent</em> from this list. Its leaves are cohesive
+     * enough to document themselves, so a container document there would be a summary with nothing to
+     * summarise.
+     *
+     * <p>{@code com/cardemo/service} and {@code com/cardemo/batch} are different in kind, and both are
+     * allow-listed. The service root spans nine leaves and 21 beans translated from 17 separate COBOL
+     * programs, and the invariants that bind all 21 are what its document holds. The batch root spans four
+     * leaves whose shared facts are properties of the layer rather than of any leaf - one exit-code
+     * vocabulary of 0, 4, 8 and 12, one fixed-width record geometry contract, one generation-to-object-key
+     * scheme over seven GDG bases, and one set of preserved source quirks - so stating them per leaf would be
+     * the duplication Rule 1 Clause C forbids and stating them nowhere would fail Clause E for the layer.
+     *
+     * <p><strong>An earlier revision of this list named {@code com/cardemo/batch} alongside
+     * {@code com/cardemo/model} as deliberately absent, and that claim is withdrawn.</strong> It was written
+     * when the batch root carried no document; the layer document now exists, so the reason that applied to
+     * {@code model} - a summary with nothing to summarise - no longer describes {@code batch}. The exemption
+     * stays honest either way, because the two assertions below still require every entry here to be
+     * genuinely type-less and genuinely documented.
      */
-    private static final List<Path> DOCUMENTED_CONTAINERS = List.of(SOURCE_ROOT.resolve("service"));
+    private static final List<Path> DOCUMENTED_CONTAINERS =
+            List.of(SOURCE_ROOT.resolve("service"), SOURCE_ROOT.resolve("batch"));
 
     /**
      * The four topics Rule 1 Clause E names, as the heading text each document must carry. Matched on the
@@ -228,9 +242,9 @@ class PackageDocumentationInventoryTest {
 
             assertThat(orphaned)
                     .as("a document for a package that has been emptied describes nothing and will not be "
-                            + "maintained; the intermediate packages model and batch contain no types and "
-                            + "correctly carry none, and the only type-less package allowed a document is the "
-                            + "service layer root named in DOCUMENTED_CONTAINERS")
+                            + "maintained; the intermediate package model contains no types and correctly "
+                            + "carries none, and the only type-less packages allowed a document are the "
+                            + "service and batch layer roots named in DOCUMENTED_CONTAINERS")
                     .isEmpty();
         }
 
