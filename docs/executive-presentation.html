@@ -1,0 +1,1805 @@
+<!DOCTYPE html>
+<!--
+  ******************************************************************
+  * Document    : executive-presentation.html
+  * Application : CardDemo
+  * Type        : Static stakeholder document (HTML5, self contained)
+  * Function    : Executive summary of the migration of the AWS
+  *               CardDemo credit card management application from
+  *               IBM Enterprise COBOL under CICS, VSAM, JCL and BMS
+  *               on z/OS to Java 25 with Spring Boot 3.5.11.
+  *
+  *               It summarises, and does not replace, the legacy
+  *               artefacts it is derived from: the 28 COBOL programs
+  *               of app/cbl, the 28 copybooks of app/cpy, the 17 BMS
+  *               mapsets of app/bms with their 17 generated symbolic
+  *               maps in app/cpy-bms, the 29 job control members of
+  *               app/jcl with the 2 procedures of app/proc and the
+  *               control card in app/ctl, the CICS resource
+  *               definitions in app/csd/CARDDEMO.CSD, the VSAM
+  *               catalogue listing in app/catlg/LISTCAT.txt and the
+  *               9 ASCII fixtures in app/data/ASCII.
+  *
+  *               This is a static document. It is NOT part of the
+  *               product's user interface and is not a front end.
+  *               The migrated system exposes REST/JSON operations
+  *               and Spring Boot Actuator endpoints only.
+  *
+  * Provenance   : Every quantitative claim below is cited to a
+  *               repository path, and where useful a line locator,
+  *               at anchor commit
+  *               7756d895ffeb65f7ea72aaa609e356d9899afcec
+  *               (short 7756d89). The legacy corpus under app/ is
+  *               frozen and byte for byte unchanged.
+  *
+  * Self contained: There is NO external dependency of any kind. No
+  *               external script, stylesheet, web font, image,
+  *               iframe, tracker, analytics snippet or beacon. All
+  *               styling is one inline stylesheet, all diagrams are
+  *               inline SVG, and all typefaces are generic CSS font
+  *               stacks. The document therefore renders completely
+  *               and identically with networking disabled, which was
+  *               verified: the only http URL anywhere in this file
+  *               is the Apache License 2.0 address inside licence
+  *               text, which is quoted for attribution and is never
+  *               fetched.
+  *
+  * Scripting    : NONE. This file contains no script element at all.
+  *               Every section is plain markup and is fully visible
+  *               and readable with scripting disabled, so there is
+  *               no behaviour to degrade.
+  *
+  * Verification recorded at authoring time
+  * ***************************************
+  *   Offline render  : Verified. Grepped for http and https across the
+  *                     whole file: exactly two occurrences, both the
+  *                     Apache licence address in licence text (this
+  *                     comment and the visible footer). Zero script
+  *                     elements, zero link elements, zero iframes,
+  *                     zero import rules, zero font-face rules, and
+  *                     no src or href attribute referencing any
+  *                     remote resource. The inline SVG carries no
+  *                     xmlns attribute, which an HTML5 document does
+  *                     not need, so the file holds no URL at all
+  *                     outside licence text. Confirmed at runtime by
+  *                     loading this file from disk in headless
+  *                     Chrome: the ONLY network request was the
+  *                     document itself, zero subresources were
+  *                     fetched, zero requests to any remote host
+  *                     were attempted, and the render with
+  *                     networking disabled was pixel identical to
+  *                     the render with networking available. Console
+  *                     output was empty: zero errors, zero warnings.
+  *   Print output    : Verified by a real print render. The page
+  *                     paginates cleanly across 23 pages at the
+  *                     16 mm page margin this stylesheet sets, the
+  *                     skip link and the table of contents are
+  *                     correctly hidden, and the architecture figure
+  *                     is not split across a page boundary. Two of
+  *                     the eight tables are taller than one printed
+  *                     page and therefore do break, which no
+  *                     break-inside rule can prevent; they break
+  *                     cleanly, repeating the header row and
+  *                     bisecting no row.
+  *   Accessibility   : Verified in the same run. Exactly one h1 and
+  *                     no skipped heading level across 39 headings;
+  *                     all 8 tables carry a caption; the single
+  *                     inline SVG exposes role="img" with a
+  *                     1,630-character accessible name from its
+  *                     title and desc; no duplicate id; the skip
+  *                     link is off screen until focused and then
+  *                     visible with a 3 px focus outline that is
+  *                     identical on ordinary links; all 22 in-page
+  *                     fragment links resolve and land on their
+  *                     heading. An automated audit reported no
+  *                     failing accessibility check.
+  *   Known finding   : LOW, standards hygiene, no observable effect.
+  *                     This banner precedes the head, so the
+  *                     charset declaration below sits beyond the
+  *                     1024-byte window a parser sniffs for an
+  *                     encoding declaration. It has no effect here
+  *                     because this file contains zero non-ASCII
+  *                     bytes: all typography is written as HTML
+  *                     character entities, and 7-bit ASCII decodes
+  *                     identically under UTF-8 and every Latin-1
+  *                     derived encoding. Browsers resolve the
+  *                     document as UTF-8. Remedy, if the repository
+  *                     convention of leading with this banner is
+  *                     ever relaxed: move the charset meta above it.
+  *                     Recorded rather than silently accepted, and
+  *                     the file must stay free of raw non-ASCII
+  *                     bytes while it stands.
+  *   Markup validity : Verified. No HTML validator binary is
+  *                     installed on the authoring host, so this was
+  *                     checked with a spec-compliant HTML5 parser
+  *                     implementing the standard parsing algorithm,
+  *                     which reports the parse errors that algorithm
+  *                     defines: it reports ZERO for this file. The
+  *                     resulting tree was then asserted against the
+  *                     structure this document intends, and it holds
+  *                     exactly: tags balanced and properly nested,
+  *                     all attributes quoted, DOCTYPE and lang
+  *                     present, no duplicate id, exactly one h1 with
+  *                     no skipped heading level across 39 headings,
+  *                     8 tables and 8 captions with scoped headers,
+  *                     one figure and one figcaption, no script
+  *                     element, and every in-page anchor resolving
+  *                     to a real id. The parser also confirms the
+  *                     inline SVG is placed in the SVG namespace
+  *                     without an xmlns attribute, with its title
+  *                     and desc intact, which is why omitting that
+  *                     attribute is correct rather than merely
+  *                     tolerated.
+  *   Documentation   : mkdocs build in strict mode, MkDocs 1.6.1,
+  *                     run on 6 August 2026 with the site directory
+  *                     outside the repository so no build output is
+  *                     committed. Exit status 0, zero warnings. This
+  *                     page is copied to the site byte for byte.
+  *                     It is NOT a pass for any validation gate:
+  *                     documentation rendering is not one of them.
+  *   Reachability    : This page publishes only while the site
+  *                     navigation carries the entry
+  *                     "Executive Presentation:
+  *                     executive-presentation.html". Because a
+  *                     static HTML file is not a Markdown page,
+  *                     MkDocs does not report its omission from the
+  *                     navigation even at INFO level, so a strict
+  *                     build CANNOT catch a missing or mismatched
+  *                     entry. Do not rename this file.
+  ******************************************************************
+  * Copyright Amazon.com, Inc. or its affiliates.
+  * All Rights Reserved.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License").
+  * You may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+  *    http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing,
+  * software distributed under the License is distributed on an
+  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  * either express or implied. See the License for the specific
+  * language governing permissions and limitations under the License.
+  ******************************************************************
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CardDemo modernisation: executive summary (COBOL to Java 25 and Spring Boot 3.5.11)</title>
+<meta name="description" content="Stakeholder summary of the AWS CardDemo migration from IBM Enterprise COBOL under CICS, VSAM, JCL and BMS to Java 25 with Spring Boot 3.5.11: verified legacy scale, objectives, before and after architecture, fidelity constraints, evidence framework and current risks. Every figure is cited to a repository path.">
+<style>
+/* ------------------------------------------------------------------
+   One inline stylesheet. Generic font stacks only, no web fonts and
+   no external resource of any kind. Every rule below is used by the
+   markup in this file.
+   ------------------------------------------------------------------ */
+:root{
+  --ink:#12181f;          /* body text on white: contrast ratio > 14:1 */
+  --ink-soft:#3d4a58;     /* secondary text: contrast ratio > 8:1     */
+  --rule:#c3ccd6;
+  --rule-soft:#e2e8ee;
+  --page:#ffffff;
+  --band:#f4f7fa;
+  --legacy:#7a4a12;       /* legacy accent, always paired with text   */
+  --target:#0f4f6b;       /* target accent, always paired with text   */
+  --alert:#8a1c1c;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--page);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:17px;
+  line-height:1.62;
+}
+.wrap{max-width:60rem;margin:0 auto;padding:0 1.25rem}
+.skip-link{
+  position:absolute;left:0.5rem;top:-3rem;z-index:10;
+  background:var(--ink);color:#fff;padding:0.55rem 0.9rem;
+  border-radius:0 0 4px 4px;text-decoration:none;font-weight:600;
+  transition:top 0.12s ease-in-out;
+}
+.skip-link:focus{top:0}
+a{color:#0b4f8a;text-decoration:underline;text-underline-offset:2px}
+a:hover{color:#062f52}
+a:focus-visible,.skip-link:focus-visible{outline:3px solid #0b4f8a;outline-offset:2px}
+h1,h2,h3{line-height:1.25;font-weight:700;color:var(--ink)}
+h1{font-size:2.05rem;margin:0 0 0.4rem}
+h2{font-size:1.5rem;margin:2.6rem 0 0.6rem;padding-top:0.9rem;border-top:2px solid var(--rule)}
+h3{font-size:1.13rem;margin:1.7rem 0 0.4rem}
+p,ul,ol,dl{margin:0 0 0.95rem}
+li{margin:0 0 0.35rem}
+code{font-family:var(--mono);font-size:0.87em;background:var(--band);
+  border:1px solid var(--rule-soft);border-radius:3px;padding:0.05em 0.3em;
+  word-break:break-word}
+abbr{text-decoration:none;border-bottom:1px dotted var(--ink-soft);cursor:help}
+.masthead{background:var(--band);border-bottom:2px solid var(--rule);padding:2.1rem 0 1.5rem}
+.eyebrow{margin:0 0 0.5rem;font-size:0.8rem;letter-spacing:0.09em;
+  text-transform:uppercase;font-weight:700;color:var(--ink-soft)}
+.lede{font-size:1.14rem;color:var(--ink-soft);margin:0.7rem 0 1.2rem;max-width:48rem}
+.meta{display:grid;grid-template-columns:12.5rem 1fr;gap:0.3rem 1rem;
+  margin:0;font-size:0.9rem;border-top:1px solid var(--rule);padding-top:0.9rem}
+.meta dt{font-weight:600;color:var(--ink-soft)}
+.meta dd{margin:0}
+.toc{background:var(--band);border:1px solid var(--rule);border-radius:6px;
+  padding:1.1rem 1.3rem 0.6rem;margin:2rem 0}
+.toc h2{font-size:1.05rem;margin:0 0 0.6rem;padding-top:0;border-top:0}
+.toc ol{margin:0;padding-left:1.4rem;columns:2;column-gap:2rem}
+@supports not (columns:2){.toc ol{columns:auto}}
+.toc li{margin:0 0 0.3rem;break-inside:avoid}
+table{border-collapse:collapse;width:100%;margin:0 0 1.1rem;font-size:0.93rem}
+caption{caption-side:top;text-align:left;font-weight:600;font-size:0.92rem;
+  color:var(--ink-soft);padding:0 0 0.5rem}
+th,td{border:1px solid var(--rule);padding:0.42rem 0.6rem;text-align:left;
+  vertical-align:top}
+thead th{background:var(--band)}
+tbody th{background:#fbfcfd;font-weight:600}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tablewrap{overflow-x:auto;margin:0 0 1.1rem}
+.tablewrap table{margin:0}
+figure{margin:1.4rem 0;padding:0}
+figure svg{display:block;width:100%;height:auto;border:1px solid var(--rule);
+  border-radius:6px;background:var(--page)}
+/* Accent tokens applied to the diagram, so the legacy and target sides are
+   coloured from the same palette as the prose rather than from literals. */
+.brand-legacy{fill:var(--legacy)}
+.brand-target{fill:var(--target)}
+.frame-legacy{stroke:var(--legacy)}
+.frame-target{stroke:var(--target)}
+figcaption{font-size:0.9rem;color:var(--ink-soft);margin-top:0.6rem}
+.legend{list-style:none;margin:0.9rem 0 0;padding:0;display:flex;
+  flex-wrap:wrap;gap:0.4rem 1.4rem;font-size:0.86rem}
+.legend li{display:flex;align-items:baseline;gap:0.45rem;margin:0}
+.key{display:inline-block;width:0.95rem;height:0.95rem;border:1px solid var(--ink);
+  flex:0 0 auto;position:relative;top:0.12rem}
+.key-legacy{background:#f0e0c8}
+.key-target{background:#d6e9f2}
+.key-store{background:#e6e6ea;border-style:dashed}
+.key-none{background:repeating-linear-gradient(45deg,#fff,#fff 3px,#bbb 3px,#bbb 5px)}
+.callout{border:1px solid var(--rule);border-left:6px solid var(--target);
+  background:var(--band);padding:1rem 1.15rem;margin:1.3rem 0;border-radius:0 6px 6px 0}
+.callout-alert{border-left-color:var(--alert)}
+.callout p:last-child{margin-bottom:0}
+.callout-title{font-weight:700;margin:0 0 0.45rem}
+/* .na is the short "Not available" label and must never break across lines.
+   .na-note is the same emphasis for a full sentence, which MUST be allowed to
+   wrap: an unbreakable sentence forces the single-column grid below to a
+   min-content width wider than a narrow viewport. */
+.na{font-weight:700;color:var(--alert);white-space:nowrap}
+.na-note{color:var(--alert)}
+.sev{font-weight:700;white-space:nowrap}
+.fid{white-space:nowrap;font-variant-numeric:tabular-nums}
+.cite{font-family:var(--mono);font-size:0.83em;color:var(--ink-soft);
+  word-break:break-word}
+.notes{font-size:0.9rem;color:var(--ink-soft)}
+footer{margin-top:3rem;border-top:2px solid var(--rule);background:var(--band);
+  padding:1.6rem 0 2.2rem;font-size:0.88rem;color:var(--ink-soft)}
+footer p{max-width:52rem}
+footer .lic{font-size:0.83rem}
+@media (max-width:44rem){
+  body{font-size:16px}
+  h1{font-size:1.65rem}
+  h2{font-size:1.3rem}
+  .toc ol{columns:auto}
+  .meta{grid-template-columns:1fr;gap:0.05rem 0}
+  .meta dd{margin:0 0 0.5rem}
+}
+@media print{
+  :root{--band:#fff;--page:#fff}
+  body{font-size:10.5pt;line-height:1.45;color:#000}
+  .wrap{max-width:none;padding:0}
+  .skip-link,.toc{display:none}
+  .masthead{background:#fff;padding:0 0 0.6rem}
+  a{color:#000;text-decoration:underline}
+  h2{break-after:avoid;page-break-after:avoid;border-top-color:#000}
+  h3{break-after:avoid;page-break-after:avoid}
+  table,figure,.callout,.meta,thead,tr,li{break-inside:avoid;page-break-inside:avoid}
+  .tablewrap{overflow-x:visible}
+  th,td{border-color:#000}
+  thead th,tbody th{background:#fff}
+  figure svg{border-color:#000}
+  .key{border-color:#000}
+  .na,.callout-alert{color:#000}
+  footer{background:#fff;border-top-color:#000;padding-top:0.8rem}
+  @page{margin:16mm}
+}
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="eyebrow">AWS CardDemo &mdash; modernisation programme</p>
+    <h1>From COBOL on z/OS to Java 25: an executive summary</h1>
+    <p class="lede">Replacing the execution substrate of a 19,254-line IBM Enterprise COBOL
+    credit card application with Java 25 and Spring Boot 3.5.11, while reproducing its
+    behaviour exactly. This page is the stakeholder overview. It states what is being
+    changed, what is deliberately not being changed, what evidence exists today and what
+    does not.</p>
+    <dl class="meta">
+      <dt>Document type</dt>
+      <dd>Static summary. It is not a user interface, not a front end and not a product
+      screen. The migrated system exposes REST/JSON operations and Spring Boot Actuator
+      endpoints only.</dd>
+      <dt>Anchor commit</dt>
+      <dd><code>7756d895ffeb65f7ea72aaa609e356d9899afcec</code> (short <code>7756d89</code>).
+      Every figure below is cited to a repository path at this commit.</dd>
+      <dt>Legacy corpus</dt>
+      <dd><code>app/</code> is frozen and byte for byte unchanged. The migration is purely
+      additive and stays in this repository: the Java tree at <code>src/</code> sits beside
+      it.</dd>
+      <dt>Evidence status</dt>
+      <dd><strong class="na-note">No validation gate result is recorded in this
+      document.</strong>
+      The authoritative ledger is
+      <a href="validation-gates.md">validation-gates.md</a>.</dd>
+      <dt>Licence</dt>
+      <dd>Apache License 2.0. Copyright Amazon.com, Inc. or its affiliates. All Rights
+      Reserved. See the repository <a href="../LICENSE">LICENSE</a> and
+      <a href="../NOTICE">NOTICE</a>.</dd>
+    </dl>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="toc" aria-labelledby="toc-heading">
+    <h2 id="toc-heading">Contents</h2>
+    <ol>
+      <li><a href="#context">Business context and the objective</a></li>
+      <li><a href="#scale">The verified legacy estate</a></li>
+      <li><a href="#objectives">What the modernisation delivers</a></li>
+      <li><a href="#architecture">Before and after, side by side</a></li>
+      <li><a href="#coverage">Coverage of the corpus</a></li>
+      <li><a href="#fidelity">Why exact reproduction is hard</a></li>
+      <li><a href="#security">Security and observability</a></li>
+      <li><a href="#gates">The evidence framework: eight gates</a></li>
+      <li><a href="#decisions">Decisions, substitutions and disclosed deviations</a></li>
+      <li><a href="#findings">Findings by severity</a></li>
+      <li><a href="#risks">Current position, risks and next actions</a></li>
+      <li><a href="#next">Where to go next</a></li>
+    </ol>
+  </nav>
+</div>
+
+<main id="main" class="wrap">
+
+  <section aria-labelledby="context">
+    <h2 id="context">1. Business context and the objective</h2>
+
+    <p>CardDemo is a credit card management application. It maintains accounts, cards and
+    customers, records transactions, posts them daily, calculates monthly interest,
+    produces statements and prints reports. It was implemented in IBM Enterprise COBOL and
+    runs under CICS for its online screens, VSAM for its data, JCL for its batch stream and
+    BMS for its 3270 terminal maps, on z/OS. The complete source of record is in this
+    repository under <code class="cite">app/</code>.</p>
+
+    <p><strong>The constraint is the substrate, not the business logic.</strong> The rules
+    encoded in these programs are correct, in production use, and were the product of years
+    of refinement. What limits the application is the platform underneath it: a terminal
+    protocol, a record-oriented file system, a job scheduler and a transaction monitor that
+    together determine how the software can be staffed, tested, deployed and integrated.
+    The objective is therefore stated narrowly and deliberately: <strong>replace the
+    execution substrate while reproducing the behaviour exactly.</strong></p>
+
+    <div class="callout">
+      <p class="callout-title">The acceptance contract</p>
+      <p><strong>Behavioural parity across all twenty-two catalogued features, F-001
+      through F-022, is the acceptance contract &mdash; not an aspiration.</strong> The
+      practical consequence is unintuitive and is worth stating plainly to anyone reviewing
+      this programme: <strong>known legacy quirks are preserved and documented, never
+      corrected.</strong> Where a program does something odd, the Java code does the same
+      odd thing, cites the source line that made it do so, and records the decision. A
+      migration that quietly improved behaviour would be impossible to verify, because the
+      only available oracle for &ldquo;correct&rdquo; is the legacy system itself.</p>
+    </div>
+
+    <p>Separately from parity, three things the legacy system does not have are added,
+    because a modern substrate is not usable without them: an observability layer, an
+    automated regression net, and a reproducible build. These are additions, and they are
+    labelled as additions rather than presented as equivalence.</p>
+  </section>
+
+  <section aria-labelledby="scale">
+    <h2 id="scale">2. The verified legacy estate</h2>
+
+    <p>Every figure in this section was measured directly from the frozen corpus rather
+    than taken from prior documentation. Where an earlier description of this system
+    disagreed with the source, the source governs; two such corrections are noted below
+    because both had the potential to remove real work from scope.</p>
+
+    <div class="tablewrap">
+      <table>
+        <caption>Table 1. Legacy artefact inventory, measured at commit
+        <code>7756d89</code>. Line counts are exact.</caption>
+        <thead>
+          <tr>
+            <th scope="col">Artefact set</th>
+            <th scope="col" class="num">Count</th>
+            <th scope="col" class="num">Lines</th>
+            <th scope="col">Source path</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">COBOL programs</th>
+            <td class="num">28</td>
+            <td class="num">19,254</td>
+            <td><code class="cite">app/cbl/</code></td>
+          </tr>
+          <tr>
+            <th scope="row">Copybooks (record layouts and shared state)</th>
+            <td class="num">28</td>
+            <td class="num">2,614</td>
+            <td><code class="cite">app/cpy/</code></td>
+          </tr>
+          <tr>
+            <th scope="row">BMS mapsets (3270 screen definitions)</th>
+            <td class="num">17</td>
+            <td class="num">4,472</td>
+            <td><code class="cite">app/bms/</code></td>
+          </tr>
+          <tr>
+            <th scope="row">Generated symbolic maps</th>
+            <td class="num">17</td>
+            <td class="num">5,632</td>
+            <td><code class="cite">app/cpy-bms/</code></td>
+          </tr>
+          <tr>
+            <th scope="row">JCL members (batch job control)</th>
+            <td class="num">29</td>
+            <td class="num">&mdash;</td>
+            <td><code class="cite">app/jcl/</code></td>
+          </tr>
+          <tr>
+            <th scope="row">Procedures and control cards</th>
+            <td class="num">2 / 1</td>
+            <td class="num">&mdash;</td>
+            <td><code class="cite">app/proc/</code>, <code class="cite">app/ctl/</code></td>
+          </tr>
+          <tr>
+            <th scope="row">VSAM catalogue listing</th>
+            <td class="num">1</td>
+            <td class="num">3,956</td>
+            <td><code class="cite">app/catlg/LISTCAT.txt</code></td>
+          </tr>
+          <tr>
+            <th scope="row">CICS resource definitions</th>
+            <td class="num">1</td>
+            <td class="num">&mdash;</td>
+            <td><code class="cite">app/csd/CARDDEMO.CSD</code></td>
+          </tr>
+          <tr>
+            <th scope="row">ASCII data fixtures</th>
+            <td class="num">9</td>
+            <td class="num">&mdash;</td>
+            <td><code class="cite">app/data/ASCII/</code></td>
+          </tr>
+          <tr>
+            <th scope="row">EBCDIC <code>.PS</code> reference datasets</th>
+            <td class="num">12</td>
+            <td class="num">&mdash;</td>
+            <td><code class="cite">app/data/EBCDIC/</code>, alongside a
+            <code>.gitkeep</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="notes">Two notes on the last two rows, because precision matters more than a
+    round number. The <strong>9</strong> ASCII fixtures are the authoritative seed and test
+    input, and their record widths corroborate the catalogued record lengths exactly, which is
+    what makes them usable as both. The <strong>12</strong> EBCDIC datasets are retained as
+    byte-level codepage reference only and are never parsed by the build; eleven of the twelve
+    carry a plain <code>.PS</code> suffix and the twelfth carries a further
+    <code>.INIT</code> suffix [<code class="cite">app/data/EBCDIC/</code>].</p>
+
+    <h3>How the 28 programs divide</h3>
+
+    <p>The corpus is <strong>17 online transaction programs, 10 batch programs and 1
+    statically called date utility</strong> [<code class="cite">app/cbl/</code>]. The
+    largest single program is the account update program <code>COACTUPC</code> at
+    <strong>4,236 lines</strong>; the sign-on program <code>COSGN00C</code> is
+    <strong>260 lines</strong> [<code class="cite">app/cbl/COACTUPC.cbl</code>,
+    <code class="cite">app/cbl/COSGN00C.cbl</code>]. Two of the batch programs,
+    <code>CBSTM03A.CBL</code> and <code>CBSTM03B.CBL</code>, carry an
+    <strong>uppercase file extension</strong>, so a naive case-sensitive scan for
+    <code>*.cbl</code> silently omits them and under-reports the corpus by
+    <strong>1,154 lines</strong> &mdash; a small detail with a real consequence, since one of
+    those two programs is the sole source for statement generation. The same trap exists in
+    the job control directory, where <code>CREASTMT.JCL</code> is the one member of 29 with
+    an uppercase extension. Both were caught by matching case-insensitively; both are the
+    reason the counts above are 28 and 29 rather than 26 and 28.</p>
+
+    <h3>The data estate</h3>
+
+    <p>The catalogue listing records, in its own summary of entries processed,
+    <strong>10 base VSAM clusters, 3 alternate indexes, 3 access paths and 7 generation
+    data groups</strong> [<code class="cite">app/catlg/LISTCAT.txt</code>, summary block
+    L3936-L3950]. Each of those figures matters to the target design: every cluster becomes
+    a table, every alternate index becomes an indexed query, and every generation data group
+    becomes an object-storage prefix. Under-counting any of them removes a required
+    artefact from the plan, so the summary block is quoted rather than inferred.</p>
+
+    <h3>The screen estate, and a scope-integrity finding</h3>
+
+    <p>The 17 generated symbolic maps declare <strong>441 input fields</strong> in total
+    [<code class="cite">app/cpy-bms/</code>]. Those fields are the field contract: each one
+    fixes a name, a type and a length that the corresponding Java request or response object
+    must reproduce, because silent truncation or widening would break parity in a way no
+    test catches unless the contract is asserted.</p>
+
+    <p>The count of externally reachable operations required a judgement, and it is
+    published here rather than buried. The CICS resource definitions declare <strong>18
+    transactions and 18 programs, but only 17 mapsets</strong>
+    [<code class="cite">app/csd/CARDDEMO.CSD</code>]. The eighteenth transaction-and-program
+    pair points at a program named in the definitions and <strong>nowhere else: it has no
+    source file anywhere in the repository</strong>, its only two occurrences being the two
+    definition lines themselves [<code class="cite">app/csd/CARDDEMO.CSD:L211</code>,
+    <code class="cite">:L390</code>]. The corroborating inventory in the repository readme
+    lists exactly 17 online entries [<code class="cite">README.md:L211-L231</code>].</p>
+
+    <div class="callout">
+      <p class="callout-title">Scope integrity: 17 operations, not 18</p>
+      <p>The programme <strong>declined to invent an endpoint for a program that does not
+      exist.</strong> A dangling definition with no code behind it cannot be migrated, so it
+      is documented as a dangling legacy definition and carried forward as a finding. The
+      target therefore exposes <strong>17 REST operations</strong>. Reporting 18 would have
+      inflated the delivery on paper while leaving one of them unimplementable.</p>
+    </div>
+
+    <h3>What is deliberately untouched</h3>
+
+    <p><code>app/</code> remains <strong>frozen and byte for byte unchanged</strong>, and it
+    holds three roles simultaneously that it loses the moment it is edited. It is the
+    <strong>parity oracle</strong> that target output is compared against; it is the
+    <strong>field-contract source</strong> from which every type, length and precision is
+    derived; and it is the <strong>traceability anchor</strong> that the paragraph-level
+    mapping cites by line. The migration is consequently <strong>purely additive and stays
+    in this repository</strong>: the Java tree at <code>src/</code> sits beside the frozen
+    tree, sharing its history and its licence.</p>
+  </section>
+
+  <section aria-labelledby="objectives">
+    <h2 id="objectives">3. What the modernisation delivers</h2>
+
+    <p>Nine objectives, each with the concrete artefact that realises it. None is aspirational
+    and none is a statement of intent: each names something that either exists in the
+    repository or is specified in the plan at
+    <a href="technical-specifications.md">technical-specifications.md</a>.</p>
+
+    <div class="tablewrap">
+      <table>
+        <caption>Table 2. The nine modernisation objectives and how each is realised.</caption>
+        <thead>
+          <tr>
+            <th scope="col">Objective</th>
+            <th scope="col">Concrete realisation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">An executable Java target</th>
+            <td>A Java 25 source tree at <code class="cite">src/main/java/com/cardemo/</code>,
+            built by Maven and packaged as a single Spring Boot application archive.</td>
+          </tr>
+          <tr>
+            <th scope="row">A replaced data substrate</th>
+            <td><strong>11</strong> persistent entities and <strong>3</strong> database
+            migrations replacing the <strong>10</strong> VSAM clusters, their
+            <strong>3</strong> alternate indexes and the sequential and generation datasets
+            [<code class="cite">app/catlg/LISTCAT.txt</code>, summary block L3936-L3950].</td>
+          </tr>
+          <tr>
+            <th scope="row">A replaced online presentation layer</th>
+            <td><strong>17</strong> REST operations across <strong>8</strong> controller
+            classes, backed by <strong>21</strong> service beans, replacing the
+            <strong>17</strong> CICS screen programs and their terminal conversations
+            [<code class="cite">app/csd/CARDDEMO.CSD</code>].</td>
+          </tr>
+          <tr>
+            <th scope="row">A replaced batch stream</th>
+            <td>A five-stage batch pipeline plus an orchestrator &mdash; <strong>6</strong>
+            job definitions in all &mdash; replacing the job control stream and its sort and
+            dataset-utility steps [<code class="cite">app/jcl/</code>,
+            <code class="cite">app/proc/</code>].</td>
+          </tr>
+          <tr>
+            <th scope="row">Replaced mainframe integration</th>
+            <td>Object storage, a first-in-first-out message queue and a notification topic,
+            replacing generation data groups, the transient data queue
+            [<code class="cite">app/csd/CARDDEMO.CSD:L499</code>] and operator notification.
+            All of it runs against a <strong>local emulator, with zero live cloud
+            credentials</strong>.</td>
+          </tr>
+          <tr>
+            <th scope="row">An observability layer</th>
+            <td>Structured logging, distributed tracing, a metrics endpoint and a composite
+            health endpoint &mdash; capability the source
+            <strong>entirely lacks</strong> &mdash; shipped with the initial implementation
+            rather than deferred.</td>
+          </tr>
+          <tr>
+            <th scope="row">A regression net</th>
+            <td>A test pyramid with a line-coverage gate set at 80 per cent as a build
+            condition, and integration tiers that provision a real database and a cloud
+            emulator in containers.</td>
+          </tr>
+          <tr>
+            <th scope="row">Evidence artefacts</th>
+            <td>A decision log, a paragraph-level traceability matrix, a gate ledger, an API
+            contract, an architecture comparison, an onboarding guide and this summary.
+            Listed with their locations in <a href="#gates">section 8</a>.</td>
+          </tr>
+          <tr>
+            <th scope="row">A runnable topology</th>
+            <td>A container image and a compose definition bringing up the database, the
+            cloud emulator, the trace collector, the metrics store and the dashboard
+            server.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="notes">The coverage figure above is a <strong>build gate threshold</strong>, not
+    a measured result. No measured coverage figure is stated anywhere in this document,
+    because none has been captured as published evidence &mdash; see
+    <a href="#gates">section 8</a>.</p>
+  </section>
+
+  <section aria-labelledby="architecture">
+    <h2 id="architecture">4. Before and after, side by side</h2>
+
+    <figure>
+      <!-- Inline SVG in an HTML5 document needs no xmlns attribute: the HTML parser
+           places it in the SVG namespace. It is omitted so that this file contains no
+           URL of any kind outside licence text. -->
+      <svg viewBox="0 0 1000 660" role="img" aria-labelledby="arch-title arch-desc">
+        <title id="arch-title">The legacy z/OS architecture beside the Java 25 and Spring
+        Boot target architecture</title>
+        <desc id="arch-desc">Two panels. The left panel shows the frozen mainframe stack:
+        3270 terminals feeding a CICS region that holds screen state in a communication
+        area and navigates by program transfer, driving 28 COBOL programs, which read and
+        write 10 VSAM key-sequenced clusters with 3 alternate indexes and also write an
+        80-byte job deck to the transient data queue named JOBS; the JES2 internal reader
+        consumes that deck and runs 29 job control members with sort and dataset utilities,
+        producing 7 generation data groups, and executing the same COBOL programs. Two
+        annotation bands record that session state is carried in the communication area
+        across every program transfer, and that the corpus has no observability at all. The
+        right panel shows the target: an HTTP and JSON client passing through a filter chain
+        of correlation identifier assignment, token authentication and role-based
+        authorisation, into 8 controller classes exposing 17 operations, delegating to 21
+        service beans, then 11 repositories, onto PostgreSQL 16 with 11 tables, 3 B-tree
+        indexes and 3 migrations; a Spring Batch layer of 6 jobs with a decider replacing
+        return-code gating and a split for the independent statement and report branches,
+        which calls the same service beans, writes to object storage and exchanges messages
+        with a first-in-first-out queue that in turn triggers it; and a telemetry band
+        exporting traces, metrics and dashboards.</desc>
+
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
+                  markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#12181f"></path>
+          </marker>
+          <pattern id="hatch" width="6" height="6" patternTransform="rotate(45)"
+                   patternUnits="userSpaceOnUse">
+            <rect width="6" height="6" fill="#ffffff"></rect>
+            <line x1="0" y1="0" x2="0" y2="6" stroke="#9aa4ae" stroke-width="2"></line>
+          </pattern>
+        </defs>
+
+        <g font-family="system-ui, sans-serif" fill="#12181f">
+
+          <!-- Panel frames and panel titles -->
+          <text x="255" y="32" text-anchor="middle" font-size="17" font-weight="700"
+                class="brand-legacy">BEFORE &mdash; z/OS, frozen in app/</text>
+          <rect x="20" y="48" width="470" height="596" fill="none" class="frame-legacy"
+                stroke-width="2" rx="8"></rect>
+          <text x="745" y="32" text-anchor="middle" font-size="17" font-weight="700"
+                class="brand-target">AFTER &mdash; Java 25, Spring Boot 3.5.11, in src/</text>
+          <rect x="510" y="48" width="470" height="596" fill="none" class="frame-target"
+                stroke-width="2" rx="8"></rect>
+
+          <!-- LEFT: online path -->
+          <rect x="70" y="66" width="300" height="40" fill="#f0e0c8" stroke="#12181f"></rect>
+          <text x="220" y="91" text-anchor="middle" font-size="15.5">3270 terminals</text>
+          <line x1="220" y1="106" x2="220" y2="120" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+
+          <rect x="70" y="122" width="300" height="58" fill="#f0e0c8"
+                stroke="#12181f"></rect>
+          <text x="220" y="143" text-anchor="middle" font-size="15.5">CICS region</text>
+          <text x="220" y="161" text-anchor="middle" font-size="13">communication-area
+          state, program transfer,</text>
+          <text x="220" y="175" text-anchor="middle" font-size="13">17 BMS mapsets and 441
+          input fields</text>
+          <line x1="220" y1="180" x2="220" y2="194" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+
+          <rect x="70" y="196" width="300" height="52" fill="#f0e0c8"
+                stroke="#12181f"></rect>
+          <text x="220" y="217" text-anchor="middle" font-size="15.5">28 COBOL programs</text>
+          <text x="220" y="236" text-anchor="middle" font-size="13">17 online, 10 batch,
+          1 date utility</text>
+          <line x1="141" y1="248" x2="141" y2="262" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+          <line x1="299" y1="248" x2="299" y2="262" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+
+          <rect x="70" y="264" width="142" height="60" fill="#e6e6ea" stroke="#12181f"
+                stroke-dasharray="5 3"></rect>
+          <text x="141" y="284" text-anchor="middle" font-size="14">10 VSAM KSDS</text>
+          <text x="141" y="300" text-anchor="middle" font-size="13">clusters, plus</text>
+          <text x="141" y="316" text-anchor="middle" font-size="13">3 alternate indexes</text>
+
+          <rect x="228" y="264" width="142" height="60" fill="#f0e0c8"
+                stroke="#12181f"></rect>
+          <text x="299" y="284" text-anchor="middle" font-size="14">queue &ldquo;JOBS&rdquo;</text>
+          <text x="299" y="300" text-anchor="middle" font-size="13">80-byte job deck</text>
+          <text x="299" y="316" text-anchor="middle" font-size="13">written by a screen</text>
+          <line x1="299" y1="324" x2="299" y2="338" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+
+          <rect x="70" y="340" width="300" height="52" fill="#f0e0c8"
+                stroke="#12181f"></rect>
+          <text x="220" y="361" text-anchor="middle" font-size="15.5">JES2 internal reader
+          and 29 JCL members</text>
+          <text x="220" y="380" text-anchor="middle" font-size="13">sort and dataset
+          utilities</text>
+          <line x1="220" y1="392" x2="220" y2="406" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+          <path d="M 370 366 H 455 V 222 H 374" fill="none" stroke="#12181f"
+                stroke-width="1.6" marker-end="url(#ah)"></path>
+          <text x="376" y="290" font-size="12.5" fill="#3d4a58">runs the</text>
+          <text x="376" y="305" font-size="12.5" fill="#3d4a58">same</text>
+          <text x="376" y="320" font-size="12.5" fill="#3d4a58">programs</text>
+
+          <rect x="70" y="408" width="300" height="40" fill="#e6e6ea" stroke="#12181f"
+                stroke-dasharray="5 3"></rect>
+          <text x="220" y="433" text-anchor="middle" font-size="14">7 generation data
+          groups</text>
+
+          <rect x="40" y="462" width="430" height="62" fill="#faf5ec" class="frame-legacy"
+                stroke-dasharray="2 3"></rect>
+          <text x="255" y="483" text-anchor="middle" font-size="14" font-weight="700">Session
+          state</text>
+          <text x="255" y="501" text-anchor="middle" font-size="13">carried in the
+          communication area across every</text>
+          <text x="255" y="516" text-anchor="middle" font-size="13">program transfer, one
+          screen at a time</text>
+
+          <rect x="40" y="538" width="430" height="62" fill="url(#hatch)" class="frame-legacy"
+                stroke-width="1.6"></rect>
+          <text x="255" y="559" text-anchor="middle" font-size="14"
+                font-weight="700">Observability: none</text>
+          <text x="255" y="577" text-anchor="middle" font-size="13">no metrics, no tracing,
+          no structured logs;</text>
+          <text x="255" y="592" text-anchor="middle" font-size="13">printed lines in the job
+          log only</text>
+
+          <!-- RIGHT: target path -->
+          <rect x="560" y="66" width="300" height="40" fill="#d6e9f2"
+                stroke="#12181f"></rect>
+          <text x="710" y="91" text-anchor="middle" font-size="15.5">HTTP and JSON
+          client</text>
+          <line x1="710" y1="106" x2="710" y2="120" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+
+          <rect x="560" y="122" width="300" height="58" fill="#d6e9f2"
+                stroke="#12181f"></rect>
+          <text x="710" y="143" text-anchor="middle" font-size="15.5">Filter chain</text>
+          <text x="710" y="161" text-anchor="middle" font-size="13">correlation identifier,
+          then token</text>
+          <text x="710" y="175" text-anchor="middle" font-size="13">authentication, then
+          role-based access</text>
+          <line x1="710" y1="180" x2="710" y2="194" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+
+          <rect x="560" y="196" width="300" height="52" fill="#d6e9f2"
+                stroke="#12181f"></rect>
+          <text x="710" y="217" text-anchor="middle" font-size="15.5">8 controller
+          classes</text>
+          <text x="710" y="236" text-anchor="middle" font-size="13">17 REST operations,
+          stateless</text>
+          <line x1="710" y1="248" x2="710" y2="262" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+
+          <rect x="560" y="264" width="300" height="52" fill="#d6e9f2"
+                stroke="#12181f"></rect>
+          <text x="710" y="285" text-anchor="middle" font-size="15.5">21 service beans</text>
+          <text x="710" y="304" text-anchor="middle" font-size="13">one method per COBOL
+          paragraph</text>
+          <line x1="710" y1="316" x2="710" y2="330" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+
+          <rect x="560" y="332" width="300" height="40" fill="#d6e9f2"
+                stroke="#12181f"></rect>
+          <text x="710" y="357" text-anchor="middle" font-size="15.5">11 repositories</text>
+          <line x1="710" y1="372" x2="710" y2="386" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+
+          <rect x="560" y="388" width="300" height="56" fill="#e6e6ea" stroke="#12181f"
+                stroke-dasharray="5 3"></rect>
+          <text x="710" y="409" text-anchor="middle" font-size="15.5">PostgreSQL 16</text>
+          <text x="710" y="428" text-anchor="middle" font-size="13">11 tables, 3 B-tree
+          indexes, 3 migrations</text>
+
+          <rect x="560" y="458" width="300" height="56" fill="#d6e9f2"
+                stroke="#12181f"></rect>
+          <text x="710" y="479" text-anchor="middle" font-size="15.5">Spring Batch, 6
+          jobs</text>
+          <text x="710" y="498" text-anchor="middle" font-size="13">decider for gating, split
+          for parallel branches</text>
+          <path d="M 860 486 H 945 V 290 H 864" fill="none" stroke="#12181f"
+                stroke-width="1.6" marker-end="url(#ah)"></path>
+          <text x="866" y="380" font-size="12.5" fill="#3d4a58">calls the</text>
+          <text x="866" y="395" font-size="12.5" fill="#3d4a58">same</text>
+          <text x="866" y="410" font-size="12.5" fill="#3d4a58">services</text>
+          <line x1="710" y1="514" x2="710" y2="528" stroke="#12181f" stroke-width="1.6"
+                marker-end="url(#ah)"></line>
+
+          <rect x="560" y="530" width="300" height="56" fill="#e6e6ea" stroke="#12181f"
+                stroke-dasharray="5 3"></rect>
+          <text x="710" y="551" text-anchor="middle" font-size="15.5">Object storage, queue
+          and topic</text>
+          <text x="710" y="570" text-anchor="middle" font-size="13">on a local emulator, no
+          live credentials</text>
+          <path d="M 560 558 H 530 V 486 H 556" fill="none" stroke="#12181f"
+                stroke-width="1.6" marker-end="url(#ah)"></path>
+
+          <rect x="530" y="600" width="430" height="40" fill="#eaf4f8" class="frame-target"
+                stroke-dasharray="2 3"></rect>
+          <text x="745" y="625" text-anchor="middle" font-size="14" font-weight="700">Traces,
+          metrics, structured logs and health, from every layer</text>
+        </g>
+      </svg>
+
+      <ul class="legend">
+        <li><span class="key key-legacy" aria-hidden="true"></span>Legacy processing
+        component (solid outline, left panel)</li>
+        <li><span class="key key-target" aria-hidden="true"></span>Target processing
+        component (solid outline, right panel)</li>
+        <li><span class="key key-store" aria-hidden="true"></span>Data store or dataset
+        (dashed outline)</li>
+        <li><span class="key key-none" aria-hidden="true"></span>Capability absent from the
+        legacy system (hatched)</li>
+      </ul>
+
+      <figcaption>Figure 1. The legacy stack, frozen in <code>app/</code>, beside the
+      target stack in <code>src/</code>. Fill shades are paired with a written label on
+      every box and with the outline styles named in the legend, so no meaning is carried by
+      colour alone. The full text equivalent is the two paragraphs that follow, and the
+      detailed diagram set is in
+      <a href="architecture-before-after.md">architecture-before-after.md</a>.</figcaption>
+    </figure>
+
+    <h3>Before, in words</h3>
+
+    <p>3270 terminals drive a CICS region. The region holds each conversation's state in a
+    communication area and moves between screens by transferring control from one program to
+    another, rendering 17 BMS mapsets whose generated symbolic maps declare 441 input fields
+    [<code class="cite">app/bms/</code>, <code class="cite">app/cpy-bms/</code>]. Behind the
+    screens sit 28 COBOL programs, which read and write 10 VSAM key-sequenced clusters
+    reached through 3 alternate indexes and 3 access paths
+    [<code class="cite">app/catlg/LISTCAT.txt</code>, summary block L3936-L3950]. The online
+    and batch worlds are joined by one closed loop: the report screen writes an 80-byte job
+    deck to a transient data queue named <code>JOBS</code>
+    [<code class="cite">app/csd/CARDDEMO.CSD:L499</code>], the JES2 internal reader consumes
+    that deck, and JES2 then executes 29 job control members with sort and dataset utilities,
+    producing 7 generation data groups and running the very same COBOL programs. Two facts
+    about this picture matter more than the boxes: session state lives in the communication
+    area rather than in the client, and <strong>there is no observability tier at all</strong>
+    &mdash; no metrics, no tracing and no structured logs, only printed lines in the job
+    log.</p>
+
+    <h3>After, in words</h3>
+
+    <p>An HTTP client sends and receives JSON. Each request passes through a filter that
+    assigns a correlation identifier, then a filter that validates a signed token, then
+    role-based authorisation, before reaching one of 8 controller classes that expose 17
+    operations. Controllers delegate to 21 service beans, which are organised so that each
+    private method corresponds to one paragraph of the COBOL program it replaces. The beans
+    reach data through 11 repositories onto PostgreSQL 16, whose schema is 11 tables, 3
+    B-tree indexes standing in for the 3 alternate indexes, and 3 ordered migrations. The
+    batch stream becomes 6 jobs, in which a decider replaces the job control return-code
+    gating and a parallel split models the statement and report branches that have no
+    ordering dependency between them; those jobs call the same service beans the online
+    operations call, which is what keeps one set of business rules rather than two. Object
+    storage replaces the generation data groups, a first-in-first-out queue replaces the
+    transient data queue and triggers the batch jobs in place of the internal reader, and a
+    notification topic replaces operator notification &mdash; all three against a
+    <strong>local emulator with zero live cloud credentials</strong>. Across every layer,
+    traces, metrics, structured logs and health checks are emitted, which is new capability
+    rather than a translation of anything.</p>
+  </section>
+
+  <section aria-labelledby="coverage">
+    <h2 id="coverage">5. Coverage of the corpus</h2>
+
+    <p>Scope is expressed as a mapping rather than as a percentage. Twenty-two features are
+    catalogued, F-001 through F-022, and each is realised by named artefacts
+    [<a href="technical-specifications.md">technical-specifications.md</a>].</p>
+
+    <div class="tablewrap">
+      <table>
+        <caption>Table 3. The delivered surface, by kind.</caption>
+        <thead>
+          <tr>
+            <th scope="col">Kind</th>
+            <th scope="col" class="num">Count</th>
+            <th scope="col">Composition</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Catalogued features</th>
+            <td class="num">22</td>
+            <td>F-001 through F-022; behavioural parity across all of them is the acceptance
+            contract.</td>
+          </tr>
+          <tr>
+            <th scope="row">REST operations</th>
+            <td class="num">17</td>
+            <td>Authentication 1, menus 2, accounts 2, cards 3, transactions 3, billing 1,
+            reporting 1, administration 4. Enumerated in
+            <a href="api-contracts.md">api-contracts.md</a>.</td>
+          </tr>
+          <tr>
+            <th scope="row">Controller classes</th>
+            <td class="num">8</td>
+            <td>One per resource grouping, with the administration routes restricted to the
+            administrator role.</td>
+          </tr>
+          <tr>
+            <th scope="row">Service beans</th>
+            <td class="num">21</td>
+            <td>17 for the online programs, plus date validation, lookup validation, file
+            status translation and file access.</td>
+          </tr>
+          <tr>
+            <th scope="row">Persistent entities</th>
+            <td class="num">11</td>
+            <td>One per VSAM base cluster.</td>
+          </tr>
+          <tr>
+            <th scope="row">Batch jobs</th>
+            <td class="num">6</td>
+            <td>Daily posting, interest calculation, transaction combination, statement
+            generation, transaction reporting, and an orchestrator over the five.</td>
+          </tr>
+          <tr>
+            <th scope="row">Packages</th>
+            <td class="num">14</td>
+            <td>The modular structure the plan defines, each package documented with the COBOL
+            artefacts it derives from
+            [<a href="technical-specifications.md">technical-specifications.md</a>].</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Full corpus coverage, including the three judgement calls</h3>
+
+    <p>All 28 programs are accounted for. Three of them required a decision that could
+    reasonably have gone the other way, and publishing those decisions is the point of this
+    subsection: they are precisely the cases a superficial migration drops without anyone
+    noticing.</p>
+
+    <dl>
+      <dt><strong>A batch program with no distinct target job.</strong></dt>
+      <dd><code>CBTRN01C</code>, at <strong>491 lines</strong>
+      [<code class="cite">app/cbl/CBTRN01C.cbl</code>], has no job control member of its own,
+      and its verb inventory contains <strong>no write operation of any kind</strong>. It is
+      therefore folded into the daily posting job as an explicitly labelled, read-only
+      pre-flight step. Inventing a job of its own would have manufactured a deliverable the
+      source does not have; dropping it would have lost its validation and diagnostic
+      logic.</dd>
+
+      <dt><strong>A job with no COBOL program.</strong></dt>
+      <dd><code>COMBTRAN.jcl</code> contains no program invocation: its logic is entirely sort
+      and dataset-utility control statements [<code class="cite">app/jcl/COMBTRAN.jcl</code>].
+      The job control member is therefore itself the source of truth for the Java job, which is
+      the only honest reading &mdash; there is no program to translate.</dd>
+
+      <dt><strong>A copybook that nothing uses.</strong></dt>
+      <dd><code>UNUSED1Y.cpy</code> has <strong>zero references anywhere in the repository</strong>
+      [<code class="cite">app/cpy/UNUSED1Y.cpy</code>]. It is dispositioned as documented dead
+      rather than quietly omitted, so that a coverage claim over the 28 copybooks can be
+      checked rather than taken on trust.</dd>
+    </dl>
+
+    <p>The paragraph-level mapping from every program to its Java counterpart is in
+    <a href="../TRACEABILITY_MATRIX.md">TRACEABILITY_MATRIX.md</a> at the repository root. It
+    is the artefact that makes the coverage claim checkable, and it is referenced here rather
+    than summarised.</p>
+  </section>
+
+  <section aria-labelledby="fidelity">
+    <h2 id="fidelity">6. Why exact reproduction is hard</h2>
+
+    <p>Reproducing behaviour exactly is harder than rewriting it, and the difficulty is
+    concentrated in a small number of places. Five are described below in plain terms, because
+    each one is a place where the obvious modern implementation produces working software that
+    behaves differently from the original.</p>
+
+    <h3>6.1 Money must be decimal, not floating point</h3>
+
+    <p>Amounts and rates are held as exact decimal values whose number of decimal places is
+    taken from each field's original definition, and stored in columns declared with that same
+    precision. <strong>No floating-point type appears in any financial field</strong>, because
+    binary floating point cannot represent ordinary decimal amounts exactly and its errors
+    accumulate over a batch run.</p>
+
+    <p>Formulas are also transcribed in their <em>original shape</em> rather than in an
+    algebraically equivalent one. Monthly interest, for instance, is computed by multiplying
+    the balance by the rate and then dividing by 1200 in a single step
+    [<code class="cite">app/cbl/CBACT04C.cbl:L462-L470</code>]. Dividing by 100 and then by 12,
+    which is mathematically identical, rounds differently at the intermediate step and produces
+    a different figure on some inputs. Parity therefore constrains not just the answer but the
+    order of operations.</p>
+
+    <h3>6.2 Signs are hidden in the last character of a number</h3>
+
+    <p>The legacy data files encode whether a number is positive or negative in the
+    <em>final character</em> of the field, a technique known as overpunch: the digit and the
+    sign share one byte, so an amount can end in a brace or a letter rather than a digit.
+    Evidence sits in the first line of the account fixture, where three money fields each end
+    in a brace [<code class="cite">app/data/ASCII/acctdata.txt:L1</code>], and in the category
+    balance and disclosure group fixtures
+    [<code class="cite">app/data/ASCII/tcatbal.txt:L1</code>,
+    <code class="cite">app/data/ASCII/discgrp.txt:L18</code>].</p>
+
+    <p>The trap is that the very same letters occur legitimately inside text fields such as
+    merchant names. Decoding therefore has to be <strong>position-aware</strong> &mdash; driven
+    by each field's declared definition, never by searching for characters &mdash; or ordinary
+    words get silently reinterpreted as negative numbers. The daily transaction fixture
+    contains both positive and negative sign characters across its 300 records
+    [<code class="cite">app/data/ASCII/dailytran.txt</code>], so it genuinely exercises the
+    negative-amount path and must not be normalised before use.</p>
+
+    <h3>6.3 Quirks are reproduced, not repaired</h3>
+
+    <p>Where the legacy system does something odd, the Java system does the same odd thing and
+    records why. Two illustrations make the principle concrete.</p>
+
+    <p>First, two validation checks run one after another with nothing between them, so when
+    both fail <strong>the second rejection reason overwrites the first</strong> and a single
+    rejected record is written carrying only the later reason
+    [<code class="cite">app/cbl/CBTRN02C.cbl:L393-L422</code>]. An implementation that guarded
+    the second check, or that emitted two rejections, would be more defensible in isolation and
+    would diverge from the system of record.</p>
+
+    <p>Second, a batch report starts a new total whenever the <em>card number</em> changes
+    [<code class="cite">app/cbl/CBTRN03C.cbl:L181-L184</code>], while the label printed on that
+    total line reads &ldquo;Account Total&rdquo;
+    [<code class="cite">app/cpy/CVTRA07Y.cpy:L58</code>]. Both the grouping and the wording are
+    preserved exactly as they are. Correcting either one changes output that the parity
+    comparison is measured against.</p>
+
+    <h3>6.4 Detecting a concurrent edit needs two mechanisms, not one</h3>
+
+    <p>Before writing an account change, the legacy screen compared the values the user had
+    been shown against the values currently on file, field by field, and abandoned the write if
+    anything had moved [<code class="cite">app/cbl/COACTUPC.cbl:L4109-L4193</code>]. That is a
+    stronger and stranger guarantee than it first appears: it detects <em>which</em> values
+    differ and in what representation, not merely that the record changed.</p>
+
+    <p>Because the new interface is stateless, there is no server-side screen to hold that
+    comparison snapshot between requests, so <strong>the snapshot travels with the request</strong>.
+    And <strong>two layers of protection are used together</strong>: a database version check,
+    which catches any concurrent write, and an explicit field-by-field comparison, which
+    reproduces the original decision. Neither alone is sufficient &mdash; a version check would
+    reject a concurrent write that restored a field to the value the user was shown, which the
+    legacy system accepts.</p>
+
+    <h3>6.5 Atomicity, and why one deployable unit was mandatory</h3>
+
+    <div class="callout">
+      <p class="callout-title">The clearest architectural message in this document</p>
+      <p><strong>The target is one deployable application &mdash; a modular monolith &mdash;
+      and explicitly not a set of microservices.</strong> This is the decision most likely to
+      be questioned, so the reason is stated in full rather than asserted.</p>
+      <p>An account update writes to <strong>two</strong> datasets inside one indivisible step
+      [<code class="cite">app/cbl/COACTUPC.cbl:L3888-L4105</code>], and daily posting writes to
+      <strong>three</strong> [<code class="cite">app/cbl/CBTRN02C.cbl:L424-L465</code>]. Either
+      all of the writes in each group take effect or none of them does. Splitting those writes
+      across independently deployed services would forfeit that guarantee and force
+      compensating transactions in its place, which do not fail the same way: there is a window
+      in which the data is half updated, and the recovery path is new code with new failure
+      modes of its own.</p>
+      <p>That is a <strong>behaviour change</strong>, and behaviour change is precisely what
+      this programme forbids. Modularity is therefore delivered <em>inside</em> one deployable
+      unit &mdash; separated packages, one service bean per program, clear layering &mdash; which
+      buys the maintainability benefit without spending the atomicity guarantee. The reasoning
+      is developed at length in
+      <a href="architecture-before-after.md">architecture-before-after.md</a>.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="security">
+    <h2 id="security">7. Security and observability</h2>
+
+    <h3>7.1 Security</h3>
+
+    <p>The legacy system stored and compared passwords as plain text. The seed records that
+    populate its user file are ten fixed rows carried inline in a job control member, and
+    <strong>every one of them carries the same literal plain-text password</strong>
+    [<code class="cite">app/jcl/DUSRSECJ.jcl:L35-L44</code>]. That value is deliberately
+    <strong>not reproduced anywhere in this document</strong>; it is referred to by locator
+    only, and it is not a usable credential against the migrated system, because the migration
+    stores those users only as one-way hashes.</p>
+
+    <p>The measures below are properties of the implementation, each backed by a named
+    artefact.</p>
+
+    <dl>
+      <dt><strong>Password hashing.</strong></dt>
+      <dd>Passwords are stored as BCrypt hashes at strength 10, replacing the plain-text
+      comparison the source performs. The seeded users are written as hashes by the seed
+      migration, never as the literal.</dd>
+
+      <dt><strong>No committed signing key.</strong></dt>
+      <dd>The token signing key is <strong>resolved from an environment variable in every
+      profile, with no committed default and fail-fast behaviour on absence</strong>: an unset
+      variable aborts start-up rather than silently falling back to something guessable.</dd>
+
+      <dt><strong>Least privilege.</strong></dt>
+      <dd>Administration routes are restricted to the administrator role, and a dedicated
+      production profile externalises every secret rather than shipping development
+      conveniences into a deployment.</dd>
+
+      <dt><strong>Log masking.</strong></dt>
+      <dd>Credentials, password hashes and social security numbers are masked in log output.
+      This matters concretely because the customer record layout carries a nine-digit social
+      security number and the user layout carries a password field, so unmasked logging would
+      leak both.</dd>
+
+      <dt><strong>Dependency discipline.</strong></dt>
+      <dd>Every dependency and build plugin is pinned to an exact version, with no ranges and
+      no floating selectors, and an automated vulnerability scan is bound into the build so
+      the pinning is verifiable rather than merely asserted.</dd>
+
+      <dt><strong>No live cloud credentials.</strong></dt>
+      <dd><strong>All cloud interaction targets a local emulator.</strong> No code path reaches
+      a live provider endpoint and no credential material appears in any file.</dd>
+    </dl>
+
+    <p>Two defects recorded against the <em>prior</em> attempt at this migration are closed by
+    the current work: a <strong>hardcoded signing key</strong> and the
+    <strong>absence of a production profile</strong>, both classified High
+    [<code class="cite">docs/project-guide.md:L51-L52</code>]. Each is now addressed by a named
+    file; see <a href="#findings">section 10</a>.</p>
+
+    <h3>7.2 Observability</h3>
+
+    <p>The starting point is worth stating bluntly: <strong>the legacy corpus contains no
+    instrumentation at all.</strong> Its entire diagnostic surface is print statements to the
+    job log, plus one routine that formats a file status code into four characters for
+    display. There are no metrics, no traces, no structured records and no health check
+    anywhere in 19,254 lines.</p>
+
+    <p>Four capabilities are added, and they are <strong>shipped with the initial
+    implementation rather than deferred to later work</strong>:</p>
+
+    <ul>
+      <li><strong>Structured logging.</strong> Log records are emitted as machine-parsable
+      JSON carrying a trace identifier, a span identifier and a correlation identifier, so a
+      single request or batch run can be followed end to end.</li>
+      <li><strong>Distributed tracing.</strong> Trace context is propagated across the
+      application, including onto outbound calls, and exported to a trace collector.</li>
+      <li><strong>Metrics.</strong> A metrics endpoint publishes four named counters: records
+      processed, records rejected <em>tagged by reason</em>, authentication attempts, and total
+      transaction amount. The tag on the rejection counter is what turns the legacy end-of-run
+      printed totals into a signal an operator can act on.</li>
+      <li><strong>Health.</strong> A composite health endpoint covers the database, object
+      storage and the queue, with separate liveness and readiness groupings.</li>
+    </ul>
+
+    <p>No throughput, latency or utilisation figure is stated in this document, for either
+    system. The legacy application publishes no service-level objective, and no measurement of
+    the target has been captured as published evidence &mdash; see
+    <a href="#gates">section 8</a>, gate 3.</p>
+  </section>
+
+  <section aria-labelledby="gates">
+    <h2 id="gates">8. The evidence framework: eight gates</h2>
+
+    <div class="callout callout-alert">
+      <p class="callout-title">Read this before reading the table</p>
+      <p><strong>No validation gate result is recorded in this document, and design alone
+      never constitutes a pass.</strong> Every entry in the Result column below reads
+      <span class="na">Not available</span>, because this summary is a narrative artefact: it
+      produces no evidence and signs off no verdict. A gate result may rest only on a captured,
+      published, linked artefact that a reviewer can open.</p>
+      <p>The authoritative ledger &mdash; which defines each gate, states its prerequisites,
+      gives the literal command that runs it and records its current standing &mdash; is
+      <a href="validation-gates.md">validation-gates.md</a>. <strong>Read the standing of any
+      gate there, not here.</strong> That ledger has since closed the prerequisite for gate 7
+      and recorded the outcome of running its harness; consistent with its own wording, that is
+      reported there as measured assertions rather than as a pass, and this page does not
+      restate it. Any change to a result is made by producing evidence, never by softening a
+      sentence.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <caption>Table 4. The eight validation gates. The Result column states what
+        <em>this summary</em> records, which is nothing; the prerequisite column states what is
+        needed. The authoritative standing of each gate is in
+        <a href="validation-gates.md">validation-gates.md</a>.</caption>
+        <thead>
+          <tr>
+            <th scope="col" class="num">#</th>
+            <th scope="col">Gate</th>
+            <th scope="col">What it asserts</th>
+            <th scope="col">Result recorded here</th>
+            <th scope="col">Prerequisite</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row" class="num">1</th>
+            <td>End-to-end boundary parity</td>
+            <td>Field-level and byte-level equality of posted output against legacy
+            behaviour</td>
+            <td><span class="na">Not available</span></td>
+            <td>An agreed legacy baseline output artefact to compare against; none exists in
+            the repository</td>
+          </tr>
+          <tr>
+            <th scope="row" class="num">2</th>
+            <td>Zero-warning build</td>
+            <td>A repeatable, deterministic, warning-free build with a clean dependency
+            vulnerability scan</td>
+            <td><span class="na">Not available</span></td>
+            <td>A captured build and scan artefact, published and linked</td>
+          </tr>
+          <tr>
+            <th scope="row" class="num">3</th>
+            <td>Performance baseline</td>
+            <td>A <strong>measured baseline</strong> &mdash; recorded, <strong>explicitly not
+            compared against a target</strong></td>
+            <td><span class="na">Not available</span></td>
+            <td>A captured measurement. <strong>No target may be invented</strong>: the legacy
+            system publishes no service-level objective</td>
+          </tr>
+          <tr>
+            <th scope="row" class="num">4</th>
+            <td>Named fixture validation</td>
+            <td>All nine ASCII fixtures and the ten inline user records load correctly, with
+            position-aware sign decoding and hashing</td>
+            <td><span class="na">Not available</span></td>
+            <td>A captured seeded-load report</td>
+          </tr>
+          <tr>
+            <th scope="row" class="num">5</th>
+            <td>API contract verification</td>
+            <td>All 17 operations exercised against a real application context, with role
+            enforcement and failure mapping asserted</td>
+            <td><span class="na">Not available</span></td>
+            <td>A captured integration-tier report</td>
+          </tr>
+          <tr>
+            <th scope="row" class="num">6</th>
+            <td>Security audit</td>
+            <td>The security invariants of <a href="#security">section 7</a> hold across the
+            whole tree</td>
+            <td><span class="na">Not available</span></td>
+            <td>A captured audit and scan artefact</td>
+          </tr>
+          <tr>
+            <th scope="row" class="num">7</th>
+            <td>Scope coverage</td>
+            <td>All 28 programs mapped at paragraph level through a checkable matrix</td>
+            <td><span class="na">Not available</span></td>
+            <td>Nothing further is needed of this page. Its standing is recorded in
+            <a href="validation-gates.md">validation-gates.md</a> against
+            <a href="../TRACEABILITY_MATRIX.md">TRACEABILITY_MATRIX.md</a></td>
+          </tr>
+          <tr>
+            <th scope="row" class="num">8</th>
+            <td>Integration sign-off</td>
+            <td>The full runtime topology stands up and reports healthy, with all three
+            migrations applying cleanly</td>
+            <td><span class="na">Not available</span></td>
+            <td>The stack brought up and verified, with the result captured</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Where the evidence artefacts live</h3>
+
+    <p>These are linked rather than summarised, so that there is exactly one authoritative copy
+    of each.</p>
+
+    <div class="tablewrap">
+      <table>
+        <caption>Table 5. Evidence artefacts and their locations.</caption>
+        <thead>
+          <tr>
+            <th scope="col">Artefact</th>
+            <th scope="col">Location</th>
+            <th scope="col">What it is authoritative for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row"><a href="../DECISION_LOG.md">DECISION_LOG.md</a></th>
+            <td>Repository root</td>
+            <td>Every mechanism substitution, preserved quirk, labelled deviation and resolved
+            conflict, each citing its source locator</td>
+          </tr>
+          <tr>
+            <th scope="row"><a href="../TRACEABILITY_MATRIX.md">TRACEABILITY_MATRIX.md</a></th>
+            <td>Repository root</td>
+            <td>Paragraph-level mapping from all 28 programs to their Java counterparts</td>
+          </tr>
+          <tr>
+            <th scope="row"><a href="validation-gates.md">validation-gates.md</a></th>
+            <td><code class="cite">docs/</code></td>
+            <td>Gate definitions, commands, prerequisites, current standing and the
+            residual-risk register</td>
+          </tr>
+          <tr>
+            <th scope="row"><a href="technical-specifications.md">technical-specifications.md</a></th>
+            <td><code class="cite">docs/</code></td>
+            <td>The full plan: scope, transformation mapping, dependency inventory and
+            per-program analysis</td>
+          </tr>
+          <tr>
+            <th scope="row"><a href="api-contracts.md">api-contracts.md</a></th>
+            <td><code class="cite">docs/</code></td>
+            <td>The 17 operations, their payloads, error envelope and pagination contract</td>
+          </tr>
+          <tr>
+            <th scope="row"><a href="architecture-before-after.md">architecture-before-after.md</a></th>
+            <td><code class="cite">docs/</code></td>
+            <td>The detailed before and after architecture, and why a modular monolith is
+            mandatory</td>
+          </tr>
+          <tr>
+            <th scope="row"><a href="onboarding-guide.md">onboarding-guide.md</a></th>
+            <td><code class="cite">docs/</code></td>
+            <td>Prerequisites, configuration, and how to build, test and run the system</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="decisions">
+    <h2 id="decisions">9. Decisions, substitutions and disclosed deviations</h2>
+
+    <h3>9.1 Mechanism substitutions</h3>
+
+    <p>A substitution replaces a mainframe mechanism with a modern one while keeping observable
+    behaviour identical. These are the ones a stakeholder is most likely to be asked about. Each
+    is recorded with its source locator in
+    <a href="../DECISION_LOG.md">DECISION_LOG.md</a>.</p>
+
+    <div class="tablewrap">
+      <table>
+        <caption>Table 6. Principal mechanism substitutions.</caption>
+        <thead>
+          <tr>
+            <th scope="col">Legacy mechanism</th>
+            <th scope="col">Replacement</th>
+            <th scope="col">Why behaviour is unchanged</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Screen state in a communication area</th>
+            <td>Stateless requests carrying signed token claims</td>
+            <td>The state was per-conversation and never observable to anyone but the screen;
+            what the user could see and do is unchanged</td>
+          </tr>
+          <tr>
+            <th scope="row">Program-to-program transfer of control</th>
+            <td>Dependency injection between beans</td>
+            <td>The same code runs in the same order; only the linkage mechanism differs</td>
+          </tr>
+          <tr>
+            <th scope="row">Record-oriented file access</th>
+            <td>Repositories over a relational schema</td>
+            <td>Keys, key lengths and browse orderings are preserved, including the page sizes
+            the screens used</td>
+          </tr>
+          <tr>
+            <th scope="row">Job control return-code gating</th>
+            <td>A batch decider on the same codes</td>
+            <td>The same conditions gate the same steps</td>
+          </tr>
+          <tr>
+            <th scope="row">Transient data queue and internal reader</th>
+            <td>A first-in-first-out queue and a listener</td>
+            <td>The same parameters are handed to the same job; the 80-byte record shape is what
+            fixes the message contract</td>
+          </tr>
+          <tr>
+            <th scope="row">Generation data groups</th>
+            <td>Object-storage keys over a versioned bucket</td>
+            <td>Record lengths are preserved byte-exactly at the storage boundary</td>
+          </tr>
+          <tr>
+            <th scope="row">Plain-text password comparison</th>
+            <td>BCrypt verification</td>
+            <td>The credential a caller presents is unchanged; only the stored representation
+            differs, and it was never observable</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>9.2 Three disclosed deviations</h3>
+
+    <p>A deviation is different, and the distinction is the most important one in this section:
+    the Java system <strong>deliberately behaves differently from the source</strong>, and the
+    difference is disclosed rather than absorbed. Three are highlighted here because a
+    stakeholder should know about them. They are <strong>improvements, not parity</strong>, and
+    they are labelled that way in the register. The complete set of labelled deviations is
+    recorded in <a href="../DECISION_LOG.md">DECISION_LOG.md</a> and in the register in
+    <a href="validation-gates.md">validation-gates.md</a>; this is a selection, not the whole
+    list.</p>
+
+    <div class="tablewrap">
+      <table>
+        <caption>Table 7. Three disclosed deviations a stakeholder should know about.</caption>
+        <thead>
+          <tr>
+            <th scope="col">Deviation</th>
+            <th scope="col">What the legacy system does</th>
+            <th scope="col">What the target does, and why it is disclosed</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">One transaction boundary closes an orphaned-write hazard</th>
+            <td>Daily posting performs its three writes as three independent commits, so a
+            failure part-way through can leave two rows written and the third not
+            [<code class="cite">app/cbl/CBTRN02C.cbl:L424-L465</code>]</td>
+            <td>The three writes become one indivisible unit, so the hazard cannot occur. This
+            is <strong>strictly better than the source</strong>, which is exactly why it is
+            labelled a deviation instead of being presented as equivalence</td>
+          </tr>
+          <tr>
+            <th scope="row">A hard capacity ceiling is removed</th>
+            <td>Statement generation holds its working set in a fixed table of 51 card entries
+            each holding 10 transactions &mdash; <strong>a hard ceiling of 510 transactions per
+            run</strong> &mdash; and increments its indexes with <strong>no bounds check at
+            all</strong> [<code class="cite">app/cbl/CBSTM03A.CBL:L226</code>,
+            <code class="cite">:L228</code>, <code class="cite">:L232</code>]</td>
+            <td>The target streams instead, so there is no ceiling and no silent overrun. The
+            legacy limit is recorded as a historical capacity fact rather than reproduced,
+            because reproducing a latent corruption hazard would be indefensible</td>
+          </tr>
+          <tr>
+            <th scope="row">A conflicting retention setting is resolved</th>
+            <td>Two job control members declare <strong>different retention limits for the same
+            output group</strong> [<code class="cite">app/jcl/DEFGDGB.jcl:L37-L38</code>,
+            <code class="cite">app/jcl/REPTFILE.jcl:L26-L27</code>]</td>
+            <td>Resolved in favour of the <strong>larger</strong> value, because a single
+            storage-lifecycle value has to be chosen and the larger one discards nothing. This
+            is <strong>the only legacy inconsistency this migration resolves</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>9.3 Legacy defects logged rather than fixed</h3>
+
+    <p>Several genuine defects exist in the legacy job control and programs &mdash; a corrupted
+    dataset statement, a record-length mismatch between two steps of the same job, a procedure
+    whose internal name differs from the member name that invokes it, a misspelled job name, and
+    a rejection code that is assigned on a path where it can never be reported. <strong>None is
+    repaired.</strong></p>
+
+    <p>The reason is the same one that governs the preserved quirks in
+    <a href="#fidelity">section 6</a>: <strong>repairing them would change behaviour that the
+    parity comparison is measured against</strong>, and the comparison is the only means of
+    proving the migration correct. Each is recorded with its locator in the register in
+    <a href="validation-gates.md">validation-gates.md</a>, so that a later programme can decide
+    to fix them deliberately, with parity re-baselined, rather than inheriting them unknowingly.</p>
+  </section>
+
+  <section aria-labelledby="findings">
+    <h2 id="findings">10. Findings by severity</h2>
+
+    <p>Findings are classified Blocker, High, Medium or Low, each with a remediation. The
+    identifiers match the authoritative register in
+    <a href="validation-gates.md">validation-gates.md</a>, which is
+    <strong>referenced here, not duplicated</strong>; that register also carries findings below
+    the stakeholder threshold and is the place to read the full set.</p>
+
+    <div class="tablewrap">
+      <table>
+        <caption>Table 8. Stakeholder-level findings, severity-classified.</caption>
+        <thead>
+          <tr>
+            <th scope="col">ID</th>
+            <th scope="col">Severity</th>
+            <th scope="col">Finding</th>
+            <th scope="col">Remediation and status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row" class="fid">B-1</th>
+            <td><span class="sev">Blocker</span></td>
+            <td>A dependency library used by the integration tests renamed every one of its
+            module artefacts at a major version, so the previously correct identifiers no longer
+            resolve &mdash; and the framework parent independently manages an older version of
+            the same library</td>
+            <td><strong>Identified and remediated in the plan.</strong> Two changes are required
+            <strong>together</strong>: override the managed version, and use only the renamed
+            identifiers. <strong>Either one alone still fails the build</strong> &mdash; applying
+            the override without the rename resolves artefacts that do not exist, and applying
+            the rename without the override selects the wrong version. The coordinate-level
+            detail is in <a href="technical-specifications.md">technical-specifications.md</a></td>
+          </tr>
+          <tr>
+            <th scope="row" class="fid">H-1</th>
+            <td><span class="sev">High</span></td>
+            <td>The token signing key was hardcoded in the prior implementation
+            [<code class="cite">docs/project-guide.md:L52</code>]</td>
+            <td><strong>Closed by this work.</strong> Resolved from an environment variable in
+            every profile, with no committed default; an unset variable aborts start-up</td>
+          </tr>
+          <tr>
+            <th scope="row" class="fid">H-2</th>
+            <td><span class="sev">High</span></td>
+            <td>No production profile existed in the prior implementation
+            [<code class="cite">docs/project-guide.md:L51</code>]</td>
+            <td><strong>Closed by this work</strong> &mdash; a dedicated production profile with
+            every secret externalised</td>
+          </tr>
+          <tr>
+            <th scope="row" class="fid">H-3</th>
+            <td><span class="sev">High</span></td>
+            <td>No continuous-integration pipeline existed in the prior implementation
+            [<code class="cite">docs/project-guide.md:L49</code>]</td>
+            <td><strong>Closed by this work</strong> &mdash; a workflow pinned to the enforced
+            toolchain, so the zero-warning build is repeatable rather than local to one
+            machine</td>
+          </tr>
+          <tr>
+            <th scope="row" class="fid">H-5</th>
+            <td><span class="sev">High</span></td>
+            <td>A documentation page absent from the site navigation <strong>never appears in
+            the published site, and nothing reports a problem</strong> &mdash; the site renders
+            from that navigation [<code class="cite">catalog-info.yaml:L22</code>]. A strict
+            documentation build does <strong>not</strong> catch it: omissions are reported below
+            warning level by default, and for a page that is a static file rather than a
+            Markdown page the omission is <strong>not reported at all</strong></td>
+            <td>Add the navigation entry in the same change as the page, <strong>and</strong>
+            raise navigation omissions to warning level so a strict build can fail on them.
+            Until then the only reliable detection is a human reading the navigation</td>
+          </tr>
+          <tr>
+            <th scope="row" class="fid">M-1</th>
+            <td><span class="sev">Medium</span></td>
+            <td>The report output group carries two conflicting retention limits
+            [<code class="cite">app/jcl/DEFGDGB.jcl:L37-L38</code>,
+            <code class="cite">app/jcl/REPTFILE.jcl:L26-L27</code>]</td>
+            <td><strong>Resolved to the larger value</strong>, because one storage-lifecycle
+            value must be chosen. Recorded as the only legacy inconsistency resolved</td>
+          </tr>
+          <tr>
+            <th scope="row" class="fid">M-3</th>
+            <td><span class="sev">Medium</span></td>
+            <td>The coverage plugin is pinned <em>below</em> the version cited elsewhere in the
+            documentation &mdash; a version drift between two sources</td>
+            <td><strong>The pinned version governs.</strong> The divergence is recorded rather
+            than resolved by advancing the pin unilaterally, since an unreviewed version change
+            is a build risk of its own</td>
+          </tr>
+          <tr>
+            <th scope="row" class="fid">L-2</th>
+            <td><span class="sev">Low</span></td>
+            <td>The service-catalogue entry carries four inaccurate metadata declarations: the
+            component type [<code class="cite">catalog-info.yaml:L35</code>], the owning system
+            [<code class="cite">:L38</code>], the tag set
+            [<code class="cite">:L7-L18</code>] and a documentation link
+            [<code class="cite">:L31</code>]</td>
+            <td>Correct them in <strong>separate work</strong>. Reported here with its
+            remediation but <strong>explicitly out of scope</strong>, because that file must
+            remain unchanged by this migration</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="risks">
+    <h2 id="risks">11. Current position, risks and next actions</h2>
+
+    <p>This section is deliberately the least flattering one in the document. A stakeholder
+    reading a modernisation summary is entitled to know what has <em>not</em> been established,
+    and an unqualified claim here would be the easiest thing in the programme to disprove.</p>
+
+    <h3>11.1 What is not established</h3>
+
+    <dl>
+      <dt><strong>No gate result is recorded in this document.</strong></dt>
+      <dd>Every entry in table 4 reads <span class="na">Not available</span>. Design, however
+      thorough, is never a pass. The standing of each gate is maintained in
+      <a href="validation-gates.md">validation-gates.md</a> and should be read there.</dd>
+
+      <dt><strong>No expected legacy baseline output artefact exists in the repository.</strong></dt>
+      <dd>End-to-end parity is defined as a byte-level comparison against what the COBOL
+      produces, and the thing being compared against &mdash; a captured, agreed baseline output
+      &mdash; is not present. Parity therefore <strong>cannot yet be executed as a true
+      diff</strong>. <strong>Capturing or agreeing that baseline is a named prerequisite</strong>
+      and is the single largest gap in the evidence chain.</dd>
+
+      <dt><strong>Documentation publication has a genuinely silent failure path.</strong></dt>
+      <dd>A page absent from the site navigation never appears in the published site and
+      <strong>nothing reports a problem</strong> &mdash; no error, no output, and no warning that
+      a strict build could fail on. See finding H-5 in <a href="#findings">section 10</a>. This
+      page depends on its navigation entry being present and on its filename matching that entry
+      exactly, and neither condition is checkable by the build.</dd>
+    </dl>
+
+    <h3>11.2 The environment position</h3>
+
+    <p>The state of the authoring host decides which gates can run at all, so it is published
+    rather than assumed. The <strong>first dated reading, Thursday 30 July 2026</strong>, recorded
+    a <strong>container runtime that is available</strong> &mdash; Docker Engine 29.6.2 with
+    Compose v5.3.1 and a reachable daemon &mdash; while the host build and command-line tools
+    (a Java runtime and compiler, Maven, the cloud emulator, the cloud command-line client and the
+    documentation site generator) were <strong>absent</strong>
+    [<a href="validation-gates.md">validation-gates.md</a>, first reading]. The consequences at
+    that point were that host-native build execution was blocked until a Java 25 runtime and
+    Maven 3.9.11 were provisioned, with a pinned-container build path available in the meantime,
+    and that documentation-site verification was an unmet prerequisite.</p>
+
+    <p><strong>That reading has since been superseded, and the ledger publishes the later one
+    beside it rather than replacing it.</strong> The subsequent reading records that the host
+    Java runtime, compiler, Maven, cloud emulator and cloud command-line client
+    <strong>have since been provisioned</strong>, that the container runtime remains available,
+    and that the documentation site generator was provisioned and its strict build then actually
+    run, with the outcome recorded including its failure and the reason for it
+    [<a href="validation-gates.md">validation-gates.md</a>, second reading and documentation
+    build verification]. The figures are not restated here; the ledger is the authoritative
+    record and is the only place they are maintained. <strong>At no point was the container
+    runtime unavailable.</strong></p>
+
+    <h3>11.3 A Blocker-severity build finding, already remediated in the plan</h3>
+
+    <p>One finding is severe enough to stop a build outright and is recorded as
+    <strong>Blocker</strong> (B-1 in <a href="#findings">section 10</a>). In stakeholder terms: a
+    third-party test library renamed its components at a major version, and the surrounding
+    framework independently pins an older version of the same library. <strong>Two corrections
+    are needed and they only work together</strong> &mdash; either one applied alone still fails.
+    It was found before it could break anything, because every dependency was verified against the
+    public package registry rather than assumed, and the remediation is written into the plan. The
+    coordinate-level detail is in
+    <a href="technical-specifications.md">technical-specifications.md</a>.</p>
+
+    <h3>11.4 Deferred hardening, disclosed as residual risk</h3>
+
+    <p>Eight items are knowingly out of scope. They are <strong>disclosed rather than
+    dropped</strong>, each with the trigger that would bring it into scope, in the register in
+    <a href="validation-gates.md">validation-gates.md</a>: table partitioning; read replicas;
+    connection-pool tuning; transport-layer security termination; request rate limiting;
+    URI-based API versioning; generated API specification tooling; and encryption at rest for
+    personally identifiable data. Two of those &mdash; transport security and encryption at rest
+    &mdash; are deployment decisions rather than application defects, and both must be settled
+    before any exposure beyond a local environment.</p>
+
+    <h3>11.5 On the prior attempt's numbers</h3>
+
+    <div class="callout callout-alert">
+      <p><a href="project-guide.md">project-guide.md</a> is retained unchanged as
+      <strong>prior-run</strong> evidence, because deleting it would erase the record of what a
+      previous attempt reported. <strong>Its completion, hours, test-count, coverage and
+      gate-pass claims are not evidence for the current implementation</strong>, and none of them
+      is restated or endorsed anywhere in this document. It is cited here for exactly one purpose:
+      as the record of the four defects the current work closes (see H-1, H-2 and H-3 in
+      <a href="#findings">section 10</a>).</p>
+      <p>For the same reason, this document states <strong>no</strong> completion percentage, no
+      effort figure, no test count, no coverage measurement, no throughput or latency figure and
+      no financial or business-benefit quantification. None of it is supported by evidence that
+      exists today, and publishing an unsupported figure in a stakeholder summary is the most
+      damaging thing this page could do.</p>
+    </div>
+
+    <h3>11.6 Next actions, in order</h3>
+
+    <ol>
+      <li><strong>Generate and complete the implementation</strong> against the plan in
+      <a href="technical-specifications.md">technical-specifications.md</a>.</li>
+      <li><strong>Execute the gates that need no container first</strong> &mdash; the
+      zero-warning build with its vulnerability scan, the security audit and scope coverage
+      &mdash; because they are runnable with the least set-up and produce the earliest
+      evidence.</li>
+      <li><strong>Capture the parity baseline</strong>, or formally agree how it will be
+      derived. Nothing about gate 1 can move until this exists.</li>
+      <li><strong>Keep the host toolchain provisioned</strong> so that build and
+      documentation verification remain reproducible rather than dependent on one machine's
+      state.</li>
+      <li><strong>Publish the evidence artefacts</strong> and update the ledger, closing each
+      absence by producing the artefact a reviewer would open &mdash; never by rewording the
+      result.</li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="next">
+    <h2 id="next">12. Where to go next</h2>
+
+    <p>This page is a summary and is deliberately the shallowest document in the set. Each
+    document below is authoritative for its own subject, and none of their content is repeated
+    here.</p>
+
+    <dl>
+      <dt><a href="onboarding-guide.md">onboarding-guide.md</a></dt>
+      <dd>Prerequisites, the configuration profiles and their defaults, and how to build, test
+      and run the system. <strong>Start here if you intend to run anything.</strong></dd>
+
+      <dt><a href="api-contracts.md">api-contracts.md</a></dt>
+      <dd>The API surface: all 17 operations, their request and response shapes, the error
+      envelope and the pagination contract.</dd>
+
+      <dt><a href="architecture-before-after.md">architecture-before-after.md</a></dt>
+      <dd>The detailed before and after architecture diagrams, and the full argument for a
+      single deployable unit.</dd>
+
+      <dt><a href="validation-gates.md">validation-gates.md</a></dt>
+      <dd>The evidence ledger: gate definitions, commands, prerequisites, current standing and
+      the residual-risk register. <strong>The authoritative source for any gate
+      result.</strong></dd>
+
+      <dt><a href="technical-specifications.md">technical-specifications.md</a></dt>
+      <dd>The complete plan, including the per-program analysis of the places where a naive
+      translation would silently diverge.</dd>
+
+      <dt><a href="../DECISION_LOG.md">DECISION_LOG.md</a> and
+      <a href="../TRACEABILITY_MATRIX.md">TRACEABILITY_MATRIX.md</a></dt>
+      <dd>At the repository root: every decision with its source locator, and the
+      paragraph-level mapping from all 28 programs to their Java counterparts.</dd>
+
+      <dt><a href="../README.md">README.md</a></dt>
+      <dd>The legacy transaction, program and job inventories, preserved intact, alongside the
+      Java build and run instructions.</dd>
+    </dl>
+  </section>
+</main>
+
+<footer aria-labelledby="provenance">
+  <div class="wrap">
+    <h2 id="provenance">Provenance and licence</h2>
+    <p><strong>CardDemo modernisation: executive summary.</strong> A static stakeholder
+    document. It is not a user interface, not a front end and not a product screen; the
+    migrated system exposes REST/JSON operations and Spring Boot Actuator endpoints only. This
+    file is entirely self-contained: it has no external script, stylesheet, web font, image,
+    iframe, tracker or network dependency of any kind, and it contains no script element, so it
+    renders completely and identically offline.</p>
+
+    <p><strong>All quantitative claims in this document are cited to repository paths at anchor
+    commit <code>7756d895ffeb65f7ea72aaa609e356d9899afcec</code></strong> (short
+    <code>7756d89</code>), and the legacy corpus under <code>app/</code> is frozen and byte for
+    byte unchanged. <strong>No validation-gate evidence has yet been generated: every gate
+    result in this document reads <span class="na">Not available</span>, and design alone never
+    constitutes a pass.</strong> The authoritative ledger is
+    <a href="validation-gates.md">validation-gates.md</a>.</p>
+
+    <p class="lic">Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. Licensed
+    under the Apache License, Version 2.0 (the &ldquo;License&rdquo;). You may not use this file
+    except in compliance with the License. You may obtain a copy of the License at
+    <code>http://www.apache.org/licenses/LICENSE-2.0</code>. Unless required by applicable law
+    or agreed to in writing, software distributed under the License is distributed on an
+    &ldquo;AS IS&rdquo; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+    implied. See the <a href="../LICENSE">LICENSE</a> for the specific language governing
+    permissions and limitations under the License, and the <a href="../NOTICE">NOTICE</a> for
+    attribution.</p>
+  </div>
+</footer>
+
+</body>
+</html>
