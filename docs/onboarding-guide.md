@@ -967,7 +967,14 @@ service compares them field by field, reproducing
 Now the trap. The **live customer record** holds a dash-separated date, so its components sit
 at offsets **1, 6 and 9**. The **snapshot** holds the same date **without separators**, so its
 components sit at offsets **1, 5 and 7**. The source compares **offset 1 against 1, 6 against
-5, and 9 against 7.**
+5, and 9 against 7** &mdash; six lines you can read for yourself at
+[`app/cbl/COACTUPC.cbl:L4174-L4179`]:
+
+```text
+AND CUST-DOB-YYYY-MM-DD (1:4)  EQUAL ACUP-OLD-CUST-DOB-YYYY-MM-DD (1:4)
+AND CUST-DOB-YYYY-MM-DD (6:2)  EQUAL ACUP-OLD-CUST-DOB-YYYY-MM-DD (5:2)
+AND CUST-DOB-YYYY-MM-DD (9:2)  EQUAL ACUP-OLD-CUST-DOB-YYYY-MM-DD (7:2)
+```
 
 **A whole-string comparison of the two reports a change on every request**, so the endpoint
 returns a conflict every time and is permanently unusable. Compare **components**, and store
@@ -1552,7 +1559,7 @@ the eight gates; this is recorded because clause F requires evidence to be cited
 | Warnings attributable to **this page** | **2**, both of them a link to `executive-presentation.html`, a document created in the same batch |
 | Warnings attributable to other pages | 7, every one of the same kind, from `api-contracts.md` (1), `architecture-before-after.md` (3) and `validation-gates.md` (3) |
 | Warnings of any other kind | **0** |
-| This page's rendered output | Produced successfully: **32 tables**, **10 fenced code blocks**, **81 heading anchors**, **all 260 in-page links resolving to a real element id**, and **no syntax-highlighting error token** |
+| This page's rendered output | Produced successfully: **32 tables**, **11 fenced code blocks**, **81 heading anchors**, **all 260 in-page links resolving to a real element id**, and **no syntax-highlighting error token** |
 
 > **What that failure means, and what it does not.** The build fails **only** because one
 > document this page links to has not landed yet. The link filename is already the one the
