@@ -355,6 +355,31 @@ COPY localstack-init/ localstack-init/
 COPY .env.example docker-compose.yml ./
 COPY .github/ .github/
 
+# The two published artefacts the unit tier reconciles the code against.
+# Established by evidence, exactly as the additions above were: with them
+# absent, `docker compose build app` failed while the identical suite
+# passed on the host, on these two reads and no others -
+#   docs/          DocumentationConsistencyTest.lines("docs/api-contracts.md")
+#                  threw UncheckedIOException "Cannot read
+#                  /workspace/docs/api-contracts.md", erroring
+#                  thePublishedContractCarriesTheLabel. The class also
+#                  walks upward for the root and scans .md files, and
+#                  excludes docs/project-guide.md by path, so the
+#                  directory has to be present for the exclusion to mean
+#                  anything
+#   observability/ MetricInstrumentOwnershipTest resolves
+#                  Path.of("observability","grafana","dashboards",
+#                  "carddemo-dashboard.json") and reads it to prove every
+#                  dashboard query resolves to a rendered Prometheus
+#                  series; without the file it errored with NoSuchFile on
+#                  everyDashboardQueryResolvesToARenderedSeries
+# .dockerignore already keeps both in the build context deliberately - it
+# names "observability/, docs/" in its required-context listing and again
+# under "protected by OMISSION" - so only these COPY lines were missing.
+# Both are confined to this stage; neither reaches the runtime image.
+COPY docs/ docs/
+COPY observability/ observability/
+
 COPY src/ src/
 
 # Compile, test and package. Warnings are escalated to errors by
