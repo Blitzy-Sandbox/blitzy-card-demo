@@ -29,6 +29,7 @@
 package com.cardemo.batch.writers;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -235,6 +236,26 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * discoverable while {@link #REJECT_OBJECT_KEY_CONTEXT_KEY} names that object precisely.
      */
     public static final String REJECT_GENERATION_PREFIX_CONTEXT_KEY = "carddemo.dalyrejs.generation.prefix";
+
+    /**
+     * Step execution context key naming the object <em>this attempt is currently writing</em>, published at
+     * every chunk commit so that a restart can find it.
+     *
+     * <p><b>This is restart state and nothing else. A downstream step must never read it</b> - that is what
+     * {@link #REJECT_OBJECT_KEY_CONTEXT_KEY} is for, and the distinction is the whole reason a second entry
+     * exists. The published key names a completed object; this one names an object still being written, which
+     * a consumer reading it early would find absent or short.
+     *
+     * <p>It exists because of when the two are written. {@link #REJECT_OBJECT_KEY_CONTEXT_KEY} is written by
+     * {@link #close()}, and the framework persists a step's execution context <em>before</em> closing its
+     * streams, so on a failed attempt that entry never reaches the database - verified by decoding
+     * {@code BATCH_STEP_EXECUTION_CONTEXT} for a forced failure, where the generation prefix and the record
+     * count were present and the object key was not. {@link #update(ExecutionContext)} runs at every chunk
+     * commit and is persisted, so an entry written there survives the failure and is restored into the
+     * restarted attempt, which is exactly what {@link #adoptPriorAttempt(ExecutionContext)} needs.
+     */
+    public static final String REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY =
+            "carddemo.dalyrejs.attempt.object.key";
 
     /**
      * Step execution context key under which the cumulative count of reject records written by this step is
@@ -694,6 +715,16 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      */
     private OutputStream generationStream;
 
+    /**
+     * The previous attempt's object key under this same generation, or {@code null} when this is not a restart.
+     *
+     * <p>Set at {@link #open(ExecutionContext)} from the restored context, consumed when the consolidated
+     * object is first written, and cleared by {@link #deleteSupersededObject()} once the deletion has been
+     * attempted. Not {@code static}, because it is per-instance restart state and this class holds no mutable
+     * static field.
+     */
+    private String supersededObjectKey;
+
     /** Whether {@link #close()} has already committed this step's generation, so a second call is a no-op. */
     private boolean generationCommitted;
 
@@ -886,7 +917,72 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
         this.generationStream = null;
         this.generationCommitted = false;
         this.recordsWritten.set(0L);
+        this.supersededObjectKey = null;
+        adoptPriorAttempt(executionContext);
         LOGGER.debug("{} generation is open for writing under {}", DALYREJS_DD_NAME, generationPrefix);
+    }
+
+    /**
+     * Adopts a previous attempt's generation object so a restart consolidates rather than fragments.
+     *
+     * <p><b>Why a restart needs this at all.</b> The object key carries the job <em>execution</em> identifier
+     * while the generation prefix carries the job <em>instance</em> identifier, so a restart of the same
+     * instance writes a second object under the same generation. That was deliberate, and the reasoning
+     * recorded on {@link #buildGenerationObjectKey} was that the newer key sorts after the older one and so a
+     * consumer resolving the greatest key would "get a whole run rather than a fragment". <b>That does not
+     * hold, and cannot.</b> A restart resumes the reader at the cursor the failed attempt reached, so the
+     * second object can only ever contain the rejects found <em>after</em> that cursor. Measured on the
+     * 300-row fixture with a forced failure at record 46: two objects of 430x4 and 430x34, the completed
+     * execution's manifest naming only the second, and a record count of 34 sitting beside a reject count of
+     * 38 in the same context with nothing to reconcile them.
+     *
+     * <p><b>Why consolidating rather than deleting.</b> The abnormal-termination disposition of
+     * {@code app/jcl/POSTTRAN.jcl:L34} {@code //DALYREJS DD DISP=(NEW,CATLG,DELETE)} says a failed step's
+     * generation is not catalogued, and for a step that regenerates its whole output on restart, deleting the
+     * failed attempt's object discharges that exactly. This step is not one of those. Its input cursor moves,
+     * so the four rejects the first attempt found are unreproducible: deleting that object would satisfy the
+     * one-object rule by destroying part of a reject audit trail, which in a card system is a regulated
+     * artefact. Carrying the bytes forward satisfies the same rule losslessly, and it is what
+     * {@code TransactionWriter} already does with its own indexed manifest, so the two writers stop
+     * disagreeing.
+     *
+     * <p>The prior object is <b>not</b> deleted here. It is deleted only once the consolidated object has been
+     * committed - see {@link #close()} - so a failure between the two leaves the earlier attempt's records
+     * still readable rather than losing both copies.
+     *
+     * @param executionContext the restored step execution context, permitted to be {@code null}
+     */
+    private void adoptPriorAttempt(final ExecutionContext executionContext) {
+        if (executionContext == null) {
+            return;
+        }
+
+        // The attempt entry is preferred because it is the one that survives a failure: it is written by
+        // update() at chunk commits, whereas the published entry is written by close() after the framework has
+        // already persisted the context. The published entry is still consulted, for a context that came from
+        // an attempt which completed its close.
+        final String priorKey = executionContext.containsKey(REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY)
+                ? executionContext.getString(REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY, "")
+                : executionContext.getString(REJECT_OBJECT_KEY_CONTEXT_KEY, "");
+        if (priorKey.isBlank()
+                || priorKey.equals(this.generationObjectKey)
+                || !priorKey.startsWith(this.generationPrefix)) {
+            // Not a prior attempt of this generation: either this execution's own key echoed back, or a key
+            // from somewhere else entirely. Adopting the latter would import another generation's records.
+            return;
+        }
+
+        final long priorCount = executionContext.getLong(REJECT_RECORD_COUNT_CONTEXT_KEY, 0L);
+        this.supersededObjectKey = priorKey;
+        this.recordsWritten.set(priorCount);
+        LOGGER.info("{} is restarting under generation {} and will consolidate the {} record(s) of the"
+                        + " previous attempt's object {} into {}, deleting the superseded object only once"
+                        + " the consolidated one is committed",
+                DALYREJS_DD_NAME,
+                generationPrefix,
+                Long.valueOf(priorCount),
+                priorKey,
+                this.generationObjectKey);
     }
 
     /**
@@ -907,6 +1003,11 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
         }
         executionContext.putString(REJECT_GENERATION_PREFIX_CONTEXT_KEY, generationPrefix);
         executionContext.putLong(REJECT_RECORD_COUNT_CONTEXT_KEY, this.recordsWritten.get());
+        if (this.generationStream != null || this.generationCommitted) {
+            // Restart state, persisted at this chunk boundary. Only written once the object actually exists,
+            // so a restart never adopts a key nothing was ever written to.
+            executionContext.putString(REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY, this.generationObjectKey);
+        }
     }
 
     /**
@@ -934,6 +1035,19 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     public void close() throws ItemStreamException {
         final OutputStream open = this.generationStream;
         if (open == null) {
+            if (this.supersededObjectKey != null) {
+                // A restart that rejected nothing of its own. The previous attempt's object still holds the
+                // whole run, so it stays and the manifest names it. Publishing this execution's own key would
+                // name an object that was never created, and leaving the manifest unwritten would make the
+                // completed execution look as though the generation did not exist.
+                publishGeneration(this.supersededObjectKey, 0);
+                LOGGER.info("{} wrote no rejects on this attempt, so the carried-forward object {} holding"
+                                + " {} record(s) remains the generation and is republished unchanged",
+                        DALYREJS_DD_NAME,
+                        this.supersededObjectKey,
+                        Long.valueOf(this.recordsWritten.get()));
+                return;
+            }
             LOGGER.debug("No rejected transactions were written, so no {} generation was created",
                     DALYREJS_DD_NAME);
             return;
@@ -954,8 +1068,44 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
 
         this.generationCommitted = true;
         publishGeneration(this.generationObjectKey, 0);
+        deleteSupersededObject();
         LOGGER.debug("Closed the {} generation holding {} reject record(s)", DALYREJS_DD_NAME,
                 Long.valueOf(this.recordsWritten.get()));
+    }
+
+    /**
+     * Removes the superseded attempt's object, once and only once the consolidated object is committed.
+     *
+     * <p>The order is deliberate and is the reason this is a separate step rather than part of the copy. Until
+     * the consolidated upload has completed there are two objects and both are readable; after it there are
+     * two objects and the newer one is complete; only then is the older one redundant. Deleting it any earlier
+     * would leave a window in which a failure loses records that exist nowhere else.
+     *
+     * <p>A failure to delete is reported and does not fail the step. The records are safe either way - they are
+     * in the consolidated object - and what remains is a redundant sibling under the generation, which the
+     * reader now refuses loudly rather than resolving past. Turning a completed posting run into a failure over
+     * a leftover object would be the worse outcome, so it is logged for an operator instead.
+     */
+    private void deleteSupersededObject() {
+        final String superseded = this.supersededObjectKey;
+        if (superseded == null) {
+            return;
+        }
+        this.supersededObjectKey = null;
+        try {
+            if (s3Operations.objectExists(outputBucket, superseded)) {
+                s3Operations.deleteObject(outputBucket, superseded);
+                LOGGER.info("{} deleted the superseded object {} now that the consolidated generation {} is"
+                                + " committed, so the generation is one dataset and therefore one object",
+                        DALYREJS_DD_NAME, superseded, this.generationObjectKey);
+            }
+        } catch (RuntimeException deletion) {
+            LOGGER.error("{} committed the consolidated generation {} but could not delete the superseded"
+                            + " object {}; every record is present in the consolidated object, and the"
+                            + " leftover sibling must be removed manually because a consumer resolving this"
+                            + " generation will now refuse it as ambiguous",
+                    DALYREJS_DD_NAME, this.generationObjectKey, superseded, deletion);
+        }
     }
 
     /**
@@ -1470,7 +1620,64 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
         final S3Resource resource = s3Operations.createResource(outputBucket, this.generationObjectKey);
         resource.setObjectMetadata(streamedObjectMetadata());
         this.generationStream = resource.getOutputStream();
+        seedFromSupersededObject(this.generationStream);
         return this.generationStream;
+    }
+
+    /**
+     * Copies a superseded attempt's records into this attempt's object before anything new is appended.
+     *
+     * <p>Ordering is the whole point: the carried-forward bytes go in first, so the consolidated object holds
+     * the run in the order it was produced - the failed attempt's rejects, then the resumed attempt's - which
+     * is the order a single uninterrupted run would have written them in.
+     *
+     * <p>The payload is framing-checked before it is trusted. A superseded object whose length is not a whole
+     * multiple of the reject record length is not a shorter run, it is a corrupt one, and copying it would
+     * misalign every record after it; that is refused rather than propagated. An object named by the restored
+     * context but absent from the store is treated as nothing to carry, because the disposition of
+     * {@code app/jcl/POSTTRAN.jcl:L34} permits a failed attempt's object to have been removed already - what
+     * is not permitted is silently continuing when it is present but unreadable.
+     *
+     * @param stream this attempt's freshly opened object stream
+     * @throws IOException if the copy cannot be completed
+     */
+    private void seedFromSupersededObject(final OutputStream stream) throws IOException {
+        if (this.supersededObjectKey == null) {
+            return;
+        }
+
+        if (!s3Operations.objectExists(outputBucket, this.supersededObjectKey)) {
+            LOGGER.warn("{} found no object at the superseded key {}, so there is nothing to carry forward;"
+                            + " the consolidated object will hold only this attempt's records",
+                    DALYREJS_DD_NAME, this.supersededObjectKey);
+            this.supersededObjectKey = null;
+            this.recordsWritten.set(0L);
+            return;
+        }
+
+        final byte[] carried;
+        try (InputStream priorRecords =
+                s3Operations.download(outputBucket, this.supersededObjectKey).getInputStream()) {
+            carried = priorRecords.readAllBytes();
+        }
+        // The same framing rule the write path applies, reused rather than restated so the two cannot drift.
+        // Both arguments are the byte length because there is no composed character form to compare here: what
+        // is being checked is the whole-record multiple, not a charset round trip.
+        assertUnblockedFraming(carried.length, carried.length);
+        stream.write(carried);
+
+        // The object's own length is the authority for how many records were carried, not the count the
+        // restored context happened to hold. The context count is written at chunk boundaries and can lag the
+        // last records the failed attempt actually wrote, and a published record count that disagrees with the
+        // object it describes is precisely the inconsistency this fix exists to remove.
+        final long carriedRecords = carried.length / RejectCode.REJECT_RECORD_LENGTH;
+        this.recordsWritten.set(carriedRecords);
+        LOGGER.info("{} carried {} record(s) ({} bytes) forward from the superseded object {} into {}",
+                DALYREJS_DD_NAME,
+                Long.valueOf(carriedRecords),
+                Integer.valueOf(carried.length),
+                this.supersededObjectKey,
+                this.generationObjectKey);
     }
 
     /**
@@ -1688,9 +1895,22 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      *
      * <p>One key per step execution, allocated once, with <strong>no per-chunk sequence</strong>: a generation
      * is one dataset, so it is one object. The job execution identifier is included so a restart of the same
-     * job instance writes a distinct object that still sorts after the previous attempt's, which is what lets a
-     * consumer resolve "the current generation" as the greatest key under the prefix and get a whole run rather
-     * than a fragment.
+     * job instance writes to a distinct key that sorts after the previous attempt's.
+     *
+     * <p><b>A correction to what this javadoc used to claim.</b> It previously said that the newer key sorting
+     * after the older one is "what lets a consumer resolve 'the current generation' as the greatest key under
+     * the prefix and get a whole run rather than a fragment". <b>That was not achievable and the code did not
+     * do it.</b> A restart resumes the reader at the cursor the failed attempt reached, so the newer object can
+     * only hold the rejects found after that cursor - by construction a fragment, not a whole run. Measured on
+     * the 300-row fixture with a forced failure at record 46: objects of 430x4 and 430x34 under one generation,
+     * and a published record count of 34 beside a reject count of 38.
+     *
+     * <p>The distinct key is still correct, but a distinct key alone is not the mechanism that delivers a whole
+     * run. {@link #adoptPriorAttempt(ExecutionContext)} is: the restarted attempt copies the superseded
+     * object's records into this key before appending its own, then {@link #deleteSupersededObject()} removes
+     * the superseded object once this one is committed. The generation therefore ends as one object holding the
+     * whole run, with a record count equal to the reject count, which is what a consumer resolving the greatest
+     * key actually receives.
      *
      * <p>No wall clock is consulted. A timestamp would also be monotonic, but it would make the key
      * irreproducible on re-run and would import an environment-specific assumption; identifiers are

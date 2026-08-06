@@ -93,7 +93,8 @@ class TransactionWriterStepContractTest {
                 new FileStatusMapper(),
                 new MetricsConfig(new SimpleMeterRegistry()),
                 "carddemo-batch-output",
-                "transact");
+                "transact",
+                TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
     }
 
     @Nested

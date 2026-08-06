@@ -33,7 +33,19 @@ package com.cardemo.unit.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.Mockito.mock;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import com.cardemo.batch.jobs.BatchPipelineOrchestrator;
+import com.cardemo.batch.jobs.DailyTransactionPostingJob;
+import com.cardemo.batch.jobs.InterestCalculationJob;
+import com.cardemo.exception.FatalProcessingException;
+import com.cardemo.exception.ValidationException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -47,12 +59,14 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
@@ -75,18 +89,16 @@ import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteExcep
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.batch.support.transaction.ResourcelessTransactionManager;
+import org.springframework.beans.factory.ListableBeanFactory;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.web.servlet.server.ServletWebServerFactory;
 import org.springframework.core.task.SyncTaskExecutor;
 import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionException;
 import org.springframework.transaction.TransactionStatus;
-
-import com.cardemo.batch.jobs.BatchPipelineOrchestrator;
-import com.cardemo.batch.jobs.DailyTransactionPostingJob;
-import com.cardemo.batch.jobs.InterestCalculationJob;
-import com.cardemo.exception.FatalProcessingException;
-import com.cardemo.exception.ValidationException;
 
 /**
  * The named test obligation of {@code BatchPipelineOrchestrator}, discharged without a database and without a
@@ -963,6 +975,215 @@ final class BatchPipelineOrchestratorTest {
                 final Class<? extends RuntimeException> expected) {
 
             assertThat(refusalOf(cause)).isInstanceOf(expected).hasCause(cause);
+        }
+    }
+
+    /**
+     * The operator submission path: the runner that makes the six jobs reachable in a deployed application.
+     *
+     * <p>Before this existed, {@code launchPipeline} had no caller anywhere in {@code src/main}: the
+     * application declared six jobs, seventeen endpoints and {@code spring.batch.job.enabled=false} and could
+     * start none of them outside a test classpath. These assertions are what keeps that from returning.
+     */
+    @Nested
+    @DisplayName("the operator submission path can start each of the six jobs, and only those six")
+    class OperatorSubmission {
+
+        /** The container the runner resolves the requested job from. */
+        private StaticListableBeanFactory beanFactory;
+
+        /** Registers the pipeline job and the five stage jobs under their published bean names. */
+        @BeforeEach
+        void registerJobs() {
+            beanFactory = new StaticListableBeanFactory();
+            beanFactory.addBean("batchPipelineJob", pipelineJob);
+            beanFactory.addBean("dailyTransactionPostingJob", postTran);
+            beanFactory.addBean("interestCalculationJob", intCalc);
+            beanFactory.addBean("combineTransactionsJob", combTran);
+            beanFactory.addBean("statementGenerationJob", creaStmt);
+            beanFactory.addBean("transactionReportJob", tranRept);
+        }
+
+        @Test
+        @DisplayName("the whole stream is launchable, which is what the deployed application could not do")
+        void theWholeStreamIsLaunchable() throws Exception {
+            submit("batchPipelineJob");
+
+            assertThat(invocations.stream().map(Invocation::stage))
+                    .as("every stage of app/jcl's job stream ran from one command-line submission")
+                    .contains("POSTTRAN", "INTCALC", "COMBTRAN");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"dailyTransactionPostingJob", "interestCalculationJob",
+            "combineTransactionsJob", "statementGenerationJob", "transactionReportJob"})
+        @DisplayName("each single stage is launchable, the equivalent of running one JCL member")
+        void eachSingleStageIsLaunchable(final String jobBeanName) throws Exception {
+            submit(jobBeanName);
+
+            assertThat(invocations)
+                    .as("running one member must launch exactly that member")
+                    .hasSize(1);
+        }
+
+        @Test
+        @DisplayName("an unknown job name is refused, naming the six an operator may ask for")
+        void anUnknownJobNameIsRefused() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> submit("someOtherJob"))
+                    .withMessageContaining("batchPipelineJob")
+                    .withMessageContaining("dailyTransactionPostingJob")
+                    .withMessageContaining("someOtherJob");
+        }
+
+        @Test
+        @DisplayName("a blank job name is refused rather than resolving to something arbitrary")
+        void aBlankJobNameIsRefused() {
+            assertThatExceptionOfType(ValidationException.class).isThrownBy(() -> submit("  "));
+        }
+
+        @Test
+        @DisplayName("a malformed interest date is refused before anything is launched")
+        void aMalformedInterestDateIsRefused() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> orchestrator
+                            .batchOperatorLauncher(beanFactory, "batchPipelineJob", "2022-07-18",
+                                    VALID_START_DATE, VALID_END_DATE)
+                            .run(null));
+            assertThat(invocations).as("nothing may run when a parameter is unusable").isEmpty();
+        }
+
+        @Test
+        @DisplayName("a failed run throws, so the process exits non-zero for a shell or a scheduler")
+        void aFailedRunThrows() {
+            postTran.onExecute(execution -> execution.setStatus(BatchStatus.FAILED));
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> submit("batchPipelineJob"))
+                    .withMessageContaining("batchPipelineJob");
+        }
+
+        @Test
+        @DisplayName("return code 4 does not throw: completing with rejects is a success, not a failure")
+        void returnCodeFourDoesNotThrow() throws Exception {
+            // app/cbl/CBTRN02C.cbl:L202-L234 sets RC 4 when and only when the reject count exceeds zero, and
+            // the stream continues. A runner that treated the exit code rather than the status as the verdict
+            // would abort the pipeline on an ordinary rejecting run.
+            postTran.onExecute(execution -> execution.setExitStatus(new ExitStatus("COMPLETED WITH REJECTS")));
+
+            submit("batchPipelineJob");
+
+            assertThat(invocations.stream().map(Invocation::stage))
+                    .as("the stages after a rejecting POSTTRAN still run")
+                    .contains("INTCALC", "COMBTRAN");
+        }
+
+        @Test
+        @DisplayName("the runner is property-gated, so an ordinary boot declares no launcher at all")
+        void theRunnerIsPropertyGated() throws Exception {
+            final ConditionalOnProperty condition = BatchPipelineOrchestrator.class
+                    .getMethod("batchOperatorLauncher", ListableBeanFactory.class, String.class, String.class,
+                            String.class, String.class)
+                    .getAnnotation(ConditionalOnProperty.class);
+
+            assertThat(condition)
+                    .as("an unconditional runner would launch on every boot of every context, including the "
+                            + "web deployment and the slice tests that pin this class's bean inventory")
+                    .isNotNull();
+            assertThat(condition.name()).containsExactly("carddemo.batch.launch");
+        }
+
+        @Test
+        @DisplayName("a submission in a web context warns that the process will not end on its own")
+        void aSubmissionInAWebContextWarns() throws Exception {
+            // A submitted mainframe job ended and freed its initiator. A Boot web application does not, so a
+            // submission made without --spring.main.web-application-type=none finishes its work and then
+            // appears to hang. The warning is the only thing that can be done from here: the application type
+            // is decided before the context exists.
+            beanFactory.addBean("servletWebServerFactory", mock(ServletWebServerFactory.class));
+            final ListAppender<ILoggingEvent> appender = attachAppender();
+            try {
+                submit("dailyTransactionPostingJob");
+            } finally {
+                detachAppender(appender);
+            }
+
+            assertThat(appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage))
+                    .as("the warning must name the property that fixes it, not merely observe the symptom")
+                    .anySatisfy(message ->
+                            assertThat(message).contains("spring.main.web-application-type=none"));
+        }
+
+        @Test
+        @DisplayName("a submission with no servlet container warns about nothing")
+        void aSubmissionWithNoServletContainerIsSilent() throws Exception {
+            final ListAppender<ILoggingEvent> appender = attachAppender();
+            try {
+                submit("dailyTransactionPostingJob");
+            } finally {
+                detachAppender(appender);
+            }
+
+            assertThat(appender.list.stream()
+                    .filter(event -> event.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage))
+                    .as("a correctly formed submission must not be warned at")
+                    .noneSatisfy(message ->
+                            assertThat(message).contains("spring.main.web-application-type"));
+        }
+
+        /**
+         * Attaches a capturing appender to this class's logger.
+         *
+         * @return the attached appender, already started
+         */
+        private ListAppender<ILoggingEvent> attachAppender() {
+            final ListAppender<ILoggingEvent> appender = new ListAppender<>();
+            appender.start();
+            ((Logger) LoggerFactory.getLogger(BatchPipelineOrchestrator.class)).addAppender(appender);
+            return appender;
+        }
+
+        /**
+         * Detaches a capturing appender, so no test observes another's log events.
+         *
+         * @param appender the appender to detach
+         */
+        private void detachAppender(final ListAppender<ILoggingEvent> appender) {
+            ((Logger) LoggerFactory.getLogger(BatchPipelineOrchestrator.class)).detachAppender(appender);
+            appender.stop();
+        }
+
+        @Test
+        @DisplayName("the submission path terminates no process: no System.exit and no shutdown hook")
+        void theSubmissionPathTerminatesNoProcess() throws Exception {
+            // A runner that called System.exit would skip context close, abandoning the connection pool and
+            // the final metrics flush. The outcome travels out as an exception instead, which Spring Boot
+            // turns into a non-zero exit status by itself.
+            // Comment lines are excluded, because the class documents the prohibition in prose and a plain
+            // substring search over the whole file would match the documentation rather than a call.
+            final String code = Files.readAllLines(
+                            Path.of("src", "main", "java", "com", "cardemo", "batch", "jobs",
+                                    "BatchPipelineOrchestrator.java")).stream()
+                    .map(String::trim)
+                    .filter(line -> !line.startsWith("//") && !line.startsWith("*")
+                            && !line.startsWith("/*"))
+                    .collect(java.util.stream.Collectors.joining("\n"));
+
+            assertThat(code).doesNotContain("System.exit").doesNotContain("addShutdownHook");
+        }
+
+        /**
+         * Submits one job through the operator path with valid parameters.
+         *
+         * @param jobBeanName the job to submit
+         * @throws Exception if the runner's contract declares one; none is expected
+         */
+        private void submit(final String jobBeanName) throws Exception {
+            orchestrator.batchOperatorLauncher(beanFactory, jobBeanName, VALID_PARM_DATE, VALID_START_DATE,
+                    VALID_END_DATE).run(null);
         }
     }
 

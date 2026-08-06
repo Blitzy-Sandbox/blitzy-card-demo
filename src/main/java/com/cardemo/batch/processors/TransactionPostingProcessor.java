@@ -289,7 +289,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * A reject is therefore an ordinary outcome that must remain countable, so this class never throws for one:
  * it returns {@link PostingResult#rejected(DailyTransaction, RejectCode)} and lets the step count and
  * classify. Exceptions are reserved for conditions the source itself treats as fatal, where it displays a
- * message, renders the status through {@code 9910} and abends through {@code 9999}.
+ * message, renders the status through {@code 9910} and abends through {@code 9999} - with DEVIATION 2 above
+ * as the single labelled exception, where the source does not guard the write and the escalation is this
+ * implementation's own.
  *
  * <h2>The reject-record contract this class honours half of</h2>
  * <p>
@@ -634,6 +636,44 @@ public class TransactionPostingProcessor
     private static final String OPERATION_REWRITE = "REWRITE";
 
     /**
+     * The source attribution appended by {@link #translateStoreFailure} to a store failure that is neither a
+     * duplicate key nor a constraint violation, for the two call sites where the source really does test the
+     * {@code FILE STATUS} and abend.
+     *
+     * <p>{@code 2700-A-CREATE-TCATBAL-REC} at {@code app/cbl/CBTRN02C.cbl:L512-L524} and
+     * {@code 2700-B-UPDATE-TCATBAL-REC} at {@code :L530-L542} both accept {@code '00'} only, and both reach
+     * {@code DISPLAY} then {@code PERFORM 9910-DISPLAY-IO-STATUS} then
+     * {@code PERFORM 9999-ABEND-PROGRAM} on anything else. The attribution is a per-call-site constant
+     * rather than part of the template because the third call site is <b>not</b> guarded - see
+     * {@link #UNGUARDED_ACCOUNT_REWRITE_ATTRIBUTION}.
+     */
+    private static final String GUARDED_ABEND_ATTRIBUTION =
+            "the guard in app/cbl/CBTRN02C.cbl reaches PERFORM 9999-ABEND-PROGRAM.";
+
+    /**
+     * Companion of {@link #GUARDED_ABEND_ATTRIBUTION} for the account rewrite, which the source does
+     * <b>not</b> guard.
+     *
+     * <p>{@code 2800-UPDATE-ACCOUNT-REC} at {@code app/cbl/CBTRN02C.cbl:L545-L560} tests no
+     * {@code FILE STATUS} at all. Its {@code INVALID KEY} clause moves 109 and
+     * {@code 'ACCOUNT RECORD NOT FOUND'} into the validation reason fields at {@code :L556-L558} and then
+     * falls straight through the {@code EXIT} at {@code :L560} to
+     * {@code PERFORM 2900-WRITE-TRANSACTION-FILE} at {@code :L442}. There is no {@code DISPLAY}, no
+     * {@code PERFORM 9910-DISPLAY-IO-STATUS} and no {@code PERFORM 9999-ABEND-PROGRAM} anywhere on that
+     * path. Reporting the abend guard here would attribute to the source a statement it does not contain, so
+     * this path names the divergence instead: the escalation is DEVIATION 2 of this class, taken because all
+     * three writes share one unit of work, so continuing to the transaction write would commit a transaction
+     * row and a category-balance row against an account row that was never updated.
+     */
+    private static final String UNGUARDED_ACCOUNT_REWRITE_ATTRIBUTION =
+            "app/cbl/CBTRN02C.cbl:L545-L560 does not guard this REWRITE: its INVALID KEY clause assigns "
+                    + "reason 109 at :L556 and continues to 2900-WRITE-TRANSACTION-FILE with no DISPLAY, no "
+                    + "9910-DISPLAY-IO-STATUS and no 9999-ABEND-PROGRAM. This implementation escalates "
+                    + "deliberately - DEVIATION 2 - because all three writes share one unit of work, so "
+                    + "continuing would commit a transaction row against an account row that was never "
+                    + "updated.";
+
+    /**
      * {@code XREF-FILE}, read on its primary key at {@code app/cbl/CBTRN02C.cbl:L383}. Keyed by the
      * sixteen-character card number per {@code FILE-CONTROL} at {@code :L28-L60}.
      */
@@ -939,8 +979,11 @@ public class TransactionPostingProcessor
      *             {@code app/cbl/CBTRN02C.cbl:L204-L205} and so cannot present an absent record
      * @return the outcome, never {@code null}; returning {@code null} would filter the item out of the chunk
      * and the source filters nothing
-     * @throws FatalProcessingException if {@code item} is {@code null}, or if a store failure occurs that
-     *                                  the source would have answered with {@code 9999-ABEND-PROGRAM}
+     * @throws FatalProcessingException if {@code item} is {@code null}; if a store failure occurs on one of
+     *                                  the two guarded category-balance writes, which the source answers with
+     *                                  {@code 9999-ABEND-PROGRAM}; or if one occurs on the account rewrite of
+     *                                  {@code :L545-L560}, which the source does not guard and which this
+     *                                  implementation escalates deliberately under DEVIATION 2
      * @throws DuplicateRecordException if a primary key collides on one of the two inserts
      * @throws DataIntegrityException if a foreign key or check constraint rejects a write, or if the record
      *                                omits a value its {@code NOT NULL} column requires
@@ -1445,9 +1488,10 @@ public class TransactionPostingProcessor
             transactionCategoryBalanceRepository.save(created);
             transactionCategoryBalanceRepository.flush();
         } catch (DataAccessException storeFailure) {
-            // :L512-L524 guard accepting '00' only, then DISPLAY + 9910 + 9999.
+            // :L512-L524 guard accepting '00' only, then DISPLAY + 9910 + 9999. The guarded attribution is
+            // therefore the source's own outcome on this path.
             throw translateStoreFailure(storeFailure, TCATBAL_WRITE_FAILURE_TEXT, DD_TCATBALF,
-                    RELATION_TCATBAL, OPERATION_WRITE, renderTranCatKey(key));
+                    RELATION_TCATBAL, OPERATION_WRITE, renderTranCatKey(key), GUARDED_ABEND_ATTRIBUTION);
         }
         LOG.debug("Created transaction category balance for key {}", WITHHELD_VALUE);
     }
@@ -1490,9 +1534,11 @@ public class TransactionPostingProcessor
             transactionCategoryBalanceRepository.save(existing);
             transactionCategoryBalanceRepository.flush();
         } catch (DataAccessException storeFailure) {
-            // :L530-L542 guard accepting '00' only, then DISPLAY + 9910 + 9999.
+            // :L530-L542 guard accepting '00' only, then DISPLAY + 9910 + 9999. The guarded attribution is
+            // therefore the source's own outcome on this path.
             throw translateStoreFailure(storeFailure, TCATBAL_REWRITE_FAILURE_TEXT, DD_TCATBALF,
-                    RELATION_TCATBAL, OPERATION_REWRITE, renderTranCatKey(existing.getId()));
+                    RELATION_TCATBAL, OPERATION_REWRITE, renderTranCatKey(existing.getId()),
+                    GUARDED_ABEND_ATTRIBUTION);
         }
         LOG.debug("Updated transaction category balance for key {}", WITHHELD_VALUE);
     }
@@ -1588,11 +1634,15 @@ public class TransactionPostingProcessor
             // on this method - the throw replaces the source's fall-through because the unit of work is
             // already poisoned.
             RejectCode neverConsumedFailReason = RejectCode.ACCOUNT_RECORD_NOT_FOUND_ON_REWRITE;
+            // UNGUARDED_ACCOUNT_REWRITE_ATTRIBUTION, not the guarded one: :L545-L560 contains no FILE STATUS
+            // test, no 9910 and no 9999, so the abend on this path is this implementation's escalation and the
+            // message must not borrow the guard's authority.
             throw translateStoreFailure(storeFailure,
                     "ACCOUNT REWRITE FAILED, app/cbl/CBTRN02C.cbl:L554 would have set reason "
                             + neverConsumedFailReason.toFailReasonField() + " "
                             + neverConsumedFailReason.getDescription() + " and continued",
-                    DD_ACCTFILE, RELATION_ACCOUNT, OPERATION_REWRITE, renderAccountKey(account));
+                    DD_ACCTFILE, RELATION_ACCOUNT, OPERATION_REWRITE, renderAccountKey(account),
+                    UNGUARDED_ACCOUNT_REWRITE_ATTRIBUTION);
         }
         LOG.debug("Applied transaction amount to account {}", WITHHELD_VALUE);
 
@@ -2042,10 +2092,17 @@ public class TransactionPostingProcessor
      * Translates a store failure on one of the three writes into the typed exception its {@code FILE STATUS}
      * guard implies.
      *
-     * <p>Each of {@code 2700-A} ({@code :L512}), {@code 2700-B} ({@code :L530}),
-     * {@code 2800} ({@code :L555}) and {@code 2900} ({@code :L566}) applies the same guard shape, and this
-     * method is the one place the source's outcome is reproduced: display the paragraph's own failure text,
-     * then abend. The mapping follows the authoritative status-to-exception table -
+     * <p>This method serves the three writes this class owns, and <b>only two of them are guarded in the
+     * source</b>. {@code 2700-A} ({@code :L512-L524}) and {@code 2700-B} ({@code :L530-L542}) apply the guard
+     * shape - accept {@code '00'} only, otherwise display the paragraph's own failure text, then
+     * {@code 9910-DISPLAY-IO-STATUS}, then {@code 9999-ABEND-PROGRAM} - and for those two this method is the
+     * one place that outcome is reproduced. {@code 2800} ({@code :L545-L560}) applies <b>no</b> guard: it
+     * assigns reason 109 and continues, so its unclassified failure is this implementation's own escalation
+     * and is reported as such. That is why the attribution for the unclassified branch arrives as
+     * {@code unclassifiedAttribution} from the caller instead of being fixed in the template: a single fixed
+     * tail would attribute an abend guard to a paragraph that does not contain one.
+     * {@code 2900} ({@code :L562-L579}) is guarded too but is not translated here - that write is owned by
+     * {@code TransactionWriter}. The mapping follows the authoritative status-to-exception table -
      * {@code '22'} is a duplicate key, {@code '23'} is a record not found, and anything unexpected is the
      * abend of {@code 9999-ABEND-PROGRAM}:
      *
@@ -2060,8 +2117,9 @@ public class TransactionPostingProcessor
      * detail.</li>
      * <li>Anything else becomes {@link FatalProcessingException} with abend code
      * {@value FatalProcessingException#BATCH_ABEND_CODE} and return code
-     * {@value FatalProcessingException#BATCH_RETURN_CODE}, which is what the guard's
-     * {@code PERFORM 9999-ABEND-PROGRAM} does.</li>
+     * {@value FatalProcessingException#BATCH_RETURN_CODE}. On the two guarded paths that is exactly what
+     * their {@code PERFORM 9999-ABEND-PROGRAM} does; on the account rewrite it is this implementation's own
+     * escalation, and the message says so rather than borrowing the guard's authority.</li>
      * </ul>
      *
      * <p><b>{@code FILE STATUS '23'} is never produced here</b>, and its absence is deliberate. The only
@@ -2081,12 +2139,17 @@ public class TransactionPostingProcessor
      * @param relation the relation behind that DD name
      * @param operation {@code WRITE} or {@code REWRITE}, matching the source verb
      * @param key the key image being written, for the diagnostic
+     * @param unclassifiedAttribution what the source does on this specific path when the failure is neither a
+     * duplicate key nor a constraint violation: {@link #GUARDED_ABEND_ATTRIBUTION} for the two guarded
+     * category-balance paths, {@link #UNGUARDED_ACCOUNT_REWRITE_ATTRIBUTION} for the unguarded account
+     * rewrite. It is a whole sentence, appended after {@code so}
      * @return the exception to throw
      */
     private static CardDemoException translateStoreFailure(final DataAccessException storeFailure,
                                                           final String failureText, final String ddName,
                                                           final String relation, final String operation,
-                                                          final String key) {
+                                                          final String key,
+                                                          final String unclassifiedAttribution) {
         // The key is carried on the EXCEPTION and withheld from the LOG. The two have different audiences and
         // different exposure: the exception reaches an operator through the abend payload of a step that has
         // just failed, where knowing which record failed is the whole point, while the log is aggregated,
@@ -2115,12 +2178,15 @@ public class TransactionPostingProcessor
                     ddName, relation, key), null, relation, storeFailure);
         }
 
+        // The attribution is the LAST format argument rather than part of the template, so that the two
+        // renderings below still come from one template and so that a '%' inside an attribution constant can
+        // never be read as a conversion. Only the caller knows whether its paragraph guards the FILE STATUS.
         String template = "%s. The %s of DD %s (relation %s) for key %s failed, and the condition is neither "
-                + "a duplicate key nor a constraint violation, so the guard in app/cbl/CBTRN02C.cbl reaches "
-                + "PERFORM 9999-ABEND-PROGRAM.";
-        return abend(String.format(Locale.ROOT, template, failureText, operation, ddName, relation, key),
+                + "a duplicate key nor a constraint violation, so %s";
+        return abend(String.format(Locale.ROOT, template, failureText, operation, ddName, relation, key,
+                        unclassifiedAttribution),
                 String.format(Locale.ROOT, template, failureText, operation, ddName, relation,
-                        WITHHELD_VALUE),
+                        WITHHELD_VALUE, unclassifiedAttribution),
                 storeFailure);
     }
 }

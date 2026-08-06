@@ -39,9 +39,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
@@ -69,15 +71,41 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.awspring.cloud.sqs.annotation.SqsListener;
+import io.awspring.cloud.sqs.listener.SqsHeaders;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import org.junit.jupiter.api.BeforeEach;
+import org.mockito.ArgumentCaptor;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
+import org.springframework.boot.autoconfigure.batch.BatchDataSourceScriptDatabaseInitializer;
+import org.springframework.boot.autoconfigure.batch.BatchProperties;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.messaging.MessageHeaders;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
@@ -148,6 +176,15 @@ class BatchConfigTest {
     /** The inclusive upper bound of the reporting period. */
     private static final String END_DATE = "2022-12-31";
 
+    /**
+     * Switches the stubbed metadata probe from answering to refusing.
+     *
+     * <p>It stands in for the two states a deployment can be in: the six framework tables present and
+     * readable by the runtime role, or one of them missing because the DDL role never created it. The second
+     * state is the one that used to be silent.
+     */
+    private static final String UNREADABLE_METADATA_PROPERTY = "carddemo.test.metadata-probe-refuses";
+
     /** The class under test, constructed with the small window size. */
     private final BatchConfig batchConfig = new BatchConfig(WINDOW_SIZE);
 
@@ -208,9 +245,12 @@ class BatchConfigTest {
             assertThat(Arrays.stream(BatchConfig.class.getDeclaredMethods())
                     .filter(method -> method.isAnnotationPresent(Bean.class))
                     .map(Method::getReturnType))
-                    .as("the bean types this class contributes are the DD binding and the one job listener, "
-                            + "and nothing that any batch/** component already registers for itself")
-                    .containsOnly(FileService.Dataset.class, JobExecutionListener.class);
+                    .as("the bean types this class contributes are the DD binding, the one job listener, the "
+                            + "framework metadata initialiser and the report queue listener, and nothing "
+                            + "that any batch/** component already registers for itself")
+                    .containsOnly(FileService.Dataset.class, JobExecutionListener.class,
+                            BatchDataSourceScriptDatabaseInitializer.class,
+                            BatchConfig.ReportJobQueueListener.class);
         }
 
         @Test
@@ -298,7 +338,11 @@ class BatchConfigTest {
                 .withUserConfiguration(BatchConfig.class, StubCollaborators.class)
                 .withPropertyValues(
                         "carddemo.batch.dataset-window-size=100",
-                        "carddemo.aws.s3.batch-output-bucket=carddemo-batch-output");
+                        "carddemo.aws.s3.batch-output-bucket=carddemo-batch-output",
+                        // The platform is pinned so the framework's script location resolves without a live
+                        // connection, and the mode stays at the base profile's value so no script runs here.
+                        "spring.batch.jdbc.platform=postgresql",
+                        "spring.batch.jdbc.initialize-schema=never");
 
         @Test
         @DisplayName("four dataset bindings and exactly one job listener are contributed")
@@ -346,9 +390,208 @@ class BatchConfigTest {
                     .run(context -> assertThat(context).hasFailed());
         }
 
-        /** The collaborators the bean methods take, as mocks: the inventory is what is under test. */
+        @Test
+        @DisplayName("the framework metadata initialiser is contributed, and it replaces Boot's own")
+        void theMetadataInitialiserIsContributed() {
+            runner.run(context -> {
+                assertThat(context).hasNotFailed();
+                assertThat(context.getBeansOfType(BatchDataSourceScriptDatabaseInitializer.class))
+                        .as("Boot declares its own @ConditionalOnMissingBean, so exactly one must exist and"
+                                + " it must be the one bound to the DDL-owning role")
+                        .containsOnlyKeys("batchMetadataInitializer");
+            });
+        }
+
+        @Test
+        @DisplayName("an operator submission declares no consumer, so it ends and cannot race the online tier")
+        void anOperatorSubmissionDeclaresNoConsumer() {
+            // Two things break if a submission also drains the queue. A polling container holds non-daemon
+            // threads, so a submission that succeeds never ends - proven at runtime, where a completed
+            // interest submission sat polling instead of exiting. And a submitted process draining the queue
+            // would be a second consumer alongside the online tier, so one message could launch two runs.
+            new ApplicationContextRunner()
+                    .withUserConfiguration(BatchConfig.class, StubCollaborators.class)
+                    .withPropertyValues(
+                            "carddemo.batch.dataset-window-size=100",
+                            "carddemo.aws.s3.batch-output-bucket=carddemo-batch-output",
+                            "spring.batch.jdbc.platform=postgresql",
+                            "spring.batch.jdbc.initialize-schema=never",
+                            "carddemo.aws.sqs.report-queue=carddemo-report-jobs.fifo",
+                            "carddemo.batch.launch=batchPipelineJob")
+                    .run(context -> assertThat(context.getBeansOfType(
+                            BatchConfig.ReportJobQueueListener.class))
+                            .as("a batch submission is not the online tier")
+                            .isEmpty());
+        }
+
+        @Test
+        @DisplayName("the online tier does declare the consumer when a queue is configured")
+        void theOnlineTierDeclaresTheConsumer() {
+            runner.withUserConfiguration(LaunchCollaborators.class)
+                    .withPropertyValues("carddemo.aws.sqs.report-queue=carddemo-report-jobs.fifo")
+                    .run(context -> assertThat(context.getBeansOfType(
+                            BatchConfig.ReportJobQueueListener.class))
+                            .as("with a queue configured and no submission in progress, the JES2 internal "
+                                    + "reader replacement must exist")
+                            .containsOnlyKeys("reportJobQueueListener"));
+        }
+
+        @Test
+        @DisplayName("carddemo.batch.report-queue-listener.enabled=false withdraws the consumer so a "
+                + "producer-side context can be the only reader of the FIFO queue")
+        void theConsumerCanBeWithdrawnSoAProducerSideContextIsTheOnlyReader() {
+            // A FIFO message is delivered to exactly one reader, so a context that asserts what the producer
+            // published has to be that reader. application-test.yml sets this property for exactly that
+            // reason: three integration classes publish a submission and then receive it - the three
+            // reporting periods, the correlation identifier on the message, and the health probe that must
+            // not consume - and with a listener in the same context every one of them reads an empty queue.
+            runner.withUserConfiguration(LaunchCollaborators.class)
+                    .withPropertyValues(
+                            "carddemo.aws.sqs.report-queue=carddemo-report-jobs.fifo",
+                            "carddemo.batch.report-queue-listener.enabled=false")
+                    .run(context -> assertThat(context.getBeansOfType(
+                            BatchConfig.ReportJobQueueListener.class))
+                            .as("the property exists to leave the queue to a single reader")
+                            .isEmpty());
+        }
+
+        @Test
+        @DisplayName("the consumer is present by default, so omitting the property never silently "
+                + "disables the JES2 internal reader replacement")
+        void theConsumerDefaultsToPresentWhenThePropertyIsAbsent() {
+            // The default matters more than the override. A deployment that never mentions this property must
+            // still consume the queue, or a report submission would be published and then simply sit there.
+            runner.withUserConfiguration(LaunchCollaborators.class)
+                    .withPropertyValues(
+                            "carddemo.aws.sqs.report-queue=carddemo-report-jobs.fifo",
+                            "carddemo.batch.report-queue-listener.enabled=true")
+                    .run(context -> assertThat(context.getBeansOfType(
+                            BatchConfig.ReportJobQueueListener.class))
+                            .as("an explicit true behaves exactly as an absent property does")
+                            .containsOnlyKeys("reportJobQueueListener"));
+        }
+
+        @Test
+        @DisplayName("application-test.yml disables the consumer, and that is asserted against the file "
+                + "rather than assumed")
+        void theTestProfileWithdrawsTheConsumerOnDisk() throws Exception {
+            // The comment in application-test.yml claims this class asserts the gate. This is that assertion,
+            // and it is made against the file so that deleting the property from the profile fails a test
+            // instead of quietly reintroducing a second reader into the whole integration tier.
+            final String profile = Files.readString(
+                    Path.of("src/main/resources/application-test.yml"), StandardCharsets.UTF_8);
+
+            assertThat(profile.replaceAll("\\s+", " "))
+                    .as("the shared integration harness must remain the only reader of the report queue")
+                    .contains("carddemo: batch: report-queue-listener: enabled: false");
+        }
+
+        /**
+         * The collaborators only the queue listener needs, kept out of the default slice on purpose.
+         *
+         * <p>A {@link Job} bean supplied to every slice would contradict
+         * {@link #noJobStepOrDeciderBeanReachesTheContainer}, which asserts that this class contributes none
+         * and that the six classes of {@code com.cardemo.batch.jobs} are the definition sites. Supplying them
+         * only where the listener is under test keeps both assertions meaningful.
+         */
         @Configuration(proxyBeanMethods = false)
+        static class LaunchCollaborators {
+
+            /** @return a mocked launcher; what the listener does with it is tested elsewhere */
+            @Bean
+            JobLauncher jobLauncher() {
+                return mock(JobLauncher.class);
+            }
+
+            /** @return the report job under the bean name the listener qualifies on */
+            @Bean("transactionReportJob")
+            Job transactionReportJob() {
+                return mock(Job.class);
+            }
+
+            /** @return a real mapper, because the listener binds an untrusted body with it */
+            @Bean
+            ObjectMapper objectMapper() {
+                return new ObjectMapper();
+            }
+        }
+
+        @Test
+        @DisplayName("no queue configured means no consumer rather than one bound to a guessed name")
+        void noQueueConfiguredMeansNoConsumer() {
+            runner.run(context -> assertThat(context.getBeansOfType(
+                    BatchConfig.ReportJobQueueListener.class)).isEmpty());
+        }
+
+        @Test
+        @DisplayName("a metadata table the runtime role cannot read fails startup instead of being swallowed")
+        void anUnreadableMetadataTableFailsStartup() {
+            runner.withPropertyValues(UNREADABLE_METADATA_PROPERTY + "=true")
+                    .run(context -> {
+                        assertThat(context)
+                                .as("Boot's own initialiser carries continueOnError=true, which is exactly"
+                                        + " how a deployment came up healthy with no batch_* tables at all")
+                                .hasFailed();
+                        // The direct cause rather than the root cause: the root is the driver's own
+                        // SQLException, whose message is whatever the database chose to say. The link that
+                        // matters is the one this class contributes - it has to name the table an operator
+                        // must provision and the property that decides which role provisions it.
+                        assertThat(context.getStartupFailure())
+                                .cause()
+                                .isInstanceOf(IllegalStateException.class)
+                                .hasMessageContaining("BATCH_JOB_INSTANCE")
+                                .hasMessageContaining("spring.batch.jdbc.initialize-schema")
+                                .hasMessageContaining("spring.flyway.user");
+                    });
+        }
+
+        /**
+         * The collaborators the bean methods take, as mocks: the inventory is what is under test.
+         *
+         * <p>{@link BatchProperties} is bound from {@code spring.batch.*} rather than instantiated, because
+         * the class under test reads three values off it - the table prefix, the initialisation mode and the
+         * platform - and a bare instance would silently supply the framework defaults instead of the values
+         * this test sets. That distinction is not cosmetic: the default mode is {@code EMBEDDED}, which
+         * makes the framework interrogate the connection to decide whether the database is embedded, and the
+         * default platform is the {@code @@platform@@} placeholder, which makes it interrogate the
+         * connection again to resolve the script name. Both reach past the mock.
+         */
+        @Configuration(proxyBeanMethods = false)
+        @EnableConfigurationProperties(BatchProperties.class)
         static class StubCollaborators {
+
+            /**
+             * A DataSource whose probe either answers or refuses, so both metadata outcomes are reachable.
+             *
+             * <p>The connection is stubbed rather than real because the assertion is about what the
+             * initialiser does with the answer, not about PostgreSQL. {@code spring.batch.jdbc.platform} is
+             * pinned in the runner so no live connection is needed to resolve the script location, and
+             * {@code initialize-schema} stays {@code never} so no script runs here - the framework's own
+             * integration tier covers the script itself against a real container.
+             *
+             * @param probeRefused whether the metadata probe should refuse, standing in for a table that the
+             *     DDL role never created or that the runtime role cannot read
+             * @return the stubbed DataSource
+             * @throws SQLException never; declared by the stubbed JDBC contract
+             */
+            @Bean
+            DataSource dataSource(
+                    @Value("${" + UNREADABLE_METADATA_PROPERTY + ":false}") final boolean probeRefused)
+                    throws SQLException {
+
+                final DataSource dataSource = mock(DataSource.class);
+                final Connection connection = mock(Connection.class);
+                final Statement statement = mock(Statement.class);
+                when(dataSource.getConnection()).thenReturn(connection);
+                when(connection.createStatement()).thenReturn(statement);
+                if (probeRefused) {
+                    when(statement.execute(anyString()))
+                            .thenThrow(new SQLException("relation \"batch_job_instance\" does not exist"));
+                } else {
+                    when(statement.execute(anyString())).thenReturn(Boolean.TRUE.booleanValue());
+                }
+                return dataSource;
+            }
 
             /** @return a mocked object store */
             @Bean
@@ -372,6 +615,233 @@ class BatchConfigTest {
             @Bean
             CardCrossReferenceRepository cardCrossReferenceRepository() {
                 return mock(CardCrossReferenceRepository.class);
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("The queue listener that replaces the JES2 internal reader drains and launches exactly once")
+    class ReportQueueListener {
+
+        /** The deduplication header the producer sets, and this consumer's idempotency key. */
+        private static final String DEDUPLICATION_HEADER =
+                SqsHeaders.MessageSystemAttributes.SQS_MESSAGE_DEDUPLICATION_ID_HEADER;
+
+        /** A submission body in the shape the producer publishes. */
+        private static final String PAYLOAD = """
+                {"reportName":"Monthly","startDate":"2022-07-01","endDate":"2022-07-31"}""";
+
+        /** The launcher, stubbed so the parameters the listener builds can be captured. */
+        private final JobLauncher jobLauncher = mock(JobLauncher.class);
+
+        /** The report job, named so a failure message identifies it. */
+        private final Job reportJob = mock(Job.class);
+
+        /** The listener under test, built through the public factory method. */
+        private BatchConfig.ReportJobQueueListener listener;
+
+        /** Builds the listener with a real mapper, because binding the body is part of what is under test. */
+        @BeforeEach
+        void buildListener() {
+            when(reportJob.getName()).thenReturn("TRANREPT");
+            listener = new BatchConfig(100)
+                    .reportJobQueueListener(jobLauncher, reportJob, new ObjectMapper());
+        }
+
+        @Test
+        @DisplayName("a submission launches the report job carrying the message's own period")
+        void aSubmissionLaunchesTheReportJob() throws Exception {
+            final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
+
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-1"));
+
+            verify(jobLauncher).run(eq(reportJob), captor.capture());
+            final JobParameters launched = captor.getValue();
+            assertThat(launched.getString("startDate"))
+                    .as("app/proc/TRANREPT.prc:L41 PARM-START-DATE, taken from the message and not defaulted")
+                    .isEqualTo("2022-07-01");
+            assertThat(launched.getString("endDate")).isEqualTo("2022-07-31");
+            assertThat(launched.getString("reportName")).isEqualTo("Monthly");
+            assertThat(launched.getString("submissionId"))
+                    .as("the deduplication identifier the producer minted, carried as the idempotency key")
+                    .isEqualTo("submission-1");
+        }
+
+        @Test
+        @DisplayName("the deduplication identifier is identifying, so a redelivery is the same job instance")
+        void theDeduplicationIdentifierIsIdentifying() throws Exception {
+            final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
+
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-1"));
+
+            verify(jobLauncher).run(eq(reportJob), captor.capture());
+            // Identity is the whole mechanism: Spring Batch keys the job instance on the identifying
+            // parameters, so this flag is what turns at-least-once delivery into exactly-once launching.
+            assertThat(captor.getValue().getParameters().get("submissionId").isIdentifying())
+                    .as("a non-identifying submission id would make every redelivery a new instance")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("a redelivery of a completed submission starts nothing and does not propagate")
+        void aRedeliveryOfACompletedSubmissionStartsNothing() throws Exception {
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class)))
+                    .thenThrow(new JobInstanceAlreadyCompleteException("already complete"));
+
+            // Must not throw: the message has to be acknowledged, or the queue redelivers it forever.
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-1"));
+
+            verify(jobLauncher).run(eq(reportJob), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a redelivery while the first attempt is still running starts no competing execution")
+        void aRedeliveryWhileRunningStartsNothing() throws Exception {
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class)))
+                    .thenThrow(new JobExecutionAlreadyRunningException("still running"));
+
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-1"));
+
+            verify(jobLauncher).run(eq(reportJob), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a malformed payload is consumed rather than returned, because a FIFO group is ordered")
+        void aMalformedPayloadIsConsumed() throws Exception {
+            // No dead-letter queue exists in this topology, so a rethrow would redeliver this message
+            // forever and every later submission in the same message group would queue behind it.
+            listener.drainReportJobQueue("{not json", Map.of(DEDUPLICATION_HEADER, "submission-2"));
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a body missing a required field is consumed, not launched with a null period")
+        void anIncompleteBodyIsConsumed() throws Exception {
+            listener.drainReportJobQueue("{\"reportName\":\"Monthly\"}",
+                    Map.of(DEDUPLICATION_HEADER, "submission-3"));
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a message with no deduplication identifier falls back to the framework's message id")
+        void theMessageIdIsTheFallback() throws Exception {
+            final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
+            final UUID messageId = UUID.randomUUID();
+
+            listener.drainReportJobQueue(PAYLOAD, Map.of(MessageHeaders.ID, messageId));
+
+            verify(jobLauncher).run(eq(reportJob), captor.capture());
+            assertThat(captor.getValue().getString("submissionId")).isEqualTo(messageId.toString());
+        }
+
+        @Test
+        @DisplayName("a message carrying neither identifier collapses onto one instance rather than repeating")
+        void neitherIdentifierCollapsesOntoOneInstance() throws Exception {
+            final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
+
+            listener.drainReportJobQueue(PAYLOAD, Map.of());
+
+            verify(jobLauncher).run(eq(reportJob), captor.capture());
+            // A generated value here would make an unidentifiable message launch on every redelivery. A
+            // fixed one makes those deliveries collapse onto a single instance, which is the safer failure.
+            assertThat(captor.getValue().getString("submissionId")).isEqualTo("unidentified-submission");
+        }
+
+        @Test
+        @DisplayName("null headers are tolerated rather than failing the delivery")
+        void nullHeadersAreTolerated() throws Exception {
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
+
+            listener.drainReportJobQueue(PAYLOAD, null);
+
+            verify(jobLauncher).run(eq(reportJob), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("the listener binds the configured queue and carries a stable container id")
+        void theListenerBindsTheConfiguredQueue() throws Exception {
+            final SqsListener annotation = BatchConfig.ReportJobQueueListener.class
+                    .getMethod("drainReportJobQueue", String.class, Map.class)
+                    .getAnnotation(SqsListener.class);
+
+            assertThat(annotation).as("the consumer that replaces the JES2 internal reader").isNotNull();
+            assertThat(annotation.queueNames())
+                    .as("resolved from configuration, never a literal queue name")
+                    .containsExactly("${carddemo.aws.sqs.report-queue}");
+            assertThat(annotation.id())
+                    .as("a stable id, so 'exactly one consumer of this queue' is assertable at runtime")
+                    .isEqualTo("carddemoReportJobsListener");
+        }
+
+        @Test
+        @DisplayName("the poll wait stays strictly below the queue client's per-attempt deadline")
+        void thePollWaitFitsInsideTheClientsAttemptDeadline() throws Exception {
+            // FINDING, severity Medium, REGRESSION GUARD. AwsConfig bounds every queue call at a ten-second
+            // apiCallAttemptTimeout, and Spring Cloud AWS defaults a listener's poll to the same ten seconds,
+            // so every long poll over an idle queue raced that deadline, was aborted, retried and finally
+            // failed the whole thirty-second call: an idle deployment logged ApiCallTimeoutException at ERROR
+            // every thirty seconds, measured at 371 occurrences in one afternoon. The relationship is the
+            // contract, so it is asserted against AwsConfig's own constant rather than against a literal -
+            // read reflectively, because widening that class's API to observe it would be the wrong trade.
+            final SqsListener annotation = BatchConfig.ReportJobQueueListener.class
+                    .getMethod("drainReportJobQueue", String.class, Map.class)
+                    .getAnnotation(SqsListener.class);
+
+            assertThat(annotation.pollTimeoutSeconds())
+                    .as("an explicit wait, because the library's default is exactly the value it must stay "
+                            + "below")
+                    .isNotBlank();
+            final int pollWait = Integer.parseInt(annotation.pollTimeoutSeconds());
+
+            final java.lang.reflect.Field attemptDeadline = com.cardemo.config.AwsConfig.class
+                    .getDeclaredField("API_CALL_ATTEMPT_TIMEOUT_SECONDS");
+            attemptDeadline.setAccessible(true);
+            final int attemptTimeout = attemptDeadline.getInt(null);
+
+            assertThat(pollWait)
+                    .as("a receive must complete and return empty inside one attempt; equal is not enough, "
+                            + "because equal is precisely the state that produced the error every thirty "
+                            + "seconds")
+                    .isPositive()
+                    .isLessThan(attemptTimeout);
+        }
+
+        @Test
+        @DisplayName("this tree declares exactly one queue consumer, so two executions cannot race a message")
+        void exactlyOneQueueConsumerExistsInTheTree() {
+            // A second consumer of one FIFO queue would let two executions contend for a single submission.
+            // Asserted over the source tree because the second declaration would most likely be added to a
+            // different class, where a container-scoped assertion in this file would never see it.
+            // Matched as an annotation at the start of a line rather than as the substring anywhere,
+            // because several classes discuss the listener in prose - AwsConfig names it to say it does not
+            // declare one - and a substring search would count documentation as a declaration.
+            final Path mainSources = Path.of("src", "main", "java");
+            try (var paths = Files.walk(mainSources)) {
+                final List<String> declaringFiles = paths
+                        .filter(path -> path.toString().endsWith(".java"))
+                        .filter(path -> {
+                            try {
+                                return Files.readAllLines(path).stream()
+                                        .map(String::trim)
+                                        .anyMatch(line -> line.startsWith("@SqsListener"));
+                            } catch (final IOException unreadable) {
+                                throw new UncheckedIOException(unreadable);
+                            }
+                        })
+                        .map(path -> path.getFileName().toString())
+                        .toList();
+                assertThat(declaringFiles)
+                        .as("the one consumer lives in the batch layer's configuration; AwsConfig owns the "
+                                + "clients and BatchPipelineOrchestrator's contract requires zero")
+                        .containsExactly("BatchConfig.java");
+            } catch (final IOException unreadable) {
+                throw new UncheckedIOException(unreadable);
             }
         }
     }

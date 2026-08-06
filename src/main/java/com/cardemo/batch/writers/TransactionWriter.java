@@ -137,6 +137,11 @@ import io.awspring.cloud.s3.S3Operations;
  * <li>{@code carddemo.aws.s3.transaction-object-prefix} - the base-name segment every key starts with.
  * Defaults
  * to {@code transact}, the logical file name of {@code app/jcl/TRANFILE.jcl}.</li>
+ * <li>{@value #KEY_MAX_INDEXED_OBJECT_KEYS} - how many object keys the indexed manifest enumerates. Defaults
+ * to {@value #DEFAULT_MAX_INDEXED_OBJECT_KEYS}, declared in {@code src/main/resources/application.yml} at the
+ * same value so the key is discoverable to whoever operates the job. It is a bound on a diagnostic record and
+ * not a bound on the run: the exact object count, the generation prefix and the latest key are published
+ * whatever it is set to. See {@link #OBJECT_KEYS_INDEXED_ENTRY}.</li>
  * </ul>
  *
  * <p>No endpoint, region or credential is read here, and no process environment variable is consulted
@@ -163,9 +168,17 @@ import io.awspring.cloud.s3.S3Operations;
  * <p>Because a later step in the same job must re-read what an earlier step wrote as {@code (+1)} rather
  * than re-resolving "latest", every created key is published twice, at two scopes and for two readers. The
  * <em>latest</em> key goes into the step execution context under {@link #OBJECT_KEY_CONTEXT_ENTRY}, for a
- * listener running inside this step. The <em>complete ordered list</em> goes into the <b>job</b> execution
+ * listener running inside this step. The <em>ordered list</em> goes into the <b>job</b> execution
  * context under {@link #OBJECT_KEYS_COUNT_ENTRY} and the indexed entries it describes, written by this class
- * rather than by an external promotion listener - so the generation record is complete with no wiring required.
+ * rather than by an external promotion listener - so the generation record needs no wiring to exist.
+ *
+ * <p>That list is <b>bounded</b>, and the bound is {@value #KEY_MAX_INDEXED_OBJECT_KEYS}. The posting step
+ * commits once per record as a parity contract, so the job execution context is re-serialised once per record,
+ * and an unbounded per-object list therefore costs work proportional to the square of the record count - the
+ * scale limit recorded on {@link #OBJECT_KEYS_INDEXED_ENTRY}. Nothing is lost to the bound: the exact count
+ * stays exact, {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} names a prefix unique to this job instance so that
+ * listing it enumerates every object deterministically, and {@link #OBJECT_KEYS_TRUNCATED_ENTRY} says plainly
+ * when the enumeration stopped short.
  *
  * <h2>Side effects</h2>
  *
@@ -197,6 +210,16 @@ import io.awspring.cloud.s3.S3Operations;
  * so no job-instance identifier exists to key the object on. Register it on a step, which makes the framework
  * call {@code beforeStep}, or, in a unit test that uses the class directly, call {@code beforeStep} with a
  * {@code StepExecution} built over a job execution and a job instance before writing.</li>
+ * <li><strong>One {@code WARN} that the indexed manifest reached its bound</strong> - <b>not a failure and not
+ * a defect.</b> The run posted more objects than {@value #KEY_MAX_INDEXED_OBJECT_KEYS} enumerates, so the keys
+ * past that point are counted but not listed individually. Read the exact count from
+ * {@link #OBJECT_KEYS_COUNT_ENTRY} and, if every key is needed, list the single prefix in
+ * {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} - it names this job instance only. Raise the property
+ * deliberately if the enumeration itself is required, having accepted that the job execution context is
+ * re-serialised once per record.</li>
+ * <li><strong>Startup fails naming {@value #KEY_MAX_INDEXED_OBJECT_KEYS}</strong> - the property is zero or
+ * negative. Neither names a usable bound, so the context refuses to start rather than producing an audit
+ * record no consumer can read.</li>
  * </ul>
  *
  * <h2>The preserved identifier race is deliberate</h2>
@@ -391,10 +414,19 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * Job execution context entry holding how many objects this job instance's transaction generation
      * contains, as a {@code Long}.
      *
-     * <p>Together with {@link #objectKeysIndexEntry(int)} this is the complete, ordered, exact record of the
-     * generation - the thing a downstream step needs in order to consume {@code (0)} without guessing. Read
-     * the count, then read that many indexed entries; entry {@code n} is the key of the {@code n}th object
-     * created, in creation order.
+     * <p>This count is always exact and is never capped. Together with {@link #objectKeysIndexEntry(int)} it
+     * is the ordered record of the generation - the thing a downstream step needs in order to consume
+     * {@code (0)} without guessing.
+     *
+     * <p><b>Read protocol.</b> Read {@link #OBJECT_KEYS_INDEXED_ENTRY} for how many indexed entries exist,
+     * then read that many; entry {@code n} is the key of the {@code n}th object created, in creation order.
+     * {@code indexed} equals this count on every run that stays within
+     * {@code carddemo.batch.transaction-writer.max-indexed-object-keys}, which is why a consumer written
+     * against the earlier "read the count, then read that many indexed entries" rule still works for such a
+     * run - but that rule is withdrawn, because it reads an absent entry once the cap is passed. When the two
+     * differ, {@link #OBJECT_KEYS_TRUNCATED_ENTRY} is present and
+     * {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} names the one prefix that holds every object of this
+     * generation.
      *
      * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision published only the latest chunk key,
      * and only into the <em>step</em> execution context, while its documentation asserted that promotion to
@@ -419,8 +451,104 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     /**
      * Prefix of the indexed job-execution entries described on {@link #OBJECT_KEYS_COUNT_ENTRY}. The entry for
      * index {@code n} is this prefix followed by {@code n}, rendered by {@link #objectKeysIndexEntry(int)}.
+     *
+     * <p>{@link #OBJECT_KEYS_COUNT_ENTRY}, {@link #OBJECT_KEYS_INDEXED_ENTRY},
+     * {@link #OBJECT_KEYS_TRUNCATED_ENTRY} and {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} share this prefix
+     * and are not indexed entries. A consumer addresses an indexed entry through
+     * {@link #objectKeysIndexEntry(int)} and therefore never has to tell them apart; one that scans the
+     * context by prefix instead must skip the four non-numeric suffixes.
      */
     public static final String OBJECT_KEYS_INDEX_ENTRY_PREFIX = "carddemo.transaction.object.keys.";
+
+    /**
+     * Job execution context entry holding how many indexed entries were actually published, as a {@code Long}.
+     *
+     * <p>Equal to {@link #OBJECT_KEYS_COUNT_ENTRY} on any run that stays within
+     * {@code carddemo.batch.transaction-writer.max-indexed-object-keys}, and equal to that cap on any run that
+     * passes it. It is the bound a consumer iterates to.
+     *
+     * <p><b>Finding, severity Minor, RESOLVED.</b> An earlier revision appended one indexed entry per created
+     * object with <b>no bound of any kind</b>. Because the commit interval of the posting step is pinned at one
+     * record as a parity contract - see {@code DailyTransactionPostingJob.POSTING_COMMIT_INTERVAL}, grounded on
+     * the three separate commits of {@code app/cbl/CBTRN02C.cbl:L440-L442} - Spring Batch re-serialises the
+     * whole job execution context once per <em>record</em>, so the work of writing this manifest grew with the
+     * square of the record count. A measured 300-record run of {@code app/data/ASCII/dailytran.txt} left 262
+     * indexed entries and a serialised job context of 36,664 bytes, about 140 bytes per record; a hundred
+     * thousand records would have reached roughly fourteen megabytes re-serialised a hundred thousand times.
+     * No cap, no marker and no disclosed ceiling existed. <i>Remediation, applied:</i> the indexed enumeration
+     * is bounded, the bound is a documented property, passing it is reported once at {@code WARN} and marked in
+     * the context by {@link #OBJECT_KEYS_TRUNCATED_ENTRY}, and the three facts that make the generation
+     * recoverable in full - the exact count, the generation prefix and the latest key - are published
+     * unconditionally.
+     *
+     * <p><b>Why this cap truncates where the statement cap refuses.</b>
+     * {@code carddemo.batch.statement-processor.max-transactions-per-run} bounds a structure the statement
+     * output is <em>computed from</em>, so exceeding it must fail loudly - a truncated table would silently
+     * drop transactions from a customer's statement. This manifest is a diagnostic and hand-off record, and
+     * nothing is dropped when it is capped: the count stays exact, {@link #OBJECT_KEY_CONTEXT_ENTRY} still
+     * names the latest object, and {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} names a prefix unique to this
+     * job instance, so listing that one prefix enumerates every object deterministically and without racing
+     * any concurrent producer. Refusing an otherwise successful posting run because it posted more records
+     * than its audit list can enumerate would be a behaviour the source does not have -
+     * {@code app/cbl/CBTRN02C.cbl} writes to a sequential dataset and imposes no such limit.
+     */
+    public static final String OBJECT_KEYS_INDEXED_ENTRY = "carddemo.transaction.object.keys.indexed";
+
+    /**
+     * Job execution context entry present only when the indexed enumeration was capped, holding
+     * {@value #OBJECT_KEYS_TRUNCATED_MARKER}.
+     *
+     * <p>Written as a string rather than as a {@code Boolean} for the reason given on
+     * {@link #OBJECT_KEYS_COUNT_ENTRY}: plain strings serialise through every {@code ExecutionContext}
+     * serialiser without a trusted-class allow-list. Its <em>absence</em> is the complete-manifest case, so a
+     * consumer never has to interpret a value to know it has every key.
+     */
+    public static final String OBJECT_KEYS_TRUNCATED_ENTRY = "carddemo.transaction.object.keys.truncated";
+
+    /** The only value {@link #OBJECT_KEYS_TRUNCATED_ENTRY} ever holds. */
+    public static final String OBJECT_KEYS_TRUNCATED_MARKER = "true";
+
+    /**
+     * Job execution context entry naming the key prefix that holds every object of this generation, ending in
+     * the key separator.
+     *
+     * <p>Derived from a created key rather than recomposed, so it cannot drift from {@link #KEY_TEMPLATE}: it
+     * is the key up to and including its last separator, which is
+     * {@code <configured-prefix>/<job-instance-id>/}. Because the job instance identifier is in it, the prefix
+     * is unique to this job instance and listing it is deterministic - which is what makes the bounded
+     * enumeration of {@link #OBJECT_KEYS_INDEXED_ENTRY} lossless rather than lossy, and what keeps it distinct
+     * from the "re-resolve the lexicographically greatest prefix" resolution that would race a concurrent
+     * producer.
+     */
+    public static final String OBJECT_KEYS_GENERATION_PREFIX_ENTRY =
+            "carddemo.transaction.object.keys.generation-prefix";
+
+    /**
+     * The property bounding how many object keys the indexed manifest enumerates.
+     *
+     * <p>Public so that the value is named once and asserted against
+     * {@code src/main/resources/application.yml} rather than repeated as a literal, exactly as
+     * {@code StatementProcessor.KEY_MAX_TRANSACTIONS_PER_RUN} is.
+     */
+    public static final String KEY_MAX_INDEXED_OBJECT_KEYS =
+            "carddemo.batch.transaction-writer.max-indexed-object-keys";
+
+    /**
+     * Default bound on the indexed manifest, {@value #DEFAULT_MAX_INDEXED_OBJECT_KEYS} keys.
+     *
+     * <p>Chosen against measurement rather than taste. One indexed entry costs about 140 serialised bytes, and
+     * the 300-record parity run of {@code app/data/ASCII/dailytran.txt} publishes 262 of them, so this default
+     * enumerates that run and every fixture-scale run in full while bounding the serialised job execution
+     * context at roughly 140 kB. The bound matters because the posting step commits once per record by parity
+     * contract, so the context is re-serialised once per record: the cost of the manifest is quadratic in the
+     * record count, and a bound on its size is the only place that quadratic can be capped.
+     *
+     * <p>A deployment that needs the full enumeration of a larger run raises
+     * {@value #KEY_MAX_INDEXED_OBJECT_KEYS} deliberately, having accepted that cost; one that does not need it
+     * reads the exact count, the generation prefix and the latest key, all of which stay complete. See
+     * {@link #OBJECT_KEYS_INDEXED_ENTRY} for the finding this resolves.
+     */
+    public static final int DEFAULT_MAX_INDEXED_OBJECT_KEYS = 1_000;
 
     /** {@code TRAN-ID PIC X(16)}, bytes 1-16 of {@code app/cpy/CVTRA05Y.cpy:L5}. */
     private static final int TRAN_ID_WIDTH = 16;
@@ -730,6 +858,15 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     private final String objectPrefix;
 
     /**
+     * Bound on the indexed manifest, from {@value #KEY_MAX_INDEXED_OBJECT_KEYS}, defaulting to
+     * {@value #DEFAULT_MAX_INDEXED_OBJECT_KEYS}.
+     *
+     * <p>See {@link #OBJECT_KEYS_INDEXED_ENTRY} for what the bound protects and
+     * {@link #DEFAULT_MAX_INDEXED_OBJECT_KEYS} for how the default was chosen.
+     */
+    private final int maxIndexedObjectKeys;
+
+    /**
      * The step execution of the step running this writer, injected by the step scope.
      *
      * <p>This is the only mutable field on the class and there is no static mutable state at all. It
@@ -786,21 +923,29 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      *        namespace would misrepresent the source. <i>Remediation, applied:</i> the default is removed, the
      *        key resolves from {@code application.yml} alone, and that file now carries the explanation of why
      *        this one prefix is declared separately from the catalogue
-     * @throws IllegalArgumentException if any collaborator is {@code null} or either configuration value is
-     *         blank
+     * @param maxIndexedObjectKeys the bound on the indexed manifest, from
+     *        {@value #KEY_MAX_INDEXED_OBJECT_KEYS} and defaulting to
+     *        {@value #DEFAULT_MAX_INDEXED_OBJECT_KEYS}. Must be positive: zero would publish no key at all and
+     *        a negative value names no bound, so both fail at startup rather than producing a manifest nothing
+     *        can read. See {@link #OBJECT_KEYS_INDEXED_ENTRY}
+     * @throws IllegalArgumentException if any collaborator is {@code null}, either string configuration value
+     *         is blank, or the indexed-manifest bound is not positive
      */
     public TransactionWriter(TransactionRepository transactionRepository,
             S3Operations objectStorage,
             FileStatusMapper fileStatusMapper,
             MetricsConfig metrics,
             @Value("${carddemo.aws.s3.batch-output-bucket}") String outputBucket,
-            @Value("${carddemo.aws.s3.transaction-object-prefix}") String objectPrefix) {
+            @Value("${carddemo.aws.s3.transaction-object-prefix}") String objectPrefix,
+            @Value("${" + KEY_MAX_INDEXED_OBJECT_KEYS + ":" + DEFAULT_MAX_INDEXED_OBJECT_KEYS + "}")
+                    int maxIndexedObjectKeys) {
         this.transactionRepository = requireCollaborator(transactionRepository, "transactionRepository");
         this.objectStorage = requireCollaborator(objectStorage, "objectStorage");
         this.fileStatusMapper = requireCollaborator(fileStatusMapper, "fileStatusMapper");
         this.metrics = requireCollaborator(metrics, "metrics");
         this.outputBucket = requireConfigured(outputBucket, "carddemo.aws.s3.batch-output-bucket");
         this.objectPrefix = requireObjectPrefix(objectPrefix);
+        this.maxIndexedObjectKeys = requireIndexedKeyCap(maxIndexedObjectKeys);
     }
 
     /**
@@ -1342,9 +1487,17 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * without any external promotion listener; see {@link #OBJECT_KEYS_COUNT_ENTRY} for the finding this
      * resolves and for the read protocol a consumer follows.
      *
+     * <p><strong>The indexed enumeration is bounded and the count is not.</strong> Up to
+     * {@value #KEY_MAX_INDEXED_OBJECT_KEYS} keys are indexed; past that the count, the generation prefix and
+     * the latest key still move, one {@code WARN} is emitted, and {@link #OBJECT_KEYS_TRUNCATED_ENTRY} marks
+     * the context so no reader has to infer the bound from a missing entry. See
+     * {@link #OBJECT_KEYS_INDEXED_ENTRY} for the finding this resolves and why this cap truncates where the
+     * statement cap refuses.
+     *
      * <p>Side effects: writes one step-context entry, overwriting any previous value so that it always names the
-     * most recently created object, and appends two job-context entries - the new indexed key and the updated
-     * count. Performs no I/O.
+     * most recently created object; writes the exact count and the generation prefix into the job context on
+     * every call; adds one indexed entry and updates the indexed count while below the bound; and on the first
+     * call at or above it, writes the truncation marker and logs once. Performs no I/O.
      *
      * @param execution the captured step execution
      * @param objectKey the key just created
@@ -1362,9 +1515,51 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
         }
 
         ExecutionContext jobContext = jobExecution.getExecutionContext();
-        int published = Math.toIntExact(jobContext.getLong(OBJECT_KEYS_COUNT_ENTRY, 0L));
-        jobContext.putString(objectKeysIndexEntry(published), objectKey);
+        long published = jobContext.getLong(OBJECT_KEYS_COUNT_ENTRY, 0L);
+
+        // The count is exact and unbounded, and it is a long rather than an int precisely because it is not
+        // capped. The generation prefix is republished rather than written once: it is the same value on every
+        // call, and writing it here means it exists from the first object rather than depending on a listener.
         jobContext.putLong(OBJECT_KEYS_COUNT_ENTRY, published + 1L);
+        jobContext.putString(OBJECT_KEYS_GENERATION_PREFIX_ENTRY, generationPrefixOf(objectKey));
+
+        if (published < maxIndexedObjectKeys) {
+            // Narrowing is safe only on this branch: the index is below the bound, which is an int. Converting
+            // the unbounded count instead would throw once a run passed Integer.MAX_VALUE objects.
+            jobContext.putString(objectKeysIndexEntry(Math.toIntExact(published)), objectKey);
+            jobContext.putLong(OBJECT_KEYS_INDEXED_ENTRY, published + 1L);
+            return;
+        }
+
+        if (!jobContext.containsKey(OBJECT_KEYS_TRUNCATED_ENTRY)) {
+            // Once per job execution, not once per object: the condition holds for every remaining record of a
+            // run that has passed the bound, and one WARN per record would bury the run it is warning about.
+            jobContext.putString(OBJECT_KEYS_TRUNCATED_ENTRY, OBJECT_KEYS_TRUNCATED_MARKER);
+            LOG.warn("The indexed transaction object-key manifest has reached its bound of {} keys, so keys "
+                            + "beyond that are counted but not enumerated. {} stays exact, {} names the one "
+                            + "prefix that holds every object of this generation, and {} marks the context. "
+                            + "Raise {} deliberately if the full enumeration is needed, accepting that the "
+                            + "job execution context is re-serialised once per record",
+                    Integer.valueOf(maxIndexedObjectKeys), OBJECT_KEYS_COUNT_ENTRY,
+                    OBJECT_KEYS_GENERATION_PREFIX_ENTRY, OBJECT_KEYS_TRUNCATED_ENTRY,
+                    KEY_MAX_INDEXED_OBJECT_KEYS);
+        }
+    }
+
+    /**
+     * Derives the generation prefix from a created key.
+     *
+     * <p>The key up to and including its last separator, which {@link #KEY_TEMPLATE} makes
+     * {@code <configured-prefix>/<job-instance-id>/}. Taken from the key rather than recomposed from the
+     * prefix and the instance identifier so that the two can never disagree: there is one place a key is
+     * built, and this reads its output.
+     *
+     * @param objectKey a key this class created, never {@code null} and always containing a separator
+     * @return the prefix, ending in the separator
+     */
+    private static String generationPrefixOf(String objectKey) {
+        int lastSeparator = objectKey.lastIndexOf(KEY_SEPARATOR);
+        return objectKey.substring(0, lastSeparator + KEY_SEPARATOR.length());
     }
 
     /**
@@ -1886,5 +2081,25 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
                     + "prefix, but was only separators");
         }
         return value;
+    }
+
+    /**
+     * Validates the indexed-manifest bound.
+     *
+     * <p>Zero and negative values are refused at startup rather than tolerated, because both produce a
+     * manifest that no consumer can read against the protocol on {@link #OBJECT_KEYS_COUNT_ENTRY}: zero
+     * publishes no indexed entry while the count keeps rising, and a negative bound names no bound at all.
+     * Failing here is the difference between a misconfiguration and a silently useless audit record.
+     *
+     * @param configured the value bound from {@value #KEY_MAX_INDEXED_OBJECT_KEYS}
+     * @return the same value when it is positive
+     * @throws IllegalArgumentException when it is not
+     */
+    private static int requireIndexedKeyCap(int configured) {
+        if (configured <= 0) {
+            throw new IllegalArgumentException(KEY_MAX_INDEXED_OBJECT_KEYS + " must be positive but was "
+                    + configured);
+        }
+        return configured;
     }
 }

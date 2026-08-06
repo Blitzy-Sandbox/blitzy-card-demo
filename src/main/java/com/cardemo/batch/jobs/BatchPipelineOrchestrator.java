@@ -63,8 +63,12 @@ import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.web.servlet.server.ServletWebServerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
@@ -130,8 +134,11 @@ import com.cardemo.exception.ValidationException;
  *
  * <ul>
  *   <li><b>This class</b>, invoked explicitly through
- *       {@link #launchPipeline(Job, String, String, String)} by an operator, a test or a caller that already
- *       holds the {@value #JOB_BEAN_NAME} bean.</li>
+ *       {@link #launchPipeline(Job, String, String, String)} by a test or a caller that already holds the
+ *       {@value #JOB_BEAN_NAME} bean, and from a command line through
+ *       {@link #batchOperatorLauncher(ListableBeanFactory, String, String, String, String)} - the
+ *       property-gated runner that stands in for an operator submitting the deck through TSO SUBMIT or SDSF,
+ *       and the path by which any of the six jobs can be started in a deployed application.</li>
  *   <li><b>The queue listener that replaces the JES2 internal reader.</b> The legacy path is
  *       {@code app/cbl/CORPT00C.cbl:L88-L100}, an eighteen-card job deck held as {@code PIC X(80)} literals
  *       whose {@code :L94} card is {@code "//STEP10 EXEC PROC=TRANREPT"} - the sole
@@ -477,6 +484,42 @@ public class BatchPipelineOrchestrator {
      * reason as {@link #INTCALC_JOB_BEAN_NAME}.
      */
     private static final String TRANREPT_JOB_BEAN_NAME = "transactionReportJob";
+
+    // =================================================================================================
+    // The operator submission path. One property decides whether this application is a server or a batch
+    // submission; three more carry the values the JCL parameter cards carried.
+    // =================================================================================================
+
+    /**
+     * The job an operator asked to run, {@value}, whose presence creates the launch runner and nothing else.
+     *
+     * <p>No default, deliberately. An absent value must mean "this is a server", not "run something".
+     */
+    private static final String KEY_LAUNCH_JOB = "carddemo.batch.launch";
+
+    /** The interest date for an operator submission, {@value}; {@code app/jcl/INTCALC.jcl:L22}. */
+    private static final String KEY_LAUNCH_PARM_DATE = "carddemo.batch.launch.parm-date";
+
+    /** The report start date for an operator submission, {@value}; {@code app/proc/TRANREPT.prc:L41}. */
+    private static final String KEY_LAUNCH_START_DATE = "carddemo.batch.launch.start-date";
+
+    /** The report end date for an operator submission, {@value}; {@code app/proc/TRANREPT.prc:L42}. */
+    private static final String KEY_LAUNCH_END_DATE = "carddemo.batch.launch.end-date";
+
+    /**
+     * The six job bean names an operator submission may name: the whole stream, or any one stage.
+     *
+     * <p>Every JCL member that runs a COBOL program in the frozen corpus has an entry here, and nothing else
+     * does. Ordered as the stream runs so that the message produced by an unrecognised name reads as a
+     * running order rather than an alphabetical list.
+     */
+    private static final List<String> LAUNCHABLE_JOB_BEAN_NAMES = List.of(
+            JOB_BEAN_NAME,
+            POSTTRAN_JOB_BEAN_NAME,
+            INTCALC_JOB_BEAN_NAME,
+            COMBTRAN_JOB_BEAN_NAME,
+            CREASTMT_JOB_BEAN_NAME,
+            TRANREPT_JOB_BEAN_NAME);
 
     // =================================================================================================
     // Job parameters. Three, and every stage receives all three unchanged. Two of the names are owned
@@ -966,6 +1009,46 @@ public class BatchPipelineOrchestrator {
      * {@code SYSTRAN(0)} at {@code :L25-L26}; the load step runs <b>ungated</b>, which is the clearest
      * evidence in the corpus that no inter-step gating may be invented.
      *
+     * <p><b>{@code TRANSACT.BKUP} is NOT a prerequisite of this stage, and this pipeline never produces one
+     * before it.</b> Stating it plainly here because the two facts above sit adjacent to the report branch's
+     * {@code STEP01R} documentation below, and reading them together invites the conclusion that stage 3
+     * depends on stage 4's output. It does not. Both legs of the concatenated {@code SORTIN} are optional:
+     * {@code app/jcl/COMBTRAN.jcl} carries no {@code COND=} on either {@code :L22} or {@code :L41}, so the
+     * member asserts no precondition on either DD, and {@code CombinedTransactionReader} treats an absent
+     * generation on either leg as a successful empty read. The member that produces {@code TRANSACT.BKUP}
+     * generations on the mainframe, {@code app/jcl/TRANBKP.jcl}, has <b>no Java analogue by recorded
+     * decision</b> - {@link CombineTransactionsJob} carries the reasoning, the citations and the residual
+     * limitation. A run in which neither leg contributes a record still completes with an empty combined
+     * generation and a published count of zero, because {@code :L33-L37} allocates {@code SORTOUT}
+     * unconditionally and {@code :L48} copies it.
+     *
+     * <p>Consequently the only genuine cross-stage data dependency in this pipeline remains the one already
+     * documented on the class: stage 2 writes {@code SYSTRAN(+1)} ({@code app/jcl/INTCALC.jcl:L37-L41}) and
+     * this stage reads {@code SYSTRAN(0)} ({@code app/jcl/COMBTRAN.jcl:L25-L26}).
+     *
+     * <p><b>This stage requires the object-storage input substrate, and that IS a prerequisite of the
+     * pipeline.</b> {@code CombinedTransactionReader} can take its first leg either from an object-storage
+     * generation or from the ordered transaction relation, selected by
+     * {@code carddemo.batch.combined-transaction-reader.source}, whose default is {@code repository}. Only
+     * {@code object-storage} is correct inside this pipeline, and the reason is arithmetic rather than
+     * preference. On the repository substrate the first leg <em>is</em> the live relation, so the combined
+     * generation this stage writes is a snapshot of the very table {@code :L48} then loads it into - a
+     * measured 262 relation rows plus 50 interest records, every one of the 262 already present - and the
+     * load correctly refuses the first repeated identifier with {@code DuplicateRecordException} and return
+     * code 8. On the mainframe that collision cannot arise because {@code app/jcl/TRANBKP.jcl} deletes and
+     * redefines the cluster between the backup and the combine, leaving {@code REPRO} an empty target; with
+     * no Java analogue for that member there is no step that empties the relation, and none is invented here
+     * because emptying it whenever the first leg is absent would discard the posted transactions rather than
+     * archive them.
+     *
+     * <p>So an operator driving this pipeline sets
+     * {@code carddemo.batch.combined-transaction-reader.source=object-storage}. Verified end to end on a
+     * reset database and an empty output bucket: all five stages completed, the aggregate was return code 4
+     * from the posting stage's rejects, and the relation ended with 312 rows of which 50 were the interest
+     * transactions. The default is left as it is rather than changed here, because the property belongs to
+     * the reader and a standalone combine against a relation is a legitimate use of it; the divergence is
+     * recorded rather than resolved unilaterally.
+     *
      * @return the launcher step, never {@code null}
      */
     @Bean(COMBTRAN_STEP_BEAN_NAME)
@@ -995,6 +1078,15 @@ public class BatchPipelineOrchestrator {
      * {@code STEP05R} at {@code :L35} sorts by card number with the inclusive date filter of
      * {@code :L45-L46}, and {@code STEP10R} at {@code :L57} runs the report. The procedure, not
      * {@code app/jcl/TRANREPT.jcl}, is the authority: the standalone member carries {@code STEP05R} twice.
+     *
+     * <p><b>{@code STEP01R} is the only producer of a {@code TRANSACT.BKUP} generation in this application,
+     * and it runs here in stage 4 - downstream of the stage 3 combine that reads that base.</b> This ordering
+     * is the source's, not an inversion to repair: the mainframe's producer for the combine's first leg is
+     * {@code app/jcl/TRANBKP.jcl}, a separate operator member that has no Java analogue by recorded decision.
+     * Stage 3 therefore does not and must not depend on this backup; see
+     * {@link #batchPipelineCombTranStep()} and {@link CombineTransactionsJob} for the full reasoning. Do not
+     * "fix" the pipeline by moving this branch ahead of stage 3 - that would reorder the stream the source
+     * defines, and it would make the combine read back rows the master already holds.
      *
      * @return the launcher step, never {@code null}
      */
@@ -1188,10 +1280,13 @@ public class BatchPipelineOrchestrator {
      * constructor that injected {@value #JOB_BEAN_NAME} would be a self-reference. A caller already holds the
      * bean, so passing it is both honest and free of a lazy proxy.
      *
-     * <p>The two callers this exists for are an operator or test invoking it directly, and the queue listener
-     * that replaces the JES2 internal reader described in the class documentation. <b>This method never
-     * terminates the process</b>: it reports an outcome through the returned execution and through typed
-     * exceptions, and nothing else.
+     * <p>The callers this exists for are a test invoking it directly and
+     * {@link #batchOperatorLauncher(ListableBeanFactory, String, String, String, String)}, the operator
+     * submission path. The queue listener that replaces the JES2 internal reader is <em>not</em> one of them,
+     * and the distinction is worth keeping straight: a report submission names one report period, so
+     * {@code com.cardemo.config.BatchConfig} launches {@code transactionReportJob} from it, not the whole
+     * five-stage stream. <b>This method never terminates the process</b>: it reports an outcome through the
+     * returned execution and through typed exceptions, and nothing else.
      *
      * @param pipelineJob the {@value #JOB_BEAN_NAME} bean this class declares
      * @param parmDate the interest date, ten digits with no separator
@@ -1239,6 +1334,242 @@ public class BatchPipelineOrchestrator {
             throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "PIPELINE LAUNCH FAILED",
                     "The batch pipeline " + jobName + " could not be launched.", unexpected);
         }
+    }
+
+    // =================================================================================================
+    // THE OPERATOR SUBMISSION PATH: WHAT REPLACED "SUBMIT THE JOB FROM SDSF".
+    //
+    // Finding, severity Major, RESOLVED here. launchPipeline above had no caller anywhere in src/main. The
+    // deployed application declared six jobs, seventeen HTTP endpoints and spring.batch.job.enabled=false,
+    // and had no path by which any of the six could be started: no runner, no schedule, no endpoint that
+    // launches. The batch tier was reachable only from a test classpath, which is not a batch tier.
+    //
+    // On the mainframe there were exactly two ways in, and both now exist. One is an operator submitting the
+    // deck - TSO SUBMIT, or SDSF, against app/jcl/POSTTRAN.jcl and its siblings - and that is this runner.
+    // The other is the online tier writing to the JOBS data queue for the JES2 internal reader to read, and
+    // that is the listener in com.cardemo.config.BatchConfig.
+    //
+    // WHY IT IS PROPERTY-GATED. An ApplicationRunner with no condition would run on every boot of every
+    // context, including the web deployment whose job it is to serve HTTP and the slice tests that assert
+    // this class's bean inventory. Gating on carddemo.batch.launch means the bean does not exist unless a
+    // launch was asked for, so `java -jar carddemo.jar --carddemo.batch.launch=batchPipelineJob` is a batch
+    // submission and `java -jar carddemo.jar` is a server - one artefact, two roles, which is what a single
+    // deployable modular monolith needs and what the JCL/CICS split gave for free.
+    //
+    // WHAT IT DELIBERATELY DOES NOT DO. It never calls System.exit and installs no shutdown hook: the
+    // outcome travels out as a thrown exception, which Spring Boot turns into a non-zero JVM exit status by
+    // itself. Calling System.exit here would skip context close, and a batch run that abandons its
+    // connection pool and its final metric flush is worse than one that reports failure and unwinds.
+    // =================================================================================================
+
+    /**
+     * The operator submission path: launches one named job, once, from the command line.
+     *
+     * <p><b>What it does.</b> Resolves the job named by {@value #KEY_LAUNCH_JOB} among the six this
+     * application declares, launches it with the three parameters the stream uses, and reports the outcome.
+     * The pipeline job goes through {@link #launchPipeline(Job, String, String, String)} so that a command
+     * line submission and a programmatic one are the same code path; the five stage jobs go through the
+     * launcher directly, which is what running a single JCL member rather than the whole stream corresponds
+     * to.
+     *
+     * <p><b>How to run it.</b> {@code java -jar carddemo.jar --spring.main.web-application-type=none
+     * --carddemo.batch.launch=batchPipelineJob --carddemo.batch.launch.parm-date=2022071800
+     * --carddemo.batch.launch.start-date=2022-01-01 --carddemo.batch.launch.end-date=2022-07-06}. Substitute
+     * {@code dailyTransactionPostingJob}, {@code interestCalculationJob}, {@code combineTransactionsJob},
+     * {@code statementGenerationJob} or {@code transactionReportJob} to run one stage.
+     *
+     * <p>{@code --spring.main.web-application-type=none} is part of the command, not an optional extra. It is
+     * what makes the process end when the job ends, the way a submitted job freed its initiator; without it
+     * the embedded servlet container holds the JVM open after the run and the submission appears to hang.
+     * {@link #warnIfTheProcessWillNotEnd(ListableBeanFactory, String)} says so at the moment it happens.
+     *
+     * <p><b>Key configuration and defaults.</b> {@value #KEY_LAUNCH_JOB} has no default and its presence is
+     * what creates this bean. The three date properties have no defaults either, because every one of them is
+     * a value the source took from a JCL parameter card and none has a safe assumed value - a guessed
+     * interest date would post interest transactions under identifiers of the wrong shape.
+     *
+     * <p><b>Failure modes and troubleshooting.</b> An unknown job name fails naming all six accepted values.
+     * A malformed or absent date fails with the shape it expected and the JCL locator it came from. A run
+     * that ends {@code FAILED} or {@code ABANDONED} throws, so the process exits non-zero and a shell or
+     * scheduler sees the failure; a run that ends {@code COMPLETED} with the exit code
+     * {@value #GATE_PROCEED_WITH_REJECTS} does <b>not</b> throw, because return code 4 is a successful
+     * completion carrying rejects and {@code app/cbl/CBTRN02C.cbl:L202-L234} sets it precisely when the
+     * reject count exceeds zero.
+     *
+     * @param beanFactory the container, used to resolve the requested job by name <em>after</em> refresh has
+     *     finished; injected as the factory rather than as a map of jobs because this class declares one of
+     *     the jobs itself and a map parameter would be a self-reference
+     * @param requestedJob the bean name of the job to launch, from {@value #KEY_LAUNCH_JOB}
+     * @param parmDate the interest date, from {@value #KEY_LAUNCH_PARM_DATE}
+     * @param startDate the report start date, from {@value #KEY_LAUNCH_START_DATE}
+     * @param endDate the report end date, from {@value #KEY_LAUNCH_END_DATE}
+     * @return the runner, never {@code null}
+     */
+    @Bean
+    @ConditionalOnProperty(name = KEY_LAUNCH_JOB)
+    public ApplicationRunner batchOperatorLauncher(
+            final ListableBeanFactory beanFactory,
+            @Value("${" + KEY_LAUNCH_JOB + "}") final String requestedJob,
+            @Value("${" + KEY_LAUNCH_PARM_DATE + ":}") final String parmDate,
+            @Value("${" + KEY_LAUNCH_START_DATE + ":}") final String startDate,
+            @Value("${" + KEY_LAUNCH_END_DATE + ":}") final String endDate) {
+
+        return arguments -> runRequestedJob(beanFactory, requestedJob, parmDate, startDate, endDate);
+    }
+
+    /**
+     * Resolves, launches and reports one operator-requested job.
+     *
+     * <p>Separated from the bean method so the launch happens when the runner is <em>run</em> rather than
+     * when it is built. That ordering is what lets the requested job be resolved from the container without a
+     * circular dependency on the pipeline job this class declares.
+     *
+     * @param beanFactory the container
+     * @param requestedJob the requested bean name
+     * @param parmDate the interest date
+     * @param startDate the report start date
+     * @param endDate the report end date
+     * @throws ValidationException if the job name is not one of the six, or a parameter is unusable
+     * @throws FatalProcessingException if the launch fails, or if the run ends unsuccessfully
+     */
+    private void runRequestedJob(final ListableBeanFactory beanFactory, final String requestedJob,
+            final String parmDate, final String startDate, final String endDate) {
+
+        final String jobBeanName = requireLaunchableJobName(requestedJob);
+        final Job job = beanFactory.getBean(jobBeanName, Job.class);
+        LOG.info("Operator submission of {} accepted; this is the path that replaces submitting"
+                + " app/jcl/POSTTRAN.jcl and its siblings through TSO SUBMIT or SDSF", jobBeanName);
+
+        final JobExecution execution;
+        if (JOB_BEAN_NAME.equals(jobBeanName)) {
+            execution = launchPipeline(job, parmDate, startDate, endDate);
+        } else {
+            execution = launchRequestedStage(job, jobBeanName, parmDate, startDate, endDate);
+        }
+
+        // The aggregate return code, not the framework's own vocabulary, because that is what an operator
+        // reading a job log on the mainframe saw and what a scheduler downstream keys on.
+        LOG.info("Operator submission of {} finished as execution {} with status {} and exit code {}",
+                jobBeanName, execution.getId(), execution.getStatus(),
+                execution.getExitStatus().getExitCode());
+
+        warnIfTheProcessWillNotEnd(beanFactory, jobBeanName);
+
+        if (execution.getStatus().isUnsuccessful()) {
+            // Thrown rather than exited: Spring Boot turns an exception out of a runner into a non-zero JVM
+            // exit status while still closing the context, so the pool is drained and the final metrics are
+            // flushed. RC 4 does not reach here - COMPLETED is not unsuccessful, however the exit code reads.
+            throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "OPERATOR SUBMISSION FAILED",
+                    "The operator submission of " + jobBeanName + " ended with status "
+                            + execution.getStatus() + " and exit code "
+                            + execution.getExitStatus().getExitCode() + ". The step that failed and its"
+                            + " return code are in the execution context of execution "
+                            + execution.getId() + ".");
+        }
+    }
+
+    /**
+     * Warns when a finished submission will leave the process running, and names the property that stops it.
+     *
+     * <p>A submitted mainframe job ends; the initiator is freed and the operator gets a completion message.
+     * A Spring Boot <em>web</em> application does not, because the embedded servlet container holds
+     * non-daemon threads long after the runner has returned, so a submission made without
+     * {@code --spring.main.web-application-type=none} completes its work and then appears to hang.
+     *
+     * <p>Warned about rather than corrected in code, deliberately. The three mechanisms that would end the
+     * process from here are all worse than the warning: {@code System.exit} skips context close, abandoning
+     * the connection pool and the final metrics flush; a shutdown hook is the same thing on a delay; and
+     * closing the context from inside a runner tears down the container while the framework is still walking
+     * its list of runners. The application type has to be decided before the context is built, which means it
+     * belongs on the command line, and the one thing this method can usefully do is say so at the moment it
+     * becomes relevant.
+     *
+     * @param beanFactory the container, inspected for a servlet container rather than asked about it
+     * @param jobBeanName the job that has just finished, so the warning names the run it belongs to
+     */
+    private static void warnIfTheProcessWillNotEnd(final ListableBeanFactory beanFactory,
+            final String jobBeanName) {
+
+        if (beanFactory.getBeanNamesForType(ServletWebServerFactory.class).length == 0) {
+            return;
+        }
+        LOG.warn("The operator submission of {} has finished, but this application was started as a web"
+                        + " application, so the embedded servlet container is still holding the process open"
+                        + " and the run will not end on its own. A submitted job on the mainframe ended and"
+                        + " freed its initiator. Add --spring.main.web-application-type=none to the"
+                        + " submission so the process ends when the job does; the same artefact then serves"
+                        + " as both the online tier and a batch submission, which is what a single"
+                        + " deployable requires.", jobBeanName);
+    }
+
+    /**
+     * Launches one stage job directly, the equivalent of running a single JCL member.
+     *
+     * <p>All three parameters are supplied to every stage even though no stage reads all three, because each
+     * stage's own validator takes what it needs and ignores the rest, and because a single parameter set
+     * keyed identically across the stream is what makes a stage's instance identity match the pipeline's for
+     * the same business date. None of the five validators is a
+     * {@code DefaultJobParametersValidator} with a closed key set, so no stage refuses a parameter it has no
+     * use for.
+     *
+     * @param job the resolved stage job
+     * @param jobBeanName its bean name, for messages
+     * @param parmDate the interest date
+     * @param startDate the report start date
+     * @param endDate the report end date
+     * @return the finished execution, never {@code null}
+     * @throws ValidationException if the parameters are unusable or the instance has already completed
+     * @throws FatalProcessingException if the stage is already running, a restart is refused, or the launcher
+     *     fails
+     */
+    private JobExecution launchRequestedStage(final Job job, final String jobBeanName, final String parmDate,
+            final String startDate, final String endDate) {
+
+        final JobParameters parameters = pipelineParameters(parmDate, startDate, endDate);
+        try {
+            return jobLauncher.run(job, parameters);
+        } catch (final JobParametersInvalidException refused) {
+            throw new ValidationException(
+                    "The stage " + jobBeanName + " refused its parameters: " + refused.getMessage(), refused);
+        } catch (final JobInstanceAlreadyCompleteException refused) {
+            throw new ValidationException("The stage " + jobBeanName + " has already completed with these"
+                    + " parameters. No incrementer is declared, deliberately, so a repeat of an unchanged"
+                    + " run is refused rather than allowed to post the same input twice.", refused);
+        } catch (final JobExecutionAlreadyRunningException refused) {
+            throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE ALREADY RUNNING",
+                    "The stage " + jobBeanName + " is already running.", refused);
+        } catch (final JobRestartException refused) {
+            throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE RESTART REFUSED",
+                    "The stage " + jobBeanName + " cannot be restarted.", refused);
+        } catch (final RuntimeException unexpected) {
+            throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE LAUNCH FAILED",
+                    "The stage " + jobBeanName + " could not be launched.", unexpected);
+        }
+    }
+
+    /**
+     * Refuses a job name that is not one of the six this application declares.
+     *
+     * <p>Checked against a known set rather than handed straight to the container, so that a typo produces a
+     * message listing what an operator may actually ask for instead of a bean-resolution failure. It also
+     * means this path cannot be used to instantiate an arbitrary bean by name from a command line argument.
+     *
+     * @param requestedJob the requested name; may be {@code null} or blank
+     * @return the accepted bean name, never {@code null}
+     * @throws ValidationException if the name is absent or is not one of the six
+     */
+    private static String requireLaunchableJobName(final String requestedJob) {
+        if (requestedJob == null || requestedJob.isBlank()) {
+            throw ValidationException.missingField(KEY_LAUNCH_JOB,
+                    KEY_LAUNCH_JOB + " must name one of " + LAUNCHABLE_JOB_BEAN_NAMES);
+        }
+        final String candidate = requestedJob.trim();
+        if (!LAUNCHABLE_JOB_BEAN_NAMES.contains(candidate)) {
+            throw ValidationException.invalidField(KEY_LAUNCH_JOB,
+                    KEY_LAUNCH_JOB + " must name one of " + LAUNCHABLE_JOB_BEAN_NAMES + " but was '"
+                            + candidate + "'");
+        }
+        return candidate;
     }
 
     /**

@@ -46,6 +46,10 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.cardemo.batch.jobs.InterestCalculationJob;
 import com.cardemo.batch.writers.TransactionWriter;
 import com.cardemo.exception.FatalProcessingException;
@@ -90,6 +94,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.domain.SliceImpl;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
 /**
@@ -183,6 +188,17 @@ class InterestCalculationJobTest {
             }
             throw wrapped;
         }
+    }
+
+    /** An action that may throw, so a capture helper can wrap a reflective invocation. */
+    private interface ThrowingAction {
+
+        /**
+         * Runs the action.
+         *
+         * @throws Exception whatever the action throws
+         */
+        void run() throws Exception;
     }
 
     private static JobParameters params(final String parmDate) {
@@ -801,6 +817,77 @@ class InterestCalculationJobTest {
                 }
             }).isInstanceOf(FatalProcessingException.class);
             verify(s3Operations, never()).createBucket(anyString());
+        }
+
+        @Test
+        @DisplayName("MINOR: an APPL-AOK guard logs the bare operation, never the abend reason")
+        void aSuccessfulGuardNamesTheOperationOnly() throws Exception {
+            // FINDING, severity Minor, REGRESSION GUARD. The guard is handed an abend reason for its failure
+            // branch - "OPEN FAILED", "CLOSE FAILED" - and its success branch used to log that same constant,
+            // so a healthy open emitted "TCATBALF OPEN FAILED completed with status 00". IF APPL-AOK CONTINUE
+            // at app/cbl/CBACT04C.cbl:L330 does nothing at all, so nothing here may claim a failure.
+            final List<String> events = captureAtTrace(() -> invokePrivate("guardFileOperation",
+                    new Class<?>[] {String.class, String.class, String.class, String.class, Throwable.class},
+                    "00", "TCATBALF", "ERROR OPENING TCATBAL FILE", reasonConstant("REASON_OPEN_FAILED"),
+                    null));
+
+            assertThat(events)
+                    .anySatisfy(message -> assertThat(message)
+                            .isEqualTo("TCATBALF OPEN completed with status 00"));
+            assertThat(events).noneSatisfy(message -> assertThat(message).contains("FAILED"));
+        }
+
+        @Test
+        @DisplayName("MINOR: the failure branch keeps the reason, which is what the abend was written for")
+        void theFailureBranchKeepsTheReason() throws Exception {
+            assertThatThrownBy(() -> invokePrivate("guardFileOperation",
+                    new Class<?>[] {String.class, String.class, String.class, String.class, Throwable.class},
+                    "35", "TCATBALF", "ERROR OPENING TCATBAL FILE", reasonConstant("REASON_OPEN_FAILED"),
+                    null))
+                    .isInstanceOf(FatalProcessingException.class)
+                    .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories
+                            .type(FatalProcessingException.class))
+                    .satisfies(abend -> assertThat(abend.getAbendReason()).isEqualTo("OPEN FAILED"));
+        }
+
+        /**
+         * Reads one of the job's own reason constants, so the assertion tracks the code rather than
+         * restating its literal.
+         *
+         * @param name the declared constant name
+         * @return its value
+         * @throws Exception if the field cannot be reached
+         */
+        private String reasonConstant(final String name) throws Exception {
+            final java.lang.reflect.Field field = InterestCalculationJob.class.getDeclaredField(name);
+            field.setAccessible(true);
+            return (String) field.get(null);
+        }
+
+        /**
+         * Runs an action with the job's logger captured at {@code TRACE}, restoring the level afterwards.
+         *
+         * <p>Captured locally rather than in the class setup so that only the tests that assert on log text
+         * pay for it, and so the level is restored even when the action abends.
+         *
+         * @param action the work to observe
+         * @return every formatted message the logger emitted
+         * @throws Exception whatever the action throws
+         */
+        private List<String> captureAtTrace(final ThrowingAction action) throws Exception {
+            final Logger captured = (Logger) LoggerFactory.getLogger(InterestCalculationJob.class);
+            final ListAppender<ILoggingEvent> events = new ListAppender<>();
+            events.start();
+            final Level original = captured.getLevel();
+            captured.addAppender(events);
+            captured.setLevel(Level.TRACE);
+            try {
+                action.run();
+            } finally {
+                captured.detachAppender(events);
+                captured.setLevel(original);
+            }
+            return events.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
         }
 
         @Test

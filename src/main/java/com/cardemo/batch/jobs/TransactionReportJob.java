@@ -751,6 +751,7 @@ public class TransactionReportJob {
             failure = closeReader(reader, readerOpened, failure, DD_BACKUP_INPUT);
         }
         if (failure != null) {
+            discardOwnGenerationOnFailure(backupKey, BACKUP_STEP_BEAN_NAME);
             throw failure;
         }
 
@@ -849,7 +850,14 @@ public class TransactionReportJob {
 
         final long jobInstanceId = requireJobInstanceId(stepExecution);
         final String dailyKey = generationObjectKey(dailyPrefix, jobInstanceId, DAILY_OBJECT_NAME);
-        writeFixedWidthGeneration(dailyKey, DD_SORT_OUTPUT, TRANSACTION_RECORD_LENGTH, records);
+        try {
+            writeFixedWidthGeneration(dailyKey, DD_SORT_OUTPUT, TRANSACTION_RECORD_LENGTH, records);
+        } catch (final RuntimeException failure) {
+            // CardDemoException is itself a RuntimeException, so this one alternative covers both the typed
+            // failures this write raises and any unexpected one. The failure is rethrown unchanged.
+            discardOwnGenerationOnFailure(dailyKey, SORT_STEP_BEAN_NAME);
+            throw failure;
+        }
         publishConcreteKey(stepExecution, DAILY_OBJECT_KEY_CONTEXT, dailyKey);
         publishCount(stepExecution, DAILY_RECORD_COUNT_CONTEXT, records.size());
         LOG.info("{} completed: {} records passed the inclusive character predicate and card ordering",
@@ -955,6 +963,7 @@ public class TransactionReportJob {
         CardDemoException failure = mainlineProcedureDivision(
                 stepExecution, reader, processor, writer);
         if (failure != null) {
+            discardOwnGenerationOnFailure(reportKey, GENERATE_STEP_BEAN_NAME);
             throw failure;
         }
 
@@ -962,6 +971,47 @@ public class TransactionReportJob {
         publishCount(stepExecution, REPORT_LINE_COUNT_CONTEXT, writer.linesWritten());
         LOG.info("{} completed: {} fixed-width report lines emitted",
                 GENERATE_STEP_BEAN_NAME, Long.valueOf(writer.linesWritten()));
+    }
+
+    /**
+     * Reproduces the abnormal-termination disposition {@code DELETE} for the generation this step created.
+     *
+     * <p>{@code app/proc/TRANREPT.prc} STEP10R declares {@code //TRANREPT DD DISP=(NEW,CATLG,DELETE)}. The
+     * third positional sub-parameter is the <b>abnormal-termination</b> disposition, so when the step abends
+     * the new generation is deleted and never catalogued. Without that, a failed generate step left
+     * {@code gdg/tranrept/generation=.../TRANREPT} behind at <b>0 bytes</b>, and a consumer resolving
+     * {@code TRANREPT(0)} could not tell "no transactions matched the range" from "the job abended" - two
+     * situations demanding opposite responses.
+     *
+     * <p><b>Scoped to the object this step created, and to nothing else.</b> The backup and daily objects of a
+     * run whose own steps completed are left alone, because their steps were normal terminations and their
+     * {@code CATLG} disposition applies. Likewise a generation written by a step that succeeded is not removed
+     * because a <em>later</em> step failed - {@code app/jcl/COMBTRAN.jcl} demonstrates the same rule, where a
+     * load-step failure leaves the sort step's {@code SORTOUT} legitimately catalogued.
+     *
+     * <p>A deletion failure is reported and deliberately does not replace the original failure. The step is
+     * already failing and the cause the operator needs is the one that made it fail; losing that to an
+     * error about tidying up would be strictly worse. The leftover object is named at error level so it can be
+     * removed by hand.
+     *
+     * @param objectKey the key this step created and is abandoning
+     * @param stepName the step bean name, for the diagnostic
+     */
+    private void discardOwnGenerationOnFailure(final String objectKey, final String stepName) {
+        try {
+            if (objectStorage.objectExists(outputBucket, objectKey)) {
+                objectStorage.deleteObject(outputBucket, objectKey);
+                LOG.info("{} failed, so the generation it created was deleted rather than catalogued,"
+                                + " reproducing the abnormal-termination disposition DELETE of"
+                                + " app/proc/TRANREPT.prc DISP=(NEW,CATLG,DELETE): {}",
+                        stepName, objectKey);
+            }
+        } catch (final RuntimeException deletion) {
+            LOG.error("{} failed and the generation it created could not be deleted; {} remains catalogued"
+                            + " and must be removed by hand, because a consumer resolving this generation"
+                            + " cannot distinguish it from a complete one",
+                    stepName, objectKey, deletion);
+        }
     }
 
     /**

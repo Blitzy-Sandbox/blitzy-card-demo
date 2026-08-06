@@ -1083,6 +1083,16 @@ configs:
       -- DML for the runtime, across the eleven domain tables, the Spring Batch
       -- metadata tables and flyway_schema_history alike. No CREATE, no DROP,
       -- no ALTER, no TRUNCATE and no REFERENCES.
+      --
+      -- The Spring Batch half of that sentence is carried by the ALTER DEFAULT
+      -- PRIVILEGES declarations below rather than by the two grants here, and
+      -- it only became true once the framework's schema script started running
+      -- as the migration role: com.cardemo.config.BatchConfig declares the
+      -- initializer and binds it to spring.flyway.user, because the app role
+      -- has no CREATE on this schema by design and Boot's own initializer
+      -- swallowed the resulting refusal, leaving a deployment with no batch_*
+      -- tables and no way to launch a job. Nothing here needed to change for
+      -- that fix; this comment records why the claim now holds.
       GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app_user";
       GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"app_user";
       GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO :"migration_user";

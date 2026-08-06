@@ -993,3 +993,38 @@ spring:
 logging:
   level:
     com.github.dockerjava: WARN
+
+# ============================================================================
+# WITHDRAW THE REPORT-QUEUE CONSUMER: THIS HARNESS MUST BE THE ONLY READER
+# ============================================================================
+# com.cardemo.config.BatchConfig binds one @SqsListener to the report FIFO
+# queue, replacing the JES2 internal reader that consumed TDQUEUE(JOBS) at
+# app/csd/CARDDEMO.CSD:L499-L505. Every deployed profile wants it: a submission
+# published by com.cardemo.service.report.ReportSubmissionService has to be
+# picked up by something, and that listener is the something.
+#
+# This tier is the one context where it must NOT run, and the reason is a
+# property of FIFO queues rather than a preference. A FIFO message is delivered
+# to exactly one reader. Several classes here assert PRODUCER-side behaviour by
+# reading the queue directly - that a submission carries the three reporting
+# periods with the boundaries app/cbl/CORPT00C.cbl:L212-L436 computes, that the
+# correlation identifier reaches the message, that the health probe observes the
+# queue without consuming from it. Each publishes and then receives. With a
+# consumer in the same context those assertions do not become flaky in a way
+# that shows up as flakiness; they fail outright, because the listener wins the
+# race every time and the test sees an empty queue.
+#
+# So this is the same address-space separation carddemo.batch.launch expresses.
+# On the mainframe the CICS region that WRITEQ TD's the card and the initiator
+# that reads it are different address spaces, and only one of them drains the
+# queue. Here the harness takes the reader role and the listener stands down.
+#
+# The listener's own behaviour is not left unproven by this: its launch,
+# idempotency, malformed-payload and identifier-fallback paths are asserted in
+# com.cardemo.unit.config.BatchConfigTest, which drives the listener directly
+# rather than through a live queue, and the property gate itself is asserted
+# there too.
+carddemo:
+  batch:
+    report-queue-listener:
+      enabled: false

@@ -75,6 +75,7 @@ package com.cardemo.config;
 
 import com.cardemo.batch.jobs.StatementGenerationJob;
 import com.cardemo.batch.processors.StatementProcessor;
+import com.cardemo.batch.processors.TransactionReportProcessor;
 import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Customer;
@@ -83,7 +84,12 @@ import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.CustomerRepository;
+import com.cardemo.service.report.ReportSubmissionService.JobSubmissionMessage;
 import com.cardemo.service.shared.FileService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.awspring.cloud.sqs.annotation.SqsListener;
+import io.awspring.cloud.sqs.listener.SqsHeaders;
 import io.awspring.cloud.s3.S3Operations;
 import java.io.IOException;
 import java.io.InputStream;
@@ -94,19 +100,41 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import javax.sql.DataSource;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
+import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.batch.core.scope.context.StepContext;
+import org.springframework.batch.core.repository.dao.AbstractJdbcBatchMetadataDao;
 import org.springframework.batch.core.scope.context.StepSynchronizationManager;
 import org.springframework.batch.item.ExecutionContext;
+import org.springframework.boot.autoconfigure.batch.BatchDataSourceScriptDatabaseInitializer;
+import org.springframework.boot.autoconfigure.batch.BatchProperties;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.core.env.Environment;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.messaging.MessageHeaders;
+import org.springframework.messaging.handler.annotation.Headers;
+import org.springframework.util.StringUtils;
 
 /**
  * Wiring for the batch tier: the four dataset bindings that give the {@code CBSTM03B} translation something
@@ -311,10 +339,22 @@ import org.springframework.data.domain.PageRequest;
  * migrations and this class adds no fourth, nor any batch metadata to the first: a validation gate asserts
  * that the first migration creates exactly eleven tables, so adding metadata there fails it.
  *
- * <p>{@code spring.batch.job.enabled} is {@code false}, so jobs do not run at startup. Launching is
- * explicit: the orchestrator, or the queue listener that replaces the JES2 internal reader driven by
- * {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} in {@code app/cbl/CORPT00C.cbl}. This class therefore declares no
- * runner, no scheduler and nothing annotated to fire on startup.
+ * <p><b>The script runs as the DDL-owning role, and the result is verified against the runtime one.</b>
+ * {@link #batchMetadataInitializer(DataSource, BatchProperties, Environment, String, String)} replaces Boot's own
+ * initialiser for two reasons that a deployed topology proved rather than predicted: Boot runs the script
+ * through the runtime DataSource, which is deliberately bound to a DML-only role that cannot create a table,
+ * and Boot's settings carry {@code continueOnError=true}, so every refusal was silent and the container
+ * started healthy with no metadata schema and therefore no launchable job. That bean runs the same framework
+ * script as the same role Flyway uses, then proves through the runtime DataSource that all six tables are
+ * readable by the principal that will use them, and refuses to start when any is not.
+ *
+ * <p>{@code spring.batch.job.enabled} is {@code false}, so jobs do not run at startup. Launching is explicit,
+ * through the two paths the mainframe had. One is an operator submitting a deck, which is the property-gated
+ * runner in {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. The other is the online tier writing to
+ * the {@code JOBS} data queue for the JES2 internal reader, driven by {@code EXEC CICS WRITEQ TD
+ * QUEUE('JOBS')} in {@code app/cbl/CORPT00C.cbl}, and <strong>that one is declared in this class</strong> -
+ * see {@link ReportJobQueueListener}. This class still declares no runner, no scheduler and nothing annotated
+ * to fire on startup: a queue listener fires when a message arrives, which is the opposite of firing on boot.
  *
  * <h2>The record-image contract, and why these bindings render fixed-width text</h2>
  *
@@ -426,17 +466,29 @@ import org.springframework.data.domain.PageRequest;
  *       class: the six classes in {@code com.cardemo.batch.jobs} are the designated definition sites. The
  *       same applies to a step, a flow or a processor whose derived bean name collides with a
  *       {@code @Component}.</dd>
- *   <dt>A job fails on a missing {@code BATCH_JOB_INSTANCE} or {@code BATCH_STEP_EXECUTION} table</dt>
- *   <dd>{@code spring.batch.jdbc.initialize-schema} is {@code never} in the active profile, which is
- *       deliberate at base and in production. Run under the local or test profile, or provision the
- *       framework's own schema script out of band. Do <strong>not</strong> add a migration for it: the
- *       migration set is closed at three and a gate asserts the first one creates exactly eleven
- *       tables.</dd>
+ *   <dt>Startup fails naming a missing or unreadable {@code BATCH_*} table</dt>
+ *   <dd>This is {@link #batchMetadataInitializer(DataSource, BatchProperties, Environment, String, String)}
+ *       refusing to start an application that could not launch a job, which is the deliberate replacement for
+ *       the silence that preceded it. Either the DDL role could not create the schema - check that the
+ *       migration role and its password reached the application and that the role holds {@code CREATE} on the
+ *       schema - or {@code spring.batch.jdbc.initialize-schema} is {@code never}, which is deliberate at base
+ *       and in production, and nobody has applied the framework's own script. Do <strong>not</strong> add a
+ *       migration for it: the migration set is closed at three and a gate asserts the first one creates
+ *       exactly eleven tables.</dd>
  *   <dt>No job runs at startup and no error appears</dt>
- *   <dd>Expected and by design: {@code spring.batch.job.enabled} is {@code false}. Launch through the
- *       orchestrator or by publishing to the report queue that replaces the JES2 internal reader. Adding a
- *       runner, a scheduler or a startup hook to "fix" this reintroduces the behaviour the flag exists to
- *       suppress - every job running on every boot.</dd>
+ *   <dd>Expected and by design: {@code spring.batch.job.enabled} is {@code false}. Launch either by
+ *       submitting one - {@code java -jar carddemo.jar --spring.main.web-application-type=none
+ *       --carddemo.batch.launch=batchPipelineJob} plus the three date properties, which is the operator
+ *       path - or by publishing a report submission to the queue
+ *       {@link ReportJobQueueListener} drains. Adding an unconditional runner, a scheduler or a startup hook
+ *       to "fix" this reintroduces the behaviour the flag exists to suppress: every job running on every
+ *       boot, including on the boot of a container whose job is to serve HTTP.</dd>
+ *   <dt>A report submission returns success and no report job ever runs</dt>
+ *   <dd>The listener is not running. It exists only when {@value #KEY_REPORT_QUEUE} is set, so check that
+ *       first; then check the log for the {@code ERROR} line naming the submission, because a payload that
+ *       cannot be bound or a period the report job refuses is logged and consumed rather than returned to the
+ *       queue. The reason that message is consumed rather than retried is on
+ *       {@link ReportJobQueueListener}.</dd>
  *   <dt>The combine load step fails on a duplicate key</dt>
  *   <dd>The interest run was repeated with the same date parameter, so it minted colliding transaction
  *       identifiers: {@code app/cbl/CBACT04C.cbl} concatenates the ten character date with a run-sequential
@@ -546,6 +598,119 @@ public class BatchConfig {
     private static final String KEY_WINDOW_SIZE = "carddemo.batch.dataset-window-size";
 
     /**
+     * The FIFO queue the report submission listener drains, deliberately without a default.
+     *
+     * <p>Named rather than defaulted because a guessed queue name is worse than no listener: it would bind
+     * successfully, drain nothing, and report itself healthy. Every profile that has a queue sets it.
+     */
+    private static final String KEY_REPORT_QUEUE = "carddemo.aws.sqs.report-queue";
+
+    /**
+     * The operator submission property, mirrored here so the queue listener can stand down when it is set.
+     *
+     * <p>Declared by {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}, privately, and repeated here
+     * for the same reason the report job's bean name is: this class may not reach into that one's internals,
+     * and a shared constant would put a batch-launch detail into a package that has no other use for it.
+     *
+     * <p>What it is used for here is a negative condition. When an operator has submitted a job, this
+     * application is a batch submission and not the online tier, so it must not drain the queue - see the
+     * commentary above the listener for both reasons that matters.
+     */
+    private static final String KEY_LAUNCH_JOB = "carddemo.batch.launch";
+
+    /**
+     * Property that withdraws the report-queue consumer from a context that must not compete for messages.
+     *
+     * <p>Defaults to enabled, so every ordinary deployment consumes the queue exactly as the JES2 internal
+     * reader consumed {@code TDQUEUE(JOBS)}. It exists for one situation: a context that asserts what the
+     * <em>producer</em> put on the queue has to be the only reader, and a consumer racing it turns a
+     * deterministic assertion into a timing accident. {@code application-test.yml} therefore sets this to
+     * {@code false}, which is why the shared integration harness can inspect published messages directly.
+     *
+     * <p>This is the same address-space separation that {@value #KEY_LAUNCH_JOB} expresses: on the mainframe
+     * the submitting region and the reading initiator are different address spaces, and only one of them
+     * drains the queue.
+     */
+    private static final String KEY_REPORT_QUEUE_LISTENER_ENABLED =
+            "carddemo.batch.report-queue-listener.enabled";
+
+    /**
+     * The listener container's identifier, so it can be found by name in a running context.
+     *
+     * <p>An explicit identifier rather than a generated one because there must be exactly <em>one</em>
+     * consumer of this queue - a second would let two executions race for one submission - and a stable name
+     * is what makes that assertable at runtime and in a test.
+     */
+    private static final String REPORT_QUEUE_LISTENER_ID = "carddemoReportJobsListener";
+
+    /**
+     * How long one receive waits for a message before returning empty, in seconds, as the annotation
+     * attribute requires it.
+     *
+     * <p><b>Finding, severity Medium, RESOLVED. It must stay strictly below the queue client's per-attempt
+     * deadline, and the library's default does not.</b> {@code AwsConfig} bounds every queue call at a
+     * ten-second {@code apiCallAttemptTimeout} inside a thirty-second {@code apiCallTimeout}, deliberately, so
+     * that an unreachable emulator surfaces as a bounded failure rather than a blocked thread. Spring Cloud
+     * AWS defaults a listener's poll to <em>ten</em> seconds, which is the same value: every long poll over an
+     * idle queue therefore raced that per-attempt deadline, was aborted, retried twice more and finally failed
+     * the whole call, so an idle deployment logged
+     * {@code ApiCallTimeoutException: Client execution did not complete before the specified timeout
+     * configuration: 30000 millis} at {@code ERROR} once every thirty seconds, forever. It was measured at 371
+     * occurrences in one afternoon of an otherwise healthy container, and an error that an idle system emits on
+     * a timer trains an operator to ignore the log - which is the whole cost of it.
+     *
+     * <p>Five seconds leaves half the per-attempt budget as margin, so a receive over an idle queue completes
+     * and returns empty on its first attempt. The alternative - widening the client's deadlines to fit a longer
+     * poll - was rejected because those deadlines guard every publish and the health probe too, and loosening
+     * them to accommodate the consumer would trade a real property for a cosmetic one. The cost is one empty
+     * receive every five seconds instead of every thirty; against the LocalStack endpoint this topology targets
+     * that is free, and no live cloud path is structurally reachable.
+     *
+     * <p><b>The relationship is the contract, not the number.</b> A deployment that raises the client's
+     * per-attempt deadline may raise this to match, but this value must never reach it. {@code BatchConfigTest}
+     * asserts the inequality against {@code AwsConfig}'s own constant rather than against a literal, so the two
+     * cannot drift apart silently.
+     */
+    private static final String REPORT_QUEUE_POLL_TIMEOUT_SECONDS = "5";
+
+    /**
+     * The bean name of the job every message on the report queue names.
+     *
+     * <p>The literal is repeated here because the declaring constant in
+     * {@code com.cardemo.batch.jobs.TransactionReportJob} is private to that class. The two must agree, and
+     * the qualifier below is where a disagreement surfaces - as a startup failure naming this string, not as
+     * a message that silently launches nothing.
+     */
+    private static final String TRANSACTION_REPORT_JOB_BEAN_NAME = "transactionReportJob";
+
+    /**
+     * The submission's report name, carried as an identifying job parameter.
+     *
+     * <p>{@code WS-REPORT-NAME} at {@code app/cbl/CORPT00C.cbl:L58}, one of {@code Monthly}, {@code Yearly}
+     * or {@code Custom}. Identifying because the source's job card carried it and because two submissions
+     * differing only in period name are two submissions.
+     */
+    private static final String REPORT_NAME_JOB_PARAMETER = "reportName";
+
+    /**
+     * The submission's identity, carried as an identifying job parameter, and the whole idempotency mechanism.
+     *
+     * <p>This is what makes one queue message one job instance no matter how many times the queue delivers
+     * it. It has no counterpart in the source because JES2 read each card deck once; a queue with
+     * at-least-once delivery needs the key the mainframe did not.
+     */
+    private static final String SUBMISSION_ID_JOB_PARAMETER = "submissionId";
+
+    /**
+     * Stands in for a submission identifier when the message carries neither of the two candidates.
+     *
+     * <p>A literal rather than a generated value, deliberately: a generated one would make every redelivery
+     * a new job instance, turning an unidentifiable message into repeated executions. This value makes them
+     * collapse onto one instance instead, which is the safer failure and is visible in the log.
+     */
+    private static final String UNIDENTIFIED_SUBMISSION = "unidentified-submission";
+
+    /**
      * Structured logger, the sole diagnostic channel of this class.
      *
      * <p>Nothing here writes to the process output streams: the legacy {@code DISPLAY} statements this system
@@ -605,6 +770,23 @@ public class BatchConfig {
     private final int windowSize;
 
     /**
+     * The six framework metadata tables, unprefixed, in the order the framework's own script creates them.
+     *
+     * <p>Every one of them is required before any job can be launched or restarted: the instance and
+     * execution tables carry identity, the parameter table carries the values a restart must match, and the
+     * two context tables carry the generation manifests the stages hand to one another. A deployment missing
+     * any of them cannot run the stream at all, which is why {@link #verifyMetadataReachable(DataSource,
+     * String)} refuses to start rather than leaving the absence to be discovered by the first launch.
+     */
+    private static final List<String> METADATA_TABLE_SUFFIXES = List.of(
+            "JOB_INSTANCE",
+            "JOB_EXECUTION",
+            "JOB_EXECUTION_PARAMS",
+            "JOB_EXECUTION_CONTEXT",
+            "STEP_EXECUTION",
+            "STEP_EXECUTION_CONTEXT");
+
+    /**
      * Creates the configuration class.
      *
      * @param windowSize rows per keyset window, from {@value #KEY_WINDOW_SIZE}, defaulting to
@@ -618,6 +800,524 @@ public class BatchConfig {
             throw new IllegalArgumentException(KEY_WINDOW_SIZE + " must be positive but was " + windowSize);
         }
         this.windowSize = windowSize;
+    }
+
+    // =============================================================================================
+    // THE FRAMEWORK METADATA SCHEMA: CREATED BY THE DDL-OWNING ROLE, USED BY THE DML-ONLY ROLE.
+    //
+    // Finding, severity Major, RESOLVED here. The deployed topology had NO BATCH_* tables at all and said
+    // nothing about it. Spring Boot's own BatchDataSourceScriptDatabaseInitializer runs the framework's
+    // schema script through the RUNTIME DataSource, which docker-compose.yml binds to the DML-only role
+    // carddemo_app; that role has no CREATE on schema public, deliberately - the inline role script REVOKEs
+    // CREATE from PUBLIC and grants it to carddemo_migrator alone - so every CREATE TABLE was refused. The
+    // refusal was invisible because Boot hardcodes continueOnError=true on those settings, so the container
+    // started healthy, served requests, and could not launch or restart a single job: no job instance table,
+    // no execution table, no execution context, and therefore no generation manifest to hand between stages.
+    //
+    // The fix keeps BOTH halves of the least-privilege split rather than trading one for the other. The
+    // framework still owns its own schema - there is no fourth Flyway migration and no extra table in
+    // V1__create_schema.sql, whose exact eleven-table shape a validation gate asserts - but the script now
+    // runs as the DDL-owning role, exactly as Flyway's migrations do, and the runtime role keeps DML only.
+    // No grant has to be added for that to work: docker-compose.yml already declares
+    // ALTER DEFAULT PRIVILEGES FOR ROLE carddemo_migrator IN SCHEMA public GRANT SELECT, INSERT, UPDATE,
+    // DELETE ON TABLES TO carddemo_app, which is what its own comment means by "the Spring Batch metadata
+    // tables" and what makes tables created LATER by that role usable by the runtime.
+    //
+    // The second half of the fix is that absence is no longer silent. A deployment that reaches the end of
+    // initialisation without the six tables being readable by the runtime role now FAILS TO START, with a
+    // message naming the missing table, the role and the property that governs creation. A batch tier that
+    // cannot launch anything is not a healthy application, and it must not be discovered by the first
+    // operator who tries.
+    // =============================================================================================
+
+    /**
+     * The framework metadata initialiser, bound to the DDL-owning role and verified against the runtime one.
+     *
+     * <p><b>What it does.</b> Two things, in order. It runs the framework's own
+     * {@code org/springframework/batch/core/schema-postgresql.sql} - never a Flyway migration - through a
+     * connection that is permitted to create tables, honouring {@code spring.batch.jdbc.initialize-schema}
+     * exactly as Boot's own initialiser would. Then it proves, through the <em>runtime</em>
+     * {@link DataSource}, that all six metadata tables are readable by the role that will actually use them,
+     * and refuses to start if any is not.
+     *
+     * <p><b>Why it replaces Boot's.</b> Boot declares its initialiser
+     * {@code @ConditionalOnMissingBean(BatchDataSourceScriptDatabaseInitializer.class)}, so declaring one
+     * here takes over without disabling any auto-configuration. Boot's version has two properties this
+     * deployment cannot live with: it uses the runtime DataSource, which is deliberately privilege-starved,
+     * and its settings carry {@code continueOnError=true}, which turns a permission failure into silence.
+     *
+     * <p><b>Key configuration and defaults.</b> {@code spring.batch.jdbc.initialize-schema} governs whether
+     * the script runs at all - {@code never} in the base and production profiles, {@code always} in
+     * {@code local} and {@code test} - and this bean honours it unchanged, including {@code never}, where it
+     * still performs the verification so that a DBA-provisioned schema is proven rather than assumed.
+     * {@code spring.batch.jdbc.table-prefix} defaults to the framework's {@code BATCH_} and is not
+     * overridden anywhere. {@code spring.flyway.user} and {@code spring.flyway.password} name the DDL-owning
+     * role; when either is absent the runtime DataSource is used, which is the single-role case every
+     * Testcontainers profile runs and the fallback an existing volume keeps working under.
+     * {@code spring.flyway.url} is honoured when set and otherwise inherited from
+     * {@code spring.datasource.url}, matching how Boot derives Flyway's own connection.
+     *
+     * <p><b>Why the URL arrives through {@link Environment} rather than a third {@code @Value}.</b> A
+     * {@code @Value} argument is resolved when this bean is created, unconditionally, whether or not the
+     * value is ever used - and the URL is used only on the two-role branch. That eagerness broke every
+     * Testcontainers-backed context. Those profiles configure no {@code spring.flyway.user}, so the URL is
+     * irrelevant to them, but {@code application.yml:581} declares
+     * {@code spring.datasource.url: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT:5432}/${POSTGRES_DB}}
+     * with <b>no default for {@code POSTGRES_HOST}</b>, and a Testcontainers datasource is contributed as a
+     * {@code ConnectionDetails} bean rather than by overriding that property. Resolving the fallback chain
+     * therefore raised {@code PlaceholderResolutionException} for a value the branch would have discarded,
+     * failing context startup for the whole integration tier. Reading the property inside the branch that
+     * needs it keeps the {@code local} and {@code prod} inheritance behaviour - neither profile sets
+     * {@code spring.flyway.url}, so both genuinely depend on the fallback - while leaving a single-role
+     * profile free of a property it does not define.
+     *
+     * <p><b>Failure modes and troubleshooting.</b> A startup failure naming a missing metadata table means
+     * either that the DDL role could not create it - check that {@code CARDDEMO_DB_MIGRATION_USER} and its
+     * password reached the application, and that the role holds {@code CREATE} on the schema - or that
+     * {@code initialize-schema} is {@code never} and nobody has applied the framework script. A startup
+     * failure naming a table that exists means the runtime role lacks {@code SELECT} on it, which the
+     * {@code ALTER DEFAULT PRIVILEGES} declarations in {@code docker-compose.yml} exist to prevent.
+     *
+     * @param dataSource the runtime, DML-only DataSource the job repository will use; never {@code null}
+     * @param batchProperties the framework's own batch properties, supplying the initialisation mode, the
+     *     table prefix and the optional platform override
+     * @param environment the property source the DDL connection URL is read from, on the two-role branch
+     *     only; never {@code null}
+     * @param migrationUser the DDL-owning role, {@code spring.flyway.user}; blank in the single-role case
+     * @param migrationPassword the DDL-owning role's password, {@code spring.flyway.password}; blank in the
+     *     single-role case
+     * @return the initialiser, never {@code null}
+     * @throws IllegalStateException if the configured table prefix is not a plain SQL identifier, or if any
+     *     metadata table is missing or unreadable by the runtime role once initialisation has finished
+     */
+    @Bean
+    public BatchDataSourceScriptDatabaseInitializer batchMetadataInitializer(
+            final DataSource dataSource,
+            final BatchProperties batchProperties,
+            final Environment environment,
+            @Value("${spring.flyway.user:}") final String migrationUser,
+            @Value("${spring.flyway.password:}") final String migrationPassword) {
+
+        Objects.requireNonNull(dataSource, "dataSource must not be null");
+        Objects.requireNonNull(batchProperties, "batchProperties must not be null");
+        Objects.requireNonNull(environment, "environment must not be null");
+        final String tablePrefix = requireIdentifier(resolveTablePrefix(batchProperties));
+        final DataSource ddlDataSource =
+                metadataDdlDataSource(dataSource, environment, migrationUser, migrationPassword);
+
+        // An anonymous subclass rather than a second bean: the verification has to run AFTER the script and
+        // BEFORE anything that depends on database initialisation, and initializeDatabase() is exactly that
+        // point. A separate runner would have to re-establish the ordering the framework already gives here,
+        // and a runner is forbidden in this class for the unrelated reason that it must never launch a job.
+        return new BatchDataSourceScriptDatabaseInitializer(ddlDataSource, batchProperties.getJdbc()) {
+
+            @Override
+            public boolean initializeDatabase() {
+                final boolean applied = super.initializeDatabase();
+                verifyMetadataReachable(dataSource, tablePrefix);
+                return applied;
+            }
+        };
+    }
+
+    /**
+     * Resolves the metadata table prefix the way the job repository itself resolves it.
+     *
+     * <p>{@code spring.batch.jdbc.table-prefix} carries no default in the framework's own properties class -
+     * the field is left {@code null} - and the {@code BATCH_} default lives one layer down, in
+     * {@link AbstractJdbcBatchMetadataDao#DEFAULT_TABLE_PREFIX}, applied only when the property has text.
+     * Reading the property directly therefore yields an empty prefix on every deployment that does not set
+     * it, which is every deployment in this repository: {@code application.yml} leaves it at the default
+     * deliberately so the schema matches the framework's published script unmodified.
+     *
+     * <p>The consequence of getting this wrong is not a cosmetic one, which is why it is resolved here rather
+     * than inline. An empty prefix makes the verification probe ask for {@code JOB_INSTANCE}, a table that
+     * exists in no deployment, so a correctly provisioned schema would be reported as missing and startup
+     * would fail naming a table nobody was ever meant to create. The constant is referenced rather than
+     * copied so that the prefix this class probes for and the prefix the job repository writes to cannot
+     * drift apart.
+     *
+     * @param batchProperties the framework's own batch properties
+     * @return the configured prefix when one has text, and the framework default otherwise; never
+     *     {@code null}
+     */
+    private static String resolveTablePrefix(final BatchProperties batchProperties) {
+        final String configured = batchProperties.getJdbc().getTablePrefix();
+        return StringUtils.hasText(configured)
+                ? configured
+                : AbstractJdbcBatchMetadataDao.DEFAULT_TABLE_PREFIX;
+    }
+
+    /**
+     * Chooses the connection the metadata script runs under: the DDL-owning role when one is configured.
+     *
+     * <p>A {@link DriverManagerDataSource} rather than a pooled one, deliberately. This connection is used
+     * once, during startup, for a handful of {@code CREATE} statements; a second Hikari pool would live for
+     * the lifetime of the application holding idle connections nothing will ever use again, and closing one
+     * from a {@code @Bean} method would mean owning a lifecycle this class has no reason to own.
+     *
+     * <p>The role is tested <b>before</b> the URL is read, and that order is load-bearing rather than
+     * incidental. A single-role profile defines no {@code spring.flyway.user}, so it returns here without
+     * ever touching {@code spring.datasource.url} - which under Testcontainers still holds the unresolvable
+     * {@code ${POSTGRES_HOST}} template from {@code application.yml:581}. Reading the URL first, as an
+     * eagerly resolved {@code @Value} argument once did, failed those contexts on a value this branch
+     * discards.
+     *
+     * @param runtimeDataSource the runtime DataSource, used when no separate DDL role is configured
+     * @param environment the property source the DDL connection URL is read from, only once a DDL role is
+     *     known to be configured
+     * @param user the DDL-owning role; blank falls back to the runtime DataSource
+     * @param password the DDL-owning role's password
+     * @return the DataSource the metadata script runs under, never {@code null}
+     */
+    private static DataSource metadataDdlDataSource(final DataSource runtimeDataSource,
+            final Environment environment, final String user, final String password) {
+
+        if (user == null || user.isBlank()) {
+            LOG.debug("No separate migration role is configured, so the framework metadata script runs"
+                    + " through the runtime DataSource; this is the single-role case");
+            return runtimeDataSource;
+        }
+        final String url = environment.getProperty(
+                "spring.flyway.url",
+                environment.getProperty("spring.datasource.url", ""));
+        if (url.isBlank()) {
+            LOG.debug("A migration role is configured but neither spring.flyway.url nor"
+                    + " spring.datasource.url carries a value, so the framework metadata script runs"
+                    + " through the runtime DataSource");
+            return runtimeDataSource;
+        }
+        final DriverManagerDataSource ddlDataSource = new DriverManagerDataSource(url, user, password);
+        LOG.info("The Spring Batch metadata script will run as the DDL-owning role {}, exactly as the Flyway"
+                + " migrations do; the runtime role keeps DML only", user);
+        return ddlDataSource;
+    }
+
+    /**
+     * Proves the six metadata tables are present and readable by the runtime role, or fails startup.
+     *
+     * <p>One probe per table, through the runtime {@link DataSource}, because that is the principal whose
+     * access matters: a table the DDL role created but the runtime role cannot read is as unusable as one
+     * that was never created, and only a probe under the runtime credentials tells the two apart from a
+     * refusal to start.
+     *
+     * <p>The predicate is deliberately {@code where 1 = 0}: it proves existence and {@code SELECT} without
+     * reading a row, so the check costs nothing on a table holding a million executions and cannot log or
+     * retain any execution content.
+     *
+     * <p>The table name is composed rather than bound because SQL has no parameter form for an identifier.
+     * That is safe here for a stated reason rather than by assumption: the prefix has already been checked by
+     * {@link #requireIdentifier(String)} to be a plain SQL identifier, and the suffixes are compile-time
+     * constants in {@link #METADATA_TABLE_SUFFIXES}.
+     *
+     * @param dataSource the runtime, DML-only DataSource
+     * @param tablePrefix the validated table prefix, {@code BATCH_} unless a deployment overrides it
+     * @throws IllegalStateException if any table is missing or unreadable, naming the table and the cause
+     */
+    private static void verifyMetadataReachable(final DataSource dataSource, final String tablePrefix) {
+        final JdbcTemplate probe = new JdbcTemplate(dataSource);
+        for (final String suffix : METADATA_TABLE_SUFFIXES) {
+            final String table = tablePrefix + suffix;
+            try {
+                probe.execute("select 1 from " + table + " where 1 = 0");
+            } catch (final DataAccessException unreachable) {
+                throw new IllegalStateException(String.format(Locale.ROOT,
+                        "The Spring Batch metadata table %s is missing or unreadable by the runtime role, so"
+                                + " no job could be launched or restarted and every generation handoff"
+                                + " between pipeline stages would be lost. The framework owns this schema"
+                                + " through spring.batch.jdbc.initialize-schema (never in the base and"
+                                + " production profiles, always in local and test) and it must run as the"
+                                + " role named by spring.flyway.user, because the runtime role holds DML"
+                                + " only. Provision the six %s tables with"
+                                + " org/springframework/batch/core/schema-postgresql.sql under that role,"
+                                + " then grant the runtime role SELECT, INSERT, UPDATE and DELETE on them.",
+                        table, tablePrefix), unreachable);
+            }
+        }
+        LOG.info("All {} Spring Batch metadata tables under the prefix {} are present and readable by the"
+                + " runtime role; the batch tier can be launched and restarted",
+                Integer.valueOf(METADATA_TABLE_SUFFIXES.size()), tablePrefix);
+    }
+
+    /**
+     * Refuses a table prefix that is not a plain SQL identifier.
+     *
+     * <p>Nothing in this repository overrides the framework default, so this guard exists for the deployment
+     * that one day does: a prefix carrying a quote, a semicolon or whitespace would be composed into the
+     * probe statement above, and refusing it at startup is the one place that can be prevented rather than
+     * detected.
+     *
+     * @param prefix the configured prefix, permitted to be empty but not {@code null}
+     * @return the prefix unchanged
+     * @throws IllegalStateException if the prefix contains anything but ASCII letters, digits or underscores
+     */
+    private static String requireIdentifier(final String prefix) {
+        final String candidate = prefix == null ? "" : prefix;
+        for (int index = 0; index < candidate.length(); index++) {
+            final char character = candidate.charAt(index);
+            final boolean permitted = character == '_'
+                    || (character >= '0' && character <= '9')
+                    || (character >= 'a' && character <= 'z')
+                    || (character >= 'A' && character <= 'Z');
+            if (!permitted) {
+                throw new IllegalStateException(String.format(Locale.ROOT,
+                        "spring.batch.jdbc.table-prefix must be a plain SQL identifier but '%s' carries the"
+                                + " character '%s' at position %d",
+                        candidate, Character.toString(character), Integer.valueOf(index + 1)));
+            }
+        }
+        return candidate;
+    }
+
+    // =============================================================================================
+    // THE QUEUE LISTENER THAT REPLACES THE JES2 INTERNAL READER.
+    //
+    // Finding, severity Major, RESOLVED here. Three surfaces in this tree stated that a listener replaced the
+    // JES2 internal reader - this class's own javadoc, application.yml's batch.job.enabled comment, and
+    // com.cardemo.config.AwsConfig - and no listener existed anywhere: zero @SqsListener declarations, zero
+    // MessageListenerContainer beans. com.cardemo.service.report.ReportSubmissionService published a typed
+    // message to carddemo-report-jobs.fifo on every report submission and nothing ever drained it, so the
+    // online half of app/cbl/CORPT00C.cbl worked and the batch half it exists to trigger did not. Every
+    // submission accumulated in the queue until its retention expired.
+    //
+    // WHY THE LISTENER LIVES HERE, which is worth stating because three file schemas disagreed about it.
+    // AwsConfig's schema says the consumer belongs to BatchPipelineOrchestrator and must not be declared in
+    // AwsConfig. BatchPipelineOrchestrator's schema says the opposite - "do NOT declare an @SqsListener in
+    // this file" - and its own contract asserts zero of them. ReportSubmissionService's schema says the bean
+    // publishes only and that "the consumer is the batch side". Two of the three point at the batch side and
+    // the third refuses it in itself, so it lands in the batch layer's configuration: this class, which owns
+    // the shared infrastructure the jobs consume and whose javadoc already named this listener as one of the
+    // two launch paths. The divergence from AwsConfig's pointer is deliberate and recorded rather than left
+    // to be inferred from the absence of a listener there.
+    //
+    // WHY IT IS A NESTED CLASS rather than a method on this one. An @SqsListener method needs the launcher
+    // and the job as collaborators, and this class's constructor takes a single window size that a large
+    // number of slice tests construct directly. Widening that constructor to carry batch-launch
+    // collaborators would make every one of those tests supply things they have no interest in. A nested
+    // holder takes them through its own constructor instead, and adds no file to a package inventory that is
+    // closed.
+    //
+    // WHY IT IS CONDITIONAL, on two properties rather than one.
+    //
+    // On the queue name, because a deployment that configures no queue has nothing to drain and an
+    // @SqsListener bound to an unresolvable placeholder fails startup rather than degrading. That property is
+    // set in every profile that has a queue and unset in the slice tests, which is also what keeps this bean
+    // out of the bean inventories those tests pin.
+    //
+    // And on the ABSENCE of carddemo.batch.launch, because an operator submission must not also be a queue
+    // consumer. That is not a workaround for an inconvenience; it is the same separation JES2 and CICS had as
+    // two address spaces, and dropping it breaks two things at once. A polling container holds non-daemon
+    // threads, so a submission that succeeds never ends - the job finishes, the runner returns, and the
+    // process sits there polling, which is the opposite of a submitted job freeing its initiator. And a
+    // submitted batch process that also drained the queue would be a SECOND consumer alongside the online
+    // tier, so one report submission could be launched twice, by two processes, from one message - exactly
+    // the race the single-consumer contract exists to prevent.
+    // =============================================================================================
+
+    /**
+     * The consumer that replaces the JES2 internal reader, drained from the queue that replaces {@code JOBS}.
+     *
+     * <p><b>What it does.</b> Binds one listener to the FIFO queue named by {@value #KEY_REPORT_QUEUE} and
+     * launches {@code transactionReportJob} for each submission, carrying the report name and the two
+     * ten-character dates the message holds. That is the whole of the mainframe path it replaces:
+     * {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} at {@code app/cbl/CORPT00C.cbl:L517-L523} wrote eighty-byte
+     * job cards to an extrapartition queue whose {@code DDNAME(INREADER)} was the JES2 internal reader, and
+     * JES2 read the deck and initiated the job.
+     *
+     * <p><b>Inputs and outputs.</b> Input is one JSON message per submission, published by
+     * {@code com.cardemo.service.report.ReportSubmissionService}. Output is a launched job execution, or a
+     * logged decision not to launch. Nothing is returned to the queue and no reply is published.
+     *
+     * <p><b>Key configuration and defaults.</b> {@value #KEY_REPORT_QUEUE} names the queue and has no
+     * default - a deployment without it has no listener at all rather than a listener on a guessed name.
+     * {@code spring.batch.job.enabled} stays {@code false}: this path launches deliberately, and the
+     * framework's launch-everything-on-boot behaviour would defeat the point of a queue.
+     * {@value #KEY_REPORT_QUEUE_LISTENER_ENABLED} defaults to {@code true} and withdraws this listener when
+     * set to {@code false}; {@value #KEY_LAUNCH_JOB} withdraws it too, because a submitted batch process must
+     * not become a second reader of the queue that submitted work to it.
+     *
+     * <p><b>Exactly one consumer, and why that has to be enforced rather than assumed.</b> A FIFO message is
+     * delivered to one reader. Any context holding a second reader turns "the message was published with
+     * these dates" into a race, because whichever reader wins removes the message from the other's view. Two
+     * situations make that concrete and both are handled by the condition above: a batch submission process,
+     * which exists to run one job and must not drain the queue feeding the server, and a test context that
+     * asserts producer-side behaviour by reading the queue itself. The latter is why
+     * {@code application-test.yml} disables this listener - the shared integration harness publishes and then
+     * inspects, so it must be the only reader.
+     *
+     * @param jobLauncher the container's launcher
+     * @param transactionReportJob the report job this queue's messages name; the bean whose name is
+     *     {@code transactionReportJob}, declared by {@code com.cardemo.batch.jobs.TransactionReportJob}
+     * @param objectMapper the application object mapper, so the message is bound with the strict settings
+     *     the base profile pins rather than with a mapper this class configures
+     * @return the listener holder, never {@code null}
+     */
+    @Bean
+    @ConditionalOnExpression("'${" + KEY_REPORT_QUEUE + ":}' != '' and '${" + KEY_LAUNCH_JOB + ":}' == ''"
+            + " and '${" + KEY_REPORT_QUEUE_LISTENER_ENABLED + ":true}' != 'false'")
+    public ReportJobQueueListener reportJobQueueListener(
+            final JobLauncher jobLauncher,
+            @Qualifier(TRANSACTION_REPORT_JOB_BEAN_NAME) final Job transactionReportJob,
+            final ObjectMapper objectMapper) {
+
+        return new ReportJobQueueListener(jobLauncher, transactionReportJob, objectMapper);
+    }
+
+    /**
+     * The JES2 internal reader, as one listener over the queue that replaced the {@code JOBS} data queue.
+     *
+     * <p><b>What it does.</b> Receives a report submission, turns it into job parameters, and launches the
+     * report job exactly once per submission however many times the queue delivers the message.
+     *
+     * <p><b>How the once-only guarantee works,</b> because it is the part that is easy to get wrong. The
+     * producer mints one {@code MessageDeduplicationId} per submission, and that identifier is carried into
+     * the job parameters as an identifying value. Spring Batch derives job instance identity from the
+     * identifying parameters, so a redelivery of the same message resolves to the <em>same</em> job instance
+     * and the launcher refuses it - {@link JobInstanceAlreadyCompleteException} when the first attempt
+     * finished, {@link JobExecutionAlreadyRunningException} when it is still running. Both refusals are
+     * caught and logged as what they are: the queue's at-least-once delivery meeting an exactly-once
+     * consumer. A FIFO queue redelivers whenever the visibility window expires before acknowledgement, so
+     * this is an ordinary event and not an error.
+     *
+     * <p><b>Failure modes and troubleshooting.</b> A payload that cannot be bound, or that carries a date the
+     * job's own validator refuses, is logged at {@code ERROR} and <em>consumed</em>. That choice is
+     * deliberate and is the opposite of what a service with a dead-letter queue should do: this topology
+     * declares none, so a rethrow would return the message to the queue, redeliver it, fail identically, and
+     * occupy the listener forever - a poison message would stop every later submission behind it, because a
+     * FIFO message group is ordered. Consuming it keeps the queue moving and leaves the evidence in the log.
+     * A submission that never produces a job execution therefore has its reason in the log at {@code ERROR};
+     * a submission that produces none and logs nothing means the listener is not running, which
+     * {@value #KEY_REPORT_QUEUE} governs.
+     */
+    public static final class ReportJobQueueListener {
+
+        /** The container's launcher, the only path to a job execution this class uses. */
+        private final JobLauncher jobLauncher;
+
+        /** The report job named by every message this queue carries. */
+        private final Job transactionReportJob;
+
+        /** The application object mapper, carrying the base profile's strict binding settings. */
+        private final ObjectMapper objectMapper;
+
+        /**
+         * Creates the listener.
+         *
+         * @param jobLauncher the container's launcher; never {@code null}
+         * @param transactionReportJob the report job; never {@code null}
+         * @param objectMapper the application object mapper; never {@code null}
+         */
+        private ReportJobQueueListener(final JobLauncher jobLauncher, final Job transactionReportJob,
+                final ObjectMapper objectMapper) {
+
+            this.jobLauncher = Objects.requireNonNull(jobLauncher, "jobLauncher must not be null");
+            this.transactionReportJob =
+                    Objects.requireNonNull(transactionReportJob, "transactionReportJob must not be null");
+            this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
+        }
+
+        /**
+         * Drains one report submission and launches the report job for it.
+         *
+         * <p>The payload is taken as text and bound here rather than declared as the record type, so that a
+         * binding failure is this method's to handle. Declaring the record would move the failure into the
+         * framework's conversion step, where the only available outcomes are acknowledge-everything or
+         * redeliver-forever, and neither is right for a topology with no dead-letter queue.
+         *
+         * @param payload the raw JSON body, exactly as published
+         * @param headers the message headers, carrying the deduplication identifier that makes the launch
+         *     idempotent and the framework's own message identifier as a fallback
+         */
+        @SqsListener(queueNames = "${" + KEY_REPORT_QUEUE + "}", id = REPORT_QUEUE_LISTENER_ID,
+                pollTimeoutSeconds = REPORT_QUEUE_POLL_TIMEOUT_SECONDS)
+        public void drainReportJobQueue(final String payload,
+                @Headers final Map<String, Object> headers) {
+
+            final String submissionId = submissionIdentifier(headers);
+            final JobSubmissionMessage submission;
+            try {
+                submission = this.objectMapper.readValue(payload, JobSubmissionMessage.class);
+            } catch (final JsonProcessingException malformed) {
+                // Consumed, not rethrown. See the failure-modes paragraph on this class: there is no
+                // dead-letter queue, and a FIFO group is ordered, so returning this message would block
+                // every submission behind it indefinitely.
+                LOG.error("Report job submission {} could not be bound and has been discarded; the queue"
+                                + " that replaces app/csd/CARDDEMO.CSD DEFINE TDQUEUE(JOBS) has no"
+                                + " dead-letter target, so returning it would stall every later submission"
+                                + " in the same FIFO group. Payload length {} characters.",
+                        submissionId, Integer.valueOf(payload == null ? 0 : payload.length()), malformed);
+                return;
+            }
+
+            final JobParameters parameters = new JobParametersBuilder()
+                    .addString(TransactionReportProcessor.START_DATE_JOB_PARAMETER, submission.startDate())
+                    .addString(TransactionReportProcessor.END_DATE_JOB_PARAMETER, submission.endDate())
+                    .addString(REPORT_NAME_JOB_PARAMETER, submission.reportName())
+                    .addString(SUBMISSION_ID_JOB_PARAMETER, submissionId)
+                    .toJobParameters();
+
+            try {
+                final JobExecution execution = this.jobLauncher.run(this.transactionReportJob, parameters);
+                // The JOBS queue is named without parentheses or quotes deliberately: the log masking rules
+                // treat a quoted value in parentheses as a possible credential assignment and redact it, so
+                // the source-citing form EXEC CICS WRITEQ TD QUEUE('JOBS') would reach the log with its
+                // literal replaced. The locator carries the same information and survives masking intact.
+                LOG.info("Report job submission {} launched {} as execution {} for the {} period {} to {},"
+                                + " replacing the JES2 internal reader fed by the EXEC CICS WRITEQ TD to the"
+                                + " JOBS queue at app/cbl/CORPT00C.cbl:L517-L523",
+                        submissionId, this.transactionReportJob.getName(), execution.getId(),
+                        submission.reportName(), submission.startDate(), submission.endDate());
+            } catch (final JobInstanceAlreadyCompleteException alreadyDone) {
+                LOG.info("Report job submission {} has already been processed to completion, so this"
+                                + " delivery is a redelivery and no second execution has been started."
+                                + " The queue guarantees at-least-once delivery; the deduplication"
+                                + " identifier carried as an identifying job parameter is what makes this"
+                                + " consumer exactly-once.", submissionId);
+            } catch (final JobExecutionAlreadyRunningException stillRunning) {
+                LOG.info("Report job submission {} is still running from an earlier delivery, so this"
+                                + " delivery has been discarded rather than starting a competing execution.",
+                        submissionId);
+            } catch (final JobParametersInvalidException refused) {
+                LOG.error("Report job submission {} carried parameters the {} job refuses and has been"
+                                + " discarded: {}. The period is validated on submission by"
+                                + " com.cardemo.service.report.ReportSubmissionService, so a message that"
+                                + " reaches here and is refused indicates the two validators disagree.",
+                        submissionId, this.transactionReportJob.getName(), refused.getMessage(), refused);
+            } catch (final JobRestartException refused) {
+                LOG.error("Report job submission {} names a job instance that cannot be restarted and has"
+                                + " been discarded.", submissionId, refused);
+            }
+        }
+
+        /**
+         * Chooses the identifier that makes one submission one job instance.
+         *
+         * <p>The deduplication identifier is preferred because the producer mints exactly one per
+         * submission and the queue carries it unchanged through every redelivery, which is precisely the
+         * property an idempotency key needs. The framework's own message identifier is the fallback for a
+         * non-FIFO queue, where no deduplication identifier exists; it is stable across redeliveries of one
+         * message too, so the guarantee survives, and the reason it is not the first choice is that a
+         * transport-level retry of the <em>publish</em> would produce two message identifiers for one
+         * submission where the deduplication identifier produces one.
+         *
+         * @param headers the message headers; may be {@code null}
+         * @return a non-blank identifier, never {@code null}
+         */
+        private static String submissionIdentifier(final Map<String, Object> headers) {
+            if (headers == null) {
+                return UNIDENTIFIED_SUBMISSION;
+            }
+            final Object deduplicationId =
+                    headers.get(SqsHeaders.MessageSystemAttributes.SQS_MESSAGE_DEDUPLICATION_ID_HEADER);
+            if (deduplicationId != null && !deduplicationId.toString().isBlank()) {
+                return deduplicationId.toString();
+            }
+            final Object messageId = headers.get(MessageHeaders.ID);
+            if (messageId != null && !messageId.toString().isBlank()) {
+                return messageId.toString();
+            }
+            return UNIDENTIFIED_SUBMISSION;
+        }
     }
 
     // =============================================================================================

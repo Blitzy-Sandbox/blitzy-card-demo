@@ -39,10 +39,14 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Objects;
+import java.util.TreeMap;
 
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
@@ -374,12 +378,41 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     carried forward. See the carry-forward section above.</li>
  * <li><b>A {@code null} or trimmed 26-byte timestamp</b> means it was wrongly normalised. It must be 26
  *     characters, spaces included.</li>
- * <li><b>An absent {@code TRANSACT.BKUP} generation is a failure</b>, reported as {@code '35'} - the file
- *     is not available - because combining nothing into the master would silently leave the cluster
- *     unchanged while reporting success. <b>An absent or empty {@code SYSTRAN} generation is a successful
- *     empty read</b>, because {@code app/jcl/INTCALC.jcl} is a separate job that need not have run and the
- *     combine step carries no {@code COND=} requiring it to have. The two cases are deliberately
- *     asymmetric.</li>
+ * <li><b>A generation prefix holding more than one object is refused</b>, with
+ *     {@link DataIntegrityException} naming every candidate key. <b>A GDG generation is one dataset, so it is
+ *     one object</b> - the invariant {@code RejectWriter} states and this reader now enforces on the reading
+ *     side. Resolution used to keep the lexicographically greatest key and discard siblings in silence, which
+ *     turned two objects under one {@code TRANSACT.BKUP} generation into a {@code COMPLETED} run with a
+ *     record count of 2 and one identifier simply missing. Reading every sibling instead of refusing is not
+ *     an option: their concatenation order is undefined, so it would substitute an arbitrary order for a
+ *     dropped record. See {@link #requireOneObjectInResolvedGeneration}.
+ *     <p><b>Three key conventions coexist</b> across the seven generation bases and resolution is agnostic to
+ *     all of them, because in each the generation is the leading component after the base:
+ *     {@code <base>/<19-digit>/<object>}, {@code <base>/generation=<19-digit>/<object>}, and the per-record
+ *     form {@code <base>/<19-digit>/<name>-<19-digit>.dat}. {@code (0)} therefore means the greatest
+ *     generation <em>segment</em>, not the greatest key, and {@link #generationSegmentOf} is the single place
+ *     that reading depends on the convention. A key written directly under a base with no further separator
+ *     is treated as its own generation rather than as an error.</li>
+ * <li><b>An absent or empty generation on either leg is a successful empty read</b>, and the two legs are
+ *     deliberately <b>symmetric</b>. {@code app/jcl/COMBTRAN.jcl} carries no {@code COND=} on either
+ *     {@code :L22} {@code STEP05R} or {@code :L41} {@code STEP10}, so the member asserts no precondition on
+ *     either DD; {@code app/jcl/INTCALC.jcl} is a separate job that need not have run; and
+ *     {@code app/jcl/TRANBKP.jcl}, the member that produces {@code TRANSACT.BKUP} generations on the
+ *     mainframe, has <b>no Java analogue by recorded decision</b>, so on a clean environment the first leg
+ *     is absent by construction rather than by error.
+ *     <p>An earlier revision reported an absent {@code TRANSACT.BKUP} generation as {@code '35'} while
+ *     treating an absent {@code SYSTRAN} generation as an empty read. <b>That asymmetry is withdrawn.</b> It
+ *     was too strict, because the only producer of a {@code TRANSACT.BKUP} generation in this application is
+ *     {@code TransactionReportJob}'s {@code STEP01R} ({@code app/proc/TRANREPT.prc:L21}) in <b>stage 4</b>,
+ *     downstream of the stage this reader serves, which made the five-stage pipeline unsatisfiable on a clean
+ *     environment. It was also too weak, because a generation object that existed but held no records
+ *     satisfied it while still combining nothing.
+ *     <p>The hazard the old rule named - a zero-record combine reporting success - is addressed by being
+ *     <b>explicit rather than refused</b>, which is what the source does: {@code app/jcl/COMBTRAN.jcl:L33-L37}
+ *     allocates {@code SORTOUT} unconditionally and {@code :L48} copies it, so a copy of nothing is a copy
+ *     that succeeds. Accordingly a run in which neither leg contributes a record still creates an empty
+ *     combined generation, publishes a record count of zero, and logs the per-source counts so the empty leg
+ *     is named rather than inferred. Refusing it here would contradict the member.</li>
  * <li><b>Any status that is neither {@code '00'} nor {@code '10'}</b> renders the legacy line
  *     {@code FILE STATUS IS: NNNN} followed by four characters ({@code app/cbl/CBTRN02C.cbl:L714-L731})
  *     and abends with abend code {@value com.cardemo.exception.FatalProcessingException#BATCH_ABEND_CODE}
@@ -927,7 +960,7 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                             + "systranResumeRows={}",
                     LOGICAL_FILE,
                     inputSource,
-                    displayGenerationKey(backupCursor.resolvedObjectKey, REPOSITORY_SOURCE_MARKER),
+                    displayGenerationKey(backupCursor.resolvedObjectKey, absentBackupMarker()),
                     displayGenerationKey(systranCursor.resolvedObjectKey, ABSENT_GENERATION_MARKER),
                     Long.valueOf(backupCursor.emittedCount),
                     Long.valueOf(systranCursor.emittedCount));
@@ -978,6 +1011,103 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
         lastEmittedSourceRow = selected.emittedCount;
         lastTransactionId = transactionId;
         return next;
+    }
+
+    /**
+     * Returns the generation component of a key: the first path segment after the base prefix.
+     *
+     * <p>Three key conventions coexist across the generation bases and this method is deliberately agnostic
+     * to all three, because in every one the generation is the leading component after the base:
+     * {@code <base>/<19-digit>/<object>}, {@code <base>/generation=<19-digit>/<object>}, and the
+     * per-record form {@code <base>/<19-digit>/<name>-<19-digit>.dat}. A key carrying no separator after the
+     * base - a single object written directly under it - is its own generation, which keeps a
+     * conventionally-flat base readable rather than making it an error.
+     *
+     * @param key a key already confirmed to sit within {@code generationPrefix}
+     * @param generationPrefix the base prefix, with or without a trailing separator
+     * @return the generation segment, never {@code null} and never blank
+     */
+    private static String generationSegmentOf(final String key, final String generationPrefix) {
+        final String base = generationPrefix.endsWith(KEY_SEPARATOR)
+                ? generationPrefix
+                : generationPrefix + KEY_SEPARATOR;
+        final String remainder = key.length() > base.length() ? key.substring(base.length()) : key;
+        final int separator = remainder.indexOf(KEY_SEPARATOR);
+        return separator < 0 ? remainder : remainder.substring(0, separator);
+    }
+
+    /**
+     * Resolves {@code (0)} to the one object of the greatest generation, refusing an ambiguous generation.
+     *
+     * <p><b>A GDG generation is one dataset, so it is one object.</b> That invariant was already stated by
+     * {@code RejectWriter}, but nothing enforced it on the reading side: this resolution kept the
+     * lexicographically greatest key and discarded every sibling without a log, an exception or a count
+     * check. The measured consequence was a run that reported {@code COMPLETED} with return code 0 and a
+     * combined record count of 2 while one of the three planted identifiers had vanished - the worst
+     * available outcome, because a subset loaded under a success status is indistinguishable from a correct
+     * run.
+     *
+     * <p>Refusing is the right response rather than reading every object under the generation. The order in
+     * which siblings would be concatenated is undefined - they are not one sorted stream and no convention
+     * says which comes first - so reading them all would substitute an arbitrary order for a missing record.
+     * A restart is one way this shape arises, so the diagnostic names every candidate key: an operator needs
+     * to know which objects are in contention, not merely that contention exists.
+     *
+     * @param candidatesByGeneration every listed object grouped by generation segment, may be empty
+     * @param generationPrefix the base prefix, named in the diagnostic
+     * @param source the concatenated source being resolved, named in the diagnostic
+     * @return the single object key of the greatest generation, or {@code null} when no generation exists
+     * @throws DataIntegrityException if the greatest generation holds more than one object
+     */
+    private static String requireOneObjectInResolvedGeneration(
+            final NavigableMap<String, List<String>> candidatesByGeneration,
+            final String generationPrefix,
+            final ConcatenatedSource source) {
+
+        final Map.Entry<String, List<String>> resolved = candidatesByGeneration.lastEntry();
+        if (resolved == null) {
+            return null;
+        }
+
+        final List<String> keys = resolved.getValue();
+        if (keys.size() > 1) {
+            final List<String> ambiguous = new ArrayList<>(keys);
+            ambiguous.sort(Comparator.naturalOrder());
+            throw new DataIntegrityException(String.format(Locale.ROOT,
+                    "%s resolved generation '%s' under prefix '%s' to %d objects, and a generation is one "
+                            + "dataset so it is one object. Reading one of them would drop the rest and "
+                            + "report success, and reading all of them would impose an order no convention "
+                            + "defines. Candidates: %s",
+                    source.datasetName,
+                    resolved.getKey(),
+                    generationPrefix,
+                    Integer.valueOf(keys.size()),
+                    ambiguous),
+                    generationPrefix,
+                    source.datasetName);
+        }
+        return keys.get(0);
+    }
+
+    /**
+     * Names what a missing {@code TRANSACT.BKUP} key means on the substrate actually in use.
+     *
+     * <p>A null backup key used to have exactly one meaning. On the repository substrate the first leg is the
+     * ordered relation and never has an object key, and on the object-storage substrate an absent generation
+     * abended, so {@code <repository>} was the only possible reading. Now that an absent generation is an
+     * ordinary empty read, the same null carries two meanings and the substrate is what distinguishes them.
+     *
+     * <p>Without this, the open and close lines report {@code backupKey=<repository>} while the very same
+     * line reports {@code substrate=OBJECT_STORAGE} - a self-contradicting record that would send anyone
+     * diagnosing an empty combine looking for a repository read that never happened.
+     *
+     * @return {@code <repository>} when the relation is the first leg, and {@code <absent>} when the first
+     *     leg is an object-storage generation that does not exist; never {@code null}
+     */
+    private String absentBackupMarker() {
+        return inputSource == InputSource.OBJECT_STORAGE
+                ? ABSENT_GENERATION_MARKER
+                : REPOSITORY_SOURCE_MARKER;
     }
 
     /**
@@ -1050,7 +1180,7 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                         + "totalRecords={}",
                 LOGICAL_FILE,
                 inputSource,
-                displayGenerationKey(backupCursor.resolvedObjectKey, REPOSITORY_SOURCE_MARKER),
+                displayGenerationKey(backupCursor.resolvedObjectKey, absentBackupMarker()),
                 displayGenerationKey(systranCursor.resolvedObjectKey, ABSENT_GENERATION_MARKER),
                 Long.valueOf(backupCursor.emittedCount),
                 Long.valueOf(systranCursor.emittedCount),
@@ -1292,20 +1422,17 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
         if (executionContext != null && executionContext.containsKey(contextKey)) {
             final String checkpointed = executionContext.getString(contextKey, "");
             if (ABSENT_GENERATION_MARKER.equals(checkpointed)) {
-                if (source == ConcatenatedSource.SYSTRAN) {
-                    LOG.info(
-                            "{} carried forward the absence of {} under execution-context key '{}'",
-                            LOGICAL_FILE,
-                            source.datasetName,
-                            contextKey);
-                    return null;
-                }
-                throw statusException(
-                        source,
-                        STATUS_FILE_UNAVAILABLE,
-                        OPERATION_OPEN,
-                        null,
-                        "ERROR OPENING " + source.displayName);
+                // Either leg may legitimately be absent, so the absence is carried forward for both rather
+                // than only for SYSTRAN. This branch previously abended for BACKUP; see the class javadoc
+                // for why that asymmetry was withdrawn.
+                LOG.info(
+                        "{} carried forward the absence of {} (SORTIN DD {}) under execution-context key"
+                                + " '{}'; that leg contributes no records to this restart",
+                        LOGICAL_FILE,
+                        source.datasetName,
+                        Integer.valueOf(source.ddOrdinal),
+                        contextKey);
+                return null;
             }
             if (REPOSITORY_SOURCE_MARKER.equals(checkpointed)) {
                 throw new DataIntegrityException(String.format(Locale.ROOT,
@@ -1322,7 +1449,14 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                     "the step execution context");
         }
 
-        String greatestKey = null;
+        // Candidates are grouped by generation rather than reduced to one greatest key, because a GDG
+        // generation is one dataset and therefore one object. Keeping only the greatest key across the whole
+        // base silently discarded any sibling under the resolved generation: two 350-byte objects under one
+        // transact-bkup generation produced a COMPLETED run with a record count of 2 and one identifier
+        // simply gone. Grouping first makes that shape detectable; selection is unchanged, because the
+        // generation segment is the leading component of every key under all conventions in use, so the
+        // greatest segment still resolves to what the greatest key resolved to.
+        final NavigableMap<String, List<String>> candidatesByGeneration = new TreeMap<>();
         try {
             for (final S3Object listed : objectStoreClient.listObjectsV2Paginator(
                     ListObjectsV2Request.builder()
@@ -1341,11 +1475,14 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                         generationPrefix,
                         source,
                         "the paged object listing");
-                if (greatestKey == null || verified.compareTo(greatestKey) > 0) {
-                    greatestKey = verified;
-                }
+                candidatesByGeneration
+                        .computeIfAbsent(generationSegmentOf(verified, generationPrefix),
+                                segment -> new ArrayList<>())
+                        .add(verified);
             }
         } catch (FatalProcessingException failure) {
+            throw failure;
+        } catch (DataIntegrityException failure) {
             throw failure;
         } catch (RuntimeException failure) {
             throw statusException(
@@ -1356,20 +1493,26 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                     "ERROR LISTING " + source.displayName);
         }
 
-        if (greatestKey == null && source == ConcatenatedSource.BACKUP) {
-            throw statusException(
-                    source,
-                    STATUS_FILE_UNAVAILABLE,
-                    OPERATION_OPEN,
-                    null,
-                    "ERROR OPENING " + source.displayName);
-        }
+        final String greatestKey = requireOneObjectInResolvedGeneration(
+                candidatesByGeneration, generationPrefix, source);
+
         if (greatestKey == null) {
+            // Both concatenated legs are optional. Neither app/jcl/COMBTRAN.jcl:L22 (STEP05R) nor :L41
+            // (STEP10) carries a COND=, so the member asserts no precondition on either DD, and nothing in
+            // this application produces a TRANSACT.BKUP generation before this stage runs: the sole producer
+            // is TransactionReportJob's STEP01R (app/proc/TRANREPT.prc:L21), which is stage 4 of the
+            // pipeline, downstream of stage 3. Failing here on an absent first leg therefore made the
+            // authored five-stage topology unsatisfiable on a clean environment. The "combining nothing into
+            // the master" hazard the old branch named is handled by being explicit rather than by refusing:
+            // COMBTRAN.jcl:L33-L37 allocates SORTOUT unconditionally and :L48 copies it, so an empty combine
+            // creates an empty generation, publishes a zero count, and logs which leg was empty.
             LOG.info(
-                    "{} found no current {} generation under prefix '{}'; the second source is empty",
+                    "{} found no current {} generation under prefix '{}'; SORTIN DD {} contributes no"
+                            + " records to this run",
                     LOGICAL_FILE,
                     source.datasetName,
-                    generationPrefix);
+                    generationPrefix,
+                    Integer.valueOf(source.ddOrdinal));
             return null;
         }
 

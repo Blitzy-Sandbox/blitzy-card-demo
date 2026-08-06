@@ -49,6 +49,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.cardemo.batch.writers.RejectWriter;
+import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
 import com.cardemo.model.entity.DailyTransaction;
@@ -60,6 +61,7 @@ import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.math.BigDecimal;
@@ -82,6 +84,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.item.Chunk;
 
@@ -300,6 +303,27 @@ class RejectWriterTest {
         } catch (ReflectiveOperationException failure) {
             throw new IllegalStateException("cannot write " + name + " on DailyTransaction", failure);
         }
+    }
+
+    /**
+     * Stubs a superseded generation object so a restart has something concrete to carry forward.
+     *
+     * <p>Both the existence probe and the download are stubbed, because the writer checks the first before
+     * trusting the second: an object named by a restored context but absent from the store is nothing to carry,
+     * whereas one that is present must be readable.
+     *
+     * @param key the superseded object's key
+     * @param payload its exact bytes
+     */
+    private void stubSupersededObject(final String key, final byte[] payload) {
+        Mockito.when(s3Operations.objectExists(BUCKET, key)).thenReturn(Boolean.TRUE);
+        S3Resource prior = Mockito.mock(S3Resource.class);
+        try {
+            Mockito.when(prior.getInputStream()).thenReturn(new ByteArrayInputStream(payload));
+        } catch (java.io.IOException impossible) {
+            throw new IllegalStateException("stubbing cannot fail", impossible);
+        }
+        Mockito.when(s3Operations.download(BUCKET, key)).thenReturn(prior);
     }
 
     /**
@@ -868,6 +892,109 @@ class RejectWriterTest {
                     .containsExactly(
                             String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", 7L, 42L),
                             String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", 8L, 43L));
+        }
+
+        @Test
+        @DisplayName("a restart consolidates the superseded attempt's records into ONE object, and deletes "
+                + "the superseded object only after the consolidated one is committed")
+        void aRestartConsolidatesRatherThanFragmentingTheGeneration() throws Exception {
+            // The shape a restart actually produces. The generation prefix carries the job INSTANCE, so both
+            // attempts share it, while the object key carries the job EXECUTION, so the restarted attempt
+            // writes a different key. Measured before this fix, on the 300-row fixture with a forced failure
+            // at record 46: two objects of 430x4 and 430x34 under one generation, a manifest naming only the
+            // second, and a published record count of 34 beside a reject count of 38.
+            //
+            // Deleting the failed attempt's object instead of carrying it forward would satisfy the
+            // one-object rule by destroying evidence: the restart resumes the reader at the cursor the failed
+            // attempt reached, so those first records are unreproducible.
+            final String priorKey =
+                    String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", JOB_INSTANCE_ID, 41L);
+            final byte[] priorRecords = new byte[2 * RECORD_LENGTH];
+            java.util.Arrays.fill(priorRecords, (byte) 'A');
+            stubSupersededObject(priorKey, priorRecords);
+
+            final ExecutionContext restored = new ExecutionContext();
+            restored.putString(RejectWriter.REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY, priorKey);
+            restored.putLong(RejectWriter.REJECT_RECORD_COUNT_CONTEXT_KEY, 2L);
+
+            writer.open(restored);
+            writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
+
+            // Asserted before the generation is committed, because the ordering is the safety property: while
+            // the consolidated object is still open there must be two readable copies, so a failure here
+            // cannot lose the records that exist nowhere else.
+            Mockito.verify(s3Operations, Mockito.never())
+                    .deleteObject(Mockito.anyString(), Mockito.anyString());
+
+            assertThat(uploadedKeys())
+                    .as("the restarted attempt writes its own key and nothing else; the generation must end "
+                            + "as one object")
+                    .containsExactly(String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat",
+                            JOB_INSTANCE_ID, JOB_EXECUTION_ID));
+            assertThat(uploadedPayload())
+                    .as("the superseded records come first, then this attempt's, which is the order an "
+                            + "uninterrupted run would have written them in")
+                    .hasSize(3 * RECORD_LENGTH)
+                    .startsWith("AAAA");
+
+            Mockito.verify(s3Operations)
+                    .deleteObject(BUCKET, priorKey);
+
+            final ExecutionContext published = new ExecutionContext();
+            writer.update(published);
+            assertThat(published.getLong(RejectWriter.REJECT_RECORD_COUNT_CONTEXT_KEY))
+                    .as("the published count must describe the object it names - 2 carried plus 1 written - "
+                            + "or a consumer cannot reconcile it against the reject count")
+                    .isEqualTo(3L);
+        }
+
+        @Test
+        @DisplayName("a restart that rejects nothing keeps the carried-forward object and republishes it, "
+                + "rather than naming an object it never created")
+        void aRestartThatRejectsNothingRepublishesTheCarriedForwardObject() {
+            final String priorKey =
+                    String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", JOB_INSTANCE_ID, 41L);
+            stubSupersededObject(priorKey, new byte[2 * RECORD_LENGTH]);
+
+            final ExecutionContext restored = new ExecutionContext();
+            restored.putString(RejectWriter.REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY, priorKey);
+            restored.putLong(RejectWriter.REJECT_RECORD_COUNT_CONTEXT_KEY, 2L);
+
+            writer.open(restored);
+            writer.close();
+
+            assertThat(uploadedKeys())
+                    .as("nothing was rejected on this attempt, so no new object exists")
+                    .isEmpty();
+            Mockito.verify(s3Operations, Mockito.never())
+                    .deleteObject(Mockito.anyString(), Mockito.anyString());
+            assertThat(stepExecution.getExecutionContext()
+                    .getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY, ""))
+                    .as("the manifest must name the object that actually holds the run, which is still the "
+                            + "carried-forward one")
+                    .isEqualTo(priorKey);
+        }
+
+        @Test
+        @DisplayName("a superseded object whose length is not a whole number of records is refused rather "
+                + "than copied, because copying it would misalign every record after it")
+        void aMisframedSupersededObjectIsRefused() {
+            final String priorKey =
+                    String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", JOB_INSTANCE_ID, 41L);
+            stubSupersededObject(priorKey, new byte[RECORD_LENGTH + 7]);
+
+            final ExecutionContext restored = new ExecutionContext();
+            restored.putString(RejectWriter.REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY, priorKey);
+
+            writer.open(restored);
+
+            // The failure funnels through the writer's universal FILE STATUS guard, exactly as any other
+            // failed write does, so the typed outcome is a CardDemoException carrying the rendered legacy
+            // status. What matters is that the misframing is refused and its reason survives in the cause
+            // chain rather than being copied into the consolidated object.
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER))
+                    .withStackTraceContaining("not a whole number of");
         }
 
         @Test

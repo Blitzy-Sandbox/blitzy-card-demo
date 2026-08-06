@@ -773,7 +773,7 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
      */
     private TransactionWriter productionWriter(final String bucket) {
         return new TransactionWriter(transactionRepository, s3Template(), fileStatusMapper, metricsConfig,
-                bucket, handoffGenerationPrefix);
+                bucket, handoffGenerationPrefix, TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
     }
 
     /**

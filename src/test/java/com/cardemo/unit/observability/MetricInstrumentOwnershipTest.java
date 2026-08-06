@@ -301,7 +301,8 @@ class MetricInstrumentOwnershipTest {
         void theTransactionWriterReportsBothOfItsSeries() throws Exception {
             TransactionWriter writer = new TransactionWriter(
                     mock(TransactionRepository.class), mock(S3Operations.class), new FileStatusMapper(),
-                    metrics, "carddemo-batch-output", "transact");
+                    metrics, "carddemo-batch-output", "transact",
+                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
             StepExecution execution = MetaDataInstanceFactory.createStepExecution();
             writer.beforeStep(execution);
 
@@ -318,7 +319,8 @@ class MetricInstrumentOwnershipTest {
         void theTransactionWriterReportsNothingForAnEmptyChunk() throws Exception {
             TransactionWriter writer = new TransactionWriter(
                     mock(TransactionRepository.class), mock(S3Operations.class), new FileStatusMapper(),
-                    metrics, "carddemo-batch-output", "transact");
+                    metrics, "carddemo-batch-output", "transact",
+                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
             writer.beforeStep(MetaDataInstanceFactory.createStepExecution());
 
             writer.write(Chunk.of());

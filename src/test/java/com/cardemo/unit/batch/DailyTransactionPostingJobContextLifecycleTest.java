@@ -53,6 +53,7 @@
 package com.cardemo.unit.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -62,6 +63,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.cardemo.batch.jobs.DailyTransactionPostingJob;
+import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.observability.CorrelationIdFilter;
@@ -107,6 +109,9 @@ class DailyTransactionPostingJobContextLifecycleTest {
 
     /** A sixteen-digit card number. */
     private static final String CARD_NUMBER = "4111111111117890";
+
+    /** {@code FILE STATUS '00'}, the only value the guard's APPL-AOK branch accepts. */
+    private static final String SUCCESS_STATUS = "00";
 
     /** The parity logger the pre-flight routes its record-level emissions to. */
     private static final String PARITY_LOGGER_NAME = "com.cardemo.parity.CBTRN01C";
@@ -360,6 +365,107 @@ class DailyTransactionPostingJobContextLifecycleTest {
     }
 
     // ==================================================================
+    // 3 - FINDING, severity Minor, RESOLVED. The I/O guard is handed an
+    //     abend REASON because that is what its failure branch needs -
+    //     "OPEN FAILED", "CLOSE FAILED" - and its success branch used to
+    //     log that same constant, so a healthy open emitted
+    //     "DALYTRAN OPEN FAILED completed with status 00", 25 times in a
+    //     single-record run. The verb is now derived from the reason, and
+    //     the reason still reaches the abend it was written for.
+    // ==================================================================
+
+    @Nested
+    @DisplayName("3. The I/O guard reports a success as a success and keeps the abend reason for the abend")
+    class GuardMessageAttribution {
+
+        @Test
+        @DisplayName("an APPL-AOK open logs the bare operation, and the word FAILED appears nowhere")
+        void aSuccessfulOpenNamesTheOperationOnly() throws Exception {
+            guard(SUCCESS_STATUS, "DALYTRAN", "ERROR OPENING DAILY TRANSACTION FILE",
+                    reason("REASON_OPEN_FAILED"), null);
+
+            assertThat(capturedLogText())
+                    .as("IF APPL-AOK CONTINUE at app/cbl/CBTRN01C.cbl:L207 - nothing failed, so no "
+                            + "emission may say anything did")
+                    .contains("DALYTRAN OPEN completed with status 00")
+                    .doesNotContain("FAILED");
+        }
+
+        @Test
+        @DisplayName("an APPL-AOK close reports CLOSE, so both reason constants are covered")
+        void aSuccessfulCloseNamesTheOperationOnly() throws Exception {
+            guard(SUCCESS_STATUS, "ACCTFILE", "ERROR CLOSING ACCOUNT FILE",
+                    reason("REASON_CLOSE_FAILED"), null);
+
+            assertThat(capturedLogText())
+                    .contains("ACCTFILE CLOSE completed with status 00")
+                    .doesNotContain("FAILED");
+        }
+
+        @Test
+        @DisplayName("the failure branch still displays the literal, renders the status and abends on the "
+                + "reason")
+        void theFailureBranchStillCarriesTheReason() throws Exception {
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> guard("35", "DALYTRAN", "ERROR OPENING DAILY TRANSACTION FILE",
+                            reason("REASON_OPEN_FAILED"), null))
+                    .satisfies(abend -> assertThat(abend.getAbendReason())
+                            .as("the reason is what the abend was written for and is unchanged there")
+                            .isEqualTo("OPEN FAILED"));
+
+            assertThat(capturedLogText())
+                    .contains("ERROR OPENING DAILY TRANSACTION FILE")
+                    .as("9910-DISPLAY-IO-STATUS renders four characters, and '35' is numeric so it is "
+                            + "zero-padded rather than expanded")
+                    .contains("FILE STATUS IS: NNNN0035");
+        }
+
+        /**
+         * Invokes the private six-argument {@code guardFileOperation} over a real
+         * {@link FileStatusMapper}, so the branch is chosen by the status rather than by a stub.
+         *
+         * @param ioStatus the two-character status the operation reported
+         * @param ddName the DD name the emission names
+         * @param failureMessage the paragraph's own {@code DISPLAY} literal
+         * @param reason the abend reason the failure branch needs
+         * @param cause the underlying failure, or {@code null}
+         * @throws Exception if the member cannot be reached, or the guard abends
+         */
+        private void guard(final String ioStatus, final String ddName, final String failureMessage,
+                final String reason, final Throwable cause) throws Exception {
+
+            final DailyTransactionPostingJob job = jobWith(Optional.empty(), Optional.empty(),
+                    new FileStatusMapper());
+            final Method method = DailyTransactionPostingJob.class.getDeclaredMethod("guardFileOperation",
+                    String.class, String.class, String.class, String.class, String.class, Throwable.class);
+            method.setAccessible(true);
+            try {
+                method.invoke(job, ioStatus, ddName, failureMessage, reason, "CBTRN02C", cause);
+            } catch (final InvocationTargetException wrapped) {
+                if (wrapped.getCause() instanceof Exception unwrapped) {
+                    throw unwrapped;
+                }
+                throw wrapped;
+            }
+        }
+
+        /**
+         * Reads one of the class's own reason constants, so the assertion tracks the code rather than
+         * restating its literal.
+         *
+         * @param name the declared constant name
+         * @return its value
+         * @throws Exception if the field cannot be reached
+         */
+        private String reason(final String name) throws Exception {
+            final java.lang.reflect.Field field =
+                    DailyTransactionPostingJob.class.getDeclaredField(name);
+            field.setAccessible(true);
+            return (String) field.get(null);
+        }
+    }
+
+    // ==================================================================
     // Reflective access. Both concerns live behind private members, and
     // exposing them for a test would weaken the class to observe it.
     // ==================================================================
@@ -491,6 +597,25 @@ class DailyTransactionPostingJobContextLifecycleTest {
     private static DailyTransactionPostingJob jobWith(
             final Optional<CardCrossReference> crossReference, final Optional<Account> account) {
 
+        return jobWith(crossReference, account, mock(FileStatusMapper.class));
+    }
+
+    /**
+     * Builds the job over a stated {@link FileStatusMapper}.
+     *
+     * <p>The two-argument form mocks the mapper, whose {@code int} methods then answer zero - which is
+     * {@code APPL-AOK}, so every status would look like a success. A test of the guard's two branches needs
+     * the real translation, and takes it here rather than stubbing the answer it is trying to observe.
+     *
+     * @param crossReference what the cross-reference lookup returns
+     * @param account what the account lookup returns
+     * @param fileStatusMapper the mapper the guard consults
+     * @return a fully constructed job, never {@code null}
+     */
+    private static DailyTransactionPostingJob jobWith(
+            final Optional<CardCrossReference> crossReference, final Optional<Account> account,
+            final FileStatusMapper fileStatusMapper) {
+
         final CardCrossReferenceRepository crossReferences = mock(CardCrossReferenceRepository.class);
         when(crossReferences.findById(any())).thenReturn(crossReference);
         final AccountRepository accounts = mock(AccountRepository.class);
@@ -507,7 +632,7 @@ class DailyTransactionPostingJobContextLifecycleTest {
                 mock(CardRepository.class),
                 mock(CustomerRepository.class),
                 mock(MetricsConfig.class),
-                mock(FileStatusMapper.class),
+                fileStatusMapper,
                 "posttran",
                 100);
     }

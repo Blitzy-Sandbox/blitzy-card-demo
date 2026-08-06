@@ -445,6 +445,23 @@ spring:
       # migration or an extra table in V1 would fail it. Letting the
       # framework own its own schema keeps both sides provable.
       #
+      # WHICH ROLE RUNS IT, and why that had to change. Finding, severity
+      # Major, RESOLVED. Boot's own BatchDataSourceScriptDatabaseInitializer
+      # runs this script through spring.datasource above - the DML-only role
+      # - which holds no CREATE on schema public because the inline role
+      # script in docker-compose.yml REVOKEs it from PUBLIC and grants it to
+      # the migration role alone. Every CREATE TABLE was therefore refused,
+      # and Boot hardcodes continueOnError=true on these settings, so the
+      # refusal produced no log line at all: the container came up healthy
+      # with ZERO batch_* tables and could not launch or restart a single
+      # job. com.cardemo.config.BatchConfig now declares the initializer
+      # itself, runs this script as the role named by spring.flyway.user
+      # below - exactly as the migrations run - and then PROVES through the
+      # runtime DataSource that all six tables are readable by the runtime
+      # role, failing startup when they are not. No grant had to be added:
+      # docker-compose.yml already declares ALTER DEFAULT PRIVILEGES for
+      # tables the migration role creates later.
+      #
       # Measured restart behaviour against PostgreSQL 16 is recorded under
       # RUNTIME VALIDATION EVIDENCE at the foot of this file: the script is
       # not idempotent as SQL, but the framework's initializer tolerates the

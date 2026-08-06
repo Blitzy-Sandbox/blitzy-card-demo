@@ -120,7 +120,7 @@ class CombineTransactionsJobTest {
     private final MetricsConfig metricsConfig = new MetricsConfig(new SimpleMeterRegistry());
     private final TransactionWriter transactionWriter = new TransactionWriter(
             mock(com.cardemo.repository.TransactionRepository.class), objectStorage, fileStatusMapper,
-            metricsConfig, BUCKET, "transact");
+            metricsConfig, BUCKET, "transact", TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
 
     private CombineTransactionsJob newJob() {
         return new CombineTransactionsJob(jobRepository, transactionManager, transactionWriter,

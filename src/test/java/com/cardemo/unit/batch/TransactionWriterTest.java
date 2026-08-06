@@ -81,6 +81,7 @@ import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.item.Chunk;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
@@ -171,7 +172,7 @@ class TransactionWriterTest {
         meterRegistry = new SimpleMeterRegistry();
         metricsConfig = new MetricsConfig(meterRegistry);
         writer = new TransactionWriter(repository, objectStorage, new FileStatusMapper(), metricsConfig,
-                BUCKET, PREFIX);
+                BUCKET, PREFIX, TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
         stepExecution = stepExecution(JOB_INSTANCE_ID);
         writer.beforeStep(stepExecution);
 
@@ -345,7 +346,8 @@ class TransactionWriterTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new TransactionWriter(repositoryArgument, storeArgument, mapperArgument,
-                            metricsArgument, BUCKET, PREFIX))
+                            metricsArgument, BUCKET, PREFIX,
+                            TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
                     .withMessage(absent + " must not be null");
         }
 
@@ -355,7 +357,8 @@ class TransactionWriterTest {
         void aBlankBucketIsRefused(final String bucket) {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
-                            metricsConfig, bucket, PREFIX))
+                            metricsConfig, bucket, PREFIX,
+                            TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
                     .withMessage("carddemo.aws.s3.batch-output-bucket must be configured with a non-blank value");
         }
 
@@ -364,7 +367,8 @@ class TransactionWriterTest {
         void aNullBucketIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
-                            metricsConfig, null, PREFIX))
+                            metricsConfig, null, PREFIX,
+                            TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
                     .withMessage("carddemo.aws.s3.batch-output-bucket must be configured with a non-blank value");
         }
 
@@ -373,7 +377,8 @@ class TransactionWriterTest {
         void aBlankPrefixIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
-                            metricsConfig, BUCKET, "  "))
+                            metricsConfig, BUCKET, "  ",
+                            TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
                     .withMessage("carddemo.aws.s3.transaction-object-prefix must be configured with a "
                             + "non-blank value");
         }
@@ -387,7 +392,7 @@ class TransactionWriterTest {
         @DisplayName("writing before the listener callback fails fast rather than inventing a key")
         void writingBeforeTheCallbackFailsFast() {
             TransactionWriter detached = new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
-                    metricsConfig, BUCKET, PREFIX);
+                    metricsConfig, BUCKET, PREFIX, TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
 
             assertThatExceptionOfType(FatalProcessingException.class)
                     .isThrownBy(() -> detached.write(chunk(posted())))
@@ -399,7 +404,7 @@ class TransactionWriterTest {
         @DisplayName("writing before the callback tells the operator what to wire, and stores nothing")
         void writingBeforeTheCallbackStoresNothing() throws Exception {
             TransactionWriter detached = new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
-                    metricsConfig, BUCKET, PREFIX);
+                    metricsConfig, BUCKET, PREFIX, TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
 
             assertThatExceptionOfType(FatalProcessingException.class)
                     .isThrownBy(() -> detached.write(chunk(posted())));
@@ -945,7 +950,8 @@ class TransactionWriterTest {
         @DisplayName("a custom object prefix is honoured in both key positions")
         void aCustomPrefixIsHonoured() throws Exception {
             TransactionWriter prefixed = new TransactionWriter(repository, objectStorage,
-                    new FileStatusMapper(), metricsConfig, BUCKET, "systran");
+                    new FileStatusMapper(), metricsConfig, BUCKET, "systran",
+                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
             prefixed.beforeStep(stepExecution);
 
             prefixed.write(chunk(posted()));
@@ -1106,6 +1112,171 @@ class TransactionWriterTest {
                     .isEqualTo(RECORD_LENGTH);
             assertThat(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY)
                     .isEqualTo("carddemo.transaction.object.key");
+        }
+    }
+
+    // ==================================================================================================
+    // 9 - FINDING, severity Minor, RESOLVED. The indexed manifest used to grow with no bound of any kind,
+    //     and the posting step commits once per record by parity contract, so Spring Batch re-serialised
+    //     the whole job execution context once per record: the cost of the manifest was quadratic in the
+    //     record count. A measured 300-record run published 262 indexed entries and a 36,664-byte context.
+    //     The enumeration is now bounded; the count, the generation prefix and the latest key are not.
+    // ==================================================================================================
+
+    @Nested
+    @DisplayName("9. MINOR: the indexed manifest is bounded, and what stays exact when it is")
+    class IndexedManifestBound {
+
+        @Test
+        @DisplayName("below the bound every key is indexed, in creation order, and nothing is marked")
+        void belowTheBoundEveryKeyIsIndexed() throws Exception {
+            writeChunks(3);
+
+            ExecutionContext jobContext = stepExecution.getJobExecution().getExecutionContext();
+            assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_COUNT_ENTRY)).isEqualTo(3L);
+            assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_INDEXED_ENTRY))
+                    .as("indexed equals the count on any run that stays within the bound")
+                    .isEqualTo(3L);
+            assertThat(jobContext.containsKey(TransactionWriter.OBJECT_KEYS_TRUNCATED_ENTRY))
+                    .as("the marker's absence is the complete-manifest case")
+                    .isFalse();
+            assertThat(indexedKeys(jobContext, 3))
+                    .containsExactly(uploadedKeys().toArray(new String[0]));
+        }
+
+        @Test
+        @DisplayName("the generation prefix names this job instance only, so listing it cannot race")
+        void theGenerationPrefixNamesTheJobInstance() throws Exception {
+            writeChunks(2);
+
+            String published = stepExecution.getJobExecution().getExecutionContext()
+                    .getString(TransactionWriter.OBJECT_KEYS_GENERATION_PREFIX_ENTRY);
+            assertThat(published)
+                    .isEqualTo(String.format(Locale.ROOT, "%s/%019d/", PREFIX, JOB_INSTANCE_ID))
+                    .as("it is the created key up to its last separator, so it cannot drift from the "
+                            + "key template")
+                    .isEqualTo(uploadedKeys().get(0)
+                            .substring(0, uploadedKeys().get(0).lastIndexOf('/') + 1));
+        }
+
+        @Test
+        @DisplayName("at the bound the count keeps rising while the enumeration stops, and says so once")
+        void atTheBoundTheEnumerationStopsAndTheCountDoesNot() throws Exception {
+            TransactionWriter bounded = new TransactionWriter(repository, objectStorage,
+                    new FileStatusMapper(), metricsConfig, BUCKET, PREFIX, 2);
+            bounded.beforeStep(stepExecution);
+
+            for (int ordinal = 0; ordinal < 4; ordinal++) {
+                stepExecution.setWriteCount(ordinal);
+                bounded.write(chunk(posted(String.format(Locale.ROOT, "%016d", ordinal + 1), "1.00")));
+            }
+
+            ExecutionContext jobContext = stepExecution.getJobExecution().getExecutionContext();
+            assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_COUNT_ENTRY))
+                    .as("the count is exact and is never capped")
+                    .isEqualTo(4L);
+            assertThat(jobContext.getLong(TransactionWriter.OBJECT_KEYS_INDEXED_ENTRY))
+                    .as("the enumeration stops at the bound")
+                    .isEqualTo(2L);
+            assertThat(jobContext.getString(TransactionWriter.OBJECT_KEYS_TRUNCATED_ENTRY))
+                    .isEqualTo(TransactionWriter.OBJECT_KEYS_TRUNCATED_MARKER);
+            assertThat(jobContext.containsKey(TransactionWriter.objectKeysIndexEntry(2)))
+                    .as("nothing is written past the bound, so a consumer must read indexed and not count")
+                    .isFalse();
+            assertThat(indexedKeys(jobContext, 2))
+                    .containsExactly(uploadedKeys().get(0), uploadedKeys().get(1));
+            assertThat(stepExecution.getExecutionContext()
+                    .getString(TransactionWriter.OBJECT_KEY_CONTEXT_ENTRY))
+                    .as("the latest key is published whatever the bound is")
+                    .isEqualTo(uploadedKeys().get(3));
+            assertThat(loggedMessages().stream()
+                    .filter(message -> message.contains("indexed transaction object-key manifest"))
+                    .toList())
+                    .as("once per job execution, not once per record: the condition holds for every "
+                            + "remaining record and one warning per record would bury the run")
+                    .hasSize(1)
+                    .allSatisfy(message -> assertThat(message)
+                            .contains("bound of 2 keys")
+                            .contains(TransactionWriter.OBJECT_KEYS_COUNT_ENTRY)
+                            .contains(TransactionWriter.OBJECT_KEYS_GENERATION_PREFIX_ENTRY)
+                            .contains(TransactionWriter.KEY_MAX_INDEXED_OBJECT_KEYS));
+        }
+
+        @ParameterizedTest(name = "a bound of {0} is refused")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("a non-positive bound fails the context at startup, naming its property")
+        void aNonPositiveBoundIsRefused(final int bound) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new TransactionWriter(repository, objectStorage,
+                            new FileStatusMapper(), metricsConfig, BUCKET, PREFIX, bound))
+                    .withMessage(TransactionWriter.KEY_MAX_INDEXED_OBJECT_KEYS
+                            + " must be positive but was " + bound);
+        }
+
+        @Test
+        @DisplayName("the default bound clears the 262 entries of the 300-record parity run")
+        void theDefaultBoundClearsTheParityRun() {
+            assertThat(TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS)
+                    .as("app/data/ASCII/dailytran.txt posts 262 of its 300 records, so the parity run is "
+                            + "enumerated in full and this fix changes nothing it measured")
+                    .isGreaterThan(262);
+            assertThat(TransactionWriter.KEY_MAX_INDEXED_OBJECT_KEYS)
+                    .isEqualTo("carddemo.batch.transaction-writer.max-indexed-object-keys");
+        }
+
+        @Test
+        @DisplayName("application.yml declares the property at the same value, so it is operable")
+        void theShippedProfileDeclaresTheBound() throws Exception {
+            // The reason max-transactions-per-run is declared in the profile too: a key that is read at
+            // runtime but appears in no profile is invisible to whoever operates the job. Asserted against
+            // the file so deleting the declaration fails a test rather than silently hiding the knob.
+            String profile = java.nio.file.Files.readString(
+                    java.nio.file.Path.of("src/main/resources/application.yml"),
+                    StandardCharsets.UTF_8);
+            assertThat(profile)
+                    .contains("max-indexed-object-keys: "
+                            + TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
+        }
+
+        /**
+         * Writes one single-record chunk per requested object, advancing the step's write count so each
+         * chunk composes its own key.
+         *
+         * @param chunks how many objects to create
+         * @throws Exception if the writer does
+         */
+        private void writeChunks(final int chunks) throws Exception {
+            for (int ordinal = 0; ordinal < chunks; ordinal++) {
+                stepExecution.setWriteCount(ordinal);
+                writer.write(chunk(posted(String.format(Locale.ROOT, "%016d", ordinal + 1), "1.00")));
+            }
+        }
+
+        /**
+         * Reads the indexed entries a consumer would read.
+         *
+         * @param jobContext the job execution context the writer published into
+         * @param indexed how many entries to read
+         * @return the keys, in creation order
+         */
+        private List<String> indexedKeys(final ExecutionContext jobContext, final int indexed) {
+            List<String> keys = new java.util.ArrayList<>(indexed);
+            for (int index = 0; index < indexed; index++) {
+                keys.add(jobContext.getString(TransactionWriter.objectKeysIndexEntry(index)));
+            }
+            return keys;
+        }
+
+        /**
+         * Captures every object key the writer uploaded, in call order.
+         *
+         * @return the keys
+         */
+        private List<String> uploadedKeys() {
+            ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+            Mockito.verify(objectStorage, Mockito.atLeastOnce()).upload(Mockito.eq(BUCKET),
+                    captor.capture(), Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
+            return captor.getAllValues();
         }
     }
 }

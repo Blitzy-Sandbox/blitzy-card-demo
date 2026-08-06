@@ -151,7 +151,8 @@ class WriterObjectStoragePolicyTest {
             // An unset property resolves to an empty string rather than to null, so a null-only guard lets a
             // zero-length bucket name reach the object store.
             assertRejects(() -> new TransactionWriter(mock(TransactionRepository.class),
-                    mock(S3Operations.class), new FileStatusMapper(), metrics(), "   ", "transact"));
+                    mock(S3Operations.class), new FileStatusMapper(), metrics(), "   ", "transact",
+                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS));
             assertRejects(() -> new RejectWriter(mock(S3Operations.class), metrics(),
                     new FileStatusMapper(), "   ", GDG_PREFIX, null));
             assertRejects(() -> new StatementWriter(mock(S3Operations.class),
@@ -162,7 +163,8 @@ class WriterObjectStoragePolicyTest {
         @DisplayName("An absent destination bucket is rejected by every writer")
         void anAbsentBucketIsRejectedEverywhere() {
             assertRejects(() -> new TransactionWriter(mock(TransactionRepository.class),
-                    mock(S3Operations.class), new FileStatusMapper(), metrics(), null, "transact"));
+                    mock(S3Operations.class), new FileStatusMapper(), metrics(), null, "transact",
+                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS));
             assertRejects(() -> new RejectWriter(mock(S3Operations.class), metrics(),
                     new FileStatusMapper(), null, GDG_PREFIX, null));
             assertRejects(() -> new StatementWriter(mock(S3Operations.class),
@@ -292,7 +294,8 @@ class WriterObjectStoragePolicyTest {
     private static List<WriterUnderTest> subjects() {
         final S3Operations forTransactions = mock(S3Operations.class);
         final TransactionWriter transactionWriter = new TransactionWriter(mock(TransactionRepository.class),
-                forTransactions, new FileStatusMapper(), metrics(), "carddemo-batch-output", "transact");
+                forTransactions, new FileStatusMapper(), metrics(), "carddemo-batch-output", "transact",
+                TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
         transactionWriter.beforeStep(MetaDataInstanceFactory.createStepExecution());
 
         final S3Operations forRejects = mock(S3Operations.class);

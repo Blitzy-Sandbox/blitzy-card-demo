@@ -79,12 +79,14 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cardemo.batch.processors.TransactionCombineProcessor;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.repository.TransactionRepository;
 
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 /**
@@ -1009,10 +1011,15 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
     /**
      * An empty {@code TRANSACT.BKUP(0)} generation leaves the interest records to be combined on their own.
      *
-     * <p>The mirror boundary. The distinction that matters is between <em>empty</em> and <em>absent</em>:
-     * an empty generation is a real state and is exercised here, whereas the absent-generation path maps to
-     * a file-unavailable status that occurs nowhere in the COBOL corpus - <strong>Not available</strong> as
-     * a parity claim - so no test for it is fabricated.
+     * <p>The mirror boundary. The distinction that matters is between <em>empty</em> and <em>absent</em>: an
+     * empty generation is a real state and is exercised here, and the absent-generation state is exercised by
+     * {@link #anAbsentBackupGenerationPrefixCombinesTheSystranRecordsAlone()} immediately below.
+     *
+     * <p>An earlier revision of this class recorded the absent case as <strong>Not available</strong> as a
+     * parity claim and declined to test it, on the grounds that a file-unavailable status occurs nowhere in
+     * the COBOL corpus. The premise was sound but the conclusion inverted the consequence: because no such
+     * status exists in the corpus, the reader had no business <em>producing</em> one, and the untested path
+     * was the one that occurs on every clean environment. Both states are now asserted.
      */
     @Test
     @DisplayName("9. an empty TRANSACT.BKUP(0) generation leaves only the SYSTRAN(0) records to combine, "
@@ -1031,6 +1038,111 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
         assertThat(transactionRepository.count())
                 .as("and every one of its records is loaded")
                 .isEqualTo(systran.size());
+    }
+
+    /**
+     * An <em>absent</em> {@code TRANSACT.BKUP} prefix is the clean-environment state, not a failure.
+     *
+     * <p>This is the state every first run of the pipeline is in. Nothing in this application produces a
+     * {@code TRANSACT.BKUP} generation before the combine stage: the sole producer is
+     * {@code TransactionReportJob}'s {@code STEP01R} ({@code app/proc/TRANREPT.prc:L21}), which runs in
+     * <strong>stage 4</strong>, downstream of the stage 3 combine that reads the base. The mainframe's
+     * producer for that leg is {@code app/jcl/TRANBKP.jcl}, a separate operator member with no Java analogue
+     * by recorded decision. So on a clean environment the first leg is absent <em>by construction</em>.
+     *
+     * <p>An earlier revision reported this as file status {@code '35'} from
+     * {@code CombinedTransactionReader}, which made the authored five-stage topology
+     * {@code POSTTRAN -> INTCALC -> COMBTRAN -> (CREASTMT || TRANREPT)} unsatisfiable: the pipeline abended in
+     * stage 3 and stages 4's two branches never received a {@code StepExecution} at all. Nothing in the
+     * corpus justified it - {@code app/jcl/COMBTRAN.jcl} carries no {@code COND=} on either {@code :L22} or
+     * {@code :L41}, so the member asserts no precondition on either DD - and the same reader already treated
+     * an absent {@code SYSTRAN} generation as an ordinary empty read. The two legs are now symmetric.
+     *
+     * <p>The precondition is asserted rather than assumed: the case proves the prefix holds no object at all,
+     * so that a future change to per-test bucket cleanup cannot quietly turn this into a re-run of the
+     * empty-object case above.
+     */
+    @Test
+    @DisplayName("9a. an ABSENT TRANSACT.BKUP prefix is the clean-environment state and combines the "
+            + "SYSTRAN(0) records alone, rather than abending on file status 35")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void anAbsentBackupGenerationPrefixCombinesTheSystranRecordsAlone() {
+        final List<String> systran = seedSystranGeneration(interestRecords(firstFixtureRecords(3), 3));
+
+        assertThat(s3Client.listObjectsV2(ListObjectsV2Request.builder()
+                        .bucket(batchOutputBucket)
+                        .prefix(backupPrefix)
+                        .build())
+                        .contents())
+                .as("the precondition is a genuinely absent prefix - no generation object, not an empty one")
+                .isEmpty();
+
+        final JobExecution execution = launchCombine();
+        assertCombineCompleted(execution);
+
+        assertThat(identifiersOf(combinedRecords(execution)))
+                .as("the absent first leg contributes nothing and the second is combined on its own")
+                .isEqualTo(identifiersOf(systran));
+        assertThat(transactionRepository.count())
+                .as("and every one of its records is loaded")
+                .isEqualTo(systran.size());
+    }
+
+    /**
+     * Two objects under one generation are refused by name, never silently reduced to one.
+     *
+     * <p><b>A GDG generation is one dataset, so it is one object.</b> {@code RejectWriter} states that
+     * invariant, but nothing enforced it on the reading side: {@code (0)} resolution kept the lexicographically
+     * greatest key and discarded every sibling without a log, an exception or a count check. Planting two
+     * 350-byte objects under one {@code TRANSACT.BKUP} generation plus one {@code SYSTRAN} generation
+     * therefore produced a run that reported {@code COMPLETED} with return code 0 and a combined record count
+     * of 2, with the first planted identifier simply absent from the relation.
+     *
+     * <p>That is the worst available outcome, and it is why this test asserts a refusal rather than a warning.
+     * A subset loaded under a success status cannot be distinguished from a correct run by any consumer: the
+     * record count looks plausible, the exit status is clean, and the missing identifier is discoverable only
+     * by comparing against a source nobody retained. Reading every sibling instead would be no better, since
+     * their concatenation order is undefined - no convention says which of {@code PART-A} and {@code PART-B}
+     * precedes the other - so it would trade a dropped record for an arbitrary order.
+     *
+     * <p>The diagnostic must name <b>every</b> candidate key rather than merely reporting that contention
+     * exists, because the operator's next action is to decide which object to remove. Both keys are asserted
+     * present in the message for that reason, and the relation is asserted empty so that a partial load
+     * followed by a refusal cannot pass as a refusal.
+     *
+     * <p>A restart is one way this shape arises rather than a contrived one, which is what makes the case
+     * worth holding: a chunk-oriented step that writes a generation and then fails can leave one object
+     * behind and write another on the next attempt.
+     */
+    @Test
+    @DisplayName("7a. two objects under one generation prefix are refused with every candidate key named, "
+            + "rather than resolved to the greatest and the rest dropped in silence")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void siblingObjectsUnderOneGenerationAreRefusedByNameRatherThanSilentlyDropped() {
+        final List<String> fixture = firstFixtureRecords(3);
+        final String partAKey = generationKey(backupPrefix, currentGenerationSegment, "PART-A");
+        final String partBKey = generationKey(backupPrefix, currentGenerationSegment, "PART-B");
+        putGeneration(partAKey, List.of(withIdentifier(fixture.get(0), "0000000000000011")));
+        putGeneration(partBKey, List.of(withIdentifier(fixture.get(1), "0000000000000012")));
+        seedSystranGeneration(List.of(withIdentifier(fixture.get(2), "0000000000000013")));
+
+        final JobExecution execution = launchCombine();
+
+        assertThat(execution.getStatus())
+                .as("an ambiguous generation must fail the step; the previous behaviour was RC0 COMPLETED "
+                        + "with one of the three records missing")
+                .isEqualTo(BatchStatus.FAILED);
+
+        final DataIntegrityException ambiguity = generationAmbiguityFailure(execution);
+        assertThat(ambiguity.getMessage())
+                .as("the operator's next action is to remove one object, so every candidate key must be "
+                        + "named - reporting only that contention exists is not actionable")
+                .contains(partAKey)
+                .contains(partBKey);
+
+        assertThat(transactionRepository.count())
+                .as("a refusal must leave nothing behind, or a partial load would pass as a refusal")
+                .isZero();
     }
 
     /**
@@ -1794,6 +1906,34 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                         + "outcome - an absorbed conflict, an untyped store error, or no failure at all - "
                         + "means the load of app/jcl/COMBTRAN.jcl:L48 no longer reproduces a REPRO into a "
                         + "keyed cluster")
+                .isNotNull();
+        return found;
+    }
+
+    /**
+     * Extracts the generation-ambiguity failure from an execution, failing the test when none is present.
+     *
+     * <p>The cause chain is walked rather than the top-level exception inspected, because the refusal is
+     * raised inside the reader's {@code open} and reaches the execution wrapped by the step's own reporting.
+     *
+     * @param execution the failed execution
+     * @return the reported {@link DataIntegrityException}, never {@code null}
+     */
+    private DataIntegrityException generationAmbiguityFailure(final JobExecution execution) {
+        DataIntegrityException found = null;
+        for (final Throwable reported : execution.getAllFailureExceptions()) {
+            Throwable candidate = reported;
+            for (int depth = 0; candidate != null && depth < 32; depth++) {
+                if (found == null && candidate instanceof DataIntegrityException ambiguity) {
+                    found = ambiguity;
+                }
+                candidate = candidate.getCause();
+            }
+        }
+        assertThat(found)
+                .as("an ambiguous generation must surface as the migration's typed data-integrity failure. "
+                        + "Any other outcome - a warning, a silently chosen object, or no failure at all - "
+                        + "means a GDG generation is no longer being treated as one dataset")
                 .isNotNull();
         return found;
     }

@@ -275,12 +275,53 @@ import io.awspring.cloud.s3.S3Resource;
  *       it rather than parsing a misaligned stream.</li>
  *   <li><b>A load step that reports zero rows</b> means {@code STEP05R} published an empty generation; the
  *       sort step logs the per-source counts, so the empty source is named rather than inferred.</li>
- *   <li><b>An absent {@code TRANSACT.BKUP} current generation</b> abends in
- *       {@link CombinedTransactionReader#open(ExecutionContext)}, which owns that decision; an absent
- *       {@code SYSTRAN} current generation is <b>not</b> an error and yields an empty second source, because
- *       {@code (0)} on a base with no generation is the state before the first interest run. Neither
- *       condition is re-implemented here.</li>
+ *   <li><b>An absent current generation on either leg</b> is <b>not</b> an error and yields an empty source
+ *       for that leg, because {@code (0)} on a base with no generation is simply the state before that base's
+ *       first producer has run. {@code CombinedTransactionReader} owns the decision and it is not
+ *       re-implemented here. A run in which <b>neither</b> leg contributes a record still completes, creating
+ *       an empty combined generation and publishing a record count of zero - {@code :L33-L37} allocates
+ *       {@code SORTOUT} unconditionally and {@code :L48} copies it, so a copy of nothing succeeds - and the
+ *       sort step logs the per-source counts so the empty leg is named rather than inferred.
+ *       <p>An earlier revision abended on an absent {@code TRANSACT.BKUP} generation specifically, while
+ *       treating an absent {@code SYSTRAN} generation as an empty read. <b>That asymmetry is withdrawn</b> -
+ *       see the no-analogue entry for {@code app/jcl/TRANBKP.jcl} below for why the first leg is absent by
+ *       construction on a clean environment.</li>
  * </ul>
+ *
+ * <h2>{@code app/jcl/TRANBKP.jcl} has no Java analogue, and that is a recorded decision</h2>
+ *
+ * <p>{@code app/jcl/TRANBKP.jcl} is the member that produces the {@code TRANSACT.BKUP} generations this job's
+ * first {@code SORTIN} leg reads. It is three steps and no COBOL program: {@code :L23}
+ * {@code //STEP05R EXEC PROC=REPROC} copies {@code TRANSACT.VSAM.KSDS} to {@code TRANSACT.BKUP(+1)} at
+ * {@code :L31} {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)}; {@code //STEP05 EXEC PGM=IDCAMS} then
+ * {@code DELETE}s the cluster and its alternate index, each followed by
+ * {@code IF MAXCC LE 08 THEN SET MAXCC = 0}; and {@code //STEP10 EXEC PGM=IDCAMS,COND=(4,LT)} re-issues
+ * {@code DEFINE CLUSTER} with {@code KEYS(16 0) RECORDSIZE(350 350)}.
+ *
+ * <p><b>Neither of its two legs has a relational counterpart worth reproducing.</b> The copy leg is the same
+ * shared {@code REPROC} invocation that {@code TransactionReportJob}'s {@code STEP01R}
+ * ({@code app/proc/TRANREPT.prc:L21}) already implements - the complete {@code EXEC PROC=} census puts
+ * {@code app/jcl/TRANBKP.jcl:L23} and {@code app/proc/TRANREPT.prc:L21} on the same procedure - so the target
+ * already produces {@code TRANSACT.BKUP} generations. The delete-and-redefine leg exists <b>only</b> because a
+ * VSAM KSDS cannot absorb a merged record set through {@code REPRO} without colliding on every key it already
+ * holds, so the operator must unload the cluster, empty it, and reload the merged result. Inserting new rows
+ * into a relation needs no unload-empty-reload cycle, and the end state is the same either way: the master
+ * ends up holding its prior contents plus the interest transactions.
+ *
+ * <p>This follows the precedent already recorded for {@code app/jcl/PRTCATBL.jcl} in
+ * {@link com.cardemo.model.entity.TransactionCategoryBalance} - a member with no COBOL program whose Java
+ * analogue would require files outside the authored inventory is documented rather than invented.
+ * Reproducing {@code TRANBKP} here is additionally impossible without breaching that inventory: this job is
+ * pinned to the two steps of {@code app/jcl/COMBTRAN.jcl}, and
+ * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} composes exactly five stages and declares no step
+ * logic of its own.
+ *
+ * <p><b>Residual limitation, disclosed rather than papered over.</b> Because the master is never emptied, a
+ * {@code TRANSACT.BKUP} generation produced by a previous pipeline run holds rows that are still present in
+ * the relation. Re-running this job against an un-reset master therefore resolves that generation and fails
+ * with {@code DuplicateRecordException} and return code 8 - the outcome this file mandates - rather than
+ * silently upserting. On a clean environment the first leg is absent, the interest generation supplies the
+ * records, and the combine completes.
  *
  * <h2>Findings carried by this file, classified per Rule 1 Clause F</h2>
  * <ul>

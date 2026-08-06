@@ -166,12 +166,14 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *       kind is created, and again in this class's constructor before any client exists. See the guarantee
  *       below.</li>
  *   <li><strong>It declares no queue listener.</strong> The consumer that replaces the JES2 internal reader
- *       is owed by {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which <strong>is now
- *       authored</strong> - an earlier revision of this entry recorded that class as absent, and that
- *       reading is withdrawn. What remains true, and is the point of this entry, is that the tree carries no
- *       {@code @SqsListener} declaration at all, so a published message is not yet drained. Re-derive with
- *       {@code grep -rn "@SqsListener" src/main/java}. The bean below is a producer with a named future
- *       consumer, not a producer with a live one.</li>
+ *       is owned by {@link com.cardemo.config.BatchConfig}, which declares exactly one {@code @SqsListener}
+ *       over this queue and launches the report job from it. Re-derive with
+ *       {@code grep -rn "@SqsListener" src/main/java}, which finds that one declaration and no other. Two
+ *       earlier revisions of this entry are withdrawn: one recorded
+ *       {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} as the owner, which is wrong because that
+ *       class's own contract requires zero {@code @SqsListener} declarations in it, and one recorded that
+ *       nothing drained the queue at all, which was true when written and is no longer. The bean below is a
+ *       producer with a live consumer.</li>
  *   <li><strong>It derives no object keys.</strong> The generation-reference translation is specified here and
  *       implemented by the job classes, which bind the seven {@code carddemo.aws.s3.gdg-prefixes.*} entries
  *       directly, and by {@code com.cardemo.config.BatchConfig}, which centralises the step wiring.</li>
@@ -479,11 +481,11 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *
  * <p>Two consequences for anyone reading a message body. It is <em>untrusted input</em>, so it is bound as
  * typed JSON with strict binding and never through Java serialization; the base profile pins
- * {@code fail-on-unknown-properties} for exactly this reason. And the consumer that replaces the JES2 internal
- * reader is owed by {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, not by this class. That
- * orchestrator is <strong>now authored</strong>, so the outstanding item is the listener itself rather than
- * the class that will hold it; an earlier revision recorded the orchestrator as unauthored and that is
- * withdrawn.
+ * {@code fail-on-unknown-properties} for exactly this reason, and the consumer binds the body with the
+ * Spring-managed mapper so those settings apply on the receiving side too. And the consumer that replaces the
+ * JES2 internal reader is owned by {@link com.cardemo.config.BatchConfig}, not by this class and not by
+ * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which an earlier revision of this paragraph named
+ * and whose own contract forbids a listener in it.
  *
  * <p>The producer replaces the block at {@code app/cbl/CORPT00C.cbl:L517-L523} - {@code EXEC CICS WRITEQ TD},
  * {@code QUEUE ('JOBS')}, {@code FROM (JCL-RECORD)}, {@code LENGTH (LENGTH OF JCL-RECORD)},
@@ -1378,9 +1380,10 @@ public class AwsConfig {
      * and unknown-property settings the base profile pins.
      *
      * <p>This bean publishes. It declares no listener: the consumer that replaces the JES2 internal reader is
-     * owed by {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which is <strong>now authored</strong>
-     * though the listener itself is not, so nothing drains the queue yet. An earlier revision recorded that
-     * orchestrator as unauthored and that reading is withdrawn. On a send failure
+     * owned by {@link com.cardemo.config.BatchConfig}, which drains this queue and launches the report job
+     * from it. Two earlier revisions of this paragraph are withdrawn - one named
+     * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} as the owner, and one recorded that nothing
+     * drained the queue. On a send failure
      * {@code com.cardemo.service.report.ReportSubmissionService} reproduces the legacy screen text
      * {@code Unable to Write TDQ (JOBS)...} - three trailing dots - from
      * {@code app/cbl/CORPT00C.cbl:L531-L532}, byte for byte.

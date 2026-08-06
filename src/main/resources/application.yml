@@ -807,10 +807,33 @@ spring:
   batch:
     job:
       # Jobs must NOT auto-launch on startup. The framework default is true,
-      # which would run every job on every boot. Launching is explicit: either
-      # BatchPipelineOrchestrator, or the SQS listener that replaces the JES2
-      # internal reader driven by EXEC CICS WRITEQ TD QUEUE('JOBS') in
-      # app/cbl/CORPT00C.cbl.
+      # which would run every job on every boot. Launching is explicit, through
+      # the two paths the mainframe had, and both are authored:
+      #
+      #   1. An operator submitting the deck (TSO SUBMIT / SDSF). That is the
+      #      runner in com.cardemo.batch.jobs.BatchPipelineOrchestrator, which
+      #      exists only when carddemo.batch.launch names a job:
+      #        java -jar carddemo.jar \
+      #          --spring.main.web-application-type=none \
+      #          --carddemo.batch.launch=batchPipelineJob \
+      #          --carddemo.batch.launch.parm-date=2022071800 \
+      #          --carddemo.batch.launch.start-date=2022-01-01 \
+      #          --carddemo.batch.launch.end-date=2022-07-06
+      #      Without carddemo.batch.launch the artefact is a server, not a
+      #      submission. web-application-type=none is equally required: it is
+      #      what makes the process END when the job ends, as a submitted job
+      #      freed its initiator. Omit it and the run finishes correctly but
+      #      the embedded container holds the JVM open, so the submission
+      #      looks hung. The runner logs a WARN naming this property when it
+      #      detects that case.
+      #
+      #   2. The online tier writing to the JOBS data queue for the JES2
+      #      internal reader - EXEC CICS WRITEQ TD QUEUE('JOBS') in
+      #      app/cbl/CORPT00C.cbl. That is the single @SqsListener in
+      #      com.cardemo.config.BatchConfig, which launches
+      #      transactionReportJob per submission.
+      #
+      # Neither path fires on boot, which is what this flag is protecting.
       enabled: false
     jdbc:
       # The BATCH_* metadata tables come from the framework's own
@@ -1401,7 +1424,13 @@ carddemo:
       # cards that app/cbl/CORPT00C.cbl:L83-L125 holds as literal constants and
       # writes one at a time collapse into ONE typed JSON message carrying the
       # report name and the start and end dates; an SQS listener replaces the
-      # JES2 internal reader.
+      # JES2 internal reader. That listener is the single @SqsListener in
+      # com.cardemo.config.BatchConfig - not in AwsConfig, which owns the
+      # clients, and not in BatchPipelineOrchestrator, whose contract requires
+      # zero of them. It carries the deduplication identifier the producer mints
+      # into the job parameters as an identifying value, so a FIFO redelivery
+      # resolves to the same job instance and is refused rather than launching
+      # the report twice.
       # THE COUNT IS SEVENTEEN, NOT EIGHTEEN. An earlier revision of this
       # comment said eighteen, and the claim is withdrawn. JOB-DATA-1 spans
       # app/cbl/CORPT00C.cbl:L82-L125 and holds fourteen
@@ -1580,6 +1609,36 @@ carddemo:
     # changes no behaviour.
     statement-processor:
       max-transactions-per-run: 1000000
+    # BOUND on the indexed object-key manifest TransactionWriter publishes into
+    # the job execution context. A SCALE BOUND on a diagnostic record, not a
+    # bound on the run: the exact object count, the generation prefix and the
+    # latest key are published whatever this is set to, so nothing is lost when
+    # it is reached - only the per-key enumeration stops, one WARN is emitted and
+    # carddemo.transaction.object.keys.truncated marks the context.
+    #
+    # Why a bound is needed at all: the posting step commits once per RECORD by
+    # parity contract - DailyTransactionPostingJob.POSTING_COMMIT_INTERVAL,
+    # grounded on the three separate commits of app/cbl/CBTRN02C.cbl:L440-L442 -
+    # and Spring Batch re-serialises the whole job execution context at every
+    # commit. One indexed entry costs about 140 serialised bytes, so an unbounded
+    # list costs work proportional to the SQUARE of the record count: a measured
+    # 300-record run of app/data/ASCII/dailytran.txt published 262 entries and a
+    # 36,664-byte context, and a hundred thousand records would have reached
+    # about fourteen megabytes re-serialised a hundred thousand times.
+    #
+    # The value below enumerates that parity run in full - 262 of 1000 - while
+    # bounding the context at roughly 140 kB. A deployment that needs the full
+    # enumeration of a larger run RAISES this deliberately, having accepted that
+    # cost; one that does not lists the generation prefix instead, which is
+    # unique to the job instance and therefore deterministic.
+    #
+    # Declared here, and not only as a constant in code, for the same reason as
+    # max-transactions-per-run above: a key that is read at runtime but appears
+    # in no profile is invisible to whoever operates the job. The value is
+    # exactly TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS, so declaring it
+    # changes no behaviour.
+    transaction-writer:
+      max-indexed-object-keys: 1000
     jobs:
       # app/jcl/POSTTRAN.jcl:L23 EXEC PGM=CBTRN02C, with app/cbl/CBTRN01C.cbl
       # folded in as the read-only pre-flight step described above.

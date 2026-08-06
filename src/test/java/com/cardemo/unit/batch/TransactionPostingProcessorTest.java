@@ -2102,6 +2102,52 @@ class TransactionPostingProcessorTest {
         }
 
         @Test
+        @DisplayName("the ACCOUNT REWRITE abend attributes itself, because :L545-L560 has no guard to borrow")
+        void theAccountRewriteAbendDoesNotBorrowTheGuardsAuthority() {
+            // FINDING, severity Minor, REGRESSION GUARD. The unclassified tail used to be one fixed sentence
+            // for all three call sites, ending "so the guard in app/cbl/CBTRN02C.cbl reaches PERFORM
+            // 9999-ABEND-PROGRAM". On this path that sentence is false and contradicts both the source and
+            // this class's own Javadoc: 2800-UPDATE-ACCOUNT-REC at app/cbl/CBTRN02C.cbl:L545-L560 tests no
+            // FILE STATUS at all - its INVALID KEY clause assigns 109 at :L556 and falls through the EXIT at
+            // :L560 to 2900-WRITE-TRANSACTION-FILE, with no DISPLAY, no 9910 and no 9999 anywhere. The abend
+            // is this implementation's own escalation under DEVIATION 2 and the message now says so.
+            stubCreateBranch();
+            CannotAcquireLockException lockFailure = new CannotAcquireLockException("row locked");
+            Mockito.when(accountRepository.save(Mockito.any())).thenThrow(lockFailure);
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> processor.process(dailyTransaction("1.00")))
+                    .satisfies(abend -> assertThat(abend.getAbendMessage())
+                            .contains("app/cbl/CBTRN02C.cbl:L545-L560 does not guard this REWRITE")
+                            .contains("assigns reason 109 at :L556")
+                            .contains("continues to 2900-WRITE-TRANSACTION-FILE")
+                            .contains("no DISPLAY, no 9910-DISPLAY-IO-STATUS and no 9999-ABEND-PROGRAM")
+                            .contains("escalates deliberately - DEVIATION 2")
+                            .as("the withdrawn tail claimed the source's guard reached the abend paragraph, "
+                                    + "which on this path it does not")
+                            .doesNotContain("PERFORM 9999-ABEND-PROGRAM"));
+        }
+
+        @Test
+        @DisplayName("the two TCATBAL guards keep the 9999 attribution, because :L512 and :L530 do reach it")
+        void theBalanceGuardsKeepTheSourcesOwnAttribution() {
+            // The companion of the assertion above: parameterising the attribution must not weaken the two
+            // paths where the source genuinely does display, render and abend - :L512-L524 for the WRITE and
+            // :L530-L542 for the REWRITE, both accepting '00' only.
+            stubRewriteBranch();
+            CannotAcquireLockException lockFailure = new CannotAcquireLockException("timeout");
+            Mockito.when(transactionCategoryBalanceRepository.save(Mockito.any())).thenThrow(lockFailure);
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> processor.process(dailyTransaction("1.00")))
+                    .satisfies(abend -> assertThat(abend.getAbendMessage())
+                            .startsWith("ERROR REWRITING TRANSACTION BALANCE FILE")
+                            .contains("so the guard in app/cbl/CBTRN02C.cbl reaches "
+                                    + "PERFORM 9999-ABEND-PROGRAM")
+                            .doesNotContain("does not guard this REWRITE"));
+        }
+
+        @Test
         @DisplayName("a duplicate key on the ACCOUNT REWRITE is a duplicate record, not an abend")
         void aDuplicateKeyOnTheAccountRewrite() {
             stubCreateBranch();

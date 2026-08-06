@@ -1292,6 +1292,43 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         }
 
         /**
+         * An abended generate step leaves no {@code TRANREPT} generation catalogued.
+         *
+         * <p>Purpose: {@code app/proc/TRANREPT.prc} STEP10R declares {@code //TRANREPT DD
+         * DISP=(NEW,CATLG,DELETE)}, whose third positional sub-parameter is the <b>abnormal-termination</b>
+         * disposition. A step that abends therefore leaves nothing on the base.
+         *
+         * <p>Before this was honoured, an abended generate step left {@code TRANREPT} behind at <b>0 bytes</b>
+         * and it survived the failed restart as well. That is worse than it sounds: a consumer resolving
+         * {@code TRANREPT(0)} received an empty report and could not distinguish "no transactions matched the
+         * requested window" from "the job abended", and those two situations demand opposite responses - accept
+         * the result, or re-drive the run.
+         *
+         * <p>The writer opens its object before the first record is processed, so the object exists by the time
+         * the per-record lookup abends; nothing about the failure prevents its creation, which is why the
+         * disposition has to be reproduced explicitly rather than relying on the object never being made.
+         */
+        @Test
+        @DisplayName("an abended generate step leaves NO TRANREPT generation catalogued, reproducing the "
+                + "abnormal-termination disposition DELETE of app/proc/TRANREPT.prc STEP10R")
+        @Transactional(propagation = Propagation.NOT_SUPPORTED)
+        void anAbendedGenerateStepLeavesNoReportGenerationCatalogued() {
+            final JobExecution execution = launchGenerateStepOverSyntheticGeneration(List.of(
+                    syntheticTransactionRecord(probeTransactionId(1), absentTypeCode,
+                            seededCategoryCode.intValue(), firstSeededCardNumber(), new BigDecimal("10.00"),
+                            fixedClockProcessingTimestamp())));
+
+            assertThat(execution.getStatus())
+                    .as("the precondition of this case is a genuinely abended generate step")
+                    .isEqualTo(BatchStatus.FAILED);
+            assertThat(objectKeysUnder(reportPrefix))
+                    .as("DISP=(NEW,CATLG,DELETE) deletes the new generation on abnormal termination, so an "
+                            + "empty or fragmentary TRANREPT can never be catalogued - and a 0-byte one is "
+                            + "indistinguishable from a legitimately empty report")
+                    .isEmpty();
+        }
+
+        /**
          * An absent transaction category composite key abends the report.
          *
          * <p>Purpose: the third lookup, and the one whose key is composite - the type code resolves and only the

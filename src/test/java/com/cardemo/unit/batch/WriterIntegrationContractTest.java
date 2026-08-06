@@ -289,7 +289,8 @@ class WriterIntegrationContractTest {
                 new FileStatusMapper(),
                 metrics,
                 OUTPUT_BUCKET,
-                CONFIGURED_TRANSACTION_PREFIX);
+                CONFIGURED_TRANSACTION_PREFIX,
+                TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS);
     }
 
     /**
@@ -619,7 +620,8 @@ class WriterIntegrationContractTest {
             // The H-07 assertion. An inline default would make this construction succeed and write a whole
             // generation under a silently different prefix.
             assertThatThrownBy(() -> new TransactionWriter(mock(TransactionRepository.class),
-                    mock(S3Operations.class), new FileStatusMapper(), metrics, OUTPUT_BUCKET, "  "))
+                    mock(S3Operations.class), new FileStatusMapper(), metrics, OUTPUT_BUCKET, "  ",
+                    TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
                     .isInstanceOf(IllegalArgumentException.class);
         }
 

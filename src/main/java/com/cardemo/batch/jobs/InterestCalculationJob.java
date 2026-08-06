@@ -965,6 +965,13 @@ public class InterestCalculationJob {
     /** Reason text carried by an abend raised while opening a dataset. Fits {@code ABEND-REASON X(50)}. */
     private static final String REASON_OPEN_FAILED = "OPEN FAILED";
 
+    /**
+     * The suffix every operation-failure reason constant ends in, {@value}.
+     *
+     * <p>Declared once so {@link #succeededOperation(String)} strips exactly what the reason constants append.
+     */
+    private static final String FAILED_REASON_SUFFIX = " FAILED";
+
     /** Reason text carried by an abend raised while closing a dataset. */
     private static final String REASON_CLOSE_FAILED = "CLOSE FAILED";
 
@@ -1409,6 +1416,31 @@ public class InterestCalculationJob {
     }
 
     /**
+     * Names the operation a reason constant describes, for the success branch of the I/O guard.
+     *
+     * <p>The guard is handed an abend <em>reason</em> because that is what it needs on the failure branch -
+     * {@code "OPEN FAILED"}, {@code "CLOSE FAILED"} - and the success branch used to log that same constant.
+     * The result read {@code "DALYTRAN OPEN FAILED completed with status 00"}: a line asserting a failure and a
+     * success in the same breath, emitted 25 times in a single-record run. Nothing was wrong with the run; the
+     * sentence was wrong, and a diagnostic that reports a healthy operation as a failure trains a reader to
+     * ignore it.
+     *
+     * <p>The verb is derived from the reason rather than passed as a second argument so that the two can never
+     * disagree at a call site, and so no caller has to be edited to add one. A reason that does not describe a
+     * failed operation is returned unchanged, which keeps the guard usable for outcomes that are not verbs.
+     *
+     * <p>Pure function of its argument.
+     *
+     * @param reason the abend reason the caller supplies for the failure branch
+     * @return the bare operation, or the reason unchanged when it names no operation
+     */
+    private static String succeededOperation(final String reason) {
+        return reason != null && reason.endsWith(FAILED_REASON_SUFFIX)
+                ? reason.substring(0, reason.length() - FAILED_REASON_SUFFIX.length())
+                : reason;
+    }
+
+    /**
      * The guard that closes all ten {@code OPEN} and {@code CLOSE} paragraphs, reproduced once rather than
      * ten times. Every one of them is written
      * {@code IF status = '00' MOVE 0 TO APPL-RESULT ELSE MOVE 12 TO APPL-RESULT END-IF}, then
@@ -1452,7 +1484,7 @@ public class InterestCalculationJob {
         if (fileStatusMapper.applResultForGuard(ioStatus) == FileStatusMapper.APPL_AOK) {
             // IF APPL-AOK CONTINUE - the source does nothing here; the trace is a target-side addition
             // that replaces instrumentation the corpus does not have at all.
-            LOG.debug("{} {} completed with status {}", logicalName, reason, ioStatus);
+            LOG.debug("{} {} completed with status {}", logicalName, succeededOperation(reason), ioStatus);
             return;
         }
         LOG.error(failureMessage);
