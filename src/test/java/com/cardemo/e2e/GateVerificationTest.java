@@ -21,6 +21,8 @@
  *               contribute procedural labels, through unquoted and quoted COPY respectively
  * Source      : app/cpy/CSUTLDWY.cpy @ 7756d89 - pure working storage, zero procedural labels
  * Source      : app/cpy/CSMSG02Y.cpy @ 7756d89 - internally titled CABENDD.CPY, the abend work areas
+ *               ABEND-CODE X(4), ABEND-CULPRIT X(8), ABEND-REASON X(50), ABEND-MSG X(72), all VALUE SPACES
+ * Source      : app/cpy/CSSETATY.cpy @ 7756d89 - a COPY ... REPLACING template, so it yields no type
  * Source      : app/cpy/UNUSED1Y.cpy @ 7756d89 - zero COPY references repository-wide
  * Source      : app/cpy/CVTRA07Y.cpy @ 7756d89 - :L58 the 'Account Total' label of the report
  * Source      : app/csd/CARDDEMO.CSD @ 7756d89 - the resource census, and :L211/:L390 the sourceless
@@ -57,6 +59,7 @@ package com.cardemo.e2e;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.enums.RejectCode;
 import com.cardemo.observability.MetricsConfig;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -1776,6 +1779,150 @@ class GateVerificationTest {
     }
 
     /**
+     * Gate 7: the four copybooks with no entity or data-transfer counterpart are dispositioned explicitly.
+     *
+     * <p>Eleven of the twenty-eight copybooks are record layouts and become entities. The coverage claim is
+     * only complete if the remainder are accounted for too, and four of them are the ones a mechanical
+     * reading gets wrong, because none of the four yields a type:
+     *
+     * <ul>
+     *   <li>{@code app/cpy/UNUSED1Y.cpy} is <strong>dead</strong>. It carries a complete eighty-byte layout
+     *       that looks exactly like a record to translate, and it has zero {@code COPY} references anywhere
+     *       in the corpus. The reference count is derived here rather than restated, so a future
+     *       {@code COPY} of it would fail this gate instead of quietly making the disposition false.</li>
+     *   <li>{@code app/cpy/CSMSG02Y.cpy} is <strong>not a message copybook</strong> despite its name. It is
+     *       internally titled {@code CABENDD.CPY} and holds the abend work areas, so it maps to the field
+     *       set of {@link FatalProcessingException}. Reading it as a message table would silently lose that
+     *       field set, which is why the internal title, all four widths and the Java counterpart are each
+     *       asserted rather than assumed.</li>
+     *   <li>{@code app/cpy/CSSTRPFY.cpy} is <strong>procedural</strong>: it is copied into a
+     *       {@code PROCEDURE DIVISION} and contributes labels, so it becomes controller-level action
+     *       mapping and no data type at all.</li>
+     *   <li>{@code app/cpy/CSSETATY.cpy} is a <strong>{@code COPY ... REPLACING} template</strong>
+     *       expanded once per validated field, so it becomes validation annotations and per-field error
+     *       markers rather than a type.</li>
+     * </ul>
+     *
+     * <p>The final assertion is the one that makes the disposition binding: no entity and no
+     * data-transfer type is named after any of the four. Without it, "no counterpart" would be a claim in
+     * prose that a later commit could contradict without failing anything.
+     */
+    @Test
+    @DisplayName("Gate 7 app/cpy: UNUSED1Y is dead, CSMSG02Y is CABENDD.CPY, CSSTRPFY and CSSETATY yield no type")
+    void theCopybooksWithoutAnEntityOrDataTransferCounterpartAreDispositioned() {
+        final Map<String, Integer> repositoryWideCopySites = copySiteCountsIn(Stream.of(
+                        this.corpus.programs(), this.corpus.copybooks(), this.corpus.jclMembers(),
+                        this.corpus.mapsets(), this.corpus.symbolicMaps())
+                .flatMap(List::stream)
+                .toList());
+        assertThat(repositoryWideCopySites)
+                .as("the scan found real COPY statements, so a zero for one member below means that member "
+                        + "is genuinely unreferenced rather than that the scanner matched nothing at all")
+                .isNotEmpty();
+        assertThat(repositoryWideCopySites.get("UNUSED1Y"))
+                .as("app/cpy/UNUSED1Y.cpy has ZERO COPY references repository-wide, which is the whole "
+                        + "evidence for dispositioning it as documented dead. Its eighty-byte layout is a "
+                        + "dead duplicate of the user security record, so translating it would create an "
+                        + "entity the legacy system never reads")
+                .isNull();
+
+        final CorpusMember dead = Corpus.require(this.corpus.copybooks(), "UNUSED1Y.cpy");
+        assertThat(dead.text())
+                .as("it really is a complete layout rather than an empty file, which is exactly why it is a "
+                        + "trap: it looks translatable")
+                .contains("01 UNUSED-DATA.")
+                .contains("UNUSED-ID")
+                .contains("UNUSED-PWD");
+
+        final CorpusMember abendWorkAreas = Corpus.require(this.corpus.copybooks(), "CSMSG02Y.cpy");
+        assertThat(abendWorkAreas.text())
+                .as("app/cpy/CSMSG02Y.cpy is internally titled CABENDD.CPY and describes itself as the "
+                        + "abend work areas, so its name is misleading and its content governs")
+                .contains("CABENDD.CPY")
+                .contains("Work areas for abend routine");
+        assertThat(abendWorkAreas.text())
+                .as("all four abend fields are present at their exact widths; a narrower or wider field "
+                        + "would change what the typed abend can carry")
+                .contains("ABEND-CODE")
+                .contains("PIC X(4)")
+                .contains("ABEND-CULPRIT")
+                .contains("PIC X(8)")
+                .contains("ABEND-REASON")
+                .contains("PIC X(50)")
+                .contains("ABEND-MSG")
+                .contains("PIC X(72)");
+        assertThat(countOccurrences(abendWorkAreas.text(), Pattern.compile("VALUE\\s+SPACES")))
+                .as("every one of the four initialises to spaces, which is why the Java counterpart treats "
+                        + "an absent value as absent rather than as an empty string of its own making")
+                .isEqualTo(4);
+
+        final CorpusMember typedAbend = sourceOf("com.cardemo.exception.FatalProcessingException");
+        assertThat(typedAbend.text())
+                .as("the typed abend cites the copybook it derives from, closing the reverse direction for "
+                        + "a copybook that yields no entity")
+                .contains("app/cpy/CSMSG02Y.cpy");
+        assertThat(typedAbend.text())
+                .as("and it carries all four work areas as fields, so the field set survived the "
+                        + "translation intact rather than being collapsed into a single message string")
+                .contains("abendCode")
+                .contains("abendCulprit")
+                .contains("abendReason")
+                .contains("abendMessage");
+        assertThat(FatalProcessingException.BATCH_ABEND_CODE)
+                .as("the abend code is 999, taken from app/cbl/CBTRN02C.cbl:L710 rather than invented")
+                .isEqualTo(999);
+        assertThat(FatalProcessingException.BATCH_RETURN_CODE)
+                .as("and the process return code an abend yields is 12, from app/cbl/CBTRN02C.cbl:L707-L711")
+                .isEqualTo(12);
+
+        final Map<String, Integer> programCopySites = proceduralCopySiteCounts();
+        assertThat(programCopySites.get("CSSTRPFY"))
+                .as("app/cpy/CSSTRPFY.cpy is copied into the PROCEDURE DIVISION of five programs, which is "
+                        + "what makes it procedural and therefore action mapping rather than a type")
+                .isEqualTo(5);
+        assertThat(programCopySites.get("CSSETATY"))
+                .as("app/cpy/CSSETATY.cpy is expanded once per validated field, which is what makes it a "
+                        + "template and therefore validation annotations rather than a type")
+                .isGreaterThan(1);
+        assertThat(codeOnlyText(Corpus.require(this.corpus.copybooks(), "CSSETATY.cpy")))
+                .as("it is a parameterised template: the placeholder is substituted through COPY REPLACING "
+                        + "at each site, so there is no single field it could ever become")
+                .contains("TESTVAR1");
+        assertThat(this.corpus.programs().stream()
+                .filter(program -> codeOnlyText(program).contains("COPY CSSETATY REPLACING"))
+                .map(CorpusMember::memberName)
+                .toList())
+                .as("and every expansion uses the REPLACING form, which is the property that makes it a "
+                        + "template rather than an ordinary copybook")
+                .isNotEmpty();
+
+        final List<String> typesNamedAfterANonTypeCopybook = this.corpus.productionSources().stream()
+                .filter(source -> source.relativePath().contains("/model/entity/")
+                        || source.relativePath().contains("/model/dto/"))
+                .map(CorpusMember::memberName)
+                .filter(name -> {
+                    final String upper = name.toUpperCase(Locale.ROOT);
+                    return upper.startsWith("UNUSED") || upper.startsWith("CSMSG")
+                            || upper.startsWith("CSSTRPFY") || upper.startsWith("CSSETATY")
+                            || upper.startsWith("ABEND");
+                })
+                .toList();
+        assertThat(typesNamedAfterANonTypeCopybook)
+                .as("none of the four yields an entity or a data-transfer type. This is what turns the "
+                        + "disposition from a claim in prose into a constraint a later commit cannot break "
+                        + "without failing this gate")
+                .isEmpty();
+
+        record("gate7.repositoryWideCopiedMembers", repositoryWideCopySites.size());
+        record("gate7.deadCopybook",
+                "app/cpy/UNUSED1Y.cpy - documented dead, zero COPY references repository-wide");
+        record("gate7.abendCopybook",
+                "app/cpy/CSMSG02Y.cpy == CABENDD.CPY - 4 work areas -> FatalProcessingException field set");
+        record("gate7.copybooksYieldingNoType", "UNUSED1Y (dead), CSMSG02Y (abend fields), "
+                + "CSSTRPFY (procedural), CSSETATY (COPY REPLACING template)");
+    }
+
+    /**
      * Gate 7: the sourceless program behind one CICS transaction is reported {@code Not available}.
      *
      * <p>The definition exists in the resource file and nothing else in the repository mentions the program,
@@ -3246,17 +3393,33 @@ class GateVerificationTest {
      * @return copied member name to site count, never {@code null}
      */
     private Map<String, Integer> proceduralCopySiteCounts() {
+        return copySiteCountsIn(this.corpus.programs());
+    }
+
+    /**
+     * Counts {@code COPY} call sites per member name across an arbitrary member list.
+     *
+     * <p>Extracted so the program-only expansion census and the repository-wide reference census share one
+     * scanner rather than two that could drift apart. Comment and continuation lines are skipped through
+     * the indicator column, and both the quoted and unquoted spellings are recognised, because a scanner
+     * that handles only one under-counts.
+     *
+     * @param members the members to scan; must not be {@code null}
+     * @return an immutable map from copied member name to the number of call sites, empty when none
+     */
+    private static Map<String, Integer> copySiteCountsIn(final List<CorpusMember> members) {
+        Objects.requireNonNull(members, "members must not be null");
         final Map<String, Integer> siteCounts = new TreeMap<>();
-        for (final CorpusMember program : this.corpus.programs()) {
-            for (final String line : program.lines()) {
+        for (final CorpusMember member : members) {
+            for (final String line : member.lines()) {
                 if (line.length() > INDICATOR_COLUMN_INDEX
                         && NON_CODE_INDICATORS.contains(line.charAt(INDICATOR_COLUMN_INDEX))) {
                     continue;
                 }
                 final Matcher copied = COPY_STATEMENT.matcher(line);
                 while (copied.find()) {
-                    final String member = copied.group(1) != null ? copied.group(1) : copied.group(2);
-                    siteCounts.merge(member, 1, Integer::sum);
+                    final String copiedMember = copied.group(1) != null ? copied.group(1) : copied.group(2);
+                    siteCounts.merge(copiedMember, 1, Integer::sum);
                 }
             }
         }
