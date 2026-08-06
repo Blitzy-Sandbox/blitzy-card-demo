@@ -1,8 +1,22 @@
 site_name: 'blitzy-card-demo'
+# Backstage TechDocs publishes from this nav (catalog-info.yaml sets
+# `backstage.io/techdocs-ref: dir:.`), so every document under docs/ must
+# be listed here exactly once: an omitted page is built but never linked,
+# and MkDocs reports that at INFO level only, so `mkdocs build --strict`
+# still exits 0 and the page silently becomes undiscoverable. Verify with:
+#   mkdocs build --strict 2>&1 | grep -c 'not included in the' (expect 0).
+# DECISION_LOG.md and TRACEABILITY_MATRIX.md are deliberately absent: they
+# are root evidence artifacts outside docs_dir, linked from README.md, and
+# a `../` entry would not resolve here. Do not add or duplicate them.
 nav:
   - Home: index.md
   - Project Guide: project-guide.md
   - Technical Specifications: technical-specifications.md
+  - API Contracts: api-contracts.md
+  - Architecture Before and After: architecture-before-after.md
+  - Onboarding Guide: onboarding-guide.md
+  - Validation Gates: validation-gates.md
+  - Executive Presentation: executive-presentation.html
 plugins:
   - techdocs-core
   - mermaid2
