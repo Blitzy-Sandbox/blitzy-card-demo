@@ -1,35 +1,217 @@
 # ******************************************************************
-# * File         : build.yml
-# * Application  : CardDemo
-# * Type         : GitHub Actions continuous integration workflow
-# * Function     : Provides the deterministic, repeatable zero-warning build
-# *                harness the migration requires. There is no legacy
-# *                equivalent - the z/OS build inputs were the three compile
-# *                templates samples/BATCMP.jcl, samples/CICCMP.jcl and
-# *                samples/BMSCMP.jcl driven by the three procedures
-# *                samples/BUILDBAT.prc, samples/BUILDBMS.prc and
-# *                samples/BUILDONL.prc, all of which are superseded by pom.xml.
-# *                Pinned to JDK 25 and Maven 3.9.11. The frozen COBOL corpus in
-# *                app/ is verified to be untouched on every run.
+# Program     : build.yml
+# Application : CardDemo
+# Type        : GitHub Actions continuous integration workflow
+# Function    : Validate the complete Java 25 / Spring Boot 3.5.11 migration
+#               and publish evidence. Never deploys.
+# Source      : docs/technical-specifications.md section 0 (the Agent Action
+#               Plan: the CI contract, the pinned versions, the eight gates)
+#               + pom.xml, mvnw, mvnw.cmd, .mvn/wrapper/maven-wrapper.properties
+#               (the Maven build this harness drives)
+#               + app/** (the frozen legacy parity corpus; specifically the JES2
+#               job stream, whose COND=(0,NE) step gating is the direct
+#               antecedent of the fail-fast step sequencing below -
+#               app/jcl/CREASTMT.JCL:56 STEP020 EXEC PGM=IDCAMS,COND=(0,NE),
+#               app/jcl/CREASTMT.JCL:66 STEP030 EXEC PGM=IEFBR14,COND=(0,NE),
+#               app/jcl/CREASTMT.JCL:79 STEP040 EXEC PGM=CBSTM03A,COND=(0,NE))
+#               + docs/validation-gates.md, anchors #gate-1 through #gate-8
+#               (the eight gates this workflow produces evidence for)
 # ******************************************************************
-# * Copyright Amazon.com, Inc. or its affiliates.
-# * All Rights Reserved.
-# *
-# * Licensed under the Apache License, Version 2.0 (the "License").
-# * You may not use this file except in compliance with the License.
-# * You may obtain a copy of the License at
-# *
-# *    http://www.apache.org/licenses/LICENSE-2.0
-# *
-# * Unless required by applicable law or agreed to in writing,
-# * software distributed under the License is distributed on an
-# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
-# * either express or implied. See the License for the specific
-# * language governing permissions and limitations under the License
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
 # ******************************************************************
+#
+# ==================================================================
+# COMPONENT DOCSTRING
+#
+# This block plus the descriptive step names below ARE this component's
+# documentation, satisfying Rule 1 clause E through its "or docstring"
+# disjunct. No README is added to this folder: a second document describing
+# one file would be the duplication clause C forbids. This folder holds
+# exactly one file, deliberately - there is no release, deploy, publish or
+# second workflow, no reusable or composite action, and no bot manifest,
+# because an automated version-bump bot contradicts the determinism clause C
+# requires and the "no ranges, no LATEST, no RELEASE" rule pom.xml holds
+# itself to.
+#
+# ------------------------------------------------------------------
+# 1. WHAT IT DOES
+#
+# It is the deterministic, repeatable harness that validates the COBOL to
+# Java 25 migration and publishes the evidence, pinned to JDK 25 and Maven
+# 3.9.11. Five jobs, each with one responsibility:
+#
+#   repository-integrity  the frozen corpus under app/ is unmodified, and the
+#                         legacy inventory still counts what it counted at the
+#                         traceability anchor
+#   verify                the toolchain, wrapper and dependency contracts hold,
+#                         then one Maven command compiles warning-free and runs
+#                         the unit, integration and end-to-end tiers under the
+#                         coverage floor and the vulnerability scan
+#   integration           the committed container topology stands up and the
+#                         schema, object store, queue and scrape target are
+#                         really reachable
+#   image-scan            the artefact that actually ships is scanned, because
+#                         the Maven scan reads the dependency graph and cannot
+#                         see the runtime image
+#   gate-evidence         collates the eight gates, their severities and their
+#                         evidence paths
+#
+# IT NEVER DEPLOYS. There is no deploy stage, no Kubernetes, Helm or ECS
+# manifest, no container-registry login and no image push - AAP section 0.3.2
+# puts orchestration beyond Docker Compose out of scope, and
+# docs/project-guide.md records that no registry is configured. The
+# deploy-stage and production-deployment items in that document are
+# prior-run recommendations, not AAP requirements, and are deliberately not
+# implemented here.
+#
+# ------------------------------------------------------------------
+# 2. HOW TO RUN, BUILD AND TEST
+#
+# Automatically on every push to main and on every pull request targeting
+# main, which is what CONTRIBUTING.md:37 relies on when it asks contributors
+# to "Pay attention to any automated CI failures reported in the pull
+# request". Manually through the Actions tab: this workflow accepts NO
+# workflow_dispatch inputs, deliberately, so it has no knob that could weaken
+# a gate and no operator-supplied string that could reach a shell.
+#
+# Reproduce it locally with the same commands, in this order. They are the
+# commands docs/validation-gates.md documents, and the first is the one
+# CONTRIBUTING.md:34 ("Ensure local tests pass.") refers to - the harness runs
+# exactly what a developer runs, with no CI-only skip flags, so the two
+# results are comparable:
+#
+#   ./mvnw --batch-mode --no-transfer-progress clean verify
+#   docker compose up --build --wait
+#
+# Prerequisites: JDK 25, a container runtime for the Testcontainers-backed
+# tiers, and unzip plus curl or wget for the wrapper (see failure mode 10).
+# Maven itself is NOT a prerequisite - ./mvnw provisions the pinned version
+# and verifies its checksum first.
+#
+# ------------------------------------------------------------------
+# 3. KEY CONFIGURATION AND DEFAULTS
+#
+# Thresholds are asserted and referenced here, never restated: pom.xml is the
+# single place they are defined, and duplicating a number into this file is
+# how the two drift apart. Read pom.xml for the authoritative values.
+#
+#   JDK feature version        25            asserted; the patch is whatever
+#                                            the pinned distribution ships
+#   Apache Maven               3.9.11        asserted exactly, via ./mvnw
+#   Compiler                   pom.xml       release 25, -Xlint:all, -Werror
+#   Coverage floor             pom.xml       jacoco.line.coverage.minimum
+#   Vulnerability threshold    pom.xml       owasp.failBuildOnCVSS
+#   Testcontainers             pom.xml       testcontainers.version property
+#   Container topology         docker-compose.yml   every image digest-pinned
+#   LocalStack readiness       INIT_MAX_ATTEMPTS / INIT_SLEEP_SECONDS
+#   Artifact retention         30 days, finite by design
+#   if-no-files-found          error on a required report; warn on a
+#                              diagnostic log. Never ignore - a missing report
+#                              is a signal, and ignore is the setting that
+#                              hides it
+#
+# Credentials. There is no repository secret on any LocalStack path. Every
+# value the topology needs is generated per run, registered with the runner's
+# masking mechanism, never printed and never persisted beyond the job. AWS
+# access is emulated: dummy non-production key material against the local
+# endpoint only, so no code path can reach a live AWS endpoint and there is no
+# live credential, account identifier or production endpoint anywhere in this
+# file. The LocalStack image is the COMMUNITY build at the exact tag
+# docker-compose.yml pins - never the Pro image, which would need an auth
+# token, and never a floating tag. NVD_API_KEY is optional and is read from
+# the environment if a maintainer has configured it; the scan runs on public
+# retrieval without it, and no key is committed.
+#
+# ------------------------------------------------------------------
+# 4. COMMON FAILURE MODES AND TROUBLESHOOTING
+#
+#  1. A bare Testcontainers coordinate cannot be resolved.
+#     Every module artefact was renamed in the 2.x line, so org.testcontainers
+#     localstack, postgresql and junit-jupiter DO NOT EXIST at the pinned
+#     version and fail resolution outright.
+#     Remedy: use the prefixed artifact ids only - testcontainers,
+#     testcontainers-localstack, testcontainers-postgresql,
+#     testcontainers-junit-jupiter.
+#
+#  2. Testcontainers resolves to a 1.x version unexpectedly.
+#     Spring Boot already manages a 1.x version and imports the Testcontainers
+#     bill of materials itself, so a competing import produces an
+#     ordering-dependent resolution that can silently win.
+#     Remedy, and BOTH halves are required: set the version PROPERTY to the
+#     pinned value and import no second bill of materials. Overriding without
+#     renaming resolves artefacts that do not exist; renaming without
+#     overriding resolves the wrong version.
+#
+#  3. The enforcer rejects the toolchain.
+#     Remedy: use JDK 25 and Maven 3.9.11. Never downgrade the floor, never
+#     install Maven 3.8, and never fall back to Java 21 or 17.
+#
+#  4. The build fails on a compiler warning.
+#     -Werror is the zero-warning gate, so a warning is an error by design.
+#     Remedy: fix the warning. Never disable -Xlint and never remove -Werror.
+#
+#  5. The coverage threshold fails.
+#     Remedy: add meaningful tests. Never lower the line-coverage floor and
+#     never exclude core packages from the report to reach it.
+#
+#  6. The vulnerability feed, a registry or another network prerequisite is
+#     unavailable.
+#     Remedy: report it as an exact Blocker with the error text and fix the
+#     prerequisite. A skipped, blocked or partially completed scan is NOT a
+#     passing gate. Never weaken the threshold, never add a skip, never widen
+#     the suppression file and never downgrade the failure to a warning.
+#
+#  7. Flyway fails against an existing schema.
+#     A migration checksum or an already-populated schema will stop the
+#     migrate step.
+#     Remedy: start from a clean volume - "docker compose down --volumes" and
+#     bring the topology up again.
+#
+#  8. LocalStack initialisation has not finished when a check runs.
+#     The provisioning script polls with bounded readiness rather than
+#     sleeping blindly.
+#     Remedy: raise INIT_MAX_ATTEMPTS, or INIT_SLEEP_SECONDS on a slow host.
+#     Re-running the script is safe: it is idempotent and converges.
+#
+#  9. The JWT signing key variable is unset.
+#     The application fails fast by design - there is deliberately no
+#     committed default, because a committed default is a shipped credential.
+#     Remedy: supply it through the environment. This workflow generates an
+#     ephemeral one per run.
+#
+# 10. "Failed to validate Maven distribution SHA-256, your Maven distribution
+#     might be compromised." with a checksum that is in fact correct. This
+#     trap is Unix-only and the message actively misleads.
+#     The script-only launcher rewrites the distribution URL to a .tar.gz when
+#     unzip is absent, while distributionSha256Sum still pins the .zip, so the
+#     hashes cannot match and the launcher exits 1.
+#     Remedy: make unzip, and curl or wget, available on the runner. Never
+#     blank or delete the checksum - a blank value silently disables integrity
+#     verification altogether and the build then passes having checked
+#     nothing. Never pin the .tar.gz either; the launcher rejects a URL that
+#     does not end in -bin.zip.
+# ==================================================================
 
 name: build
 
+# The default branch is main, evidenced by catalog-info.yaml:23 (project-slug),
+# :24 (source-location .../tree/main/) and CONTRIBUTING.md:26 ("You are working
+# against the latest source on the main branch"). workflow_dispatch declares no
+# inputs: none is needed, and an absent input cannot be used to weaken a gate or
+# to smuggle an operator-supplied string into a shell.
 on:
   push:
     branches:
@@ -39,155 +221,872 @@ on:
       - main
   workflow_dispatch:
 
+# Least privilege, Rule 1 clause D. Read-only, and nothing else is granted.
+# Deliberately absent, without exception: pull-requests: write and issues: write
+# - CONTRIBUTING.md:54 asks that a potential security issue be reported through
+# the vulnerability reporting page and NOT as a public github issue, so this
+# workflow neither opens an issue nor writes vulnerability detail into a pull
+# request comment; packages: write or any publish scope, because nothing is
+# published; id-token: write, because no cloud identity is federated; and any
+# environment: target, because nothing is deployed. No self-hosted runner and no
+# self-hosted secret is assumed anywhere.
 permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Non-secret, non-sensitive expectations only. Every one of these is ASSERTED
+# against its authoritative source rather than trusted: JAVA_FEATURE_VERSION and
+# MAVEN_VERSION against the running toolchain, and the wrapper values against
+# .mvn/wrapper/maven-wrapper.properties itself.
 env:
-  JAVA_VERSION: "25"
+  # The FEATURE version, not a patch level. Available sources disagree about the
+  # patch - docs/project-guide.md:510 records 25.0.2 while AAP section 0.6.1.3
+  # records 25.0.3 - so asserting a patch would be brittle for no gain. The
+  # setup action supplies whatever patch the pinned distribution ships, and the
+  # enforcer floor in pom.xml is expressed as a feature-version floor too.
+  JAVA_FEATURE_VERSION: "25"
+  # Asserted exactly. docs/project-guide.md:521 records 3.9.9, a Medium drift;
+  # the pinned value governs and 3.9.9 must NOT be accepted.
   MAVEN_VERSION: "3.9.11"
-  MAVEN_OPTS: "-Xmx2048m -XX:MaxMetaspaceSize=512m"
+  WRAPPER_PROPERTIES: .mvn/wrapper/maven-wrapper.properties
+  # Uploaded evidence is retained for a finite, stated period rather than the
+  # account default, so retention is a reviewable property of this file.
+  ARTIFACT_RETENTION_DAYS: "30"
 
-# ============================================================================
+# ==================================================================
 # SUPPLY CHAIN: WHY EVERY `uses:` CARRIES A COMMIT SHA
 #
-# Finding, severity High - raised against the previous revision of this file
-# and remediated throughout it. Every action was referenced by a MOVING tag:
-# `actions/checkout@v4`, `actions/setup-java@v4`, `actions/cache@v4`,
-# `actions/upload-artifact@v4` and a third-party `stCarolas/setup-maven@v5`.
+# A major-version tag on an action is not a version. It is a branch the
+# publisher re-points at will, so `@v7` means "whatever v7 is when the job
+# starts", and that code executes with this workflow's token and full read
+# access to the checkout. The same reasoning that makes every Maven coordinate
+# in pom.xml an exact version, and every container image in docker-compose.yml a
+# digest, applies with more force here, because an action EXECUTES rather than
+# merely being linked. Pinning by tag would also defeat this file's stated
+# purpose: a harness advertised as deterministic cannot be one while a third
+# party can change what it runs between two builds of the same commit.
 #
-# A major-version tag on a GitHub Action is not a version. It is a branch the
-# publisher re-points at will, so `@v4` means "whatever v4 is when the job
-# starts", and that code runs with this workflow's token and full access to the
-# checkout. The same argument that makes every Maven coordinate in pom.xml an
-# exact version, and every container image in docker-compose.yml a digest,
-# applies with more force here, because an action executes rather than merely
-# being linked. Pinning by tag also defeats the stated purpose of this file: a
-# harness advertised as deterministic and repeatable cannot be either while a
-# third party can change what it runs between two builds of the same commit.
+# So each reference below names an immutable 40-character commit, with the
+# human-readable release beside it. The comment is what a reader and a
+# dependency bot use; the SHA is what executes. Both are required - a bare SHA
+# is unreviewable and a bare tag is unpinned.
 #
-# So each reference below names an immutable commit SHA, with the human-readable
-# release in a trailing comment. The comment is what a reader and a dependency
-# bot use; the SHA is what executes. Both are needed - a bare SHA is unreviewable
-# and a bare tag is unpinned.
+# Three actions are used, one per function: repository checkout, JDK
+# provisioning, and artifact upload. Each SHA was resolved from the official
+# action repository's tagged release and verified twice - the tag-to-commit
+# mapping from the repository's own refs, and the input contract by reading
+# action.yml at that exact commit. None was guessed. All three are on the
+# current major line and run on the supported Node 24 runtime rather than the
+# deprecated Node 20 one.
 #
-# THE MAVEN INSTALL WAS REMOVED RATHER THAN PINNED. `stCarolas/setup-maven` ran
-# in both build jobs to install Apache Maven ${MAVEN_VERSION}. It was an
-# unpinned third-party action in the critical path, and it was redundant: this
-# repository ships a Maven wrapper whose
-# .mvn/wrapper/maven-wrapper.properties names the exact distribution URL for
-# 3.9.11 together with its distributionSha256Sum, so `./mvnw` verifies the
+# NO MARKETPLACE ACTION INSTALLS MAVEN. That step was removed rather than
+# pinned, because it was both an unpinned third-party dependency in the critical
+# path and redundant: .mvn/wrapper/maven-wrapper.properties names the exact
+# distribution together with its distributionSha256Sum, so ./mvnw verifies the
 # checksum of what it downloads before running it. That is a stronger guarantee
-# than installing the same version from a marketplace action, and it is the same
-# tool a developer runs locally and the Dockerfile build stage runs at
-# `RUN ./mvnw -B -ntp test-compile`. Deleting the step therefore removed a
-# dependency and closed a divergence at once, and every `mvn` invocation became
-# `./mvnw`. The `Report toolchain` step asserts the wrapper really did resolve
-# ${MAVEN_VERSION}, so the guarantee the removal relies on is checked rather
-# than assumed.
+# than installing the same version from a marketplace, and it is the same tool a
+# developer runs locally and the Dockerfile build stage runs. The "Assert the
+# toolchain" step below proves the wrapper really did resolve the pinned
+# version, so the guarantee this removal relies on is checked rather than
+# assumed.
+#
+# NO CACHE ACTION EITHER. The Maven repository is cached by the JDK provisioning
+# action, which cannot alter a verdict; a separately keyed vulnerability-data
+# cache is deliberately NOT added, because a cache that could let a scan pass on
+# data it did not really evaluate is a cache that must not exist.
 #
 # src/test/java/com/cardemo/unit/infrastructure/BuildProvenanceTest.java holds
-# these properties mechanically, so an unpinned action or a reintroduced host
-# `mvn` fails the build instead of depending on a reviewer noticing.
-# ============================================================================
+# these properties mechanically, so an unpinned action, a missing release
+# comment or a reintroduced host Maven fails the build rather than depending on
+# a reviewer noticing.
+# ==================================================================
 
 jobs:
 
-  # --------------------------------------------------------------------------
-  # The legacy corpus is the parity oracle, the field-contract source and the
-  # traceability anchor. Any modification under app/ invalidates all three.
-  # --------------------------------------------------------------------------
-  frozen-corpus-guard:
-    name: Frozen corpus guard (app/ must be unmodified)
+  # ------------------------------------------------------------------
+  # The frozen corpus is simultaneously the parity oracle, the field-contract
+  # source and the traceability anchor, so any modification under app/
+  # invalidates all three at once. This job also holds the source-text integrity
+  # checks, because they need no toolchain and therefore give the fastest
+  # feedback of any gate here.
+  # ------------------------------------------------------------------
+  repository-integrity:
+    name: Frozen corpus, legacy inventory and migration integrity
     runs-on: ubuntu-latest
     steps:
       - name: Check out with full history
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Full history: the frozen-corpus comparison needs the pull request's
+          # base commit to be present, and nothing shallower guarantees that.
           fetch-depth: 0
+          # Nothing here pushes, so the checkout token is not left behind in
+          # .git/config for any later step to reach.
+          persist-credentials: false
 
-      - name: Assert no change under app/
+      # Rule 1 clause F in one place. Every finding this workflow reports carries
+      # the file path, the symbol checked, expected versus actual, a severity
+      # from Blocker / High / Medium / Low, and a remediation line. Defining it
+      # once rather than restating it in each step is clause C's "avoid
+      # duplication" applied to shell as much as to Java.
+      - name: Install the shared finding reporter
         run: |
           set -euo pipefail
-          base="${{ github.event.pull_request.base.sha }}"
-          if [ -z "${base}" ]; then
-            base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
-          fi
-          changed="$(git diff --name-only "${base}" HEAD -- app/ || true)"
-          if [ -n "${changed}" ]; then
-            echo "::error::The frozen COBOL corpus under app/ was modified:"
-            echo "${changed}"
-            exit 1
-          fi
-          echo "app/ is unmodified."
+          cat > "${RUNNER_TEMP}/finding.sh" <<'REPORTER'
+          FINDINGS=0
 
-  # --------------------------------------------------------------------------
-  # Compile, unit tests, integration and e2e tests, coverage, enforcer.
-  # --------------------------------------------------------------------------
+          # finding <severity> <path> <symbol> <expected> <actual> <remediation>
+          finding() {
+            printf '::error title=%s::%s [%s] expected: %s | actual: %s | remediation: %s\n' \
+              "$1" "$2" "$3" "$4" "$5" "$6"
+            FINDINGS=$((FINDINGS + 1))
+          }
+
+          # unavailable <severity> <path> <what-is-needed>
+          # The mandated wording for a result that cannot be produced.
+          unavailable() {
+            printf '::error title=%s::%s Not available - %s\n' "$1" "$2" "$3"
+            FINDINGS=$((FINDINGS + 1))
+          }
+
+          # conclude <gate-label>
+          conclude() {
+            if [ "${FINDINGS}" -ne 0 ]; then
+              printf '%s: %d finding(s) reported above; see docs/validation-gates.md.\n' \
+                "$1" "${FINDINGS}"
+              exit 1
+            fi
+            printf '%s: no findings.\n' "$1"
+          }
+          REPORTER
+          echo "Reporter installed at ${RUNNER_TEMP}/finding.sh"
+
+      # The legacy antecedent of this sequencing is the JES2 job stream's
+      # COND=(0,NE) gating - app/jcl/CREASTMT.JCL:56, :66 and :79 - where a step
+      # runs only if every prior step ended cleanly. Nothing below carries
+      # continue-on-error, so a finding stops the job exactly as a nonzero
+      # condition code stopped the stream.
+      - name: Assert app/, samples/ and diagrams/ are byte-for-byte unmodified
+        env:
+          # Routed through env: rather than interpolated into the script.
+          # A github.event.* value is attacker-influenced on a pull request, and
+          # expanding one inside a shell is the injection pattern Rule 1 clause D
+          # names explicitly.
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          base="${PR_BASE_SHA:-}"
+          if [ -z "${base}" ]; then
+            if git rev-parse --verify --quiet 'HEAD~1' > /dev/null; then
+              base="$(git rev-parse 'HEAD~1')"
+            else
+              base="$(git rev-parse HEAD)"
+            fi
+          fi
+          printf 'Comparing the frozen trees against %s\n' "${base}"
+
+          changed="$(git diff --name-only "${base}" HEAD -- app/ samples/ diagrams/)"
+          if [ -n "${changed}" ]; then
+            finding Blocker 'app/ samples/ diagrams/' 'git diff --name-only' \
+              'no changed paths' "$(printf '%s' "${changed}" | tr '\n' ' ')" \
+              'revert every change under these trees. They are read-only reference material: the parity oracle, the field-contract source and the traceability anchor. The migration is additive only.'
+          fi
+
+          dirty="$(git status --porcelain app/ samples/ diagrams/)"
+          if [ -n "${dirty}" ]; then
+            finding Blocker 'app/ samples/ diagrams/' 'git status --porcelain' \
+              'empty' "$(printf '%s' "${dirty}" | tr '\n' ' ')" \
+              'restore the working tree. No build step may write into the frozen trees.'
+          fi
+
+          conclude 'Frozen corpus'
+
+      # ----------------------------------------------------------------------
+      # ENUMERATION IS CASE-INSENSITIVE AND COUNTS MEMBERS, NOT GLOB MATCHES.
+      # Two measured hazards make this mandatory rather than stylistic.
+      #
+      # 1. A lowercase glob under-reports the corpus. app/cbl holds 28 members
+      #    totalling 19,254 lines, but two of them - CBSTM03A.CBL and
+      #    CBSTM03B.CBL - carry an UPPERCASE extension, so `app/cbl/*.cbl`
+      #    matches only 26 and silently drops 1,154 lines. The same trap exists
+      #    for COSTM01.CPY in app/cpy and for CREASTMT.JCL in app/jcl, and that
+      #    last one is the sole source for statement generation, so a
+      #    case-sensitive pattern deletes a whole feature from scope.
+      #
+      # 2. A bare extension glob misses a member outright, and .gitkeep
+      #    sentinels inflate a raw listing. app/data/EBCDIC holds 12 data files
+      #    but only 11 end in .PS - the twelfth is
+      #    AWS.M2.CARDDEMO.DALYTRAN.PS.INIT - and app/cpy-bms, app/csd and
+      #    app/data/EBCDIC each carry a .gitkeep that `ls | wc -l` would count.
+      #
+      # So every count below is `find -type f`, excluding .gitkeep, and every
+      # extension test uses -iname. Never `ls | wc -l`, never a bare glob.
+      # ----------------------------------------------------------------------
+      - name: Assert the legacy inventory still counts what the anchor counted
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          members() {
+            find "$1" -type f ! -name '.gitkeep' | wc -l | tr -d ' '
+          }
+
+          # expect_members <directory> <expected-count> <severity>
+          expect_members() {
+            if [ ! -d "$1" ]; then
+              unavailable "$3" "$1" 'the directory is absent; restore the frozen corpus from the traceability anchor'
+              return
+            fi
+            actual="$(members "$1")"
+            if [ "${actual}" != "$2" ]; then
+              finding "$3" "$1" 'non-.gitkeep member count' "$2" "${actual}" \
+                'restore the frozen corpus, or correct the expected count here only if the AAP inventory in docs/technical-specifications.md section 0.2 changed.'
+            else
+              printf '%-20s %s members\n' "$1" "${actual}"
+            fi
+          }
+
+          expect_members app/cbl            28 High
+          expect_members app/cpy            28 High
+          expect_members app/cpy-bms        17 High
+          expect_members app/bms            17 High
+          expect_members app/jcl            29 High
+          expect_members app/proc            2 High
+          expect_members app/ctl             1 High
+          expect_members app/csd             1 High
+          expect_members app/catlg           1 High
+          expect_members app/data/ASCII      9 High
+          expect_members app/data/EBCDIC    12 High
+          expect_members diagrams            6 Low
+          expect_members samples             8 Low
+
+          # The line total is the figure TRACEABILITY_MATRIX.md is keyed to, and
+          # it is only reachable case-insensitively.
+          cbl_lines="$(find app/cbl -type f -iname '*.cbl' -exec cat {} + | wc -l | tr -d ' ')"
+          if [ "${cbl_lines}" != "19254" ]; then
+            finding High app/cbl 'total lines across *.cbl, case-insensitive' \
+              '19254' "${cbl_lines}" \
+              'enumerate with -iname. A lowercase-only glob reports 18,100 because CBSTM03A.CBL and CBSTM03B.CBL carry an uppercase extension.'
+          else
+            printf 'app/cbl              %s lines across 28 programs\n' "${cbl_lines}"
+          fi
+
+          # The uppercase members are asserted BY NAME, so the hazard above is
+          # proven closed rather than merely commented on.
+          for upper in app/cbl/CBSTM03A.CBL app/cbl/CBSTM03B.CBL \
+                       app/cpy/COSTM01.CPY app/jcl/CREASTMT.JCL; do
+            if [ ! -f "${upper}" ]; then
+              finding High "${upper}" 'uppercase-extension member' 'present' 'absent' \
+                'restore it. Its uppercase extension is exactly why every pattern touching these directories must be case-insensitive.'
+            fi
+          done
+
+          # The Gate 1 and Gate 4 fixture, named in full - dailytran.txt, not
+          # dalytran.txt, which is the mainframe DD name.
+          fixture=app/data/ASCII/dailytran.txt
+          if [ ! -f "${fixture}" ]; then
+            unavailable Blocker "${fixture}" 'the named-fixture gate has no input; restore the ASCII fixture set'
+          else
+            bytes="$(wc -c < "${fixture}" | tr -d ' ')"
+            lines="$(wc -l < "${fixture}" | tr -d ' ')"
+            if [ "${bytes}" != "105300" ] || [ "${lines}" != "300" ]; then
+              finding Blocker "${fixture}" 'size and record count' \
+                '105300 bytes / 300 records of 350' "${bytes} bytes / ${lines} records" \
+                'restore the fixture. Its geometry is load-bearing: 300 x 350 = 105,300, and it carries both positive and negative overpunch signs, so it must not be normalised.'
+            else
+              printf '%s   %s bytes / %s records\n' "${fixture}" "${bytes}" "${lines}"
+            fi
+          fi
+
+          conclude 'Legacy inventory'
+
+      - name: Assert the mandated migration artefacts are present
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          # expect_file <path> <severity> <why-it-is-needed>
+          expect_file() {
+            if [ ! -s "$1" ]; then
+              unavailable "$2" "$1" "$3"
+            else
+              printf 'present  %s\n' "$1"
+            fi
+          }
+
+          expect_file pom.xml Blocker \
+            'the build descriptor defines every gate this workflow drives'
+          expect_file Dockerfile Blocker \
+            'the runtime image is built from it and is the artefact the image scan covers'
+          expect_file docker-compose.yml Blocker \
+            'the container topology under test is defined there'
+          expect_file localstack-init/init-aws.sh Blocker \
+            'the object store, queue and topic are provisioned by it'
+
+          # The three observability provisioning files the AAP mandates. The
+          # directory legitimately holds more than three files, so the MANDATED
+          # SET is asserted by name rather than by a total count. The stale paths
+          # in docs/project-guide.md:96 - a bare prometheus.yml and a dashboard
+          # under docs/ - are superseded by these.
+          expect_file observability/prometheus.yml High \
+            'without a scrape configuration the metrics gate cannot report a target'
+          expect_file observability/grafana/provisioning/datasources/datasource.yml High \
+            'without datasource provisioning the integration sign-off needs a manual step'
+          expect_file observability/grafana/dashboards/carddemo-dashboard.json High \
+            'without a dashboard definition there is no populated dashboard to demonstrate'
+
+          # The three Flyway migrations, by their exact committed names.
+          for migration in V1__create_schema V2__create_indexes V3__seed_data; do
+            expect_file "src/main/resources/db/migration/${migration}.sql" Blocker \
+              'Flyway applies the three migrations in prefix order; a missing one leaves the schema incomplete'
+          done
+
+          conclude 'Mandated artefacts'
+
+      # ----------------------------------------------------------------------
+      # The evidence artefacts are deliverables of this same single phase - the
+      # AAP admits no staging - so their absence is a real finding rather than a
+      # tolerable "not yet". Reported with the mandated "Not available" wording
+      # and the precise prerequisite, never faked and never quietly passed over.
+      # ----------------------------------------------------------------------
+      - name: Assert the evidence artefacts exist and cover all 28 programs
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          # TRACEABILITY_MATRIX.md lives at the repository ROOT, not under docs/.
+          matrix=TRACEABILITY_MATRIX.md
+          if [ ! -s "${matrix}" ]; then
+            unavailable High "${matrix}" \
+              'the paragraph-level mapping from all 28 COBOL programs to their Java methods has not been generated; Gate 7 cannot be evidenced until it exists at the repository root'
+          else
+            missing=''
+            while IFS= read -r program; do
+              stem="$(basename "${program}")"
+              stem="${stem%.*}"
+              if ! grep -qi -- "${stem}" "${matrix}"; then
+                missing="${missing} ${stem}"
+              fi
+            done <<< "$(find app/cbl -type f -iname '*.cbl' | sort)"
+            if [ -n "${missing}" ]; then
+              finding High "${matrix}" 'program coverage' \
+                'all 28 programs cited' "unmapped:${missing}" \
+                'add a row for each program named above. Enumerate the corpus case-insensitively or CBSTM03A and CBSTM03B are silently omitted.'
+            else
+              printf '%s cites all 28 programs.\n' "${matrix}"
+            fi
+          fi
+
+          if [ ! -s DECISION_LOG.md ]; then
+            unavailable Medium DECISION_LOG.md \
+              'every mechanism substitution and every deliberately preserved legacy quirk must be recorded with its COBOL locator; the register has not been generated'
+          fi
+
+          if [ ! -s docs/validation-gates.md ]; then
+            unavailable High docs/validation-gates.md \
+              'the eight gate definitions with their anchors #gate-1 through #gate-8, evidence paths, severities and remediations have not been generated; this workflow reports against them'
+          fi
+
+          if [ ! -s src/test/java/com/cardemo/e2e/GateVerificationTest.java ]; then
+            unavailable High src/test/java/com/cardemo/e2e/GateVerificationTest.java \
+              'the machine-checkable gate assertions have not been generated; Failsafe already includes **/e2e/**/*Test.java, so the class runs as soon as it exists'
+          fi
+
+          conclude 'Evidence artefacts'
+
+      # ----------------------------------------------------------------------
+      # Gate 6, the parts provable from source text alone.
+      #
+      # The float/double check is deliberately scoped to DECLARATIONS - fields,
+      # record components and parameters - and not to every occurrence of the
+      # token. AAP transformation rule 1 forbids a floating-point type in a
+      # financial FIELD; it does not forbid calling a metrics API that takes a
+      # double, and a blanket text search would fail on exactly that legitimate
+      # call while proving nothing extra about the money path.
+      # ----------------------------------------------------------------------
+      - name: Assert no floating-point type reaches a financial field
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          declarations='(private|protected|public|final)[[:space:]]+(float|double|Float|Double)[[:space:]]+[A-Za-z_]|[(,][[:space:]]*(float|double|Float|Double)[[:space:]]+[A-Za-z_]'
+          if hits="$(grep -rnE "${declarations}" src/main/java --include='*.java')"; then
+            finding Blocker src/main/java 'float/double declaration' \
+              'none; every monetary and rate value is java.math.BigDecimal' \
+              "$(printf '%s' "${hits}" | head -c 400 | tr '\n' ' ')" \
+              'replace the declaration with BigDecimal at the scale the PIC clause dictates, compare with compareTo rather than equals, and round HALF_EVEN.'
+          else
+            printf 'src/main/java declares no float or double field, component or parameter.\n'
+          fi
+
+          if sql="$(grep -rinE '\b(double precision|float[0-9]*|real)\b' \
+              src/main/resources/db/migration --include='*.sql' \
+              | grep -vE ':[0-9]+:[[:space:]]*--')"; then
+            finding Blocker src/main/resources/db/migration 'column type' \
+              'NUMERIC(p,2) for every monetary and rate column' \
+              "$(printf '%s' "${sql}" | head -c 400 | tr '\n' ' ')" \
+              'use NUMERIC with the precision and scale the copybook PIC clause fixes. An approximate type cannot reproduce packed-decimal arithmetic.'
+          else
+            printf 'The migrations declare no approximate numeric column type.\n'
+          fi
+
+          conclude 'Gate 6 - decimal arithmetic'
+
+      - name: Assert no credential material is committed
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          # Scanned paths exclude the frozen corpus: app/jcl/DUSRSECJ.jcl
+          # legitimately carries the ten seeded users' plaintext passwords as
+          # inline IEBGENER data, and that member is read-only reference material
+          # whose whole purpose is to be the seed of record. What must not exist
+          # is a plaintext password on the JAVA side - V3__seed_data.sql stores
+          # only BCrypt hashes.
+          targets='src pom.xml docker-compose.yml Dockerfile .env.example localstack-init observability'
+
+          # Provider-shaped key material and private keys.
+          patterns='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[0-9A-Za-z]{20,}|github_pat_[0-9A-Za-z_]{20,}|xox[abps]-[0-9A-Za-z-]{10,}|AIza[0-9A-Za-z_-]{35}|sk_live_[0-9A-Za-z]{16,}|pk_live_[0-9A-Za-z]{16,}|-----BEGIN[[:space:]][A-Z ]*PRIVATE KEY-----'
+
+          # -o so each MATCHED TOKEN is judged individually rather than the whole
+          # line, then self-declared non-functional placeholders are dropped: a
+          # token containing EXAMPLE is a published documentation value that
+          # cannot authenticate against anything.
+          #
+          # This exclusion is narrow and it is load-bearing. The only tokens it
+          # removes belong to NEGATIVE SECURITY TESTS - cases asserting that the
+          # application and the provisioning script REFUSE an endpoint carrying
+          # credentials, and that a refusal never echoes the offending value back
+          # into a log. Flagging those would put a maintainer under pressure to
+          # delete the very tests that harden this repository against credential
+          # leakage, which is how a scan stops being read at all. Any real-shaped
+          # token without EXAMPLE in it still fails this gate, and judging tokens
+          # rather than lines means a genuine key sharing a line with an example
+          # is still caught.
+          # The two stages are deliberately NOT one pipeline. awk exits 0 whether
+          # or not its expression selected anything, so a pipeline ending in awk
+          # cannot report "nothing matched" through its exit status, and testing
+          # that status would report a finding on every run with an empty value.
+          # Matching and filtering are therefore separated, and the verdict is
+          # taken from whether the filtered file has content.
+          raw="${RUNNER_TEMP}/credential-matches.raw"
+          filtered="${RUNNER_TEMP}/credential-matches.txt"
+          if grep -rnoE "${patterns}" ${targets} > "${raw}" 2>/dev/null; then
+            awk -F: '$NF !~ /EXAMPLE/' "${raw}" > "${filtered}"
+          else
+            : > "${filtered}"
+          fi
+
+          if [ -s "${filtered}" ]; then
+            finding Blocker "${targets}" 'provider credential pattern' \
+              'no key material of any kind' \
+              "$(head -c 300 "${filtered}" | tr '\n' ' ')" \
+              'remove the value, rotate it at the provider, and read it from the environment instead. Never commit a credential.'
+          else
+            printf 'No provider-shaped credential material found outside the frozen corpus.\n'
+            printf 'Documented EXAMPLE placeholders in negative security tests are excluded by design: %s such token(s) seen.\n' \
+              "$(wc -l < "${raw}" | tr -d ' ')"
+          fi
+
+          # A committed default for the signing key is the specific High-severity
+          # defect the prior implementation carried. Every profile must indirect
+          # to the environment and fail fast when it is unset.
+          #
+          # The pattern anchors on the KEY AT THE START OF ITS OWN LINE rather
+          # than looking for "jwt" adjacent to it, because in YAML the property is
+          # nested - "jwt:" sits on one line and "signing-key:" on the next - so a
+          # pattern requiring both on one line cannot see the realistic case at
+          # all. It then requires the value to begin with something other than
+          # "$", so the environment-indirected form is accepted and a literal is
+          # not. Anchoring on leading whitespace also means a commented example
+          # cannot trigger it, since a comment line begins with "#".
+          if hits="$(grep -rnE '^[[:space:]]*(signing-key|signingKey|jwt-secret|jwt_secret)[[:space:]]*:[[:space:]]*[^$[:space:]#]' \
+              src/main/resources --include='*.yml')"; then
+            finding Blocker src/main/resources 'JWT signing key' \
+              'an environment reference with no committed default' \
+              "$(printf '%s' "${hits}" | head -c 300 | tr '\n' ' ')" \
+              'indirect the key through the environment in every profile and let the application fail fast when it is unset. A committed default is a shipped credential.'
+          else
+            printf 'The signing key is environment-indirected in every profile.\n'
+          fi
+
+          conclude 'Gate 6 - secret hygiene'
+
+      - name: Assert this workflow is the only file in .github
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          actual="$(find .github -type f | sort | tr '\n' ' ')"
+          expected='.github/workflows/build.yml '
+          if [ "${actual}" != "${expected}" ]; then
+            finding Medium .github 'directory contents' \
+              "${expected}" "${actual}" \
+              'this folder holds exactly one workflow. A release, deploy, publish or second workflow, a composite action, a version-bump bot manifest, an owners file, a duplicate security policy or an issue template all either contradict the determinism this file exists to provide or duplicate guidance CONTRIBUTING.md already gives.'
+          else
+            printf '.github holds exactly one file: .github/workflows/build.yml\n'
+          fi
+
+          conclude 'Workflow inventory'
+
+  # ------------------------------------------------------------------
+  # Gate 2. One Maven command enforces the zero-warning compile, the unit,
+  # integration and end-to-end tiers, the coverage floor, the toolchain floors
+  # and the vulnerability scan. The contract assertions run BEFORE it, so a
+  # dependency or toolchain defect is reported as itself rather than as a
+  # confusing compilation failure several minutes later.
+  # ------------------------------------------------------------------
   verify:
-    name: Zero-warning build, tests and coverage
+    name: Zero-warning build, tests, coverage and vulnerability scan
     runs-on: ubuntu-latest
+    env:
+      # Bounded so a runaway test tier fails rather than consuming the whole job
+      # allowance. Not a performance target - see Gate 3, which is a measurement.
+      MAVEN_OPTS: -Xmx3072m -XX:MaxMetaspaceSize=512m
     steps:
       - name: Check out
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Set up JDK ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
+      - name: Set up JDK ${{ env.JAVA_FEATURE_VERSION }}
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: ${{ env.JAVA_FEATURE_VERSION }}
+          # Caches ~/.m2/repository. This cannot change a verdict: the cached
+          # content is resolved dependency jars whose coordinates pom.xml pins
+          # exactly, and the vulnerability scan re-validates its own data
+          # freshness on every run with failOnError set, so data it cannot
+          # refresh FAILS the build rather than passing it. A separately keyed
+          # vulnerability-data cache is deliberately not added, because a cache
+          # able to stale-bypass a scan must not exist. The tradeoff bought here
+          # is transfer time only.
           cache: maven
 
-      - name: Report toolchain and assert the wrapper resolved the pinned Maven
+      - name: Install the shared finding reporter
         run: |
           set -euo pipefail
-          java -version
-          ./mvnw -version
-          resolved="$(./mvnw -version 2>/dev/null | awk '/^Apache Maven /{print $3; exit}')"
-          if [ "${resolved}" != "${MAVEN_VERSION}" ]; then
-            echo "::error::the wrapper resolved Apache Maven ${resolved}, not the pinned" \
-                 "${MAVEN_VERSION}. .mvn/wrapper/maven-wrapper.properties is the single" \
-                 "source of that version and carries the distribution checksum; fix it" \
-                 "there rather than installing a Maven beside it."
-            exit 1
+          cat > "${RUNNER_TEMP}/finding.sh" <<'REPORTER'
+          FINDINGS=0
+
+          finding() {
+            printf '::error title=%s::%s [%s] expected: %s | actual: %s | remediation: %s\n' \
+              "$1" "$2" "$3" "$4" "$5" "$6"
+            FINDINGS=$((FINDINGS + 1))
+          }
+
+          unavailable() {
+            printf '::error title=%s::%s Not available - %s\n' "$1" "$2" "$3"
+            FINDINGS=$((FINDINGS + 1))
+          }
+
+          conclude() {
+            if [ "${FINDINGS}" -ne 0 ]; then
+              printf '%s: %d finding(s) reported above; see docs/validation-gates.md.\n' \
+                "$1" "${FINDINGS}"
+              exit 1
+            fi
+            printf '%s: no findings.\n' "$1"
+          }
+          REPORTER
+          echo "Reporter installed at ${RUNNER_TEMP}/finding.sh"
+
+      # ----------------------------------------------------------------------
+      # The launcher is the root of the build's integrity, so it is validated
+      # rather than trusted. Two boundary conditions make the sharpened form
+      # necessary, and neither is visible from a mere existence check:
+      #
+      #   - a BLANK distributionSha256Sum silently disables integrity
+      #     verification altogether. The build still succeeds and exits 0 having
+      #     checked nothing, which is the worst possible failure shape.
+      #   - an UPPERCASE hex value passes on Linux and therefore on this runner,
+      #     but fails only on Windows, because that launcher lowercases the hash
+      #     it computes and then compares verbatim. A silent platform asymmetry
+      #     is exactly what a CI assertion should catch on behalf of a developer
+      #     who has no Windows machine to discover it on.
+      #
+      # There is deliberately NO assertion about a wrapper jar. distributionType
+      # is only-script, which means the launcher is a script that downloads and
+      # checksums a distribution; no jar is committed and none should be.
+      # ----------------------------------------------------------------------
+      - name: Assert the Maven wrapper pins a checksum-verified distribution
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          if [ ! -f mvnw ]; then
+            unavailable Blocker mvnw 'the launcher is absent; restore it and mark it executable'
+          elif [ ! -x mvnw ]; then
+            finding Blocker mvnw 'file mode' 'executable' 'not executable' \
+              'run "git update-index --chmod=+x mvnw" and commit the mode change, or every job must invoke it through an interpreter.'
+          else
+            printf 'mvnw is present and executable.\n'
           fi
-          echo "Apache Maven ${resolved} resolved by the checksum-verified wrapper."
 
-      - name: Verify (compile, unit + integration + e2e, JaCoCo >= 80% line)
-        run: ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+          if [ ! -f mvnw.cmd ]; then
+            finding Medium mvnw.cmd 'presence' 'present' 'absent' \
+              'restore the Windows launcher. Without it the build is reproducible on Unix only.'
+          else
+            printf 'mvnw.cmd is present.\n'
+          fi
+
+          if [ ! -s "${WRAPPER_PROPERTIES}" ]; then
+            unavailable Blocker "${WRAPPER_PROPERTIES}" \
+              'the distribution coordinates and checksum are absent, so nothing pins the Maven version'
+            conclude 'Maven wrapper'
+          fi
+
+          # Key by key, each asserted against its exact expected form.
+          if ! grep -qE '^wrapperVersion=3\.3\.4$' "${WRAPPER_PROPERTIES}"; then
+            finding Medium "${WRAPPER_PROPERTIES}" wrapperVersion '3.3.4' \
+              "$(grep -E '^wrapperVersion=' "${WRAPPER_PROPERTIES}" || echo absent)" \
+              'pin the wrapper version exactly; a floating value reintroduces the nondeterminism this file exists to remove.'
+          fi
+
+          if ! grep -qE '^distributionType=only-script$' "${WRAPPER_PROPERTIES}"; then
+            finding Medium "${WRAPPER_PROPERTIES}" distributionType 'only-script' \
+              "$(grep -E '^distributionType=' "${WRAPPER_PROPERTIES}" || echo absent)" \
+              'keep the script-only launcher. Any other type expects a committed wrapper jar, which this repository deliberately does not carry.'
+          fi
+
+          if ! grep -qE '^distributionUrl=https://.*apache-maven-3\.9\.11-bin\.zip$' \
+              "${WRAPPER_PROPERTIES}"; then
+            finding Blocker "${WRAPPER_PROPERTIES}" distributionUrl \
+              "an https URL ending in apache-maven-${MAVEN_VERSION}-bin.zip" \
+              "$(grep -E '^distributionUrl=' "${WRAPPER_PROPERTIES}" || echo absent)" \
+              'pin the exact -bin.zip distribution over https. The launcher rejects a URL that does not end in -bin.zip, so pinning the .tar.gz is not an option.'
+          fi
+
+          # The checksum must be present, exactly 64 characters, and LOWERCASE.
+          if ! grep -qE '^distributionSha256Sum=[0-9a-f]{64}$' "${WRAPPER_PROPERTIES}"; then
+            finding Blocker "${WRAPPER_PROPERTIES}" distributionSha256Sum \
+              '64 lowercase hexadecimal characters' \
+              "$(grep -E '^distributionSha256Sum=' "${WRAPPER_PROPERTIES}" \
+                 | sed 's/=.*/=<redacted-shape-mismatch>/' || echo absent)" \
+              'restore the published SHA-256 in lowercase. A blank value disables verification entirely while still exiting 0, and an uppercase value passes here but fails only on Windows.'
+          else
+            printf '%s pins Apache Maven %s with a 64-character lowercase SHA-256.\n' \
+              "${WRAPPER_PROPERTIES}" "${MAVEN_VERSION}"
+          fi
+
+          # Failure mode 10, reported rather than enforced, and the distinction is
+          # deliberate. Without unzip the launcher rewrites the distribution URL
+          # to a .tar.gz while distributionSha256Sum still pins the .zip, so the
+          # hashes cannot match and it exits 1 claiming the distribution "might be
+          # compromised" - when the checksum is in fact correct and the archive is
+          # simply a different one. Naming that here means the misleading message
+          # arrives already explained.
+          #
+          # It is NOT a finding, because the tool is only needed when the
+          # distribution must actually be downloaded and extracted: a runner whose
+          # wrapper cache already holds the pinned distribution never invokes it,
+          # and failing such a run would be a false positive on a build that works.
+          # A gate that fails a working build is how gates lose their audience.
+          # The authoritative check is therefore the next step, which asserts the
+          # wrapper really did resolve the pinned version - the observable outcome
+          # rather than a proxy for it.
+          for tool in unzip curl wget; do
+            if command -v "${tool}" > /dev/null 2>&1; then
+              printf 'available %s\n' "${tool}"
+            else
+              printf '::warning title=Low::%s [runner tool: %s] expected: available on PATH | actual: absent | remediation: install it if the next step reports a checksum-mismatch failure, which is what an absent unzip looks like. Never blank the checksum and never pin the .tar.gz.\n' \
+                "${WRAPPER_PROPERTIES}" "${tool}"
+            fi
+          done
+
+          conclude 'Maven wrapper'
+
+      - name: Assert the toolchain is JDK 25 and Maven ${{ env.MAVEN_VERSION }}
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          java -version
+          java_feature="$(java -version 2>&1 \
+            | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+          if [ "${java_feature}" != "${JAVA_FEATURE_VERSION}" ]; then
+            finding Blocker pom.xml 'maven.compiler.release / enforcer requireJavaVersion' \
+              "Java feature version ${JAVA_FEATURE_VERSION}" "${java_feature:-unreadable}" \
+              'provision JDK 25 through the pinned setup action. Never fall back to Java 21 or 17, and never hardcode a host JDK path - the action supplies JAVA_HOME.'
+          else
+            printf 'Java feature version %s (patch level as shipped by the pinned distribution).\n' \
+              "${java_feature}"
+          fi
+
+          # The wrapper, never a host or marketplace Maven. This is also the
+          # check that proves removing the marketplace install step was safe.
+          ./mvnw --version
+          resolved="$(./mvnw --version 2>/dev/null \
+            | sed -n 's/^Apache Maven \([0-9][^ ]*\).*/\1/p' | head -n 1)"
+          if [ "${resolved}" != "${MAVEN_VERSION}" ]; then
+            finding Blocker "${WRAPPER_PROPERTIES}" 'resolved Apache Maven version' \
+              "${MAVEN_VERSION}" "${resolved:-unreadable}" \
+              'correct the distributionUrl and its checksum in that file, which is the single source of this version. Do not install a Maven beside the wrapper, and do not accept 3.9.9 or the 3.8 line.'
+          else
+            printf 'Apache Maven %s, resolved by the checksum-verified wrapper.\n' "${resolved}"
+          fi
+
+          conclude 'Toolchain'
 
       # ----------------------------------------------------------------------
-      # Test-collection audit. Surefire 3.5.4 writes one report per top level
-      # test class and records every JUnit 5 @Nested case as a <testcase>
-      # element inside it, but it does NOT roll those cases up into the root
-      # <testsuite tests="..."> attribute: a class whose cases all live in
-      # @Nested groups advertises tests="0" while carrying hundreds of
-      # elements. The tests really do run - Maven's own console summary and the
-      # elements agree - but any consumer that sums the suite attributes reads a
-      # small fraction of the real total and can report undercollection on a
-      # green build.
+      # THE BUILD-BREAKING COORDINATE RENAME, asserted in both halves.
       #
-      # Measured on this repository with Surefire 3.5.4 and JUnit 5.12.2: 106
-      # surefire suite reports carrying 9,314 <testcase> elements, against a
-      # suite tests attribute sum of 1,571, with 89 of the 106 suites
-      # advertising tests="0". The 3 failsafe reports are unaffected (39 = 39),
-      # because those suites declare their cases at the top level.
+      # The Testcontainers 2.x line renamed every module artefact, so the bare
+      # 1.x coordinates - org.testcontainers localstack, postgresql and
+      # junit-jupiter - DO NOT EXIST at the pinned version and fail resolution
+      # outright. Compounding that, Spring Boot already manages a 1.x version and
+      # imports the Testcontainers bill of materials itself, so declaring a
+      # competing import yields an ordering-dependent resolution that can
+      # silently select 1.x.
       #
-      # This step makes the <testcase> element count the authoritative total and
-      # refuses the attribute sum as a substitute. It fails the build when no
-      # cases are collected at all, when any case failed or errored - including a
-      # failure inside a @Nested group of a suite that advertises zero, which an
-      # attribute-only consumer cannot see - and it reports the discrepancy
-      # rather than tolerating it silently. The discrepancy count falls to zero
-      # on its own once a provider that rolls @Nested cases up into the suite
-      # attribute is available, at which point this step keeps passing unchanged.
+      # The remedy has two halves and BOTH are required, which is why both are
+      # asserted: override the VERSION PROPERTY, and use only prefixed
+      # coordinates. Overriding without renaming resolves artefacts that do not
+      # exist; renaming without overriding resolves the wrong version. Either
+      # half alone still fails, and each half's failure looks nothing like the
+      # other's.
       # ----------------------------------------------------------------------
-      - name: Audit test collection (testcase elements are the authoritative total)
+      - name: Assert the Testcontainers coordinate contract
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          expected_version=2.0.3
+
+          declared="$(sed -n 's:.*<testcontainers\.version>\([^<]*\)</testcontainers\.version>.*:\1:p' \
+            pom.xml | head -n 1)"
+          if [ "${declared}" != "${expected_version}" ]; then
+            finding Blocker pom.xml 'testcontainers.version property' \
+              "${expected_version}" "${declared:-absent}" \
+              'set the version property to the pinned value. This is half one of the remedy; without it the managed 1.x version wins.'
+          else
+            printf 'testcontainers.version property is %s.\n' "${declared}"
+          fi
+
+          if grep -q 'testcontainers-bom' pom.xml; then
+            finding Blocker pom.xml 'testcontainers-bom import' \
+              'no import; the version property is the only lever' 'an import is declared' \
+              'remove the import. A second bill of materials competes with the one Spring Boot already imports and makes resolution ordering-dependent.'
+          else
+            printf 'No competing Testcontainers bill of materials is imported.\n'
+          fi
+
+          # Exactly the four prefixed module artefacts, each asserted by name.
+          for module in testcontainers testcontainers-localstack \
+                        testcontainers-postgresql testcontainers-junit-jupiter; do
+            if ! grep -qE "<artifactId>${module}</artifactId>" pom.xml; then
+              finding Blocker pom.xml "artifactId ${module}" 'declared' 'absent' \
+                'declare the prefixed module artefact. This is half two of the remedy.'
+            else
+              printf 'prefixed module present: %s\n' "${module}"
+            fi
+          done
+
+          # And zero bare 1.x module coordinates, matched only inside an
+          # org.testcontainers dependency block so an unrelated artefact of the
+          # same short name elsewhere cannot trigger a false finding.
+          bare="$(awk '
+            /<groupId>org\.testcontainers<\/groupId>/ { pending = 1; next }
+            pending && /<artifactId>/ {
+              line = $0
+              sub(/.*<artifactId>/, "", line)
+              sub(/<\/artifactId>.*/, "", line)
+              if (line == "localstack" || line == "postgresql" || line == "junit-jupiter") {
+                print "org.testcontainers:" line
+              }
+              pending = 0
+            }
+          ' pom.xml)"
+          if [ -n "${bare}" ]; then
+            finding Blocker pom.xml 'bare Testcontainers module coordinate' \
+              'none' "$(printf '%s' "${bare}" | tr '\n' ' ')" \
+              'rename each to its prefixed form. These coordinates do not exist at the pinned version and fail resolution outright.'
+          else
+            printf 'No bare Testcontainers module coordinate is declared.\n'
+          fi
+
+          conclude 'Testcontainers coordinates'
+
+      # Reported, not asserted. The runner's Docker version is whatever the
+      # image ships and this project does not pin it - docs/project-guide.md:522
+      # records 28.x while the authoring host measured a later release, so a
+      # pinned assertion would fail for a reason unrelated to this codebase. What
+      # matters is that a runtime is present, because the integration and
+      # end-to-end tiers start real containers through Testcontainers.
+      - name: Report the container runtime available to Testcontainers
+        run: |
+          set -euo pipefail
+          docker --version
+          docker compose version
+          docker info --format 'server version: {{.ServerVersion}} | storage driver: {{.Driver}}'
+
+      # ----------------------------------------------------------------------
+      # THE GATE. One command, no overrides, nonzero exit preserved.
+      #
+      # Deliberately absent: -DskipTests, -DskipITs and -Dmaven.test.skip, so the
+      # unit, integration and end-to-end tiers all really run; continue-on-error,
+      # a trailing "|| true" and "set +e", so a failure is a failure; and any
+      # -Dtest or -Dit.test selector, because pom.xml already configures Failsafe
+      # with path-based includes for **/integration/** and **/e2e/** - the
+      # integration and end-to-end classes end in Test, not IT, so a
+      # workflow-side selector would silently narrow the run.
+      #
+      # No skip is passed for the vulnerability scan either. pom.xml sets no skip
+      # element, so the scan runs by default and this one command therefore
+      # enforces all six gates it configures: the zero-warning compile, the three
+      # test tiers, the coverage floor, the toolchain floors and the scan. A
+      # skipped, blocked or partially completed scan is not a passing gate.
+      #
+      # This is character for character the command docs/validation-gates.md
+      # documents and the command CONTRIBUTING.md:34 asks a contributor to run
+      # locally, so a red result here is reproducible on a developer machine.
+      # ----------------------------------------------------------------------
+      - name: Verify - compile warning-free, run every tier, enforce every gate
+        env:
+          # Optional and read from the environment, never committed and never
+          # printed. The scan works on public retrieval without it, at a lower
+          # request rate; pom.xml names the variable rather than materialising
+          # its value, so it never reaches a command line or the process table.
+          # When it is unset this step does NOT fail: failing because a
+          # maintainer has not configured an optional key would be the
+          # environment-specific assumption Rule 1 clause C forbids.
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: ./mvnw --batch-mode --no-transfer-progress clean verify
+
+      # ----------------------------------------------------------------------
+      # TEST-COLLECTION AUDIT: the testcase element count is the authority.
+      #
+      # Surefire writes one report per top-level test class and records every
+      # JUnit 5 nested case as a testcase element inside it, but it does NOT roll
+      # those cases up into the root testsuite "tests" attribute. A class whose
+      # cases all live in nested groups therefore advertises tests="0" while
+      # carrying many elements. The cases really do run - Maven's own console
+      # summary and the elements agree - but any consumer that sums the suite
+      # attributes reads a fraction of the real total and can report
+      # undercollection on a green build.
+      #
+      # This step makes the element count authoritative and refuses the attribute
+      # sum as a substitute. It fails when nothing was collected at all, and when
+      # any case failed or errored - including a failure inside a nested group of
+      # a suite advertising zero, which an attribute-only consumer cannot see. The
+      # discrepancy is reported rather than tolerated silently, and falls to zero
+      # on its own once a provider that performs the roll-up is available, at
+      # which point this step keeps working unchanged.
+      #
+      # No count is asserted against a fixed expected total, deliberately. The
+      # suite size is a property of the test tree, not a contract of this file,
+      # and hardcoding a figure here would turn every added test into a CI
+      # failure. What is asserted is what actually matters: that cases were
+      # collected, and that none of them failed.
+      # ----------------------------------------------------------------------
+      - name: Audit test collection - testcase elements are the authoritative total
         if: always()
-        shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -195,385 +1094,935 @@ jobs:
           import sys
           import xml.etree.ElementTree as ET
 
-          FAILED = 0
-          TOTAL = 0
-          ATTRIBUTE_SUM = 0
-          UNDERREPORTING_SUITES = 0
-          SUITES = 0
+          failed = 0
+          collected = 0
+          attribute_sum = 0
+          under_advertising = 0
+          suites = 0
 
           for directory in ("target/surefire-reports", "target/failsafe-reports"):
               for report in sorted(glob.glob(directory + "/TEST-*.xml")):
                   root = ET.parse(report).getroot()
                   cases = list(root.iter("testcase"))
                   advertised = int(root.get("tests") or 0)
-                  SUITES += 1
-                  TOTAL += len(cases)
-                  ATTRIBUTE_SUM += advertised
+                  suites += 1
+                  collected += len(cases)
+                  attribute_sum += advertised
                   if advertised < len(cases):
-                      UNDERREPORTING_SUITES += 1
+                      under_advertising += 1
                   for case in cases:
                       if case.find("failure") is not None or case.find("error") is not None:
-                          FAILED += 1
-                          print("FAILED: {}#{}".format(case.get("classname"), case.get("name")))
+                          failed += 1
+                          print("FAILED: {}#{}".format(
+                              case.get("classname"), case.get("name")))
 
-          print("suite reports                : {}".format(SUITES))
-          print("testcase elements (AUTHORITY) : {}".format(TOTAL))
-          print("suite tests attribute sum     : {}".format(ATTRIBUTE_SUM))
-          print("suites under-advertising      : {}".format(UNDERREPORTING_SUITES))
-          print("failed or errored cases       : {}".format(FAILED))
+          print("suite reports                 : {}".format(suites))
+          print("testcase elements (AUTHORITY) : {}".format(collected))
+          print("suite tests attribute sum     : {}".format(attribute_sum))
+          print("suites under-advertising      : {}".format(under_advertising))
+          print("failed or errored cases       : {}".format(failed))
 
-          if SUITES == 0 or TOTAL == 0:
-              sys.exit("no test cases were collected; the reports are missing or empty")
-          if FAILED:
-              sys.exit("{} test case(s) failed or errored".format(FAILED))
-          if ATTRIBUTE_SUM < TOTAL:
+          if suites == 0 or collected == 0:
+              sys.exit("::error title=Blocker::target/surefire-reports and "
+                       "target/failsafe-reports [testcase elements] expected: at least "
+                       "one collected case | actual: none | remediation: the reports are "
+                       "missing or empty, so no tier ran. Check the compile step and "
+                       "confirm no skip flag reached Maven.")
+          if failed:
+              sys.exit("::error title=Blocker::target/surefire-reports and "
+                       "target/failsafe-reports [testcase outcome] expected: zero "
+                       "failures | actual: {} failed or errored | remediation: fix the "
+                       "cases named above.".format(failed))
+          if attribute_sum < collected:
               print(
-                  "NOTE: the suite tests attributes under-report by {} case(s) across {} suite(s), "
-                  "because Surefire does not roll JUnit 5 @Nested cases up into the root testsuite "
-                  "tests attribute. Suite-attribute-only aggregation is REJECTED for this "
-                  "repository: the testcase element count above is the authoritative total, and "
-                  "this step has already asserted that none of those cases failed."
-                  .format(TOTAL - ATTRIBUTE_SUM, UNDERREPORTING_SUITES)
-              )
+                  "NOTE: the suite tests attributes under-report by {} case(s) across "
+                  "{} suite(s), because Surefire does not roll JUnit 5 nested cases up "
+                  "into the root testsuite tests attribute. Suite-attribute-only "
+                  "aggregation is therefore REJECTED for this repository: the element "
+                  "count above is authoritative, and this step has already asserted "
+                  "that none of those cases failed.".format(
+                      collected - attribute_sum, under_advertising))
           PY
 
-      - name: Upload surefire and failsafe reports
+      # A green build that produced no report is not evidence, so the four
+      # required reports are asserted to exist. This step runs only after the
+      # gate above succeeded, which is when their absence would be genuinely
+      # anomalous rather than an expected consequence of an earlier failure.
+      - name: Assert every required report was produced
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          expect_report() {
+            if [ ! -e "$1" ]; then
+              unavailable High "$1" "$2"
+            else
+              printf 'produced  %s\n' "$1"
+            fi
+          }
+
+          expect_report target/surefire-reports \
+            'the unit tier produced no report, so its result cannot be evidenced'
+          expect_report target/failsafe-reports \
+            'the integration and end-to-end tiers produced no report; confirm Failsafe ran'
+          expect_report target/site/jacoco/index.html \
+            'the merged coverage report is absent, so the line-coverage floor cannot be evidenced'
+          expect_report target/carddemo-1.0.0.jar \
+            'the executable archive was not packaged, so there is nothing for the image build to ship'
+
+          if ! ls target/site/jacoco/jacoco*.xml > /dev/null 2>&1; then
+            unavailable High 'target/site/jacoco/jacoco*.xml' \
+              'the machine-readable coverage report is absent; a human-readable report alone cannot be consumed by a coverage tool'
+          else
+            printf 'produced  %s\n' "$(ls target/site/jacoco/jacoco*.xml | head -n 1)"
+          fi
+
+          # The vulnerability scan writes HTML, JSON and SARIF into its own
+          # directory. Its absence after a successful verify means the goal did
+          # not execute, which is the "skipped scan read as a clean scan" failure
+          # that must never pass silently.
+          if [ ! -d target/dependency-check ]; then
+            unavailable Blocker target/dependency-check \
+              'the vulnerability scan produced no report after a successful verify, so the gate did not execute. Confirm no skip property and no offline mode reached Maven, and that the feed was reachable'
+          else
+            printf 'produced  %s\n' 'target/dependency-check'
+          fi
+
+          conclude 'Required reports'
+
+      # ----------------------------------------------------------------------
+      # Evidence upload. if: always() is what makes a FAILING run still publish
+      # its reports, which is what CONTRIBUTING.md:37 relies on when it asks a
+      # contributor to act on automated CI feedback in the pull request.
+      #
+      # if-no-files-found is "error" on every required report and never "ignore".
+      # ignore is precisely the setting that turns a missing report into a silent
+      # no-op, and Rule 1 clause B requires a boundary condition to be handled
+      # explicitly rather than hidden. On a run that failed before the tiers
+      # executed this surfaces a second annotation, and that is intended: it
+      # states that the tiers produced nothing, which is information.
+      # ----------------------------------------------------------------------
+      - name: Upload the Surefire and Failsafe reports
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-reports
           path: |
             target/surefire-reports/**
             target/failsafe-reports/**
-          if-no-files-found: ignore
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
-      - name: Upload JaCoCo coverage report
+      - name: Upload the JaCoCo coverage report - XML and HTML
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: jacoco-report
+          name: jacoco-coverage-report
           path: target/site/jacoco/**
-          if-no-files-found: ignore
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
-      - name: Upload executable JAR
-        if: success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - name: Upload the dependency vulnerability report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: carddemo-jar
-          path: target/carddemo-*.jar
-          if-no-files-found: ignore
+          name: dependency-check-report
+          path: target/dependency-check/**
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
-  # --------------------------------------------------------------------------
-  # PACKAGED-ARTIFACT SMOKE. Runs the jar the Dockerfile ships, not the tree
-  # the tests compiled.
-  #
-  # WHY THIS JOB EXISTS AND WHY THE verify JOB CANNOT REPLACE IT. Every test
-  # tier above runs from an exploded classpath: Surefire and Failsafe put
-  # target/classes and the dependency jars on the class path directly, so the
-  # nested-jar layout of the executable archive - BOOT-INF/classes,
-  # BOOT-INF/lib/*.jar, BOOT-INF/classpath.idx and the Spring Boot loader that
-  # reads them - is never exercised. A runtime assessment reported 500 for every
-  # chunked request body against the packaged jar while the same request
-  # answered 200 from an exploded classpath, which is precisely the class of
-  # defect the exploded tiers cannot see. Whatever the cause in any single
-  # environment, the structural gap is real and this job closes it: the artifact
-  # that ships is started and exercised.
-  #
-  # THE THREE CHECKS ARE THE THREE THINGS THAT WERE REPORTED BROKEN, plus a
-  # happy path so a green result cannot come from an application that refuses
-  # everything:
-  #   1. a chunked POST to the anonymous sign-on must not be a 5xx;
-  #   2. a wildcard Content-Type must be 415 in the authored envelope, never a
-  #      500 with the framework's default body;
-  #   3. the same sign-on with a well-framed JSON body must succeed.
-  #
-  # PostgreSQL is a service container because Flyway owns the schema and
-  # Hibernate validates against it at startup, so the jar cannot boot without
-  # one. The image is the same major line docker-compose.yml pins and is pinned
-  # by digest here for the same reason every other reference in this file is.
-  # LocalStack is deliberately NOT started: none of the three checks touches S3
-  # or SQS, and the readiness group - not liveness, and not the routes under
-  # test - is the only thing that would report on them.
-  # --------------------------------------------------------------------------
-  packaged-artifact-smoke:
-    name: Packaged-jar smoke (framing, media type, happy path)
+      - name: Upload the executable archive
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: carddemo-executable-jar
+          path: target/carddemo-*.jar
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # ------------------------------------------------------------------
+  # Gate 8. The committed topology is stood up and the substrate is exercised
+  # for real: the schema the three migrations establish, the object store, the
+  # queue and the scrape target. Every test tier above runs from an exploded
+  # classpath, so the nested-archive layout the Dockerfile actually ships is
+  # never exercised there - this job starts that artefact instead, which is a
+  # structural gap the verify job cannot close however many tests it runs.
+  # ------------------------------------------------------------------
+  integration:
+    name: Container topology, migrations, object store, queue and scrape target
     needs: verify
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
-        env:
-          POSTGRES_DB: carddemo
-          POSTGRES_USER: carddemo
-          POSTGRES_PASSWORD: carddemo
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U carddemo -d carddemo"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
+    env:
+      # The bounded readiness the provisioning script honours. Named here so the
+      # values are reviewable rather than implicit.
+      INIT_MAX_ATTEMPTS: "30"
+      INIT_SLEEP_SECONDS: "2"
     steps:
       - name: Check out
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Set up JDK ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
+          persist-credentials: false
 
-      - name: Build the executable JAR
-        run: ./mvnw -B -ntp -DskipTests -Ddependency-check.skip=true clean package
-
-      - name: Start the packaged JAR
-        env:
-          SPRING_PROFILES_ACTIVE: local
-          SERVER_PORT: "18080"
-          POSTGRES_HOST: localhost
-          POSTGRES_PORT: "5432"
-          POSTGRES_DB: carddemo
-          POSTGRES_USER: carddemo
-          POSTGRES_PASSWORD: carddemo
-          # A throwaway value generated per run. It is 32 bytes because HS256
-          # requires it, and it never leaves this job.
-          JWT_SIGNING_KEY: ci-smoke-signing-key-of-at-least-32-bytes
-          AWS_ACCESS_KEY_ID: test
-          AWS_SECRET_ACCESS_KEY: test
-          AWS_DEFAULT_REGION: us-east-1
-          AWS_REGION: us-east-1
-          AWS_ENDPOINT_URL: http://localhost:4566
+      - name: Install the shared finding reporter
         run: |
           set -euo pipefail
-          jar="$(ls target/carddemo-*.jar | head -n 1)"
-          echo "Starting ${jar}"
-          nohup java -jar "${jar}" > smoke.log 2>&1 &
-          echo "$!" > smoke.pid
-          for _ in $(seq 1 90); do
-            if curl -sf -m 2 http://localhost:18080/actuator/health/liveness > /dev/null 2>&1; then
-              echo "The packaged jar is serving."
-              exit 0
+          cat > "${RUNNER_TEMP}/finding.sh" <<'REPORTER'
+          FINDINGS=0
+
+          finding() {
+            printf '::error title=%s::%s [%s] expected: %s | actual: %s | remediation: %s\n' \
+              "$1" "$2" "$3" "$4" "$5" "$6"
+            FINDINGS=$((FINDINGS + 1))
+          }
+
+          unavailable() {
+            printf '::error title=%s::%s Not available - %s\n' "$1" "$2" "$3"
+            FINDINGS=$((FINDINGS + 1))
+          }
+
+          conclude() {
+            if [ "${FINDINGS}" -ne 0 ]; then
+              printf '%s: %d finding(s) reported above; see docs/validation-gates.md.\n' \
+                "$1" "${FINDINGS}"
+              exit 1
             fi
-            sleep 2
-          done
-          echo "::error::the packaged jar did not start within 180 seconds."
-          tail -n 120 smoke.log
-          exit 1
+            printf '%s: no findings.\n' "$1"
+          }
+          REPORTER
+          echo "Reporter installed at ${RUNNER_TEMP}/finding.sh"
 
-      - name: Smoke the packaged JAR
+      # ----------------------------------------------------------------------
+      # Every value the topology needs is generated HERE, per run, registered
+      # with the runner's masking mechanism so it cannot appear in a log, and
+      # written to a gitignored .env that lives only on this runner. No
+      # repository secret is referenced on any part of this path.
+      #
+      # The AWS values are explicitly non-production placeholders. The emulator
+      # accepts any well-formed pair and both the application configuration and
+      # the provisioning script refuse an endpoint host outside their shared
+      # allowlist, so there is no live account, no live credential and no
+      # reachable production endpoint anywhere in this job.
+      # ----------------------------------------------------------------------
+      - name: Generate the ephemeral, masked local environment
         run: |
           set -euo pipefail
-          creds='{"userId":"ADMIN001","password":"PASSWORD"}'
 
-          # 1. A chunked body must be read like any other. Anything in the 5xx
-          #    range is the reported defect and fails the job.
-          chunked="$(printf '%s' "${creds}" \
-            | curl -sS -o smoke-chunked.out -w '%{http_code}' \
-                -X POST http://localhost:18080/api/auth/signon \
-                -H 'Content-Type: application/json' \
-                -H 'Transfer-Encoding: chunked' --data-binary @-)"
-          echo "chunked sign-on -> ${chunked}"
-          case "${chunked}" in
-            5*) echo "::error::a chunked request body answered ${chunked} against the packaged jar."
-                cat smoke-chunked.out; exit 1;;
-          esac
+          # generated <name> - a fresh value, masked before it is ever used.
+          generated() {
+            value="$(openssl rand -hex 32)"
+            printf '::add-mask::%s\n' "${value}"
+            printf '%s=%s\n' "$1" "${value}" >> .env
+          }
 
-          # 2. A wildcard Content-Type must be 415 in the authored envelope.
-          media="$(printf '%s' "${creds}" \
-            | curl -sS -o smoke-media.out -w '%{http_code}' \
-                -X POST http://localhost:18080/api/auth/signon \
-                -H 'Content-Type: */*' --data-binary @-)"
-          echo "wildcard media type -> ${media}"
-          if [ "${media}" != "415" ]; then
-            echo "::error::a wildcard Content-Type answered ${media}, expected 415."
-            cat smoke-media.out; exit 1
-          fi
-          if ! grep -q 'CARDDEMO-UNSUPPORTED-MEDIA-TYPE' smoke-media.out; then
-            echo "::error::the 415 body is not the authored problem envelope."
-            cat smoke-media.out; exit 1
-          fi
+          : > .env
+          chmod 600 .env
 
-          # 3. The happy path, so a green result cannot come from an application
-          #    that refuses everything.
-          happy="$(printf '%s' "${creds}" \
-            | curl -sS -o smoke-happy.out -w '%{http_code}' \
-                -X POST http://localhost:18080/api/auth/signon \
-                -H 'Content-Type: application/json' --data-binary @-)"
-          echo "well-framed sign-on -> ${happy}"
-          if [ "${happy}" != "200" ]; then
-            echo "::error::the well-framed sign-on answered ${happy}, expected 200."
-            cat smoke-happy.out; exit 1
-          fi
-          grep -q '"token"' smoke-happy.out || {
-            echo "::error::the sign-on response carried no token."; cat smoke-happy.out; exit 1; }
-          echo "Packaged-artifact smoke passed."
+          generated JWT_SIGNING_KEY
+          generated POSTGRES_PASSWORD
+          generated CARDDEMO_DB_APP_PASSWORD
+          generated CARDDEMO_DB_MIGRATION_PASSWORD
+          generated METRICS_SCRAPE_PASSWORD
+          generated GRAFANA_ADMIN_PASSWORD
 
-      - name: Stop the packaged JAR and publish its log
-        if: always()
-        run: |
-          set -u
-          if [ -f smoke.pid ]; then kill "$(cat smoke.pid)" 2>/dev/null || true; fi
-          if [ -f smoke.log ]; then tail -n 200 smoke.log; fi
+          # Non-secret settings. The emulator placeholders are deliberately the
+          # literal word "test" so no reader can mistake them for real material.
+          cat >> .env <<'PLAIN'
+          GRAFANA_ADMIN_USER=carddemo-admin
+          AWS_ACCESS_KEY_ID=test
+          AWS_SECRET_ACCESS_KEY=test
+          AWS_DEFAULT_REGION=us-east-1
+          AWS_REGION=us-east-1
+          CARDDEMO_BIND_ADDRESS=127.0.0.1
+          SPRING_PROFILES_ACTIVE=local
+          PLAIN
 
-      - name: Upload the smoke log
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: packaged-artifact-smoke-log
-          path: |
-            smoke.log
-            smoke-*.out
-          if-no-files-found: ignore
+          printf 'Wrote %s assignments to a gitignored, runner-local .env.\n' \
+            "$(wc -l < .env | tr -d ' ')"
 
-  # --------------------------------------------------------------------------
-  # OWASP dependency-check. Kept as its own job because the NVD feed update
-  # dominates the run time and needs its own cache. A High/Critical finding
-  # (CVSS >= 7) fails the job; an unavailable feed is reported as a blocker
-  # rather than being silently treated as a pass.
-  # --------------------------------------------------------------------------
-  security-scan:
-    name: OWASP dependency-check (fail on CVSS >= 7)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Set up JDK ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-
-      - name: Cache the NVD data directory
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.m2/repository/org/owasp/dependency-check-data
-          key: nvd-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: nvd-${{ runner.os }}-
-
-      - name: Fail fast when no NVD API key is configured
-        run: |
-          if [ -z "${{ secrets.NVD_API_KEY }}" ]; then
-            echo "::error::NVD_API_KEY is not configured. The OWASP feed update" \
-                 "cannot complete reliably without it, and the scan must not be" \
-                 "reported as passing on incomplete vulnerability data." \
-                 "Request a key at https://nvd.nist.gov/developers/request-an-api-key" \
-                 "and add it as a repository secret named NVD_API_KEY."
+          # .gitignore already excludes it; asserted rather than assumed, because
+          # a tracked .env would put generated credentials into a commit.
+          if ! git check-ignore --quiet .env; then
+            printf '::error title=Blocker::.gitignore [.env] expected: ignored | actual: tracked or untracked-but-not-ignored | remediation: add .env to .gitignore before this job can safely write one.\n'
             exit 1
           fi
 
-      - name: Run the vulnerability scan
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-        run: ./mvnw -B -ntp org.owasp:dependency-check-maven:12.1.0:check
+      # ----------------------------------------------------------------------
+      # The topology is validated before anything is started, so a
+      # configuration defect is reported as one rather than as a container that
+      # mysteriously fails to come up.
+      # ----------------------------------------------------------------------
+      - name: Validate the committed container topology
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
 
-      - name: Upload the dependency-check reports
+          docker compose config --quiet
+          docker compose config --format json > "${RUNNER_TEMP}/topology.json"
+
+          python3 - "${RUNNER_TEMP}/topology.json" <<'PY'
+          import json
+          import re
+          import sys
+
+          EXPECTED = {"app", "postgres", "localstack", "jaeger", "prometheus", "grafana"}
+          DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
+          findings = []
+
+          topology = json.load(open(sys.argv[1]))
+          services = set(topology.get("services", {}))
+          networks = set(topology.get("networks", {}))
+
+          if services != EXPECTED:
+              findings.append(
+                  "docker-compose.yml [services] expected: {} | actual: {} | "
+                  "remediation: the topology is exactly these six services.".format(
+                      sorted(EXPECTED), sorted(services)))
+
+          if len(networks) != 1:
+              findings.append(
+                  "docker-compose.yml [networks] expected: exactly one isolated "
+                  "network | actual: {} | remediation: keep every service on one "
+                  "project network.".format(sorted(networks)))
+
+          for name, service in sorted(topology.get("services", {}).items()):
+              image = service.get("image", "")
+              built = "build" in service
+              # This one assertion subsumes any separate movable-tag check: a
+              # reference without a digest fails here whatever its tag, and a
+              # reference WITH a digest resolves to one immutable image however
+              # its tag is spelled. A second check on the tag text would be
+              # redundant logic, so none is written.
+              if not built and not DIGEST.search(image):
+                  findings.append(
+                      "docker-compose.yml [services.{}.image] expected: a "
+                      "digest-pinned reference | actual: {} | remediation: pin by "
+                      "@sha256 digest. A tag is a movable pointer; only a digest "
+                      "names one image.".format(name, image or "absent"))
+              if service.get("privileged"):
+                  findings.append(
+                      "docker-compose.yml [services.{}.privileged] expected: absent "
+                      "| actual: true | remediation: privileged mode is refused."
+                      .format(name))
+              if service.get("network_mode") == "host":
+                  findings.append(
+                      "docker-compose.yml [services.{}.network_mode] expected: the "
+                      "project network | actual: host | remediation: host "
+                      "networking is refused.".format(name))
+              for volume in service.get("volumes", []):
+                  source = volume.get("source", "") if isinstance(volume, dict) else str(volume)
+                  if "docker.sock" in source:
+                      findings.append(
+                          "docker-compose.yml [services.{}.volumes] expected: no "
+                          "Docker socket | actual: {} | remediation: never hand the "
+                          "daemon socket to an application or emulator container."
+                          .format(name, source))
+
+          localstack = topology["services"].get("localstack", {}).get("image", "")
+          if "localstack-pro" in localstack:
+              findings.append(
+                  "docker-compose.yml [services.localstack.image] expected: the "
+                  "community image | actual: {} | remediation: the Pro image needs "
+                  "an auth token, which would force a repository secret onto a "
+                  "path that must carry none.".format(localstack))
+
+          for finding in findings:
+              print("::error title=Blocker::" + finding)
+          if findings:
+              sys.exit("Container topology: {} finding(s) above.".format(len(findings)))
+
+          print("Six digest-pinned services on one isolated network:")
+          for name, service in sorted(topology["services"].items()):
+              print("  {:<11} {}".format(name, service.get("image", "<built locally>")))
+          PY
+
+          conclude 'Container topology'
+
+      # promtool is run from the image docker-compose.yml pins, read out of the
+      # resolved topology rather than named again here, so the validator and the
+      # server that will read the file are the same build. A placeholder
+      # credential file is mounted only because promtool resolves password_file
+      # at check time; it is never used to authenticate anything.
+      - name: Validate the Prometheus scrape configuration with promtool
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          image="$(python3 -c "
+          import json, sys
+          print(json.load(open(sys.argv[1]))['services']['prometheus']['image'])
+          " "${RUNNER_TEMP}/topology.json")"
+          printf 'Validating with the compose-pinned image: %s\n' "${image}"
+
+          secrets_dir="${RUNNER_TEMP}/prometheus-secrets"
+          mkdir -p "${secrets_dir}"
+          printf 'placeholder-not-a-credential\n' > "${secrets_dir}/scrape-password"
+
+          docker run --rm --entrypoint promtool \
+            --volume "${PWD}/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            --volume "${secrets_dir}:/etc/prometheus/secrets:ro" \
+            "${image}" check config /etc/prometheus/prometheus.yml
+
+          # The interval and the single target are contract, not preference: the
+          # dashboard panels and the metrics gate both assume them.
+          if ! grep -qE '^[[:space:]]*scrape_interval:[[:space:]]*15s[[:space:]]*$' \
+              observability/prometheus.yml; then
+            finding High observability/prometheus.yml 'global.scrape_interval' '15s' \
+              "$(grep -E 'scrape_interval:' observability/prometheus.yml | head -n 1 | tr -d ' ')" \
+              'restore the 15s interval that the dashboard panels and the metrics gate assume.'
+          fi
+          if ! grep -qE '^[[:space:]]*metrics_path:[[:space:]]*/actuator/prometheus[[:space:]]*$' \
+              observability/prometheus.yml; then
+            finding High observability/prometheus.yml 'scrape_configs[].metrics_path' \
+              '/actuator/prometheus' 'a different path' \
+              'point the job at the actuator scrape endpoint the application exposes.'
+          fi
+
+          conclude 'Prometheus configuration'
+
+      # Explicit, so the images that run are demonstrably the pinned ones and a
+      # registry outage is reported here rather than surfacing as an ambiguous
+      # start-up failure. Nothing is pulled for the application service - it is
+      # built from the committed Dockerfile in the next step.
+      - name: Pull the exact pinned images
+        run: |
+          set -euo pipefail
+          docker compose pull --ignore-buildable
+          docker compose images
+
+      - name: Bring the topology up and wait for every health check
+        run: |
+          set -euo pipefail
+          docker compose up --build --wait --wait-timeout 420
+          docker compose ps
+
+      # The delivered image must not run as root. The Dockerfile sets a numeric
+      # unprivileged user; this reads it back from the built image so the
+      # property is verified on the artefact rather than trusted from the recipe.
+      - name: Assert the application image runs as an unprivileged user
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          image="$(docker compose ps --format json app \
+            | python3 -c "
+          import json, sys
+          raw = sys.stdin.read().strip()
+          entries = [json.loads(line) for line in raw.splitlines() if line.strip()]
+          print(entries[0]['Image'])
+          ")"
+          user="$(docker image inspect "${image}" --format '{{.Config.User}}')"
+          printf 'image %s runs as user %s\n' "${image}" "${user:-<unset>}"
+
+          case "${user}" in
+            ''|root|0|0:0)
+              finding Blocker Dockerfile 'USER' 'a non-root, unprivileged user' \
+                "${user:-unset, which means root}" \
+                'declare an unprivileged numeric USER in the runtime stage. A container that runs as root turns any application defect into host-adjacent exposure.'
+              ;;
+            *)
+              printf 'The delivered image does not run as root.\n'
+              ;;
+          esac
+
+          conclude 'Image privilege'
+
+      - name: Assert the three Flyway migrations applied cleanly
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          # Every query below is written WITHOUT an SQL string literal, and that is
+          # deliberate rather than incidental. A literal would need a single quote
+          # inside the single-quoted script handed to "sh -c", inside a YAML block
+          # scalar - three nested quoting contexts, which is precisely where a
+          # query silently stops being the query that was intended. The rows are
+          # therefore joined in the shell, and ordinary tables are counted from
+          # pg_catalog.pg_tables rather than by comparing table_type to a literal.
+          applied="$(docker compose exec -T postgres sh -c \
+            'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+             "SELECT version FROM flyway_schema_history WHERE success \
+              ORDER BY installed_rank"' \
+            | tr -d '\r' | sed '/^[[:space:]]*$/d' | tr -d '[:blank:]' | paste -sd, -)"
+
+          if [ "${applied}" != "1,2,3" ]; then
+            finding Blocker src/main/resources/db/migration 'flyway_schema_history' \
+              'versions 1,2,3 all successful' "${applied:-none}" \
+              'apply the three migrations against a clean volume. A checksum mismatch or an already-populated schema stops the migrate step - run "docker compose down --volumes" and bring the topology up again.'
+          else
+            printf 'Migrations 1, 2 and 3 applied successfully.\n'
+          fi
+
+          failed="$(docker compose exec -T postgres sh -c \
+            'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+             "SELECT count(*) FROM flyway_schema_history WHERE NOT success"' \
+            | tr -d '[:space:]')"
+          if [ "${failed}" != "0" ]; then
+            finding Blocker src/main/resources/db/migration 'failed migration rows' \
+              '0' "${failed}" \
+              'inspect flyway_schema_history, repair the migration and start from a clean volume.'
+          fi
+
+          tables="$(docker compose exec -T postgres sh -c \
+            'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+             "SELECT count(*) FROM pg_catalog.pg_tables \
+              WHERE schemaname = current_schema()"' | tr -d '[:space:]')"
+          printf 'Base tables in the migrated schema: %s\n' "${tables}"
+          if [ "${tables}" -lt 11 ]; then
+            finding Blocker src/main/resources/db/migration/V1__create_schema.sql \
+              'base table count' 'at least 11, one per VSAM cluster' "${tables}" \
+              'the schema migration did not create every table. One entity per catalogued KSDS cluster is the contract.'
+          fi
+
+          conclude 'Flyway migrations'
+
+      # The readiness group enumerates readinessState, db, s3 and sqs, so a UP
+      # from that group is an authoritative statement about the database, the
+      # object store and the queue at once. Details are deliberately never
+      # exposed on this endpoint, so the substrate is ALSO asserted directly in
+      # the next steps rather than inferred from a rolled-up status alone.
+      - name: Assert liveness and readiness report UP
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          probe() {
+            body="$(curl --silent --show-error --fail --max-time 10 "$2")"
+            status="$(printf '%s' "${body}" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
+            printf '%-10s %s -> %s\n' "$1" "$2" "${status}"
+            if [ "${status}" != "UP" ]; then
+              finding Blocker "$2" 'health status' 'UP' "${status:-unreadable}" \
+                'inspect the collected container logs. The readiness group covers readinessState, db, s3 and sqs, so a DOWN names a real unreachable dependency.'
+            fi
+          }
+
+          probe liveness  http://127.0.0.1:8080/actuator/health/liveness
+          probe readiness http://127.0.0.1:8080/actuator/health/readiness
+          probe composite http://127.0.0.1:8080/actuator/health
+
+          conclude 'Health and readiness'
+
+      # ----------------------------------------------------------------------
+      # The provisioned inventory, asserted exactly rather than approximately,
+      # and read back from the emulator rather than from the script's own output.
+      # Versioning in particular is verified by READ-BACK: the output bucket must
+      # report Enabled and the other two must not, because "it was requested"
+      # and "it is in effect" are different claims.
+      # ----------------------------------------------------------------------
+      - name: Assert the provisioned object store, queue and topic inventory
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          inventory() {
+            docker compose exec -T localstack sh -c "$1"
+          }
+
+          buckets="$(inventory 'awslocal s3api list-buckets --query "Buckets[].Name" --output text' \
+            | tr -s '[:space:]' '\n' | grep -v '^$' | sort | tr '\n' ' ')"
+          expected_buckets='carddemo-batch-input carddemo-batch-output carddemo-statements '
+          if [ "${buckets}" != "${expected_buckets}" ]; then
+            finding Blocker localstack-init/init-aws.sh 'S3 bucket inventory' \
+              "${expected_buckets}" "${buckets:-none}" \
+              'exactly three buckets are provisioned. Re-run the ready hook with "docker compose exec localstack bash /etc/localstack/init/ready.d/init-aws.sh"; it is idempotent.'
+          else
+            printf 'Buckets: %s\n' "${buckets}"
+          fi
+
+          # Versioning: Enabled on the output bucket ONLY. That bucket stands in
+          # for the generation data groups, whose relative generations become
+          # object versions; the input and statements buckets have no such
+          # requirement and must not carry it.
+          for bucket in carddemo-batch-input carddemo-batch-output carddemo-statements; do
+            state="$(inventory "awslocal s3api get-bucket-versioning --bucket ${bucket} \
+              --query Status --output text" | tr -d '[:space:]')"
+            if [ "${bucket}" = 'carddemo-batch-output' ]; then
+              wanted=Enabled
+            else
+              wanted=None
+            fi
+            printf '  %-26s versioning=%s (expected %s)\n' "${bucket}" "${state:-None}" "${wanted}"
+            if [ "${state:-None}" != "${wanted}" ] && ! { [ "${wanted}" = 'None' ] && [ -z "${state}" ]; }; then
+              finding High localstack-init/init-aws.sh "s3:${bucket} versioning" \
+                "${wanted}" "${state:-None}" \
+                'versioning belongs on the batch output bucket alone: it is what replaces relative generation references. Enabling it elsewhere retains objects no gate reads.'
+            fi
+          done
+
+          queues="$(inventory 'awslocal sqs list-queues --query "QueueUrls[]" --output text' \
+            | tr -s '[:space:]' '\n' | grep -v '^$' | sort)"
+          queue_count="$(printf '%s\n' "${queues}" | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [ "${queue_count}" != "1" ]; then
+            finding Blocker localstack-init/init-aws.sh 'SQS queue count' '1' \
+              "${queue_count}" \
+              'exactly one queue replaces the single JOBS transient data queue defined in app/csd/CARDDEMO.CSD.'
+          fi
+          case "${queues}" in
+            *carddemo-report-jobs.fifo) printf 'Queue: %s\n' "${queues}" ;;
+            *)
+              finding Blocker localstack-init/init-aws.sh 'SQS queue name' \
+                'carddemo-report-jobs.fifo (logical carddemo-report-jobs)' "${queues:-none}" \
+                'a FIFO queue name must end in .fifo. Ordering is required because the queue carries report job submissions in the order the operator made them.'
+              ;;
+          esac
+
+          fifo="$(inventory 'awslocal sqs get-queue-attributes \
+            --queue-url "$(awslocal sqs get-queue-url --queue-name carddemo-report-jobs.fifo \
+            --query QueueUrl --output text)" --attribute-names FifoQueue \
+            --query "Attributes.FifoQueue" --output text' | tr -d '[:space:]')"
+          if [ "${fifo}" != "true" ]; then
+            finding Blocker localstack-init/init-aws.sh 'sqs FifoQueue attribute' 'true' \
+              "${fifo:-absent}" \
+              'create the queue with FifoQueue=true. A standard queue cannot preserve submission order.'
+          else
+            printf 'FifoQueue=true confirmed by read-back.\n'
+          fi
+
+          topics="$(inventory 'awslocal sns list-topics --query "Topics[].TopicArn" --output text' \
+            | tr -s '[:space:]' '\n' | grep -v '^$' | sort)"
+          topic_count="$(printf '%s\n' "${topics}" | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [ "${topic_count}" != "1" ]; then
+            finding High localstack-init/init-aws.sh 'SNS topic count' '1' "${topic_count}" \
+              'exactly one notification topic is provisioned.'
+          else
+            printf 'Topic: %s\n' "${topics}"
+          fi
+
+          subscriptions="$(inventory 'awslocal sns list-subscriptions \
+            --query "Subscriptions[].SubscriptionArn" --output text' \
+            | tr -s '[:space:]' '\n' | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [ "${subscriptions}" != "0" ]; then
+            finding Medium localstack-init/init-aws.sh 'SNS subscription count' '0' \
+              "${subscriptions}" \
+              'the topic is provisioned without subscribers. A subscription nothing in this repository creates is configuration no code reads.'
+          else
+            printf 'Subscriptions: 0\n'
+          fi
+
+          conclude 'Provisioned inventory'
+
+      # ----------------------------------------------------------------------
+      # Idempotence is asserted by RE-RUNNING the hook and comparing, because
+      # "the script says it is idempotent" and "a second run converges" are
+      # different claims and only the second is evidence. A repeated
+      # "docker compose up" must converge rather than fail on resources that
+      # already exist.
+      # ----------------------------------------------------------------------
+      - name: Assert the provisioning script converges on a second run
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          snapshot() {
+            docker compose exec -T localstack sh -c '
+              awslocal s3api list-buckets --query "Buckets[].Name" --output text
+              awslocal sqs list-queues --query "QueueUrls[]" --output text
+              awslocal sns list-topics --query "Topics[].TopicArn" --output text' \
+              | tr -s '[:space:]' '\n' | grep -v '^$' | sort
+          }
+
+          before="$(snapshot)"
+
+          printf 'Re-running the ready hook with INIT_MAX_ATTEMPTS=%s INIT_SLEEP_SECONDS=%s\n' \
+            "${INIT_MAX_ATTEMPTS}" "${INIT_SLEEP_SECONDS}"
+          if docker compose exec -T \
+              --env "INIT_MAX_ATTEMPTS=${INIT_MAX_ATTEMPTS}" \
+              --env "INIT_SLEEP_SECONDS=${INIT_SLEEP_SECONDS}" \
+              localstack bash /etc/localstack/init/ready.d/init-aws.sh \
+              > "${RUNNER_TEMP}/init-rerun.log" 2>&1; then
+            printf 'The second run exited 0.\n'
+          else
+            status=$?
+            finding Blocker localstack-init/init-aws.sh 'second-run exit status' '0' \
+              "${status}" \
+              'the script must converge. Exit 2 is a configuration error and exit 3 means the edge never came up; raise INIT_MAX_ATTEMPTS or INIT_SLEEP_SECONDS on a slow host.'
+          fi
+          sed -n '1,80p' "${RUNNER_TEMP}/init-rerun.log"
+
+          after="$(snapshot)"
+          if [ "${before}" != "${after}" ]; then
+            finding Blocker localstack-init/init-aws.sh 'inventory after a second run' \
+              'identical to the first' 'changed' \
+              'a second run must neither create nor remove anything. Compare the two snapshots in this step log.'
+          else
+            printf 'The inventory is identical after the second run.\n'
+          fi
+
+          # Convergence should be reported as recognition, not as an error.
+          if grep -qiE 'already exists|already present|unchanged|converg' \
+              "${RUNNER_TEMP}/init-rerun.log"; then
+            printf 'The second run logged existing resources as already present.\n'
+          else
+            printf '::warning title=Low::localstack-init/init-aws.sh [second-run log] expected: existing resources logged as already present | actual: no such line | remediation: the inventory did converge and exit 0, so this is a reporting observation only.\n'
+          fi
+
+          conclude 'Provisioning idempotence'
+
+      - name: Assert the Prometheus scrape target is healthy
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          # The server needs at least one completed scrape interval before a
+          # target leaves the unknown state, so this waits with a bounded poll
+          # rather than a blind sleep.
+          target_health=''
+          for attempt in $(seq 1 "${INIT_MAX_ATTEMPTS}"); do
+            payload="$(curl --silent --show-error --fail --max-time 10 \
+              http://127.0.0.1:9090/api/v1/targets)"
+            target_health="$(printf '%s' "${payload}" | python3 -c '
+          import json
+          import sys
+
+          document = json.load(sys.stdin)
+          for target in document.get("data", {}).get("activeTargets", []):
+              if target.get("labels", {}).get("job") == "carddemo-app":
+                  print(target.get("health", ""))
+                  break
+          ')"
+            if [ "${target_health}" = 'up' ]; then
+              break
+            fi
+            printf 'attempt %s: carddemo-app target health=%s\n' \
+              "${attempt}" "${target_health:-not-yet-registered}"
+            sleep "${INIT_SLEEP_SECONDS}"
+          done
+
+          if [ "${target_health}" != 'up' ]; then
+            finding High observability/prometheus.yml 'activeTargets[job=carddemo-app].health' \
+              'up' "${target_health:-not registered}" \
+              'the scrape uses basic authentication against a password file, so confirm METRICS_SCRAPE_PASSWORD reached both the server config and the application, and that /actuator/prometheus is in the exposure list.'
+          else
+            printf 'The carddemo-app scrape target reports health=up.\n'
+          fi
+
+          conclude 'Scrape target'
+
+      # Exposure is asserted against the RUNNING application, not only against
+      # the configuration file, because what a client can reach is the property
+      # that matters. Three endpoints answer and the disclosing ones do not.
+      - name: Assert actuator exposure is exactly health, info and prometheus
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          code() {
+            curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 "$1"
+          }
+
+          # The scrape credential. The username is read from
+          # observability/prometheus.yml so the server configuration stays the
+          # single source of it, and the password is the one this job generated and
+          # already registered for masking, so it cannot reach a log even by
+          # accident. Neither is printed.
+          scrape_user="$(sed -n 's/^[[:space:]]*username:[[:space:]]*//p' \
+            observability/prometheus.yml | head -n 1)"
+          scrape_password="$(sed -n 's/^METRICS_SCRAPE_PASSWORD=//p' .env | head -n 1)"
+
+          authenticated() {
+            curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 \
+              --user "${scrape_user}:${scrape_password}" "$1"
+          }
+
+          # Unauthenticated and reachable. The container health check issues a
+          # readiness request with no credential, so these two must stay open.
+          for endpoint in health info; do
+            status="$(code "http://127.0.0.1:8080/actuator/${endpoint}")"
+            printf '  anonymous     /actuator/%-12s %s\n' "${endpoint}" "${status}"
+            if [ "${status}" != '200' ]; then
+              finding High src/main/resources/application.yml \
+                "management.endpoints.web.exposure.include -> /actuator/${endpoint}" \
+                '200 without a credential' "${status}" \
+                'health and info must answer anonymously; the container health check depends on it.'
+            fi
+          done
+
+          # The scrape endpoint is EXPOSED but AUTHENTICATED, and both halves are
+          # asserted. It must refuse an anonymous caller, because the series it
+          # serves are the business counters - transaction volumes, reject counts
+          # by reject code, authentication attempt counts - and it must answer the
+          # scraper, or the metrics gate has nothing to read.
+          anonymous_metrics="$(code 'http://127.0.0.1:8080/actuator/prometheus')"
+          printf '  anonymous     /actuator/%-12s %s\n' prometheus "${anonymous_metrics}"
+          if [ "${anonymous_metrics}" != '401' ]; then
+            finding High src/main/resources/application.yml \
+              'anonymous GET /actuator/prometheus' '401' "${anonymous_metrics}" \
+              'the scrape endpoint must require a credential. Answering 200 anonymously would publish the business counters to any caller that can route to the port.'
+          fi
+
+          scraped="$(authenticated 'http://127.0.0.1:8080/actuator/prometheus')"
+          printf '  authenticated /actuator/%-12s %s\n' prometheus "${scraped}"
+          if [ "${scraped}" != '200' ]; then
+            finding High src/main/resources/application.yml \
+              'authenticated GET /actuator/prometheus' '200' "${scraped}" \
+              'confirm METRICS_SCRAPE_USERNAME and METRICS_SCRAPE_PASSWORD reached both the application and the scrape configuration, and that prometheus is in the exposure list.'
+          fi
+
+          # Endpoints that disclose configuration or memory contents. Probed WITH
+          # the scrape credential, deliberately: an anonymous 401 only proves a
+          # credential is required, whereas these must not be readable even by a
+          # caller that HAS one. configprops in particular would echo resolved
+          # property values including the signing key, so this is a security
+          # assertion rather than tidiness.
+          for endpoint in env beans configprops loggers heapdump threaddump mappings; do
+            status="$(authenticated "http://127.0.0.1:8080/actuator/${endpoint}")"
+            printf '  authenticated /actuator/%-12s %s\n' "${endpoint}" "${status}"
+            if [ "${status}" = '200' ]; then
+              finding Blocker src/main/resources/application.yml \
+                "management.endpoints.web.exposure.include -> /actuator/${endpoint}" \
+                'not readable, even with the scrape credential' 'answered 200' \
+                'narrow the exposure list back to health,info,prometheus. Never widen it to "*". The scrape credential is not an administrative credential.'
+            fi
+          done
+
+          conclude 'Actuator exposure'
+
+      # ----------------------------------------------------------------------
+      # Diagnostics, collected before teardown so a failing run still explains
+      # itself. Scrubbed on the way out: the generated values are replaced by
+      # value, and social-security-shaped and bearer-token-shaped strings are
+      # redacted by shape, because the customer layout carries a nine-digit
+      # national identifier and the user layout carries a password field.
+      # ----------------------------------------------------------------------
+      - name: Collect and scrub the container logs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: dependency-check-reports
-          path: target/dependency-check/**
-          if-no-files-found: ignore
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/compose-logs"
 
-  # --------------------------------------------------------------------------
-  # Container image and SBOM scan.
+          docker compose logs --no-color --timestamps > "${RUNNER_TEMP}/compose-logs/compose.log"
+          docker compose ps --all > "${RUNNER_TEMP}/compose-logs/services.txt"
+
+          # Every generated value, replaced by value rather than by pattern.
+          scrubber="${RUNNER_TEMP}/scrub.sed"
+          : > "${scrubber}"
+          while IFS='=' read -r name value; do
+            case "${name}" in
+              JWT_SIGNING_KEY|POSTGRES_PASSWORD|CARDDEMO_DB_APP_PASSWORD|\
+              CARDDEMO_DB_MIGRATION_PASSWORD|METRICS_SCRAPE_PASSWORD|GRAFANA_ADMIN_PASSWORD)
+                printf 's|%s|REDACTED_%s|g\n' "${value}" "${name}" >> "${scrubber}"
+                ;;
+              *) ;;
+            esac
+          done < .env
+
+          # And by shape, for anything the application itself may have emitted.
+          cat >> "${scrubber}" <<'SHAPES'
+          s|[0-9]\{3\}-[0-9]\{2\}-[0-9]\{4\}|REDACTED_NATIONAL_ID|g
+          s|\$2[aby]\$[0-9]\{2\}\$[A-Za-z0-9./]\{53\}|REDACTED_PASSWORD_HASH|g
+          s|eyJ[A-Za-z0-9_-]\{6,\}\.[A-Za-z0-9_-]\{6,\}\.[A-Za-z0-9_-]\{6,\}|REDACTED_JWT|g
+          s|[Bb]earer [A-Za-z0-9._~+/-]\{16,\}=*|Bearer REDACTED_TOKEN|g
+          SHAPES
+
+          for log in "${RUNNER_TEMP}/compose-logs"/*; do
+            sed -i -f "${scrubber}" "${log}"
+          done
+          printf 'Collected and scrubbed %s log file(s).\n' \
+            "$(find "${RUNNER_TEMP}/compose-logs" -type f | wc -l | tr -d ' ')"
+
+      # if: always() so the runner is left clean whatever happened above. A step
+      # that SUCCEEDS after an earlier failure does not reset the job's
+      # conclusion, so this cannot mask a failure. Nor does it swallow one: a
+      # teardown problem is reported with its output as a Low finding rather than
+      # discarded, and rather than being allowed to turn a green build red for a
+      # reason unrelated to the code under test.
+      - name: Tear the topology down
+        if: always()
+        run: |
+          set -euo pipefail
+          if docker compose down --volumes --remove-orphans --timeout 60 \
+              > "${RUNNER_TEMP}/teardown.log" 2>&1; then
+            printf 'Topology removed, including its volumes.\n'
+          else
+            printf '::warning title=Low::docker-compose.yml [teardown] expected: a clean shutdown | actual: the command reported a problem | remediation: the runner is ephemeral so nothing leaks, but the output below should be read.\n'
+            cat "${RUNNER_TEMP}/teardown.log"
+          fi
+          rm -f .env
+
+      - name: Upload the container topology evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-topology-evidence
+          path: ${{ runner.temp }}/compose-logs/**
+          # warn, not ignore: on a run that failed before the topology started
+          # there is genuinely nothing to collect, and that is visible rather
+          # than hidden. A required report uses error instead - see the verify job.
+          if-no-files-found: warn
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # ------------------------------------------------------------------
+  # The delivered image, scanned.
   #
-  # Finding, severity Medium - remediated by this job. Every scanner this
-  # project ran looked at the MAVEN GRAPH: dependency-check above reads
-  # pom.xml's resolved dependencies and fails at CVSS >= 7. Nothing looked at
-  # the artifact that actually ships. That gap is not theoretical - it is
-  # exactly how the outdated PostgreSQL, Prometheus and Grafana images in
-  # docker-compose.yml survived a green build until a human read the tags, and
-  # one of those, CVE-2026-6473 at CVSS 8.8, was well above the threshold the
-  # Maven scan already enforced. A gate that covers the dependencies but not
-  # the runtime image reports a standard it does not hold the delivery to.
+  # The Maven vulnerability scan in the verify job reads pom.xml's resolved
+  # dependency graph. It cannot see the runtime image, and that gap is not
+  # theoretical: it is how outdated PostgreSQL, Prometheus and Grafana pins
+  # survived green builds until a human read the tags, one of them carrying a
+  # score above the threshold the Maven scan already enforced. A gate that covers
+  # the dependencies but not the artefact holds the delivery to a standard it does
+  # not actually check.
   #
-  # WHAT IS SCANNED. The image built from this repository's Dockerfile, which
-  # covers both layers of that artifact in one pass: the operating-system
-  # packages of the eclipse-temurin runtime base, and the Java archives inside
-  # the fat JAR. A CycloneDX SBOM is emitted alongside the findings so the
-  # delivered contents are recorded as evidence, not just the verdict.
+  # WHAT IS SCANNED: the image this repository's Dockerfile produces, which
+  # covers both of its layers in one pass - the operating-system packages of the
+  # runtime base, and the Java archives inside the application archive. A
+  # CycloneDX bill of materials is emitted alongside the findings so the
+  # delivered contents are recorded as evidence and not merely the verdict.
   #
-  # WHY THE SCANNER IS A DIGEST-PINNED IMAGE RATHER THAN AN ACTION. A
-  # third-party action would be one more mutable reference in the critical
-  # path - precisely what the SHA pinning in this file exists to remove - and
-  # it would add a supply-chain dependency to fix a supply-chain gap. The
-  # official scanner image, pinned by digest, is self-verifying and needs no
-  # marketplace trust. `aquasec/trivy:0.73.0` is stated beside the digest so a
-  # reader knows the version, while the digest is what resolves.
+  # WHY A DIGEST-PINNED IMAGE RATHER THAN AN ACTION: a marketplace action would
+  # be one more mutable reference in the critical path, which is exactly what the
+  # pinning in this file exists to remove, and it would add a supply-chain
+  # dependency in order to close a supply-chain gap. The official scanner image
+  # pinned by digest is self-verifying and needs no marketplace trust. The
+  # version is stated beside the digest so a reader knows it; the digest is what
+  # resolves, and it was verified against the registry's own image index.
   #
-  # WHY THE SCANNER IS PINNED BUT ITS DATABASE IS NOT. These are different
-  # properties and only one of them should be frozen - the same distinction
-  # the PostgreSQL pin in the integration harnesses documents. The scanner
-  # BINARY is pinned so the analysis is reproducible: the same image yields the
-  # same parsing, the same matching rules and the same severity arithmetic on
-  # every run. The vulnerability DATABASE is deliberately fresh, because a
-  # frozen advisory set cannot report an advisory published after it was
-  # frozen, and a vulnerability gate whose data cannot move is a gate that
-  # silently stops working. What is pinned about the data is its ORIGIN: both
-  # database repositories are named explicitly below rather than left to the
-  # tool's defaults, so the content is current while its source is fixed.
-  #
-  # THRESHOLD. HIGH and CRITICAL fail the job, matching the CVSS >= 7 boundary
-  # the Maven scan enforces so the two gates cannot disagree about what
-  # "serious" means. --ignore-unfixed is explicitly FALSE: an advisory with no
-  # upstream fix is still a disclosed exposure in the delivered image, and
-  # hiding it would let the base image drift out of support while the job stayed
-  # green. The findings are printed before the job fails, so the log names what
-  # broke rather than only that something did.
-  # --------------------------------------------------------------------------
+  # WHY THE SCANNER IS PINNED BUT ITS DATABASE IS NOT: these are different
+  # properties and only one should be frozen. The scanner BINARY is pinned so the
+  # analysis is reproducible - the same image yields the same parsing, matching
+  # rules and severity arithmetic every run. The advisory DATABASE is deliberately
+  # fresh, because a frozen advisory set cannot report an advisory published after
+  # it was frozen, and a vulnerability gate whose data cannot move is a gate that
+  # has silently stopped working. It is not cached for the same reason. What IS
+  # pinned about the data is its ORIGIN: both repositories are named explicitly
+  # below rather than left to the tool's defaults, so the content is current while
+  # its source is fixed. The tradeoff is one database download per run, accepted
+  # because no cache may be able to change this verdict.
+  # ------------------------------------------------------------------
   image-scan:
-    name: Container image and SBOM scan (fail on HIGH or CRITICAL)
+    name: Delivered image and bill of materials (fail on HIGH or CRITICAL)
+    needs: verify
     runs-on: ubuntu-latest
     env:
-      # Pinned by digest; the tag is documentation. Verified to report
-      # "Version: 0.73.0" when run.
-      TRIVY_IMAGE: >-
-        aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
-      # Stated rather than inherited from the tool's defaults, so the origin of
-      # the advisory data is fixed even though its content is current.
+      TRIVY_IMAGE: aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
       TRIVY_DB: mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
       TRIVY_JAVA_DB: mirror.gcr.io/aquasec/trivy-java-db:1,ghcr.io/aquasecurity/trivy-java-db:1
       IMAGE_TAG: carddemo:scan-${{ github.sha }}
+      SCAN_OUT: ${{ github.workspace }}/target/image-scan
     steps:
       - name: Check out
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
+      # No --pull: both stages of the Dockerfile are already digest-pinned, so
+      # there is no movable tag for a pull to re-resolve.
       - name: Build the runtime image from the committed Dockerfile
         run: |
           set -euo pipefail
-          # No --pull: both stages of the Dockerfile are already digest-pinned,
-          # so there is no mutable tag for a pull to re-resolve.
           docker build --file Dockerfile --tag "${IMAGE_TAG}" .
-
-      - name: Record the image provenance that was scanned
-        run: |
-          set -euo pipefail
           docker image inspect "${IMAGE_TAG}" \
-            --format 'scanned image id: {{.Id}}{{"\n"}}created: {{.Created}}'
+            --format 'scanned image id: {{.Id}}{{"\n"}}created: {{.Created}}{{"\n"}}user: {{.Config.User}}'
 
-      - name: Cache the scanner database
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cache/trivy
-          # The run id keeps each run writing its own entry while restore-keys
-          # still seed it from the most recent one, so a run reuses yesterday's
-          # database as a starting point and then refreshes it rather than
-          # downloading it whole. The data stays current; only the transfer is
-          # saved.
-          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: trivy-db-${{ runner.os }}-
-
-      - name: Generate a CycloneDX SBOM of the delivered image
+      # Written as the invoking user so no elevation is needed to read the
+      # reports back, which is why there is no ownership fix-up anywhere here.
+      - name: Generate a CycloneDX bill of materials for the delivered image
         run: |
           set -euo pipefail
-          mkdir -p target/image-scan "${HOME}/.cache/trivy"
+          mkdir -p "${SCAN_OUT}"
           docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock:ro \
-            -v "${HOME}/.cache/trivy:/root/.cache/trivy" \
-            -v "${PWD}/target/image-scan:/out" \
+            --user "$(id -u):$(id -g)" \
+            --volume /var/run/docker.sock:/var/run/docker.sock:ro \
+            --volume "${SCAN_OUT}:/out" \
             "${TRIVY_IMAGE}" \
               image \
               --db-repository "${TRIVY_DB}" \
@@ -581,91 +2030,97 @@ jobs:
               --format cyclonedx \
               --output /out/carddemo-image-sbom.cdx.json \
               "${IMAGE_TAG}"
+          printf 'Bill of materials written: %s bytes\n' \
+            "$(wc -c < "${SCAN_OUT}/carddemo-image-sbom.cdx.json" | tr -d ' ')"
 
-      - name: Scan the image and fail on HIGH or CRITICAL
+      # HIGH and CRITICAL fail the job, matching the boundary the Maven scan
+      # enforces so the two gates cannot disagree about what "serious" means.
+      # --ignore-unfixed is explicitly false: an advisory with no upstream fix is
+      # still a disclosed exposure in the delivered image, and hiding it would let
+      # the base image drift out of support while this job stayed green. The
+      # findings are printed before the job fails, so the log names what broke
+      # rather than only that something did.
+      - name: Scan the delivered image and fail on HIGH or CRITICAL
         run: |
           set -euo pipefail
-          status=0
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock:ro \
-            -v "${HOME}/.cache/trivy:/root/.cache/trivy" \
-            -v "${PWD}/target/image-scan:/out" \
-            "${TRIVY_IMAGE}" \
-              image \
-              --db-repository "${TRIVY_DB}" \
-              --java-db-repository "${TRIVY_JAVA_DB}" \
-              --scanners vuln \
-              --severity HIGH,CRITICAL \
-              --ignore-unfixed=false \
-              --exit-code 1 \
-              --format table \
-              --output /out/image-vulnerabilities.txt \
-              "${IMAGE_TAG}" || status=$?
-          # The report is written by a root process in the container, so it is
-          # made readable before it is printed and uploaded.
-          sudo chown -R "$(id -u):$(id -g)" target/image-scan
-          cat target/image-scan/image-vulnerabilities.txt
+          mkdir -p "${SCAN_OUT}"
+          if docker run --rm \
+              --user "$(id -u):$(id -g)" \
+              --volume /var/run/docker.sock:/var/run/docker.sock:ro \
+              --volume "${SCAN_OUT}:/out" \
+              "${TRIVY_IMAGE}" \
+                image \
+                --db-repository "${TRIVY_DB}" \
+                --java-db-repository "${TRIVY_JAVA_DB}" \
+                --scanners vuln \
+                --severity HIGH,CRITICAL \
+                --ignore-unfixed=false \
+                --exit-code 1 \
+                --format table \
+                --output /out/image-vulnerabilities.txt \
+                "${IMAGE_TAG}"; then
+            status=0
+          else
+            status=$?
+          fi
+
+          cat "${SCAN_OUT}/image-vulnerabilities.txt"
+
           if [ "${status}" -ne 0 ]; then
-            echo "::error::the delivered container image carries HIGH or CRITICAL" \
-                 "vulnerabilities, listed above. Raise the pinned base image in" \
-                 "Dockerfile, or the affected dependency in pom.xml, to a fixed" \
-                 "release. Suppressing a finding here is not available by design:" \
-                 "this gate exists because the Maven scan cannot see the image."
+            printf '::error title=Blocker::%s [HIGH and CRITICAL findings] expected: none | actual: the findings listed above | remediation: raise the pinned base image in Dockerfile, or the affected dependency in pom.xml, to a fixed release. Suppressing a finding here is deliberately not available: this gate exists precisely because the dependency scan cannot see the image.\n' \
+              "${IMAGE_TAG}"
+          else
+            printf 'The delivered image carries no HIGH or CRITICAL finding.\n'
           fi
           exit "${status}"
 
       # ----------------------------------------------------------------------
-      # The development topology's third-party images, REPORTED and not enforced.
+      # The development topology's third-party images: REPORTED, not enforced.
       #
-      # The split between this step and the blocking one above is deliberate and
-      # is grounded in a measurement rather than a preference. The images in
-      # docker-compose.yml are development substrate: PostgreSQL, LocalStack,
-      # Jaeger, Prometheus and Grafana are what a developer runs beside the
-      # application, and none of them is part of the delivered artifact. Holding
-      # them to a blocking gate sounds stricter and is worse, because their
-      # contents are not this project's to fix.
+      # The split is grounded in a measurement rather than a preference. These
+      # images are development substrate - a developer runs them beside the
+      # application and none is part of the delivered artefact - and their
+      # contents are not this project's to fix. The current PostgreSQL patch
+      # level, pinned here specifically to close a set of advisories including a
+      # high-scoring one, still reports findings from a helper binary the official
+      # image bundles, and no tag on that major line exists without them:
+      # clearing them needs an upstream rebuild. A blocking gate would therefore
+      # have exactly one available remedy - suppression - and a suppression list
+      # that grows for reasons unrelated to this codebase is how a gate stops
+      # being read at all.
       #
-      # Concretely: `postgres:16.14-alpine` - the current patch level, pinned in
-      # this repository specifically to close eleven advisories including one at
-      # CVSS 8.8 - scans clean on its Alpine packages and still reports 15
-      # HIGH/CRITICAL findings, all of them Go standard-library advisories in the
-      # `gosu` helper binary the official image bundles. There is no PostgreSQL
-      # 16 tag without them; clearing them needs an upstream rebuild against a
-      # newer Go toolchain. A blocking gate here would therefore have exactly one
-      # available remedy - suppress the findings - and a suppression list that
-      # grows for reasons unrelated to this codebase is how a gate stops being
-      # read at all.
-      #
-      # But the drift these images represent is real: outdated PostgreSQL,
-      # Prometheus and Grafana pins survived every previous green build because
-      # nothing looked at them. Reporting without failing is what closes that
-      # specific gap - the tags stay under continuous observation and land in the
-      # uploaded artifact, while the build's pass/fail keeps meaning something
-      # about what this project ships and can act on.
+      # But the drift is real: outdated pins survived green builds because nothing
+      # looked at them. Reporting without failing closes that specific gap - the
+      # tags stay under continuous observation and land in the uploaded evidence,
+      # while the build's verdict keeps meaning something about what this project
+      # ships and can actually act on. This step is NOT a weakened gate; the gate
+      # it complements is the blocking one above.
       #
       # The image list is read out of docker-compose.yml so the topology stays the
-      # single source of truth and a service added there is scanned without this
+      # single source of truth and a service added there is covered without this
       # file being touched.
       # ----------------------------------------------------------------------
       - name: Report on the development topology images (informational)
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p target/image-scan
-          report=target/image-scan/topology-images.txt
+          mkdir -p "${SCAN_OUT}"
+          report="${SCAN_OUT}/topology-images.txt"
           : > "${report}"
-          mapfile -t images < <(grep -oE '[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' \
+
+          mapfile -t images < <(grep -oE \
+            '[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' \
             docker-compose.yml | sort -u)
+
           if [ "${#images[@]}" -eq 0 ]; then
-            echo "::error::no digest-pinned image was found in docker-compose.yml, so this step" \
-                 "would have reported nothing while appearing to pass. Every service image in that" \
-                 "file is pinned by digest; if that changed, fix the pin rather than this step."
+            printf '::error title=High::docker-compose.yml [digest-pinned images] expected: at least one | actual: none found | remediation: this step would otherwise report nothing while appearing to succeed. Every service image in that file is digest-pinned; if that changed, fix the pin rather than this step.\n'
             exit 1
           fi
+
           for image in "${images[@]}"; do
-            echo "=== ${image}" >> "${report}"
+            printf '=== %s\n' "${image}" >> "${report}"
             docker run --rm \
-              -v "${HOME}/.cache/trivy:/root/.cache/trivy" \
+              --user "$(id -u):$(id -g)" \
               "${TRIVY_IMAGE}" \
                 image \
                 --db-repository "${TRIVY_DB}" \
@@ -676,13 +2131,240 @@ jobs:
                 --format table \
                 "${image}" >> "${report}" 2>/dev/null
           done
-          sudo chown -R "$(id -u):$(id -g)" target/image-scan
           cat "${report}"
 
-      - name: Upload the image scan and SBOM
+      - name: Upload the image scan and bill of materials
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: image-scan-reports
+          name: image-scan-evidence
           path: target/image-scan/**
-          if-no-files-found: ignore
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # ------------------------------------------------------------------
+  # The eight gates, collated. Every result is DERIVED from the job that
+  # produced it - nothing here is hardcoded, and the word "pass" is deliberately
+  # never asserted about a gate this run did not execute. Where a result cannot
+  # be produced the mandated wording is used verbatim, together with what is
+  # needed to produce it.
+  #
+  # if: always() so a failing run still publishes its evidence, which is what
+  # makes the automated feedback in a pull request actionable.
+  # ------------------------------------------------------------------
+  gate-evidence:
+    name: Validation gate evidence
+    needs:
+      - repository-integrity
+      - verify
+      - integration
+      - image-scan
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      # Routed through env: rather than interpolated into the script body.
+      INTEGRITY_RESULT: ${{ needs.repository-integrity.result }}
+      VERIFY_RESULT: ${{ needs.verify.result }}
+      INTEGRATION_RESULT: ${{ needs.integration.result }}
+      IMAGE_SCAN_RESULT: ${{ needs.image-scan.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # ----------------------------------------------------------------------
+      # The document is produced from a HEREDOC over precomputed variables, not
+      # from a sequence of printf calls. That is a correctness decision: a long
+      # line split across two printf calls puts the %s placeholders in the first
+      # format and the arguments on the second, so the placeholders render empty
+      # and the arguments are silently discarded - an evidence document that
+      # states no evidence, which is the one failure this file must not have. A
+      # heredoc has no format string and therefore no way to separate the two.
+      # ----------------------------------------------------------------------
+      - name: Collate the eight gates and their evidence
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/gate-evidence"
+          report="${RUNNER_TEMP}/gate-evidence/validation-gate-evidence.md"
+
+          # observed <job-result> -> the wording used for a gate this run drove.
+          # A successful job is reported as "no findings reported", never as a
+          # pass: this workflow states what it observed, and a reviewer draws the
+          # conclusion from the named evidence.
+          observed() {
+            case "$1" in
+              success)   printf 'no findings reported' ;;
+              failure)   printf 'findings reported - see the annotations in the run' ;;
+              cancelled) printf 'Not available - the job was cancelled before it concluded' ;;
+              skipped)   printf 'Not available - the job did not run because a prerequisite job failed' ;;
+              *)         printf 'Not available - the job reported an unrecognised conclusion' ;;
+            esac
+          }
+
+          integrity_observed="$(observed "${INTEGRITY_RESULT}")"
+          verify_observed="$(observed "${VERIFY_RESULT}")"
+          integration_observed="$(observed "${INTEGRATION_RESULT}")"
+          image_scan_observed="$(observed "${IMAGE_SCAN_RESULT}")"
+          executed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+          cat > "${report}" <<EVIDENCE
+          # Validation gate evidence
+
+          Gate definitions, severities and remediations live in
+          \`docs/validation-gates.md\`, anchors \`#gate-1\` to \`#gate-8\`. This file
+          records one run against them; it defines nothing.
+
+          - Run: ${RUN_URL}
+          - Commit: ${GITHUB_SHA}
+          - Executed (UTC): ${executed_at}
+          - Job conclusions: repository-integrity=${INTEGRITY_RESULT},
+            verify=${VERIFY_RESULT}, integration=${INTEGRATION_RESULT},
+            image-scan=${IMAGE_SCAN_RESULT}
+
+          ## Gate 1 - end-to-end boundary parity
+
+          - Severity on failure: Blocker
+          - Command: \`./mvnw --batch-mode --no-transfer-progress clean verify\`, the
+            end-to-end tier, driving \`app/data/ASCII/dailytran.txt\`
+          - Evidence: \`target/failsafe-reports/\`
+          - Result: Not available - no legacy baseline artefact exists in this
+            repository, so a field-level comparison against legacy output cannot be
+            produced and is not claimed. Needed: a captured legacy output set for the
+            300-record fixture, produced on the mainframe and committed as a parity
+            baseline. The end-to-end tier itself is *pending implementation and
+            execution* rather than blocked - this runner has a container runtime.
+          - Remediation: obtain and commit the legacy baseline; never synthesise one.
+
+          ## Gate 2 - zero-warning build and dependency vulnerability scan
+
+          - Severity on failure: Blocker
+          - Command: \`./mvnw --batch-mode --no-transfer-progress clean verify\`
+          - Evidence: \`target/surefire-reports/\`, \`target/failsafe-reports/\`,
+            \`target/site/jacoco/\`, \`target/dependency-check/\`
+          - Tool versions: JDK feature 25 and Apache Maven 3.9.11, both asserted in
+            this run rather than assumed
+          - Result: ${verify_observed} (job conclusion ${VERIFY_RESULT})
+          - Remediation: fix the warning rather than relaxing the lint set; add tests
+            rather than lowering the coverage floor; raise the affected dependency
+            rather than adding a skip or widening the suppression file.
+
+          ## Gate 3 - performance baseline
+
+          - Severity on failure: Medium
+          - Result: Not available - deliberately. This gate is a MEASURED BASELINE and
+            never a threshold. The COBOL corpus publishes no service level, so none
+            may be invented, and this workflow therefore asserts no throughput,
+            latency or heap figure and reports none. Needed: a measurement harness run
+            separately, whose numbers are recorded in \`docs/validation-gates.md\` as a
+            baseline for future comparison.
+          - Remediation: none applicable; a baseline cannot fail.
+
+          ## Gate 4 - named-fixture validation
+
+          - Severity on failure: Blocker
+          - Command: the seed migration plus the end-to-end tier, both driven by
+            \`./mvnw --batch-mode --no-transfer-progress clean verify\`
+          - Evidence: \`target/failsafe-reports/\`, and the migration history asserted
+            in the integration job
+          - Result: fixture inventory - ${integrity_observed}; pipeline execution is
+            *pending implementation and execution*
+          - Remediation: keep the nine ASCII fixtures under their actual committed
+            names - the fixture is \`dailytran.txt\`, not the mainframe DD name - and
+            decode overpunch signs position-aware from the PIC clauses.
+
+          ## Gate 5 - API contract, 17 endpoints
+
+          - Severity on failure: Blocker
+          - Command: the integration and end-to-end tiers
+          - Evidence: \`target/failsafe-reports/\`, \`docs/api-contracts.md\`
+          - Result: ${verify_observed} (job conclusion ${VERIFY_RESULT}). Seventeen
+            operations, not eighteen: the eighteenth CICS transaction fronts a program
+            with no source anywhere in the repository, so no endpoint is invented for
+            it. *Pending implementation and execution* where coverage is incomplete.
+          - Remediation: exercise every endpoint against a real application context.
+
+          ## Gate 6 - security audit
+
+          - Severity on failure: Blocker
+          - Command: the source-integrity steps in the repository-integrity job, plus
+            the dependency vulnerability scan and the delivered-image scan
+          - Evidence: this run log, \`target/dependency-check/\`, \`target/image-scan/\`
+          - Result: source and secret hygiene - ${integrity_observed} (job conclusion
+            ${INTEGRITY_RESULT}); delivered image - ${image_scan_observed} (job
+            conclusion ${IMAGE_SCAN_RESULT})
+          - Remediation: replace any floating-point money field with \`BigDecimal\`;
+            store passwords only as BCrypt hashes; indirect every secret through the
+            environment with no committed default.
+
+          ## Gate 7 - scope coverage, 28 programs
+
+          - Severity on failure: High
+          - Command: the traceability assertion in the repository-integrity job
+          - Evidence: \`TRACEABILITY_MATRIX.md\` at the repository root
+          - Result: ${integrity_observed} (job conclusion ${INTEGRITY_RESULT})
+          - Remediation: map every program, enumerating the corpus
+            case-insensitively. A lowercase-only pattern reports 26 of 28 and
+            silently omits the two programs whose extension is uppercase.
+
+          ## Gate 8 - integration sign-off, 6 compose services
+
+          - Severity on failure: High
+          - Command: \`docker compose up --build --wait\`
+          - Evidence: the container-topology-evidence artifact of this run
+          - Result: ${integration_observed} (job conclusion ${INTEGRATION_RESULT}).
+            *Pending implementation and execution* where coverage is incomplete -
+            this runner provides a container runtime, so nothing here is
+            container-blocked.
+          - Remediation: start from a clean volume when a migration checksum
+            conflicts, and raise \`INIT_MAX_ATTEMPTS\` or \`INIT_SLEEP_SECONDS\` when
+            the emulator is slow to report ready.
+
+          ## What this file deliberately does not contain
+
+          - No badge, no completion percentage and no performance figure, because none
+            is supported by a measurement this run made.
+          - No gate asserted as passing that this run did not execute.
+          - No figure carried over from an earlier run. Coverage, test counts and
+            decision counts recorded in \`docs/project-guide.md\` describe a previous
+            implementation and are not evidence for this one.
+          EVIDENCE
+
+          cat "${report}"
+          cat "${report}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload the gate evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: validation-gate-evidence
+          path: ${{ runner.temp }}/gate-evidence/**
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      # The overall verdict is derived, so this job cannot report green while a
+      # gate job failed. Rule 1 clause B: no swallowed failure, and no
+      # conclusion that the evidence does not support.
+      - name: Conclude on the collated gate results
+        run: |
+          set -euo pipefail
+          failures=''
+          for pair in "repository-integrity:${INTEGRITY_RESULT}" \
+                      "verify:${VERIFY_RESULT}" \
+                      "integration:${INTEGRATION_RESULT}" \
+                      "image-scan:${IMAGE_SCAN_RESULT}"; do
+            job="${pair%%:*}"
+            result="${pair#*:}"
+            printf '%-22s %s\n' "${job}" "${result}"
+            if [ "${result}" != 'success' ]; then
+              failures="${failures} ${job}=${result}"
+            fi
+          done
+
+          if [ -n "${failures}" ]; then
+            printf '::error title=Blocker::docs/validation-gates.md [gate jobs] expected: every gate job to conclude success | actual:%s | remediation: open the named job in %s and act on its annotations, each of which carries the file path, the symbol checked, expected versus actual and a remediation line.\n' \
+              "${failures}" "${RUN_URL}"
+            exit 1
+          fi
+          printf 'Every gate job concluded success. Evidence: %s\n' "${RUN_URL}"
