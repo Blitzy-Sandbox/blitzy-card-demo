@@ -69,14 +69,20 @@ import org.junit.jupiter.api.Test;
  * present-tense form and re-checks the premise, so if a document is ever authored the gate itself demands
  * revision.
  *
- * <p><strong>That revision has since been demanded once, and taken.</strong> {@code DECISION_LOG.md} is now
- * authored at the repository root, so its premise row inverted: the gate asserts that it <em>exists</em>,
- * which is what stops this guard passing by accident if the file is later deleted. Only
- * {@code TRACEABILITY_MATRIX.md} remains absent, so only that name is still forbidden in the present tense.
- * The roughly 198 forward references across the tree are deliberately <em>not</em> reworded: with the register
- * authored they are conservative rather than wrong - an entry that was owed is now held - and a rewording of
- * that size belongs with the change that authors the remaining document, which has to touch this guard again
- * in any case. That reasoning is itself recorded in the register, under its residual-risk section.
+ * <p><strong>That revision has since been demanded twice, and taken both times.</strong>
+ * {@code DECISION_LOG.md} was authored first and its premise row inverted: the gate asserts that it
+ * <em>exists</em>, which is what stops this guard passing by accident if the file is later deleted.
+ * {@code TRACEABILITY_MATRIX.md} has now been authored too, so <strong>the absent set is empty</strong> and
+ * no name is forbidden in the present tense any longer. Emptiness is asserted explicitly rather than left
+ * implicit, and both names are asserted present, so the narrowing cannot be mistaken for a name having been
+ * quietly dropped: deleting either register fails this gate immediately.
+ *
+ * <p>The roughly 198 forward references across the tree are deliberately <em>not</em> reworded. With both
+ * registers authored they are conservative rather than wrong - an entry that was owed is now held - so they
+ * under-claim rather than over-claim, and a rewording of that size is unrelated to the subject of this change.
+ * {@code CONTRIBUTING.md} asks a change to stay focused and warns that wholesale reformatting obstructs
+ * review, and <em>Rule 1</em> clause C asks the same. That reasoning is recorded in the register, under its
+ * residual-risk section.
  *
  * <p><strong>An unbounded register.</strong> "Retained for parity" was applied to five sites in one place
  * and three in another. The term means something precise - a reachable no-op or unused constant that exists
@@ -238,37 +244,51 @@ final class DocumentationConsistencyTest {
     /**
      * The scheduled evidence documents that still do not exist in this branch.
      *
-     * <p>Was two names. {@code DECISION_LOG.md} has since been authored at the repository root and moved to
-     * {@link #AUTHORED_EVIDENCE_DOCUMENTS}, so a present-tense claim about it is now true and must not be
-     * flagged. Anything left in this list is genuinely absent and a claim about it still sends a reader to
-     * nothing.
+     * <p>Was two names, then one, and is now <strong>empty</strong>: {@code DECISION_LOG.md} and
+     * {@code TRACEABILITY_MATRIX.md} have both been authored at the repository root and both moved to
+     * {@link #AUTHORED_EVIDENCE_DOCUMENTS}, so a present-tense claim about either is now a true statement and
+     * a guard that forbade it would be enforcing a premise it no longer has.
+     *
+     * <p>The list is kept rather than deleted, and its emptiness is asserted rather than assumed, because a
+     * future scheduled register would belong here and the guard has to be re-armed deliberately. If a name is
+     * ever added back it must also be added to {@link #PRESENT_TENSE_EVIDENCE_CLAIM}, or the pattern would
+     * silently forbid nothing.
      */
-    private static final List<String> ABSENT_EVIDENCE_DOCUMENTS = List.of("TRACEABILITY_MATRIX.md");
+    private static final List<String> ABSENT_EVIDENCE_DOCUMENTS = List.of();
 
     /**
      * Evidence documents that have been authored, asserted present so the guard cannot pass by accident.
      *
      * <p>Without this list the narrowing above would be indistinguishable from simply dropping a name: if
-     * {@code DECISION_LOG.md} were deleted tomorrow, every forward reference in the tree would silently
-     * become correct again and nothing would notice. Asserting existence is what makes the narrowing safe.
+     * either register were deleted tomorrow, every forward reference in the tree would silently become
+     * correct again and nothing would notice. Asserting existence is what makes the narrowing safe, and it is
+     * why this list grows by exactly the name the list above loses.
      */
-    private static final List<String> AUTHORED_EVIDENCE_DOCUMENTS = List.of("DECISION_LOG.md");
+    private static final List<String> AUTHORED_EVIDENCE_DOCUMENTS =
+            List.of("DECISION_LOG.md", "TRACEABILITY_MATRIX.md");
 
     /**
      * Verbs that, followed by "in &lt;absent document&gt;", claim the record already lives there.
      *
-     * <p>The alternation covers only {@link #ABSENT_EVIDENCE_DOCUMENTS}. It deliberately no longer names
-     * {@code DECISION_LOG.md}: that document exists, so a present-tense claim pointing at it is now a true
-     * statement, and a guard that forbade a true statement would be enforcing a premise it no longer has.
+     * <p><strong>Derived from {@link #ABSENT_EVIDENCE_DOCUMENTS}, never hard-coded.</strong> That coupling is
+     * the point: a name can no longer be dropped from the absent set while a stale alternation keeps forbidding
+     * it, nor added while the alternation silently ignores it. Both registers now exist, so the set is empty
+     * and the pattern below is deliberately one that cannot match - a present-tense claim about a document
+     * that is on disk is a true statement, and a guard forbidding a true statement would be enforcing a
+     * premise it no longer has.
      *
      * <p>Note that the sibling guard in {@code EvidenceHonestyTest} still scans for both names, including
      * inside string literals. That is why the phrasing here describes the forbidden form rather than quoting
-     * it: quoting it would trip that guard, whose own narrowing is deliberately left for the change that
-     * authors the remaining document.
+     * it: quoting it would trip that guard. That guard forbids a form the tree does not use, so it continues
+     * to pass, and leaving it untouched keeps this change focused on the failure it has to fix.
      */
     private static final Pattern PRESENT_TENSE_EVIDENCE_CLAIM = Pattern.compile(
-            "(recorded|tracked|documented|justified|logged|cited|entered|noted|captured|carried)"
-                    + " in (\\{@code )?(TRACEABILITY_MATRIX\\.md)",
+            ABSENT_EVIDENCE_DOCUMENTS.isEmpty()
+                    ? "(?!)"
+                    : "(recorded|tracked|documented|justified|logged|cited|entered|noted|captured|carried)"
+                            + " in (\\{@code )?("
+                            + String.join("|", ABSENT_EVIDENCE_DOCUMENTS).replace(".", "\\.")
+                            + ")",
             Pattern.CASE_INSENSITIVE);
 
     /** The three sites the retained-parity register admits, each named in the root package documentation. */
@@ -602,18 +622,26 @@ final class DocumentationConsistencyTest {
     final class NoClaimsOnAbsentEvidence {
 
         @Test
-        @DisplayName("the still-absent evidence document is absent, which is the premise this gate rests on")
+        @DisplayName("every document named absent really is absent, and the set is now empty")
         void thePremiseHolds() {
             for (final String document : ABSENT_EVIDENCE_DOCUMENTS) {
                 assertThat(ROOT.resolve(document))
                         .as(
-                                "%s is not authored in this branch, which is what makes a present-tense claim "
-                                        + "about it a claim about nothing. If it is ever authored, move it to "
-                                        + "AUTHORED_EVIDENCE_DOCUMENTS and drop it from the claim pattern - "
-                                        + "revised deliberately, rather than passing by accident",
+                                "%s is named as not authored in this branch, which is what would make a "
+                                        + "present-tense claim about it a claim about nothing. If it is in "
+                                        + "fact authored, move it to AUTHORED_EVIDENCE_DOCUMENTS - revised "
+                                        + "deliberately, rather than passing by accident",
                                 document)
                         .doesNotExist();
             }
+            assertThat(ABSENT_EVIDENCE_DOCUMENTS)
+                    .as(
+                            "both scheduled registers are now authored, so the absent set is empty and the "
+                                    + "claim pattern forbids nothing. Emptiness is asserted rather than "
+                                    + "assumed: a future scheduled register must be added here AND to "
+                                    + "PRESENT_TENSE_EVIDENCE_CLAIM, which is derived from this list so the "
+                                    + "two cannot drift apart")
+                    .isEmpty();
         }
 
         @Test
@@ -651,6 +679,23 @@ final class DocumentationConsistencyTest {
                                     + "IN\" - with the decision itself in the docstring of the file it "
                                     + "governs, which is where it cannot drift from the code")
                     .isEmpty();
+
+            assertThat(AUTHORED_EVIDENCE_DOCUMENTS)
+                    .as(
+                            "with the absent set empty this scan can only pass vacuously, so the guard that "
+                                    + "still carries weight is the one below it: both registers must be on "
+                                    + "disk. Asserting that here keeps this test method meaningful instead of "
+                                    + "silently becoming a no-op")
+                    .isNotEmpty();
+            for (final String document : AUTHORED_EVIDENCE_DOCUMENTS) {
+                assertThat(ROOT.resolve(document))
+                        .as(
+                                "%s is why no present-tense claim about it is forbidden any more. If it is "
+                                        + "deleted, restore it to ABSENT_EVIDENCE_DOCUMENTS rather than "
+                                        + "leaving a guard whose premise has silently reversed",
+                                document)
+                        .exists();
+            }
         }
 
         @Test

@@ -179,9 +179,11 @@ followed by the specific prerequisite that would close it. There are no `TBD`, `
 an admission, because it reads as an oversight rather than as a disclosure.
 
 **No gate is reported as passed by this document, and none may be.** Gate results live in
-[`docs/validation-gates.md`](docs/validation-gates.md), and at the time of writing **all
-eight of them read "Not available"** there. A design intention is not a pass; the
-Agent Action Plan describing a behaviour is not evidence that the behaviour was measured.
+[`docs/validation-gates.md`](docs/validation-gates.md), and **that ledger is the only
+place a result may be read**; this register cites the anchor and stops there, so a result
+recorded, revised or withdrawn over there never has to be chased through here. A design
+intention is not a pass; the Agent Action Plan describing a behaviour is not evidence that
+the behaviour was measured.
 Where this register cites a gate it cites the *obligation*, using the stable anchors that
 document publishes — [Gate 1](docs/validation-gates.md#gate-1) through
 [Gate 8](docs/validation-gates.md#gate-8).
@@ -235,9 +237,9 @@ the date of this revision.
   in [`docs/validation-gates.md`](docs/validation-gates.md). This document links to gate
   anchors and never restates a gate's result.
 - **It is not the traceability matrix.** Paragraph-to-method mapping across all 28
-  programs belongs in `TRACEABILITY_MATRIX.md`. That file **does not exist in this
-  branch** — see [DL-RR-07](#dl-rr-07) — so it is referred to as an obligation and is
-  deliberately not linked as though it were present.
+  programs belongs in [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md), which **has
+  since been authored** — see [DL-RR-07](#dl-rr-07). This document links to its row
+  anchors and never restates a row: the mapping is cited, never copied.
 - **It is not a risk register duplicate.** `docs/validation-gates.md` §12 carries the
   severity-classified findings, the legacy-defect table, the quirk table, the deviation
   table and the deferred-hardening list. This document carries the **reasoning and the
@@ -471,9 +473,9 @@ rule; where a family has a hard case, the hard case gets its own entry in
 | **Decision** | **One private method per source paragraph, no consolidation**, each carrying a Javadoc naming the paragraph and its line range |
 | **Alternatives considered** | **(a) Idiomatic restructuring** into cohesive objects, which is the mainstream recommendation for this class of migration — rejected here, and the conflict is recorded as [DL-CR-05](#dl-cr-05). **(b) Merging trivial paragraphs** such as the `-EXIT` pairs — rejected: the exits are `GO TO` targets, and several are jumped to from more than one place, so merging changes control flow |
 | **Rationale** | Paragraph correspondence is what makes coverage provable by inspection rather than by assertion. It is also what makes a parity defect diagnosable: a mismatch localises to a paragraph, and the Javadoc points straight at the lines to read |
-| **Observable consequence** | No behavioural consequence. The cost is verbosity in the large services; the compensation is the citation on every method and the matrix owed at `TRACEABILITY_MATRIX.md` |
-| **Test / gate evidence** | Citation resolution is enforced by `src/test/java/com/cardemo/unit/infrastructure/SourceCitationResolutionTest.java`, which checks that every `app/...` locator in the tree resolves against the frozen corpus. Gate-level: [Gate 7](docs/validation-gates.md#gate-7), currently **Not available**, and the matrix it reads is owed — [DL-RR-07](#dl-rr-07) |
-| **Remediation / follow-up** | Author `TRACEABILITY_MATRIX.md`; owner: the traceability deliverable |
+| **Observable consequence** | No behavioural consequence. The cost is verbosity in the large services; the compensation is the citation on every method and the matrix published at [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md) |
+| **Test / gate evidence** | Citation resolution is enforced by `src/test/java/com/cardemo/unit/infrastructure/SourceCitationResolutionTest.java`, which checks that every `app/...` locator in the tree resolves against the frozen corpus. Gate-level: [Gate 7](docs/validation-gates.md#gate-7), whose result that ledger records; the matrix it reads is published at [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md) — [DL-RR-07](#dl-rr-07) |
+| **Remediation / follow-up** | **Done.** `TRACEABILITY_MATRIX.md` was authored by the traceability deliverable and publishes one row per paragraph, so the no-consolidation rule this entry states is now checkable rather than merely asserted — [DL-RR-07](#dl-rr-07) |
 | **Verification** | `Source-verified`, `Target-verified`, `Gate-pending` — 30 July 2026 |
 
 <a id="dl-ms-03"></a>
@@ -490,7 +492,7 @@ rule; where a family has a hard case, the hard case gets its own entry in
 | **Alternatives considered** | **(a) Generating a constants class** from the lookup tables — rejected: over a thousand generated Java constants that add nothing to correctness and cannot be diffed against the source table by eye. **(b) One class per copybook, mechanically** — rejected: it would produce a second customer entity for a duplicate layout and Java types for a procedural copybook and a text template, neither of which is data. **(c) Importing the CICS-supplied copybooks** `DFHAID`, `DFHBMSCA`, `DFHATTR` — impossible: they are supplied by the transaction monitor and are not in the repository; they map onto framework mechanisms, not types |
 | **Rationale** | A copybook is a textual include, not a type, so the mapping has to be decided per member rather than mechanically. The three collapses each replace many call sites with one injected dependency, which is what makes the call sites testable |
 | **Observable consequence** | Lookup membership is editable as data rather than as code. `UNUSED1Y` has no Java counterpart, which is a documented absence rather than an omission — see [§2.3](#exclusions) |
-| **Test / gate evidence** | `src/test/java/com/cardemo/unit/service/ValidationLookupServiceTest.java`, `src/test/java/com/cardemo/unit/service/DateValidationServiceTest.java`, `src/test/java/com/cardemo/unit/service/FileServiceTest.java`. Gate-level: [Gate 7](docs/validation-gates.md#gate-7), currently **Not available** |
+| **Test / gate evidence** | `src/test/java/com/cardemo/unit/service/ValidationLookupServiceTest.java`, `src/test/java/com/cardemo/unit/service/DateValidationServiceTest.java`, `src/test/java/com/cardemo/unit/service/FileServiceTest.java`. Gate-level: [Gate 7](docs/validation-gates.md#gate-7); its result is recorded in that ledger, not here |
 | **Remediation / follow-up** | None outstanding |
 | **Verification** | `Source-verified`, `Target-verified`, `Test-verified` — 30 July 2026 |
 
@@ -843,7 +845,7 @@ requirements that mandate them.
 | **Alternatives considered** | **(a) Delete the method and the call** — satisfies the letter of the no-dead-code standard and breaks two things that matter more: the paragraph map the coverage gate reads, and the guarantee that the call at `:L216` is reproduced. **(b) Keep it with a bare marker comment** — rejected, and the reason is precise: a bare `TODO`-style marker would breach *Rule 1* clause B **for real**, because the clause forbids deferred work without an owner or tracking reference. A cited, tracked, deliberately empty method does not. **(c) Implement a fee calculation** — rejected outright: the source computes no fees, so any implementation invents behaviour |
 | **Rationale** | The legacy authors, not this migration, left the paragraph unimplemented, and the source comment is reproduced as the evidence of that. The emptiness is a fact about the system of record |
 | **Observable consequence** | None. It is a no-op in both systems. A reader encountering an empty method in a reviewed codebase will suspect an oversight, which is why it is cited here rather than only in the Javadoc. Note the zero-rate interaction: the gate at [:L214] suppresses this paragraph **together with** `1300-COMPUTE-INTEREST`, so a zero rate skips the fee call as well |
-| **Test / gate evidence** | `src/test/java/com/cardemo/unit/batch/InterestCalculationProcessorTest.java`. Gate-level: [Gate 7](docs/validation-gates.md#gate-7), currently **Not available** |
+| **Test / gate evidence** | `src/test/java/com/cardemo/unit/batch/InterestCalculationProcessorTest.java`. Gate-level: [Gate 7](docs/validation-gates.md#gate-7); its result is recorded in that ledger, not here |
 | **Remediation / follow-up** | If fees are ever specified, implement them as new behaviour with their own decision entry; owner: product. Until then this entry is the tracking reference |
 | **Verification** | `Source-verified`, `Target-verified`, `Test-verified` — 30 July 2026 |
 
@@ -1194,7 +1196,7 @@ the **decision and the rejected alternative** for each, which the table does not
 | **Decision** | Preserve the assignment, cited, rather than optimising it away |
 | **Alternatives considered** | **(a) Delete it** — the effect is provably nil, so deletion is behaviour-neutral. Rejected on traceability grounds only: the paragraph map is asserted mechanically, and a missing statement in a mapped paragraph is a coverage gap. This is the weakest case among the retained artefacts and is recorded as such |
 | **Observable consequence** | None whatsoever |
-| **Test / gate evidence** | `src/test/java/com/cardemo/unit/batch/StatementProcessorTest.java`. Gate-level: [Gate 7](docs/validation-gates.md#gate-7), currently **Not available** |
+| **Test / gate evidence** | `src/test/java/com/cardemo/unit/batch/StatementProcessorTest.java`. Gate-level: [Gate 7](docs/validation-gates.md#gate-7); its result is recorded in that ledger, not here |
 | **Remediation / follow-up** | If the coverage gate is ever satisfied by a mechanism that does not require statement-level correspondence, this is the first artefact that may be dropped; owner: the traceability deliverable |
 | **Verification** | `Source-verified`, `Target-verified` — 30 July 2026 |
 
@@ -1308,7 +1310,7 @@ stated, one is chosen, and the ground for choosing is given. None is left implic
 | **Alternatives considered** | **(a) Restructure into cohesive domain objects** — rejected: behavioural parity is the contract, and a restructured control flow cannot be shown to reproduce a 4,236-line program's decision sequence by inspection. **(b) Restructure and rely on tests alone** for parity — rejected: the tests would then be the only evidence, and [Gate 7](docs/validation-gates.md#gate-7) requires a mechanically checkable paragraph map |
 | **Rationale** | The two compensating mechanisms are: every private method carries a Javadoc citation naming its source paragraph and lines, and the traceability matrix makes the correspondence navigable. Where the guidance **can** be honoured without touching control flow, it **is**: naming is idiomatic, `BigDecimal` replaces packed decimal, framework mechanisms replace static linkage, and global mutable state is eliminated wholesale |
 | **Observable consequence** | The large services are verbose, and a reader unfamiliar with the source sees more methods than a green-field design would have. The trade is deliberate: verbosity in exchange for provable correspondence |
-| **Test / gate evidence** | `src/test/java/com/cardemo/unit/infrastructure/SourceCitationResolutionTest.java` enforces the citation half. Gate-level: [Gate 7](docs/validation-gates.md#gate-7), currently **Not available**; the matrix it reads is owed — [DL-RR-07](#dl-rr-07) |
+| **Test / gate evidence** | `src/test/java/com/cardemo/unit/infrastructure/SourceCitationResolutionTest.java` enforces the citation half. Gate-level: [Gate 7](docs/validation-gates.md#gate-7), whose result that ledger records; the matrix it reads is published at [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md) — [DL-RR-07](#dl-rr-07) |
 | **Remediation / follow-up** | Any future restructuring proposal must first satisfy the coverage gate by another mechanism; owner: whoever proposes it |
 | **Verification** | `Source-verified`, `Target-verified` — 30 July 2026 |
 
@@ -1369,7 +1371,7 @@ deferred-hardening catalogue as `R-1`…`R-9`; the entries here carry the decisi
 | **Decision** | **No endpoint is invented.** The absence is documented, and the arithmetic is stated: 17 sourced screen programs plus 1 orphan definition = 18 CSD entries |
 | **Alternatives considered** | **(a) Infer the program's purpose from its name** and implement something plausible — rejected: it fabricates behaviour, and a fabricated endpoint would be indistinguishable from a real one to a later reader. **(b) Omit the finding** — rejected: a reader counting CSD transactions against endpoints finds 18 versus 17 and cannot tell whether one was missed |
 | **Observable consequence** | The API exposes 17 operations, not 18. Anyone auditing the CSD against the API meets this entry rather than an unexplained gap |
-| **Test / gate evidence** | Program-count reconciliation is asserted in `src/test/java/com/cardemo/e2e/GateVerificationTest.java`. Gate-level: [Gate 7](docs/validation-gates.md#gate-7), currently **Not available** |
+| **Test / gate evidence** | Program-count reconciliation is asserted in `src/test/java/com/cardemo/e2e/GateVerificationTest.java`. Gate-level: [Gate 7](docs/validation-gates.md#gate-7); its result is recorded in that ledger, not here |
 | **Remediation / follow-up** | If the source is ever recovered, it becomes new scope with its own decision entry; owner: not this migration. **The information needed is the program source itself, which does not exist at `7756d89`** |
 | **Verification** | `Source-verified` — 30 July 2026 |
 
@@ -1423,18 +1425,18 @@ deferred-hardening catalogue as `R-1`…`R-9`; the entries here carry the decisi
 
 <a id="dl-rr-07"></a>
 
-### DL-RR-07 — `TRACEABILITY_MATRIX.md` does not exist in this branch
+### DL-RR-07 — `TRACEABILITY_MATRIX.md` — obligation discharged
 
 | Field | Content |
 |---|---|
 | **Classification** | `RESIDUAL RISK` |
-| **Severity** | Medium |
-| **Statement** | The paragraph-level mapping from all 28 programs to their Java methods is owed at `TRACEABILITY_MATRIX.md` in the repository root. **That file is not present at the time of this revision.** Its absence was verified, not assumed |
-| **Consequence** | [Gate 7](docs/validation-gates.md#gate-7) reads that matrix, so the gate cannot be executed. This register therefore refers to the matrix as an **obligation** and deliberately does **not** link to it as though it were present, because a link that resolves to nothing is worse than a stated absence |
-| **What is needed** | **Not available — implementation/evidence not yet generated.** Prerequisites, precisely: a matrix keyed to commit `7756d89`, covering all 28 programs with the verified line counts, mapping every paragraph to its Java method, and recording the historical capacity limit of 510 from [DL-DV-03](#dl-dv-03) |
-| **Alternatives considered** | **(a) Inline the matrix here** — rejected: it is a different artefact with a different shape and a different consumer, and duplicating it would guarantee the two drift. **(b) Link to it anyway** — rejected: a broken link in an evidence register undermines every other link in it |
-| **Remediation / follow-up** | Author the file; **owner: the traceability deliverable.** Three entries here depend on it: [DL-MS-02](#dl-ms-02), [DL-DV-03](#dl-dv-03) and [DL-LD-07](#dl-ld-07) |
-| **Verification** | Absence verified on disk — 30 July 2026 |
+| **Severity** | Medium when raised; **closed** at this revision |
+| **Statement** | The paragraph-level mapping from all 28 programs to their Java methods was owed at `TRACEABILITY_MATRIX.md` in the repository root. When this entry was raised that file was absent, and its absence was verified rather than assumed. **It has since been authored, so this entry records a closed obligation rather than an open gap** |
+| **Consequence** | [Gate 7](docs/validation-gates.md#gate-7) reads that matrix. The prerequisite it was missing is now satisfied, so the gate is executable; the gate's own result is recorded in `docs/validation-gates.md` and in [§16 of the matrix](TRACEABILITY_MATRIX.md#verify), not here |
+| **What was needed** | Four prerequisites were stated precisely and all four are met: a matrix keyed to commit `7756d89`; covering all 28 programs with the verified line counts; mapping every paragraph to its Java method; and recording the historical capacity limit of 510 from [DL-DV-03](#dl-dv-03). The delivered matrix publishes 537 rows — 528 procedure-division paragraphs plus 9 synthetic entry rows — against a derived census of 528, with 534 distinct Java targets and no unmapped paragraph |
+| **Alternatives considered** | **(a) Inline the matrix here** — rejected: it is a different artefact with a different shape and a different consumer, and duplicating it would guarantee the two drift. That reasoning still holds, which is why this entry now **links** to the matrix rather than absorbing it. **(b) Link to it before it existed** — rejected at the time: a broken link in an evidence register undermines every other link in it |
+| **Remediation / follow-up** | **Done.** Authored by the traceability deliverable. The three entries that depended on it — [DL-MS-02](#dl-ms-02), [DL-DV-03](#dl-dv-03) and [DL-LD-07](#dl-ld-07) — now resolve to published rows: the paragraph-to-method rule to the 537-row matrix, the 510-transaction ceiling to the `CBSTM03A` `8500-READTRNX-READ` row, and the redundant index assignment to `TM-CBSTM03A-R003` |
+| **Verification** | Absence verified on disk — 30 July 2026. Presence and content verified on disk — 6 August 2026 |
 
 <a id="dl-rr-08"></a>
 
@@ -1450,8 +1452,8 @@ deferred-hardening catalogue as `R-1`…`R-9`; the entries here carry the decisi
 | **Alternatives considered** | **(a) Reword every site now** — rejected: it touches roughly 198 files for a wording improvement and would obscure the actual change under review. **(b) Weaken the guards so both forms are accepted** — rejected: the guards exist because four review findings shared the root cause of comments asserting things the tree did not support; loosening them removes the protection rather than updating it |
 | **Observable consequence** | A reader of a Javadoc comment is told an entry is owed when it is in fact present. Under-claiming, not over-claiming |
 | **Test / gate evidence** | Both guard classes pass at this revision — see [§12](#verification) |
-| **Remediation / follow-up** | Reword the forward references to the present tense, narrowing the guard to the register that is still absent, **at the same time as** `TRACEABILITY_MATRIX.md` is authored — that change already has to touch the same guards. **Owner: the traceability deliverable**, tracked here and at [DL-RR-07](#dl-rr-07) |
-| **Verification** | `Target-verified`, `Test-verified` — 30 July 2026 |
+| **Remediation / follow-up** | **The guard narrowing is done.** `DocumentationConsistencyTest` now holds an **empty** absent-evidence set and an authored-evidence set naming both registers, asserts that emptiness explicitly, and asserts both registers present so the rule cannot decay into a silent no-op. The 198 forward-reference sites in the Java tree are **still deliberately unchanged**, on the reasoning in the Decision row above; they under-claim rather than over-claim and a diff of that size is unrelated to the deliverable under review. That standing decision is what this entry now carries |
+| **Verification** | `Target-verified`, `Test-verified` — 30 July 2026. Guard narrowing verified by execution — 6 August 2026 |
 
 ---
 
@@ -1505,15 +1507,20 @@ which constraints originate from the project's own standards.
 | **C — Repository hygiene** | Follow existing conventions where present, never fight existing style; deterministic; consistent structure; avoid duplication | This file opens with the **universal Apache-2.0 banner** that every source file in four of the five legacy directories carries, extended per repository convention to name the artefacts it derives from — and it matches the banner form of its sibling `docs/validation-gates.md` exactly. **Duplication is actively avoided**: [§1.9](#not-this) states what belongs elsewhere, and gate results, risk-table rows and paragraph mappings are **cited by identifier rather than copied**. No formatter or linter configuration existed in the repository to inherit, so conventions were established rather than overridden — and [DL-RR-08](#dl-rr-08) declines a 198-file rewording specifically to keep this change focused |
 | **D — Security standards** | No secrets in code, logs, tests or configuration; pin dependencies; least privilege | [§9](#security) collects eight security decisions with the exposure each closes. **No secret is quoted in this document** — `S-8` states that explicitly and justifies the single public sample credential that is named. Pinning is `S-6`; least privilege is `S-1` through `S-5` |
 | **E — Documentation standards** | Every component documented: what it does, how to run, build and test it, key configuration and defaults, common failure modes and troubleshooting | [§1.1](#what-this-is) states what this document does; [§1.11](#verify-this) and [§12](#verification) give the literal commands that verify it and their honest results; [§1.3](#identifiers) through [§1.8](#template) are its configuration and defaults; [§1.10](#update-policy) is its operating procedure. **Failure modes** are the substance of the register itself — every entry's *Observable consequence* is a failure mode, and every *Remediation* is its troubleshooting step. Broader troubleshooting lives in `docs/validation-gates.md` §13 and is not duplicated |
-| **F — Output requirements** | Evidence-based citation; severity classified as Blocker, High, Medium or Low; clear remediation; state "Not available" and list what is needed when information is missing | **Every** claim about the source carries an `app/<path>:L<n>` locator, and [§12](#verification) verifies mechanically that each resolves. **Every** entry carries a severity from the four required levels and a named remediation with an owner. Missing information is stated in the **exact** mandated form in **four** evidence fields — the vulnerability scan at [DL-RR-01](#dl-rr-01), the concurrency measurement at [DL-RR-04](#dl-rr-04), the owed matrix at [DL-RR-07](#dl-rr-07) and the open dependency finding in [§9](#security) — each followed by its specific prerequisite, plus the definition of the form itself at [§1.7](#no-invention). Beyond those four, unproven items are disclosed through the *Gate-pending* status and through gate references that state the gate's own **Not available** result, so **no gate is reported as passed** anywhere in this document |
+| **F — Output requirements** | Evidence-based citation; severity classified as Blocker, High, Medium or Low; clear remediation; state "Not available" and list what is needed when information is missing | **Every** claim about the source carries an `app/<path>:L<n>` locator, and [§12](#verification) verifies mechanically that each resolves. **Every** entry carries a severity from the four required levels and a named remediation with an owner. Missing information is stated in the **exact** mandated form in **three** evidence fields — the vulnerability scan at [DL-RR-01](#dl-rr-01), the concurrency measurement at [DL-RR-04](#dl-rr-04) and the open dependency finding in [§9](#security) — each followed by its specific prerequisite, plus the definition of the form itself at [§1.7](#no-invention). A fourth stood at [DL-RR-07](#dl-rr-07) until the matrix it named was authored; that entry now records a **closed** obligation, which is the disclosure discipline working rather than an exception to it. Beyond those, unproven items are disclosed through the *Gate-pending* status and through gate references that cite the anchor and leave the result to the ledger that owns it, so **no gate is reported as passed** anywhere in this document |
 
-**Three places where information is genuinely unavailable, stated plainly rather than
-filled.** Clause F's final requirement is the one most easily glossed over, so the three
-are named together: the program behind transaction `CDV1` **does not exist** anywhere in
-the repository ([DL-RR-03](#dl-rr-03)); `TRACEABILITY_MATRIX.md` **does not exist** in
-this branch ([DL-RR-07](#dl-rr-07)); and **no service-level objective exists** in the
+**Two places where information is genuinely unavailable, stated plainly rather than
+filled.** Clause F's final requirement is the one most easily glossed over, so both are
+named together: the program behind transaction `CDV1` **does not exist** anywhere in the
+repository ([DL-RR-03](#dl-rr-03)); and **no service-level objective exists** in the
 source, which is why [Gate 3](docs/validation-gates.md#gate-3) is framed as a measurement
-rather than a threshold ([DL-RR-02](#dl-rr-02)). None is filled with an invention.
+rather than a threshold ([DL-RR-02](#dl-rr-02)). Neither is filled with an invention.
+
+A third stood here — the paragraph-level matrix owed at `TRACEABILITY_MATRIX.md` — and it
+is named because it is the useful half of the record: the disclosure was made while the
+artefact was absent, the absence was verified rather than assumed, and it was then closed
+by authoring the artefact rather than by softening the sentence. That closure is
+[DL-RR-07](#dl-rr-07).
 
 ---
 
@@ -1652,9 +1659,18 @@ the guard's protective value:
 
 - `DECISION_LOG.md` is now asserted to **exist**, so the guard cannot pass by accident if
   this file is later deleted.
-- `TRACEABILITY_MATRIX.md` **remains** in the absent set, keeps its non-existence
-  assertion, and keeps the present-tense-claim guard — because it is still absent
-  ([DL-RR-07](#dl-rr-07)).
+- `TRACEABILITY_MATRIX.md` remained in the absent set at that revision, keeping its
+  non-existence assertion and the present-tense-claim guard, because it was still absent.
+
+**The same revision was then demanded a second time, and taken.** Authoring
+[`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md) falsified the surviving half of the
+premise, and the guard's instruction applies identically to the second name as to the
+first. The absent-evidence set is therefore now **empty** — asserted empty explicitly,
+rather than left implicit — the forbidden-phrase pattern is *derived* from that set so it
+cannot outlive it, and **both** registers are asserted present. Deleting either one fails
+the guard immediately, which is the protective value the narrowing had to keep. The
+closure is recorded at [DL-RR-07](#dl-rr-07) and the standing decision at
+[DL-RR-08](#dl-rr-08).
 
 **What was deliberately not done.** The roughly 198 forward-reference comments across the
 Java tree were **not** reworded, for the reasons at [DL-RR-08](#dl-rr-08): the wording is
@@ -1666,6 +1682,19 @@ ran green: **25 tests, 0 failures**. Creating it produced exactly **one** failur
 `thePremiseHolds` — and no others. After the revision the same three classes run **26
 tests, 0 failures**: the count rose by one because the revision *adds* an assertion rather
 than deleting one, namely that the newly authored register is present.
+
+**Re-measured after the second revision.** Authoring the traceability matrix produced the
+same single failure in the same method, and no others. After the second narrowing the three
+guard classes —
+`src/test/java/com/cardemo/unit/infrastructure/DocumentationConsistencyTest.java`,
+`src/test/java/com/cardemo/unit/model/EvidenceHonestyTest.java` and
+`src/test/java/com/cardemo/unit/infrastructure/PackageDocumentationInventoryTest.java` —
+run **31 tests, 0 failures, 0 errors, exit code 0**, measured on Thursday, 6 August 2026 by
+`./mvnw -B -ntp -Ddependency-check.skip=true -Dtest=DocumentationConsistencyTest,EvidenceHonestyTest,PackageDocumentationInventoryTest -DfailIfNoTests=false test`.
+The rise from 26 is not attributed to this change: the second narrowing adds assertions to
+two **existing** test methods and declares no new one, so the intervening growth belongs to
+work between the two revisions. What this change is accountable for is the failure it
+caused and the zero failures it leaves.
 
 **One intermediate failure was mine, and it was fixed rather than suppressed.** The first
 attempt at the revision explained the narrowing by quoting the very phrase the sibling
@@ -1693,9 +1722,9 @@ already failing strictly, for no gain.
 
 ### 12.4 What this section does not claim
 
-- **It does not claim any validation gate passed.** All eight read **Not available** in
-  [`docs/validation-gates.md`](docs/validation-gates.md), and nothing here changes that.
-  Rows V-1 to V-7 verify *this document*, not the system.
+- **It does not claim any validation gate passed.** Every gate result is read from
+  [`docs/validation-gates.md`](docs/validation-gates.md), and nothing here changes or
+  restates one. Rows V-1 to V-7 verify *this document*, not the system.
 - **It does not claim the full test suite was run to completion here.** The suite is large
   and several tiers require a container runtime. What is claimed is exactly what was run:
   the guard classes named in rows V-8 and V-9.
@@ -1712,7 +1741,7 @@ already failing strictly, for no gain.
 |---|---|
 | *Why was it built this way, and what was rejected?* | **This file** |
 | *What was proved, and what is still unproven?* | [`docs/validation-gates.md`](docs/validation-gates.md) |
-| *Which Java method corresponds to which COBOL paragraph?* | `TRACEABILITY_MATRIX.md` — **owed, not present**; see [DL-RR-07](#dl-rr-07) |
+| *Which Java method corresponds to which COBOL paragraph?* | [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md) — 537 rows across all 28 programs; see [DL-RR-07](#dl-rr-07) |
 | *What does each endpoint accept and return?* | [`docs/api-contracts.md`](docs/api-contracts.md) |
 | *How do the two architectures compare?* | [`docs/architecture-before-after.md`](docs/architecture-before-after.md) |
 | *How do I get set up and troubleshoot?* | `docs/validation-gates.md` §13 for failure modes, and `docs/onboarding-guide.md` for developer setup — the latter is **owed and not present** at this revision, so it is named as an obligation rather than linked; the same discipline as [DL-RR-07](#dl-rr-07) |

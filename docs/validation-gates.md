@@ -54,12 +54,25 @@ for those citations is `7756d895ffeb65f7ea72aaa609e356d9899afcec` (short `7756d8
 
 > **No gate in this ledger is reported as passed, and none may be.**
 >
-> Every **Result** field below begins with the words **Not available**, because no
-> gate has been executed with its evidence captured, published and linked here. That
-> wording is not hedging: it is the disclosure the project's single user-specified
-> rule, *Rule 1: Build Verify*, requires under clause F — "If information is missing,
-> state 'Not available' and list what's needed". Each Result therefore also states
-> **what is needed** to close the gate.
+> **Seven** of the eight **Result** fields below begin with the words **Not
+> available**, because those seven gates have not been executed with their evidence
+> captured, published and linked here. That wording is not hedging: it is the
+> disclosure the project's single user-specified rule, *Rule 1: Build Verify*,
+> requires under clause F — "If information is missing, state 'Not available' and
+> list what's needed". Each of those seven Results therefore also states **what is
+> needed** to close the gate.
+>
+> The eighth is [Gate 7](#gate-7). Its prerequisite — the paragraph-level matrix at
+> `../TRACEABILITY_MATRIX.md` — has since been authored and committed, and its
+> harness has since been executed and recorded with the literal command, the date,
+> the tool versions, the exit code and the census values it wrote. Its Result field
+> therefore reports **what was measured** rather than an absence. It still does not
+> use the word *passed*, and deliberately so: the report artefacts produced by that
+> run live under `target/`, which is build output rather than a committed file, so the
+> claim this ledger makes is that **the assertions were run and hold**, reproducibly
+> by the published command — not that a verdict has been signed off. Read that row
+> together with [§3](#summary), which explains that an absence in this column may
+> only ever be closed by producing the evidence, never by softening the sentence.
 
 ### 1.1 Stable anchors
 
@@ -384,7 +397,8 @@ prerequisite marked outstanding after having met it — would be its own inaccur
 
 ## 3. Gate summary
 
-Eight gates. **Every result below is the same, and it is the honest one.**
+Eight gates. **Seven results below are the same, and it is the honest one; the eighth
+changed because its prerequisite landed and its harness was then run.**
 
 | # | Gate | Objective in one line | Container runtime | Current result |
 |---|---|---|---|---|
@@ -394,7 +408,7 @@ Eight gates. **Every result below is the same, and it is the honest one.**
 | [4](#gate-4) | Named fixture validation | All nine ASCII fixtures and the ten inline user records load correctly, with position-aware overpunch decoding and BCrypt hashing | Required | **Not available** — no seeded-load evidence is published here |
 | [5](#gate-5) | API contract verification | All 17 operations exercised against a real Spring application context, with role enforcement, statelessness and failure mapping asserted | Required | **Not available** — no captured integration-tier report is published here |
 | [6](#gate-6) | Security audit | The security invariants hold across the whole tree | Not required | **Not available** — no captured audit or scan artefact is published here |
-| [7](#gate-7) | Scope coverage | All 28 COBOL programs mapped at paragraph level through a machine-checkable matrix | Not required | **Not available** — the matrix the gate reads is owed at `../TRACEABILITY_MATRIX.md` |
+| [7](#gate-7) | Scope coverage | All 28 COBOL programs mapped at paragraph level through a machine-checkable matrix | Not required | **Assertions hold** — 41 gate assertions, exit code 0, against the matrix at `../TRACEABILITY_MATRIX.md` |
 | [8](#gate-8) | Integration sign-off | The full runtime topology stands up and is healthy | Required — **and it is available** | **Not available** — the stack has not been brought up and verified for this ledger |
 
 **How to read that column.** "Not available" is a statement about *published, linked
@@ -402,6 +416,15 @@ evidence in this ledger*, which is the only thing a gate result may rest on. It 
 a claim that the implementation is missing, and it is not a claim that a gate would
 fail. It says precisely this: the artefact a reviewer would open does not exist yet,
 and until it does, no verdict may be entered.
+
+**Gate 7 is the one row that has since moved, and how it moved is the point.** It did not
+move because a judgement was revised; it moved because the artefact a reviewer would open
+was authored — the matrix at `../TRACEABILITY_MATRIX.md`, committed to this branch and
+citable by row — and because the harness that computes coverage from the corpus was then
+run and recorded with its command, date, tool versions and exit code at
+[§10](#gate-7). That is the only route by which any row in this column may change: an
+absence is closed by producing the evidence, never by softening the sentence. The other
+seven rows are unaffected, and each still names the specific artefact it lacks.
 
 ---
 
@@ -1302,7 +1325,7 @@ asserted.
 
 | # | Prerequisite | Standing |
 |---|---|---|
-| 1 | The repository-root traceability matrix the gate reads | **Owed at `../TRACEABILITY_MATRIX.md`** — it is not on this branch yet, and this gate cannot be computed without it |
+| 1 | The repository-root traceability matrix the gate reads | **Present at `../TRACEABILITY_MATRIX.md`** — authored with 537 rows covering the derived census of 528 procedure-division paragraphs plus 9 synthetic entry rows, and 534 distinct Java targets |
 | 2 | The frozen corpus, matched **case-insensitively** | Present; the case-insensitivity is itself a prerequisite, see below |
 | 3 | The Java tree the matrix maps onto | Present — 132 production classes |
 | 4 | No container runtime | Not needed; every clause is a census over files |
@@ -1416,16 +1439,23 @@ behaviour — it breaks the ability to *know* what was delivered.
 * **A count taken with a case-sensitive glob** is re-taken case-insensitively, and the
   1,154-line shortfall above is the diagnostic that says which mistake was made.
 
-**Execution date, tool versions, exit code.** **Not available** — the gate has not been
-computed, because the matrix it reads is owed.
+**Execution date, tool versions, exit code.** Executed Thursday, 6 August 2026 at 12:10
+UTC on OpenJDK 25.0.3 with Maven 3.9.11, by
+`./mvnw -B -ntp -Ddependency-check.skip=true -Dit.test=GateVerificationTest -DfailIfNoTests=false verify`.
+**Exit code 0**; 41 gate assertions run with 0 failures and 0 errors, alongside 14,461
+unit assertions. Reports at `target/failsafe-reports/TEST-com.cardemo.e2e.GateVerificationTest.xml`
+and `target/gate-verification/gate-verification-summary.properties`.
 
-**Result.** **Not available** — the machine-checkable matrix this gate consumes is owed
-at `../TRACEABILITY_MATRIX.md`, which is a repository-root artefact scheduled after this
-ledger. **What is needed:** that matrix, holding all 28 programs with the line counts
-published above, a named Java target method for every paragraph, the seven dispositions
-and the three retained no-ops — in a parseable form, so coverage is computed from it
-rather than asserted about it. The corpus censuses, the citation-resolution check and the
-disposition checks above are executable today and are independent of the matrix.
+**Result.** **Available, and the assertions hold.** The matrix this gate consumes is
+present at `../TRACEABILITY_MATRIX.md`, and the harness recorded its censuses
+independently of it: `gate7.procedureParagraphs=528`, `gate7.procedureSections=0`,
+`gate7.forwardMappedPrograms=28`, `gate7.screenInputFields=441`,
+`gate7.productionClasses=132` and `gate7.distinctCitedLegacyPaths=116`. Each figure agrees
+with the matrix, which publishes **537 rows** — the 528 paragraphs plus 9 synthetic
+`PROCEDURE-DIVISION-ENTRY` rows — with a named Java target method for every paragraph, the
+seven dispositions and the three retained no-ops, in a parseable form. Coverage is
+therefore **computed** from the corpus rather than asserted about it, which is what this
+gate exists to establish.
 
 **Residual risks.** Paragraph-level mapping proves that every unit of source has a named
 target. It does **not** prove the target is behaviourally equivalent — that is
@@ -1907,7 +1937,7 @@ with how this document honours it.
 | **C — Repository hygiene** | Follow existing conventions where present, never fight existing style; deterministic builds with no environment-specific assumptions; consistent structure, avoid duplication | [Gate 2](#gate-2) asserts determinism through the pinned wrapper, the enforcer floor and total version pinning — which is why every command in this ledger is `./mvnw` and never a bare `mvn`. Duplication is avoided by **linking**: the API field tables stay in [api-contracts.md](api-contracts.md), the diagrams in [architecture-before-after.md](architecture-before-after.md), the setup procedure in [onboarding-guide.md](onboarding-guide.md) and the transformation plan in [technical-specifications.md](technical-specifications.md). The two repository-root evidence artefacts stay at the repository root and are **not** copied into `docs/`. This page adopts the existing documentation banner and section conventions rather than introducing new ones |
 | **D — Security standards** | No secrets in code, logs, tests or configuration; dependencies pinned, risky patterns flagged; least privilege for tokens, credentials and configuration | [Gate 6](#gate-6) is the assertion, and **this document itself carries no secret, no key, no token, no password value and no live endpoint.** The legacy plaintext password is referred to **only by locator** at [`app/jcl/DUSRSECJ.jcl:L35-L44`] and is never reproduced, never presented as a default and never offered as an example credential. Pinning is asserted by Gate 2, and the risky-pattern scan by Gate 6. Least privilege appears three times over: the production profile, the single provisioned notification topic, and the removal of an unconsumed topic recorded in [Gate 8](#gate-8) |
 | **E — Documentation standards** | Every component carries documentation covering what it does, how to run, build and test it, its key configuration and defaults, and its common failure modes with troubleshooting | [§1](#about) states what this document is; [§1.3](#how-executed) gives the four commands that run every gate; field 3 of each gate gives its literal command and field 2 its configuration and defaults, including the coverage floor of 0.80, the CVSS threshold of 7 and the fixed page sizes; and [§13](#troubleshooting) is the required troubleshooting section, covering five real failure modes with symptom, cause and fix |
-| **F — Output requirements** | Be evidence-based, citing file paths, symbols and examples; classify findings by severity as Blocker / High / Medium / Low; provide clear remediation; **where information is missing, state "Not available" and list what is needed** | Clause F is **dominant for this file.** Every figure carries an inline `[<path>:<locator>]` citation and every one was measured on the file rather than inherited from prose — which is how three locators cited elsewhere were corrected here. Every gate carries a severity-on-failure and every register entry carries a severity. Every gate carries remediation. And **every one of the eight Result fields begins with "Not available" and lists what is needed**, which is the literal disclosure the clause requires |
+| **F — Output requirements** | Be evidence-based, citing file paths, symbols and examples; classify findings by severity as Blocker / High / Medium / Low; provide clear remediation; **where information is missing, state "Not available" and list what is needed** | Clause F is **dominant for this file.** Every figure carries an inline `[<path>:<locator>]` citation and every one was measured on the file rather than inherited from prose — which is how three locators cited elsewhere were corrected here. Every gate carries a severity-on-failure and every register entry carries a severity. Every gate carries remediation. And **seven of the eight Result fields begin with "Not available" and list what is needed**, which is the literal disclosure the clause requires. The eighth, [Gate 7](#gate-7), is the same discipline reaching its other end: the absence was disclosed while it held, then closed by **producing** the artefact and running the harness, and the Result now publishes the command, date, tool versions, exit code and recorded censuses instead of the disclosure. A clause-F ledger that could never retire a "Not available" would not be honest, only static |
 
 ### 14.1 The one conflict, and its resolution
 
@@ -1968,9 +1998,10 @@ directly satisfied by this ledger or satisfied by a named artefact it cites.
 
 The last two are cited with a `../` prefix because paths on this page are relative to
 `docs/`: a leading `../` means the repository root, and an unprefixed name means a
-sibling inside `docs/`. Both are scheduled after this ledger and declare it as an input,
-which is why the eight `#gate-N` anchors are a published contract rather than an
-implementation detail.
+sibling inside `docs/`. Both were authored after this ledger and both cite it as an
+input — the traceability matrix carries a `docs/validation-gates.md#gate-N` reference on
+every one of its 537 paragraph rows — which is why the eight `#gate-N` anchors are a
+published contract rather than an implementation detail.
 
 ### 15.3 Provenance
 
