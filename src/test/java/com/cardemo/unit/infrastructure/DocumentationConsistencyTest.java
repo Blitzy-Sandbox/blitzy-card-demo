@@ -62,11 +62,21 @@ import org.junit.jupiter.api.Test;
  * the assertion for any artefact the test can see on disk.
  *
  * <p><strong>Claims about a document that does not exist.</strong> {@code DECISION_LOG.md} and
- * {@code TRACEABILITY_MATRIX.md} are scheduled artefacts absent from this branch, yet hundreds of sites said
- * a decision was "recorded in" or "tracked in" one of them. That sends a reader to nothing. The convention is
- * now a forward reference - "tracked <em>for</em>", never "tracked <em>in</em>" - and the decision itself
- * lives in the docstring of the file it governs. {@link NoClaimsOnAbsentEvidence} forbids the present-tense
- * form and re-checks the premise, so if either document is ever authored the gate itself demands revision.
+ * {@code TRACEABILITY_MATRIX.md} were both scheduled artefacts absent from this branch, yet hundreds of sites
+ * said a decision was "recorded in" or "tracked in" one of them. That sends a reader to nothing. The
+ * convention is a forward reference - "tracked <em>for</em>", never "tracked <em>in</em>" - and the decision
+ * itself lives in the docstring of the file it governs. {@link NoClaimsOnAbsentEvidence} forbids the
+ * present-tense form and re-checks the premise, so if a document is ever authored the gate itself demands
+ * revision.
+ *
+ * <p><strong>That revision has since been demanded once, and taken.</strong> {@code DECISION_LOG.md} is now
+ * authored at the repository root, so its premise row inverted: the gate asserts that it <em>exists</em>,
+ * which is what stops this guard passing by accident if the file is later deleted. Only
+ * {@code TRACEABILITY_MATRIX.md} remains absent, so only that name is still forbidden in the present tense.
+ * The roughly 198 forward references across the tree are deliberately <em>not</em> reworded: with the register
+ * authored they are conservative rather than wrong - an entry that was owed is now held - and a rewording of
+ * that size belongs with the change that authors the remaining document, which has to touch this guard again
+ * in any case. That reasoning is itself recorded in the register, under its residual-risk section.
  *
  * <p><strong>An unbounded register.</strong> "Retained for parity" was applied to five sites in one place
  * and three in another. The term means something precise - a reachable no-op or unused constant that exists
@@ -225,14 +235,40 @@ final class DocumentationConsistencyTest {
             "was recorded", "were recorded", "at the time", "when this", "measurably wrong",
             "stale absence", "is present", "are present", "exists and", "closed:", "corrected");
 
-    /** The two scheduled evidence documents that do not exist in this branch. */
-    private static final List<String> ABSENT_EVIDENCE_DOCUMENTS =
-            List.of("DECISION_LOG.md", "TRACEABILITY_MATRIX.md");
+    /**
+     * The scheduled evidence documents that still do not exist in this branch.
+     *
+     * <p>Was two names. {@code DECISION_LOG.md} has since been authored at the repository root and moved to
+     * {@link #AUTHORED_EVIDENCE_DOCUMENTS}, so a present-tense claim about it is now true and must not be
+     * flagged. Anything left in this list is genuinely absent and a claim about it still sends a reader to
+     * nothing.
+     */
+    private static final List<String> ABSENT_EVIDENCE_DOCUMENTS = List.of("TRACEABILITY_MATRIX.md");
 
-    /** Verbs that, followed by "in &lt;absent document&gt;", claim the record already lives there. */
+    /**
+     * Evidence documents that have been authored, asserted present so the guard cannot pass by accident.
+     *
+     * <p>Without this list the narrowing above would be indistinguishable from simply dropping a name: if
+     * {@code DECISION_LOG.md} were deleted tomorrow, every forward reference in the tree would silently
+     * become correct again and nothing would notice. Asserting existence is what makes the narrowing safe.
+     */
+    private static final List<String> AUTHORED_EVIDENCE_DOCUMENTS = List.of("DECISION_LOG.md");
+
+    /**
+     * Verbs that, followed by "in &lt;absent document&gt;", claim the record already lives there.
+     *
+     * <p>The alternation covers only {@link #ABSENT_EVIDENCE_DOCUMENTS}. It deliberately no longer names
+     * {@code DECISION_LOG.md}: that document exists, so a present-tense claim pointing at it is now a true
+     * statement, and a guard that forbade a true statement would be enforcing a premise it no longer has.
+     *
+     * <p>Note that the sibling guard in {@code EvidenceHonestyTest} still scans for both names, including
+     * inside string literals. That is why the phrasing here describes the forbidden form rather than quoting
+     * it: quoting it would trip that guard, whose own narrowing is deliberately left for the change that
+     * authors the remaining document.
+     */
     private static final Pattern PRESENT_TENSE_EVIDENCE_CLAIM = Pattern.compile(
             "(recorded|tracked|documented|justified|logged|cited|entered|noted|captured|carried)"
-                    + " in (\\{@code )?(DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)",
+                    + " in (\\{@code )?(TRACEABILITY_MATRIX\\.md)",
             Pattern.CASE_INSENSITIVE);
 
     /** The three sites the retained-parity register admits, each named in the root package documentation. */
@@ -566,21 +602,36 @@ final class DocumentationConsistencyTest {
     final class NoClaimsOnAbsentEvidence {
 
         @Test
-        @DisplayName("neither scheduled evidence document exists, which is the premise this gate rests on")
+        @DisplayName("the still-absent evidence document is absent, which is the premise this gate rests on")
         void thePremiseHolds() {
             for (final String document : ABSENT_EVIDENCE_DOCUMENTS) {
                 assertThat(ROOT.resolve(document))
                         .as(
-                                "%s is outside this change's file inventory and must not be created here. If "
-                                        + "it is ever authored, this gate must be revised deliberately rather "
-                                        + "than passing by accident",
+                                "%s is not authored in this branch, which is what makes a present-tense claim "
+                                        + "about it a claim about nothing. If it is ever authored, move it to "
+                                        + "AUTHORED_EVIDENCE_DOCUMENTS and drop it from the claim pattern - "
+                                        + "revised deliberately, rather than passing by accident",
                                 document)
                         .doesNotExist();
             }
         }
 
         @Test
-        @DisplayName("no site says a decision is recorded, tracked or cited IN either document")
+        @DisplayName("the authored evidence document is present, so the narrowing above stays honest")
+        void theAuthoredRegisterIsPresent() {
+            for (final String document : AUTHORED_EVIDENCE_DOCUMENTS) {
+                assertThat(ROOT.resolve(document))
+                        .as(
+                                "%s was removed from the absent set because it exists. If it no longer does, "
+                                        + "restore it to ABSENT_EVIDENCE_DOCUMENTS and to the claim pattern "
+                                        + "rather than leaving a guard whose premise has silently reversed",
+                                document)
+                        .exists();
+            }
+        }
+
+        @Test
+        @DisplayName("no site says a decision is recorded, tracked or cited IN a document that does not exist")
         void noPresentTenseEvidenceClaim() {
             final List<String> offences = new ArrayList<>();
             for (final Path path : scannedFiles()) {
