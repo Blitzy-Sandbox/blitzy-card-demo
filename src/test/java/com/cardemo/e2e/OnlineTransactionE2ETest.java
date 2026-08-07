@@ -33,10 +33,18 @@
 package com.cardemo.e2e;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 
 import com.cardemo.controller.AccountController;
 import com.cardemo.controller.AdminController;
 import com.cardemo.controller.AuthController;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.Appender;
+import ch.qos.logback.core.OutputStreamAppender;
+import ch.qos.logback.core.encoder.Encoder;
+import ch.qos.logback.core.read.ListAppender;
 import com.cardemo.controller.BillingController;
 import com.cardemo.controller.CardController;
 import com.cardemo.controller.MenuController;
@@ -49,6 +57,7 @@ import com.cardemo.model.dto.PageResponse;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.observability.CorrelationIdFilter;
+import com.cardemo.repository.CustomerRepository;
 import com.cardemo.repository.UserSecurityRepository;
 import com.cardemo.security.JwtTokenProvider;
 import com.cardemo.config.WebConfig;
@@ -60,6 +69,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import javax.crypto.spec.SecretKeySpec;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -86,16 +96,13 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -108,6 +115,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -132,6 +140,7 @@ import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.lifecycle.Startables;
@@ -180,6 +189,27 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
  * signing key is generated in memory for the run and registered in place of the production
  * {@code ${JWT_SIGNING_KEY}} property, which deliberately has no default.
  *
+ * <p><strong>Isolation: every scenario is independently runnable, and none is ordered.</strong> This class
+ * declares no {@code @TestMethodOrder} and no {@code @Order}, and holds no state across methods. An earlier
+ * revision did both: a per-class instance lifecycle created two principals once in a {@code @BeforeAll} and
+ * twenty-two {@code @Order}ed methods shared them. What that cost was not theoretical. A route test is the
+ * first thing an engineer runs alone while changing that route, and under the old arrangement running one
+ * alone was not a supported operation. Worse, the first failure in the sequence masked every scenario after
+ * it, and the self-delete scenario removed the shared administrator and restored it in a {@code finally} -
+ * so any failure between those two points converted one real defect into twenty failures pointing away from
+ * it.
+ *
+ * <p>Each method now provisions its own principals in {@code @BeforeEach}, levels its own starting state -
+ * transaction table emptied, report queue drained - and removes what it created in {@code @AfterEach},
+ * unconditionally. The self-delete scenario deletes a principal it creates for the purpose. Every method
+ * that mutates a seeded row captures it first and restores it in a {@code finally}.
+ *
+ * <p>What <em>is</em> still shared is deliberately shared and is not mutable state: the two containers and
+ * the Spring context. Restarting an engine and reapplying three migrations per method would cost minutes and
+ * buy nothing, because the isolation that matters is isolation of data. {@code SAME_THREAD} execution is
+ * retained for the same reason it was there before - levelling a shared table is not safe to do
+ * concurrently - and it is an execution constraint rather than an ordering one.
+ *
  * <p><strong>Failure modes and troubleshooting.</strong> A missing Docker socket blocks the gate. A
  * Testcontainers resolution error usually means the required 2.0.3 prefixed coordinates were replaced by
  * legacy bare module names or a second BOM. Compilation warnings are fatal under {@code -Xlint:all -Werror}.
@@ -200,11 +230,14 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 @ActiveProfiles("test")
 @Testcontainers
 @Import(OnlineTransactionE2ETest.FixedClockConfiguration.class)
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 @DisplayName("the seventeen-operation online CardDemo REST surface")
 public class OnlineTransactionE2ETest {
+
+    /** JUnit instantiates this class once per class; declared explicitly so doclint has a comment to read. */
+    public OnlineTransactionE2ETest() {
+        super();
+    }
 
     private static final String POSTGRES_IMAGE =
             "postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20";
@@ -237,6 +270,15 @@ public class OnlineTransactionE2ETest {
 
     private static final String REPORT_QUEUE_NAME = "carddemo-report-jobs.fifo";
     private static final String CORRELATION_VALUE = "e2e-online-surface";
+
+    /**
+     * The one appender {@code logback-spring.xml} declares, {@value}.
+     *
+     * <p>Named here so that the refusal-record assertions can reach the production encoder rather than the raw
+     * event: the masking layer is a JSON generator decorator on this appender's encoder and is invisible to a
+     * list appender.
+     */
+    private static final String CONSOLE_APPENDER_NAME = "CONSOLE";
     private static final String TRACE_PARENT_VALUE =
             "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
     private static final Set<String> LEGACY_ONLY_FIELDS = Set.of(
@@ -391,6 +433,25 @@ public class OnlineTransactionE2ETest {
     @Autowired
     private UserSecurityRepository userSecurityRepository;
 
+    /**
+     * Supplies the one controlled customer-lock failure, and nothing else.
+     *
+     * <p>A spy rather than a replacement, so every other test in this class still drives the real Spring Data
+     * repository unchanged; only the single stubbed call in
+     * {@link #theCustomerLockFailureIsForcedThroughTheEndpointAndCarriesItsLegacyOutcome()} diverges, and the
+     * default after-method reset removes that stub without replacing the application context.
+     *
+     * <p>Injection is the only way to reach this branch over HTTP. The outcome requires a genuine
+     * {@code PessimisticLockingFailureException} - an absent customer row falls through to the
+     * record-not-found classification instead - and the row cannot simply be deleted, because the
+     * cross-reference relation depends on it. Holding a competing database lock would block the request
+     * indefinitely rather than fail it, since no lock timeout is configured. So the failure is injected at the
+     * exact seam the source's own guard sits behind, and everything above it stays real: real HTTP, real
+     * filter chain, real controller, real service, real exception mapping.
+     */
+    @MockitoSpyBean
+    private CustomerRepository customerRepository;
+
     @Autowired
     private PasswordEncoder passwordEncoder;
 
@@ -423,9 +484,25 @@ public class OnlineTransactionE2ETest {
     private TestIdentity standardUser;
 
     /**
-     * Creates the two runtime-only principals used by the surface tests.
+     * Creates the two runtime-only principals, and the empty starting state, for <b>one</b> test.
+     *
+     * <p><strong>Per test, not per class, and that is the point.</strong> These two principals were
+     * previously created once in a {@code @BeforeAll} and shared by all twenty-two methods, alongside an
+     * imposed method order. Two things followed, both bad. Every method inherited a precondition it did not
+     * create, so no scenario could be run on its own - and a route test is exactly the thing an engineer
+     * wants to run on its own while changing that route. And one method deleted the shared administrator
+     * deliberately, to prove the absent self-delete guard, restoring it in a {@code finally}: a failure
+     * anywhere between those two points left every later method authenticating as a principal that no longer
+     * existed, so one real defect became twenty failures pointing away from it.
+     *
+     * <p>Provisioning here costs two row inserts per test and buys independence outright: nothing a test
+     * does to its own principals can be observed by another, because no other test shares them.
+     *
+     * <p>The starting state is levelled here too - the transaction table emptied and the report queue drained
+     * - so a method that asserts on the first generated identifier or on the next queue message states its
+     * own precondition rather than depending on the method before it.
      */
-    @BeforeAll
+    @BeforeEach
     void provisionPrincipals() {
         this.administrator = newIdentity(UserType.ADMIN);
         this.standardUser = newIdentity(UserType.USER);
@@ -436,9 +513,23 @@ public class OnlineTransactionE2ETest {
     }
 
     /**
-     * Removes every row and message created by this class.
+     * Removes every row and message the test that just ran created.
+     *
+     * <p>Symmetric with the provisioning above and unconditional, so nothing survives a failing assertion.
+     * Deletion is existence-checked rather than assumed, because a test may legitimately have removed a
+     * principal already.
+     *
+     * <p><strong>This cleanup is hygiene, and it is deliberately not where the independence comes from.</strong>
+     * That distinction is worth stating precisely, because the comfortable version of it would be an
+     * overstatement. Independence comes from the provisioning above: each test authenticates as principals
+     * whose identifiers no other test knows, so there is nothing for a sibling to observe whether they are
+     * removed or not. Measured, by removing the two {@code deleteIdentity} calls from this method and running
+     * the whole suite in randomised order: all twenty-two still pass. What this method actually buys is that
+     * a run does not leave two rows per test in {@code user_security} - which matters for the size of the
+     * table a later page assertion might one day read, and for leaving the database as it was found, not for
+     * whether these tests can be trusted.
      */
-    @AfterAll
+    @AfterEach
     void removeCreatedResources() {
         clearTransactions();
         deleteIdentity(this.administrator);
@@ -1053,7 +1144,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(1)
     @DisplayName("app/csd/CARDDEMO.CSD:306-480 exposes exactly 17 sourced operations across 8 controllers")
     void endpointInventoryMatchesTheCsdAndTheRuntimePortIsFrameworkAssigned() {
         assertThat(this.port).isPositive();
@@ -1118,7 +1208,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(2)
     @DisplayName("app/cbl/COSGN00C.cbl:132-136 upper-cases both credential fields and emits five JWT claims")
     void signOnUppercasesBothInputsAndEmitsOnlyTheFiveIdentityClaims() {
         assertThat(this.administrator.credential().chars().anyMatch(Character::isUpperCase)).isTrue();
@@ -1154,7 +1243,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(3)
     @DisplayName("unknown-user and refused-credential sign-on responses are indistinguishable")
     void authenticationFailuresAreIndistinguishableOnTheWire() {
         final String refusedCredential = randomMixedCaseCredential();
@@ -1176,7 +1264,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(4)
     @DisplayName("CM00 and CA00 bind option lists by populated count rather than OCCURS capacity")
     void menusPreserveCountsRoleGatesAndDistinctComingSoonMessages() {
         final AuthenticatedSession user = signOn(this.standardUser);
@@ -1210,8 +1297,7 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(5)
-    @DisplayName("CAVW and CAUP use a sealed ETag and accept a valid new FICO over an out-of-band old value")
+    @DisplayName("CAVW and CAUP carry the snapshot in the body and accept a valid new FICO over an out-of-band old value")
     void accountViewAndUpdateUseTheSealedSnapshotAndNewDetailsValidation() {
         final AuthenticatedSession user = signOn(this.standardUser);
         final Map<String, Object> original = accountState(1L);
@@ -1221,11 +1307,21 @@ public class OnlineTransactionE2ETest {
             final ResponseEntity<String> view =
                     request(HttpMethod.GET, "/api/accounts/" + accountId(1L), null, user);
             assertThat(view.getStatusCode()).isEqualTo(HttpStatus.OK);
-            final String etag = view.getHeaders().getETag();
-            assertThat(etag).isNotBlank();
             final JsonNode account = responseBody(view);
-            assertThat(account.path("snapshotToken").asText()).isNotBlank();
-            assertThat(etag.equals('"' + account.path("snapshotToken").asText() + '"')).isTrue();
+            // Transformation Rule 7: the read projects the ACUP-OLD-DETAILS group of
+            // app/cbl/COACTUPC.cbl:669 and the matching PUT carries it in its body. No entity tag and no
+            // If-Match are involved, because no server-side state stands between the two turns.
+            assertThat(view.getHeaders().getETag()).isNull();
+            final JsonNode projectedSnapshot = account.path("oldDetails");
+            assertThat(projectedSnapshot.isObject()).isTrue();
+            assertThat(projectedSnapshot.path("accountId").asText()).isEqualTo(accountId(1L));
+            // :4174-4179 reads the snapshot date of birth at offsets 1, 5 and 7 - the unseparated form -
+            // while the live record is dash separated at 1, 6 and 9. A projection that emitted the live
+            // form would be refused on every write.
+            assertThat(projectedSnapshot.path("dateOfBirth").asText().length()).isEqualTo(8);
+            assertThat(projectedSnapshot.path("dateOfBirth").asText()).doesNotContain("-");
+            // The nine protected values remain absent as DISPLAY components; they reach the client only
+            // inside the group above, which is the one carrier the comparison requires.
             assertThat(account.fieldNames()).toIterable().doesNotContain(
                     "customerSsn", "customerDateOfBirth", "customerFirstName", "customerMiddleName",
                     "customerLastName", "phoneNumber1", "phoneNumber2", "governmentIssuedId",
@@ -1233,12 +1329,13 @@ public class OnlineTransactionE2ETest {
 
             final ObjectNode update = accountUpdateBody(original);
             assertThat(update.path("newDetails").path("dateOfBirth").asText().length()).isEqualTo(8);
+            // The group is echoed back exactly as the read returned it, which is the whole contract.
+            update.set("oldDetails", projectedSnapshot.deepCopy());
             final ResponseEntity<String> updated = request(
                     HttpMethod.PUT,
                     "/api/accounts?confirm=true",
                     update,
-                    user,
-                    Map.of(HttpHeaders.IF_MATCH, etag));
+                    user);
             assertThat(updated.getStatusCode()).isEqualTo(HttpStatus.OK);
             final JsonNode outcome = responseBody(updated);
             assertThat(outcome.path("applied").asBoolean()).isTrue();
@@ -1255,7 +1352,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(6)
     @DisplayName("CAUP exposes five distinguishable outcomes and preserves the customer-lock success fall-through")
     void accountUpdateOutcomesDobOffsetsAndCaseAsymmetryRemainDistinguishable()
             throws ReflectiveOperationException {
@@ -1264,20 +1360,46 @@ public class OnlineTransactionE2ETest {
         final ObjectNode body = accountUpdateBody(state);
         final ResponseEntity<String> view =
                 request(HttpMethod.GET, "/api/accounts/" + accountId(1L), null, user);
-        final String etag = view.getHeaders().getETag();
+        final JsonNode projectedSnapshot = responseBody(view).path("oldDetails");
 
-        assertThat(request(HttpMethod.PUT, "/api/accounts", body, user).getStatusCode())
+        // No confirmation: the PF05 gate of :2602-2603 is unmet, so nothing is written whatever else is
+        // right. Asserted with the group present, so the outcome is attributable to the gate alone.
+        final ObjectNode confirmedBody = body.deepCopy();
+        confirmedBody.set("oldDetails", projectedSnapshot.deepCopy());
+        assertThat(request(HttpMethod.PUT, "/api/accounts", confirmedBody, user).getStatusCode())
                 .isEqualTo(HttpStatus.PRECONDITION_REQUIRED);
+
+        // Confirmed but with NO oldDetails group: 1205-COMPARE-OLD-NEW has nothing to compare against, so
+        // it reports a validation failure naming the group rather than skipping the comparison.
         assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", body, user).getStatusCode())
-                .isEqualTo(HttpStatus.PRECONDITION_REQUIRED);
-        assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", body, user,
-                Map.of(HttpHeaders.IF_MATCH, etag + "x")).getStatusCode())
-                .isEqualTo(HttpStatus.PRECONDITION_FAILED);
+                .isEqualTo(HttpStatus.BAD_REQUEST);
 
-        final ObjectNode bodyCarriedSnapshot = body.deepCopy();
-        bodyCarriedSnapshot.set("oldDetails", this.objectMapper.createObjectNode());
-        assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", bodyCarriedSnapshot, user,
-                Map.of(HttpHeaders.IF_MATCH, etag)).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        // Confirmed with an EMPTY group: a DIFFERENT condition, and a different status. The group is
+        // present, so 9700-CHECK-CHANGE-IN-REC has operands and runs - it just compares blanks against the
+        // live record and finds them different, which is DATA-WAS-CHANGED-BEFORE-UPDATE and answers 412.
+        // That is the source's own behaviour: INITIALIZE ACUP-OLD-DETAILS leaves the group blank and
+        // :4109-4192 then compares it, so a blank group is a failed comparison rather than an absent one.
+        //
+        // The card surface answers 428 for the same shape, and the difference is also in the source rather
+        // than in the target: COCRDUPC's CCUP-CHANGE-ACTION marker at :276-280 is CCUP-DETAILS-NOT-FETCHED
+        // for BOTH LOW-VALUES and SPACES, and the dispatch arm at :954 answers that state by reading rather
+        // than writing, so a hollow group there leaves the write unreachable. COACTUPC declares no such
+        // two-valued marker for its group: :981-983 INITIALIZEs ACUP-OLD-DETAILS and :4109-4192 then
+        // compares whatever it holds. The asymmetry is asserted here deliberately, not normalised away.
+        final ObjectNode emptySnapshot = body.deepCopy();
+        emptySnapshot.set("oldDetails", this.objectMapper.createObjectNode());
+        assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", emptySnapshot, user)
+                .getStatusCode()).isEqualTo(HttpStatus.PRECONDITION_FAILED);
+
+        // Confirmed with a group that DISAGREES with the stored row: the guard of :4109-4193 fires and the
+        // write is abandoned. This is the outcome the two layers exist for, and it is the one that proves
+        // the snapshot is not derived from the row being written.
+        final ObjectNode staleSnapshot = body.deepCopy();
+        final ObjectNode staleGroup = projectedSnapshot.deepCopy();
+        staleGroup.put("addressLine1", "AN ADDRESS THIS RECORD NEVER HELD");
+        staleSnapshot.set("oldDetails", staleGroup);
+        assertThat(request(HttpMethod.PUT, "/api/accounts?confirm=true", staleSnapshot, user)
+                .getStatusCode()).isEqualTo(HttpStatus.PRECONDITION_FAILED);
 
         final Method statusFor = AccountController.class.getDeclaredMethod(
                 "statusFor", ConcurrentUpdateException.Outcome.class);
@@ -1334,7 +1456,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(7)
     @DisplayName("CCLI, CCDL and CCUP preserve seven-row paging, three-state filters and update literals")
     void cardListDetailAndUpdateExerciseAllThreeCardOperations() {
         final AuthenticatedSession user = signOn(this.standardUser);
@@ -1353,20 +1474,30 @@ public class OnlineTransactionE2ETest {
             final ResponseEntity<String> detailResponse =
                     request(HttpMethod.GET, detailPath, null, user);
             assertThat(detailResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
-            final String etag = detailResponse.getHeaders().getETag();
-            assertThat(etag).isNotBlank();
+            assertThat(detailResponse.getHeaders().getETag()).isNull();
             final JsonNode detail = responseBody(detailResponse);
-            assertThat(detail.path("snapshotToken").asText()).isNotBlank();
             assertThat(detail.path("maskedCardNumber").asText().equals(cardNumber)).isFalse();
+            // The CCUP-OLD-DETAILS group of app/cbl/COCRDUPC.cbl:291-301 travels in the body. Its expiry
+            // DAY is asserted because app/cpy-bms/COCRDSL.CPY declares no field for it, which makes this
+            // the only route by which a client obtains the operand :1507 compares.
+            final JsonNode projectedSnapshot = detail.path("oldDetails");
+            assertThat(projectedSnapshot.isObject()).isTrue();
+            assertThat(projectedSnapshot.path("cardData").path("expiraionDate").path("expiryDay").asText())
+                    .isNotBlank();
+            // And the group carries no card number: :1347 sources that member from the RECEIVED map field,
+            // so emitting it would hand back the digits maskedCardNumber exists to withhold.
+            assertThat(projectedSnapshot.path("cardNumber").isNull()
+                    || projectedSnapshot.path("cardNumber").asText().isEmpty()).isTrue();
 
+            final ObjectNode cardUpdate = cardUpdateBody(original);
+            cardUpdate.set("oldDetails", projectedSnapshot.deepCopy());
             final ResponseEntity<String> updateResponse = request(
                     HttpMethod.PUT,
                     "/api/cards",
-                    cardUpdateBody(original),
-                    user,
-                    Map.of(HttpHeaders.IF_MATCH, etag));
+                    cardUpdate,
+                    user);
             assertThat(updateResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(responseBody(updateResponse).path("snapshotToken").isNull()).isTrue();
+            assertThat(responseBody(updateResponse).path("oldDetails").isNull()).isTrue();
             assertThat(this.jdbcTemplate.queryForObject(
                     "SELECT trim(card_active_status) FROM card WHERE card_num = ?",
                     String.class, original.get("card_num")))
@@ -1390,7 +1521,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(8)
     @DisplayName("CT02 uses NUMVAL-C for the amount and generates identifier one on an empty table")
     void transactionAddUsesTheCurrencyParserAndStartsAtIdentifierOne() {
         final AuthenticatedSession user = signOn(this.standardUser);
@@ -1432,7 +1562,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(9)
     @DisplayName("CT00 returns ten rows per page, proved by the cursor and the tenth BMS row")
     void transactionListUsesTheTenRowScreenDepthAndTwoLocatorProof() {
         final AuthenticatedSession user = signOn(this.standardUser);
@@ -1458,7 +1587,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(10)
     @DisplayName("CT01 retrieves the transaction CT02 created and preserves the edited amount mask")
     void transactionDetailReturnsTheCreatedRecordWithoutInventingASecondParser() {
         final AuthenticatedSession user = signOn(this.standardUser);
@@ -1484,7 +1612,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(11)
     @DisplayName("CB00 preserves all five confirmation arms and settles the entire positive balance")
     void billPaymentPreservesTheFiveWayGateAndPaysTheFullBalanceToZero() {
         final AuthenticatedSession user = signOn(this.standardUser);
@@ -1550,7 +1677,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(12)
     @DisplayName("CB00 rejects a non-positive balance before creating a synthetic transaction")
     void billPaymentRejectsAtOrBelowZero() {
         final AuthenticatedSession user = signOn(this.standardUser);
@@ -1576,7 +1702,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(13)
     @DisplayName("CR00 publishes Monthly, Yearly and custom periods and preserves the four confirmation arms")
     void reportSubmissionPublishesTheThreePeriodsWithFullMonthBoundaries() {
         final AuthenticatedSession user = signOn(this.standardUser);
@@ -1639,7 +1764,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(14)
     @DisplayName("CU00 lists ten rows per page without exposing any credential member")
     void adminListUsesTheTenRowPageContract() {
         final AuthenticatedSession admin = signOn(this.administrator);
@@ -1654,7 +1778,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(15)
     @DisplayName("CU01 adds a user, preserves the duplicate literal and never returns a credential")
     void adminAddCreatesOneUserAndSurfacesTheDuplicateLiteral() {
         final AuthenticatedSession admin = signOn(this.administrator);
@@ -1685,7 +1808,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(16)
     @DisplayName("CU02 is the single update operation reached by both PF3 and PF5")
     void adminUpdateCoversBothLegacySaveKeysWithoutReturningTheCredential() {
         final AuthenticatedSession admin = signOn(this.administrator);
@@ -1721,33 +1843,45 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(17)
     @DisplayName("CU03 permits self-delete because COUSR03C carries no signed-on-identifier guard")
     void adminDeletePreservesTheAbsentSelfDeleteGuardAndWrongVerbLiteral() {
-        final AuthenticatedSession admin = signOn(this.administrator);
+        // The principal deleted here is one this test creates for the purpose, NOT the shared administrator.
+        // The distinction is what makes the scenario safe to run in any position: self-delete is exactly the
+        // operation that destroys the credential it authenticated with, so performing it on a principal any
+        // other assertion also uses would leave that principal's fate depending on this method's outcome.
+        // An earlier revision did delete the shared one and restored it in a finally block, which held only
+        // as long as nothing failed in between.
+        final TestIdentity selfDeleting = newIdentity(UserType.ADMIN);
+        saveIdentity(selfDeleting, UserType.ADMIN);
+        final AuthenticatedSession admin = signOn(selfDeleting);
         try {
             final ResponseEntity<String> response = request(
                     HttpMethod.DELETE,
-                    "/api/admin/users/" + this.administrator.userId() + "?confirmed=true",
+                    "/api/admin/users/" + selfDeleting.userId() + "?confirmed=true",
                     null,
                     admin);
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(this.userSecurityRepository.existsById(this.administrator.userId())).isFalse();
+            assertThat(this.userSecurityRepository.existsById(selfDeleting.userId()))
+                    .as("the source carries no comparison against the signed-on identifier anywhere in its "
+                            + "359 lines, so an administrator may remove their own account and the row is "
+                            + "gone. The absence is the behaviour and it is preserved")
+                    .isFalse();
             assertNoCredentialFields(responseBody(response));
+            assertThat(this.userSecurityRepository.existsById(this.administrator.userId()))
+                    .as("and the shared administrator is untouched by it, which is what lets this scenario "
+                            + "run in any position without disturbing another")
+                    .isTrue();
             final String deleteSource = sourceText("app/cbl/COUSR03C.cbl");
             assertThat(deleteSource.lines().filter(line -> line.contains("CDEMO-USER-ID")).count())
                     .isZero();
             assertThat(deleteSource).contains(
                     " has been deleted ...", "User ID NOT found...", "Unable to Update User...");
         } finally {
-            if (!this.userSecurityRepository.existsById(this.administrator.userId())) {
-                saveIdentity(this.administrator, UserType.ADMIN);
-            }
+            deleteIdentity(selfDeleting);
         }
     }
 
     @Test
-    @Order(18)
     @DisplayName("only sign-on is anonymous; missing, expired, tampered and under-privileged tokens are refused")
     void securityBoundaryRejectsEveryHostileCredentialAndMalformedBody() {
         final ObjectNode emptyBody = this.objectMapper.createObjectNode();
@@ -1797,7 +1931,6 @@ public class OnlineTransactionE2ETest {
     }
 
     @Test
-    @Order(19)
     @DisplayName("stateless correlation, actuator groups and the four bounded metrics are observable")
     void observabilityAndActuatorConfigurationAreExact() {
         assertThat(CorrelationIdFilter.MDC_KEY_CORRELATION_ID).isEqualTo("correlationId");
@@ -1855,7 +1988,6 @@ public class OnlineTransactionE2ETest {
      * credential, so a refusal there proves the screen runs ahead of authentication.
      */
     @Test
-    @Order(20)
     @DisplayName("every unreadable media type is refused 415 in the authored envelope, JSON alone is admitted")
     void unreadableMediaTypesAreRefusedWithTheAuthoredEnvelope() {
         final String credentials = "{\"userId\":\"" + this.administrator.userId()
@@ -1882,7 +2014,7 @@ public class OnlineTransactionE2ETest {
         // test uses parses the header itself before it sends and would refuse to transmit either.
         for (final String declared : List.of("application/", "application/json, application/xml")) {
             final String unparsable = exchangeRaw("POST /api/auth/signon HTTP/1.1\r\n"
-                    + "Host: localhost:" + this.port + "\r\n"
+                    + "Host: " + boundAuthority() + "\r\n"
                     + "Content-Type: " + declared + "\r\n"
                     + "Content-Length: " + credentials.length() + "\r\n"
                     + "Connection: close\r\n\r\n" + credentials);
@@ -1895,7 +2027,7 @@ public class OnlineTransactionE2ETest {
         // Bytes sent under no declared media type at all are refused too - a request that describes its body
         // as nothing is not the same as the body-less request the deletion operation legitimately sends.
         final String undeclared = exchangeRaw("POST /api/auth/signon HTTP/1.1\r\n"
-                + "Host: localhost:" + this.port + "\r\n"
+                + "Host: " + boundAuthority() + "\r\n"
                 + "Content-Length: " + credentials.length() + "\r\n"
                 + "Connection: close\r\n\r\n" + credentials);
         assertThat(statusLineOf(undeclared)).startsWith("HTTP/1.1 415");
@@ -1927,7 +2059,6 @@ public class OnlineTransactionE2ETest {
      * neither is a {@code 5xx}.
      */
     @Test
-    @Order(21)
     @DisplayName("chunked request bodies are read normally and a broken framing is a 4xx, never a 5xx")
     void chunkedRequestBodiesAreReadAndBrokenFramingIsAClientError() {
         final byte[] credentials = ("{\"userId\":\"" + this.administrator.userId()
@@ -1945,7 +2076,7 @@ public class OnlineTransactionE2ETest {
 
         // A chunk extension is legal and must not change the outcome either.
         final String withExtension = exchangeRaw("POST /api/auth/signon HTTP/1.1\r\n"
-                + "Host: localhost:" + this.port + "\r\n"
+                + "Host: " + boundAuthority() + "\r\n"
                 + "Content-Type: application/json\r\n"
                 + "Transfer-Encoding: chunked\r\n"
                 + "Connection: close\r\n\r\n"
@@ -1955,7 +2086,7 @@ public class OnlineTransactionE2ETest {
 
         // A chunk size that is not hexadecimal is a client error and must never be a server failure.
         final String brokenSize = exchangeRaw("POST /api/auth/signon HTTP/1.1\r\n"
-                + "Host: localhost:" + this.port + "\r\n"
+                + "Host: " + boundAuthority() + "\r\n"
                 + "Content-Type: application/json\r\n"
                 + "Transfer-Encoding: chunked\r\n"
                 + "Connection: close\r\n\r\nzz\r\nabcd\r\n0\r\n\r\n");
@@ -1974,7 +2105,6 @@ public class OnlineTransactionE2ETest {
      * yields the read-failure envelope, whose property path goes to the log rather than to the response.
      */
     @Test
-    @Order(22)
     @DisplayName("a control character in the request line or the body is refused, and no row is written")
     void controlCharactersAreRefusedOnEveryInboundStringAndNothingIsWritten() {
         final AuthenticatedSession admin = signOn(this.administrator);
@@ -1982,7 +2112,7 @@ public class OnlineTransactionE2ETest {
         // Sent over a raw socket because the HTTP client this test uses re-encodes a percent escape it is
         // handed, which would deliver the literal text %00 rather than the character under test.
         final String queryRefusal = exchangeRaw("GET /api/transactions/detail?transactionId=%00 HTTP/1.1\r\n"
-                + "Host: localhost:" + this.port + "\r\n"
+                + "Host: " + boundAuthority() + "\r\n"
                 + "Authorization: Bearer " + admin.token() + "\r\n"
                 + "Connection: close\r\n\r\n");
         assertThat(statusLineOf(queryRefusal)).startsWith("HTTP/1.1 400");
@@ -2013,7 +2143,7 @@ public class OnlineTransactionE2ETest {
         // client this test uses re-encodes a percent escape in a path it is given, which would deliver the
         // literal text rather than the character under test.
         final String pathRefusal = exchangeRaw("GET /api/accounts/A%00B HTTP/1.1\r\n"
-                + "Host: localhost:" + this.port + "\r\n"
+                + "Host: " + boundAuthority() + "\r\n"
                 + "Authorization: Bearer " + admin.token() + "\r\n"
                 + "Connection: close\r\n\r\n");
         assertThat(statusLineOf(pathRefusal)).startsWith("HTTP/1.1 4");
@@ -2026,6 +2156,198 @@ public class OnlineTransactionE2ETest {
                 request(HttpMethod.POST, "/api/billing/payments", lowValues, signOn(this.standardUser));
         assertThat(sentinel.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(responseBody(sentinel).path("outcome").asText()).isEqualTo("CONFIRMATION_REQUIRED");
+    }
+
+    /**
+     * The refusal <em>records</em> the boundary layers write, rendered by the encoder the application runs.
+     *
+     * <p><strong>Finding C-01, severity Critical - this test pins the remediation end to end.</strong> The
+     * refusal response was already asserted to echo nothing back; the log record was not, and it was the
+     * channel carrying the caller's bytes. Four pre-authentication boundaries logged raw request metadata - the
+     * declared {@code Content-Type}, the request method, the request URI, and the HTTP firewall's own rejection
+     * message, which quotes the offending request verbatim.
+     *
+     * <p>Why this test exists in addition to the unit-level cover in
+     * {@code com.cardemo.unit.config.RequestBoundaryHardeningTest}: the masking layer of
+     * {@code src/main/resources/logback-spring.xml} is a JSON generator decorator on the console appender's
+     * encoder, so it is invisible to a list appender, which sees the raw event. Only a running application
+     * context has that encoder. Rendering each captured event through it is therefore the only way to assert
+     * what an operator would actually read - and the point of the finding is precisely that masking does not
+     * save a bare protected value, because a bare value carries no label for a rule to key on.
+     *
+     * <p>Every planted value is synthetic and shaped like something this application really holds: a
+     * sixteen-digit card number, a customer surname and a nine-digit government identifier. None authenticates
+     * anything.
+     */
+    @Test
+    @DisplayName("no boundary refusal record carries the caller's header, request line or firewall text")
+    void refusalRecordsCarryNoCallerSuppliedValue() {
+        final String pan = "4111111111111111";
+        final String surname = "Whitmore";
+        final String governmentId = "123456789";
+        final List<String> planted = List.of(pan, surname, governmentId);
+
+        final Logger application = logbackLogger("com.cardemo");
+        final ListAppender<ILoggingEvent> captured = new ListAppender<>();
+        captured.setContext(application.getLoggerContext());
+        captured.start();
+        application.addAppender(captured);
+        try {
+            // 1. An unreadable media type whose header parameters carry every protected shape at once.
+            assertThat(postWithRawContentType("text/plain;pan=" + pan + ";name=" + surname
+                    + ";ssn=" + governmentId, "{}").getStatusCode())
+                    .isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+
+            // 2. A method the framework does not serve, on a path built entirely from protected values.
+            assertThat(statusLineOf(exchangeRaw("TRACE /api/accounts/" + pan + "/" + surname + " HTTP/1.1\r\n"
+                    + "Host: " + boundAuthority() + "\r\n"
+                    + "Connection: close\r\n\r\n")))
+                    .startsWith("HTTP/1.1 4");
+
+            // 3. A URI the HTTP firewall rejects outright, so its own message quotes the value back.
+            assertThat(statusLineOf(exchangeRaw("GET /api/cards/" + pan + "/%2e%2e/" + governmentId
+                    + " HTTP/1.1\r\n"
+                    + "Host: " + boundAuthority() + "\r\n"
+                    + "Connection: close\r\n\r\n")))
+                    .startsWith("HTTP/1.1 4");
+
+            // 4. An unauthenticated request to an administrator route, again on a protected-value path.
+            assertThat(statusLineOf(exchangeRaw("GET /api/admin/users/" + governmentId + " HTTP/1.1\r\n"
+                    + "Host: " + boundAuthority() + "\r\n"
+                    + "Connection: close\r\n\r\n")))
+                    .startsWith("HTTP/1.1 401");
+        } finally {
+            application.detachAppender(captured);
+            captured.stop();
+        }
+
+        assertThat(captured.list)
+                .as("the four interactions must have produced records; nothing captured would make the "
+                        + "assertions below vacuously true")
+                .isNotEmpty();
+
+        final Encoder<ILoggingEvent> encoder = productionEncoder();
+        for (final ILoggingEvent event : captured.list) {
+            final String rendered = new String(encoder.encode(event), StandardCharsets.UTF_8);
+            assertThat(rendered)
+                    .as("""
+                            the line an operator reads, produced by the very encoder the application runs. \
+                            The masking rules cover LABELLED credentials, hash shapes and social-security \
+                            shapes; a bare card number, surname or government identifier in a header value or \
+                            a path segment carries no label and would pass through untouched, which is why the \
+                            remediation is that the value is never emitted rather than that it is masked.""")
+                    .doesNotContain(planted);
+        }
+    }
+
+    /**
+     * Resolves a logger to its implementation type so an appender can be attached to it.
+     *
+     * @param loggerName the logger name
+     * @return the implementation-typed logger, never null
+     */
+    private static Logger logbackLogger(final String loggerName) {
+        final org.slf4j.Logger candidate = LoggerFactory.getLogger(loggerName);
+        assertThat(candidate)
+                .as("the backend must be the one logback-spring.xml configures, because the masking rules and "
+                        + "the field set under test live in its encoder")
+                .isInstanceOf(Logger.class);
+        return (Logger) candidate;
+    }
+
+    /**
+     * The customer-lock failure is driven through the endpoint, and carries its legacy outcome over HTTP.
+     *
+     * <p>{@link #accountUpdateOutcomesDobOffsetsAndCaseAsymmetryRemainDistinguishable()} proves the
+     * outcome-to-status table and the source text that justifies it. Neither proves the branch can be reached:
+     * a table can be complete and correct while the code that would consult it never runs, and the customer
+     * lock guard is the one outcome in that table which no request had ever produced. Its own decision
+     * paragraph never tests the flag - {@code 2606-CLASSIFY-WRITE-OUTCOME} falls through to the
+     * {@code WHEN OTHER} success arm at {@code app/cbl/COACTUPC.cbl:2613-2614}, which is the legacy defect
+     * recorded as {@code DL-LD-13} - so the flag is set at {@code :3939} and read by nothing.
+     *
+     * <p>This test therefore asserts BOTH halves that the defect keeps apart. The <em>internal</em> half: the
+     * typed outcome the REST entry point rethrows is
+     * {@link ConcurrentUpdateException.Outcome#COULD_NOT_LOCK_CUSTOMER}, surfacing as {@code 409} with the
+     * legacy message the screen would have shown. The <em>legacy user-visible</em> half: the write is
+     * abandoned with nothing persisted, because the source's guard sits before any rewrite - which is also why
+     * the source needs no rollback at this point and does not issue one.
+     *
+     * <p>The snapshot the write compares against travels in the request body as {@code oldDetails} rather
+     * than as an entity tag: no endpoint emits an {@code ETag} and none reads {@code If-Match}, which is the
+     * stateless contract of {@code F-018}. It is supplied here MATCHING the stored row deliberately, so the
+     * request is refused by the customer lock guard and by nothing upstream of it.
+     *
+     * <p>Everything above the injected seam is real - real socket, real filter chain, real token, real
+     * controller, real service, real exception mapping - so what is verified is the endpoint's behaviour and
+     * not a mapping function called directly.
+     */
+    @Test
+    @DisplayName("CAUP: an injected customer-lock failure yields 409 with the legacy message and writes nothing")
+    void theCustomerLockFailureIsForcedThroughTheEndpointAndCarriesItsLegacyOutcome() {
+        final AuthenticatedSession user = signOn(this.standardUser);
+        final Map<String, Object> state = accountState(1L);
+        final long customerKey =
+                new BigDecimal(state.get("cust_id").toString()).longValueExact();
+        final ObjectNode body = accountUpdateBody(state);
+        // The snapshot travels in the body as oldDetails - see F-018 - so it is taken from the projection
+        // the view endpoint returns and left MATCHING, which is what carries the request past the
+        // validation of 1205-COMPARE-OLD-NEW and the comparison of 9700-CHECK-CHANGE-IN-REC and into the
+        // customer lock read this test exists to reach.
+        final ResponseEntity<String> view =
+                request(HttpMethod.GET, "/api/accounts/" + accountId(1L), null, user);
+        body.set("oldDetails", responseBody(view).path("oldDetails").deepCopy());
+
+        final Map<String, Object> before = accountState(1L);
+
+        doThrow(new CannotAcquireLockException(
+                "injected: the customer row could not be locked for update"))
+                .when(this.customerRepository).findByIdForUpdate(customerKey);
+
+        final ResponseEntity<String> response =
+                request(HttpMethod.PUT, "/api/accounts?confirm=true", body, user);
+
+        assertThat(response.getStatusCode())
+                .as("the customer-lock outcome surfaces as CONFLICT. This is the status the outcome table "
+                        + "declares, now reached by a request rather than by a reflective call")
+                .isEqualTo(HttpStatus.CONFLICT);
+
+        final JsonNode payload = responseBody(response);
+        assertThat(payload.toString())
+                .as("and it carries the legacy message verbatim - the exact text the 3270 screen displayed - "
+                        + "so the user-visible outcome is preserved and not merely the status code")
+                .contains(ConcurrentUpdateException.Outcome.COULD_NOT_LOCK_CUSTOMER.getLegacyMessage());
+        assertThat(ConcurrentUpdateException.Outcome.COULD_NOT_LOCK_CUSTOMER.getLegacyMessage())
+                .as("stated explicitly so this assertion cannot pass on an empty or renamed message")
+                .isEqualTo("Could not lock customer record for update");
+
+        verify(this.customerRepository)
+                .findByIdForUpdate(customerKey);
+
+        assertThat(accountState(1L))
+                .as("NOTHING was written. The source's customer-lock guard at app/cbl/COACTUPC.cbl:3934-3942 "
+                        + "sits before either rewrite, which is precisely why it issues no rollback there "
+                        + "while the later customer-rewrite failure does. Every account and customer column "
+                        + "this request could have touched is unchanged")
+                .isEqualTo(before);
+    }
+
+    /**
+     * Returns the encoder the running application writes its log records through.
+     *
+     * @return the console appender's encoder, never null
+     */
+    private static Encoder<ILoggingEvent> productionEncoder() {
+        final Appender<ILoggingEvent> console =
+                logbackLogger(Logger.ROOT_LOGGER_NAME).getAppender(CONSOLE_APPENDER_NAME);
+        assertThat(console)
+                .as("logback-spring.xml declares exactly one appender and attaches it to the root logger; its "
+                        + "absence means the configuration was not applied to this context, so nothing "
+                        + "downstream of it can be asserted")
+                .isInstanceOf(OutputStreamAppender.class);
+        final Encoder<ILoggingEvent> encoder = ((OutputStreamAppender<ILoggingEvent>) console).getEncoder();
+        assertThat(encoder).as("the console appender must carry the structured encoder").isNotNull();
+        return encoder;
     }
 
     /**
@@ -2057,13 +2379,37 @@ public class OnlineTransactionE2ETest {
      */
     private String chunkedSignOn(final byte[] body, final String terminator) {
         return "POST /api/auth/signon HTTP/1.1\r\n"
-                + "Host: localhost:" + this.port + "\r\n"
+                + "Host: " + boundAuthority() + "\r\n"
                 + "Content-Type: application/json\r\n"
                 + "Transfer-Encoding: chunked\r\n"
                 + "Connection: close\r\n\r\n"
                 + Integer.toHexString(body.length) + "\r\n"
                 + new String(body, StandardCharsets.UTF_8) + "\r\n"
                 + terminator;
+    }
+
+    /**
+     * The authority of the server this test is actually bound to, derived rather than written down.
+     *
+     * <p>A hardcoded host is wrong here for a reason that outlives style. The port is already injected
+     * because it is assigned at run time, so writing the host as a literal beside it asserts half of an
+     * address that the harness was told the other half of - and the literal silently becomes false the moment
+     * the context binds anywhere other than the loopback name, which is exactly what happens in a container
+     * or on a dual-stack host where the loopback resolves to {@code ::1}. The bound address is therefore read
+     * from the client the context configured, and only if that yields nothing is the loopback interface
+     * consulted directly. Neither path contains a host name.
+     *
+     * @return the {@code host:port} authority of the bound server, never blank
+     */
+    private String boundAuthority() {
+        final String rootUri = this.http.getRootUri();
+        if (rootUri != null && !rootUri.isBlank()) {
+            final String authority = URI.create(rootUri).getAuthority();
+            if (authority != null && !authority.isBlank()) {
+                return authority;
+            }
+        }
+        return InetAddress.getLoopbackAddress().getHostAddress() + ":" + this.port;
     }
 
     /**
@@ -2076,7 +2422,7 @@ public class OnlineTransactionE2ETest {
      * @return the raw response text, headers and body together
      */
     private String exchangeRaw(final String request) {
-        try (Socket socket = new Socket("localhost", this.port)) {
+        try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), this.port)) {
             socket.setSoTimeout(30_000);
             socket.getOutputStream().write(request.getBytes(StandardCharsets.UTF_8));
             socket.getOutputStream().flush();

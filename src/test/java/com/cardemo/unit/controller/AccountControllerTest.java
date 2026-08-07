@@ -35,8 +35,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -60,6 +58,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -83,9 +82,12 @@ import org.springframework.security.core.Authentication;
  *       birth, the three names, both telephone numbers, the government-issued identifier and the electronic
  *       funds account identifier are withheld from the read response, and the whole submitted map is withheld
  *       from the write response.</li>
- *   <li><em>The as-displayed snapshot is server-issued.</em> It is produced by the update service, sealed,
- *       published as an {@code ETag}, required back in {@code If-Match}, and refused if a caller supplies one
- *       in the body. This is what makes {@code AccountUpdateService.fetchForUpdate} reachable at all.</li>
+ *   <li><em>The as-displayed snapshot travels in the request body.</em> It is projected by the update
+ *       service on the read - which is what makes {@code AccountUpdateService.fetchForUpdate} reachable at
+ *       all - and echoed back unaltered as the body's {@code oldDetails} group on the write, per
+ *       transformation Rule 7. It travels as the group rather than as flat fields because
+ *       {@code app/cbl/COACTUPC.cbl:4174-4179} compares the date of birth across an offset asymmetry a
+ *       client cannot be expected to reconstruct.</li>
  *   <li><em>The confirmation admits exactly two spellings.</em> The framework's {@code Boolean} binding
  *       accepts six; on the one parameter that decides whether two datasets are written, that is not
  *       acceptable.</li>
@@ -99,19 +101,19 @@ import org.springframework.security.core.Authentication;
  *
  * <pre>
  * ./mvnw -B -ntp test -Dtest=AccountControllerTest
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ./mvnw -B -ntp clean verify
  * </pre>
  *
  * <p><strong>3. Key configuration and defaults.</strong> Both services are mocked and no Spring context is
- * started: every handler and every exception handler is a plain method call. The snapshot itself is an opaque
- * string here, because what this class tests is where it travels rather than how it is sealed - the sealing
- * is pinned by {@code SnapshotTokenServiceTest} and its consumption by
+ * started: every handler and every exception handler is a plain method call. What this class tests is where
+ * the group travels and that it arrives unaltered; the comparison it feeds is pinned by
  * {@code AccountUpdateServiceTest}.</p>
  *
  * <p><strong>4. Common failure modes.</strong> A failure in the privacy group means a protected customer
- * value reached a response. A failure in the snapshot group means the update precondition became caller
- * controlled, or the read stopped issuing one. A failure in the confirmation group means the parameter is
- * being coerced again. A failure in the disclosure group means a {@code 404} is naming keys.</p>
+ * value reached a diagnostic rendering. A failure in the snapshot group means the read stopped projecting
+ * the group, or the write stopped relaying it unaltered - either of which refuses every update. A failure in
+ * the confirmation group means the parameter is being coerced again. A failure in the disclosure group means
+ * a {@code 404} is naming keys.</p>
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)
@@ -120,9 +122,6 @@ class AccountControllerTest {
 
     /** {@code ACCTSIDI PIC X(11)} at {@code app/cpy-bms/COACTVW.CPY}. */
     private static final String ACCOUNT_ID = "00000000011";
-
-    /** The opaque snapshot the update service issues; its content is irrelevant to these assertions. */
-    private static final String SNAPSHOT = "c2VhbGVkLXNuYXBzaG90LXZhbHVl";
 
     /** {@code CUST-SSN PIC 9(09)}, a value no response may carry. */
     private static final String SSN = "123456789";
@@ -251,7 +250,8 @@ class AccountControllerTest {
         @DisplayName("the read response neither declares nor carries any of the nine withheld values")
         void theReadResponseWithholdsTheNineProtectedValues() {
             when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.issueUpdateSnapshot(ACCOUNT_ID)).thenReturn(SNAPSHOT);
+            when(accountUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID))
+                    .thenReturn(suppliedSnapshot());
 
             final AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, principal).getBody();
 
@@ -277,7 +277,8 @@ class AccountControllerTest {
         @DisplayName("the read response still carries every value the account screen needs")
         void theReadResponseCarriesWhatTheScreenNeeds() {
             when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.issueUpdateSnapshot(ACCOUNT_ID)).thenReturn(SNAPSHOT);
+            when(accountUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID))
+                    .thenReturn(suppliedSnapshot());
 
             final AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, principal).getBody();
 
@@ -297,12 +298,12 @@ class AccountControllerTest {
         @Test
         @DisplayName("the write response carries no submitted map, no navigation and no 3270 attributes")
         void theWriteResponseIsApiNative() {
-            when(accountUpdateService.updateAccount(any(), any()))
+            when(accountUpdateService.updateAccount(any()))
                     .thenReturn(updateResult(
                             AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE));
 
             final AccountUpdateResponse body = controller
-                    .updateAccount(updateRequest(null), "true", "\"" + SNAPSHOT + "\"", principal)
+                    .updateAccount(updateRequest(null), "true", principal)
                     .getBody();
 
             assertThat(body).isNotNull();
@@ -324,7 +325,7 @@ class AccountControllerTest {
         @Test
         @DisplayName("applied is true only for CHANGES_OKAYED_AND_DONE")
         void appliedIsTrueOnlyForTheCompletedOutcome() {
-            when(accountUpdateService.updateAccount(any(), any()))
+            when(accountUpdateService.updateAccount(any()))
                     .thenReturn(updateResult(
                             AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE))
                     .thenReturn(updateResult(
@@ -344,7 +345,7 @@ class AccountControllerTest {
         @Test
         @DisplayName("the change action is reported by name")
         void theChangeActionIsReportedByName() {
-            when(accountUpdateService.updateAccount(any(), any()))
+            when(accountUpdateService.updateAccount(any()))
                     .thenReturn(updateResult(AccountUpdateService.ChangeAction.SHOW_DETAILS));
 
             assertThat(applyOnce().changeAction()).isEqualTo("SHOW_DETAILS");
@@ -357,46 +358,71 @@ class AccountControllerTest {
          */
         private AccountUpdateResponse applyOnce() {
             return controller
-                    .updateAccount(updateRequest(null), "true", "\"" + SNAPSHOT + "\"", principal)
+                    .updateAccount(updateRequest(null), "true", principal)
                     .getBody();
         }
     }
 
     /**
-     * The snapshot is issued by this server, travels as an entity tag, and is never accepted from a caller.
+     * The as-displayed group is projected by the read, travels in the update's request body, and is relayed
+     * to the service byte for byte.
      */
     @Nested
-    @DisplayName("the update precondition is server-issued and header-borne")
+    @DisplayName("the update precondition travels in the request body")
     class SnapshotContract {
 
         /**
-         * The read publishes the sealed snapshot twice - in the body and as the entity tag - which is the
-         * contract that makes the previously unreachable snapshot producer reachable.
+         * The read publishes the group the matching write must echo. Without it the field-by-field
+         * comparison of {@code app/cbl/COACTUPC.cbl:4109-4193} would have no operands and every write
+         * would be refused, so this is what makes the update usable at all.
          */
         @Test
-        @DisplayName("the read publishes the sealed snapshot in the body and as the ETag")
-        void theReadPublishesTheSnapshotTwice() {
+        @DisplayName("the read publishes the as-displayed group, as the very type the PUT binds")
+        void theReadPublishesTheAsDisplayedGroup() {
             when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.issueUpdateSnapshot(ACCOUNT_ID)).thenReturn(SNAPSHOT);
+            when(accountUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID)).thenReturn(suppliedSnapshot());
 
             final ResponseEntity<AccountViewResponse> response =
                     controller.viewAccount(ACCOUNT_ID, principal);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().snapshotToken()).isEqualTo(SNAPSHOT);
-            assertThat(response.getHeaders().getETag()).isEqualTo("\"" + SNAPSHOT + "\"");
+            assertThat(response.getBody().oldDetails()).isNotNull();
+            assertThat(response.getBody().oldDetails().getSsn()).isEqualTo(SSN);
+            assertThat(response.getBody().oldDetails().getDateOfBirth()).isEqualTo("19800115");
         }
 
         /**
-         * A failure to issue the snapshot is not suppressed. Returning {@code 200} with no token would answer
+         * The snapshot date of birth is unseparated where the live record is dash-separated, which is the
+         * offset asymmetry {@code :4174-4179} compares across. It is asserted here because it is the single
+         * reason the group travels as a group rather than as flat display fields: a client reassembling it
+         * from {@code customerDateOfBirth} would send the dash-separated form and be refused on every
+         * request.
+         */
+        @Test
+        @DisplayName("the projected group keeps the unseparated date of birth the comparison expects")
+        void theProjectedGroupKeepsTheUnseparatedDateOfBirth() {
+            when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
+            when(accountUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID)).thenReturn(suppliedSnapshot());
+
+            final AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, principal).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.oldDetails().getDateOfBirth())
+                    .as("the snapshot form carries no separators - offsets 1, 5 and 7")
+                    .doesNotContain("-")
+                    .hasSize(8);
+        }
+
+        /**
+         * A failure to project the group is not suppressed. Returning {@code 200} with no group would answer
          * with a response the client cannot update from, which is the gap this contract closes.
          */
         @Test
-        @DisplayName("a failure to issue the snapshot propagates rather than yielding a tokenless 200")
+        @DisplayName("a failure to project the group propagates rather than yielding a groupless 200")
         void aFailedSnapshotAcquisitionPropagates() {
             when(accountViewService.viewAccount(ACCOUNT_ID)).thenReturn(viewProjection());
-            when(accountUpdateService.issueUpdateSnapshot(ACCOUNT_ID))
+            when(accountUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID))
                     .thenThrow(new RecordNotFoundException("account not found", "account", ACCOUNT_ID));
 
             assertThatThrownBy(() -> controller.viewAccount(ACCOUNT_ID, principal))
@@ -404,53 +430,67 @@ class AccountControllerTest {
         }
 
         /**
-         * A body that carries a snapshot group is refused rather than ignored, and the refusal precedes both
-         * the confirmation gate and the service call.
+         * A body that carries the snapshot group is <em>accepted</em>, which is the frozen contract of
+         * transformation Rule 7: the group the preceding read projected is echoed back in the request body,
+         * because a stateless server keeps no COMMAREA between the two turns of the pseudo-conversation.
          */
         @Test
-        @DisplayName("a body-carried snapshot is refused before the confirmation gate is even reached")
-        void aBodyCarriedSnapshotIsRefused() {
-            final ValidationException failure = catchThrowableOfType(ValidationException.class,
-                    () -> controller.updateAccount(updateRequest(suppliedSnapshot()), "true",
-                            "\"" + SNAPSHOT + "\"", principal));
-
-            assertThat(failure.getFieldName()).isEqualTo("oldDetails");
-            assertThat(failure.getMessage()).contains("If-Match");
-            verifyNoInteractions(accountUpdateService);
-        }
-
-        /**
-         * The entity-tag quoting is stripped before the token reaches the service, and a weak-validator
-         * prefix with it, so a client may return the header value verbatim or the bare token.
-         */
-        @Test
-        @DisplayName("quoted, weak-quoted and bare If-Match values all relay the same token")
-        void everyIfMatchSpellingRelaysTheSameToken() {
-            when(accountUpdateService.updateAccount(any(), eq(SNAPSHOT)))
+        @DisplayName("a body-carried snapshot is accepted and reaches the service")
+        void aBodyCarriedSnapshotIsAccepted() {
+            when(accountUpdateService.updateAccount(any()))
                     .thenReturn(updateResult(
                             AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE));
 
-            controller.updateAccount(updateRequest(null), "true", "\"" + SNAPSHOT + "\"", principal);
-            controller.updateAccount(updateRequest(null), "true", "W/\"" + SNAPSHOT + "\"", principal);
-            controller.updateAccount(updateRequest(null), "true", SNAPSHOT, principal);
+            final ResponseEntity<AccountUpdateResponse> response =
+                    controller.updateAccount(updateRequest(suppliedSnapshot()), "true", principal);
 
-            verify(accountUpdateService, times(3)).updateAccount(any(), eq(SNAPSHOT));
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+            verify(accountUpdateService).updateAccount(any());
         }
 
         /**
-         * An absent header relays null, which the service reports as an unmet precondition. The controller
-         * does not fabricate a token and does not pre-empt the service's own outcome.
+         * The group reaches the service exactly as bound. Nothing is trimmed, case folded, re-formatted or
+         * reordered on the way through, because the comparison it feeds is byte-sensitive - the date of
+         * birth most of all.
          */
         @Test
-        @DisplayName("an absent If-Match relays null rather than a fabricated value")
-        void anAbsentIfMatchRelaysNull() {
-            when(accountUpdateService.updateAccount(any(), eq(null)))
+        @DisplayName("the submitted group reaches the service byte for byte, by reference")
+        void theSubmittedGroupReachesTheServiceUnaltered() {
+            when(accountUpdateService.updateAccount(any()))
+                    .thenReturn(updateResult(
+                            AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE));
+            final AccountUpdateRequest.OldDetails submitted = suppliedSnapshot();
+            final AccountUpdateRequest request = updateRequest(submitted);
+
+            controller.updateAccount(request, "true", principal);
+
+            final ArgumentCaptor<AccountUpdateRequest> relayed =
+                    ArgumentCaptor.forClass(AccountUpdateRequest.class);
+            verify(accountUpdateService).updateAccount(relayed.capture());
+            assertThat(relayed.getValue()).isSameAs(request);
+            assertThat(relayed.getValue().getOldDetails()).isSameAs(submitted);
+            assertThat(relayed.getValue().getOldDetails().getSsn()).isEqualTo(SSN);
+            assertThat(relayed.getValue().getOldDetails().getDateOfBirth()).isEqualTo("19800115");
+        }
+
+        /**
+         * An absent group relays null, which the service reports as a validation failure naming
+         * {@code oldDetails}. The controller does not fabricate one and does not pre-empt the service's own
+         * outcome.
+         */
+        @Test
+        @DisplayName("an absent group relays null rather than a fabricated value")
+        void anAbsentGroupRelaysNull() {
+            when(accountUpdateService.updateAccount(any()))
                     .thenReturn(updateResult(
                             AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE));
 
-            controller.updateAccount(updateRequest(null), "true", null, principal);
+            controller.updateAccount(updateRequest(null), "true", principal);
 
-            verify(accountUpdateService).updateAccount(any(), eq(null));
+            final ArgumentCaptor<AccountUpdateRequest> relayed =
+                    ArgumentCaptor.forClass(AccountUpdateRequest.class);
+            verify(accountUpdateService).updateAccount(relayed.capture());
+            assertThat(relayed.getValue().getOldDetails()).isNull();
         }
     }
 
@@ -470,7 +510,7 @@ class AccountControllerTest {
         void anAbsentConfirmationWritesNothing() {
             final ConcurrentUpdateException failure = catchThrowableOfType(
                     ConcurrentUpdateException.class,
-                    () -> controller.updateAccount(updateRequest(null), null, SNAPSHOT, principal));
+                    () -> controller.updateAccount(updateRequest(null), null, principal));
 
             assertThat(failure.getOutcome())
                     .isEqualTo(ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED);
@@ -484,7 +524,7 @@ class AccountControllerTest {
         @DisplayName("an explicit false is unconfirmed and writes nothing")
         void anExplicitFalseWritesNothing() {
             assertThatThrownBy(
-                    () -> controller.updateAccount(updateRequest(null), "false", SNAPSHOT, principal))
+                    () -> controller.updateAccount(updateRequest(null), "false", principal))
                     .isInstanceOf(ConcurrentUpdateException.class);
             verifyNoInteractions(accountUpdateService);
         }
@@ -515,7 +555,7 @@ class AccountControllerTest {
         @DisplayName("an empty confirmation reports BLANK, not INVALID")
         void anEmptyConfirmationReportsBlank() {
             final ValidationException failure = catchThrowableOfType(ValidationException.class,
-                    () -> controller.updateAccount(updateRequest(null), "", SNAPSHOT, principal));
+                    () -> controller.updateAccount(updateRequest(null), "", principal));
 
             assertThat(failure.getFieldName()).isEqualTo("confirm");
             assertThat(failure.getFailureKind()).isEqualTo(ValidationException.FailureKind.BLANK);
@@ -528,7 +568,7 @@ class AccountControllerTest {
          */
         private void assertRefused(final String token) {
             assertThatThrownBy(
-                    () -> controller.updateAccount(updateRequest(null), token, SNAPSHOT, principal))
+                    () -> controller.updateAccount(updateRequest(null), token, principal))
                     .as("confirm=%s must be refused rather than coerced", token)
                     .isInstanceOf(ValidationException.class);
         }

@@ -43,8 +43,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ItemProcessor;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import com.cardemo.exception.CardDemoException;
@@ -166,9 +164,9 @@ import com.cardemo.service.shared.FileService;
  *       See <em>Findings</em>.</li>
  *   <li>Amounts default to scale 2 with {@link RoundingMode#HALF_EVEN}; no binary floating-point
  *       type appears anywhere in this file.</li>
- *   <li>Transaction residency defaults to <strong>one card group at a time</strong>, bounded only
- *       by the loud safety limit {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}. The legacy 510-record
- *       ceiling is deliberately not reinstated; see {@link #readNextCardGroup()}.</li>
+ *   <li>Transaction residency is <strong>one card group at a time</strong>, and no ceiling bounds either
+ *       the group or the run. The legacy 510-record capacity is not reinstated and no substitute for it is
+ *       authored - finding BAT-002 removed the two that were; see {@link #advanceToCardGroup(String)}.</li>
  *   <li>Input ordering default: ascending by card number, required by
  *       {@link #emitTransactionsForCard}. See <em>Findings</em>.</li>
  *   <li>All case folding and numeric formatting uses {@link Locale#ROOT}, so behaviour does not
@@ -180,11 +178,13 @@ import com.cardemo.service.shared.FileService;
  * <p>Build with {@code ./mvnw -B -ntp clean compile} and run the unit tier with
  * {@code ./mvnw -B -ntp test}; coverage is enforced at {@code verify}. The build compiles with
  * {@code -Xlint:all -Werror} and {@code failOnWarning}, so any warning in a category
- * {@code javac} 25 publishes fails it. The tests for this class belong at
- * {@code src/test/java/com/cardemo/unit/batch/StatementProcessorTest.java}, which does not exist
- * at this commit, and must assert at minimum that: the projection yields a 24-character
- * processing timestamp; every HTML line is exactly 100 characters and every text line exactly 80;
- * {@link #initialise()} performs its five steps in the documented order; a run of more than 510
+ * {@code javac} 25 publishes fails it. The tests for this class are authored at
+ * {@code src/test/java/com/cardemo/unit/batch/StatementProcessorTest.java}, with the streaming and
+ * output-sink behaviour split into {@code StatementProcessorStreamingTest} and
+ * {@code StatementOutputSinkContractTest} alongside it; an earlier revision recorded the first of those as
+ * not existing at this commit and that record is withdrawn. Between them they assert that: the projection
+ * yields a 24-character processing timestamp; every HTML line is exactly 100 characters and every text line
+ * exactly 80; {@link #initialise()} performs its five steps in the documented order; a run of more than 510
  * transactions completes without loss; a card with no transactions still yields a complete
  * statement; and a projected record shorter than 328 characters is rejected rather than padded.
  *
@@ -416,62 +416,6 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * field width settles it.
      */
     private static final int HTML_LINE_WIDTH = StatementTransaction.STATEMENT_HTML_RECORD_LENGTH;
-
-    /**
-     * Property key through which an operator may lower the run-wide retention bound to fit a heap.
-     *
-     * <p>Declared as a key rather than only as a constant because the bound decides how much work a malformed
-     * dataset can extract, and a limit an operator cannot influence is exactly the "hidden constant" Rule 1
-     * Clause E objects to. It is also <strong>declared in {@code src/main/resources/application.yml}</strong>
-     * at exactly {@link #MAX_TRANSACTIONS_PER_RUN}, so declaring it changes no behaviour: a key that is read
-     * at runtime but appears in no profile is invisible to whoever has to operate the job, which is the same
-     * defect the four reader page sizes were corrected for. The warning that it is a safety limit and not a
-     * routine tuning knob is carried in the comment on that declaration, where an operator will actually read
-     * it, rather than by withholding the declaration.
-     */
-    public static final String KEY_MAX_TRANSACTIONS_PER_RUN =
-            "carddemo.batch.statement-processor.max-transactions-per-run";
-
-    /**
-     * Default run-wide bound: the number of transactions one statement run may admit in total.
-     *
-     * <p><strong>Why a run bound is needed even though the table is not resident for the whole run.</strong>
-     * The stream advances one control-break group at a time, so what is <em>resident</em> is one card's
-     * transactions and is bounded by {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}. The group bound alone,
-     * however, admits an endless sequence of <em>distinct</em> card numbers: each group closes within the
-     * limit and the run never terminates. So the two bounds answer two different hazards and both are
-     * checked - the group bound for heap, this one for work. Exceeding either raises
-     * {@link FatalProcessingException}: it fails loudly and never silently truncates, which is precisely what
-     * the legacy overrun did.
-     *
-     * <p><strong>Measured, not estimated.</strong> The whole fixture set for this job is 300 daily
-     * transactions ({@code app/data/ASCII/dailytran.txt}), so a parity run admits 300 - four orders of
-     * magnitude below this default. A deployment whose legitimate input could approach it lowers
-     * {@value #KEY_MAX_TRANSACTIONS_PER_RUN} rather than discovering the limit as a failed job.
-     */
-    public static final int MAX_TRANSACTIONS_PER_RUN = 1_000_000;
-
-    /**
-     * Loud safety limit on the transactions held resident for <strong>one card group</strong>.
-     *
-     * <p>Nothing else is held. The stream advances one control-break group at a time, so the resident
-     * set is one card's transactions and not the run's, and a run-wide ceiling would therefore bound
-     * nothing that is actually resident - which is why {@link #MAX_TRANSACTIONS_PER_RUN} bounds the work
-     * and this constant bounds the heap. What needs a resident bound is the single group, because a
-     * malformed dataset that repeats one card number forever would otherwise grow that group without
-     * limit (Rule 1 Clause A2, which requires inputs to be treated as untrusted). Exceeding it raises
-     * {@link FatalProcessingException}: it fails loudly and never silently truncates, which is
-     * precisely what the legacy overrun did.
-     *
-     * <p><strong>The arithmetic, so the worst case is a calculation rather than a surprise.</strong> Each
-     * retained entry is one projected record: a 16-character card number, a 16-character identifier and the
-     * 318-character remainder, so {@value StatementTransaction#RECORD_LENGTH} characters of payload. At two
-     * bytes per {@code char} plus per-object and per-list overhead that is on the order of 800 bytes retained
-     * per transaction, so this bound caps one group at roughly 800 MB - which a default JVM heap will not
-     * accommodate. That is deliberate and is why it is a <em>safety limit</em>: it sits five orders of
-     * magnitude above the largest fixture card group, so no legitimate run can reach it.
-     */
-    public static final int MAX_TRANSACTIONS_PER_CARD_GROUP = 1_000_000;
 
     /** Minimum length of a projected record: the last position the projection writes. */
     private static final int MINIMUM_PROJECTED_LENGTH =
@@ -1087,19 +1031,13 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     private final Map<Long, Account> accountMemo = boundedMemo();
 
     /**
-     * Running count of records admitted across the run. The per-group ceiling
-     * {@link #MAX_TRANSACTIONS_PER_CARD_GROUP} is checked against the current group's size, not
-     * against this counter, which is a diagnostic total reported at {@link #close()}.
+     * Running count of records admitted across the run, a diagnostic total reported at {@link #close()}.
+     *
+     * <p>It bounds nothing. A field beside it held a configured run ceiling this counter was tested against,
+     * and finding BAT-002 removed both: {@code app/cbl/CBSTM03A.CBL} refuses no run by record count, so a
+     * refusal here was an authored rule with no source behind it.
      */
     private long transactionsAccepted;
-
-    /**
-     * The effective retention bound for this instance, from {@value #KEY_MAX_TRANSACTIONS_PER_RUN}.
-     *
-     * <p>{@code final}: the bound of a run cannot change during it, and a mutable bound would make the abend
-     * message unreproducible.
-     */
-    private final int maxTransactionsPerRun;
 
     /** Running count of statements emitted, reported once at {@link #close()} in place of the absent counters. */
     private long statementsProduced;
@@ -1119,40 +1057,16 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * {@code TRNX-ORIG-TS} and {@code TRNX-PROC-TS} as characters — so a clock would be an unused
      * dependency.
      *
-     * @param fileService the DD-keyed file-access service, never {@code null}
-     * @param maxTransactionsPerRun the retention bound, from {@value #KEY_MAX_TRANSACTIONS_PER_RUN} and
-     *     defaulting to {@value #MAX_TRANSACTIONS_PER_RUN}. Bounds the number of projected records this run may
-     *     hold resident, so the heap footprint is an operator decision rather than a hidden constant; see the
-     *     arithmetic on {@link #MAX_TRANSACTIONS_PER_RUN}
-     * @throws NullPointerException if {@code fileService} is {@code null}.
-     * @throws IllegalArgumentException if the retention bound is not positive, because a bound of zero or less
-     *     would abend on the first record and a negative bound would never trip at all
-     */
-    // @Autowired is required, and is the only place in this tree that needs it: two public constructors with
-    // no marker leave the container with no way to choose, and it would fail looking for a default one.
-    @Autowired
-    public StatementProcessor(FileService fileService,
-            @Value("${" + KEY_MAX_TRANSACTIONS_PER_RUN + ":" + MAX_TRANSACTIONS_PER_RUN + "}")
-            int maxTransactionsPerRun) {
-        this.fileService = Objects.requireNonNull(fileService, "fileService must not be null");
-        if (maxTransactionsPerRun < 1) {
-            throw new IllegalArgumentException(KEY_MAX_TRANSACTIONS_PER_RUN
-                    + " must be at least 1 but was " + maxTransactionsPerRun
-                    + "; it bounds the resident transaction table, so a non-positive value would either abend "
-                    + "on the first record or never trip at all");
-        }
-        this.maxTransactionsPerRun = maxTransactionsPerRun;
-    }
-
-    /**
-     * Convenience constructor applying the default retention bound, for the unit tier and for any caller that
-     * has no reason to narrow it.
+     * <p><strong>One constructor, and one parameter.</strong> A second constructor took a configured run
+     * ceiling and {@code @Autowired} was needed to tell the container which of the two to use; finding BAT-002
+     * removed the ceiling, so both the second constructor and the annotation went with it. A single public
+     * constructor is the container's unambiguous choice.
      *
      * @param fileService the DD-keyed file-access service, never {@code null}
-     * @throws NullPointerException if {@code fileService} is {@code null}
+     * @throws NullPointerException if {@code fileService} is {@code null}.
      */
     public StatementProcessor(FileService fileService) {
-        this(fileService, MAX_TRANSACTIONS_PER_RUN);
+        this.fileService = Objects.requireNonNull(fileService, "fileService must not be null");
     }
 
     /**
@@ -1344,9 +1258,8 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * from its {@code StepExecutionListener} callback. This class produces lines; it never writes.
      *
      * @throws com.cardemo.exception.FatalProcessingException if any of the four datasets cannot be
-     * opened or primed. Breaches of {@link #MAX_TRANSACTIONS_PER_CARD_GROUP} or of the ascending
-     * card-number precondition are raised later, as each group is read, because no group is read
-     * here.
+     * opened or primed. A breach of the ascending card-number precondition is raised later, as each group is
+     * read, because no group is read here.
      */
     public void initialise() {
         if (initialised) {
@@ -1530,14 +1443,16 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * faithful reproduction of the overrun is impossible in Java and undesirable in any language.
      * Reinstating the ceiling and failing at 510 would turn a run the legacy system completed
      * (incorrectly) into a run this system refuses, which is a behaviour change affecting every
-     * dataset larger than the fixtures. Materialising the whole run without a ceiling would trade a silent
-     * corruption for a silent heap exhaustion and would need a synthetic cap to bound something that never
-     * has to be resident. The
-     * design adopted holds one card group, so the resident set is proportional to the largest card
-     * group rather than to the run, and that single group is bounded loudly at
-     * {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}. A WARN is emitted the first time a run crosses either
-     * legacy threshold, so the divergence from historical capacity is visible in the log rather than
-     * inferred.
+     * dataset larger than the fixtures. Materialising the whole run would trade a silent corruption for a
+     * silent heap exhaustion, and would then need a synthetic cap to bound something that never has to be
+     * resident at all. The design adopted holds one card group, so the resident set is proportional to the
+     * largest card group rather than to the run.
+     *
+     * <p>Two authored ceilings - one per group, one per run - did stand in this class as "loud safety limits",
+     * and finding BAT-002 removed them. They were the fourth alternative, and the wrong one: a refusal at an
+     * invented threshold is still a refusal the source does not make, and the third rejection above applies to
+     * it word for word. A WARN is emitted the first time a run crosses the legacy per-card capacity, so the
+     * divergence from historical capacity stays visible in the log rather than being enforced as a rule.
      *
      * <p>{@value StatementTransaction#LEGACY_MAX_TRANSACTIONS_PER_RUN} is this program's historical
      * capacity, and this Javadoc is where that limit and this deviation are recorded.
@@ -1570,8 +1485,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * @return the group for that card number, or empty when the stream holds no such group - either
      * because it is exhausted or because the next group belongs to a later card
      * @throws com.cardemo.exception.FatalProcessingException on a read failure, on a record shorter
-     * than the projection writes, on input that is not ascending by card number, or on a single card
-     * group larger than {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}
+     * than the projection writes, or on input that is not ascending by card number
      */
     private Optional<StatementTransaction.CardGroup> advanceToCardGroup(String soughtCardNumber) {
         Objects.requireNonNull(soughtCardNumber, "soughtCardNumber must not be null");
@@ -1617,8 +1531,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * @return the completed group, or {@code null} when the stream is exhausted, which is
      * {@code 8599-EXIT}
      * @throws com.cardemo.exception.FatalProcessingException on a read failure, on a record shorter
-     * than the projection writes, on input that is not ascending by card number, or on a group larger
-     * than {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}
+     * than the projection writes, or on input that is not ascending by card number
      */
     private StatementTransaction.CardGroup readNextCardGroup() {
         if (pendingRecord == null) {
@@ -1691,41 +1604,23 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     }
 
     /**
-     * Counts one admitted record against the loud limit and warns on the first crossing of the legacy
-     * per-card capacity.
+     * Counts one admitted record and warns on the first crossing of the legacy per-card capacity.
      *
-     * <p>This is one of the bounds checks the source does not have. It exists because the group is an
-     * unbounded collection, and it fails rather than truncates.
+     * <p><strong>Nothing here refuses a record.</strong> Two ceilings stood in this method - one on the
+     * resident card group, one on the whole run - and finding BAT-002 removed both. Neither had a source:
+     * {@code app/cbl/CBSTM03A.CBL} has no record-count refusal anywhere, and the fixed table AAP 0.7.6.3
+     * removes from this program overran silently rather than failing, so a Java refusal at an authored
+     * threshold reproduced neither the number nor the behaviour. What remains is the WARN below, which is how
+     * the divergence from historical capacity stays visible in the log: the run continues, and the reader is
+     * told the COBOL table would have overrun here.
      *
-     * <p>Two bounds are checked, and they answer two different hazards. The <em>group</em> bound
-     * {@link #MAX_TRANSACTIONS_PER_CARD_GROUP} bounds what is actually resident, because the stream advances
-     * one control-break group at a time. The <em>run</em> bound {@link #MAX_TRANSACTIONS_PER_RUN}, lowerable
-     * through {@value #KEY_MAX_TRANSACTIONS_PER_RUN}, bounds the whole run, so the total work a malformed
-     * dataset can extract is an operator decision rather than a hidden constant - the group bound alone would
-     * admit an endless sequence of distinct card numbers.
+     * <p>What bounds this run is the same thing that bounded {@code DFSORT}: its input. One control-break
+     * group is resident at a time, because {@link #advanceToCardGroup(String)} advances group by group.
      *
      * @param transactionsOnCurrentCard the size of the group the record was just added to
-     * @throws com.cardemo.exception.FatalProcessingException if the group exceeds
-     * {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}, or the run exceeds the effective
-     * {@value #KEY_MAX_TRANSACTIONS_PER_RUN}.
      */
     private void admitTransaction(int transactionsOnCurrentCard) {
         transactionsAccepted++;
-        if (transactionsOnCurrentCard > MAX_TRANSACTIONS_PER_CARD_GROUP) {
-            throw abend("One card group exceeded the safety limit of " + MAX_TRANSACTIONS_PER_CARD_GROUP
-                    + " transactions. The legacy table held at most "
-                    + StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_CARD
-                    + " per card (app/cbl/CBSTM03A.CBL:L228), so a group this large indicates a"
-                    + " malformed or repeating TRNXFILE rather than a legitimate workload");
-        }
-        if (transactionsAccepted > this.maxTransactionsPerRun) {
-            throw abend("The statement run exceeded the safety limit of " + this.maxTransactionsPerRun
-                    + " transactions (" + KEY_MAX_TRANSACTIONS_PER_RUN
-                    + "). The legacy table held at most "
-                    + StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_RUN
-                    + " (app/cbl/CBSTM03A.CBL:L225-L233), so an input this large indicates a"
-                    + " malformed or repeating TRNXFILE rather than a legitimate workload");
-        }
         if (transactionsOnCurrentCard == StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_CARD + 1) {
             LOG.warn("A card has passed the legacy capacity of {} transactions"
                             + " (WS-TRAN-TBL OCCURS 10, app/cbl/CBSTM03A.CBL:L228);"

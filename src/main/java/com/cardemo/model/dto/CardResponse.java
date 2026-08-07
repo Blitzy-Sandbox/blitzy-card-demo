@@ -59,7 +59,10 @@ import java.util.Objects;
  *   <li><b>The card verification value.</b> {@code CARD-CVV-CD} at {@code app/cpy/CVACT02Y.cpy:L7} is
  *       authentication data. No symbolic map declares it and {@code app/cbl/COCRDUPC.cbl:L1108-L1112} sends
  *       the old embossed name, status and expiry components back to the screen without it, so the source
- *       never displayed it and neither does this. It travels only inside {@link #snapshotToken}, sealed.</li>
+ *       never displayed it and neither does this. It is stored but has no read path at any layer, so no
+ *       component here could carry it and {@link #oldDetails} does not either - see
+ *       {@code CardUpdateService.checkChangeInRec9300} for why the concurrency question the source's
+ *       {@code :1503} predicate asked is answered by the {@code @Version} column instead.</li>
  *   <li><b>The screen header and the function-key captions.</b> {@code TRNNAME}, {@code TITLE01},
  *       {@code CURDATE}, {@code PGMNAME}, {@code TITLE02}, {@code CURTIME}, {@code FKEYS} and
  *       {@code FKEYSC} describe a terminal, not a card. A client knows the date and does not have function
@@ -95,12 +98,16 @@ import java.util.Objects;
  * @param informationMessage the screen information message, {@code INFOMSGI}; the source's own literal,
  *     relayed byte for byte because it is a caption that discloses no field value; may be null
  * @param errorMessage the screen error message, {@code ERRMSGI}, on the same terms; may be null
- * @param snapshotToken the sealed as-displayed snapshot to return in {@code If-Match} on a subsequent
- *     update, present on a read and <b>null on a write</b>. It is opaque: a client cannot read it, alter it
- *     undetected, use it for another card or use it indefinitely. It is the only way the update precondition
- *     can be satisfied, because the values it protects include ones this type must never emit
+ * @param oldDetails the {@code CCUP-OLD-DETAILS} group of {@code app/cbl/COCRDUPC.cbl:L291-L301} as the read
+ *     projected it, present on a read and <b>null on a write</b>, to be echoed back unaltered as the
+ *     {@code oldDetails} member of a subsequent update's request body. It is the group and not flat
+ *     components because {@code app/cpy-bms/COCRDSL.CPY} declares fifteen fields and none of them is the
+ *     expiry <em>day</em> that {@code :1507} compares, so this is the only route by which a client obtains
+ *     it; and because the comparison at {@code :1498-1521} is a byte comparison after a one-sided fold, so
+ *     none of its five comparison values may be trimmed or re-cased on the way out. Its
+ *     {@code cardNumber} member is the one value it does <b>not</b> carry - see {@link #readOf}
  * @param cardKey the sealed, opaque reference to this card, present on a read and <b>null on a write</b>.
- *     It says <em>which</em> card, where {@code snapshotToken} says <em>what was shown</em>; a client that
+ *     It says <em>which</em> card, where {@code oldDetails} says <em>what was shown</em>; a client that
  *     arrived by filter can continue by reference without retaining the number it supplied. It is not a
  *     precondition and does not substitute for one. A write issues neither, because a caller intending a
  *     further edit re-reads, and the re-read issues both afresh
@@ -114,23 +121,33 @@ public record CardResponse(
         String expiryYear,
         String informationMessage,
         String errorMessage,
-        String snapshotToken,
+        CardUpdateRequest.CardDetails oldDetails,
         String cardKey) {
 
     /**
-     * Builds the response for a card <b>read</b>, attaching the sealed snapshot the matching update will
+     * Builds the response for a card <b>read</b>, attaching the as-displayed group the matching update will
      * require.
      *
+     * <p><b>The group is rebuilt with its card number withheld, and only that.</b> All five values
+     * {@code :1503-1508} compares - the embossed name, the three expiry components and the active status -
+     * are relayed byte for byte, because the comparison is byte-sensitive. The card number is not one of
+     * them: {@code 9300-CHECK-CHANGE-IN-REC} never reads it, and the source did not obtain it from the
+     * stored record either - {@code :1347} moves the <em>received</em> {@code CC-CARD-NUM} into
+     * {@code CCUP-OLD-CARDID}. So the group's copy is redundant with the request's own identity field, while
+     * emitting it here would hand back the full sixteen digits that {@link #maskedCardNumber} exists to
+     * withhold. The update restores it from the request's own card number, citing the same line.</p>
+     *
      * @param projection the service-produced card projection; must not be null
-     * @param snapshotToken the sealed as-displayed snapshot; may be null only when the caller could not
-     *     obtain one, in which case the client will be unable to update and the reason belongs in the log
+     * @param oldDetails the as-displayed group; may be null only when the caller could not obtain one, in
+     *     which case the client will be unable to update and the reason belongs in the log
      * @param cardKey the opaque, sealed reference the update operation accepts in place of the card number
      *     this response does not disclose; may be null, in which case a client that has the card number
      *     already can still update, and one that does not cannot
      * @return the response; never null
      * @throws NullPointerException if {@code projection} is null
      */
-    public static CardResponse readOf(final CardDto projection, final String snapshotToken,
+    public static CardResponse readOf(final CardDto projection,
+                                      final CardUpdateRequest.CardDetails oldDetails,
                                       final String cardKey) {
         Objects.requireNonNull(projection, "projection must not be null");
         return new CardResponse(
@@ -142,25 +159,46 @@ public record CardResponse(
                 projection.getExpiryYear(),
                 projection.getInformationMessage(),
                 projection.getErrorMessage(),
-                snapshotToken,
+                withoutCardNumber(oldDetails),
                 cardKey);
     }
 
     /**
      * Builds the response for a card <b>write</b>, carrying the values that were actually stored.
      *
-     * <p>No snapshot token is issued. A client that wishes to edit again reads the card again, which is one
-     * request and removes any question of a token outliving the state it describes.</p>
+     * <p>No as-displayed group is issued. A client that wishes to edit again reads the card again, which is
+     * one request and removes any question of a stale group outliving the state it describes.</p>
      *
      * @param projection the refreshed card projection the write produced; must not be null
-     * @return the response, with {@link #snapshotToken} null; never null
+     * @return the response, with {@link #oldDetails} null; never null
      * @throws NullPointerException if {@code projection} is null
      */
     public static CardResponse writeOf(final CardDto projection) {
-        // No snapshot and no card reference. The rationale is one rationale, not two: a client that wants to
+        // No group and no card reference. The rationale is one rationale, not two: a client that wants to
         // edit again reads the card again, and that read issues both. Handing out a reference here would
         // make it outlive the state it describes for no benefit.
 
         return readOf(projection, null, null);
+    }
+
+    /**
+     * Rebuilds an as-displayed group without its card number.
+     *
+     * <p>The card number is a never-emit value on this type, and the group does not need to carry it: it is
+     * not one of the five values {@code app/cbl/COCRDUPC.cbl:L1503-L1508} compares, and {@code :L1347} moves
+     * the <em>received</em> {@code CC-CARD-NUM} into {@code CCUP-OLD-CARDID} rather than reading it from the
+     * stored record, so the update restores it from the request's own identity field.</p>
+     *
+     * <p>Every other member is relayed by reference, unaltered.</p>
+     *
+     * @param oldDetails the projected group, or null when none was obtained
+     * @return the group with its card number null, or null when {@code oldDetails} was null
+     */
+    private static CardUpdateRequest.CardDetails withoutCardNumber(
+            final CardUpdateRequest.CardDetails oldDetails) {
+        return oldDetails == null
+                ? null
+                : new CardUpdateRequest.CardDetails(oldDetails.accountId(), null,
+                        oldDetails.cardData());
     }
 }

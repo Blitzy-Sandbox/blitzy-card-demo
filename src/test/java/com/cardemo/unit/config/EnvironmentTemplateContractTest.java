@@ -59,6 +59,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Reconciles {@code .env.example} against the exact property graph the four Spring profile files
@@ -90,6 +91,14 @@ import org.junit.jupiter.params.provider.MethodSource;
  *   <li><strong>ONE SPELLING</strong> - no name on {@link #SUPERSEDING_NAMES} appears in the
  *       template, because each binds a property this project composes from decomposed variables
  *       and would leave that decomposed group dead while appearing to work.
+ *   <li><strong>ONE ASSIGNMENT</strong> - no name is assigned twice, and no name that carries
+ *       credential material ships with a usable value. This one was added after the template was found
+ *       assigning five names twice, the four least-privilege database role variables among them:
+ *       an empty declaration in one block and a populated one in a later block, where
+ *       last-assignment dotenv semantics quietly activated predictable {@code carddemo_app} and
+ *       {@code carddemo_migrator} passwords while the earlier empty lines and the surrounding prose
+ *       both read as though nothing had been committed. A map keyed by name cannot see that
+ *       collision, which is why {@link #TEMPLATE_OCCURRENCES} keeps every line. See {@link Assignments}.
  *   </ol>
  *
  * <p>Only the profile files are scanned for placeholders. {@code logback-spring.xml} also uses
@@ -111,6 +120,19 @@ final class EnvironmentTemplateContractTest {
 
     /** A shell-style assignment of an upper-case name at the start of a template line. */
     private static final Pattern ASSIGNMENT = Pattern.compile("^([A-Z][A-Z0-9_]*)=");
+
+    /** The same assignment, capturing the value that follows it so an empty one can be told apart. */
+    private static final Pattern ASSIGNMENT_WITH_VALUE = Pattern.compile("^([A-Z][A-Z0-9_]*)=(.*)$");
+
+    /**
+     * The two names whose committed value is deliberately non-empty although the name reads like a
+     * secret. Both are LocalStack placeholders: the emulator validates no credential, the pair
+     * exists only to displace the SDK's default provider chain, and {@code AwsConfig} refuses any
+     * value beginning {@code AKIA} or {@code ASIA}, so neither can address a real account. The
+     * review that prompted this assertion said so explicitly - they are not the defect.
+     */
+    private static final Set<String> INERT_CREDENTIAL_PLACEHOLDERS =
+            Set.of("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY");
 
     /** The four profile files that constitute the property graph. */
     private static final List<String> PROFILE_FILES = List.of(
@@ -157,6 +179,72 @@ final class EnvironmentTemplateContractTest {
 
     /** Template variable name to the one-based line it is assigned on. */
     private static final Map<String, Integer> TEMPLATE_ASSIGNMENTS = templateAssignments();
+
+    /** Template variable name to every one-based line assigning it, so a repeat is visible. */
+    private static final Map<String, List<Integer>> TEMPLATE_OCCURRENCES = templateOccurrences();
+
+    /** Template variable name to every value assigned to it, in file order. */
+    private static final Map<String, List<String>> TEMPLATE_VALUES = templateValues();
+
+    /**
+     * Name fragments that make a variable a secret, so its template value must not be a usable one.
+     *
+     * <p>Matched as an infix on the upper-case name rather than as a suffix, because the names in play are
+     * {@code JWT_SIGNING_KEY}, {@code AWS_SECRET_ACCESS_KEY}, {@code NVD_API_KEY} and
+     * {@code METRICS_SCRAPE_PASSWORD} - the significant word sits in the middle as often as at the end.
+     */
+    private static final List<String> SECRET_NAME_FRAGMENTS =
+            List.of("PASSWORD", "SECRET", "TOKEN", "CREDENTIAL", "_KEY", "KEY_");
+
+    /**
+     * The only secret-named variables permitted a non-empty template value, each with the exact value.
+     *
+     * <p>Both are the emulator's own fixed placeholders. LocalStack accepts any credential and the SDK
+     * refuses to sign a request without one, so the pair has to be present for a local start to work at all;
+     * {@code com.cardemo.config.AwsConfig} additionally enforces an endpoint allowlist, so neither value can
+     * reach a real account. They are enumerated with their values rather than merely exempted by name, so
+     * substituting a real key for either fails this suite.
+     */
+    private static final Map<String, String> PERMITTED_EMULATOR_PLACEHOLDERS =
+            Map.of("AWS_ACCESS_KEY_ID", "test", "AWS_SECRET_ACCESS_KEY", "test");
+
+    /**
+     * Non-secret variables whose template value must still never be the name of the principal it selects.
+     *
+     * <p>These four form one atomic set with the two passwords beside them, and the defect this closes
+     * assigned each of them a value equal to its own role name. A role name is not a secret, but a template
+     * that ships {@code carddemo_app} as both the user and its password teaches the pattern that produced the
+     * finding, so the user names are held empty too and the whole quartet is populated together or not at all.
+     */
+    private static final List<String> ATOMIC_ROLE_NAMES = List.of(
+            "CARDDEMO_DB_APP_USER",
+            "CARDDEMO_DB_APP_PASSWORD",
+            "CARDDEMO_DB_MIGRATION_USER",
+            "CARDDEMO_DB_MIGRATION_PASSWORD");
+
+    /**
+     * Names that carry credential material and must therefore ship with an empty value.
+     *
+     * <p>The list is deliberately explicit rather than pattern-matched on {@code PASSWORD} or {@code KEY}: a
+     * pattern would silently stop covering a name that is renamed, and it would also sweep in
+     * {@code AWS_ACCESS_KEY_ID}, whose committed value {@code test} is the LocalStack convention and is not a
+     * secret at all. Each entry here is a real credential for a real principal.
+     *
+     * <p><strong>The two role USER names are deliberately not here, and that is a contract rather than an
+     * exemption.</strong> A role name is an identifier the provisioning step creates and the application
+     * binds, not credential material - and {@code docker-compose.yml} guards all four role variables with
+     * {@code ${VAR:?}} and no {@code :-} default, where Compose reads an EMPTY value as unset. Listing the
+     * two names here would require them to ship empty, which would stop {@code docker compose config} on a
+     * value an operator has no way to choose. {@code Assignments.bothRoleNamesShipPopulated} asserts the
+     * other half of that contract, and the two PASSWORDS remain the operator's to generate.
+     */
+    private static final List<String> CREDENTIAL_NAMES = List.of(
+            "JWT_SIGNING_KEY",
+            "POSTGRES_PASSWORD",
+            "CARDDEMO_DB_APP_PASSWORD",
+            "CARDDEMO_DB_MIGRATION_PASSWORD",
+            "GRAFANA_ADMIN_PASSWORD",
+            "METRICS_SCRAPE_PASSWORD");
 
     /**
      * Walks upward from the working directory to the directory that holds both {@code pom.xml} and
@@ -224,20 +312,76 @@ final class EnvironmentTemplateContractTest {
     }
 
     /**
-     * Collects every variable the template assigns.
+     * Collects every assignment the template makes, keeping <em>every</em> occurrence of a repeated name.
+     *
+     * <p><strong>Why a list and not a map value.</strong> An earlier revision of this method kept one line
+     * per name with {@code Map.put}, so a second assignment of the same name silently replaced the first and
+     * the duplicate became invisible to every assertion below. That is not a hypothetical: the template
+     * shipped the whole least-privilege section twice, and the second copy assigned
+     * {@code CARDDEMO_DB_APP_PASSWORD=carddemo_app} where the first left it empty. Shell and Compose
+     * {@code env_file} semantics are last-assignment-wins, so the predictable value was the effective one
+     * while the reviewed, empty declaration sat above it looking authoritative. Collecting occurrences is
+     * what lets {@link Assignments} refuse that shape outright.
+     *
+     * @return variable name to every one-based line in {@code .env.example} that assigns it, in file order
+     */
+    private static Map<String, List<Integer>> templateOccurrences() {
+        final Map<String, List<Integer>> found = new LinkedHashMap<>();
+        final List<String> content = lines(".env.example");
+        for (int index = 0; index < content.size(); index++) {
+            final Matcher matcher = ASSIGNMENT.matcher(content.get(index));
+            if (matcher.find()) {
+                found.computeIfAbsent(matcher.group(1), key -> new ArrayList<>())
+                        .add(Integer.valueOf(index + 1));
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Collects the value each assignment carries, keyed the same way as {@link #templateOccurrences()}.
+     *
+     * @return variable name to every assigned value, in file order, with surrounding whitespace stripped
+     */
+    private static Map<String, List<String>> templateValues() {
+        final Map<String, List<String>> found = new LinkedHashMap<>();
+        final List<String> content = lines(".env.example");
+        for (final String line : content) {
+            final Matcher matcher = ASSIGNMENT.matcher(line);
+            if (matcher.find()) {
+                found.computeIfAbsent(matcher.group(1), key -> new ArrayList<>())
+                        .add(line.substring(matcher.end()).strip());
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Collects every variable the template assigns, taking the <em>first</em> occurrence's line.
+     *
+     * <p>First rather than last deliberately: {@link Assignments} has already refused any repeat, so the two
+     * readings can only differ on a template this suite would reject anyway, and reporting the first
+     * occurrence points a reader at the declaration they are most likely to have read.
      *
      * @return variable name to its one-based line in {@code .env.example}
      */
     private static Map<String, Integer> templateAssignments() {
         final Map<String, Integer> found = new LinkedHashMap<>();
-        final List<String> content = lines(".env.example");
-        for (int index = 0; index < content.size(); index++) {
-            final Matcher matcher = ASSIGNMENT.matcher(content.get(index));
-            if (matcher.find()) {
-                found.put(matcher.group(1), index + 1);
-            }
-        }
+        templateOccurrences().forEach((name, occurrences) -> found.put(name, occurrences.get(0)));
         return found;
+    }
+
+    /**
+     * The names that carry credential material, as parameterised-test arguments.
+     *
+     * @return one argument per documented name whose spelling marks it as a password or a key,
+     *     excluding the two inert emulator placeholders
+     */
+    private static Stream<String> credentialNames() {
+        return TEMPLATE_OCCURRENCES.keySet().stream()
+                .filter(name -> name.contains("_KEY") || name.endsWith("_PASSWORD"))
+                .filter(name -> !INERT_CREDENTIAL_PLACEHOLDERS.contains(name))
+                .sorted();
     }
 
     /**
@@ -256,6 +400,15 @@ final class EnvironmentTemplateContractTest {
      */
     private static Stream<String> templateNames() {
         return new TreeSet<>(TEMPLATE_ASSIGNMENTS.keySet()).stream();
+    }
+
+    /**
+     * The four least-privilege database-role names, as parameterised-test arguments.
+     *
+     * @return one argument per member of the atomic quartet
+     */
+    private static Stream<String> atomicRoleNames() {
+        return ATOMIC_ROLE_NAMES.stream();
     }
 
     /**
@@ -351,6 +504,239 @@ final class EnvironmentTemplateContractTest {
                     .as(".env.example must document a substantial set of names")
                     .hasSizeGreaterThanOrEqualTo(30);
         }
+
+        @Test
+        @DisplayName("no name is assigned twice, because a dotenv loader lets the LAST assignment win")
+        void noNameIsAssignedTwice() {
+            // The defect this pins. The template carried two least-privilege blocks and two lock-timeout
+            // blocks, and TEMPLATE_ASSIGNMENTS is a Map keyed by name - so the duplicate was invisible to
+            // every other guard in this class, which only ever saw the surviving entry. A dotenv loader and
+            // `set -a; . ./.env` both take the LAST assignment, so a second block silently overrode the
+            // first and the file contradicted itself. Counting raw assignment LINES rather than distinct
+            // names is what makes that visible.
+            final Map<String, Integer> occurrences = new LinkedHashMap<>();
+            final List<String> content = lines(".env.example");
+            for (final String line : content) {
+                final Matcher matcher = ASSIGNMENT.matcher(line);
+                if (matcher.find()) {
+                    occurrences.merge(matcher.group(1), 1, Integer::sum);
+                }
+            }
+            assertThat(occurrences.entrySet().stream()
+                            .filter(entry -> entry.getValue() > 1)
+                            .map(Map.Entry::getKey)
+                            .toList())
+                    .as(
+                            "each of these names is assigned more than once in .env.example. The later "
+                                    + "assignment wins, so the earlier one is documentation of a value that "
+                                    + "never takes effect. Declare each name exactly once")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("every credential-bearing name ships EMPTY, so no predictable secret is committed")
+        void noCredentialShipsWithAValue() {
+            // Rule 1 Clause D forbids a secret in configuration. The template previously shipped
+            // CARDDEMO_DB_APP_PASSWORD=carddemo_app and CARDDEMO_DB_MIGRATION_PASSWORD=carddemo_migrator -
+            // predictable credentials for the two least-privilege roles, which defeats the point of
+            // splitting them off the superuser in the first place. An empty assignment documents the name
+            // and commits nothing, which is the shape every one of these must keep.
+            final List<String> offenders = new ArrayList<>();
+            for (final String line : lines(".env.example")) {
+                final Matcher matcher = ASSIGNMENT.matcher(line);
+                if (matcher.find() && CREDENTIAL_NAMES.contains(matcher.group(1))) {
+                    final String value = line.substring(line.indexOf('=') + 1).trim();
+                    if (!value.isEmpty()) {
+                        offenders.add(matcher.group(1) + "=" + value);
+                    }
+                }
+            }
+            assertThat(offenders)
+                    .as(
+                            "each of these ships a committed credential value. Assign the name and leave the "
+                                    + "value empty; local values are generated during setup, never checked in")
+                    .isEmpty();
+            assertThat(TEMPLATE_ASSIGNMENTS.keySet())
+                    .as("the credential names this rule protects must actually be in the template, or it "
+                            + "passes by scanning nothing")
+                    .containsAll(CREDENTIAL_NAMES);
+        }
+    }
+
+    /**
+     * ONE ASSIGNMENT PER NAME, AND NO USABLE SECRET DEFAULT.
+     *
+     * <p>Two invariants that are about the template as a <em>file</em> rather than about the property graph,
+     * and that the three above could not have caught between them.
+     *
+     * <p><strong>The defect.</strong> The template shipped its whole least-privilege section twice. The first
+     * copy left the four database-role values empty; the second assigned each one a value equal to its own
+     * role name - {@code CARDDEMO_DB_APP_PASSWORD=carddemo_app} and
+     * {@code CARDDEMO_DB_MIGRATION_PASSWORD=carddemo_migrator}. Shell {@code source} and Compose
+     * {@code env_file} both take the last assignment, so the predictable values were the effective ones while
+     * the empty declarations sat above them looking authoritative, and a developer copying the template got a
+     * database whose two least-privilege principals had guessable passwords. Rule 1 clause D asks for least
+     * privilege in configuration; a predictable shared credential is the opposite of it.
+     *
+     * <p><strong>Why the duplicate matters independently of the value.</strong> A repeated assignment is a
+     * determinism failure in its own right - Rule 1 clause C - because which value takes effect depends on the
+     * consumer's ordering rule rather than on the file's evident intent. So the repeat is refused for every
+     * name, not only for the secret-named ones.
+     */
+    @Nested
+    @DisplayName("ONE ASSIGNMENT - no name is assigned twice, and no secret ships a usable default")
+    final class Assignments {
+
+        @Test
+        @DisplayName("no variable is assigned more than once, whatever its value")
+        void noVariableIsAssignedTwice() {
+            final Map<String, List<Integer>> repeated = new LinkedHashMap<>();
+            TEMPLATE_OCCURRENCES.forEach((name, occurrences) -> {
+                if (occurrences.size() > 1) {
+                    repeated.put(name, occurrences);
+                }
+            });
+
+            assertThat(repeated)
+                    .as("""
+                            A repeated assignment is resolved by the consumer's ordering rule, not by the \
+                            file: shell `source` and Compose `env_file` both take the LAST one, so the \
+                            declaration a reviewer reads need not be the one that takes effect. Delete the \
+                            duplicate rather than reconciling the two values. Repeats found (name -> lines \
+                            in .env.example): %s""", repeated)
+                    .isEmpty();
+        }
+
+        @ParameterizedTest(name = "{0} ships no usable secret value")
+        @MethodSource("com.cardemo.unit.config.EnvironmentTemplateContractTest#templateNames")
+        @DisplayName("every secret-named variable is empty, or is an enumerated emulator placeholder")
+        void everySecretNamedVariableIsEmptyOrAnEnumeratedPlaceholder(final String name) {
+            if (SECRET_NAME_FRAGMENTS.stream().noneMatch(name::contains)) {
+                return;
+            }
+            final List<String> values = TEMPLATE_VALUES.get(name);
+            final String permitted = PERMITTED_EMULATOR_PLACEHOLDERS.get(name);
+            if (permitted != null) {
+                assertThat(values)
+                        .as("%s is the emulator's fixed placeholder, so its value is pinned exactly rather "
+                                + "than merely exempted: any other value here would be a real credential in "
+                                + "a tracked file", name)
+                        .containsExactly(permitted);
+                return;
+            }
+            assertThat(values)
+                    .as("%s is secret-named, so the template documents that it exists and supplies nothing. "
+                            + "A committed default is a credential in version control even when it looks "
+                            + "like a sample, and every profile resolves this name from the environment with "
+                            + "no fallback. Assigned at .env.example:%s",
+                            name, TEMPLATE_OCCURRENCES.get(name))
+                    .containsOnly("");
+        }
+
+        @ParameterizedTest(name = "{0} is not its own role name")
+        @ValueSource(strings = {"CARDDEMO_DB_APP_PASSWORD", "CARDDEMO_DB_MIGRATION_PASSWORD"})
+        @DisplayName("neither least-privilege role PASSWORD ships a value, predictable or otherwise")
+        void neitherLeastPrivilegeRolePasswordShipsAValue(final String name) {
+            // The quartet is atomic in the sense that all four are required, not in the sense that all four
+            // are secret: the two role NAMES are the contract the provisioning step creates and the
+            // application binds, and bothRoleNamesShipPopulated asserts they ship spelled out because the
+            // compose file guards all four with `${VAR:?}` and no default. The two PASSWORDS are the
+            // operator's to generate out of band, and the defect this closes assigned each of them a value
+            // equal to its own role name.
+            assertThat(TEMPLATE_VALUES.get(name))
+                    .as("""
+                            %s is a credential and the template documents that it exists while supplying \
+                            nothing. The defect this refuses shipped it equal to its own role name, which \
+                            teaches a predictable shared password as the pattern.""", name)
+                    .containsOnly("");
+        }
+
+        @Test
+        @DisplayName("all four least-privilege role variables are documented, because compose guards all four")
+        void allFourLeastPrivilegeRoleVariablesAreDocumented() {
+            assertThat(atomicRoleNames().toList())
+                    .as("the quartet docker-compose.yml guards with `${VAR:?}` and no default")
+                    .containsExactly("CARDDEMO_DB_APP_USER", "CARDDEMO_DB_APP_PASSWORD",
+                            "CARDDEMO_DB_MIGRATION_USER", "CARDDEMO_DB_MIGRATION_PASSWORD");
+            assertThat(TEMPLATE_OCCURRENCES.keySet())
+                    .as("every one must be documented in the template, or an operator cannot supply a value "
+                            + "the compose file refuses to default")
+                    .containsAll(ATOMIC_ROLE_NAMES);
+        }
+
+        @Test
+        @DisplayName("the value scan really read values, so an empty-string pass cannot be vacuous")
+        void theValueScanIsNotVacuous() {
+            assertThat(TEMPLATE_VALUES)
+                    .as("the parse must have produced a value list for every name it found")
+                    .hasSameSizeAs(TEMPLATE_OCCURRENCES);
+            assertThat(TEMPLATE_VALUES.values().stream().flatMap(List::stream).filter(value -> !value.isEmpty())
+                    .count())
+                    .as("""
+                            Most template values are non-empty - ports, bucket names, the emulator endpoint - \
+                            so a parse that produced empty strings everywhere would make the assertions above \
+                            pass without reading anything. This is the guard against that.""")
+                    .isGreaterThanOrEqualTo(20L);
+            assertThat(SECRET_NAME_FRAGMENTS.stream()
+                    .flatMap(fragment -> TEMPLATE_VALUES.keySet().stream().filter(n -> n.contains(fragment)))
+                    .distinct()
+                    .toList())
+                    .as("and the secret-name rule must actually select the names it exists for")
+                    .contains("JWT_SIGNING_KEY", "POSTGRES_PASSWORD", "METRICS_SCRAPE_PASSWORD",
+                            "GRAFANA_ADMIN_PASSWORD", "CARDDEMO_DB_APP_PASSWORD",
+                            "CARDDEMO_DB_MIGRATION_PASSWORD", "AWS_SECRET_ACCESS_KEY", "NVD_API_KEY");
+        }
+
+        @ParameterizedTest(name = "{0} ships with no value")
+        @MethodSource("com.cardemo.unit.config.EnvironmentTemplateContractTest#credentialNames")
+        @DisplayName("every documented credential ships empty, so copying the template commits nothing")
+        void everyCredentialShipsEmpty(final String name) {
+            assertThat(TEMPLATE_VALUES.get(name))
+                    .as("""
+                            %s is assigned at .env.example:%s. Rule 1 Clause D forbids secrets in \
+                            configuration, and a template value is a committed credential however harmless it \
+                            looks - a predictable one is worse than none, because a deployment that never \
+                            changed it is indistinguishable from one that chose it. Generate the value out of \
+                            band and put it only in the ignored .env.""",
+                            name, TEMPLATE_OCCURRENCES.get(name))
+                    .containsOnly("");
+        }
+
+        @Test
+        @DisplayName("the credential scan is not vacuous and covers both least-privilege role passwords")
+        void theCredentialScanCoversTheRolePasswords() {
+            assertThat(credentialNames().toList())
+                    .as("an exemption or a renaming must not be able to empty this scan silently")
+                    .hasSizeGreaterThanOrEqualTo(7)
+                    .contains(
+                            "JWT_SIGNING_KEY",
+                            "POSTGRES_PASSWORD",
+                            "CARDDEMO_DB_APP_PASSWORD",
+                            "CARDDEMO_DB_MIGRATION_PASSWORD",
+                            "GRAFANA_ADMIN_PASSWORD",
+                            "METRICS_SCRAPE_PASSWORD");
+        }
+
+        @ParameterizedTest(name = "{0} ships with the role name the provisioning step creates")
+        @ValueSource(strings = {"CARDDEMO_DB_APP_USER", "CARDDEMO_DB_MIGRATION_USER"})
+        @DisplayName("both role NAMES ship populated, because docker-compose.yml requires all four")
+        void bothRoleNamesShipPopulated(final String name) {
+            // This is the one place the two reviews reached opposite conclusions, and the compose file
+            // settles it. All four role variables are guarded with `${VAR:?}` and no `:-` default, and
+            // Compose treats an EMPTY value as unset for that form - so a template shipping the two names
+            // empty would stop `docker compose config` on a value an operator has no way to choose. The two
+            // passwords remain the operator's to generate; the two names are the contract the provisioning
+            // step creates and the application binds, so they ship spelled out. See
+            // com.cardemo.unit.config.DataTierPrincipalContractTest for the compose-side half.
+            assertThat(TEMPLATE_VALUES.get(name))
+                    .as("""
+                            A role name is not a credential, and all four variables are guarded with \
+                            Compose's `:?` rather than defaulted, so an empty name here would fail \
+                            `docker compose config`. Assigned at .env.example:%s""",
+                            TEMPLATE_OCCURRENCES.get(name))
+                    .isNotEmpty()
+                    .noneMatch(String::isEmpty);
+        }
     }
 
     /** ONE SPELLING - no superseding variable is shipped beside the group it would mask. */
@@ -398,6 +784,65 @@ final class EnvironmentTemplateContractTest {
      */
     private static Stream<String> supersedingNames() {
         return new TreeSet<>(new LinkedHashSet<>(SUPERSEDING_NAMES)).stream();
+    }
+
+    /**
+     * DECLARED ONCE - no variable is assigned twice, whatever the prose around it says.
+     *
+     * <p>The template had grown a duplicated section: {@code POSTGRES_LOCK_TIMEOUT_MS} was assigned
+     * twice and the whole least-privilege role block appeared twice, once with the four values blank
+     * and once with predictable passwords. Shell sourcing keeps the LAST assignment, so the committed
+     * passwords were the effective ones while the blank block above them read as authoritative - the
+     * two halves of the file disagreed and the one a reader trusted was not the one that applied.
+     *
+     * <p>{@link #TEMPLATE_ASSIGNMENTS} cannot see this: it is a map, so a second assignment silently
+     * replaces the first. This group counts assignments per name instead, which is the only way the
+     * duplication is visible at all.
+     */
+    @Nested
+    @DisplayName("DECLARED ONCE - every documented variable is assigned exactly once")
+    final class DeclaredOnce {
+
+        /**
+         * Counts how many times the template assigns each name.
+         *
+         * @return variable name to the one-based lines that assign it, in file order
+         */
+        private Map<String, List<Integer>> assignmentsByName() {
+            final Map<String, List<Integer>> found = new LinkedHashMap<>();
+            final List<String> content = lines(".env.example");
+            for (int index = 0; index < content.size(); index++) {
+                final Matcher matcher = ASSIGNMENT.matcher(content.get(index));
+                if (matcher.find()) {
+                    found.computeIfAbsent(matcher.group(1), name -> new ArrayList<>()).add(index + 1);
+                }
+            }
+            return found;
+        }
+
+        @Test
+        @DisplayName("no name is assigned twice, so the effective value is the one a reader sees")
+        void noNameIsAssignedTwice() {
+            final Map<String, List<Integer>> duplicated = new LinkedHashMap<>();
+            assignmentsByName().forEach((name, at) -> {
+                if (at.size() > 1) {
+                    duplicated.put(name, at);
+                }
+            });
+
+            assertThat(duplicated)
+                    .as("""
+                            Each name here is assigned more than once in .env.example, with the line                             numbers listed. A later assignment wins when the file is sourced, so a                             duplicate makes the earlier block - and any prose above it - a false                             statement about what the value will be.""")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the assignment scan is not vacuous, so an empty file could not pass it")
+        void theScanIsNotVacuous() {
+            assertThat(assignmentsByName())
+                    .as("the template documents the whole environment surface, not a handful of names")
+                    .hasSizeGreaterThan(30);
+        }
     }
 
     /**
@@ -481,4 +926,90 @@ final class EnvironmentTemplateContractTest {
                     .anyMatch(line -> line.strip().equals("CARDDEMO_BIND_ADDRESS=127.0.0.1"));
         }
     }
+
+    @Nested
+    @DisplayName("F-027: no committed secret, and no name assigned twice")
+    class SecretHygiene {
+
+        /** Names whose value is a credential and must therefore ship empty. */
+        private static final Pattern SECRET_BEARING =
+                Pattern.compile("^[A-Z0-9_]*(PASSWORD|SECRET|TOKEN|SIGNING_KEY|API_KEY)$");
+
+        /**
+         * The one credential-shaped name that legitimately carries a value.
+         *
+         * <p>{@code AWS_SECRET_ACCESS_KEY=test} is the emulator's own fixed dummy: LocalStack accepts any
+         * credential and the AAP forbids a live one, so {@code test} is not a secret and blanking it would
+         * break every local AWS call for no security gain. {@code AWS_ACCESS_KEY_ID} carries the same value
+         * but does not match the pattern above, so only this one needs naming.
+         */
+        private static final String EMULATOR_DUMMY = "AWS_SECRET_ACCESS_KEY";
+
+        @Test
+        @DisplayName("every credential-shaped name ships empty, so no checkout shares a working password")
+        void noSecretBearingNameShipsAValue() {
+            final List<String> shipped = new ArrayList<>();
+            for (final String line : lines(".env.example")) {
+                final Matcher matcher = ASSIGNMENT.matcher(line);
+                if (!matcher.find()) {
+                    continue;
+                }
+                final String name = matcher.group(1);
+                final String value = line.substring(matcher.end());
+                if (SECRET_BEARING.matcher(name).matches()
+                        && !name.equals(EMULATOR_DUMMY)
+                        && !value.isBlank()) {
+                    shipped.add(name);
+                }
+            }
+
+            assertThat(shipped)
+                    .as("a committed default password is a committed secret however local it is meant to be "
+                            + "(Rule 1 Clause D). The template documents how to generate local-only values "
+                            + "into a gitignored .env instead; it never ships one")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("no name is assigned twice, so no later value can silently override an earlier one")
+        void noNameIsAssignedTwice() {
+            final Map<String, List<Integer>> byName = new LinkedHashMap<>();
+            final List<String> content = lines(".env.example");
+            for (int index = 0; index < content.size(); index++) {
+                final Matcher matcher = ASSIGNMENT.matcher(content.get(index));
+                if (matcher.find()) {
+                    byName.computeIfAbsent(matcher.group(1), key -> new ArrayList<>()).add(index + 1);
+                }
+            }
+            final List<String> repeated = byName.entrySet().stream()
+                    .filter(entry -> entry.getValue().size() > 1)
+                    .map(entry -> entry.getKey() + " at lines " + entry.getValue())
+                    .toList();
+
+            assertThat(repeated)
+                    .as("finding F-027 was exactly this: the four database credential names were assigned a "
+                            + "second time further down the file, with working values, and because a later "
+                            + "assignment wins those overrode the empty quartet above. The duplication is "
+                            + "what hid it, so uniqueness is asserted here rather than only blankness")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the scan sees real assignments, so neither assertion above can pass vacuously")
+        void theScanIsNotVacuous() {
+            final long assignments = lines(".env.example").stream()
+                    .filter(line -> ASSIGNMENT.matcher(line).find())
+                    .count();
+
+            assertThat(assignments)
+                    .as("the template must still assign its documented environment; an empty scan would make "
+                            + "both assertions above meaningless")
+                    .isGreaterThan(30L);
+            assertThat(TEMPLATE_ASSIGNMENTS.keySet())
+                    .as("the four credential names must still be documented, blank but present")
+                    .contains("CARDDEMO_DB_APP_PASSWORD", "CARDDEMO_DB_MIGRATION_PASSWORD",
+                            "POSTGRES_PASSWORD", "JWT_SIGNING_KEY");
+        }
+    }
+
 }

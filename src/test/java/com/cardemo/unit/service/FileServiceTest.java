@@ -135,7 +135,7 @@ import org.slf4j.LoggerFactory;
  * <ul>
  *   <li>{@code ./mvnw -B -ntp test -Dtest=FileServiceTest} for this class alone.</li>
  *   <li>{@code ./mvnw -B -ntp test} for the whole unit tier.</li>
- *   <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} for the gated build, which adds the
+ *   <li>{@code ./mvnw -B -ntp clean verify} for the gated build, which adds the
  *       JaCoCo line-coverage floor. The skip property is hyphenated, not dotted.</li>
  *   </ul>
  *

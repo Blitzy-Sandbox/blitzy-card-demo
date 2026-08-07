@@ -445,12 +445,30 @@ public abstract class AbstractBatchIntegrationTest {
      * <p>This is one of exactly two static fields in this package. See the class documentation for why that
      * exception exists, why it is not widened further, and why the field carries no
      * {@code org.testcontainers.junit.jupiter.Container} annotation.
+     *
+     * <p><strong>{@code --locale=C} is byte ordering, and this tier depended on it without asking for it.</strong>
+     * The fixed-width keys inherited from the copybooks are compared as characters everywhere in this tree -
+     * {@code TRAN-ID}, {@code TRAN-CARD-NUM} and the ten-character prefix of {@code TRAN-PROC-TS} among them -
+     * and {@code com.cardemo.repository.TransactionRepository} pushes both an {@code ORDER BY} and a range
+     * predicate over those columns into SQL. Under a locale-dependent collation the database reorders
+     * punctuation and those comparisons stop agreeing with {@code String.compareTo}, so a container without
+     * this argument tests different semantics from the ones the application ships with.
+     * {@code docker-compose.yml} initialises with {@code --encoding=UTF8 --locale=C} and states that reason in
+     * place; the three end-to-end suites and {@code com.cardemo.integration.aws.AbstractAwsIntegrationTest}
+     * already carried it, and this tier and the repository tier did not - which made them the two places a
+     * collation-sensitive regression could pass. Added under finding <strong>F-012</strong>, whose fix moves the
+     * card-number ordering and the processing-date range into the query this tier exercises.
+     *
+     * <p>The value is written inline rather than held in a constant on purpose: this package documents a hard
+     * budget of exactly two static fields, both of them containers, and a third would widen a rule that exists
+     * to keep global state out of the tier.
      */
     @ServiceConnection
     static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(
             DockerImageName
                     .parse("postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20")
-                    .asCompatibleSubstituteFor("postgres"));
+                    .asCompatibleSubstituteFor("postgres"))
+            .withEnv("POSTGRES_INITDB_ARGS", "--encoding=UTF8 --locale=C");
 
     /**
      * The cloud substrate: one LocalStack container exposing the object store and the queue, started once per

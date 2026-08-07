@@ -308,7 +308,7 @@
  * 14 methods, and the 15 is retained only as the structural census for that member. Keeping the two apart in
  * the row is deliberate: collapsing them would either invent a method for a declaration or lose the census.
  *
- * <p>A consequence for the planned {@code TRACEABILITY_MATRIX.md}, recorded here because this package is where
+ * <p>A consequence for the {@code TRACEABILITY_MATRIX.md}, recorded here because this package is where
  * the counts are published: <strong>the two figures must be derived separately and labelled separately in that
  * document too.</strong> A single hardcoded total cannot serve both, and the first time one is quoted as the
  * other the matrix stops being mechanically provable against the corpus. Both are reproducible by inspection -

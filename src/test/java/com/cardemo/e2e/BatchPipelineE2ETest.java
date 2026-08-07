@@ -14,7 +14,13 @@
  * Source      : app/cpy/CVTRA05Y.cpy, app/cpy/CVACT01Y.cpy, app/cpy/CVTRA01Y.cpy, app/cpy/CVACT03Y.cpy
  * Source      : app/jcl/POSTTRAN.jcl @ 7756d89 - the job stream; :L36 declares LRECL=430
  * Source      : app/data/ASCII/dailytran.txt @ 7756d89 - the Gate 1 and Gate 4 fixture, 300 x 350
- * Note        : The Gate 1 boundary baseline is Not available; see reportGateOneBaselineAvailability().
+ * Note        : The Gate 1 boundary oracle IS present, under src/test/resources/parity/gate1, and is the
+ *               frozen CBTRN02C compiled unmodified and executed against these fixtures - never a file
+ *               authored from the output of this implementation.
+ * Note        : Gate 1's expected outcome is derived from app/cbl/CBTRN02C.cbl by
+ *               PostingParityOracle and committed under src/test/resources/expected/
+ *               posttran; this suite is the EXECUTION half of that comparison. Only a
+ *               captured z/OS run remains Not available - see reportGateOneParityStatus().
  ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -53,6 +59,7 @@ import com.cardemo.repository.DailyTransactionRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
 import com.cardemo.repository.TransactionRepository;
 import io.awspring.cloud.s3.S3Operations;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.search.Search;
@@ -154,19 +161,45 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * every generated processing timestamp is the injected fixed clock rendered as
  * {@code yyyy-MM-dd-HH.mm.ss.SS0000} ({@code :L149}, {@code :L692-L705}).
  *
- * <p><strong>What it deliberately does not assert.</strong> No expected reject <em>total</em>. The Gate 1
- * boundary baseline is <strong>Not available</strong> - see
- * {@link #reportGateOneBaselineAvailability()} - and a hand-derived total is not an oracle: two faithful
- * models of the same source disagree over these very fixtures, because
- * {@code app/cbl/CBTRN02C.cbl:L393-L395} re-reads the account per transaction while {@code :L545-L560}
- * mutates its accumulators, so a stateless single-pass count and a stateful count differ. Asserting either
- * would freeze one model as truth, and asserting the implementation's own output would be circular. No
- * baseline file is created and none may be.
+ * <p><strong>What it compares against, and why that is not circular.</strong> The Gate 1 oracle under
+ * {@code src/test/resources/parity/gate1} is the output of the LEGACY program: the frozen
+ * {@code app/cbl/CBTRN02C.cbl} was compiled unmodified and executed against these same frozen fixtures,
+ * and its reject, transaction, account, category-balance and SYSOUT images were captured. This class
+ * compares field by field against that - 38 rejects, 262 postings, 100 category-balance rows, return code
+ * 4 - rather than against a figure anyone derived by hand.
+ *
+ * <p>An earlier revision declined to assert any total on the grounds that a hand-derived one is
+ * model-sensitive, because a stateless single-pass model and a stateful model of the source disagree over
+ * these fixtures. The disagreement is real, 13 against 38, but only one of the two is a model of THIS
+ * program: {@code :L393-L395} re-reads the account per transaction and {@code :L554} rewrites it inside the
+ * same iteration, so the stateless reading contradicts {@code :L554}. Executing the program settled it.
+ *
+ * <p>Two spans are still excluded, by name and with the reason for each recorded in the provenance file of
+ * the oracle: the processing timestamp at offsets 305-330, which {@code :L692-L705} generates per run, and
+ * the trailing {@code FILLER PIC X(20)} at 331-350, which the program assigns nowhere.
+ *
+ * <p><strong>The Gate 1 execution half.</strong> This suite compares the real run's output against the
+ * committed, source-derived expectation under {@code src/test/resources/expected/posttran} - every posted
+ * transaction, every account accumulator, every category balance and every 430-byte reject record, in full
+ * rather than by sample. The expectation is produced by {@link PostingParityOracle}, which re-derives the
+ * outcome from {@code app/cbl/CBTRN02C.cbl} and the frozen fixtures and imports no production type, so the
+ * two sides of the comparison share no code and cannot agree by construction. {@code GateVerificationTest}
+ * owns the other half, checking the oracle against the same files without needing a container.
+ *
+ * <p><strong>An earlier revision of this suite asserted no expected total at all</strong>, on the argument
+ * that "two faithful models of the same source disagree over these very fixtures", citing
+ * {@code app/cbl/CBTRN02C.cbl:L393-L395} re-reading the account against {@code :L545-L560} mutating its
+ * accumulators. That argument was withdrawn: {@code 2800-UPDATE-ACCOUNT-REC} ends in
+ * {@code REWRITE FD-ACCTFILE-REC} at {@code :L561}, and a VSAM {@code REWRITE} replaces the record in the
+ * cluster, so the re-read returns the mutated values and the stateless reading is a misreading of
+ * {@code REWRITE} rather than a second model. Exactly one faithful model exists and it is now asserted. What
+ * remains genuinely <strong>Not available</strong> is a captured z/OS run, reported verbatim by
+ * {@link #reportGateOneParityStatus()}.
  *
  * <h2>How to run, build and test</h2>
  *
  * <p>Run {@code ./mvnw -B -ntp -Ddependency-check.skip=true -Dit.test=BatchPipelineE2ETest verify}, or the
- * whole gate with {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}.
+ * whole gate with {@code ./mvnw -B -ntp clean verify}.
  *
  * <p><strong>Failsafe collects this tier, not Surefire, and the path is load-bearing.</strong>
  * {@code maven-failsafe-plugin} is bound to {@code src/test/java/com/cardemo/e2e/**} and
@@ -304,8 +337,12 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  *       {@link #bothFixtureSourceLiteralsSurviveTheLoadPath()}.</li>
  *   <li><strong>Low</strong> - the {@code ACCT-EXPIRAION-DATE} misspelling of
  *       {@code app/cpy/CVACT01Y.cpy:L11}, preserved deliberately rather than corrected.</li>
- *   <li><strong>Not available</strong> - the Gate 1 boundary baseline, reported verbatim by
- *       {@link #reportGateOneBaselineAvailability()} together with what would be needed to produce it.</li>
+ *   <li><strong>Low</strong> - the Gate 1 oracle is a GnuCOBOL execution of the frozen program rather
+ *       than an IBM Enterprise COBOL capture from z/OS. Accepted, with the difference recorded by
+ *       {@link #reportGateOneOracleComparison()} and in the provenance file of the oracle.</li>
+ *   <li><strong>Not available</strong> - a captured z/OS POSTTRAN run, reported verbatim by
+ *       {@link #reportGateOneParityStatus()}. It would corroborate rather than replace the source-derived
+ *       oracle this suite already compares against.</li>
  * </ul>
  */
 @SpringBootTest
@@ -1037,6 +1074,12 @@ public class BatchPipelineE2ETest {
     /** Category-balance keys present immediately after the run. */
     private Set<String> categoryBalanceKeysAfterPosting;
 
+    /** Category-balance amounts observed after the run, keyed identically to the key snapshot above. */
+    private Map<String, BigDecimal> categoryBalanceAmountsAfterPosting;
+
+    /** The Gate 1 comparison target: the frozen COBOL program's own captured output. */
+    private Gate1Oracle oracle;
+
     /** The reject generation object key the run published, or {@code null} when it rejected nothing. */
     private String rejectObjectKey;
 
@@ -1093,6 +1136,8 @@ public class BatchPipelineE2ETest {
         this.categoryBalanceKeysBeforePosting = captureCategoryBalanceKeys();
         this.transactionCountBeforePosting = this.transactionRepository.count();
 
+        this.oracle = Gate1Oracle.load();
+
         this.postingExecution = launchPostingJob();
 
         final ExecutionContext jobContext = this.postingExecution.getExecutionContext();
@@ -1102,11 +1147,13 @@ public class BatchPipelineE2ETest {
         this.postedTransactions = List.copyOf(this.transactionRepository.findAll());
         this.accountStateAfterPosting = captureAccountState();
         this.categoryBalanceKeysAfterPosting = captureCategoryBalanceKeys();
+        this.categoryBalanceAmountsAfterPosting = captureCategoryBalanceAmounts();
 
         this.rejectObjectKey = resolveRejectObjectKey(jobContext);
         this.rejectObjectContent = this.rejectObjectKey == null ? null : readRejectGeneration();
 
-        LOG.info(reportGateOneBaselineAvailability());
+        LOG.info(reportGateOneOracleComparison());
+        LOG.info(reportGateOneParityStatus());
     }
 
     // ====================================================================================================
@@ -1114,42 +1161,100 @@ public class BatchPipelineE2ETest {
     // ====================================================================================================
 
     /**
-     * Reports the availability of the Gate 1 boundary-parity baseline.
+     * Reports the provenance of the Gate 1 boundary-parity oracle and what this run compared against it.
      *
-     * <p><strong>Purpose.</strong> Rule 1 clause F requires that missing information be stated as
-     * {@code Not available} together with what would be needed, rather than filled with an invention. This
-     * method is that statement, in code rather than in prose alone, so the evidence travels with the run.
+     * <p><strong>Purpose.</strong> Rule 1 clause F requires evidence to be stated rather than implied. This
+     * method is that statement in code, so the provenance of the comparison target travels with the run
+     * instead of living only in a document.
      *
-     * <p><strong>Inputs.</strong> None; the answer is a property of the repository at commit
-     * {@code 7756d89}, not of any run. An exhaustive search for expected, baseline, golden, system-output,
-     * reject, report, statement and HTML captures returned only three dataset <em>definition</em> job-control
-     * members - {@code app/jcl/DALYREJS.jcl}, {@code app/jcl/TRANREPT.jcl} and
-     * {@code app/proc/TRANREPT.prc} - and zero captured data, and a byte-size sweep for 430-, 133-, 860- and
-     * 266-byte artefacts returned nothing.
+     * <p><strong>Inputs.</strong> None beyond the loaded oracle and this run's own counters. The oracle
+     * itself is the output of the frozen {@code app/cbl/CBTRN02C.cbl}, compiled unmodified and executed
+     * against the frozen ASCII fixtures; {@code src/test/resources/parity/gate1/PROVENANCE.properties}
+     * records the compiler, its flags and every input and output digest, and the harness beside it
+     * regenerates all of it.
      *
-     * <p><strong>Outputs.</strong> The report text, beginning with the literal {@code Not available} and
-     * carrying the needed-evidence sentence verbatim. That sentence, reproduced here verbatim so the
-     * statement stands in the documentation as well as in the returned text, is: <em>a captured DALYREJS
-     * 430-byte reject dataset plus the resulting TRANSACT / ACCTDATA / TCATBALF images from a real POSTTRAN
-     * execution at a known input state.</em>
+     * <p><strong>Outputs.</strong> The report text, naming the derivation, the measured legacy outcome and
+     * the two spans excluded from comparison with the reason for each.
      *
-     * <p><strong>Side effects.</strong> None. It asserts nothing, writes no file and creates no baseline;
-     * the caller decides what to do with the text. Creating a baseline file here would be worse than useless,
-     * because a baseline derived from this implementation's own output is circular and could only ever
-     * confirm the implementation against itself.
+     * <p><strong>Side effects.</strong> None. It asserts nothing and writes no file.
      *
-     * <p><strong>Error modes.</strong> None; it is a pure function with no failure path.
+     * <p><strong>Error modes.</strong> Throws {@link IllegalStateException} only if the oracle's provenance
+     * record is missing a key it names, which would mean the record and this reader had drifted apart.
      *
-     * @return the Gate 1 availability report, never {@code null} and never blank
+     * @return the Gate 1 comparison report, never {@code null} and never blank
      */
-    public String reportGateOneBaselineAvailability() {
-        return "Gate 1 boundary-parity baseline: Not available. What is needed: "
-                + "a captured DALYREJS 430-byte reject dataset plus the resulting TRANSACT / ACCTDATA / "
-                + "TCATBALF images from a real POSTTRAN execution at a known input state. "
-                + "Until those exist, no expected reject total is asserted: two faithful models of "
-                + "app/cbl/CBTRN02C.cbl disagree over these fixtures, because :L393-L395 re-reads the "
-                + "account per transaction while :L545-L560 mutates its accumulators, so any hand-derived "
-                + "total is model-sensitive rather than an oracle.";
+    public String reportGateOneOracleComparison() {
+        return "Gate 1 boundary-parity oracle: PRESENT and legacy-derived. Target = "
+                + this.oracle.declared("oracle.derivedFrom") + " compiled with "
+                + this.oracle.declared("oracle.compiler") + " "
+                + this.oracle.declared("oracle.compilerVersion") + " (source modified: "
+                + this.oracle.declared("residual.sourceModified") + ", derived from Java: "
+                + this.oracle.declared("oracle.derivedFromJava") + "). Legacy outcome: "
+                + this.oracle.declared("run.transactionsRead") + " read, " + this.oracle.rejects().size()
+                + " rejected, " + this.oracle.postedTransactions().size() + " posted, return code "
+                + this.oracle.declared("run.returnCode") + ". This run: " + this.processedCount
+                + " read, " + this.rejectedCount + " rejected, " + this.postedTransactions.size()
+                + " posted. Excluded from comparison, with reasons recorded in the provenance file: the "
+                + "processing timestamp at offsets "
+                + this.oracle.declared("exclusion.processingTimestamp.span") + " because "
+                + this.oracle.declared("exclusion.processingTimestamp.reason") + ", and the trailing filler "
+                + "at " + this.oracle.declared("exclusion.transactionFiller.span") + " because "
+                + this.oracle.declared("exclusion.transactionFiller.reason") + ".";
+    }
+
+    /**
+     * Reports the Gate 1 parity status: what the comparison establishes, and the one thing still missing.
+     *
+     * <p><strong>Purpose.</strong> Rule 1 clause F requires missing information to be stated as
+     * {@code Not available} together with what would be needed, rather than filled with an invention. One
+     * artefact here genuinely is missing - a captured run of the compiled COBOL under CICS and VSAM - and this
+     * method is that statement, in code rather than prose alone, so it travels with the run.
+     *
+     * <p><strong>What changed, and why.</strong> An earlier revision of this method reported the whole Gate 1
+     * <em>baseline</em> as {@code Not available} and argued that no expected total could be asserted because
+     * "two faithful models of app/cbl/CBTRN02C.cbl disagree over these fixtures, because :L393-L395 re-reads
+     * the account per transaction while :L545-L560 mutates its accumulators, so any hand-derived total is
+     * model-sensitive rather than an oracle". That argument does not survive reading the paragraph it cites:
+     * {@code 2800-UPDATE-ACCOUNT-REC} ends in {@code REWRITE FD-ACCTFILE-REC} at {@code :L561} and
+     * {@code 2700-B-UPDATE-TCATBAL-REC} in {@code REWRITE FD-TRAN-CAT-BAL-RECORD} at {@code :L527}, and a
+     * VSAM {@code REWRITE} replaces the record in the cluster, so the next {@code READ} of that key returns
+     * the mutated values. The stateless single-pass reading is not a second faithful model - it is a misreading
+     * of what {@code REWRITE} means. Exactly one faithful model exists, {@link PostingParityOracle} implements
+     * it, and this suite now compares the real run against it in full.
+     *
+     * <p><strong>Inputs.</strong> None; the answer is a property of the repository rather than of any run. An
+     * exhaustive search for expected, baseline, golden, system-output, reject, report, statement and HTML
+     * captures returned only three dataset <em>definition</em> job-control members -
+     * {@code app/jcl/DALYREJS.jcl}, {@code app/jcl/TRANREPT.jcl} and {@code app/proc/TRANREPT.prc} - and zero
+     * captured data, and a byte-size sweep for 430-, 133-, 860- and 266-byte artefacts returned nothing.
+     *
+     * <p><strong>Outputs.</strong> The report text, naming the committed expectation, stating that the oracle
+     * imports no production type, and carrying the literal {@code Not available} with the needed-evidence
+     * sentence verbatim. That sentence is: <em>a captured DALYREJS 430-byte reject dataset plus the resulting
+     * TRANSACT / ACCTDATA / TCATBALF images from a real POSTTRAN execution at a known input state.</em>
+     *
+     * <p><strong>Side effects.</strong> None. It asserts nothing and writes no file. In particular it does not
+     * write the expectation: an expectation captured from this implementation's own output would be circular
+     * and could only confirm the implementation against itself, which is why the committed one is derived from
+     * the COBOL instead and generated outside this suite.
+     *
+     * @return the Gate 1 parity status report, never {@code null} and never blank
+     */
+    public String reportGateOneParityStatus() {
+        return "Gate 1 boundary parity: an expected outcome IS available. It is derived from "
+                + "app/cbl/CBTRN02C.cbl and the frozen app/data/ASCII fixtures by "
+                + PostingParityOracle.class.getName() + ", which imports no production type, and is committed "
+                + "under " + PostingParityOracle.EXPECTATION_DIRECTORY + " as "
+                + PostingParityOracle.EXPECTATION_FILES.size() + " reviewable files. This suite is the "
+                + "execution half of the comparison: the real posting run's transactions, account "
+                + "accumulators, category balances and 430-byte reject records are all compared against it in "
+                + "full. GateVerificationTest is the integrity half, re-deriving the oracle and checking it "
+                + "against the same files without a container. "
+                + "Still Not available: a captured DALYREJS 430-byte reject dataset plus the resulting "
+                + "TRANSACT / ACCTDATA / TCATBALF images from a real POSTTRAN execution at a known input "
+                + "state. It would corroborate rather than replace the source-derived oracle - what it adds "
+                + "is confirmation that the COBOL as compiled and executed behaves as the COBOL as read "
+                + "does.";
     }
 
     // ====================================================================================================
@@ -1302,6 +1407,21 @@ public class BatchPipelineE2ETest {
         return this.transactionCategoryBalanceRepository.findAll().stream()
                 .map(BatchPipelineE2ETest::renderCategoryBalanceKey)
                 .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /**
+     * Captures the balance of every category-balance row, keyed by the same rendering as the key capture.
+     *
+     * <p>Separate from {@link #captureCategoryBalanceKeys()} because the two answer different questions: the
+     * key set proves which rows the upsert of {@code app/cbl/CBTRN02C.cbl:L467-L500} created, and this map
+     * proves what it accumulated into each of them. The Gate 1 comparison needs both.
+     *
+     * @return an immutable snapshot keyed by {@code account|type|category}, never {@code null}
+     */
+    private Map<String, BigDecimal> captureCategoryBalanceAmounts() {
+        return this.transactionCategoryBalanceRepository.findAll().stream()
+                .collect(Collectors.toUnmodifiableMap(BatchPipelineE2ETest::renderCategoryBalanceKey,
+                        TransactionCategoryBalance::getBalance));
     }
 
     /**
@@ -1802,11 +1922,20 @@ public class BatchPipelineE2ETest {
                 .isBetween(0L, (long) DAILY_TRANSACTION_FIXTURE.expectedRowCount());
 
         assertThat(this.rejectedCount)
-                .as("app/data/ASCII/acctdata.txt carries credit limits from 120.00 to 9750.00 while the "
-                        + "fixture amounts reach 999.77, so OVERLIMIT TRANSACTION is reachable and at least "
-                        + "one record must reject. No exact total is asserted: the Gate 1 baseline is Not "
-                        + "available and a hand-derived total is model-sensitive rather than an oracle")
-                .isPositive();
+                .as("the legacy run of app/cbl/CBTRN02C.cbl over these exact fixtures rejected 38 of the "
+                        + "300 records, every one for OVERLIMIT TRANSACTION at :L410. That figure is the "
+                        + "oracle rather than a hand-derived total, and the record-by-record comparison "
+                        + "against it is asserted separately")
+                .isEqualTo(this.oracle.rejects().size())
+                .isEqualTo(38L)
+                .as("and the source-derived expectation agrees with it, so the two "
+                        + "independently produced oracles cannot drift apart silently")
+                .isEqualTo(PostingParityOracle.readCommittedExpectation("rejects.txt").size());
+
+        assertThat(this.postedTransactions)
+                .as("and the posted side must equal the expectation's row count too, so neither arm of "
+                        + "app/cbl/CBTRN02C.cbl:L211-L216 can drift while the other absorbs the difference")
+                .hasSize(PostingParityOracle.readCommittedExpectation("transactions.txt").size());
 
         assertThat(this.transactionCountBeforePosting)
                 .as("the transaction table starts empty; V3__seed_data.sql seeds the ten other tables and "
@@ -1827,7 +1956,11 @@ public class BatchPipelineE2ETest {
     @DisplayName("app/cbl/CBTRN02C.cbl:L227-L232: return code 4 iff the reject count exceeds zero")
     void runCompletesWithRejectsKeyedOnlyOnANonZeroRejectCount() {
         assertThat(this.rejectedCount)
-                .as("the premise of the exit-status assertion: this run rejected at least one record")
+                .as("the premise of the exit-status assertion: this run rejected exactly the number of "
+                        + "records the source-derived expectation says it must, which is positive - so the "
+                        + "completed-with-rejects branch of app/cbl/CBTRN02C.cbl:L229-L231 is the one under "
+                        + "test rather than merely a plausible one")
+                .isEqualTo(PostingParityOracle.readCommittedExpectation("rejects.txt").size())
                 .isPositive();
 
         assertThat(this.postingExecution.getStatus())
@@ -2422,34 +2555,487 @@ public class BatchPipelineE2ETest {
     }
 
     /**
-     * The Gate 1 boundary-parity baseline is reported as {@code Not available}, with the needed evidence
-     * stated verbatim and no baseline artefact produced.
+     * The untagged processed counter carries exactly the POSTTRAN population, to the record.
+     *
+     * <p><strong>Finding H-01, severity High - this is the assertion the previous harness did not make.</strong>
+     * The test above proves the four meters are <em>registered</em>. Registration says nothing about
+     * <em>population</em>, and population is what the finding was about: two other jobs had begun advancing
+     * this counter, one with rows an earlier posting run had already counted and one with report lines. The
+     * exported number therefore belonged to no job, and because the series carries no tag, no PromQL expression
+     * could separate the contributions back out.
+     *
+     * <p>What is asserted here is the exact figure {@code app/cbl/CBTRN02C.cbl} would have displayed.
+     * {@code ADD 1 TO WS-TRANSACTION-COUNT} at {@code :L206} runs once per accepted {@code READ}, before
+     * validation has decided anything, so the closing display at {@code :L227} counts every record the run
+     * looked at - posted and rejected alike. In Java that total arrives from two call sites, because posted and
+     * rejected records leave the step by different paths, and their sum must be the number of staged rows: no
+     * more, which would mean a foreign population had contributed, and no fewer, which would mean a record the
+     * run handled went uncounted.
      */
     @Test
-    @DisplayName("Rule 1 clause F: the Gate 1 boundary baseline is reported Not available with what is needed")
-    void gateOneBaselineIsReportedAsNotAvailable() {
-        final String report = reportGateOneBaselineAvailability();
+    @DisplayName("app/cbl/CBTRN02C.cbl:L206: the processed counter equals the POSTTRAN population exactly")
+    void theProcessedCounterCarriesExactlyThePostTranPopulation() {
+        final Counter processed = Search.in(this.meterRegistry).name(METRIC_RECORDS_PROCESSED).counter();
+
+        assertThat(processed)
+                .as("exactly one series, because the counter is untagged - a second series would mean a tag "
+                        + "had been added to a contract that fixes it at one")
+                .isNotNull();
+
+        final long staged = this.stagedRecords.size();
+        assertThat(this.processedCount)
+                .as("sanity: WS-TRANSACTION-COUNT as the run itself reported it accounts for every staged row, "
+                        + "posted and rejected alike, which is the premise the counter assertion below rests on")
+                .isEqualTo(staged);
+        assertThat(this.rejectedCount)
+                .as("and the rejects are a proper subset of that population rather than a separate one, which "
+                        + "is why they are counted as processed too")
+                .isLessThan(staged)
+                .isPositive();
+
+        assertThat(Math.round(processed.count()))
+                .as("""
+                    The exported total must be WS-TRANSACTION-COUNT and nothing else: %d staged rows, each \
+                    counted exactly once, by the writer for a posted record and by the job for a rejected one. \
+                    A HIGHER figure means a foreign population is contributing - which is precisely what the \
+                    transaction-combination job and the report job had begun doing, adding rows an earlier run \
+                    already counted and report lines respectively. A LOWER figure means a record the run \
+                    handled was never counted. Neither is recoverable by query, because this series carries no \
+                    job dimension to group on.""", Long.valueOf(staged))
+                .isEqualTo(staged);
+    }
+
+    /**
+     * Every reject the run emitted matches the legacy oracle, record for record and field for field.
+     *
+     * <p>The oracle is the DALYREJS dataset the frozen {@code app/cbl/CBTRN02C.cbl} itself wrote when
+     * compiled unmodified and executed against these same fixtures, so this is a comparison against the
+     * legacy system rather than against a hand-derived figure or against this implementation's own output.
+     * Emission order is comparable because both systems consume {@code dailytran.txt} sequentially and
+     * append each reject as it occurs.
+     */
+    @Test
+    @DisplayName("Gate 1: every reject record equals the legacy DALYREJS oracle field for field")
+    void rejectRecordsMatchTheLegacyOracleFieldForField() {
+        final List<Gate1Oracle.RejectImage> expected = this.oracle.rejects();
+        final List<String> actual = rejectRecords();
+
+        assertThat(this.rejectedCount)
+                .as("the legacy run rejected %d of the 300 records; a different count means the validation "
+                        + "cascade of app/cbl/CBTRN02C.cbl:L370-L422 diverges, and the oracle names the "
+                        + "expected figure rather than leaving it open", expected.size())
+                .isEqualTo(expected.size());
+        assertThat(actual)
+                .as("one 430-byte record per reject, so the emitted object must carry exactly as many as "
+                        + "the legacy dataset")
+                .hasSize(expected.size());
+
+        for (int index = 0; index < expected.size(); index++) {
+            final Gate1Oracle.RejectImage want = expected.get(index);
+            final String got = actual.get(index);
+            assertThat(got.substring(0, RejectCode.REJECT_TRAN_DATA_LENGTH))
+                    .as("reject %d: app/cbl/CBTRN02C.cbl:L447 copies the 350-byte input record verbatim, so "
+                            + "the image must be byte-identical to the legacy one", index + 1)
+                    .isEqualTo(want.transactionImage());
+            assertThat(Integer.parseInt(got.substring(RejectCode.REJECT_TRAN_DATA_LENGTH,
+                    RejectCode.REJECT_TRAN_DATA_LENGTH + RejectCode.FAIL_REASON_LENGTH)))
+                    .as("reject %d: the four-digit reason must equal the legacy reason", index + 1)
+                    .isEqualTo(want.reasonCode());
+            assertThat(got.substring(RejectCode.REJECT_TRAN_DATA_LENGTH + RejectCode.FAIL_REASON_LENGTH))
+                    .as("reject %d: the 76-character description is a literal of the source and is compared "
+                            + "including its trailing spaces", index + 1)
+                    .isEqualTo(want.reasonDescription());
+        }
+    }
+
+    /**
+     * Every posted transaction matches the legacy oracle field for field.
+     *
+     * <p>The processing timestamp is compared on format rather than value, and the trailing filler is not
+     * compared at all. Both exclusions are recorded in the oracle's provenance file with their reasons:
+     * {@code app/cbl/CBTRN02C.cbl:L692-L705} generates the timestamp per run, and the program assigns the
+     * filler nowhere, so its content is a property of the compiler rather than of the source.
+     */
+    @Test
+    @DisplayName("Gate 1: every posted transaction equals the legacy TRANSACT oracle field for field")
+    void postedTransactionsMatchTheLegacyOracleFieldForField() {
+        final Map<String, Gate1Oracle.TransactionImage> expected = this.oracle.postedTransactions().stream()
+                .collect(Collectors.toUnmodifiableMap(Gate1Oracle.TransactionImage::transactionId,
+                        image -> image));
+
+        assertThat(this.postedTransactions)
+                .as("the legacy run posted %d transactions", expected.size())
+                .hasSize(expected.size());
+        assertThat(this.postedTransactions.stream().map(Transaction::getTransactionId).sorted().toList())
+                .as("the posted identifiers must be exactly the legacy set: a missing one is a lost posting "
+                        + "and an extra one is a posting the source rejected")
+                .isEqualTo(expected.keySet().stream().sorted().toList());
+
+        for (final Transaction posted : this.postedTransactions) {
+            final Gate1Oracle.TransactionImage want = expected.get(posted.getTransactionId());
+            final String id = posted.getTransactionId();
+            assertThat(posted.getTypeCode()).as("%s TRAN-TYPE-CD", id).isEqualTo(want.typeCode());
+            assertThat(String.format("%04d", posted.getCategoryCode()))
+                    .as("%s TRAN-CAT-CD", id).isEqualTo(want.categoryCode());
+            assertThat(posted.getTransactionSource())
+                    .as("%s TRAN-SOURCE, compared including its trailing spaces because the column is a "
+                            + "fixed-width CHAR", id)
+                    .isEqualTo(want.source());
+            assertThat(posted.getDescription()).as("%s TRAN-DESC", id).isEqualTo(want.description());
+            assertThat(posted.getAmount())
+                    .as("%s TRAN-AMT, compared by value through compareTo so scale cannot mask a "
+                            + "difference", id)
+                    .isEqualByComparingTo(decodeOverpunchedAmount(want.amount()));
+            assertThat(String.format("%09d", posted.getMerchantId()))
+                    .as("%s TRAN-MERCHANT-ID", id).isEqualTo(want.merchantId());
+            assertThat(posted.getMerchantName()).as("%s TRAN-MERCHANT-NAME", id)
+                    .isEqualTo(want.merchantName());
+            assertThat(posted.getMerchantCity()).as("%s TRAN-MERCHANT-CITY", id)
+                    .isEqualTo(want.merchantCity());
+            assertThat(posted.getMerchantZip()).as("%s TRAN-MERCHANT-ZIP", id)
+                    .isEqualTo(want.merchantZip());
+            assertThat(posted.getCardNumber()).as("%s TRAN-CARD-NUM", id).isEqualTo(want.cardNumber());
+            assertThat(posted.getOrigTs())
+                    .as("%s TRAN-ORIG-TS is copied from the input at app/cbl/CBTRN02C.cbl:L436, so it must "
+                            + "be byte-identical", id)
+                    .isEqualTo(want.originatingTimestamp());
+            assertThat(posted.getProcTs())
+                    .as("%s TRAN-PROC-TS is generated per run, so only its shape is a contract: 26 "
+                            + "characters ending in the four literal zeros of "
+                            + "app/cbl/CBTRN02C.cbl:L701", id)
+                    .hasSize(TIMESTAMP_WIDTH)
+                    .endsWith("0000");
+        }
+    }
+
+    /**
+     * Every account the run mutated matches the legacy oracle field for field.
+     *
+     * <p>This is the assertion the stateful reading of the source turns on. {@code :L395} re-reads the
+     * account for each transaction and {@code :L554} rewrites it in the same iteration, so the three mutated
+     * fields carry the whole accumulated history of the run rather than a single record's effect. The
+     * unmutated fields are compared too, because a posting run must not disturb them.
+     */
+    @Test
+    @DisplayName("Gate 1: every account image equals the legacy ACCTDATA oracle field for field")
+    void accountImagesMatchTheLegacyOracleFieldForField() {
+        final Map<Long, Gate1Oracle.AccountImage> expected = this.oracle.accounts();
+
+        assertThat(this.accountStateAfterPosting)
+                .as("all %d accounts must still be present after the run", expected.size())
+                .hasSize(expected.size());
+
+        for (final Map.Entry<Long, Gate1Oracle.AccountImage> entry : expected.entrySet()) {
+            final Long id = entry.getKey();
+            final Gate1Oracle.AccountImage want = entry.getValue();
+            final AccountCycleState got = this.accountStateAfterPosting.get(id);
+            assertThat(got).as("account %s is absent from the post-run state", id).isNotNull();
+            assertThat(got.currentBalance())
+                    .as("account %s ACCT-CURR-BAL after the run: app/cbl/CBTRN02C.cbl:L547 adds every "
+                            + "posted amount to it", id)
+                    .isEqualByComparingTo(decodeOverpunchedAmount(want.currentBalance()));
+            assertThat(got.cycleCredit())
+                    .as("account %s ACCT-CURR-CYC-CREDIT: :L549 accumulates non-negative amounts here", id)
+                    .isEqualByComparingTo(decodeOverpunchedAmount(want.cycleCredit()));
+            assertThat(got.cycleDebit())
+                    .as("account %s ACCT-CURR-CYC-DEBIT: :L551 accumulates NEGATIVE amounts here without "
+                            + "any absolute-value normalisation, so this value is negative and must be", id)
+                    .isEqualByComparingTo(decodeOverpunchedAmount(want.cycleDebit()));
+        }
+    }
+
+    /**
+     * Every category-balance row matches the legacy oracle, including the rows the run created.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L467-L500} upserts: an absent row is an accepted control path that
+     * creates, not an error. The oracle therefore carries more rows after the run than the fixture seeded,
+     * and both the key set and every balance are compared.
+     */
+    @Test
+    @DisplayName("Gate 1: every category-balance row equals the legacy TCATBALF oracle field for field")
+    void categoryBalancesMatchTheLegacyOracleFieldForField() {
+        final Map<String, Gate1Oracle.CategoryBalanceImage> expected = this.oracle.categoryBalances();
+
+        assertThat(this.categoryBalanceAmountsAfterPosting.keySet())
+                .as("the key set must be exactly the legacy one: a missing key is a lost upsert and an "
+                        + "extra key is a row the source did not create")
+                .isEqualTo(expected.keySet());
+
+        for (final Map.Entry<String, Gate1Oracle.CategoryBalanceImage> entry : expected.entrySet()) {
+            assertThat(this.categoryBalanceAmountsAfterPosting.get(entry.getKey()))
+                    .as("category balance %s: :L494 and :L520 both add the transaction amount to it, so the "
+                            + "value carries every posting against that account, type and category",
+                            entry.getKey())
+                    .isEqualByComparingTo(decodeOverpunchedAmount(entry.getValue().balance()));
+        }
+    }
+
+    /**
+     * The counters and exit status the run reports match the legacy SYSOUT and return code.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L227-L228} displays both counters and {@code :L229-L230} sets return
+     * code 4 when and only when the reject count exceeds zero. The oracle carries the literal DISPLAY lines
+     * and the observed process exit status, so the counters are compared against what the program printed
+     * rather than against a figure derived from the same run being checked.
+     */
+    @Test
+    @DisplayName("Gate 1: the counters and exit status equal the legacy SYSOUT and return code")
+    void countersAndExitStatusMatchTheLegacySysout() {
+        assertThat(this.oracle.sysout())
+                .as("the oracle must carry the legacy counter lines verbatim, or there is nothing to "
+                        + "compare against")
+                .contains("TRANSACTIONS PROCESSED :000000300", "TRANSACTIONS REJECTED  :000000038",
+                        "RETURN-CODE=4");
+
+        assertThat(String.format("TRANSACTIONS PROCESSED :%09d", this.processedCount))
+                .as("WS-TRANSACTION-COUNT is PIC 9(09), so the rendered counter must match the legacy line")
+                .isEqualTo("TRANSACTIONS PROCESSED :000000300");
+        assertThat(String.format("TRANSACTIONS REJECTED  :%09d", this.rejectedCount))
+                .as("WS-REJECT-COUNT is PIC 9(09) and the legacy run rejected 38")
+                .isEqualTo("TRANSACTIONS REJECTED  :000000038");
+        assertThat(this.postingExecution.getExitStatus().getExitCode())
+                .as("the legacy run exited with return code 4, whose Java counterpart is the "
+                        + "completed-with-rejects status")
+                .isEqualTo("COMPLETED WITH REJECTS");
+
+        LOG.info(reportGateOneOracleComparison());
+    }
+
+    /**
+     * <b>Gate 1, the execution half.</b> The run's committed output equals the source-derived expectation,
+     * field for field and byte for byte, in every one of the four datasets it writes.
+     *
+     * <h4>Why this is the assertion Gate 1 always needed</h4>
+     *
+     * <p>An earlier revision of this suite asserted only that the reject count was
+     * <em>positive</em>, declining an exact total on the grounds that a hand-derived figure would be
+     * "model-sensitive rather than an oracle". A positive count is satisfied by 1 as readily as by 38, so a
+     * posting engine that rejected almost everything, or almost nothing, passed. That is the gap this test
+     * closes.
+     *
+     * <p>The expectation it compares against is not captured from this implementation. It is derived from
+     * {@code app/cbl/CBTRN02C.cbl} and the frozen fixtures by {@link PostingParityOracle}, which imports no
+     * type from {@code com.cardemo.batch}, {@code .service}, {@code .model} or {@code .repository}, so the two
+     * sides share no code. A disagreement is therefore a real behavioural difference between the COBOL and the
+     * Java, which is exactly what Gate 1 is for.
+     *
+     * <h4>Why the Java values are re-rendered rather than compared as objects</h4>
+     *
+     * <p>The Java tier is typed where the record is bytes: {@code tran_cat_cd} is {@code NUMERIC(4)} so
+     * {@link Transaction#getCategoryCode()} answers {@code 1} where {@code PIC 9(04)} says {@code 0001}, and
+     * {@code tran_merchant_id} is {@code NUMERIC(9)} so the identifier arrives as a number. Rendering each
+     * back to its picture width is what makes the comparison a comparison of <em>values</em> rather than of
+     * Java representations. The text columns need no such treatment: they are {@code CHAR(n)}, which
+     * PostgreSQL blank-pads, so {@code tran_desc} arrives as 100 characters and compares byte for byte against
+     * the {@code PIC X(100)} field it came from.
+     *
+     * <p>{@code TRAN-PROC-TS} is the one posted field excluded, because {@code :L438-L439} fills it from the
+     * clock. Its width and its four trailing zeros are asserted separately against the injected fixed clock.
+     */
+    @Test
+    @DisplayName("Gate 1: the run's output equals the source-derived expectation, field for field and byte for byte")
+    void runOutputEqualsTheSourceDerivedExpectation() {
+        assertThat(PostingParityOracle.readCommittedExpectation("counters.txt"))
+                .as("the premise: the committed expectation must be present and non-empty. GateVerificationTest "
+                        + "owns the fail-closed check; repeating it here stops this suite from reporting a "
+                        + "vacuous pass if the expectation were ever deleted")
+                .isNotEmpty();
+
+        assertThat(this.postedTransactions.stream()
+                .map(BatchPipelineE2ETest::renderPostedTransaction)
+                .sorted()
+                .toList())
+                .as("every row the run committed to TRANSACT must equal what 2000-POST-TRANSACTION would have "
+                        + "written at app/cbl/CBTRN02C.cbl:L426-L437, for all %d of them. Compared sorted "
+                        + "because the committed table has no insertion order to preserve, while the "
+                        + "expectation's own emission order is asserted in GateVerificationTest",
+                        Integer.valueOf(this.postedTransactions.size()))
+                .containsExactlyElementsOf(PostingParityOracle.readCommittedExpectation("transactions.txt")
+                        .stream().sorted().toList());
+
+        assertThat(captureRenderedAccountAccumulators())
+                .as("the three accumulators 2800-UPDATE-ACCOUNT-REC mutates at app/cbl/CBTRN02C.cbl:L546-L552 "
+                        + "must equal the expectation for every account - including the cycle debit, which "
+                        + "holds negative values because :L550 adds a negative amount unnormalised")
+                .containsExactlyElementsOf(PostingParityOracle.readCommittedExpectation("accounts.txt"));
+
+        assertThat(captureRenderedCategoryBalances())
+                .as("every balance 2700-UPDATE-TCATBAL leaves behind at app/cbl/CBTRN02C.cbl:L467-L541 must "
+                        + "equal the expectation, rows the run created on the accepted '23' path included")
+                .containsExactlyElementsOf(
+                        PostingParityOracle.readCommittedExpectation("category-balances.txt"));
+
+        assertThat(this.categoryBalanceKeysAfterPosting)
+                .as("the keys present after the run must be exactly the seeded keys plus the ones "
+                        + "2700-A-CREATE-TCATBAL-REC created, with nothing else appearing and nothing removed")
+                .containsExactlyInAnyOrderElementsOf(expectedCategoryBalanceKeys());
+
+        final List<String> expectedRejects =
+                PostingParityOracle.readCommittedExpectation("rejects.txt");
+
+        assertThat(this.rejectObjectContent)
+                .as("the run rejected records, so it must have published a reject generation to compare")
+                .isNotNull();
+        assertThat(this.rejectedCount)
+                .as("WS-REJECT-COUNT at app/cbl/CBTRN02C.cbl:L215 must equal the expectation exactly. This "
+                        + "replaces an isPositive() check that 1 would have satisfied as readily as %d",
+                        Integer.valueOf(expectedRejects.size()))
+                .isEqualTo(expectedRejects.size());
+        assertThat(rejectRecords())
+                .as("every 430-byte record 2500-WRITE-REJECT-REC writes at app/cbl/CBTRN02C.cbl:L500-L502 must "
+                        + "match the expectation byte for byte, in emission order - the 350-byte staging image, "
+                        + "the four-digit reason of PIC 9(04) and the 76-character description of PIC X(76)")
+                .containsExactlyElementsOf(expectedRejects);
+    }
+
+    /**
+     * Gate 1: the status report names what the comparison establishes and the one artefact still missing.
+     *
+     * <p>Rule 1 clause F requires missing information to be named rather than invented, and a captured z/OS
+     * run genuinely is missing. What has changed is the size of the gap: the expected outcome is no longer
+     * unavailable, so the report must neither overclaim nor restate the withdrawn no-oracle position.
+     */
+    @Test
+    @DisplayName("Rule 1 clause F: the Gate 1 status names the oracle and the still-missing captured run")
+    void gateOneStatusNamesTheOracleAndTheMissingCapturedRun() {
+        final String report = reportGateOneParityStatus();
 
         assertThat(report)
-                .as("Rule 1 clause F requires missing information to be stated as Not available rather than "
-                        + "filled with an invention")
-                .contains("Not available");
+                .as("the report must state that an expected outcome exists and where it was derived from, "
+                        + "because that is the claim the comparison above rests on")
+                .contains("an expected outcome IS available")
+                .contains("app/cbl/CBTRN02C.cbl");
 
         assertThat(report)
-                .as("the needed evidence is stated verbatim, so a later run knows exactly what would close "
-                        + "the gate")
+                .as("the report must state that the oracle imports no production type, which is what makes "
+                        + "the comparison non-circular rather than merely independent-looking")
+                .contains("imports no production type");
+
+        assertThat(report)
+                .as("the report must name the committed expectation so a reader can go and read it")
+                .contains(PostingParityOracle.EXPECTATION_DIRECTORY);
+
+        assertThat(report)
+                .as("Rule 1 clause F requires the one genuinely missing artefact to be stated as Not "
+                        + "available, verbatim, so the requirement is not lost")
+                .contains("Not available")
                 .contains("a captured DALYREJS 430-byte reject dataset plus the resulting TRANSACT / "
                         + "ACCTDATA / TCATBALF images from a real POSTTRAN execution at a known input state.");
 
         assertThat(report)
-                .as("the report explains why no expected total is asserted, so the omission reads as a "
-                        + "reasoned position rather than an oversight")
-                .contains("model-sensitive");
+                .as("the withdrawn model-sensitivity claim must not survive anywhere in the report. Leaving "
+                        + "it would restate as current a position this suite has disproved by asserting the "
+                        + "exact outcome it said was unassertable")
+                .doesNotContain("model-sensitive");
     }
+
 
     // ====================================================================================================
     // Remaining private helpers.
     // ====================================================================================================
+
+    /**
+     * Renders one committed {@link Transaction} row in the committed expectation's field order.
+     *
+     * <p>Delegates the joining to {@link PostingParityOracle#renderTransaction}, so this method's only job is
+     * the widening back from the typed columns to the picture widths the record declares. Doing the widening
+     * here rather than in the oracle is deliberate: the oracle must not know how this implementation stores
+     * anything, or the two sides of the comparison would stop being independent.
+     *
+     * <p>Three columns need it. {@code tran_cat_cd} is {@code NUMERIC(4)} against {@code PIC 9(04)},
+     * {@code tran_merchant_id} is {@code NUMERIC(9)} against {@code PIC 9(09)}, and both are rendered zero
+     * filled to their picture width. The text columns need nothing: they are {@code CHAR(n)}, which PostgreSQL
+     * blank-pads, so they arrive at exactly the width their {@code PIC X(n)} clause declares.
+     *
+     * <p>Inputs: the committed row. Output: the rendered expectation row. Side effects: none.
+     *
+     * @param transaction the committed row; must not be {@code null}
+     * @return the rendered row, never {@code null}
+     */
+    private static String renderPostedTransaction(final Transaction transaction) {
+        return PostingParityOracle.renderTransaction(new PostingParityOracle.PostedTransaction(
+                transaction.getTransactionId(),
+                transaction.getTypeCode(),
+                String.format(Locale.ROOT, "%04d", transaction.getCategoryCode()),
+                transaction.getTransactionSource(),
+                transaction.getDescription(),
+                transaction.getAmount(),
+                String.format(Locale.ROOT, "%09d", transaction.getMerchantId()),
+                transaction.getMerchantName(),
+                transaction.getMerchantCity(),
+                transaction.getMerchantZip(),
+                transaction.getCardNumber(),
+                transaction.getOrigTs()));
+    }
+
+    /**
+     * Renders the committed account accumulators in the committed expectation's row order.
+     *
+     * <p>{@code account_id} is {@code NUMERIC(11)}, so the identifier is widened back to the eleven digits
+     * {@code ACCT-ID PIC 9(11)} declares before the rows are sorted - sorting the unwidened numbers would give
+     * a different order from the expectation and turn an ordering artefact into an apparent parity failure.
+     *
+     * <p>Inputs: none; reads {@link #accountStateAfterPosting}, captured once in setup. Output: the rendered
+     * rows in ascending account order. Side effects: none.
+     *
+     * @return the rendered rows, never {@code null}
+     */
+    private List<String> captureRenderedAccountAccumulators() {
+        return this.accountStateAfterPosting.entrySet().stream()
+                .map(entry -> PostingParityOracle.renderAccount(
+                        String.format(Locale.ROOT, "%011d", entry.getKey()),
+                        new PostingParityOracle.AccountAccumulators(
+                                entry.getValue().currentBalance(),
+                                entry.getValue().cycleCredit(),
+                                entry.getValue().cycleDebit())))
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * Renders the committed category balances in the committed expectation's row order.
+     *
+     * <p>Read back from the repository rather than from a setup snapshot because the snapshot captures only
+     * the keys; the balances are what {@code 2700-UPDATE-TCATBAL} computes and so are what must be compared.
+     * The read is safe to do here: the posting run committed before setup returned, so the rows are stable.
+     *
+     * <p>Inputs: none. Output: the rendered rows, key ordered to match the expectation. Side effects: one
+     * read of the category-balance relation.
+     *
+     * @return the rendered rows, never {@code null}
+     */
+    private List<String> captureRenderedCategoryBalances() {
+        return this.transactionCategoryBalanceRepository.findAll().stream()
+                .map(balance -> PostingParityOracle.renderCategoryBalance(
+                        new PostingParityOracle.CategoryBalanceKey(
+                                String.format(Locale.ROOT, "%011d", balance.getId().getAccountId()),
+                                balance.getId().getTypeCd().strip(),
+                                String.format(Locale.ROOT, "%04d", balance.getId().getCatCd())),
+                        balance.getBalance()))
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * Derives the expected category-balance key set in the form the store renders keys.
+     *
+     * <p>{@link #renderCategoryBalanceKey} answers with the identifier as the {@code NUMERIC(11)} column holds
+     * it - unpadded - while the expectation carries the eleven-digit {@code PIC 9(11)} form. Rather than
+     * loosening either, the expectation's keys are re-expressed here in the store's own form, so the two sets
+     * are directly comparable and neither side is normalised towards the other by accident.
+     *
+     * <p>Inputs: none; reads the committed expectation. Output: the expected keys. Side effects: one file
+     * read.
+     *
+     * @return the expected keys, never {@code null}
+     */
+    private static Set<String> expectedCategoryBalanceKeys() {
+        return PostingParityOracle.readCommittedExpectation("category-balances.txt").stream()
+                .map(row -> row.split("\\|", -1))
+                .map(fields -> Long.valueOf(fields[0]) + "|" + fields[1] + "|"
+                        + Integer.valueOf(fields[2]))
+                .collect(Collectors.toUnmodifiableSet());
+    }
 
     /**
      * Splits the emitted reject generation into its fixed 430-byte records.

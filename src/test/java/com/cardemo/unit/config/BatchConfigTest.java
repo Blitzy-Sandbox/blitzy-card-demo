@@ -36,19 +36,34 @@
 package com.cardemo.unit.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockingDetails;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.classic.spi.IThrowableProxy;
+import ch.qos.logback.core.read.ListAppender;
 import com.cardemo.batch.jobs.StatementGenerationJob;
 import com.cardemo.batch.processors.TransactionReportProcessor;
+import com.cardemo.batch.readers.AccountReader;
+import com.cardemo.batch.readers.CardCrossReferenceReader;
+import com.cardemo.batch.readers.CardReader;
+import com.cardemo.batch.readers.CustomerReader;
 import com.cardemo.config.BatchConfig;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.Account;
@@ -62,64 +77,90 @@ import com.cardemo.repository.CustomerRepository;
 import com.cardemo.repository.TransactionCategoryRepository;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.repository.TransactionTypeRepository;
+import com.cardemo.service.report.ReportSubmissionService.JobSubmissionMessage;
+import com.cardemo.service.report.ReportSubmissionService;
 import com.cardemo.service.shared.FileService;
 import com.cardemo.service.shared.FileStatusMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
+import io.awspring.cloud.sqs.annotation.SqsListener;
+import io.awspring.cloud.sqs.listener.SqsHeaders;
+import io.awspring.cloud.sqs.listener.Visibility;
+import jakarta.persistence.EntityManager;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.sql.DataSource;
-import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.slf4j.MDC;
-import org.springframework.beans.factory.annotation.Value;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.awspring.cloud.sqs.annotation.SqsListener;
-import io.awspring.cloud.sqs.listener.SqsHeaders;
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import org.junit.jupiter.api.BeforeEach;
 import org.mockito.ArgumentCaptor;
-import org.springframework.batch.core.Job;
-import org.springframework.batch.core.JobExecution;
-import org.springframework.batch.core.JobParameters;
-import org.springframework.batch.core.launch.JobLauncher;
-import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
-import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
-import org.springframework.boot.autoconfigure.batch.BatchDataSourceScriptDatabaseInitializer;
-import org.springframework.boot.autoconfigure.batch.BatchProperties;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.messaging.MessageHeaders;
+import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobInstance;
+import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.flow.Flow;
 import org.springframework.batch.core.job.flow.JobExecutionDecider;
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
+import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.scope.context.StepSynchronizationManager;
+import org.springframework.batch.core.step.StepLocator;
+import org.springframework.batch.item.Chunk;
+import org.springframework.batch.item.ItemProcessor;
+import org.springframework.batch.item.ItemWriter;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.batch.BatchDataSourceScriptDatabaseInitializer;
+import org.springframework.boot.autoconfigure.batch.BatchProperties;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.repository.Repository;
+import org.springframework.jdbc.core.JdbcOperations;
+import org.springframework.messaging.MessageHeaders;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
 
 /**
  * Unit tests for {@link BatchConfig}.
@@ -136,12 +177,14 @@ import org.springframework.stereotype.Component;
  * therefore assert the absence of the factory and construct the processor directly, which is exactly how a
  * step-scoped component is unit tested.
  *
- * <p>The bean inventory this class pins is the four dataset bindings plus the one job-instance diagnostic
- * context listener. It also pins the <em>absence</em> of any {@code Job}, {@code Step}, {@code Flow} or
- * {@code JobExecutionDecider} bean, because the six configuration classes in {@code com.cardemo.batch.jobs}
- * are the designated definition sites for those and a second definition would abort startup.
+ * <p>The bean inventory this class pins is the four dataset bindings, the framework metadata initialiser and
+ * the report queue listener. It also pins the <em>absence</em> of any {@code Job}, {@code Step}, {@code Flow}
+ * or {@code JobExecutionDecider} bean, because the six configuration classes in
+ * {@code com.cardemo.batch.jobs} are the designated definition sites for those and a second definition would
+ * abort startup - and, since finding CFG-003, the absence of any {@code JobExecutionListener} bean, which
+ * nothing in the framework would ever collect onto a job.
  */
-@DisplayName("BatchConfig - four CBSTM03B dataset bindings, one job listener, and no job or processor bean")
+@DisplayName("BatchConfig - four CBSTM03B dataset bindings, batch metadata readiness, and no job bean")
 class BatchConfigTest {
 
     /** A window size small enough that the tests can observe more than one window. */
@@ -185,6 +228,33 @@ class BatchConfigTest {
      */
     private static final String UNREADABLE_METADATA_PROPERTY = "carddemo.test.metadata-probe-refuses";
 
+    /**
+     * Names the product the stubbed driver reports, deciding whether the privilege probes run.
+     *
+     * <p>Left unset, the stubbed connection supplies no metadata at all, which is the shape every other test
+     * in this class exercises and which must skip the privilege probes rather than fail startup on a driver
+     * that declined to describe itself.
+     */
+    private static final String METADATA_PRODUCT_PROPERTY = "carddemo.test.metadata-product";
+
+    /**
+     * Names one privilege, or one object, the stubbed runtime role does not hold.
+     *
+     * <p>This is the state finding BAT-001 is about: a schema whose six tables exist and read cleanly under
+     * the runtime role, and which that role cannot write. The old check passed there and the first launch of
+     * the batch window failed.
+     */
+    private static final String WITHHELD_PRIVILEGE_PROPERTY = "carddemo.test.privilege-withheld";
+
+    /**
+     * Every privilege statement the readiness check issues: six tables and three sequences, three privileges
+     * apiece.
+     */
+    private static final int PRIVILEGE_PROBE_COUNT = (6 * 3) + (3 * 3);
+
+    /** The product name that unlocks the privilege probes. */
+    private static final String POSTGRESQL = "PostgreSQL";
+
     /** The class under test, constructed with the small window size. */
     private final BatchConfig batchConfig = new BatchConfig(WINDOW_SIZE);
 
@@ -208,7 +278,7 @@ class BatchConfigTest {
     }
 
     @Nested
-    @DisplayName("The report processor registers itself, and this class must not register it again")
+    @DisplayName("The report processor is owned by its job, and this class must not register it")
     class ReportProcessorRegistration {
 
         /**
@@ -231,53 +301,106 @@ class BatchConfigTest {
         @Test
         @DisplayName("BatchConfig declares no processor factory, because the name would collide")
         void batchConfigDeclaresNoProcessorFactory() {
-            // A @Bean @StepScope transactionReportProcessor factory stood in BatchConfig and was removed.
-            // TransactionReportProcessor is annotated @Component @StepScope, so its default bean name is
-            // already "transactionReportProcessor"; with spring.main.allow-bean-definition-overriding set
-            // to false in the base profile, the pair aborts context startup. This assertion is the
-            // regression guard: it fails the moment either registration is reintroduced alongside the
-            // other, which is a failure a slice test would otherwise only surface as a startup error.
+            // A @Bean @StepScope transactionReportProcessor factory stood in BatchConfig and was removed,
+            // originally because TransactionReportProcessor was annotated @Component @StepScope and the two
+            // definitions collided on the name "transactionReportProcessor" under
+            // spring.main.allow-bean-definition-overriding: false. Under finding F-008 that annotation is
+            // gone - TransactionReportJob constructs the processor itself and is its sole owner - so the
+            // collision no longer exists, and this assertion now guards the ownership model instead: no
+            // factory here may reintroduce a second provenance for a type the job owns, because that would
+            // move the constructor's DATEPARM validation behind a scoped proxy where it surfaces as a
+            // BeanCreationException rather than as the step's own FatalProcessingException.
             assertThat(Arrays.stream(BatchConfig.class.getDeclaredMethods()).map(Method::getName))
-                    .as("BatchConfig owns the four FileService.Dataset bindings and the job-instance "
-                            + "diagnostic context listener; every reader, processor and writer under "
-                            + "batch/** registers by @Component")
-                    .doesNotContain("transactionReportProcessor");
+                    .as("BatchConfig owns the four FileService.Dataset bindings, the framework metadata "
+                            + "initialiser and the report queue listener; the container-owned readers, "
+                            + "processors and writers under batch/** register by @Component, and the report "
+                            + "processor and backup reader are owned by TransactionReportJob")
+                    .doesNotContain("transactionReportProcessor", "transactionBackupReader");
             assertThat(Arrays.stream(BatchConfig.class.getDeclaredMethods())
                     .filter(method -> method.isAnnotationPresent(Bean.class))
                     .map(Method::getReturnType))
-                    .as("the bean types this class contributes are the DD binding, the one job listener, the "
-                            + "framework metadata initialiser and the report queue listener, and nothing "
-                            + "that any batch/** component already registers for itself")
-                    .containsOnly(FileService.Dataset.class, JobExecutionListener.class,
+                    .as("the bean types this class contributes are the DD binding, the framework metadata "
+                            + "initialiser, the report queue listener and the F-020 verification topology, and "
+                            + "nothing that any batch/** component already registers for itself. Findings M-01 "
+                            + "and CFG-003: JobExecutionListener is absent by design - every job registers its "
+                            + "own on its own JobBuilder, because a listener bean declared here is applied to "
+                            + "no job at all")
+                    .containsOnly(FileService.Dataset.class,
                             BatchDataSourceScriptDatabaseInitializer.class,
-                            BatchConfig.ReportJobQueueListener.class);
-        }
-
-        @Test
-        @DisplayName("no Job, Step or Flow bean is declared here: the six job classes are the definition sites")
-        void noJobStepOrFlowBeanIsDeclaredHere() {
-            // spring.main.allow-bean-definition-overriding is false, so a Job declared both here and in
-            // com.cardemo.batch.jobs would abort startup. The remedy is always to remove the duplicate from
-            // BatchConfig rather than from the job class, because the job classes are the designated
-            // definition sites. This assertion is what keeps that decision from being quietly reversed.
+                            BatchConfig.ReportJobQueueListener.class,
+                            Step.class, Job.class);
+            // Findings M-01 and CFG-003: a shared JobExecutionListener bean stood among those types and has
+            // been removed. It registered nowhere - neither Spring Batch nor Boot collects listener beans onto
+            // jobs, and every job attaches its own job-level listener with .listener(...) - so it was dead
+            // weight that read as live behaviour. This assertion is what stops it coming back: a reinstated
+            // listener bean fails here, and the remedy is to attach the behaviour to a job rather than to
+            // publish an uncollected bean.
             assertThat(Arrays.stream(BatchConfig.class.getDeclaredMethods())
                     .filter(method -> method.isAnnotationPresent(Bean.class))
                     .map(Method::getReturnType))
-                    .as("job identity, step topology and flow composition belong to com.cardemo.batch.jobs")
-                    .doesNotContain(Job.class, Step.class, Flow.class, JobExecutionDecider.class);
+                    .as("a JobExecutionListener bean here would be collected by nothing and run on no job")
+                    .doesNotContain(JobExecutionListener.class);
         }
 
         @Test
-        @DisplayName("the processor carries its own @Component and @StepScope")
-        void theProcessorCarriesItsOwnScope() {
+        @DisplayName("the only Job and Step beans declared here are the five F-020 verification factories, "
+                + "and no Flow or decider is declared here at all")
+        void theOnlyJobAndStepBeansHereAreTheVerificationTopology() {
+            // This assertion used to read "no Job, Step or Flow bean is declared here", and that premise no
+            // longer holds: app/jcl/READACCT.jcl, READCARD.jcl, READXREF.jcl and READCUST.jcl each EXEC one
+            // read-only program, the specification maps those four members onto verification *steps* rather
+            // than onto four more jobs, and InventoryCountGateTest pins com.cardemo.batch.jobs at exactly six
+            // classes. So the four steps - and the one job that gives them something launchable, because a
+            // Step cannot be launched on its own - are declared here by design.
+            //
+            // The replacement is stricter than the assertion it supersedes rather than looser. The old one
+            // forbade four return types; this one pins the exact set of Job and Step bean methods by name, so
+            // a sixth one appearing here still fails, and it keeps the outright prohibition on Flow and
+            // JobExecutionDecider, which remain the exclusive property of com.cardemo.batch.jobs.
+            final List<Method> beanMethods = Arrays.stream(BatchConfig.class.getDeclaredMethods())
+                    .filter(method -> method.isAnnotationPresent(Bean.class))
+                    .toList();
+
+            assertThat(beanMethods.stream().map(Method::getReturnType))
+                    .as("flow composition and step gating stay in com.cardemo.batch.jobs: none of the four "
+                            + "verification members carries a COND parameter, so there is nothing to gate")
+                    .doesNotContain(Flow.class, JobExecutionDecider.class);
+            assertThat(beanMethods.stream()
+                    .filter(method -> Step.class.equals(method.getReturnType()))
+                    .map(Method::getName))
+                    .as("one step per read-only JCL member of AAP F-020, and no other step declared here")
+                    .containsExactlyInAnyOrder(
+                            BatchConfig.READ_ACCOUNT_STEP_BEAN_NAME,
+                            BatchConfig.READ_CARD_STEP_BEAN_NAME,
+                            BatchConfig.READ_CROSS_REFERENCE_STEP_BEAN_NAME,
+                            BatchConfig.READ_CUSTOMER_STEP_BEAN_NAME);
+            assertThat(beanMethods.stream()
+                    .filter(method -> Job.class.equals(method.getReturnType()))
+                    .map(Method::getName))
+                    .as("exactly one job is declared here, and only because a Step with no job cannot be "
+                            + "launched; every other job identity belongs to com.cardemo.batch.jobs")
+                    .containsExactly(BatchConfig.DATASET_VERIFICATION_JOB_BEAN_NAME);
+        }
+
+        @Test
+        @DisplayName("the processor is a bean nowhere: TransactionReportJob owns it, not this class")
+        void theProcessorIsOwnedByItsJob() {
+            // Finding F-008. This assertion was the inverse until the annotations came off: the class was
+            // @Component @StepScope while com.cardemo.batch.jobs.TransactionReportJob constructed it with new,
+            // so the definition the container published was resolved by nothing. Neither this class nor the
+            // processor may reintroduce a second provenance - the six WS-REPORT-VARS items of
+            // app/cbl/CBTRN03C.cbl:L127-L137 are per-run state, and one instance per step execution is what
+            // keeps one report's pagination out of the next. That comes from construction inside the STEP10R
+            // tasklet now, and TransactionReportProcessorScopeIsolationTest asserts both halves of it: no
+            // component or scope annotation, and no static mutable field that construction could not isolate.
             assertThat(TransactionReportProcessor.class.isAnnotationPresent(Component.class))
-                    .as("the component annotation is what replaced the factory")
-                    .isTrue();
+                    .as("a bean definition here would be a second, unresolved provenance for one type")
+                    .isFalse();
             assertThat(TransactionReportProcessor.class.isAnnotationPresent(StepScope.class))
-                    .as("the six WS-REPORT-VARS items of app/cbl/CBTRN03C.cbl:L127-L137 are per-run state, "
-                            + "so a singleton would carry one report's pagination into the next; the scope "
-                            + "is a property of the component rather than of whoever wires it")
-                    .isTrue();
+                    .as("the scope would also move the constructor's DATEPARM validation behind a proxy, "
+                            + "where a rejected pair surfaces as BeanCreationException rather than as the "
+                            + "step's own FatalProcessingException")
+                    .isFalse();
         }
 
         @Test
@@ -345,28 +468,47 @@ class BatchConfigTest {
                         "spring.batch.jdbc.initialize-schema=never");
 
         @Test
-        @DisplayName("four dataset bindings and exactly one job listener are contributed")
-        void fourBindingsAndOneListenerAreContributed() {
+        @DisplayName("four dataset bindings and no listener of any kind are contributed")
+        void fourBindingsAndNoListenerAreContributed() {
             runner.run(context -> {
                 assertThat(context).hasNotFailed();
                 assertThat(context.getBeansOfType(FileService.Dataset.class))
                         .as("one binding per DD of app/cbl/CBSTM03B.CBL:L58-L78")
                         .hasSize(FileService.Dd.values().length);
                 assertThat(context.getBeansOfType(JobExecutionListener.class))
-                        .as("the job-instance diagnostic context contribution, and no competing listener")
-                        .containsOnlyKeys("jobInstanceMdcListener");
+                        .as("findings M-01 and CFG-003: a listener bean is never applied to a job "
+                                + "implicitly - neither Spring Batch nor Boot collects one - so a bean "
+                                + "published here would be dead wiring that reads as assurance; every job "
+                                + "class attaches its own with .listener(...) instead")
+                        .isEmpty();
             });
         }
 
         @Test
-        @DisplayName("no Job, Step or decider bean reaches the container from here")
-        void noJobStepOrDeciderBeanReachesTheContainer() {
+        @DisplayName("exactly the F-020 verification topology reaches the container from here, and no "
+                + "decider or flow does")
+        void onlyTheVerificationTopologyReachesTheContainer() {
             runner.run(context -> {
+                assertThat(context).hasNotFailed();
                 assertThat(context.getBeansOfType(Job.class))
-                        .as("the six classes of com.cardemo.batch.jobs are the definition sites")
+                        .as("the six classes of com.cardemo.batch.jobs are the definition sites for every "
+                                + "other job; this one exists because a Step alone cannot be launched")
+                        .containsOnlyKeys(BatchConfig.DATASET_VERIFICATION_JOB_BEAN_NAME);
+                assertThat(context.getBeansOfType(Step.class))
+                        .as("one step per read-only member of AAP F-020: READACCT, READCARD, READXREF, "
+                                + "READCUST")
+                        .containsOnlyKeys(
+                                BatchConfig.READ_ACCOUNT_STEP_BEAN_NAME,
+                                BatchConfig.READ_CARD_STEP_BEAN_NAME,
+                                BatchConfig.READ_CROSS_REFERENCE_STEP_BEAN_NAME,
+                                BatchConfig.READ_CUSTOMER_STEP_BEAN_NAME);
+                assertThat(context.getBeansOfType(JobExecutionDecider.class))
+                        .as("none of the four members carries a COND parameter, so there is no gating to "
+                                + "translate and a decider here would be invented control flow")
                         .isEmpty();
-                assertThat(context.getBeansOfType(Step.class)).isEmpty();
-                assertThat(context.getBeansOfType(JobExecutionDecider.class)).isEmpty();
+                assertThat(context.getBeansOfType(Flow.class))
+                        .as("flow composition belongs to com.cardemo.batch.jobs")
+                        .isEmpty();
             });
         }
 
@@ -417,7 +559,7 @@ class BatchConfigTest {
                             "spring.batch.jdbc.platform=postgresql",
                             "spring.batch.jdbc.initialize-schema=never",
                             "carddemo.aws.sqs.report-queue=carddemo-report-jobs.fifo",
-                            "carddemo.batch.launch=batchPipelineJob")
+                            "spring.batch.job.name=CARDDEMO-PIPELINE")
                     .run(context -> assertThat(context.getBeansOfType(
                             BatchConfig.ReportJobQueueListener.class))
                             .as("a batch submission is not the online tier")
@@ -445,6 +587,12 @@ class BatchConfigTest {
             // reason: three integration classes publish a submission and then receive it - the three
             // reporting periods, the correlation identifier on the message, and the health probe that must
             // not consume - and with a listener in the same context every one of them reads an empty queue.
+            //
+            // The property is not a way of leaving the consumer unexercised.
+            // com.cardemo.integration.batch.ReportQueueListenerLiveTest sets it back to true in a context of
+            // its own, against a separate FIFO queue, and drives the consumer through a live delivery to a
+            // real TRANREPT execution - which is the half of the contract this class cannot reach, because
+            // this class calls the listener method directly.
             runner.withUserConfiguration(LaunchCollaborators.class)
                     .withPropertyValues(
                             "carddemo.aws.sqs.report-queue=carddemo-report-jobs.fifo",
@@ -489,10 +637,11 @@ class BatchConfigTest {
         /**
          * The collaborators only the queue listener needs, kept out of the default slice on purpose.
          *
-         * <p>A {@link Job} bean supplied to every slice would contradict
-         * {@link #noJobStepOrDeciderBeanReachesTheContainer}, which asserts that this class contributes none
-         * and that the six classes of {@code com.cardemo.batch.jobs} are the definition sites. Supplying them
-         * only where the listener is under test keeps both assertions meaningful.
+         * <p>A {@code transactionReportJob} bean supplied to every slice would contradict
+         * {@link #onlyTheVerificationTopologyReachesTheContainer}, which pins the exact set of {@link Job}
+         * beans this class contributes to the one F-020 verification job and leaves every other job identity
+         * to the six classes of {@code com.cardemo.batch.jobs}. Supplying it only where the listener is under
+         * test keeps both assertions meaningful.
          */
         @Configuration(proxyBeanMethods = false)
         static class LaunchCollaborators {
@@ -545,6 +694,84 @@ class BatchConfigTest {
                     });
         }
 
+        @Test
+        @DisplayName("on PostgreSQL every metadata table and sequence is checked for mutation privilege")
+        void everyMetadataObjectIsCheckedForMutationPrivilege() throws SQLException {
+            // Finding BAT-001: the check used to end at 'select 1 ... where 1 = 0' on six tables, which
+            // proves existence and SELECT and nothing else. It said nothing about INSERT or UPDATE, and it
+            // never looked at the three sequences the framework's script creates - so a runtime role granted
+            // SELECT alone, or granted everything on tables and nothing on sequences, started cleanly and
+            // failed on its first launch. These twenty-seven statements are what closed it.
+            final ArgumentCaptor<String> issued = ArgumentCaptor.forClass(String.class);
+            runner.withPropertyValues(METADATA_PRODUCT_PROPERTY + "=" + POSTGRESQL)
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        verify(context.getBean(DataSource.class).getConnection(),
+                                times(PRIVILEGE_PROBE_COUNT)).prepareStatement(issued.capture());
+                    });
+            assertThat(issued.getAllValues())
+                    .as("both privilege functions are used: tables and sequences carry different grants")
+                    .anyMatch(sql -> sql.contains("has_table_privilege"))
+                    .anyMatch(sql -> sql.contains("has_sequence_privilege"));
+        }
+
+        @Test
+        @DisplayName("a metadata table the runtime role cannot INSERT into fails startup, not the first launch")
+        void aWithheldTablePrivilegeFailsStartup() {
+            runner.withPropertyValues(
+                            METADATA_PRODUCT_PROPERTY + "=" + POSTGRESQL,
+                            WITHHELD_PRIVILEGE_PROPERTY + "=INSERT")
+                    .run(context -> {
+                        assertThat(context)
+                                .as("a launch inserts a job instance, an execution and a step execution")
+                                .hasFailed();
+                        assertThat(context.getStartupFailure())
+                                .cause()
+                                .isInstanceOf(IllegalStateException.class)
+                                .hasMessageContaining("INSERT")
+                                .hasMessageContaining("BATCH_JOB_INSTANCE")
+                                .hasMessageContaining("GRANT SELECT, INSERT, UPDATE, DELETE");
+                    });
+        }
+
+        @Test
+        @DisplayName("a metadata sequence the runtime role cannot USE fails startup, though every table reads")
+        void aWithheldSequencePrivilegeFailsStartup() {
+            // The narrowest form of the finding, and the one no table-only check could ever see: all six
+            // tables present, readable and writable, and no USAGE on the sequences every identity in the
+            // schema is drawn from. Nothing before the first launch would have noticed.
+            runner.withPropertyValues(
+                            METADATA_PRODUCT_PROPERTY + "=" + POSTGRESQL,
+                            WITHHELD_PRIVILEGE_PROPERTY + "=USAGE")
+                    .run(context -> {
+                        assertThat(context).hasFailed();
+                        assertThat(context.getStartupFailure())
+                                .cause()
+                                .isInstanceOf(IllegalStateException.class)
+                                .hasMessageContaining("USAGE")
+                                .hasMessageContaining("sequence")
+                                .hasMessageContaining("BATCH_JOB_SEQ")
+                                .hasMessageContaining("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES");
+                    });
+        }
+
+        @Test
+        @DisplayName("an engine that is not PostgreSQL keeps the existence probe and skips the privilege ones")
+        void aForeignEngineSkipsThePrivilegeProbesRatherThanFailing() throws SQLException {
+            // has_table_privilege and has_sequence_privilege are PostgreSQL functions. Sending them to
+            // another engine would fail startup on a deployment that is otherwise fine, so the honest
+            // behaviour is to keep the existence probe, skip the privilege ones and say so in the log.
+            runner.withPropertyValues(METADATA_PRODUCT_PROPERTY + "=Oracle")
+                    .run(context -> {
+                        assertThat(context)
+                                .as("refusing to start on an unreadable privilege model would turn an "
+                                        + "unverifiable claim into an outage")
+                                .hasNotFailed();
+                        verify(context.getBean(DataSource.class).getConnection(), never())
+                                .prepareStatement(anyString());
+                    });
+        }
+
         /**
          * The collaborators the bean methods take, as mocks: the inventory is what is under test.
          *
@@ -569,14 +796,28 @@ class BatchConfigTest {
              * {@code initialize-schema} stays {@code never} so no script runs here - the framework's own
              * integration tier covers the script itself against a real container.
              *
+             * <p>Three switches, so every branch of the BAT-001 readiness check is reachable from a unit
+             * test. {@code probeRefused} makes the existence probe raise. {@code product} decides what the
+             * driver calls itself, and therefore whether the PostgreSQL-only privilege probes run at all -
+             * left blank the connection supplies no {@link DatabaseMetaData}, which is the shape a minimal
+             * stub has and which must skip rather than raise. {@code withheldPrivilege} names one privilege
+             * or one object the runtime role does not hold, which is the state that produced the finding: a
+             * schema that exists, reads cleanly, and cannot be written.
+             *
              * @param probeRefused whether the metadata probe should refuse, standing in for a table that the
              *     DDL role never created or that the runtime role cannot read
+             * @param product the product name the driver reports, or blank for a connection that supplies no
+             *     metadata at all
+             * @param withheldPrivilege a privilege name ({@code INSERT}, {@code USAGE}) or an object name
+             *     ({@code BATCH_JOB_SEQ}) the role does not hold, or blank to hold everything
              * @return the stubbed DataSource
              * @throws SQLException never; declared by the stubbed JDBC contract
              */
             @Bean
             DataSource dataSource(
-                    @Value("${" + UNREADABLE_METADATA_PROPERTY + ":false}") final boolean probeRefused)
+                    @Value("${" + UNREADABLE_METADATA_PROPERTY + ":false}") final boolean probeRefused,
+                    @Value("${" + METADATA_PRODUCT_PROPERTY + ":}") final String product,
+                    @Value("${" + WITHHELD_PRIVILEGE_PROPERTY + ":}") final String withheldPrivilege)
                     throws SQLException {
 
                 final DataSource dataSource = mock(DataSource.class);
@@ -590,7 +831,52 @@ class BatchConfigTest {
                 } else {
                     when(statement.execute(anyString())).thenReturn(Boolean.TRUE.booleanValue());
                 }
+                if (!product.isBlank()) {
+                    final DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+                    when(metaData.getDatabaseProductName()).thenReturn(product);
+                    when(connection.getMetaData()).thenReturn(metaData);
+                    stubPrivilegeQuery(connection, withheldPrivilege);
+                }
                 return dataSource;
+            }
+
+            /**
+             * Answers {@code has_table_privilege} and {@code has_sequence_privilege} the way the driver would.
+             *
+             * <p>A fresh result set per {@code executeQuery()} rather than one shared mock, because the check
+             * issues twenty-seven of these calls and a shared {@code next()} stub would exhaust itself on the
+             * second one - reporting an empty result, which the class under test correctly reads as "the
+             * object could not be checked". That would pass the refusal tests for entirely the wrong reason.
+             *
+             * @param connection the stubbed connection
+             * @param withheldPrivilege the privilege or object name to answer {@code false} for, or blank
+             * @throws SQLException never; declared by the stubbed JDBC contract
+             */
+            private static void stubPrivilegeQuery(final Connection connection,
+                    final String withheldPrivilege) throws SQLException {
+
+                // Index 1 is the object name and index 2 the privilege, in the order
+                // JdbcTemplate.queryForObject binds the two varargs.
+                final String[] bound = new String[3];
+                final PreparedStatement privilegeQuery = mock(PreparedStatement.class);
+                doAnswer(binding -> {
+                    bound[binding.getArgument(0, Integer.class).intValue()] =
+                            binding.getArgument(1, String.class);
+                    return null;
+                }).when(privilegeQuery).setString(anyInt(), anyString());
+                when(privilegeQuery.executeQuery()).thenAnswer(execution -> {
+                    final boolean held = withheldPrivilege.isBlank()
+                            || !(withheldPrivilege.equalsIgnoreCase(bound[1])
+                                    || withheldPrivilege.equalsIgnoreCase(bound[2]));
+                    final ResultSetMetaData oneColumn = mock(ResultSetMetaData.class);
+                    when(oneColumn.getColumnCount()).thenReturn(Integer.valueOf(1));
+                    final ResultSet answer = mock(ResultSet.class);
+                    when(answer.getMetaData()).thenReturn(oneColumn);
+                    when(answer.next()).thenReturn(Boolean.TRUE, Boolean.FALSE);
+                    when(answer.getBoolean(1)).thenReturn(Boolean.valueOf(held));
+                    return answer;
+                });
+                when(connection.prepareStatement(anyString())).thenReturn(privilegeQuery);
             }
 
             /** @return a mocked object store */
@@ -616,8 +902,389 @@ class BatchConfigTest {
             CardCrossReferenceRepository cardCrossReferenceRepository() {
                 return mock(CardCrossReferenceRepository.class);
             }
+
+            /**
+             * The metadata store the four verification steps and their job record against.
+             *
+             * <p>Mocked rather than real because the assertion is the topology - which steps exist, in which
+             * order, wired to which reader - and not what the framework writes to {@code BATCH_*}. The
+             * framework tier is covered against a real container by the batch integration suites.
+             *
+             * @return a mocked job repository
+             */
+            @Bean
+            JobRepository jobRepository() {
+                return mock(JobRepository.class);
+            }
+
+            /**
+             * The manager each verification step's chunk boundary commits against.
+             *
+             * @return a mocked transaction manager
+             */
+            @Bean
+            PlatformTransactionManager transactionManager() {
+                return mock(PlatformTransactionManager.class);
+            }
+
+            /**
+             * The {@code ACCTFILE} reader of {@code app/cbl/CBACT01C.cbl}.
+             *
+             * <p>The four readers carry {@code @Component @StepScope} and live in
+             * {@code com.cardemo.batch.readers}, which this slice does not scan, so the slice supplies
+             * stand-ins. That is deliberate: a slice that scanned the readers package would be asserting the
+             * readers' own wiring a second time - {@code AccountReaderTest} and its three siblings already own
+             * that - instead of asserting what this class contributes.
+             *
+             * @return a mocked account reader
+             */
+            @Bean
+            AccountReader accountReader() {
+                return mock(AccountReader.class);
+            }
+
+            /** @return a mocked {@code CARDFILE} reader, from {@code app/cbl/CBACT02C.cbl} */
+            @Bean
+            CardReader cardReader() {
+                return mock(CardReader.class);
+            }
+
+            /** @return a mocked {@code XREFFILE} reader, from {@code app/cbl/CBACT03C.cbl} */
+            @Bean
+            CardCrossReferenceReader cardCrossReferenceReader() {
+                return mock(CardCrossReferenceReader.class);
+            }
+
+            /** @return a mocked {@code CUSTFILE} reader, from {@code app/cbl/CBCUS01C.cbl} */
+            @Bean
+            CustomerReader customerReader() {
+                return mock(CustomerReader.class);
+            }
         }
     }
+
+    @Nested
+    @DisplayName("The four AAP F-020 read-only verification steps, and the job that makes them launchable")
+    class DatasetVerificationTopology {
+
+        /**
+         * The four step bean names, in the order the job must run them.
+         *
+         * <p>The order is the order of the JCL members themselves - {@code READACCT}, {@code READCARD},
+         * {@code READXREF}, {@code READCUST} - which is also the order in which their programs appear in the
+         * corpus. Nothing in the corpus declares the four concurrent, so a split here would be invented
+         * concurrency and the order is asserted rather than left to whichever order the container happens to
+         * hand back.
+         */
+        private final List<String> stepNamesInJclOrder = List.of(
+                BatchConfig.READ_ACCOUNT_STEP_BEAN_NAME,
+                BatchConfig.READ_CARD_STEP_BEAN_NAME,
+                BatchConfig.READ_CROSS_REFERENCE_STEP_BEAN_NAME,
+                BatchConfig.READ_CUSTOMER_STEP_BEAN_NAME);
+
+        /** The metadata store the steps record against; mocked, because the topology is what is asserted. */
+        private final JobRepository jobRepository = mock(JobRepository.class);
+
+        /** The manager each step's chunk boundary commits against. */
+        private final PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+
+        /**
+         * Builds the four steps through their own bean factories, in JCL member order.
+         *
+         * @return the four steps, in the order the job must run them
+         */
+        private List<Step> buildSteps() {
+            return List.of(
+                    batchConfig.datasetVerificationReadAccountStep(
+                            mock(AccountReader.class), jobRepository, transactionManager),
+                    batchConfig.datasetVerificationReadCardStep(
+                            mock(CardReader.class), jobRepository, transactionManager),
+                    batchConfig.datasetVerificationReadCrossReferenceStep(
+                            mock(CardCrossReferenceReader.class), jobRepository, transactionManager),
+                    batchConfig.datasetVerificationReadCustomerStep(
+                            mock(CustomerReader.class), jobRepository, transactionManager));
+        }
+
+        /**
+         * Builds the verification job over the four steps.
+         *
+         * @param steps the four steps, in JCL member order
+         * @return the job
+         */
+        private Job buildJob(final List<Step> steps) {
+            return batchConfig.datasetVerificationJob(steps.get(0), steps.get(1), steps.get(2), steps.get(3),
+                    jobRepository);
+        }
+
+        @Test
+        @DisplayName("each step is named for the JCL member it translates, so a metadata row identifies it")
+        void eachStepIsNamedForItsJclMember() {
+            assertThat(buildSteps().stream().map(Step::getName))
+                    .as("app/jcl/READACCT.jcl, READCARD.jcl, READXREF.jcl and READCUST.jcl each EXEC one "
+                            + "read-only program of AAP F-020")
+                    .containsExactlyElementsOf(stepNamesInJclOrder);
+        }
+
+        @Test
+        @DisplayName("the job runs all four steps, in the order of their JCL members")
+        void theJobRunsAllFourStepsInJclOrder() {
+            final Job job = buildJob(buildSteps());
+
+            assertThat(job.getName()).isEqualTo(BatchConfig.DATASET_VERIFICATION_JOB_BEAN_NAME);
+            assertThat(job).isInstanceOf(StepLocator.class);
+            assertThat(((StepLocator) job).getStepNames())
+                    .as("sequential and complete: four steps, none dropped, none reordered")
+                    .containsExactlyElementsOf(stepNamesInJclOrder);
+            for (final String stepName : stepNamesInJclOrder) {
+                assertThat(((StepLocator) job).getStep(stepName))
+                        .as("%s", stepName)
+                        .isNotNull();
+            }
+        }
+
+        @Test
+        @DisplayName("an empty submission is accepted, because none of the four members passes a parameter")
+        void anEmptySubmissionIsAccepted() {
+            // READACCT, READCARD, READXREF and READCUST carry no PARM, no SYMNAMES and no DATEPARM, so a
+            // validator demanding input here would demand something the source never supplies. An operator
+            // therefore needs only the job name, and this is the assertion that keeps it that way.
+            final Job job = buildJob(buildSteps());
+
+            assertThatCode(() -> job.getJobParametersValidator().validate(new JobParameters()))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("the job registers a diagnostic context listener of its own, on its own JobBuilder")
+        void theJobRegistersItsOwnDiagnosticContextListener() {
+            // Findings M-01 and CFG-003: the shared listener BEAN this job used to be handed was collected by
+            // nothing and applied to no job, so it was removed. What replaces it is a nested, non-bean
+            // listener registered through JobBuilder.listener(...) - the only registration that takes effect -
+            // and without one this job's events would be the only ones with no job instance identifier.
+            final List<Object> declaredHere = reachable(buildJob(buildSteps()), JobExecutionListener.class)
+                    .stream()
+                    .filter(listener -> listener.getClass().getName().startsWith("com.cardemo."))
+                    .toList();
+
+            // Filtered to this project's own types on purpose. A built SimpleJob always holds the framework's
+            // CompositeJobExecutionListener, which is itself a JobExecutionListener, so a reachability walk
+            // reports it alongside whatever it aggregates. That composite is the registration mechanism, not a
+            // second listener, and counting it would make this assertion a statement about Spring Batch's
+            // internals rather than about this class.
+            assertThat(declaredHere)
+                    .as("exactly one job-level listener, declared by this class and not injected into it")
+                    .hasSize(1)
+                    .allSatisfy(listener -> assertThat(listener.getClass().getSimpleName())
+                            .isEqualTo("DatasetVerificationJobListener"));
+        }
+
+        @Test
+        @DisplayName("a missing collaborator is refused by name rather than producing a half-wired step")
+        void aMissingCollaboratorIsRefusedByName() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationReadAccountStep(
+                            null, jobRepository, transactionManager))
+                    .withMessageContaining("accountReader");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationReadCardStep(
+                            null, jobRepository, transactionManager))
+                    .withMessageContaining("cardReader");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationReadCrossReferenceStep(
+                            null, jobRepository, transactionManager))
+                    .withMessageContaining("cardCrossReferenceReader");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationReadCustomerStep(
+                            null, jobRepository, transactionManager))
+                    .withMessageContaining("customerReader");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationReadAccountStep(
+                            mock(AccountReader.class), null, transactionManager))
+                    .withMessageContaining("jobRepository");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationReadAccountStep(
+                            mock(AccountReader.class), jobRepository, null))
+                    .withMessageContaining("transactionManager");
+        }
+
+        @Test
+        @DisplayName("a missing step or repository is refused by name rather than producing a shorter job")
+        void aMissingStepOrRepositoryIsRefusedByName() {
+            final List<Step> steps = buildSteps();
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationJob(
+                            null, steps.get(1), steps.get(2), steps.get(3), jobRepository))
+                    .withMessageContaining(BatchConfig.READ_ACCOUNT_STEP_BEAN_NAME);
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationJob(
+                            steps.get(0), null, steps.get(2), steps.get(3), jobRepository))
+                    .withMessageContaining(BatchConfig.READ_CARD_STEP_BEAN_NAME);
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationJob(
+                            steps.get(0), steps.get(1), null, steps.get(3), jobRepository))
+                    .withMessageContaining(BatchConfig.READ_CROSS_REFERENCE_STEP_BEAN_NAME);
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationJob(
+                            steps.get(0), steps.get(1), steps.get(2), null, jobRepository))
+                    .withMessageContaining(BatchConfig.READ_CUSTOMER_STEP_BEAN_NAME);
+            assertThatNullPointerException()
+                    .isThrownBy(() -> batchConfig.datasetVerificationJob(
+                            steps.get(0), steps.get(1), steps.get(2), steps.get(3), null))
+                    .withMessageContaining("jobRepository");
+        }
+
+        @Test
+        @DisplayName("no step wires a processor, because the four programs compute nothing")
+        void noStepWiresAProcessor() {
+            // CBACT01C, CBACT02C, CBACT03C and CBCUS01C have a verb inventory of OPEN, READ, CLOSE and
+            // DISPLAY. A processor here would be a transformation stage the source does not have.
+            for (final Step step : buildSteps()) {
+                assertThat(reachable(step, ItemProcessor.class))
+                        .as("%s", step.getName())
+                        .isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("the wired writer holds only its own diagnostics, so the step cannot store anything")
+        void theWiredWriterHoldsNothingItCouldStoreThrough() {
+            // This is the read-only guarantee made structural rather than asserted. The step's own added
+            // component - the counter that reproduces the end-of-run DISPLAY - holds no repository, no
+            // object-store client, no EntityManager, no DataSource and no JdbcOperations, so there is nothing
+            // present through which a later edit could reach the substrate without also adding a field here.
+            // The readers' own read-only property is a separate claim, owned by SequentialReaderContractTest.
+            final List<Class<?>> writeCapable = List.of(Repository.class, S3Operations.class,
+                    EntityManager.class, DataSource.class, JdbcOperations.class);
+
+            for (final Step step : buildSteps()) {
+                final Set<ItemWriter<?>> writers = wiredWriters(step);
+                assertThat(writers).as("%s wires exactly one writer", step.getName()).hasSize(1);
+                final Class<?> writerClass = writers.iterator().next().getClass();
+                final List<Class<?>> fieldTypes = Arrays.stream(writerClass.getDeclaredFields())
+                        .filter(field -> !field.isSynthetic())
+                        .map(Field::getType)
+                        .toList();
+
+                assertThat(fieldTypes)
+                        .as("%s: three diagnostic labels and one counter, and nothing else", step.getName())
+                        .containsOnly(String.class, long.class);
+                for (final Class<?> forbidden : writeCapable) {
+                    assertThat(fieldTypes)
+                            .as("%s must hold no %s", step.getName(), forbidden.getSimpleName())
+                            .noneMatch(forbidden::isAssignableFrom);
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("the writer counts the rows it saw and publishes the total under its own step name")
+        void theWriterCountsAndPublishesUnderItsOwnStepName() throws Exception {
+            final Step step = buildSteps().get(0);
+            final ItemWriter<Object> writer = onlyWriter(step);
+            final StepExecution execution = stepExecution(step.getName());
+
+            ((StepExecutionListener) writer).beforeStep(execution);
+            writer.write(Chunk.of(new Object(), new Object(), new Object()));
+
+            assertThat(((StepExecutionListener) writer).afterStep(execution))
+                    .as("returning null leaves in place the exit status the framework derived from the step's "
+                            + "own outcome, so a failure is not overwritten with a success")
+                    .isNull();
+            assertThat(execution.getExecutionContext()
+                    .getLong(step.getName() + BatchConfig.VERIFIED_ROW_COUNT_SUFFIX))
+                    .as("the end-of-run count of app/cbl/CBACT01C.cbl, published rather than only logged")
+                    .isEqualTo(3L);
+        }
+
+        @Test
+        @DisplayName("a second execution starts from zero rather than inheriting the previous total")
+        void aSecondExecutionStartsFromZero() throws Exception {
+            final Step step = buildSteps().get(0);
+            final ItemWriter<Object> writer = onlyWriter(step);
+            final StepExecutionListener listener = (StepExecutionListener) writer;
+
+            listener.beforeStep(stepExecution(step.getName()));
+            writer.write(Chunk.of(new Object(), new Object()));
+            final StepExecution second = stepExecution(step.getName());
+            listener.beforeStep(second);
+            listener.afterStep(second);
+
+            assertThat(second.getExecutionContext()
+                    .getLong(step.getName() + BatchConfig.VERIFIED_ROW_COUNT_SUFFIX))
+                    .as("a restart or a second run must report what it read, not what its predecessor read")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("four steps in one job publish four distinct counts rather than overwriting one entry")
+        void fourStepsPublishFourDistinctCounts() throws Exception {
+            // The four run in one job, so a shared key would leave the last step's count standing for all
+            // four and the other three counts simply unobservable. This writes all four into one context on
+            // purpose, which is the only way to prove the keys do not collide.
+            final List<Step> steps = buildSteps();
+            final StepExecution shared = stepExecution("shared");
+
+            int rows = 1;
+            for (final Step step : steps) {
+                final ItemWriter<Object> writer = onlyWriter(step);
+                ((StepExecutionListener) writer).beforeStep(shared);
+                writer.write(Chunk.of(new Object[rows]));
+                ((StepExecutionListener) writer).afterStep(shared);
+                rows++;
+            }
+
+            long expected = 1L;
+            for (final Step step : steps) {
+                assertThat(shared.getExecutionContext()
+                        .getLong(step.getName() + BatchConfig.VERIFIED_ROW_COUNT_SUFFIX))
+                        .as("%s", step.getName())
+                        .isEqualTo(expected);
+                expected++;
+            }
+        }
+
+        /**
+         * Builds a step execution detached from any repository, for exercising the writer's listener contract.
+         *
+         * @param stepName the step name the execution belongs to
+         * @return a fresh step execution with an empty execution context
+         */
+        private StepExecution stepExecution(final String stepName) {
+            return new StepExecution(stepName,
+                    new JobExecution(new JobInstance(Long.valueOf(1L),
+                            BatchConfig.DATASET_VERIFICATION_JOB_BEAN_NAME), null, null));
+        }
+
+        /**
+         * Returns the one writer a verification step wires.
+         *
+         * @param <T> the item type, which the writer ignores because it only counts
+         * @param step the step to inspect
+         * @return the writer
+         */
+        @SuppressWarnings("unchecked")
+        private <T> ItemWriter<T> onlyWriter(final Step step) {
+            final Set<ItemWriter<?>> writers = wiredWriters(step);
+            assertThat(writers).hasSize(1);
+            return (ItemWriter<T>) writers.iterator().next();
+        }
+
+        /**
+         * Returns every writer reachable from a built step.
+         *
+         * @param step the step to inspect
+         * @return the writers, which for a verification step is exactly one
+         */
+        private Set<ItemWriter<?>> wiredWriters(final Step step) {
+            final Set<ItemWriter<?>> writers = new LinkedHashSet<>();
+            for (final Object candidate : reachable(step, ItemWriter.class)) {
+                writers.add((ItemWriter<?>) candidate);
+            }
+            return writers;
+        }
+    }
+
 
     @Nested
     @DisplayName("The queue listener that replaces the JES2 internal reader drains and launches exactly once")
@@ -630,6 +1297,68 @@ class BatchConfigTest {
         /** A submission body in the shape the producer publishes. */
         private static final String PAYLOAD = """
                 {"reportName":"Monthly","startDate":"2022-07-01","endDate":"2022-07-31"}""";
+
+        /**
+         * The key the envelope code is derived from. Long enough to be a plausible signing key and local to
+         * this test, so nothing here is a committed credential of any deployment.
+         */
+        private static final String SIGNING_KEY = "batch-config-test-envelope-key-0123456789";
+
+        /** The message {@link #PAYLOAD} binds to, used to compute the code the producer would have sent. */
+        private static final JobSubmissionMessage MESSAGE =
+                new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
+
+        /** The header name carrying the envelope code. */
+        private static final String SIGNATURE_HEADER =
+                ReportSubmissionService.JobSubmissionEnvelope.SIGNATURE_HEADER;
+
+        /**
+         * Builds the headers a genuine delivery carries: the deduplication identifier and a valid code.
+         *
+         * @param deduplicationId the producer's idempotency key
+         * @return the header map, never {@code null}
+         */
+        private static Map<String, Object> signedHeaders(final String deduplicationId) {
+            return Map.of(DEDUPLICATION_HEADER, deduplicationId, SIGNATURE_HEADER,
+                    ReportSubmissionService.JobSubmissionEnvelope.sign(MESSAGE, SIGNING_KEY));
+        }
+
+        /**
+         * Builds headers carrying a valid code and whatever else the caller needs.
+         *
+         * @param extra the additional headers
+         * @return the header map, never {@code null}
+         */
+        private static Map<String, Object> signedHeaders(final Map<String, Object> extra) {
+            final java.util.Map<String, Object> headers = new java.util.LinkedHashMap<>(extra);
+            headers.put(SIGNATURE_HEADER,
+                    ReportSubmissionService.JobSubmissionEnvelope.sign(MESSAGE, SIGNING_KEY));
+            return headers;
+        }
+
+        /**
+         * A finished execution reporting the outcome a caller asks for.
+         *
+         * @param status the batch status the launcher reports
+         * @param exitStatus the exit status the launcher reports
+         * @return the stubbed execution
+         */
+        private static JobExecution execution(final BatchStatus status, final ExitStatus exitStatus) {
+            final JobExecution execution = mock(JobExecution.class);
+            when(execution.getStatus()).thenReturn(status);
+            when(execution.getExitStatus()).thenReturn(exitStatus);
+            when(execution.getAllFailureExceptions()).thenReturn(java.util.List.of());
+            return execution;
+        }
+
+        /**
+         * A finished execution reporting success, which is what an acknowledged delivery requires.
+         *
+         * @return the stubbed execution
+         */
+        private static JobExecution completedExecution() {
+            return execution(BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+        }
 
         /** The launcher, stubbed so the parameters the listener builds can be captured. */
         private final JobLauncher jobLauncher = mock(JobLauncher.class);
@@ -645,16 +1374,17 @@ class BatchConfigTest {
         void buildListener() {
             when(reportJob.getName()).thenReturn("TRANREPT");
             listener = new BatchConfig(100)
-                    .reportJobQueueListener(jobLauncher, reportJob, new ObjectMapper());
+                    .reportJobQueueListener(jobLauncher, reportJob, new ObjectMapper(), SIGNING_KEY);
         }
 
         @Test
         @DisplayName("a submission launches the report job carrying the message's own period")
         void aSubmissionLaunchesTheReportJob() throws Exception {
             final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
-            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
+            final JobExecution completed = completedExecution();
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(completed);
 
-            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-1"));
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-1"), null);
 
             verify(jobLauncher).run(eq(reportJob), captor.capture());
             final JobParameters launched = captor.getValue();
@@ -672,9 +1402,10 @@ class BatchConfigTest {
         @DisplayName("the deduplication identifier is identifying, so a redelivery is the same job instance")
         void theDeduplicationIdentifierIsIdentifying() throws Exception {
             final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
-            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
+            final JobExecution completed = completedExecution();
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(completed);
 
-            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-1"));
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-1"), null);
 
             verify(jobLauncher).run(eq(reportJob), captor.capture());
             // Identity is the whole mechanism: Spring Batch keys the job instance on the identifying
@@ -691,20 +1422,166 @@ class BatchConfigTest {
                     .thenThrow(new JobInstanceAlreadyCompleteException("already complete"));
 
             // Must not throw: the message has to be acknowledged, or the queue redelivers it forever.
-            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-1"));
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-1"), null);
 
             verify(jobLauncher).run(eq(reportJob), any(JobParameters.class));
         }
 
         @Test
-        @DisplayName("a redelivery while the first attempt is still running starts no competing execution")
-        void aRedeliveryWhileRunningStartsNothing() throws Exception {
+        @DisplayName("a delivery that overtakes a running execution is returned to the queue, not acknowledged")
+        void aRedeliveryWhileRunningIsReturnedToTheQueue() throws Exception {
+            // FINDING C-02, severity Critical. This delivery used to be consumed, which deleted the only
+            // record of the submission while its outcome was still unknown: if that running execution then
+            // failed, nothing on the queue said a report had ever been asked for. Returning it means the
+            // queue redelivers it after the visibility window, by which time the execution has a terminal
+            // status and this consumer either finds the instance complete or launches a genuine retry.
             when(jobLauncher.run(eq(reportJob), any(JobParameters.class)))
                     .thenThrow(new JobExecutionAlreadyRunningException("still running"));
 
-            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-1"));
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-1"), null))
+                    .withMessageContaining("returned to the queue");
 
             verify(jobLauncher).run(eq(reportJob), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("an execution that ends FAILED is not acknowledged, so the submission survives")
+        void aFailedExecutionIsNotAcknowledged() throws Exception {
+            // FINDING C-02. JobLauncher.run RETURNS a failed execution rather than throwing, so a listener
+            // that ignored the returned object reported success to the queue for a report that was never
+            // produced. Both halves of the outcome are consulted, because a step that ends with the FAILED
+            // exit code without an exception leaves the batch status successful.
+            final JobExecution failed = execution(BatchStatus.FAILED, ExitStatus.FAILED);
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(failed);
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-4"), null))
+                    .withMessageContaining("FAILED");
+        }
+
+        @Test
+        @DisplayName("a successful batch status with a FAILED exit code is also not acknowledged")
+        void aFailedExitCodeIsNotAcknowledged() throws Exception {
+            final JobExecution failedExit = execution(BatchStatus.COMPLETED, ExitStatus.FAILED);
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(failedExit);
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-5"), null));
+        }
+
+        @Test
+        @DisplayName("a message with no envelope code launches nothing")
+        void anUnsignedMessageLaunchesNothing() throws Exception {
+            // FINDING M-11, severity Major. The emulator queue enforces no authorisation of its own, so
+            // before this check any process able to reach its port could submit a report job and name the
+            // job instance. It is consumed rather than returned: an unsigned message will never become
+            // signed, and a message group is ordered, so returning it would stall every later submission.
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-6"), null);
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a message whose envelope code was computed for another period launches nothing")
+        void aForgedEnvelopeCodeLaunchesNothing() throws Exception {
+            final String codeForAnotherPeriod = ReportSubmissionService.JobSubmissionEnvelope.sign(
+                    new JobSubmissionMessage("Monthly", "2022-08-01", "2022-08-31"), SIGNING_KEY);
+
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-7",
+                    SIGNATURE_HEADER, codeForAnotherPeriod), null);
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a message whose envelope code was computed under another key launches nothing")
+        void aCodeUnderAnotherKeyLaunchesNothing() throws Exception {
+            final String codeUnderAnotherKey = ReportSubmissionService.JobSubmissionEnvelope.sign(
+                    MESSAGE, SIGNING_KEY + "-different");
+
+            listener.drainReportJobQueue(PAYLOAD, Map.of(DEDUPLICATION_HEADER, "submission-8",
+                    SIGNATURE_HEADER, codeUnderAnotherKey), null);
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a report name outside the three source literals launches nothing")
+        void aReportNameOutsideTheClosedSetLaunchesNothing() throws Exception {
+            // FINDING M-12, severity Major. An arbitrary, unbounded report name used to reach an IDENTIFYING
+            // job parameter, which the batch repository persists and keys a job instance on. The record's own
+            // constructor now refuses anything but the three literals of app/cbl/CORPT00C.cbl:L214, :L240 and
+            // :L433, and the listener treats that refusal exactly as it treats an unparseable body.
+            final String hostile = """
+                    {"reportName":"Monthly'; DROP TABLE transaction; --","startDate":"2022-07-01",\
+                    "endDate":"2022-07-31"}""";
+
+            listener.drainReportJobQueue(hostile, signedHeaders("submission-9"), null);
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("the producer's correlation identifier is restored for the launch and removed after it")
+        void theProducersCorrelationIdentifierIsRestoredForTheLaunch() throws Exception {
+            // FINDING M-03, severity Major. The producer publishes a correlation identifier and a W3C trace
+            // context; before this they were never consumed, so a report run could not be tied back to the
+            // request that submitted it. The value is observed from inside the launch, because that is the
+            // only scope in which it is supposed to exist.
+            final String correlationId = "11111111-2222-3333-4444-555555555555";
+            final java.util.List<String> observed = new java.util.ArrayList<>();
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenAnswer(invocation -> {
+                observed.add(org.slf4j.MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID));
+                return completedExecution();
+            });
+
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders(
+                    Map.of(CorrelationIdFilter.CORRELATION_ID_HEADER, correlationId)), null);
+
+            assertThat(observed)
+                    .as("the identifier the producer propagated must label every line the launch emits")
+                    .containsExactly(correlationId);
+            assertThat(org.slf4j.MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID))
+                    .as("and must be removed afterwards, or the container's pooled thread would label the "
+                            + "next submission with this one's identity")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("a hostile correlation header is dropped rather than placed in the logging context")
+        void aHostileCorrelationHeaderIsDropped() throws Exception {
+            final java.util.List<String> observed = new java.util.ArrayList<>();
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenAnswer(invocation -> {
+                observed.add(org.slf4j.MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID));
+                return completedExecution();
+            });
+
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders(Map.of(
+                    DEDUPLICATION_HEADER, "submission-10",
+                    CorrelationIdFilter.CORRELATION_ID_HEADER, "forged\nlevel=ERROR forged line")), null);
+
+            assertThat(observed).as("the launch still happens; only the label changes").hasSize(1);
+            assertThat(observed.get(0))
+                    .as("a control character in a propagated header could forge a log record, so the value is "
+                            + "dropped and a substitute stands in for it. The substitute is NOT the transport "
+                            + "identifier: finding C-02 established that the deduplication identifier is "
+                            + "publisher-controlled free text and may not reach a log stream, so what stands "
+                            + "in is the one-way digest of it - sixteen lowercase hexadecimal characters, "
+                            + "stable across redeliveries of one submission and different between submissions")
+                    .doesNotContain("forged")
+                    .doesNotContain("\n")
+                    .isNotEqualTo("submission-10")
+                    .matches("[0-9a-f]{16}");
+        }
+
+        @Test
+        @DisplayName("the envelope key is required, because there is no unsigned mode")
+        void theEnvelopeKeyIsRequired() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new BatchConfig(100)
+                            .reportJobQueueListener(jobLauncher, reportJob, new ObjectMapper(), "  "))
+                    .withMessageContaining("carddemo.security.jwt.signing-key");
         }
 
         @Test
@@ -712,7 +1589,7 @@ class BatchConfigTest {
         void aMalformedPayloadIsConsumed() throws Exception {
             // No dead-letter queue exists in this topology, so a rethrow would redeliver this message
             // forever and every later submission in the same message group would queue behind it.
-            listener.drainReportJobQueue("{not json", Map.of(DEDUPLICATION_HEADER, "submission-2"));
+            listener.drainReportJobQueue("{not json", signedHeaders("submission-2"), null);
 
             verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
         }
@@ -721,7 +1598,7 @@ class BatchConfigTest {
         @DisplayName("a body missing a required field is consumed, not launched with a null period")
         void anIncompleteBodyIsConsumed() throws Exception {
             listener.drainReportJobQueue("{\"reportName\":\"Monthly\"}",
-                    Map.of(DEDUPLICATION_HEADER, "submission-3"));
+                    signedHeaders("submission-3"), null);
 
             verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
         }
@@ -730,10 +1607,11 @@ class BatchConfigTest {
         @DisplayName("a message with no deduplication identifier falls back to the framework's message id")
         void theMessageIdIsTheFallback() throws Exception {
             final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
-            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
+            final JobExecution completed = completedExecution();
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(completed);
             final UUID messageId = UUID.randomUUID();
 
-            listener.drainReportJobQueue(PAYLOAD, Map.of(MessageHeaders.ID, messageId));
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders(Map.of(MessageHeaders.ID, messageId)), null);
 
             verify(jobLauncher).run(eq(reportJob), captor.capture());
             assertThat(captor.getValue().getString("submissionId")).isEqualTo(messageId.toString());
@@ -743,9 +1621,10 @@ class BatchConfigTest {
         @DisplayName("a message carrying neither identifier collapses onto one instance rather than repeating")
         void neitherIdentifierCollapsesOntoOneInstance() throws Exception {
             final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
-            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
+            final JobExecution completed = completedExecution();
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(completed);
 
-            listener.drainReportJobQueue(PAYLOAD, Map.of());
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders(Map.of()), null);
 
             verify(jobLauncher).run(eq(reportJob), captor.capture());
             // A generated value here would make an unidentifiable message launch on every redelivery. A
@@ -754,20 +1633,213 @@ class BatchConfigTest {
         }
 
         @Test
-        @DisplayName("null headers are tolerated rather than failing the delivery")
-        void nullHeadersAreTolerated() throws Exception {
+        @DisplayName("null headers are tolerated, and carry no envelope code, so nothing is launched")
+        void nullHeadersAreToleratedAndCarryNoCode() throws Exception {
+            // Tolerated means "does not fail with a NullPointerException", which is what this always
+            // asserted. It no longer means "launches": a delivery with no headers carries no envelope code,
+            // and finding M-11 makes an unauthenticated submission one this consumer refuses to act on.
+            listener.drainReportJobQueue(PAYLOAD, null, null);
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        // =========================================================================================
+        // FINDING C-02, severity CRITICAL. The listener used to log the publisher-set deduplication
+        // identifier and the three payload fields. All four are chosen by whoever publishes, which is
+        // not necessarily this application, so each was untrusted free text reaching a log stream past
+        // a masking layer that redacts only LABELLED values - a bare card number or government
+        // identifier carries no label. The tests below plant protected values in every one of those
+        // four places and assert none reaches any part of any record the listener writes.
+        // =========================================================================================
+
+        /** A card-number-shaped value, sixteen digits as {@code CARD-NUM PIC X(16)} of CVACT02Y declares. */
+        private static final String PAN_SHAPED = "4111111111111111";
+
+        /** A government-identifier-shaped value, nine digits as {@code CUST-SSN PIC 9(09)} declares. */
+        private static final String GOVERNMENT_ID_SHAPED = "123456789";
+
+        /** A customer-surname-shaped value, of the kind {@code CUST-LAST-NAME} of CVCUS01Y holds. */
+        private static final String SURNAME_SHAPED = "Whitmore";
+
+        /**
+         * Runs one delivery with an appender attached and returns every part of every record it wrote.
+         *
+         * <p>The formatted message, the raw pattern and each placeholder argument are all collected, because a
+         * value passed as an argument is absent from the pattern and present in the rendered line.
+         *
+         * @param payload the body to deliver, verbatim
+         * @param headers the headers to deliver, verbatim
+         * @return one entry per inspected part; never null and never empty
+         */
+        private List<String> deliverAndCapture(final String payload, final Map<String, Object> headers) {
+            final Logger logger = (Logger) LoggerFactory.getLogger("com.cardemo");
+            final ListAppender<ILoggingEvent> appender = new ListAppender<>();
+            appender.setContext(logger.getLoggerContext());
+            appender.start();
+            logger.addAppender(appender);
+            try {
+                // The visibility handle is optional in the framework's argument resolution and a directly
+                // invoked listener has no queue behind it, so null is what a real absence looks like.
+                listener.drainReportJobQueue(payload, headers, null);
+            } finally {
+                logger.detachAppender(appender);
+                appender.stop();
+            }
+
+            assertThat(appender.list)
+                    .as("the delivery must have produced a record; nothing captured would make the assertion "
+                            + "below vacuously true")
+                    .isNotEmpty();
+
+            final List<String> parts = new ArrayList<>();
+            for (final ILoggingEvent event : appender.list) {
+                parts.add(event.getFormattedMessage());
+                parts.add(String.valueOf(event.getMessage()));
+                if (event.getArgumentArray() != null) {
+                    for (final Object argument : event.getArgumentArray()) {
+                        parts.add(String.valueOf(argument));
+                    }
+                }
+                // A throwable attached to the record is rendered by the encoder too, so its message and the
+                // messages of its causes are as public as the pattern itself.
+                for (IThrowableProxy cause = event.getThrowableProxy(); cause != null;
+                        cause = cause.getCause()) {
+                    parts.add(String.valueOf(cause.getMessage()));
+                }
+            }
+            return parts;
+        }
+
+        @Test
+        @DisplayName("a hostile deduplication identifier is never logged, and never in any form")
+        void aHostileDeduplicationIdentifierIsNeverLogged() throws Exception {
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
+            final String hostile = PAN_SHAPED + "-" + GOVERNMENT_ID_SHAPED;
+
+            final List<String> logged = deliverAndCapture(PAYLOAD, Map.of(DEDUPLICATION_HEADER, hostile));
+
+            for (final String part : logged) {
+                assertThat(part)
+                        .as("the transport identifier is publisher-chosen, so it may not reach a log stream in "
+                                + "any form; what is logged is a one-way digest of it")
+                        .doesNotContain(PAN_SHAPED)
+                        .doesNotContain(GOVERNMENT_ID_SHAPED);
+            }
+            assertThat(String.join(" ", logged))
+                    .as("the digest is sixteen lowercase hexadecimal characters, so a record is still joinable "
+                            + "across the several lines one delivery produces")
+                    .containsPattern("delivery [0-9a-f]{16} ");
+        }
+
+        @Test
+        @DisplayName("the digest is stable across redeliveries and different between submissions")
+        void theLoggedDeliveryIdentifierIsStableAndDistinct() throws Exception {
             when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(mock(JobExecution.class));
 
-            listener.drainReportJobQueue(PAYLOAD, null);
+            final String first = String.join(" ", deliverAndCapture(PAYLOAD,
+                    Map.of(DEDUPLICATION_HEADER, "submission-A")));
+            final String redelivery = String.join(" ", deliverAndCapture(PAYLOAD,
+                    Map.of(DEDUPLICATION_HEADER, "submission-A")));
+            final String second = String.join(" ", deliverAndCapture(PAYLOAD,
+                    Map.of(DEDUPLICATION_HEADER, "submission-B")));
 
-            verify(jobLauncher).run(eq(reportJob), any(JobParameters.class));
+            final String firstDigest = digestIn(first);
+            assertThat(digestIn(redelivery))
+                    .as("a redelivery of one submission must carry the same identifier, or the several records "
+                            + "of one delivery cannot be joined")
+                    .isEqualTo(firstDigest);
+            assertThat(digestIn(second))
+                    .as("two different submissions must carry different identifiers, or the identifier "
+                            + "distinguishes nothing")
+                    .isNotEqualTo(firstDigest);
+        }
+
+        /**
+         * Extracts the sixteen-character delivery digest from a captured line.
+         *
+         * @param logged the joined log parts
+         * @return the digest
+         */
+        private String digestIn(final String logged) {
+            final Matcher matcher = Pattern.compile("delivery ([0-9a-f]{16}) ").matcher(logged);
+            assertThat(matcher.find()).as("every record names the delivery by its digest").isTrue();
+            return matcher.group(1);
+        }
+
+        @Test
+        @DisplayName("a hostile payload field is refused by the contract and never logged")
+        void aHostilePayloadFieldIsRefusedAndNeverLogged() throws Exception {
+            // A publisher that is not this application's submission surface: a card number where the report
+            // period belongs, and a date of birth where a parameter date belongs.
+            final String hostile = "{\"reportName\":\"" + PAN_SHAPED + " " + SURNAME_SHAPED
+                    + "\",\"startDate\":\"1974-03-19\",\"endDate\":\"" + GOVERNMENT_ID_SHAPED + "\"}";
+
+            final List<String> logged = deliverAndCapture(hostile, Map.of(DEDUPLICATION_HEADER, "submission-H"));
+
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+            for (final String part : logged) {
+                assertThat(part)
+                        .as("the refusal record must name the reason, never the value: a constructor message "
+                                + "that quoted the offending field would disclose exactly what was withheld")
+                        .doesNotContain(PAN_SHAPED)
+                        .doesNotContain(SURNAME_SHAPED)
+                        .doesNotContain(GOVERNMENT_ID_SHAPED);
+            }
+            assertThat(String.join(" ", logged))
+                    .as("what an operator gets instead is the failure class, which is what they act on. The "
+                            + "mapper wraps a record constructor's own refusal in this type, which is why the "
+                            + "listener catches it separately from a parse failure - the two mean different "
+                            + "things: a publisher ignoring the contract, versus a corrupted body")
+                    .contains("ValueInstantiationException");
+        }
+
+        @Test
+        @DisplayName("a well-formed submission still logs neither the report name nor either date")
+        void aWellFormedSubmissionLogsNoPayloadField() throws Exception {
+            // Built before the stubbing rather than inside it: completedExecution() stubs a mock of its own,
+            // and Mockito reads a nested when(...) as an unfinished stubbing of the outer one.
+            final JobExecution completed = completedExecution();
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(completed);
+
+            final List<String> logged = deliverAndCapture(PAYLOAD, signedHeaders("submission-W"));
+
+            for (final String part : logged) {
+                assertThat(part)
+                        .as("screening the values is one control and withholding them is another; a "
+                                + "confidentiality boundary needs both, because the screen bounds the shape "
+                                + "of a value and not its content")
+                        .doesNotContain("Monthly")
+                        .doesNotContain("2022-07-01")
+                        .doesNotContain("2022-07-31");
+            }
+            // The period is still recoverable where it belongs: the identifying job parameters of the launched
+            // execution, under the job repository's own access control.
+            final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+            verify(jobLauncher).run(eq(reportJob), captor.capture());
+            assertThat(captor.getValue().getString("reportName")).isEqualTo("Monthly");
+        }
+
+        @Test
+        @DisplayName("a malformed body's parser context is not attached to the record either")
+        void aMalformedBodyDoesNotPublishItsParserContext() {
+            // Jackson quotes the offending token and its surrounding context in its message, so attaching the
+            // exception as the record's cause published the very bytes the remediation withholds.
+            final String hostile = "{\"reportName\":\"" + PAN_SHAPED + "\",oops";
+
+            final List<String> logged = deliverAndCapture(hostile, Map.of(DEDUPLICATION_HEADER, "submission-M"));
+
+            for (final String part : logged) {
+                assertThat(part).doesNotContain(PAN_SHAPED);
+            }
+            assertThat(String.join(" ", logged)).contains("JsonParseException");
         }
 
         @Test
         @DisplayName("the listener binds the configured queue and carries a stable container id")
         void theListenerBindsTheConfiguredQueue() throws Exception {
             final SqsListener annotation = BatchConfig.ReportJobQueueListener.class
-                    .getMethod("drainReportJobQueue", String.class, Map.class)
+                    .getMethod("drainReportJobQueue", String.class, Map.class,
+                            io.awspring.cloud.sqs.listener.Visibility.class)
                     .getAnnotation(SqsListener.class);
 
             assertThat(annotation).as("the consumer that replaces the JES2 internal reader").isNotNull();
@@ -790,7 +1862,8 @@ class BatchConfigTest {
             // contract, so it is asserted against AwsConfig's own constant rather than against a literal -
             // read reflectively, because widening that class's API to observe it would be the wrong trade.
             final SqsListener annotation = BatchConfig.ReportJobQueueListener.class
-                    .getMethod("drainReportJobQueue", String.class, Map.class)
+                    .getMethod("drainReportJobQueue", String.class, Map.class,
+                            io.awspring.cloud.sqs.listener.Visibility.class)
                     .getAnnotation(SqsListener.class);
 
             assertThat(annotation.pollTimeoutSeconds())
@@ -810,6 +1883,66 @@ class BatchConfigTest {
                             + "seconds")
                     .isPositive()
                     .isLessThan(attemptTimeout);
+        }
+
+        @Test
+        @DisplayName("the invisibility window covers the whole processing interval, and matches the queue's")
+        void theInvisibilityWindowCoversTheProcessingInterval() throws Exception {
+            // FINDING M-02, severity Major. Only the poll wait used to be declared, so the queue's own default
+            // of 30 seconds governed how long a received submission stayed hidden - far shorter than a report
+            // run, so the message reappeared while its own job was still going. The window is stated on both
+            // sides of the boundary, and the two values must agree: the queue attribute governs the delivery
+            // this listener did not make, the annotation governs the ones it does.
+            final SqsListener annotation = BatchConfig.ReportJobQueueListener.class
+                    .getMethod("drainReportJobQueue", String.class, Map.class,
+                            io.awspring.cloud.sqs.listener.Visibility.class)
+                    .getAnnotation(SqsListener.class);
+
+            assertThat(annotation.messageVisibilitySeconds())
+                    .as("an explicit window, because the service default is the value that produced the defect")
+                    .isNotBlank();
+            final int window = Integer.parseInt(annotation.messageVisibilitySeconds());
+            assertThat(window)
+                    .as("a report run backs up the cluster, sorts a generation and writes the report; thirty "
+                            + "seconds is not the order of magnitude involved")
+                    .isGreaterThan(60);
+
+            final String provisioning = Files.readString(Path.of("localstack-init", "init-aws.sh"));
+            assertThat(provisioning)
+                    .as("the queue must be provisioned with the same window the listener declares, or a "
+                            + "delivery made before this consumer received it would expire early")
+                    .contains("readonly QUEUE_VISIBILITY_TIMEOUT_SECONDS='" + window + "'")
+                    .contains("VisibilityTimeout=${QUEUE_VISIBILITY_TIMEOUT_SECONDS}");
+        }
+
+        @Test
+        @DisplayName("the listener takes the visibility handle, so a long run can extend its own window")
+        void theListenerTakesTheVisibilityHandle() throws Exception {
+            final Visibility visibility = mock(Visibility.class);
+            final JobExecution completed = completedExecution();
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(completed);
+
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-11"), visibility);
+
+            verify(visibility).changeTo(Integer.parseInt(BatchConfig.ReportJobQueueListener.class
+                    .getMethod("drainReportJobQueue", String.class, Map.class, Visibility.class)
+                    .getAnnotation(SqsListener.class).messageVisibilitySeconds()));
+        }
+
+        @Test
+        @DisplayName("a refused extension is logged and the validated submission still runs")
+        void aRefusedExtensionStillLaunches() throws Exception {
+            final Visibility visibility = mock(Visibility.class);
+            final JobExecution completed = completedExecution();
+            when(jobLauncher.run(eq(reportJob), any(JobParameters.class))).thenReturn(completed);
+            org.mockito.Mockito.doThrow(new IllegalStateException("window already elapsed"))
+                    .when(visibility).changeTo(anyInt());
+
+            listener.drainReportJobQueue(PAYLOAD, signedHeaders("submission-12"), visibility);
+
+            // The window applied at receive time still stands, so refusing to run a validated submission over
+            // a failed refresh would be the worse outcome.
+            verify(jobLauncher).run(eq(reportJob), any(JobParameters.class));
         }
 
         @Test
@@ -847,85 +1980,69 @@ class BatchConfigTest {
     }
 
     @Nested
-    @DisplayName("The job-instance diagnostic context listener establishes one key and leaks none")
-    class JobInstanceMdcListener {
+    @DisplayName("The job-instance diagnostic context is owned by the jobs, not by a listener bean here")
+    class JobInstanceDiagnosticContext {
 
-        /** A job instance identifier standing in for a real run. */
-        private static final long INSTANCE_ID = 4242L;
+        /** The six job classes, each of which attaches its own job-level listener. */
+        private static final List<String> JOB_CLASSES = List.of(
+                "BatchPipelineOrchestrator.java",
+                "CombineTransactionsJob.java",
+                "DailyTransactionPostingJob.java",
+                "InterestCalculationJob.java",
+                "StatementGenerationJob.java",
+                "TransactionReportJob.java");
 
-        /** A value an enclosing scope might already have established on the thread. */
-        private static final String FOREIGN_VALUE = "99";
+        @Test
+        @DisplayName("no shared job listener bean is declared, because nothing would ever collect it")
+        void noSharedJobListenerBeanIsDeclared() {
+            // CFG-003: a jobInstanceMdcListener() @Bean returning JobExecutionListener stood here. Spring
+            // Batch attaches listeners through JobBuilder.listener(...) and Boot's batch auto-configuration
+            // collects none from the container, so that bean ran on no job at all - and its own tests passed
+            // by calling it directly, which is what kept the deadness invisible. It is gone, and this is the
+            // guard: reinstating it fails here, and the remedy is to attach the behaviour to a job.
+            assertThat(Arrays.stream(BatchConfig.class.getDeclaredMethods()).map(Method::getName))
+                    .as("a listener published from a @Bean method is collected by nothing, so it would run "
+                            + "on no job; .listener(...) on a JobBuilder is the registration that works")
+                    .doesNotContain("jobInstanceMdcListener", "jobInstanceIdOf");
+            assertThat(Arrays.stream(BatchConfig.class.getDeclaredMethods()).map(Method::getReturnType))
+                    .as("no method here yields a listener under any name")
+                    .doesNotContain(JobExecutionListener.class);
+        }
+
+        @Test
+        @DisplayName("every job class attaches its own listener and publishes the instance identifier itself")
+        void everyJobClassAttachesItsOwnListener() {
+            // This is what shows the removal cost no behaviour rather than merely deleting code: the key the
+            // withdrawn bean would have published is published by each of the six jobs, on the execution the
+            // framework actually runs. Asserted over the source because the registration sits inside a
+            // JobBuilder chain, where no container-scoped assertion in this file could observe it.
+            final Path jobs = Path.of("src", "main", "java", "com", "cardemo", "batch", "jobs");
+            for (final String jobClass : JOB_CLASSES) {
+                final String source = read(jobs.resolve(jobClass));
+                assertThat(source)
+                        .as("%s attaches its own job-level listener", jobClass)
+                        .contains(".listener(");
+                assertThat(source)
+                        .as("%s publishes the job instance identifier into the diagnostic context", jobClass)
+                        // enterBatchScope is the canonical entry point - finding M-02 - and it publishes the
+                        // key itself, so a job that opens a batch scope satisfies this without naming the key.
+                        .containsAnyOf("enterBatchScope", "propagateJobInstanceId",
+                                "MDC_KEY_JOB_INSTANCE_ID", "MDC_JOB_INSTANCE_ID");
+            }
+        }
 
         /**
-         * Builds an execution the way the framework hands one to a listener.
+         * Reads a source file whose absence is a test failure rather than a condition to handle.
          *
-         * @param instanceId the job instance identifier
-         * @return a job execution carrying that instance
+         * @param path the file to read
+         * @return its full text
          */
-        private JobExecution execution(final long instanceId) {
-            return new JobExecution(new JobInstance(Long.valueOf(instanceId), "POSTTRAN"), null, null);
-        }
-
-        /** Leaves the diagnostic context exactly as the test found it, whatever the test did to it. */
-        @AfterEach
-        void clearDiagnosticContext() {
-            MDC.remove(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID);
-        }
-
-        @Test
-        @DisplayName("before-job publishes the instance identifier under the shared key, not a re-spelling")
-        void beforeJobPublishesTheInstanceIdentifier() {
-            batchConfig.jobInstanceMdcListener().beforeJob(execution(INSTANCE_ID));
-
-            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
-                    .as("the key is CorrelationIdFilter's own constant, so it has one definition")
-                    .isEqualTo(Long.toString(INSTANCE_ID));
-        }
-
-        @Test
-        @DisplayName("after-job removes what it established, so nothing leaks onto a pooled thread")
-        void afterJobRemovesWhatItEstablished() {
-            final JobExecutionListener listener = batchConfig.jobInstanceMdcListener();
-
-            listener.beforeJob(execution(INSTANCE_ID));
-            listener.afterJob(execution(INSTANCE_ID));
-
-            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
-                    .as("a leaked entry would mislabel an unrelated later run on the same pooled thread")
-                    .isNull();
-        }
-
-        @Test
-        @DisplayName("after-job puts back a value it did not establish, rather than discarding it")
-        void afterJobRestoresAValueItDidNotEstablish() {
-            MDC.put(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID, FOREIGN_VALUE);
-
-            batchConfig.jobInstanceMdcListener().afterJob(execution(INSTANCE_ID));
-
-            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
-                    .as("the entry belonged to an enclosing scope, which is owed a restore and not a removal")
-                    .isEqualTo(FOREIGN_VALUE);
-        }
-
-        @Test
-        @DisplayName("an execution carrying no instance is skipped rather than raising or clearing")
-        void anExecutionWithNoInstanceIsSkipped() {
-            final JobExecutionListener listener = batchConfig.jobInstanceMdcListener();
-            MDC.put(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID, FOREIGN_VALUE);
-
-            listener.beforeJob(new JobExecution(Long.valueOf(INSTANCE_ID)));
-
-            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
-                    .as("a diagnostic aid must never fail, nor destroy an entry, over a missing instance")
-                    .isEqualTo(FOREIGN_VALUE);
-        }
-
-        @Test
-        @DisplayName("the listener is stateless, so one instance serves concurrent runs")
-        void theListenerIsStateless() {
-            assertThat(batchConfig.jobInstanceMdcListener().getClass().getDeclaredFields())
-                    .as("a field would be shared mutable state across every job the singleton is registered on")
-                    .isEmpty();
+        private String read(final Path path) {
+            try {
+                return Files.readString(path);
+            } catch (final IOException unreadable) {
+                throw new UncheckedIOException(unreadable);
+            }
         }
     }
 
@@ -1369,5 +2486,113 @@ class BatchConfigTest {
         return new Customer(CUSTOMER_ID, "SYNTHETICA", "Q", "TESTCASE", "1 SAMPLE STREET", "SUITE 100",
                 "SPRINGFIELD", "IL", "USA", "0000012345", "(555) 010-0001", "(555) 010-0002",
                 "999009999", "SYNTHETIC-ID-0001", "1990-01-01", "0000000001", "Y", "750");
+    }
+
+    /**
+     * Package prefixes the reachability walk descends into. Anything else is treated as a leaf.
+     *
+     * <p>Bounded on purpose. A built {@code Step} is a framework object graph, and the only parts of it this
+     * suite has a claim about are the components this project contributed and the framework wiring that holds
+     * them, so descending into the JDK or into a third-party library would add cost and no assertion.
+     */
+    private static final List<String> TRAVERSED_PACKAGES =
+            List.of("com.cardemo.", "org.springframework.");
+
+    /** Upper bound on visited objects, so an unexpectedly wide graph cannot stall the suite. */
+    private static final int REACHABILITY_BUDGET = 20_000;
+
+    /**
+     * Every object of a given type reachable from a root by following fields, collection elements and array
+     * elements.
+     *
+     * <p>Used instead of naming the framework's own internal field path - {@code TaskletStep.tasklet} to
+     * {@code ChunkOrientedTasklet.chunkProcessor} to {@code SimpleChunkProcessor.itemWriter} - because that
+     * path is a framework implementation detail that a patch release may rename, whereas "the step wires
+     * exactly one writer, and it holds nothing it could store through" is a claim about this project.
+     *
+     * <p>Mocks are neither reported nor descended into: a mock is a stand-in this suite supplied, so counting
+     * one would be counting the harness rather than the wiring.
+     *
+     * @param root the object to walk from
+     * @param type the type to collect
+     * @return the distinct instances found, in discovery order
+     */
+    private static Set<Object> reachable(final Object root, final Class<?> type) {
+        final Set<Object> found = new LinkedHashSet<>();
+        final Map<Object, Boolean> visited = new IdentityHashMap<>();
+        final Deque<Object> pending = new ArrayDeque<>();
+        offer(pending, root);
+        while (!pending.isEmpty() && visited.size() < REACHABILITY_BUDGET) {
+            final Object current = pending.poll();
+            if (visited.put(current, Boolean.TRUE) != null) {
+                continue;
+            }
+            final boolean stubbed = mockingDetails(current).isMock();
+            if (type.isInstance(current) && !stubbed) {
+                found.add(current);
+            }
+            if (!stubbed) {
+                enqueueChildren(current, pending);
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Enqueues everything directly reachable from one object.
+     *
+     * @param current the object being expanded
+     * @param pending the walk's work queue
+     */
+    private static void enqueueChildren(final Object current, final Deque<Object> pending) {
+        if (current instanceof final Collection<?> elements) {
+            elements.forEach(element -> offer(pending, element));
+            return;
+        }
+        if (current instanceof final Map<?, ?> entries) {
+            entries.values().forEach(value -> offer(pending, value));
+            return;
+        }
+        final Class<?> concrete = current.getClass();
+        if (concrete.isArray()) {
+            if (!concrete.getComponentType().isPrimitive()) {
+                for (final Object element : (Object[]) current) {
+                    offer(pending, element);
+                }
+            }
+            return;
+        }
+        if (TRAVERSED_PACKAGES.stream().noneMatch(prefix -> concrete.getName().startsWith(prefix))) {
+            return;
+        }
+        for (Class<?> declaring = concrete; declaring != null && !Object.class.equals(declaring);
+                declaring = declaring.getSuperclass()) {
+            for (final Field field : declaring.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) || field.getType().isPrimitive()) {
+                    continue;
+                }
+                try {
+                    field.setAccessible(true);
+                    offer(pending, field.get(current));
+                } catch (final ReflectiveOperationException | RuntimeException refused) {
+                    // A field the runtime refuses to open is simply not descended into. That cannot hide a
+                    // writer this project wired, because the wiring path runs through classes of the two
+                    // traversed packages, both of which are on the class path and therefore openable.
+                    continue;
+                }
+            }
+        }
+    }
+
+    /**
+     * Adds a value to the walk queue unless it is {@code null}, which the queue implementation forbids.
+     *
+     * @param pending the walk's work queue
+     * @param value the value to add, which may be {@code null}
+     */
+    private static void offer(final Deque<Object> pending, final Object value) {
+        if (value != null) {
+            pending.add(value);
+        }
     }
 }

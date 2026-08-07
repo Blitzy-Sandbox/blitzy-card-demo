@@ -75,6 +75,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import com.cardemo.batch.GenerationPrefixContract;
 import com.cardemo.batch.processors.StatementProcessor;
 import com.cardemo.batch.writers.StatementWriter;
 import com.cardemo.exception.CardDemoException;
@@ -196,10 +197,6 @@ import io.awspring.cloud.s3.S3Resource;
  *   <tr><td>{@code carddemo.batch.creastmt.chunk-size}</td>
  *       <td>{@code carddemo.batch.chunk-size}, then {@value #DEFAULT_CHUNK_SIZE}</td>
  *       <td>Commit interval of the emit step and window size of the projection read</td></tr>
- *   <tr><td>{@code carddemo.batch.creastmt.max-work-records}</td>
- *       <td>{@value #DEFAULT_MAX_WORK_RECORDS}</td>
- *       <td>Ceiling on records the projection will write and the load will verify; the bounded refusal that
- *           replaces an {@code OutOfMemoryError}. See {@link #DEFAULT_MAX_WORK_RECORDS}</td></tr>
  *   <tr><td>{@code carddemo.aws.s3.batch-output-bucket}</td><td>none - startup fails without it</td>
  *       <td>Receives the projected sequential object</td></tr>
  *   <tr><td>{@code carddemo.aws.s3.statements-bucket}</td><td>none - startup fails without it</td>
@@ -230,10 +227,9 @@ import io.awspring.cloud.s3.S3Resource;
  * outlives its job execution no more than the legacy cluster outlived its job.
  *
  * <p>The alternative reading - hold the projected records in a job-scoped map and let the execution context
- * carry only a handle - was considered and rejected on the finding recorded at
- * {@link #DEFAULT_MAX_WORK_RECORDS}. It requires the whole sorted sequence to be resident at once, which is
- * the unbounded materialisation that finding is about and that AAP 0.7.6.3 removes from this program by
- * streaming; it also forfeits the {@value #DIGEST_ALGORITHM} identity proof between what {@code STEP010}
+ * carry only a handle - was considered and rejected. It requires the whole sorted sequence to be resident at
+ * once, which is exactly the unbounded materialisation AAP 0.7.6.3 removes from this program by streaming; it
+ * also forfeits the {@value #DIGEST_ALGORITHM} identity proof between what {@code STEP010}
  * wrote and what {@code STEP020} read, and leaves {@code STEP020} unrestartable once the process that ran
  * {@code STEP010} has gone. Streaming through one object keeps peak memory at one record in both directions.
  * The cost of that choice is stated plainly rather than hidden: the work object does reach the batch output
@@ -367,13 +363,12 @@ import io.awspring.cloud.s3.S3Resource;
  *       {@code RECORDSIZE(350 350)} at {@code app/jcl/CREASTMT.JCL:L32} is violated. Object storage input
  *       is untrusted and is validated before it is parsed, which is why this surfaces as a typed abend
  *       rather than a mis-parse.</li>
- *   <li><b>Either step abends reporting a work-record cap.</b> The transaction relation, or the object one
- *       run of it produced, holds more records than
- *       {@code carddemo.batch.creastmt.max-work-records} allows. This is a deliberate bounded refusal and
- *       <b>not</b> a defect: it is what this job reports instead of exhausting the heap. Raise the property
- *       deliberately if the input is genuinely that large, having satisfied yourself that the deployment has
- *       the object-storage and runtime budget for it; reduce the input otherwise. See
- *       {@link #DEFAULT_MAX_WORK_RECORDS}.</li>
+ *   <li><b>A run is larger than expected but does not abend.</b> That is correct, and it is finding BAT-002.
+ *       An earlier revision refused any run above a configured five million work records; the corpus has no
+ *       such rule - {@code app/jcl/CREASTMT.JCL} sizes nothing by record count - so the refusal was an
+ *       invented business ceiling and has been removed. Both directions of this pipeline stream one record at
+ *       a time, so run size is bounded by the input and by object storage, not by an authored constant.
+ *       Watch {@code STEP010}'s projected record count and the object's size if a run's duration matters.</li>
  *   <li><b>The emit step abends on an open.</b> One of the four datasets has no binding, or reported a
  *       status outside {@code '00'} and {@code '04'}. The abend names the DD and the return code.</li>
  *   <li><b>Steps 3, 4 and 5 are reported as skipped.</b> That is {@code COND=(0,NE)} doing its job; look
@@ -506,35 +501,6 @@ public class StatementGenerationJob {
 
     /** Commit interval and read window, matching {@code carddemo.batch.chunk-size}. */
     static final int DEFAULT_CHUNK_SIZE = 100;
-
-    /**
-     * Largest number of {@value #WORK_CLUSTER_RECORD_LENGTH}-byte records {@code STEP010} will project and
-     * {@code STEP020} will verify, from {@code carddemo.batch.creastmt.max-work-records}.
-     *
-     * <p><strong>Finding, severity Medium, resolved - CWE-400, uncontrolled resource consumption.</strong> An
-     * earlier revision of {@code STEP010} accumulated the whole transaction relation in an
-     * {@code ArrayList<String>}, copied it into a {@code StringBuilder} sized
-     * {@code records.size() * 350}, encoded that into a {@code byte[]}, and then {@code STEP020} read the
-     * object back with {@code readAllBytes()} and decoded it into one more {@code String} - five whole-relation
-     * copies, of which three were live simultaneously. The relation is caller-driven and unbounded, so a
-     * cluster larger than the heap produced an {@code OutOfMemoryError}: an unrecoverable, undiagnosable abort
-     * that takes the whole job virtual machine with it rather than a step failure with a reason code.
-     *
-     * <p>The remedy has two halves and needs both. The pipeline now <em>streams</em>, so peak heap is one read
-     * window rather than one relation; and this cap makes the failure <em>bounded and diagnosable</em>, because
-     * a streamed pipeline still writes an unbounded object and still loops an unbounded number of times. The
-     * cap is checked against the relation's row count <strong>before the first record is projected</strong>,
-     * and again per record while streaming, so a relation that grows during the run cannot slip past the
-     * pre-flight check.
-     *
-     * <p><strong>Why this value.</strong> Five million records is 1.75 GB at
-     * {@value #WORK_CLUSTER_RECORD_LENGTH} bytes each - far beyond any run this system is sized for, and far
-     * below the point at which a streamed object becomes unmanageable. It is deliberately a ceiling that
-     * normal operation never approaches: a cap tight enough to be hit in practice would turn a safety guard
-     * into an operational limit. It is a property rather than a literal so that a deployment which genuinely
-     * needs a different ceiling can raise it without a rebuild.
-     */
-    static final int DEFAULT_MAX_WORK_RECORDS = 5_000_000;
 
     /** Key prefix standing in for the {@code AWS.M2.CARDDEMO.TRXFL} dataset names. */
     static final String DEFAULT_WORK_PREFIX = "work/trxfl";
@@ -806,16 +772,6 @@ public class StatementGenerationJob {
      */
     private static final String DIGEST_ALGORITHM = "SHA-256";
 
-    /**
-     * Abend reason when the work relation or the projected object exceeds
-     * {@link #DEFAULT_MAX_WORK_RECORDS}.
-     *
-     * <p>A reason code rather than an {@code OutOfMemoryError}: this is the failure mode the cap exists to
-     * substitute for, so it travels the same abend path as every other step failure and carries the same
-     * return code.
-     */
-    private static final String REASON_WORK_RECORD_CAP_EXCEEDED = "WORK RECORD CAP EXCEEDED";
-
     /** The {@code '9x'} family status used when object storage fails, {@code FileStatus:IO_ERROR}. */
     private static final String OBJECT_STORE_IO_STATUS = FileStatus.IO_ERROR_FIRST_BYTE + "0";
 
@@ -889,13 +845,6 @@ public class StatementGenerationJob {
     /** Commit interval and read window, {@code carddemo.batch.creastmt.chunk-size}. */
     private final int chunkSize;
 
-    /**
-     * Ceiling on projected and verified records, {@code carddemo.batch.creastmt.max-work-records}.
-     *
-     * <p>See {@link #DEFAULT_MAX_WORK_RECORDS} for why the cap exists and why streaming alone is not enough.
-     */
-    private final int maxWorkRecords;
-
     /** Bucket receiving the projected sequential object, {@code carddemo.aws.s3.batch-output-bucket}. */
     private final String batchOutputBucket;
 
@@ -926,9 +875,6 @@ public class StatementGenerationJob {
      * @param jobName the registered job name; defaults to {@value #DEFAULT_JOB_NAME}, must not be blank
      * @param chunkSize the commit interval and read window; defaults to {@code carddemo.batch.chunk-size}
      *     and then to {@value #DEFAULT_CHUNK_SIZE}, must be positive
-     * @param maxWorkRecords the ceiling on projected and verified records from
-     *     {@code carddemo.batch.creastmt.max-work-records}; defaults to
-     *     {@value #DEFAULT_MAX_WORK_RECORDS} and must be positive
      * @param batchOutputBucket the bucket receiving the projected sequential object; no default, must not
      *     be blank
      * @param statementsBucket the bucket receiving both statement objects; no default, must not be blank
@@ -948,8 +894,6 @@ public class StatementGenerationJob {
             @Value("${carddemo.batch.jobs.creastmt.name:" + DEFAULT_JOB_NAME + "}") final String jobName,
             @Value("${carddemo.batch.creastmt.chunk-size:${carddemo.batch.chunk-size:"
                     + DEFAULT_CHUNK_SIZE + "}}") final int chunkSize,
-            @Value("${carddemo.batch.creastmt.max-work-records:" + DEFAULT_MAX_WORK_RECORDS + "}")
-                    final int maxWorkRecords,
             @Value("${carddemo.aws.s3.batch-output-bucket}") final String batchOutputBucket,
             @Value("${carddemo.aws.s3.statements-bucket}") final String statementsBucket,
             @Value("${carddemo.aws.s3.work-prefixes.trxfl:" + DEFAULT_WORK_PREFIX + "}")
@@ -964,17 +908,14 @@ public class StatementGenerationJob {
         this.fileStatusMapper = requireCollaborator(fileStatusMapper, "fileStatusMapper");
         this.jobName = requireText(jobName, "carddemo.batch.jobs.creastmt.name");
         this.chunkSize = requirePositive(chunkSize, "carddemo.batch.creastmt.chunk-size");
-        this.maxWorkRecords =
-                requirePositive(maxWorkRecords, "carddemo.batch.creastmt.max-work-records");
         this.batchOutputBucket = requireText(batchOutputBucket, "carddemo.aws.s3.batch-output-bucket");
         this.statementsBucket = requireText(statementsBucket, "carddemo.aws.s3.statements-bucket");
         this.workPrefix = normalisePrefix(
                 requireText(workPrefix, "carddemo.aws.s3.work-prefixes.trxfl"));
 
-        LOG.info("CREASTMT statement generation configured: job={} steps={} chunk={} maxWorkRecords={} "
+        LOG.info("CREASTMT statement generation configured: job={} steps={} chunk={} "
                         + "workCluster=KEYS({} 0)/RECORDSIZE({} {}) outputs={}B text and {}B markup",
                 this.jobName, Integer.valueOf(STEP_COUNT), Integer.valueOf(this.chunkSize),
-                Integer.valueOf(this.maxWorkRecords),
                 Integer.valueOf(WORK_CLUSTER_KEY_LENGTH), Integer.valueOf(WORK_CLUSTER_RECORD_LENGTH),
                 Integer.valueOf(WORK_CLUSTER_RECORD_LENGTH), Integer.valueOf(TEXT_RECORD_LENGTH),
                 Integer.valueOf(HTML_RECORD_LENGTH));
@@ -1028,26 +969,24 @@ public class StatementGenerationJob {
     }
 
     /**
-     * Trims a key prefix to a single canonical form - no leading separator, no trailing separator - so that
-     * {@code work/trxfl}, {@code /work/trxfl} and {@code work/trxfl/} all produce identical object keys.
+     * Validates the configured work-cluster key prefix against the one shared grammar.
+     *
+     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This method used to trim a prefix to a
+     * canonical form - stripping both a leading and a trailing separator - so that {@code work/trxfl},
+     * {@code /work/trxfl} and {@code work/trxfl/} all produced identical object keys. It was the most
+     * permissive of the six divergent validators the review found, and permissiveness was the defect: three
+     * spellings silently folded into one meant the value an operator wrote and the value in force could
+     * differ. {@link GenerationPrefixContract#requireRelativePrefix(String, String)} is now the only grammar
+     * and accepts exactly one spelling, {@code work/trxfl}, which is this class's own default and therefore
+     * changes no behaviour.
      *
      * @param prefix the configured prefix, never {@code null} and never blank
-     * @return the canonical prefix, never {@code null} and never blank
-     * @throws IllegalArgumentException if the prefix consists only of separators
+     * @return the prefix unchanged, once it satisfies the shared grammar
+     * @throws IllegalArgumentException if the prefix is absent, blank or malformed
      */
     private static String normalisePrefix(final String prefix) {
-        String trimmed = prefix.strip();
-        while (trimmed.startsWith(KEY_SEPARATOR)) {
-            trimmed = trimmed.substring(KEY_SEPARATOR.length());
-        }
-        while (trimmed.endsWith(KEY_SEPARATOR)) {
-            trimmed = trimmed.substring(0, trimmed.length() - KEY_SEPARATOR.length());
-        }
-        if (trimmed.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "carddemo.aws.s3.work-prefixes.trxfl must name a prefix, but was only separators");
-        }
-        return trimmed;
+        return GenerationPrefixContract.requireRelativePrefix(
+                prefix, "carddemo.aws.s3.work-prefixes.trxfl");
     }
 
     // =================================================================================================
@@ -1425,9 +1364,6 @@ public class StatementGenerationJob {
             final StepExecution stepExecution = chunkContext.getStepContext().getStepExecution();
             final ExecutionContext jobContext = stepExecution.getJobExecution().getExecutionContext();
             final long generation = reserveWorkGeneration(stepExecution, jobContext);
-
-            requireWorkRelationWithinCap();
-
             final ProjectionResult projection = streamProjectionIntoWorkObject(generation);
 
             jobContext.putString(WORK_OBJECT_KEY_CONTEXT_ENTRY, projection.objectKey());
@@ -1455,50 +1391,6 @@ public class StatementGenerationJob {
      * @param digest the lowercase hexadecimal {@value #DIGEST_ALGORITHM} digest of the object's bytes
      */
     private record ProjectionResult(String objectKey, int recordCount, String digest) {
-    }
-
-    /**
-     * Refuses a transaction relation larger than {@link #maxWorkRecords} before anything is allocated.
-     *
-     * <p>One counting query, issued once per run. It is the cheapest possible form of the guard and the only
-     * form that can fail <em>before</em> allocation, which is precisely what distinguishes a bounded refusal
-     * from an {@code OutOfMemoryError}. The streaming producer re-checks the cap per record, so a relation
-     * that grows after this check still cannot exceed the ceiling - this check exists to make the common case
-     * fail early and clearly, not to be the only guard.
-     *
-     * @throws FatalProcessingException if the relation holds more than {@link #maxWorkRecords} rows
-     */
-    private void requireWorkRelationWithinCap() {
-        final long rows = transactionRepository.count();
-        if (rows > maxWorkRecords) {
-            throw abend(REASON_WORK_RECORD_CAP_EXCEEDED,
-                    "STEP010 refuses to project " + rows + " transaction records because "
-                            + "carddemo.batch.creastmt.max-work-records is " + maxWorkRecords
-                            + "; at " + WORK_CLUSTER_RECORD_LENGTH + " bytes per record per "
-                            + "RECORDSIZE(350 350) at app/jcl/CREASTMT.JCL:L32 that is more than the "
-                            + "ceiling this deployment is configured to handle. Raise the property "
-                            + "deliberately, or reduce the input", null);
-        }
-    }
-
-    /**
-     * Refuses a record count above {@link #maxWorkRecords}, wherever it is observed.
-     *
-     * <p>Applied per record on the write path and per record on the read path, so the ceiling holds even
-     * though {@link #requireWorkRelationWithinCap()} sampled the row count before the run began. A relation
-     * that grows mid-run, or an object left behind by a run configured with a larger ceiling, is refused with
-     * a reason code rather than allowed to consume the heap.
-     *
-     * @param observed the record count observed so far
-     * @throws FatalProcessingException if {@code observed} exceeds {@link #maxWorkRecords}
-     */
-    private void requireRecordCountWithinCap(final int observed) {
-        if (observed > maxWorkRecords) {
-            throw abend(REASON_WORK_RECORD_CAP_EXCEEDED,
-                    "The work object reached " + observed + " records, above the "
-                            + maxWorkRecords + " that carddemo.batch.creastmt.max-work-records allows; "
-                            + "the run is refused rather than allowed to exhaust the heap", null);
-        }
     }
 
     /**
@@ -1548,7 +1440,6 @@ public class StatementGenerationJob {
                 digest.update(encoded);
                 sink.accept(encoded);
                 projected++;
-                requireRecordCountWithinCap(projected);
                 previous = row;
             }
             final Transaction last = window.get(window.size() - 1);
@@ -1795,14 +1686,15 @@ public class StatementGenerationJob {
      * <p><strong>The object is verified as a stream, one record at a time.</strong> An earlier revision read
      * it whole with {@code readAllBytes()} and then decoded the whole array into a {@code String} - two more
      * copies of a relation-sized image, on the read side of a pipeline whose write side had already made
-     * three. The verification needs no more than one record and its key at a time, so that is all it holds;
-     * see {@link #DEFAULT_MAX_WORK_RECORDS} for the finding.
+     * three. The verification needs no more than one record and its key at a time, so that is all it holds -
+     * which is why finding BAT-002 could remove the authored record ceiling without putting the heap at risk:
+     * peak memory here is one record whatever the object's size.
      *
      * @param key the concrete key {@code STEP010} published, never {@code null}
      * @param jobContext the job execution context, consulted for the producer's record count
      * @return the number of records loaded
-     * @throws FatalProcessingException if the object cannot be read, is not a whole number of records,
-     *     violates the key geometry or the key order, or exceeds {@link #maxWorkRecords}
+     * @throws FatalProcessingException if the object cannot be read, is not a whole number of records, or
+     *     violates the key geometry or the key order
      */
     private int reproIntoWorkCluster(final String key, final ExecutionContext jobContext) {
         final LoadedObject loaded = streamWorkObject(key);
@@ -1900,7 +1792,6 @@ public class StatementGenerationJob {
             }
             digest.update(record, 0, WORK_CLUSTER_RECORD_LENGTH);
             recordCount++;
-            requireRecordCountWithinCap(recordCount);
 
             final String recordKey =
                     new String(record, 0, WORK_CLUSTER_KEY_LENGTH, FIXED_WIDTH_CHARSET);
@@ -2493,8 +2384,10 @@ public class StatementGenerationJob {
      * Routes an object-storage outcome through {@link FileStatusMapper}, so the boundary that replaced VSAM
      * reports failure the way the source did.
      *
-     * <p>{@code '00'} continues; the {@code '9x'} family becomes the mapper's typed exception with the cause
-     * preserved. Nothing is swallowed: every non-success path leaves this method by throwing.
+     * <p>{@code '00'} continues; the {@code '9x'} family becomes the mapper's typed exception carrying the
+     * cause, sanitised by {@link StatementWriter#sanitizedCause(Throwable)} so that a statement key cannot
+     * travel inside it. Nothing is swallowed: every non-success path leaves this method by throwing, and the
+     * cause it throws with keeps the original's type name, text and stack trace.
      *
      * @param ioStatus the synthesised file status, never {@code null}
      * @param logicalName the dataset or object name to name in the failure, never {@code null}
@@ -2519,13 +2412,22 @@ public class StatementGenerationJob {
         // account identifier. Its type is the classification an operator needs, and the cause itself is
         // preserved as the cause of the exception raised immediately below - so nothing is swallowed and the
         // root cause still reaches whoever handles the failure.
+        //
+        // Finding m-03, severity Minor. Withholding it from THIS logger was only half the control: the
+        // exception raised below leaves this class, and both the framework's own step-failure logging and the
+        // rendered stack Spring Batch stores in BATCH_STEP_EXECUTION.EXIT_MESSAGE render whatever cause it
+        // carries. StatementWriter owns the key shape, so it owns the sanitiser too - one definition, used
+        // from both boundaries. It preserves the type name, the text and the stack trace, removes only the
+        // account digits of a statement key, and returns the original throwable unchanged when there is no
+        // key in it.
+        final Throwable reportable = StatementWriter.sanitizedCause(cause);
         LOG.error("{} on {} reported {}{}", operation, logicalName,
                 fileStatusMapper.displayIoStatus(ioStatus),
                 cause == null ? "" : " (cause: " + cause.getClass().getName() + ")");
         throw fileStatusMapper
-                .toException(ioStatus, logicalName, operation, cause)
+                .toException(ioStatus, logicalName, operation, reportable)
                 .orElseGet(() -> abend(REASON_OBJECT_STORE_FAILED,
-                        operation + " on " + logicalName + " failed with status " + ioStatus, cause));
+                        operation + " on " + logicalName + " failed with status " + ioStatus, reportable));
     }
 
     /**

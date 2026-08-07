@@ -65,8 +65,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code app/csd/CARDDEMO.CSD:153} and program entry {@code app/csd/CARDDEMO.CSD:271}. The source program is
  * 783 lines carrying 18 paragraph labels, and every one of those labels is reproduced here as exactly one
  * private method whose Javadoc cites the label and its verified line. The traceability anchor is commit
- * {@code 7756d89}; the paragraph-to-method correspondence is what the planned {@code TRACEABILITY_MATRIX.md} will
- * assert.
+ * {@code 7756d89}; the paragraph-to-method correspondence is what {@code TRACEABILITY_MATRIX.md}
+ * asserts.
  * </p>
  * <p>
  * The behaviour, in source order, is: resolve the account or card key through the card cross reference,
@@ -87,7 +87,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       This class therefore consults <em>no</em> clock: it holds no {@code Clock}, calls no {@code now()}
  *       and formats no timestamp. Both the batch rendering {@code yyyy-MM-dd-HH.mm.ss.SS0000} and the
  *       online rendering {@code yyyy-MM-dd HH:mm:ss.SSSSSS} are wrong for this program. This corrects the
- *       technical specification, which describes a generated timestamp; owed an entry in the planned
+ *       technical specification, which describes a generated timestamp; owed an entry in the
  *       {@code DECISION_LOG.md}. Remediation: none — the source is authoritative.</li>
  *   <li><b>High — the identifier generation race is deliberately retained.</b>
  *       {@code app/cbl/COTRN02C.cbl:443-450} moves {@code HIGH-VALUES} into the key, browses backwards for
@@ -97,7 +97,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       the Gate 1 comparison against the legacy baseline. A collision surfaces as
  *       {@code DuplicateRecordException} from the primary key constraint, which is the intended outcome and
  *       matches the shared {@code DUPKEY}/{@code DUPREC} branch at {@code app/cbl/COTRN02C.cbl:735-736}.
- *       Owed an entry in the planned {@code DECISION_LOG.md}. Remediation: acceptable only because parity against the
+ *       Owed an entry in the {@code DECISION_LOG.md}. Remediation: acceptable only because parity against the
  *       legacy baseline is the contract; revisit if concurrent add throughput becomes a requirement.</li>
  *   <li><b>High — validation is strictly fail fast.</b> {@code SEND-TRNADD-SCREEN} issues
  *       {@code EXEC CICS SEND} and then {@code EXEC CICS RETURN} at
@@ -111,14 +111,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       currency parsed and echoed at {@code app/cbl/COTRN02C.cbl:383-386}, which is <em>before</em> the two
  *       dates are semantically validated at {@code :389-427} and <em>before</em> the merchant identifier
  *       numeric check at {@code :430-437}. A tidier ordering would change which echo the caller receives on
- *       a date validation failure. Owed an entry in the planned {@code DECISION_LOG.md}. Remediation: none — reorder
+ *       a date validation failure. Owed an entry in the {@code DECISION_LOG.md}. Remediation: none — reorder
  *       only if the parity contract is renegotiated, because the echoed amount is byte compared.</li>
  *   <li><b>Medium — on the PF5 path the key validation and the cross reference read execute twice.</b>
  *       {@code COPY-LAST-TRAN-DATA} performs {@code VALIDATE-INPUT-KEY-FIELDS} at
  *       {@code app/cbl/COTRN02C.cbl:473} and then performs {@code PROCESS-ENTER-KEY} at {@code :495}, which
  *       performs {@code VALIDATE-INPUT-KEY-FIELDS} again at {@code :166}. The redundant read is source
  *       behaviour and is not optimised away; the efficiency clause is discharged by this written
- *       justification and the entry owed to the planned {@code DECISION_LOG.md}, not by deduplicating. Remediation:
+ *       justification and the entry owed to the {@code DECISION_LOG.md}, not by deduplicating. Remediation:
  *       revisit only if PF5 prefill latency becomes a measured problem; the repeat is a single indexed lookup.</li>
  *   <li><b>Medium — two distinct numeric parsers are used deliberately.</b> {@code FUNCTION NUMVAL} parses
  *       the account identifier at {@code app/cbl/COTRN02C.cbl:204} and the card number at {@code :218};
@@ -151,7 +151,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><b>Low — the screen header reads no clock in this target.</b>
  *       {@code MOVE FUNCTION CURRENT-DATE} at {@code app/cbl/COTRN02C.cbl:554} is presentation only, and the
  *       zero-clock constraint above is absolute for this file, so {@code populateHeaderInfo} echoes the
- *       request's own date and time text. Owed an entry in the planned {@code DECISION_LOG.md}.</li>
+ *       request's own date and time text. Owed an entry in the {@code DECISION_LOG.md}.</li>
  *   </ol>
  *
  * <h2>Fixed-width input contract</h2>
@@ -1326,7 +1326,7 @@ public class TransactionAddService {
      * this program is immediately followed by {@code PERFORM SEND-TRNADD-SCREEN}, which returns from the
      * task, so {@code ERR-FLG-ON} at {@code :237} cannot be true on entry. It is retained rather than
      * deleted because deleting it would break the paragraph body correspondence the coverage gate verifies
-     * (Low; owed an entry in the planned {@code DECISION_LOG.md}).
+     * (Low; owed an entry in the {@code DECISION_LOG.md}).
      * </p>
      *
      * @param work the per-invocation work area.
@@ -1546,7 +1546,7 @@ public class TransactionAddService {
      * moves at {@code :480-493}, and then performs {@code PROCESS-ENTER-KEY} at {@code :495}. </p> <p> Because
      * {@code PROCESS-ENTER-KEY} performs {@code VALIDATE-INPUT-KEY-FIELDS} again at {@code :166}, the key validation
      * and the cross reference read execute twice on this path (Medium). That redundant I/O is source behaviour and is
-     * not optimised away; it is justified in writing here and in the planned {@code DECISION_LOG.md} rather than
+     * not optimised away; it is justified in writing here and in the {@code DECISION_LOG.md} rather than
      * deduplicated. </p> <p> The two reads are not necessarily the same read, and this is easy to get wrong. When the
      * operator typed only a card number, the first pass takes the card branch and {@code :223} moves
      * {@code XREF-ACCT-ID} into {@code ACTIDINI}. The account field is therefore populated by the time the second
@@ -1762,7 +1762,7 @@ public class TransactionAddService {
      * generates no timestamp at all on the write path, the zero-clock constraint is absolute for this file,
      * so the header echoes the date and time text the request carried rather than consulting a clock. The
      * renderings are {@code MM/DD/YY} and {@code HH:MM:SS}, eight characters each, per
-     * {@code app/cpy/CSDAT01Y.cpy:30-41}. Owed an entry in the planned {@code DECISION_LOG.md}.
+     * {@code app/cpy/CSDAT01Y.cpy:30-41}. Owed an entry in the {@code DECISION_LOG.md}.
      * </p>
      *
      * @param work the per-invocation work area.
@@ -1877,7 +1877,7 @@ public class TransactionAddService {
      * {@code EXEC CICS STARTBR} only positions a browse, and Spring Data JPA has no separate positioning
      * call because the descending top-one query both positions and reads. The exec layer therefore reports a
      * normal response, and the not-found and other branches are retained for paragraph completeness and
-     * documented as unreachable in this target (Low; owed an entry in the planned {@code DECISION_LOG.md}).
+     * documented as unreachable in this target (Low; owed an entry in the {@code DECISION_LOG.md}).
      * </p>
      *
      * @param work the per-invocation work area.

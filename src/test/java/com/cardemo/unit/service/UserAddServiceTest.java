@@ -1863,11 +1863,6 @@ class UserAddServiceTest {
             assertConcreteType(catchHardFailure(service), "FileAccessException");
         }
 
-        /**
-         * Arranges a write that reaches the store and fails there for a reason that is not a key collision.
-         *
-         * @param cause the data-access failure the store will raise
-         */
         @Test
         @DisplayName("a check-constraint refusal is NOT a duplicate: it reports :270's literal instead")
         void aConstraintRefusalIsNotReportedAsADuplicate() {
@@ -1918,6 +1913,15 @@ class UserAddServiceTest {
                     .withMessage(DUPLICATE_USER_ID);
         }
 
+        /**
+         * Arranges a write that reaches the store and fails there for a reason that is not a key collision.
+         *
+         * <p>This comment sits immediately above the helper it documents. It previously stood several methods
+         * higher, where a test added between the two left {@code @param cause} bound to a zero-argument
+         * {@code @Test} method - which doclint reports as a parameter that does not exist.
+         *
+         * @param cause the data-access failure the store will raise
+         */
         private void arrangeHardFailure(final RuntimeException cause) {
             when(encoder.encode(PRESENTED_CREDENTIAL)).thenReturn(contractualDigest());
             when(repository.existsById(NEW_USER_ID)).thenReturn(false);

@@ -2220,7 +2220,7 @@ final class UserSecurityTest {
 
         assertThat(digest).hasSize(BCRYPT_HASH_WIDTH).matches(BCRYPT_SHAPE);
         assertThatCode(() -> new UserSecurity("STDUSR01", "FIRST", "LAST", digest, UserType.USER))
-                .as("BCryptPasswordEncoder.BCryptVersion of spring-security-crypto 6.5.8 declares "
+                .as("BCryptPasswordEncoder.BCryptVersion of spring-security-crypto 6.5.11 declares "
                         + "exactly three constants, for the 2a, 2y and 2b tags, and "
                         + "BCrypt.gensalt(String, int, SecureRandom) rejects any other third character "
                         + "with IllegalArgumentException(\"Invalid prefix\"). Accepting exactly that set "

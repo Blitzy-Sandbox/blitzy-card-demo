@@ -222,10 +222,17 @@
  *       contains production classes only. They are to assert the eleven record lengths, the key lengths, the
  *       three precision tiers, that {@code origTs} and {@code procTs} are declared {@code String}, and that
  *       no accessor or {@code toString} exposes credential material or personal data. Measured
- *       1 August 2026 that set is <strong>largely not available</strong>: {@code UserSecurityTest} is the
- *       only entity test that exists, so the record lengths, key lengths and precision tiers of the other
- *       ten entities are asserted <strong>nowhere</strong>. Treat the sentence above as the specification of
- *       the tests owed, not as a description of a suite that runs.</li>
+ *       6 August 2026 that set is <strong>authored in full</strong>: every one of the eleven entities carries
+ *       its own test class in {@code src/test/java/com/cardemo/unit/model} - {@code AccountTest},
+ *       {@code CardTest}, {@code CardCrossReferenceTest}, {@code CustomerTest}, {@code TransactionTest},
+ *       {@code DailyTransactionTest}, {@code TransactionCategoryBalanceTest}, {@code DisclosureGroupTest},
+ *       {@code TransactionTypeTest}, {@code TransactionCategoryTest} and {@code UserSecurityTest} - with
+ *       {@code EntityContractTest}, {@code EntityBoundaryValidationTest}, {@code EntityIdentityContractTest}
+ *       and {@code ReferenceEntityContractTest} asserting the cross-entity invariants. A reading of 1 August
+ *       2026 recorded {@code UserSecurityTest} as the only entity test and the other ten entities as asserted
+ *       nowhere; that reading is <strong>withdrawn</strong>, and it is the understating direction, so anyone
+ *       who acted on it would have concluded that authored, passing coverage did not exist. Re-measure with
+ *       {@code ls src/test/java/com/cardemo/unit/model} rather than quoting either figure.</li>
  *   <li><strong>Toolchain actually present, measured 1 August 2026.</strong> Read in this container on that
  *       date. The prerequisite is a capability and never a host path - JDK 25 on {@code PATH} with
  *       {@code JAVA_HOME} set, however the host provides it, and Maven from the pinned wrapper; the

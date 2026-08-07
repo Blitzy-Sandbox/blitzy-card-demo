@@ -26,6 +26,10 @@
  */
 package com.cardemo.service.report;
 
+import java.nio.charset.StandardCharsets;
+import java.security.InvalidKeyException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -35,12 +39,15 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,6 +66,7 @@ import io.awspring.cloud.sqs.operations.MessagingOperationFailedException;
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsTemplate;
 import io.micrometer.tracing.Span;
+import io.micrometer.tracing.TraceContext;
 import io.micrometer.tracing.Tracer;
 
 /**
@@ -97,7 +105,7 @@ import io.micrometer.tracing.Tracer;
  * <h2>Finding, Blocker: the monthly period is the FULL current calendar month</h2>
  *
  * <p><strong>Severity: Blocker. Locator: {@code app/cbl/CORPT00C.cbl:L213-L238}. Status: implemented correctly here;
- * recorded so the root agent can enter it in the planned {@code DECISION_LOG.md}.</strong>
+ * recorded so the root agent can enter it in the {@code DECISION_LOG.md}.</strong>
  *
  * <p>The monthly period runs from the first day of the current month to the <strong>last</strong> day of
  * the current month. It is <strong>not</strong> month to date. The source proves it in six steps:
@@ -327,8 +335,10 @@ import io.micrometer.tracing.Tracer;
  * 3.9.11 through the pinned wrapper. The compiler runs {@code -Xlint:all} with {@code -Werror}, so any
  * warning {@code javac} 25 publishes fails the build. Compile with {@code ./mvnw -B -ntp clean compile} and
  * test with {@code ./mvnw -B -ntp test}; {@code ./mvnw -B -ntp verify} additionally enforces the JaCoCo
- * line coverage floor of 0.80. The environment file must be sourced first, because the queue name resolves
- * from it: {@code set -a; . ./.env; set +a}.
+ * line coverage floor of 0.80. The environment file must be sourced for those commands, because the queue name
+ * resolves from it, and it is sourced inside a subshell that also carries the command -
+ * {@code ( set -a; . ./.env; set +a; ./mvnw -B -ntp verify )} - rather than exported into the shell, where every
+ * later child would inherit it.
  *
  * <p>Tests for this bean live in {@code src/test/java/com/cardemo/unit/service/} and nowhere else; no test
  * source, fixture or helper belongs in this package. The bean is built to be unit testable without any
@@ -548,6 +558,28 @@ public class ReportSubmissionService {
      * all.
      */
     private static final String REPORT_NAME_CUSTOM = "Custom";
+
+    /**
+     * The closed set of report names this application will submit or accept, in the order
+     * {@code app/cbl/CORPT00C.cbl} assigns them.
+     *
+     * <p>Published so that {@code com.cardemo.config.BatchConfig} enforces the same set on the consuming side
+     * without restating the three literals. Finding M-12: a set defined in one place cannot drift, and the
+     * queue boundary needs the same rule at both ends because a message may arrive from a redelivery issued
+     * before a deployment.
+     */
+    public static final Set<String> PERMITTED_REPORT_NAMES =
+            Set.of(REPORT_NAME_MONTHLY, REPORT_NAME_YEARLY, REPORT_NAME_CUSTOM);
+
+    /**
+     * The only shape a parameter date may take: ten characters, {@code yyyy-MM-dd}, exactly as
+     * {@code app/cbl/CORPT00C.cbl:L60-L71} assembles it from its {@code PIC 9} components.
+     *
+     * <p>Anchored at both ends, so a value carrying a trailing line feed or any other suffix is refused rather
+     * than matched on its prefix. It deliberately checks shape and not validity: whether {@code 2022-02-31}
+     * is a date is {@link DateValidationService}'s decision, which reports a severity code the caller acts on.
+     */
+    private static final Pattern PARAMETER_DATE_SHAPE = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
 
     /**
      * The cursor marker for the monthly selector, {@code MONTHLYL} of the symbolic map.
@@ -977,7 +1009,11 @@ public class ReportSubmissionService {
      *
      * <p>Its purpose is not to hide a slow queue but to make the failure <em>deterministic</em>: without a
      * caller deadline this method's worst case is whatever the client, the retry policy and the transport
-     * agree on, which is neither stated anywhere nor testable.
+     * agree on. That is not a rhetorical point: {@code SqsTemplate.send} is compiled to
+     * {@code unwrapCompletionException(sendAsync(...))} over a bare {@code CompletableFuture.join()}, so the
+     * synchronous form waits without any bound at all and offers no handle with which to abandon the
+     * request. The deadline enforced here is asserted by the timeout and cancellation tests in
+     * {@code ReportSubmissionServiceTest}.
      */
     private static final long SEND_DEADLINE_SECONDS = 10L;
 
@@ -986,8 +1022,17 @@ public class ReportSubmissionService {
      * HTTP boundary uses so one identifier spans the whole path.
      *
      * <p>{@link CorrelationIdFilter#CORRELATION_ID_HEADER} is the single source of that name. This is what
-     * makes an online submission and the batch run it triggers reconcilable: the correlation identifier
-     * replaces {@code EIBTRNID}, which was the legacy system's only per-request thread of identity.
+     * makes an online submission and the publish hop it triggers reconcilable. The identifier is
+     * <strong>new capability rather than a translation</strong>: the specification motivates it by analogy with
+     * {@code EIBTRNID}, but that field is CICS-supplied and occurs <strong>zero times under {@code app/}</strong>,
+     * so nothing in the frozen corpus is being replaced. See {@code CorrelationIdFilter} for the full census.
+     *
+     * <p><strong>What this header does not reach.</strong> It travels as a message header only. The listener
+     * that drains this queue, {@code BatchConfig.ReportJobQueueListener}, builds its job parameters from the
+     * report name, the two dates and the SQS deduplication identifier, and neither reads this header nor
+     * restores it into the diagnostic context. So the identifier joins the HTTP request to the <em>publish</em>,
+     * and the deduplication identifier joins the publish to the <em>launch</em>; it does not appear on the batch
+     * run's own log records.
      */
     private static final String HEADER_CORRELATION_ID = CorrelationIdFilter.CORRELATION_ID_HEADER;
 
@@ -1185,17 +1230,273 @@ public class ReportSubmissionService {
     public record JobSubmissionMessage(String reportName, String startDate, String endDate) {
 
         /**
-         * Rejects an incompletely populated message at construction.
+         * Rejects an incompletely or implausibly populated message at construction.
          *
          * <p>The source could not express a partially built deck: the parameter fields are fixed-width
          * areas that always hold something, and the report name is assigned on every reachable arm before
          * the submission paragraph is performed. Requiring all three here reproduces that, and does so at
          * the one point where the omission would otherwise reach the queue.
+         *
+         * <p><strong>Finding M-12, severity Major, RESOLVED here.</strong> Null-checking was the only
+         * validation this type performed, so an arbitrary and unbounded report name travelled to the queue
+         * and then into an <em>identifying</em> job parameter, which the batch repository stores and keys a
+         * job instance on. Two things follow from the source that make a closed set the correct rule rather
+         * than a length cap. {@code WS-REPORT-NAME} is {@code PIC X(10)} at
+         * {@code app/cbl/CORPT00C.cbl:L58}, so no longer value could exist on the mainframe at all; and the
+         * only three values ever moved into it are the literals at {@code :L214}, {@code :L240} and
+         * {@code :L433}. Anything else is not a report this application knows how to run, so it is refused
+         * here rather than carried to a step that would refuse it later with less context.
+         *
+         * <p>The dates are checked for shape only - ten characters, {@code yyyy-MM-dd}, digits and dashes -
+         * because whether a shaped value is a real calendar date is
+         * {@link DateValidationService}'s decision and it reports a severity code the caller acts on. What
+         * this check removes is the class of value that could never have been assembled by
+         * {@code :L60-L71}: one carrying a control character, a separator, or a length the fixed-width
+         * parameter card could not hold.
+         *
+         * @throws IllegalArgumentException if the report name is not one of the three source literals, or if
+         *     either date is not ten characters of {@code yyyy-MM-dd} shape
          */
         public JobSubmissionMessage {
             Objects.requireNonNull(reportName, "reportName must not be null");
             Objects.requireNonNull(startDate, "startDate must not be null");
             Objects.requireNonNull(endDate, "endDate must not be null");
+            if (!PERMITTED_REPORT_NAMES.contains(reportName)) {
+                throw new IllegalArgumentException("reportName must be one of " + PERMITTED_REPORT_NAMES
+                        + ", the three literals app/cbl/CORPT00C.cbl:L214, :L240 and :L433 move into"
+                        + " WS-REPORT-NAME PIC X(10); the presented value is " + reportName.length()
+                        + " characters and is not one of them");
+            }
+            requireParameterDateShape(startDate, "startDate");
+            requireParameterDateShape(endDate, "endDate");
+        }
+
+        /**
+         * Refuses a parameter date that the fixed-width card of {@code app/cbl/CORPT00C.cbl:L60-L71} could
+         * not have carried.
+         *
+         * <p>The value itself is never echoed. A rejected date is untrusted input by definition, and a
+         * message that quoted it would carry whatever it contained into a log line; the field name and the
+         * observed length are what an operator needs and are all that is reported.
+         *
+         * @param value the presented date, never {@code null}
+         * @param field the field name, for the diagnostic
+         * @throws IllegalArgumentException if the value is not ten characters of {@code yyyy-MM-dd} shape
+         */
+        private static void requireParameterDateShape(final String value, final String field) {
+            if (!PARAMETER_DATE_SHAPE.matcher(value).matches()) {
+                throw new IllegalArgumentException(field + " must be ten characters of yyyy-MM-dd shape, as"
+                        + " app/cbl/CORPT00C.cbl:L60-L71 assembles it from PIC 9 components; the presented"
+                        + " value is " + value.length() + " characters and does not match that shape");
+            }
+        }
+
+        /**
+         * Renders the three fields as the one canonical string the envelope signature covers.
+         *
+         * <p>Signing a canonical rendering of the fields rather than the serialised body is deliberate: a
+         * signature over the body would break the moment the encoder changed a space, a field order or an
+         * escape, and it would authenticate a representation rather than a meaning. Every field is validated
+         * above to exclude the separator, so the rendering is unambiguous - no value can contain a line feed
+         * and therefore no two distinct messages can render identically.
+         *
+         * @return the canonical rendering, never {@code null}
+         */
+        String canonicalForm() {
+            return reportName + '\n' + startDate + '\n' + endDate;
+        }
+    }
+
+    /**
+     * The authenticity envelope that makes a queue message provably this application's own.
+     *
+     * <p><strong>Finding M-11, severity Major, RESOLVED here and in {@code com.cardemo.config.BatchConfig}.</strong>
+     * The listener that replaces the JES2 internal reader used to launch a job from any structurally valid
+     * message on the queue. In this topology the queue is an emulator queue with static local credentials and
+     * the emulator's community edition enforces no authorisation at all, so "structurally valid" was the only
+     * barrier: any process able to reach the emulator port could submit a report job, choose its period and
+     * name the job instance. Network placement narrows who can reach the port - that is what
+     * {@code docker-compose.yml} contributes - but it cannot distinguish one reachable principal from another,
+     * so the distinction is made here instead.
+     *
+     * <p>The mechanism is a keyed message authentication code over the message's canonical form, carried as an
+     * ordinary message header. A publisher without the key cannot produce a valid code, and the consumer
+     * refuses a message whose code is absent, malformed or wrong before it launches anything. The comparison
+     * is {@link MessageDigest#isEqual(byte[], byte[])}, which does not short-circuit, so a caller cannot
+     * recover the expected value one byte at a time by measuring how long a rejection takes.
+     *
+     * <p><strong>The key is derived, never reused.</strong> The material is the application's existing signing
+     * key - mandatory in all four profiles, environment-indirected with no committed default, and already
+     * refused at startup when too short - and a single-purpose key is derived from it by taking the code of a
+     * fixed label under it. Deriving rather than reusing means a message code can never be replayed as a token
+     * and a token can never be replayed as a message code, which is the whole point of domain separation; and
+     * it means this control introduces no new secret for an operator to distribute, so it cannot be
+     * accidentally left unconfigured. There is deliberately <strong>no unsigned mode</strong>: a control that
+     * can be switched off by omitting configuration is a control that will be off.
+     */
+    public static final class JobSubmissionEnvelope {
+
+        /**
+         * The header carrying the code. A message attribute, so it survives the queue unchanged and is
+         * visible to the consumer before any payload is interpreted.
+         */
+        public static final String SIGNATURE_HEADER = "X-CardDemo-Message-Signature";
+
+        /**
+         * The version prefix of a rendered code. Present so that a future algorithm change is a new prefix
+         * rather than an ambiguous byte string, and so that a consumer can refuse a version it does not
+         * implement instead of comparing bytes produced by different rules.
+         */
+        public static final String SIGNATURE_VERSION = "v1";
+
+        /** The keyed hash. Available on every supported runtime, so no configuration selects it. */
+        private static final String MAC_ALGORITHM = "HmacSHA256";
+
+        /**
+         * The domain-separation label. Any change to it invalidates every previously issued code, which is
+         * why it carries the version that {@link #SIGNATURE_VERSION} renders.
+         */
+        private static final String KEY_DERIVATION_LABEL = "carddemo/sqs/jobs-envelope/v1";
+
+        /** Not instantiable: this type is a contract, and its two operations are pure functions. */
+        private JobSubmissionEnvelope() {
+            throw new AssertionError("JobSubmissionEnvelope is a contract holder and is never instantiated");
+        }
+
+        /**
+         * Renders the code for one message.
+         *
+         * @param message the message about to be published; never {@code null}
+         * @param signingKey the application signing key the purpose key is derived from; never blank
+         * @return the rendered code, {@value #SIGNATURE_VERSION} followed by {@code =} and lowercase
+         *     hexadecimal, never {@code null}
+         * @throws IllegalArgumentException if the signing key is absent or blank
+         */
+        public static String sign(final JobSubmissionMessage message, final String signingKey) {
+            Objects.requireNonNull(message, "message must not be null");
+            return SIGNATURE_VERSION + '=' + hexadecimal(code(message.canonicalForm(), signingKey));
+        }
+
+        /**
+         * Decides whether a presented code was produced for this message by a holder of the key.
+         *
+         * <p>Every rejection returns {@code false} rather than throwing, so the caller decides what a failed
+         * verification means for the message; and no rejection reports which of the reasons applied, because
+         * the distinctions are exactly the information a forger would use.
+         *
+         * @param message the message as parsed from the body; never {@code null}
+         * @param signingKey the application signing key; never blank
+         * @param presented the header value exactly as delivered, possibly {@code null} or of another type
+         * @return {@code true} only when the presented value is a well-formed code of a version this
+         *     implementation produces and equals the code for this message
+         * @throws IllegalArgumentException if the signing key is absent or blank
+         */
+        public static boolean verify(final JobSubmissionMessage message, final String signingKey,
+                final Object presented) {
+
+            Objects.requireNonNull(message, "message must not be null");
+            final byte[] expected = code(message.canonicalForm(), signingKey);
+            if (presented == null) {
+                return false;
+            }
+            final String rendered = presented.toString();
+            final String prefix = SIGNATURE_VERSION + '=';
+            if (!rendered.startsWith(prefix)) {
+                return false;
+            }
+            final byte[] offered = fromHexadecimal(rendered.substring(prefix.length()));
+            return offered != null && MessageDigest.isEqual(expected, offered);
+        }
+
+        /**
+         * Computes the code of a canonical form under the derived purpose key.
+         *
+         * @param canonicalForm the exact bytes to authenticate, interpreted as UTF-8
+         * @param signingKey the application signing key
+         * @return the raw code bytes, never {@code null}
+         * @throws IllegalArgumentException if the signing key is absent or blank
+         */
+        private static byte[] code(final String canonicalForm, final String signingKey) {
+            return mac(purposeKey(signingKey), canonicalForm.getBytes(StandardCharsets.UTF_8));
+        }
+
+        /**
+         * Derives the single-purpose key from the application signing key.
+         *
+         * @param signingKey the application signing key; never blank
+         * @return the derived key material, never {@code null}
+         * @throws IllegalArgumentException if the signing key is absent or blank
+         */
+        private static byte[] purposeKey(final String signingKey) {
+            if (signingKey == null || signingKey.isBlank()) {
+                throw new IllegalArgumentException("the message envelope key is derived from "
+                        + "carddemo.security.jwt.signing-key, which must be configured; it has no default "
+                        + "anywhere in this repository and an unsigned queue message is never accepted");
+            }
+            return mac(signingKey.getBytes(StandardCharsets.UTF_8),
+                    KEY_DERIVATION_LABEL.getBytes(StandardCharsets.UTF_8));
+        }
+
+        /**
+         * Applies the keyed hash.
+         *
+         * <p>The two checked exceptions the interface declares cannot occur here and are converted rather
+         * than propagated: the algorithm is one every supported runtime implements, and the key is a non-empty
+         * byte array this class constructed. Converting them keeps the two public operations free of a
+         * checked contract their callers could not act on, and nothing is swallowed - the original is the
+         * cause.
+         *
+         * @param key the key material
+         * @param data the bytes to authenticate
+         * @return the code, never {@code null}
+         */
+        private static byte[] mac(final byte[] key, final byte[] data) {
+            try {
+                final Mac mac = Mac.getInstance(MAC_ALGORITHM);
+                mac.init(new SecretKeySpec(key, MAC_ALGORITHM));
+                return mac.doFinal(data);
+            } catch (final NoSuchAlgorithmException | InvalidKeyException impossible) {
+                throw new IllegalStateException(MAC_ALGORITHM
+                        + " is required by every supported runtime and the key is a non-empty array built by "
+                        + "this class, so neither failure is reachable", impossible);
+            }
+        }
+
+        /**
+         * Renders bytes as lowercase hexadecimal.
+         *
+         * @param bytes the bytes to render
+         * @return the rendering, never {@code null}
+         */
+        private static String hexadecimal(final byte[] bytes) {
+            final StringBuilder rendered = new StringBuilder(bytes.length * 2);
+            for (final byte value : bytes) {
+                rendered.append(Character.forDigit((value >> 4) & 0xF, 16));
+                rendered.append(Character.forDigit(value & 0xF, 16));
+            }
+            return rendered.toString();
+        }
+
+        /**
+         * Parses lowercase or uppercase hexadecimal, refusing anything else.
+         *
+         * @param rendered the presented hexadecimal, never {@code null}
+         * @return the bytes, or {@code null} when the value is not an even-length run of hexadecimal digits
+         */
+        private static byte[] fromHexadecimal(final String rendered) {
+            if (rendered.isEmpty() || rendered.length() % 2 != 0) {
+                return null;
+            }
+            final byte[] parsed = new byte[rendered.length() / 2];
+            for (int index = 0; index < parsed.length; index++) {
+                final int high = Character.digit(rendered.charAt(index * 2), 16);
+                final int low = Character.digit(rendered.charAt(index * 2 + 1), 16);
+                if (high < 0 || low < 0) {
+                    return null;
+                }
+                parsed[index] = (byte) ((high << 4) | low);
+            }
+            return parsed;
         }
     }
 
@@ -1378,6 +1679,18 @@ public class ReportSubmissionService {
     private static final String KEY_NOTIFICATION_TOPIC = "carddemo.aws.sns.notification-topic";
 
     /**
+     * Property key behind {@link #envelopeSigningKey}.
+     *
+     * <p>Deliberately the <em>application</em> signing key rather than a key of this service's own.
+     * {@link JobSubmissionEnvelope} derives a single-purpose key from it, so the two uses are
+     * cryptographically separated while the operator has exactly one secret to supply - one that is already
+     * mandatory in every profile, environment-indirected, and refused at startup when it is too short. A
+     * second secret would be a second thing to forget, and a control that can be left unconfigured is a
+     * control that is off.
+     */
+    private static final String KEY_ENVELOPE_SIGNING_KEY = "carddemo.security.jwt.signing-key";
+
+    /**
      * The optional tracer used to open a child span around the publish.
      *
      * <p>A provider rather than the tracer itself because tracing must be optional here. The tracing bridge
@@ -1407,6 +1720,16 @@ public class ReportSubmissionService {
      * emulator being up.
      */
     private final String notificationTopic;
+
+    /**
+     * The key material the queue envelope code is derived from, bound from
+     * {@value #KEY_ENVELOPE_SIGNING_KEY}.
+     *
+     * <p>Held as the configured string and never logged, rendered or reported. Every use goes through
+     * {@link JobSubmissionEnvelope}, which derives a single-purpose key from it, so this field's value never
+     * signs anything directly.
+     */
+    private final String envelopeSigningKey;
 
     /**
      * Assembles the bean.
@@ -1451,6 +1774,10 @@ public class ReportSubmissionService {
      *                                {@value #KEY_MESSAGE_GROUP_ID}
      * @param notificationTopic       the operator notification topic, from
      *                                {@value #KEY_NOTIFICATION_TOPIC}
+     * @param envelopeSigningKey      the application signing key, from
+     *                                {@value #KEY_ENVELOPE_SIGNING_KEY}, from which
+     *                                {@link JobSubmissionEnvelope} derives the single-purpose key that makes
+     *                                a submission provably this application's own
      * @throws NullPointerException  if any argument is {@code null}
      * @throws IllegalStateException if the message group identifier is blank, longer than
      *                               {@value #MAX_MESSAGE_GROUP_ID_LENGTH} characters, or contains a character
@@ -1466,7 +1793,8 @@ public class ReportSubmissionService {
             @Value("${carddemo.aws.sqs.report-queue}") final String reportQueueName,
             @Value("${carddemo.aws.sqs.report-queue-logical-name}") final String reportQueueLogicalName,
             @Value("${" + KEY_MESSAGE_GROUP_ID + "}") final String reportMessageGroupId,
-            @Value("${" + KEY_NOTIFICATION_TOPIC + "}") final String notificationTopic) {
+            @Value("${" + KEY_NOTIFICATION_TOPIC + "}") final String notificationTopic,
+            @Value("${" + KEY_ENVELOPE_SIGNING_KEY + "}") final String envelopeSigningKey) {
         this.sqsTemplate = Objects.requireNonNull(sqsTemplate, "sqsTemplate must not be null");
         this.snsTemplate = Objects.requireNonNull(snsTemplate, "snsTemplate must not be null");
         this.dateValidationService =
@@ -1480,6 +1808,27 @@ public class ReportSubmissionService {
                 Objects.requireNonNull(reportMessageGroupId, "reportMessageGroupId must not be null"));
         this.notificationTopic =
                 Objects.requireNonNull(notificationTopic, "notificationTopic must not be null");
+        this.envelopeSigningKey = requireEnvelopeSigningKey(envelopeSigningKey);
+    }
+
+    /**
+     * Proves the envelope key material is present before any message can be published without it.
+     *
+     * <p>Checked at construction rather than at first send, so a deployment that failed to supply the key
+     * fails to start instead of accepting submissions it cannot authenticate. The value itself is never
+     * echoed, not even by length: it is the application signing key.
+     *
+     * @param signingKey the configured key material
+     * @return the same value, once proven usable
+     * @throws IllegalArgumentException if the value is absent or blank
+     */
+    private static String requireEnvelopeSigningKey(final String signingKey) {
+        if (signingKey == null || signingKey.isBlank()) {
+            throw new IllegalArgumentException("Property " + KEY_ENVELOPE_SIGNING_KEY + " must be configured: "
+                    + "the queue envelope code that makes a report submission provably this application's own "
+                    + "is derived from it, and there is no unsigned mode");
+        }
+        return signingKey;
     }
 
     /**
@@ -2393,13 +2742,26 @@ public class ReportSubmissionService {
         try {
             final Map<String, Object> headers = propagationHeaders(span);
 
+            // Finding M-11. The envelope code is added last, after the propagation headers, so that the
+            // header map this method sends is the one the consumer verifies against. It covers the three
+            // payload fields and nothing else: the propagation headers are diagnostic context, which the
+            // consumer validates for shape rather than trusting, so signing them would authenticate values
+            // no decision is taken on.
+            headers.put(JobSubmissionEnvelope.SIGNATURE_HEADER,
+                    JobSubmissionEnvelope.sign(card, this.envelopeSigningKey));
+
             // :L517-L523. The queue name and the message group are both configuration; the template and the
             // client beneath it belong to com.cardemo.config.AwsConfig, so no endpoint is named here.
             //
-            // sendAsync rather than send: the synchronous form's worst case is whatever the client, the
-            // retry policy and the transport agree on, which is stated nowhere and cannot be tested. The
-            // asynchronous form plus an explicit await makes the deadline this method's own, and gives it a
-            // future it can cancel. The observable behaviour on success is identical.
+            // sendAsync plus an explicit bounded await, rather than send. This is NOT an asynchronous
+            // handoff layered over a blocking call, because the synchronous form is itself exactly that:
+            // AbstractMessagingTemplate.send(String, Message) is compiled to
+            // unwrapCompletionException(sendAsync(queue, message)), and that helper is a bare
+            // CompletableFuture.join() - so send() pays the identical handoff and then waits with NO
+            // caller-visible bound and NO handle to abandon. SqsTemplateOptions exposes no send timeout
+            // either (defaultPollTimeout governs receive), so this form is the only bounded synchronous
+            // send available. It costs nothing extra and adds the deadline and the cancellation.
+            //
             // One identifier per call, held in a local so the value that reaches the queue is also the value
             // that could be logged: reading it twice from a generator would produce two different identities.
             final String deduplicationId = newDeduplicationId();
@@ -2508,8 +2870,28 @@ public class ReportSubmissionService {
      * converting it into a response. That is the distinction Rule 1 Clause B draws - an empty {@code catch} is
      * forbidden, a documented non-fatal outcome that preserves the cause is not.
      *
-     * <p>It is not retried, for the reason the queue publish is not: the source retries nothing, and a retry
-     * would change how many notifications a failing topic eventually receives.
+     * <p>It is not retried <em>by this method</em>, for the reason the queue publish is not: the source retries
+     * nothing, and an application-level retry would change how many notifications a failing topic eventually
+     * receives.
+     *
+     * <p><strong>Finding I-01, informational, DOCUMENTED.</strong> Beneath this method the shared client does
+     * apply a bounded standard retry, and unlike the queue send there is no deduplication token to collapse a
+     * repeat: a first publish that succeeded and then lost its response is sent again and <em>delivered
+     * twice</em>. So a subscriber observes <strong>at least once</strong>, not exactly once. That is stated
+     * rather than removed - suppressing transport retries here would trade a duplicated courtesy for a lost
+     * one, and the mainframe's {@code NOTIFY} was itself best-effort and undeduplicated. A subscriber that must
+     * not act twice on one notice is expected to be idempotent; the payload carries no identity to key on and
+     * inventing one would change what the notified party receives.
+     *
+     * <p><strong>Finding M-04, severity Major, RESOLVED - by provisioning, not here.</strong> This method
+     * reports a successful publish, and a successful publish is <em>acceptance by the service</em>, which is
+     * not the same thing as delivery to anyone. That distinction used to be fatal to the capability, because
+     * {@code localstack-init/init-aws.sh} created the topic with no subscriber and asserted that count, so
+     * every notification this method logged as published was accepted and immediately discarded. The script now
+     * provisions a durable inbox queue subscribed to the topic and <em>fails</em> when the topic reports no
+     * subscription, which is the enforceable half of the guarantee; the log line below is honest about being
+     * the other half, since a publisher cannot observe a subscriber's receipt. There is deliberately no
+     * delivery check here: it would require this method to read the inbox, which is the operator's to read.
      *
      * <p><strong>Boundedness. Finding M-08, severity Medium, RESOLVED.</strong> This publish is synchronous on
      * the request thread, and the submission it follows has already succeeded - so whatever budget bounds it
@@ -2542,8 +2924,12 @@ public class ReportSubmissionService {
             this.snsTemplate.sendNotification(this.notificationTopic, notification,
                     JOB_NAME + " " + JOB_DESCRIPTION);
 
-            LOG.info("operator notification for the {} period published to the {} topic, "
-                            + "replacing the {} card",
+            // "accepted by" rather than "delivered to": the service acknowledges the publish, and delivery to
+            // the subscribed inbox is the service's to perform. Finding M-04 - the wording used to claim more
+            // than the call proves, at a time when the topic had no subscriber at all.
+            LOG.info("operator notification for the {} period accepted by the {} topic for delivery to its "
+                            + "subscribed inbox, replacing the {} card; the topic is provisioned with a "
+                            + "subscriber by localstack-init/init-aws.sh, which fails when it has none",
                     period.reportName(), this.notificationTopic, JOB_NOTIFY_CARD);
         } catch (final RuntimeException failure) {
             // Non-fatal by design; see the method documentation. The period name is safe to log - it is one
@@ -2623,8 +3009,15 @@ public class ReportSubmissionService {
         } else {
             // The span's own identifiers rather than the diagnostic context's, so a consumer parents onto
             // this publish hop and not onto the request span that contains it.
-            putIfPropagatable(headers, HEADER_TRACE_PARENT,
-                    CorrelationIdFilter.traceParent(span.context().traceId(), span.context().spanId()));
+            //
+            // FINDING M-03: and the span's own sampling decision alongside them, rather than an asserted
+            // "sampled". The trace-flags octet used to be hard-coded, so with the production sampling
+            // probability of one in ten this header told nine consumers in ten to record a child of a trace
+            // this process had already decided to drop - producing an orphaned half-trace at the collector.
+            // sampled() may be null when the decision is deferred, which traceParent reports as sampled.
+            final TraceContext context = span.context();
+            putIfPropagatable(headers, HEADER_TRACE_PARENT, CorrelationIdFilter.traceParent(
+                    context.traceId(), context.spanId(), context.sampled()));
         }
 
         headers.put(HEADER_SOURCE_TRANSACTION, TRANSACTION_ID);

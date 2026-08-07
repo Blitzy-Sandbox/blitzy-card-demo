@@ -87,11 +87,13 @@ import org.springframework.context.annotation.Configuration;
  *       static, and every one of them resolves to the bean declared here. Before this declaration existed
  *       the context could not refresh at all: the failure surfaced as an unsatisfied constructor parameter
  *       on the first component the container happened to build.</li>
- *   <li><strong>It is the declared wiring owner of {@code com.cardemo.observability}.</strong> All three
- *       classes in that package register themselves - {@code CorrelationIdFilter} as a scanned,
- *       {@code @Order}ed servlet filter, {@code MetricsConfig} as the definition site of the four
- *       instruments, {@code HealthIndicators} as the source of the object-store and queue health
- *       contributors - so this file deliberately declares no duplicate of any of them. Its ownership here is
+ *   <li><strong>It is the declared wiring owner of {@code com.cardemo.observability}.</strong> All
+ *       <strong>four</strong> classes in that package register themselves - {@code CorrelationIdFilter} as
+ *       a scanned, {@code @Order}ed servlet filter, {@code MetricsConfig} as the definition site of the
+ *       four instruments, {@code HealthIndicators} as the source of the object-store and queue health
+ *       contributors, and {@code TemplatedUriObservationConvention} through the {@code ObjectProvider}
+ *       that Boot's {@code WebMvcObservationAutoConfiguration} resolves - so this file deliberately
+ *       declares no duplicate of any of them. Its ownership here is
  *       the documented contract below, not a second set of bean definitions.</li>
  * </ol>
  *
@@ -122,9 +124,10 @@ import org.springframework.context.annotation.Configuration;
  * {@code com.cardemo.observability} that owns it.</blockquote>
  *
  * <p>That direction applies equally to the correlation filter and the health contributors.
- * {@code spring.main.allow-bean-definition-overriding} is {@code false} at
- * {@code application.yml:505}, so a collision throws {@code BeanDefinitionOverrideException} during context
- * refresh rather than silently shadowing one definition with the other. That is the desired behaviour: an
+ * {@code spring.main.allow-bean-definition-overriding} is set {@code false} in {@code application.yml} -
+ * cited by that key rather than by line, because the line moves - so a collision throws
+ * {@code BeanDefinitionOverrideException} during context refresh rather than silently shadowing one
+ * definition with the other. That is the desired behaviour: an
  * order-dependent startup failure is worse than the loud one.
  *
  * <h2>What this class does not own</h2>
@@ -145,11 +148,16 @@ import org.springframework.context.annotation.Configuration;
  *       which uses exactly {@code correlationId}, {@code traceId} and {@code spanId} in HTTP scope. No
  *       fourth HTTP-scope key is invented here and no existing one is re-spelled: key drift silently
  *       produces unpopulated log fields and raises no error, which is why it is classified High below.</li>
- *   <li><strong>The batch job-instance MDC contribution.</strong> {@code CorrelationIdFilter} is
- *       HTTP-scoped, so the {@code jobInstanceId} key that batch events carry alongside the trio is
- *       contributed by a {@code JobExecutionListener} declared as a {@code @Bean} lambda in
- *       {@code com.cardemo.config.BatchConfig}. It is not declared here and no competing listener is
- *       added.</li>
+ *   <li><strong>The batch job-instance MDC contribution.</strong> {@code CorrelationIdFilter}'s request path
+ *       is HTTP-scoped, so the {@code jobInstanceId} key that batch events carry alongside the trio is
+ *       contributed by a {@code JobExecutionListener} that each of the six job classes in
+ *       {@code com.cardemo.batch.jobs} registers on its own job - a listener bean is never applied to a job
+ *       implicitly, so a listener declared in a configuration class and registered by no job builder does
+ *       nothing, which is why the one that stood in {@code com.cardemo.config.BatchConfig} was removed as
+ *       finding M-01. The park-and-restore lifecycle those six listeners share is
+ *       {@code CorrelationIdFilter.enterBatchScope(long, String)} and
+ *       {@code CorrelationIdFilter.exitBatchScope()}, so the key names and the lifecycle each have one
+ *       definition. Nothing of the kind is declared here and no competing listener is added.</li>
  *   <li><strong>Cloud clients.</strong> {@code com.cardemo.config.AwsConfig} constructs them;
  *       {@code HealthIndicators} injects them. This class constructs none and never sets an endpoint
  *       override.</li>
@@ -177,7 +185,8 @@ import org.springframework.context.annotation.Configuration;
  *       {@code app/cbl/COSGN00C.cbl} (260 lines): the password comparison at {@code :L223}, the wrong
  *       password path at {@code :L241-L246}, {@code WHEN 13} for a user that does not exist at
  *       {@code :L247-L251}, and {@code WHEN OTHER} at {@code :L252-L256}.</li>
- *   <li><strong>Total transaction amount - the gauge.</strong> From the accumulations in
+ *   <li><strong>Total transaction amount - a function counter, deliberately not a gauge.</strong> From the
+ *       accumulations in
  *       {@code 2800-UPDATE-ACCOUNT-REC} at {@code app/cbl/CBTRN02C.cbl:L545-L560}, where the amount is
  *       added to the balance and then to the cycle credit when it is non-negative and to the cycle debit
  *       otherwise, at {@code :L547-L552}. This one instrument publishes <strong>two series</strong>, tagged
@@ -251,7 +260,7 @@ import org.springframework.context.annotation.Configuration;
  * request-scoped thread of identity that replaces the mainframe's per-transaction identity.
  *
  * <p><strong>The exporter endpoint is deliberately not read by this class.</strong>
- * {@code management.otlp.tracing.endpoint} is declared at {@code application.yml:940} as a bare
+ * {@code management.otlp.tracing.endpoint} is declared in {@code application.yml} as a bare
  * {@code OTEL_EXPORTER_OTLP_ENDPOINT} reference with no default, so that a missing collector fails loudly
  * rather than silently discarding spans - the framework gates its OTLP exporter on the property's presence,
  * so an absent value would create no exporter at all. Reading that key from Java would make this class abort
@@ -340,7 +349,7 @@ import org.springframework.context.annotation.Configuration;
  *       topic names, every one supplied by environment variable with no default</dt>
  *   <dd>The health namespaces {@code HealthIndicators} reads. Not read here.</dd>
  *   <dt>{@value #KEY_CLOCK_ZONE} - <strong>defaulted to {@code UTC}</strong> by
- *       {@code zone: ${CARDDEMO_TIME_ZONE:UTC}} at {@code application.yml:987}</dt>
+ *       {@code zone: ${CARDDEMO_TIME_ZONE:UTC}} in {@code application.yml}</dt>
  *   <dd>The one key this class reads. See the time-source section for its effect and for the discrepancy it
  *       creates.</dd>
  * </dl>
@@ -361,8 +370,8 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p><strong>The clock zone and the parity baseline must be made to agree, and this class cannot do it
  * alone.</strong> The base profile pins
- * {@value #KEY_CLOCK_ZONE} to {@code UTC} through {@code zone: ${CARDDEMO_TIME_ZONE:UTC}} at
- * {@code application.yml:987}. A deployment that inherits that default therefore runs the clock in UTC, not
+ * {@value #KEY_CLOCK_ZONE} to {@code UTC} through {@code zone: ${CARDDEMO_TIME_ZONE:UTC}} in
+ * {@code application.yml}. A deployment that inherits that default therefore runs the clock in UTC, not
  * in the host's civil zone, so rendered dates and times will differ from a baseline captured under a
  * non-UTC zone by the host's offset. This class cannot resolve the discrepancy by itself:
  * {@code application.yml} is owned elsewhere and is bound, never redeclared. Whoever owns the parity
@@ -472,7 +481,7 @@ public class ObservabilityConfig {
     /**
      * Property key by which a deployment pins the zone the application {@link Clock} ticks in.
      *
-     * <p>The base profile binds it to {@code ${CARDDEMO_TIME_ZONE:UTC}} at {@code application.yml:987}, so
+     * <p>The base profile binds it to {@code ${CARDDEMO_TIME_ZONE:UTC}} in {@code application.yml}, so
      * the pinned path is the one that normally runs and the effective zone is {@code UTC} unless
      * {@code CARDDEMO_TIME_ZONE} is exported. The key exists so that a zone is chosen deliberately rather
      * than inherited from whatever the host happens to be set to, and so that a baseline captured under one

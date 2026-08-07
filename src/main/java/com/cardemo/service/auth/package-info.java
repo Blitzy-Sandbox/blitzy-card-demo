@@ -105,7 +105,8 @@
  *       {@code app/cbl/COSGN00C.cbl:L132-L136}. <strong>Severity: High</strong> - it locks out legitimate
  *       users.</p></li>
  *   <li><p><strong>Symptom: startup fails with {@code Could not resolve placeholder 'JWT_SIGNING_KEY'}.</strong>
- *       Cause: the environment was not loaded. <em>Remediation:</em> {@code set -a; . ./.env; set +a}. Do
+ *       Cause: the environment was not loaded. <em>Remediation:</em> load it for the one command that needs it,
+ *       {@code ( set -a; . ./.env; set +a; <command> )}, rather than exporting it into the shell. Do
  *       <strong>not</strong> add a default: a signing key with a fallback is a committed secret.
  *       <strong>Severity: High</strong> if it is mistaken for a bug.</p></li>
  *   <li><p><strong>Symptom: every seeded user fails to authenticate.</strong> Cause: the seed migration stored
@@ -140,7 +141,9 @@
  *       <strong>build failure</strong>.</li>
  *   <li><strong>Run.</strong> These are Spring beans and are never invoked directly; a controller or a batch
  *       step calls them. A manual exercise needs the compose stack up - {@code docker compose up -d} - and the
- *       environment loaded with {@code set -a; . ./.env; set +a}, because {@code JWT_SIGNING_KEY} has no default and
+ *       environment scoped to that one command rather than exported into the shell:
+ *       {@code ( set -a; . ./.env; set +a; <command> )}. The parentheses confine the values to the subshell
+ *       instead of leaving every later child inheriting them. {@code JWT_SIGNING_KEY} has no default and
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service}.
  *       <strong>Measured 4 August 2026:</strong> {@code AuthenticationServiceTest} covers this service and

@@ -141,7 +141,7 @@ import org.springframework.data.domain.Pageable;
  *   <li>{@code ./mvnw -B -ntp test} - runs this class under Surefire; the report lands in
  *       {@code target/surefire-reports/}.</li>
  *   <li>{@code ./mvnw -B -ntp -Dtest=CardListServiceTest test} - runs this class alone.</li>
- *   <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} - the full gate. Note the
+ *   <li>{@code ./mvnw -B -ntp clean verify} - the full gate. Note the
  *       skip property is hyphenated.</li>
  *   </ul>
  * <p>Compilation is {@code maven-compiler-plugin:3.14.1} at {@code release 25} with
@@ -241,7 +241,7 @@ import org.springframework.data.domain.Pageable;
  * <p>Rule 1 Clause B forbids dead code; the parity mandate requires that the bare-{@code EXIT} exit
  * paragraphs and the {@code ELSE CONTINUE} no-op arms of {@code 9500} be retained. Parity governs,
  * and Clause B is satisfied on its own wording: the prohibition is on artefacts without an owner or
- * a tracking reference, and every retained item carries an entry in the planned {@code DECISION_LOG.md}, a
+ * a tracking reference, and every retained item carries an entry in the {@code DECISION_LOG.md}, a
  * {@code TRACEABILITY_MATRIX.md} row and Javadoc citing its source locator. This class asserts that
  * those methods exist, so deleting one breaks a test instead of silently breaking the paragraph map
  * that Gate 7 verifies. No other conflict exists.</p>

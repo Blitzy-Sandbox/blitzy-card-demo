@@ -156,7 +156,7 @@
 #     in tests any more than in production - Rule 1 Clause D names tests
 #     explicitly. The two probe groups are left intact because
 #     GateVerificationTest asserts they resolve as distinct endpoints and
-#     Dockerfile:99-100 depends on the readiness path.
+#     the Dockerfile's HEALTHCHECK depends on the readiness path.
 #   - The conservative logging levels (logging.level.* in the base profile), including
 #     the org.hibernate.SQL and org.hibernate.orm.jdbc.bind protective floors.
 #     Hibernate SQL and bind-parameter logging, Spring Security DEBUG, AWS SDK
@@ -204,12 +204,18 @@
 # runnable profile, and it is protected WITHOUT declaring anything, which is
 # what makes the arrangement safe rather than merely conventional:
 #
-#   * application.yml carries the three service endpoints - indirected through
-#     ${AWS_ENDPOINT_URL} and defaulting to the emulator edge - and the inert
-#     static credential pair that displaces the SDK default provider chain. A
-#     standalone run under this profile alone therefore addresses the emulator
-#     rather than falling through to regional endpoint discovery, which is
-#     precisely what it used to do.
+#   * application.yml carries the three service endpoints - each indirected
+#     through ${AWS_ENDPOINT_URL} with NO literal default, deliberately, so an
+#     unset variable fails placeholder resolution instead of being hidden - and
+#     the inert static credential pair that displaces the SDK default provider
+#     chain. A standalone run under this profile alone therefore addresses the
+#     emulator rather than falling through to regional endpoint discovery, which
+#     is precisely what it used to do. THAT IS THE WHOLE ENDPOINT POLICY, and it
+#     is the same in every profile: every profile points S3, SQS and SNS at the
+#     emulator, and com.cardemo.config.AwsConfig aborts the context refresh
+#     unless all three do. The developer defaults for the variable live in
+#     application-local.yml; this profile needs none, because the harness below
+#     registers concrete container addresses that take precedence.
 #   * The integration harness registers spring.cloud.aws.s3.endpoint,
 #     .sqs.endpoint and .sns.endpoint from its LocalStack container's mapped
 #     address through @DynamicPropertySource. Those registrations take
@@ -1014,16 +1020,31 @@ logging:
 # that shows up as flakiness; they fail outright, because the listener wins the
 # race every time and the test sees an empty queue.
 #
-# So this is the same address-space separation carddemo.batch.launch expresses.
+# So this is the same address-space separation spring.batch.job.name expresses:
+# the listener stands down in any process that is serving an operator submission.
 # On the mainframe the CICS region that WRITEQ TD's the card and the initiator
 # that reads it are different address spaces, and only one of them drains the
 # queue. Here the harness takes the reader role and the listener stands down.
 #
-# The listener's own behaviour is not left unproven by this: its launch,
-# idempotency, malformed-payload and identifier-fallback paths are asserted in
-# com.cardemo.unit.config.BatchConfigTest, which drives the listener directly
-# rather than through a live queue, and the property gate itself is asserted
-# there too.
+# The listener's own behaviour is not left unproven by this, and it is not left
+# to a unit test either. Two tiers cover it and the split is deliberate:
+#
+#   - com.cardemo.unit.config.BatchConfigTest drives the listener method
+#     directly with a mocked launcher, which is what reaches its launch,
+#     idempotency, malformed-payload and identifier-fallback branches one at a
+#     time. It also asserts this property gate against this file, so deleting
+#     the setting below fails a test instead of quietly reintroducing a second
+#     reader into the whole integration tier.
+#   - com.cardemo.integration.batch.ReportQueueListenerLiveTest turns the
+#     listener ON in a context of its own and drives it THROUGH A LIVE FIFO
+#     QUEUE, which is what proves the parts a direct call cannot: that the
+#     @SqsListener is actually bound and running, that the framework converts
+#     the raw body and the deduplication header into the method's parameters,
+#     that the message is acknowledged rather than redelivered forever, and that
+#     the launch reaches a real TRANREPT execution. It takes a SEPARATE queue,
+#     carddemo-report-jobs-live.fifo, and carries @DirtiesContext, so enabling
+#     the consumer there cannot make it a second reader of the queue this
+#     profile reserves for the shared harness.
 carddemo:
   batch:
     report-queue-listener:

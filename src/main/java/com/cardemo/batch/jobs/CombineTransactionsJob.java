@@ -24,17 +24,26 @@
  */
 package com.cardemo.batch.jobs;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.SequenceInputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.sql.BatchUpdateException;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 
 import org.slf4j.Logger;
@@ -61,18 +70,22 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.dao.DataAccessException;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import com.cardemo.batch.GenerationPrefixContract;
 import com.cardemo.batch.processors.TransactionCombineProcessor;
 import com.cardemo.batch.readers.CombinedTransactionReader;
 import com.cardemo.batch.writers.TransactionWriter;
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.observability.CorrelationIdFilter;
-import com.cardemo.observability.MetricsConfig;
+import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileStatusMapper;
 
 import io.awspring.cloud.s3.ObjectMetadata;
@@ -130,12 +143,21 @@ import io.awspring.cloud.s3.S3Resource;
  *       deleted or expired by this job.</li>
  *   <li><b>Outputs:</b> one new {@code TRANSACT.COMBINED} object of {@value #COMBINED_RECORD_LENGTH}-byte
  *       records, and one row per record inserted into the {@code transaction} relation.</li>
- *   <li><b>Side effects, in order:</b> a single object is written to the generation bucket; two entries are
- *       written to the job execution context ({@value #COMBINED_OBJECT_KEY_CONTEXT_ENTRY} and
- *       {@value #COMBINED_RECORD_COUNT_CONTEXT_ENTRY}) and are therefore persisted by the job repository;
- *       rows are inserted into the relation inside the load step's transaction; the records-processed counter
- *       is advanced once by the number of rows loaded; and two diagnostic-context entries are set for the
- *       duration of the run and cleared afterwards.</li>
+ *   <li><b>Side effects, in order:</b> one temporary staging file is created under {@code java.io.tmpdir}
+ *       and deleted again whatever the outcome; a single object is written to the generation bucket; three
+ *       entries are written to the job execution context ({@value #COMBINED_OBJECT_KEY_CONTEXT_ENTRY},
+ *       {@value #COMBINED_RECORD_COUNT_CONTEXT_ENTRY} and
+ *       {@value #COMBINED_LOADED_RECORD_COUNT_CONTEXT_ENTRY}) and are therefore persisted by the job
+ *       repository; rows are inserted into the relation inside the load step's transaction; and two
+ *       diagnostic-context entries are set for the duration of the run and cleared afterwards. <b>No
+ *       Micrometer counter is advanced by this job</b> - see
+ *       {@link #publishLoadedRecordCount(StepExecution, int)}.</li>
+ *   <li><b>Not a side effect, and this one is worth stating because it was one:</b> no application metric is
+ *       advanced. {@code carddemo.batch.records.processed} counts the daily-transaction records the POSTTRAN
+ *       job read ({@code app/cbl/CBTRN02C.cbl:L206}) and nothing else; the rows this job loads were already
+ *       counted by the run that posted them. This job's volume lives in
+ *       {@value #COMBINED_RECORD_COUNT_CONTEXT_ENTRY} and in the Spring Batch step metrics, both of which
+ *       carry a job dimension that an untagged counter cannot. See finding H-01.</li>
  *   <li><b>Not a side effect:</b> nothing is deleted, no generation is expired, no queue message is sent and
  *       no other job is launched. Retention is documented rather than enforced, so this job never removes an
  *       object.</li>
@@ -230,7 +252,9 @@ import io.awspring.cloud.s3.S3Resource;
  * <b>Both timestamps are twenty-six-character text and are passed through untouched.</b> They are
  * {@code String} over {@code CHAR(26)} end to end - never {@code LocalDateTime}, {@code Timestamp},
  * {@code Instant}, {@code OffsetDateTime} or {@code LocalDate} - because the corpus has three mutually
- * incompatible producers and the batch producer emits millisecond precision followed by four literal zeros.
+ * incompatible producers and the batch producer emits <b>hundredths-of-a-second</b> precision followed by
+ * four literal zeros - not millisecond precision, which an earlier revision of this sentence claimed and which
+ * would need seven fraction characters where {@code app/cbl/CBTRN02C.cbl:L159-L174} declares six.
  * Parsing and re-rendering would normalise that fourth-zero tail away and every generated timestamp would
  * differ from the baseline. This job performs no parsing, no reformatting, no normalising and no timezone
  * conversion on either field. Bytes are read and written through
@@ -243,9 +267,6 @@ import io.awspring.cloud.s3.S3Resource;
  *       {@value #DEFAULT_JOB_NAME}.</li>
  *   <li>{@code carddemo.batch.combtran.chunk-size} - rows per bulk-load batch, falling back to
  *       {@code carddemo.batch.chunk-size} and then to {@value #DEFAULT_CHUNK_SIZE}.</li>
- *   <li>{@code carddemo.batch.combtran.max-records-per-run} - the upper bound on one combined generation,
- *       default {@value #DEFAULT_MAX_RECORDS_PER_RUN}, mirroring the existing
- *       {@code carddemo.batch.statement-processor.max-transactions-per-run} convention.</li>
  *   <li>{@code carddemo.aws.s3.batch-output-bucket} - the versioned generation bucket, supplied by
  *       {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET} with no committed value.</li>
  *   <li>{@code carddemo.aws.s3.gdg-prefixes.transact-combined} - the {@code TRANSACT.COMBINED} key prefix,
@@ -257,7 +278,7 @@ import io.awspring.cloud.s3.S3Resource;
  * <h2>How to run, build and test</h2>
  * Jobs do not auto-launch - {@code spring.batch.job.enabled: false} - so this one is started by
  * {@code BatchPipelineOrchestrator} or by the queue listener that replaces the JES2 internal reader. Build
- * and verify with {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. Tests belong in
+ * and verify with {@code ./mvnw -B -ntp clean verify}. Tests belong in
  * {@code src/test/java/com/cardemo/unit/batch} for the comparator, the decode and the decider arms, and in
  * {@code src/test/java/com/cardemo/integration/batch} for the concatenation order, the {@code (+1)} key
  * handoff, the geometry and the duplicate collision.
@@ -275,20 +296,33 @@ import io.awspring.cloud.s3.S3Resource;
  *       it rather than parsing a misaligned stream.</li>
  *   <li><b>A load step that reports zero rows</b> means {@code STEP05R} published an empty generation; the
  *       sort step logs the per-source counts, so the empty source is named rather than inferred.</li>
- *   <li><b>An absent current generation on either leg</b> is <b>not</b> an error and yields an empty source
- *       for that leg, because {@code (0)} on a base with no generation is simply the state before that base's
- *       first producer has run. {@code CombinedTransactionReader} owns the decision and it is not
- *       re-implemented here. A run in which <b>neither</b> leg contributes a record still completes, creating
- *       an empty combined generation and publishing a record count of zero - {@code :L33-L37} allocates
- *       {@code SORTOUT} unconditionally and {@code :L48} copies it, so a copy of nothing succeeds - and the
- *       sort step logs the per-source counts so the empty leg is named rather than inferred.
- *       <p>An earlier revision abended on an absent {@code TRANSACT.BKUP} generation specifically, while
- *       treating an absent {@code SYSTRAN} generation as an empty read. <b>That asymmetry is withdrawn</b> -
- *       see the no-analogue entry for {@code app/jcl/TRANBKP.jcl} below for why the first leg is absent by
- *       construction on a clean environment.</li>
+ *   <li><b>An absent current generation on either leg IS an error</b>, reported as file status {@code '35'}
+ *       with the searched prefix and the producing member named. {@code app/jcl/COMBTRAN.jcl:L23-L26} carries
+ *       {@code DISP=SHR} on both legs, and an uncatalogued {@code DISP=SHR} dataset fails <b>allocation</b>
+ *       before {@code SORT} is given control; the absence of {@code COND=} on {@code :L22} says nothing about
+ *       that, because {@code COND=} gates step <em>execution</em> and not allocation. Produce the generation
+ *       first: {@code TRANSACT.BKUP} comes from {@code STEP01R} of {@code app/proc/TRANREPT.prc:L21} and
+ *       {@code SYSTRAN} from {@code app/jcl/INTCALC.jcl:L37-L41}. {@code CombinedTransactionReader} owns the
+ *       decision and it is not re-implemented here.
+ *       <p>Two earlier revisions of this entry are withdrawn. The first abended on an absent
+ *       {@code TRANSACT.BKUP} generation while treating an absent {@code SYSTRAN} generation as an empty read;
+ *       the second removed both failures and called an absent generation on either leg a successful empty
+ *       read. Neither matches the member: the disposition is the same on both legs, so the outcome is the same
+ *       on both legs.</li>
+ *   <li><b>A generation that exists and holds nothing is a different case, and is legitimately empty.</b> It
+ *       is the object-store counterpart of {@code DISP=(NEW,CATLG,DELETE)} cataloguing a dataset to which
+ *       nothing was written - which {@code app/jcl/INTCALC.jcl:L37-L41} does whenever
+ *       {@code app/cbl/CBACT04C.cbl:L214} suppressed every write - so it is read as zero records. A run in
+ *       which both legs are present and both are empty still completes, creating an empty combined generation
+ *       and publishing a record count of zero, because {@code :L33-L37} allocates {@code SORTOUT}
+ *       unconditionally and {@code :L48} copies it, so a copy of nothing succeeds; the sort step logs the
+ *       per-source counts so the empty leg is named rather than inferred.
+ *       <p>Inside the pipeline the first leg is never absent, because the archive-and-reset step below
+ *       writes {@code TRANSACT.BKUP(+1)} from the master before the sort runs; the two guarantees are
+ *       complementary - one produces the generation, the other refuses to invent one.</li>
  * </ul>
  *
- * <h2>{@code app/jcl/TRANBKP.jcl} has no Java analogue, and that is a recorded decision</h2>
+ * <h2>{@code app/jcl/TRANBKP.jcl} is implemented here, as the archive-and-reset step (finding C-06)</h2>
  *
  * <p>{@code app/jcl/TRANBKP.jcl} is the member that produces the {@code TRANSACT.BKUP} generations this job's
  * first {@code SORTIN} leg reads. It is three steps and no COBOL program: {@code :L23}
@@ -298,30 +332,43 @@ import io.awspring.cloud.s3.S3Resource;
  * {@code IF MAXCC LE 08 THEN SET MAXCC = 0}; and {@code //STEP10 EXEC PGM=IDCAMS,COND=(4,LT)} re-issues
  * {@code DEFINE CLUSTER} with {@code KEYS(16 0) RECORDSIZE(350 350)}.
  *
- * <p><b>Neither of its two legs has a relational counterpart worth reproducing.</b> The copy leg is the same
- * shared {@code REPROC} invocation that {@code TransactionReportJob}'s {@code STEP01R}
- * ({@code app/proc/TRANREPT.prc:L21}) already implements - the complete {@code EXEC PROC=} census puts
- * {@code app/jcl/TRANBKP.jcl:L23} and {@code app/proc/TRANREPT.prc:L21} on the same procedure - so the target
- * already produces {@code TRANSACT.BKUP} generations. The delete-and-redefine leg exists <b>only</b> because a
- * VSAM KSDS cannot absorb a merged record set through {@code REPRO} without colliding on every key it already
- * holds, so the operator must unload the cluster, empty it, and reload the merged result. Inserting new rows
- * into a relation needs no unload-empty-reload cycle, and the end state is the same either way: the master
- * ends up holding its prior contents plus the interest transactions.
+ * <p><b>It is the reason the daily stream is repeatable, so it is reproduced rather than documented away.</b>
+ * An earlier revision recorded a decision that this member had no Java analogue, reasoning that inserting
+ * rows into a relation needs no unload-empty-reload cycle and that the end state was the same either way.
+ * <b>The end state is not the same</b>, and that reasoning was withdrawn as finding C-06. The delete and
+ * redefine leaves {@code REPRO} an <em>empty</em> target, so {@code :L41-L48} loads the merged set into a
+ * master holding nothing. Without it the combine loads the merged set into a master that still holds every
+ * row the first leg just supplied, so every identifier collides: the load correctly refuses with
+ * {@link com.cardemo.exception.DuplicateRecordException} and return code 8, and the stream cannot be run
+ * twice. Repeatability is a property of the source that a migration either reproduces or loses.
  *
- * <p>This follows the precedent already recorded for {@code app/jcl/PRTCATBL.jcl} in
- * {@link com.cardemo.model.entity.TransactionCategoryBalance} - a member with no COBOL program whose Java
- * analogue would require files outside the authored inventory is documented rather than invented.
- * Reproducing {@code TRANBKP} here is additionally impossible without breaching that inventory: this job is
- * pinned to the two steps of {@code app/jcl/COMBTRAN.jcl}, and
- * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} composes exactly five stages and declares no step
- * logic of its own.
+ * <h3>Why it is a step of this job rather than a sixth pipeline stage</h3>
  *
- * <p><b>Residual limitation, disclosed rather than papered over.</b> Because the master is never emptied, a
- * {@code TRANSACT.BKUP} generation produced by a previous pipeline run holds rows that are still present in
- * the relation. Re-running this job against an un-reset master therefore resolves that generation and fails
- * with {@code DuplicateRecordException} and return code 8 - the outcome this file mandates - rather than
- * silently upserting. On a clean environment the first leg is absent, the interest generation supplies the
- * records, and the combine completes.
+ * <p>{@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} composes exactly five stages and declares no
+ * step logic of its own, and the authored inventory admits no further file under {@code batch/jobs/**}. The
+ * archive is therefore a step here, which is also where it belongs behaviourally: it is the step that
+ * prepares this job's own input and output, and it must not run when this job runs standalone. The gate is
+ * {@link #JOB_PARAMETER_ARCHIVE_MASTER} - a per-run instruction from the stream rather than a deployment
+ * property, set non-identifying by the orchestrator on its stage-3 launch. Absent the instruction the step
+ * is a logged no-operation, so a standalone combine still never empties anybody's master.
+ *
+ * <p>The copy leg is the same shared {@code REPROC} invocation that {@code TransactionReportJob}'s
+ * {@code STEP01R} ({@code app/proc/TRANREPT.prc:L21}) implements - the {@code EXEC PROC=} census puts
+ * {@code app/jcl/TRANBKP.jcl:L23} and {@code app/proc/TRANREPT.prc:L21} on the same procedure - so that base
+ * now has two producers, exactly as the mainframe catalogue does. Both write
+ * {@code <prefix>/generation=<19-digit>/TRANSACT.BKUP} so that neither shadows the other; see
+ * {@link #BACKUP_OBJECT_KEY_TEMPLATE} for why a divergent key shape there would silently resolve the wrong
+ * generation.
+ *
+ * <p>The delete-and-redefine leg becomes one {@code DELETE} over the relation. The schema stays in the
+ * Flyway migrations, which is where a relational {@code DEFINE CLUSTER} equivalent belongs; the
+ * {@code IF MAXCC LE 08} tolerance of a not-found cluster has no analogue, because removing no rows from an
+ * already-empty table is not an error.
+ *
+ * <p><b>Ordering, and what it guarantees.</b> The archive object is uploaded <em>before</em> a single row is
+ * removed, so a failure between the two leaves the master intact and the archive merely redundant - the safe
+ * direction. The reverse order could lose the master outright. A restarted archive replaces its own object
+ * rather than adding a sibling to the same generation.
  *
  * <h2>Findings carried by this file, classified per Rule 1 Clause F</h2>
  * <ul>
@@ -378,8 +425,10 @@ import io.awspring.cloud.s3.S3Resource;
  * <h2>Thread safety and state</h2>
  * This class is a stateless singleton. Every injected collaborator is {@code private final}; <b>there is no
  * static mutable field</b>, the only static members being the logger and immutable constants. All per-run
- * state - the accumulated record image, the resolved key, the counters - lives in method locals inside the
- * two tasklets or in the execution context, so two job executions cannot observe each other. Every JCL step,
+ * state - the staging file, the resolved key, the counters - lives in method locals inside the two tasklets or
+ * in the execution context, so two job executions cannot observe each other. The staging file is created with
+ * a unique name per call and deleted in a {@code finally}, so two concurrent executions cannot collide on it
+ * either. Every JCL step,
  * DD statement, {@code SYMNAMES} entry, {@code SORT FIELDS} specification and control card maps to exactly
  * one private method or documented constant below, each citing its {@code path:line}; that mapping is what
  * keeps {@code TRACEABILITY_MATRIX.md} provable for a job with no program.
@@ -437,20 +486,25 @@ public class CombineTransactionsJob {
     private static final int DEFAULT_CHUNK_SIZE = 100;
 
     /**
-     * Upper bound on the records one combined generation may carry when
-     * {@code carddemo.batch.combtran.max-records-per-run} is not configured: {@code 1000000}.
+     * Bytes buffered on the {@code SORTOUT} staging file and on the {@code REPRO} input stream: {@code 65536}.
      *
-     * <p>DFSORT materialises its whole input to order it, and so does this step: the ordered stream is
-     * accumulated into one object because {@code SORTOUT} at {@code app/jcl/COMBTRAN.jcl:L33-L37} is a
-     * <b>single</b> generation, and emitting one object per chunk would misrepresent that geometry and break
-     * the {@code (+1)} handoff at {@code :L43-L44}. Rule 1 Clause A asks for the tradeoff to be justified
-     * rather than assumed, so it is stated: memory is proportional to the combined record count, and this
-     * bound makes the ceiling explicit and diagnosable instead of letting the step fail as an out-of-memory
-     * error with no attribution. The value mirrors the existing
-     * {@code carddemo.batch.statement-processor.max-transactions-per-run} convention. Exceeding it is a
-     * <b>hard failure, never a silent truncation</b>.
+     * <p>A stream buffer, not a bound on the run. {@code app/jcl/COMBTRAN.jcl:L33-L37} allocates
+     * {@code SORTOUT} on {@code UNIT=SYSDA} with {@code SPACE=(CYL,(1,1),RLSE)}, so the sort's output has
+     * always been disk with a buffer in front of it, and this constant is that buffer. It is the only quantity
+     * in this step that scales with anything other than the chunk size, which is why no per-run record cap
+     * exists any longer: an earlier revision accumulated the whole generation in a {@code StringBuilder}, a
+     * {@code String} and a {@code byte[]} at once and needed an invented
+     * {@code carddemo.batch.combtran.max-records-per-run} ceiling of one million records to keep that from
+     * exhausting the heap. {@code app/jcl/COMBTRAN.jcl} declares no such ceiling anywhere, and removing the
+     * accumulation removed the need to invent one.
      */
-    private static final int DEFAULT_MAX_RECORDS_PER_RUN = 1_000_000;
+    private static final int WORK_BUFFER_BYTES = 64 * 1024;
+
+    /** Filename prefix of the {@code SORTOUT} staging file, so an orphan left by a crash is attributable. */
+    private static final String WORK_FILE_PREFIX = "carddemo-combtran-sortout-";
+
+    /** Filename suffix of the {@code SORTOUT} staging file: fixed-length records, not a text document. */
+    private static final String WORK_FILE_SUFFIX = ".dat";
 
     /**
      * Default key prefix for {@code AWS.M2.CARDDEMO.TRANSACT.COMBINED} generations, the base defined at
@@ -502,6 +556,16 @@ public class CombineTransactionsJob {
     static final String COMBINED_RECORD_COUNT_CONTEXT_ENTRY = "carddemo.transact.combined.record.count";
 
     /**
+     * Job execution context entry carrying how many rows {@code STEP10}'s {@code REPRO} loaded, {@value}.
+     *
+     * <p>This step's volume metric, and deliberately job-local rather than a Micrometer counter: see
+     * {@link #publishLoadedRecordCount(StepExecution, int)} for why advancing the shared untagged
+     * records-processed counter from here corrupted it.
+     */
+    static final String COMBINED_LOADED_RECORD_COUNT_CONTEXT_ENTRY =
+            "carddemo.transact.combined.loaded.record.count";
+
+    /**
      * Digits in {@code Long.MAX_VALUE}, and therefore the zero-padding width used by
      * {@link #COMBINED_OBJECT_KEY_TEMPLATE}.
      *
@@ -519,6 +583,68 @@ public class CombineTransactionsJob {
 
     /** Content type for a fixed-width generation: deliberately binary, because trailing padding is data. */
     private static final String OBJECT_CONTENT_TYPE = "application/octet-stream";
+
+    /**
+     * Bean name of the archive-and-reset step that replaces {@code app/jcl/TRANBKP.jcl}, {@value}.
+     */
+    private static final String ARCHIVE_STEP_BEAN_NAME = "combineTransactionsArchiveStep";
+
+    /**
+     * Job parameter instructing this job to archive and reset the transaction relation first, {@value}.
+     *
+     * <p><b>Finding C-06, severity Critical.</b> {@code app/jcl/COMBTRAN.jcl:L48} REPROs the combined
+     * generation into the transaction cluster, and that cluster is empty when it does so - not by accident,
+     * but because {@code app/jcl/TRANBKP.jcl} runs first and empties it:
+     * {@code :L23-L33} REPROs the cluster out to {@code TRANSACT.BKUP(+1)}, {@code :L37-L45} DELETEs the
+     * cluster and its alternate index, and {@code :L51-L67} DEFINEs the cluster afresh with
+     * {@code KEYS(16 0) RECORDSIZE(350 350)}. Loading into an already-populated relation collides on the
+     * first repeated identifier, so the daily stream could be run once and not again.
+     *
+     * <p><b>Why a parameter rather than an unconditional step.</b> Whether the archive and reset precede the
+     * load is a property of the job <em>stream</em>, not of {@code COMBTRAN}: on the mainframe they are a
+     * separate member that an operator schedules ahead of it. A standalone combine against generations that
+     * are already in hand is a legitimate use of this job and must not silently empty the relation - which is
+     * why the instruction is explicit, is carried as a non-identifying parameter by
+     * {@code BatchPipelineOrchestrator}, and defaults to off.
+     */
+    public static final String JOB_PARAMETER_ARCHIVE_MASTER = "archiveAndResetMaster";
+
+    /** Logical name of the archive output, from the {@code FILEOUT} DD of {@code app/jcl/TRANBKP.jcl:L29}. */
+    private static final String DD_TRANSACT_BKUP = "TRANSACT.BKUP";
+
+    /** Default generation prefix for {@code AWS.M2.CARDDEMO.TRANSACT.BKUP}. */
+    private static final String DEFAULT_BACKUP_PREFIX = "gdg/transact-bkup";
+
+    /**
+     * Archive key template: prefix, then the job instance as the generation, then the fixed object name.
+     *
+     * <p><b>The {@code generation=} segment and the fixed terminal name are both load-bearing; neither is
+     * decoration.</b> {@link com.cardemo.batch.jobs.TransactionReportJob} already writes this base with
+     * {@code <prefix>/generation=<19-digit>/TRANSACT.BKUP}, and
+     * {@link CombinedTransactionReader} resolves {@code (0)} by taking the lexicographically greatest
+     * <em>generation segment</em>. A bare numeric segment would sort <b>below</b> every
+     * {@code generation=...} segment, because {@code '0'} precedes {@code 'g'} - so an archive written under
+     * one would never be resolved as the current generation while any report-branch backup existed, and the
+     * combine would silently sort last run's master instead of this run's. The two producers of this base
+     * must therefore share one convention.
+     *
+     * <p>The terminal name is fixed rather than carrying the step execution, so a restarted archive
+     * <b>replaces</b> its own object instead of adding a second one to the same generation - which
+     * {@link CombinedTransactionReader} rejects as an ambiguous generation, correctly, since a GDG
+     * generation is one dataset.
+     */
+    private static final String BACKUP_OBJECT_KEY_TEMPLATE =
+            "%s/generation=%0" + KEY_NUMBER_WIDTH + "d/" + DD_TRANSACT_BKUP;
+
+    /** Rows read per page while archiving, so the whole relation is never resident. */
+    private static final int ARCHIVE_PAGE_SIZE = 1_000;
+
+    /** Job execution context entry carrying the archive object key this run created. */
+    public static final String BACKUP_OBJECT_KEY_CONTEXT_ENTRY = "carddemo.gdg.transact-bkup.createdKey";
+
+    /** Job execution context entry carrying how many records the archive holds. */
+    public static final String BACKUP_RECORD_COUNT_CONTEXT_ENTRY =
+            "carddemo.gdg.transact-bkup.recordCount";
 
     /**
      * Logical name of the sort output, the DD name at {@code app/jcl/COMBTRAN.jcl:L33} that
@@ -583,6 +709,12 @@ public class CombineTransactionsJob {
     /** Diagnostic for a failed emission of the combined generation. */
     private static final String MSG_ERROR_WRITING_COMBINED_FILE = "ERROR WRITING COMBINED TRANSACTION FILE";
 
+    /**
+     * Diagnostic for a failed archive write, in the corpus's own register: an upper-case statement of what
+     * was being done, naming the dataset rather than the mechanism.
+     */
+    private static final String MSG_ERROR_WRITING_BACKUP = "ERROR WRITING TRANSACTION BACKUP FILE";
+
     /** Diagnostic for a failed read of the combined generation. */
     private static final String MSG_ERROR_READING_COMBINED_FILE = "ERROR READING COMBINED TRANSACTION FILE";
 
@@ -595,6 +727,9 @@ public class CombineTransactionsJob {
     /** Abend reason when the combined generation cannot be written. */
     private static final String REASON_WRITE_FAILED = "WRITE FAILED";
 
+    /** Abend reason when the {@code TRANSACT.BKUP} archive could not be written. */
+    private static final String REASON_BACKUP_WRITE_FAILED = "BACKUP WRITE FAILED";
+
     /** Abend reason when the combined generation cannot be read back. */
     private static final String REASON_READ_FAILED = "READ FAILED";
 
@@ -603,9 +738,6 @@ public class CombineTransactionsJob {
 
     /** Abend reason when the {@code (+1)} key the sort published is missing from the execution context. */
     private static final String REASON_NO_GENERATION_KEY = "NO GENERATION KEY";
-
-    /** Abend reason when the combined generation exceeds the configured per-run bound. */
-    private static final String REASON_RECORD_LIMIT = "RECORD LIMIT EXCEEDED";
 
     /** Abend reason when a zoned-decimal amount cannot be decoded. */
     private static final String REASON_BAD_NUMERIC = "NUMERIC FIELD VIOLATION";
@@ -767,23 +899,26 @@ public class CombineTransactionsJob {
     /** The shared file-status translator: every I/O outcome on both steps passes through it. */
     private final FileStatusMapper fileStatusMapper;
 
-    /** The four owned counters. No fifth instrument, no new meter and no high-cardinality tag is added. */
-    private final MetricsConfig metricsConfig;
-
     /** Registered job name, from {@code carddemo.batch.jobs.combtran.name}. */
     private final String jobName;
 
     /** Rows per bulk-load batch, from {@code carddemo.batch.combtran.chunk-size}. */
     private final int chunkSize;
 
-    /** Per-run record bound, from {@code carddemo.batch.combtran.max-records-per-run}. */
-    private final int maxRecordsPerRun;
-
     /** The versioned generation bucket, from {@code carddemo.aws.s3.batch-output-bucket}. */
     private final String outputBucket;
 
     /** The {@code TRANSACT.COMBINED} key prefix, from {@code carddemo.aws.s3.gdg-prefixes.transact-combined}. */
     private final String combinedPrefix;
+
+    /**
+     * The transaction relation, read in key order to produce the {@code TRANSACT.BKUP(+1)} archive of
+     * {@code app/jcl/TRANBKP.jcl:L23-L33}. See {@link #JOB_PARAMETER_ARCHIVE_MASTER}.
+     */
+    private final TransactionRepository transactionRepository;
+
+    /** Generation prefix replacing {@code AWS.M2.CARDDEMO.TRANSACT.BKUP}. */
+    private final String backupPrefix;
 
     /**
      * Creates the job configuration and validates every injected value, so a mis-wired context fails during
@@ -795,16 +930,16 @@ public class CombineTransactionsJob {
      * @param jdbcTemplate the bulk-load channel; must not be {@code null}
      * @param objectStorage read and write access to the generation bucket; must not be {@code null}
      * @param fileStatusMapper the shared file-status translator; must not be {@code null}
-     * @param metricsConfig the owner of the four batch counters; must not be {@code null}
      * @param configuredJobName the registered job name, from {@code carddemo.batch.jobs.combtran.name}
      * @param configuredChunkSize rows per bulk-load batch, from {@code carddemo.batch.combtran.chunk-size}
-     * @param configuredMaxRecords the per-run record bound, from
-     *     {@code carddemo.batch.combtran.max-records-per-run}
      * @param configuredOutputBucket the generation bucket, from {@code carddemo.aws.s3.batch-output-bucket}
      * @param configuredCombinedPrefix the {@code TRANSACT.COMBINED} prefix, from
+     * @param transactionRepository source of the {@code app/jcl/TRANBKP.jcl} archive unload
+     * @param configuredBackupPrefix {@code TRANSACT.BKUP} generation prefix the archive writes, default
+     *     {@value #DEFAULT_BACKUP_PREFIX}
      *     {@code carddemo.aws.s3.gdg-prefixes.transact-combined}
      * @throws NullPointerException if a collaborator is {@code null}
-     * @throws IllegalArgumentException if a name, size, bound, bucket or prefix is absent or out of range
+     * @throws IllegalArgumentException if a name, size, bucket or prefix is absent or out of range
      */
     public CombineTransactionsJob(
             final JobRepository jobRepository,
@@ -813,16 +948,16 @@ public class CombineTransactionsJob {
             final JdbcTemplate jdbcTemplate,
             final S3Operations objectStorage,
             final FileStatusMapper fileStatusMapper,
-            final MetricsConfig metricsConfig,
             @Value("${carddemo.batch.jobs.combtran.name:" + DEFAULT_JOB_NAME + "}")
                     final String configuredJobName,
             @Value("${carddemo.batch.combtran.chunk-size:${carddemo.batch.chunk-size:"
                     + DEFAULT_CHUNK_SIZE + "}}") final int configuredChunkSize,
-            @Value("${carddemo.batch.combtran.max-records-per-run:" + DEFAULT_MAX_RECORDS_PER_RUN + "}")
-                    final int configuredMaxRecords,
             @Value("${carddemo.aws.s3.batch-output-bucket:}") final String configuredOutputBucket,
             @Value("${carddemo.aws.s3.gdg-prefixes.transact-combined:" + DEFAULT_COMBINED_PREFIX + "}")
-                    final String configuredCombinedPrefix) {
+                    final String configuredCombinedPrefix,
+            final TransactionRepository transactionRepository,
+            @Value("${carddemo.aws.s3.gdg-prefixes.transact-bkup:" + DEFAULT_BACKUP_PREFIX + "}")
+                    final String configuredBackupPrefix) {
 
         this.jobRepository = Objects.requireNonNull(jobRepository, "jobRepository must not be null");
         this.transactionManager =
@@ -833,15 +968,16 @@ public class CombineTransactionsJob {
         this.objectStorage = Objects.requireNonNull(objectStorage, "objectStorage must not be null");
         this.fileStatusMapper =
                 Objects.requireNonNull(fileStatusMapper, "fileStatusMapper must not be null");
-        this.metricsConfig = Objects.requireNonNull(metricsConfig, "metricsConfig must not be null");
         this.jobName = requireConfiguredText(configuredJobName, "carddemo.batch.jobs.combtran.name");
         this.chunkSize = requirePositive(configuredChunkSize, "carddemo.batch.combtran.chunk-size");
-        this.maxRecordsPerRun =
-                requirePositive(configuredMaxRecords, "carddemo.batch.combtran.max-records-per-run");
         this.outputBucket =
                 requireConfiguredText(configuredOutputBucket, "carddemo.aws.s3.batch-output-bucket");
         this.combinedPrefix = requireGenerationPrefix(
                 configuredCombinedPrefix, "carddemo.aws.s3.gdg-prefixes.transact-combined");
+        this.transactionRepository =
+                Objects.requireNonNull(transactionRepository, "transactionRepository must not be null");
+        this.backupPrefix = requireGenerationPrefix(
+                configuredBackupPrefix, "carddemo.aws.s3.gdg-prefixes.transact-bkup");
     }
 
     /**
@@ -854,8 +990,8 @@ public class CombineTransactionsJob {
      * <p>A tasklet rather than a chunk-oriented step, for two reasons that are both about correctness rather
      * than taste. {@code SORTOUT} at {@code :L33-L37} is a <b>single</b> generation, and a chunk-oriented
      * writer emits one object per chunk, which would leave {@code :L44}'s {@code (+1)} reference ambiguous.
-     * And a tasklet keeps every piece of per-run state - the accumulated image, the counters, the resolved
-     * key - in method locals, so this singleton holds no mutable state that two concurrent executions could
+     * And a tasklet keeps every piece of per-run state - the staging file, the counters, the resolved key -
+     * in method locals, so this singleton holds no mutable state that two concurrent executions could
      * share.
      *
      * <p>The reader and processor arrive as method parameters rather than fields because
@@ -876,6 +1012,35 @@ public class CombineTransactionsJob {
                         combineTransactionsSortTasklet(
                                 combinedTransactionReader, transactionCombineProcessor),
                         transactionManager)
+                .build();
+    }
+
+    /**
+     * {@code app/jcl/TRANBKP.jcl} - archive the transaction master, then leave it empty.
+     *
+     * <p>Runs before {@code STEP05R} and only when {@value #JOB_PARAMETER_ARCHIVE_MASTER} instructs it; see
+     * that constant for finding C-06 and for why the instruction is explicit rather than implied.
+     *
+     * <p>The member's three steps become one, and the consolidation is deliberate. {@code :L23-L33} REPROs
+     * the cluster to {@code TRANSACT.BKUP(+1)} with {@code DCB=(LRECL=350,RECFM=FB)}; {@code :L37-L45}
+     * deletes the cluster and its alternate index, each tolerating a not-found with
+     * {@code IF MAXCC LE 08 THEN SET MAXCC = 0}; {@code :L51-L67} defines the cluster again under
+     * {@code COND=(4,LT)}. The delete-and-redefine pair has one relational meaning - <em>the relation exists
+     * and holds nothing</em> - and the table itself is owned by the Flyway migrations rather than by a batch
+     * step, so nothing is dropped and nothing is created. Performing the archive and the emptying in one step
+     * is additionally the safer ordering: the sequence that must never occur is emptying without having
+     * archived, and a single unit of work cannot produce it.
+     *
+     * <p>The archive is a single object, because {@code TRANSACT.BKUP(+1)} is a single sequential dataset -
+     * the same invariant the interest job's generation carries. It is streamed a page at a time rather than
+     * assembled whole, so a relation larger than the heap is still archivable.
+     *
+     * @return the archive-and-reset step, registered as {@value #ARCHIVE_STEP_BEAN_NAME}, never {@code null}
+     */
+    @Bean(ARCHIVE_STEP_BEAN_NAME)
+    public Step combineTransactionsArchiveStep() {
+        return new StepBuilder(ARCHIVE_STEP_BEAN_NAME, jobRepository)
+                .tasklet(combineTransactionsArchiveTasklet(), transactionManager)
                 .build();
     }
 
@@ -902,7 +1067,7 @@ public class CombineTransactionsJob {
     }
 
     /**
-     * The two steps in source order, with <b>no gate between them</b>.
+     * The archive, sort and load steps in source order, with <b>no gate between the sort and the load</b>.
      *
      * <p>This is the one structural fact about {@code app/jcl/COMBTRAN.jcl} that is easiest to get wrong, so
      * it is spelled out. <b>Neither {@code //STEP05R  EXEC PGM=SORT} at {@code :L22} nor
@@ -919,6 +1084,7 @@ public class CombineTransactionsJob {
      * for the orchestrated pipeline; the unrecognised arm fails rather than falling through, so a future
      * outcome cannot silently pass.
      *
+     * @param archiveStep the {@code app/jcl/TRANBKP.jcl} archive-and-reset step, injected by bean name
      * @param sortStep {@code STEP05R}, injected by bean name so the flow cannot bind to another assignable
      *     step
      * @param loadStep {@code STEP10}, injected by bean name
@@ -926,13 +1092,20 @@ public class CombineTransactionsJob {
      */
     @Bean(FLOW_BEAN_NAME)
     public Flow combineTransactionsFlow(
+            @Qualifier(ARCHIVE_STEP_BEAN_NAME) final Step archiveStep,
             @Qualifier(SORT_STEP_BEAN_NAME) final Step sortStep,
             @Qualifier(LOAD_STEP_BEAN_NAME) final Step loadStep) {
 
         final JobExecutionDecider returnCodeDecider = new CombineTransactionsReturnCodeDecider();
 
         return new FlowBuilder<SimpleFlow>(FLOW_BEAN_NAME)
-                .start(sortStep).on(EXIT_CODE_FAILED).to(returnCodeDecider)
+                // app/jcl/TRANBKP.jcl precedes the member this job replaces, and its failure arms mirror the
+                // sort's: only a failure or an abend diverts, because an archive that did not complete must
+                // not be followed by a load into a relation whose emptying is now in doubt.
+                .start(archiveStep).on(EXIT_CODE_FAILED).to(returnCodeDecider)
+                .from(archiveStep).on(EXIT_CODE_ABEND).to(returnCodeDecider)
+                .from(archiveStep).on(EXIT_CODE_ANY).to(sortStep)
+                .from(sortStep).on(EXIT_CODE_FAILED).to(returnCodeDecider)
                 .from(sortStep).on(EXIT_CODE_ABEND).to(returnCodeDecider)
                 .from(sortStep).on(EXIT_CODE_ANY).to(loadStep)
                 .from(loadStep).on(EXIT_CODE_ANY).to(returnCodeDecider)
@@ -959,7 +1132,7 @@ public class CombineTransactionsJob {
      * contribute only {@link Job}, {@link Step} and {@link Flow} beans, and the listener needs no container
      * singleton.
      *
-     * @param combineTransactionsFlow the two-step flow, injected by bean name
+     * @param combineTransactionsFlow the archive, sort and load flow, injected by bean name
      * @return the job, registered under the configured name, never {@code null}
      */
     @Bean(JOB_BEAN_NAME)
@@ -971,6 +1144,173 @@ public class CombineTransactionsJob {
                 .start(combineTransactionsFlow)
                 .end()
                 .build();
+    }
+
+    /**
+     * Creates the {@code app/jcl/TRANBKP.jcl} tasklet without registering an additional bean.
+     *
+     * @return the archive-and-reset tasklet, never {@code null}
+     */
+    private Tasklet combineTransactionsArchiveTasklet() {
+        return (contribution, chunkContext) -> {
+            executeTranbkp(chunkContext.getStepContext().getStepExecution());
+            return RepeatStatus.FINISHED;
+        };
+    }
+
+    /**
+     * Archives the transaction relation to {@code TRANSACT.BKUP(+1)} and then empties it.
+     *
+     * <p>A no-operation unless {@value #JOB_PARAMETER_ARCHIVE_MASTER} is {@code true}. The parameter is read
+     * from the job rather than a property because it is a per-run instruction from the stream, not a
+     * deployment setting.
+     *
+     * <p>An empty relation still writes its generation. A zero-length object is how an empty dataset is
+     * expressed - the generation exists and holds nothing - and suppressing it would make the following
+     * {@code SORTIN} leg absent rather than empty, which are different states the reader distinguishes.
+     *
+     * @param stepExecution the running step, whose context receives the created key
+     */
+    private void executeTranbkp(final StepExecution stepExecution) {
+        final JobExecution jobExecution = stepExecution.getJobExecution();
+        if (!archiveInstructed(jobExecution)) {
+            LOG.info("{} not instructed for this run, so the transaction relation is neither archived nor"
+                            + " emptied; app/jcl/TRANBKP.jcl is a separate member of the stream and a"
+                            + " standalone combine does not include it", DD_TRANSACT_BKUP);
+            return;
+        }
+
+        final long rowCount = transactionRepository.count();
+        final long expectedBytes = rowCount * TransactionWriter.RECORD_LENGTH;
+        final String objectKey =
+                composeBackupObjectKey(jobExecution.getJobInstance().getInstanceId());
+
+        String ioStatus = STATUS_SUCCESS;
+        RuntimeException failure = null;
+        try (InputStream archive = new SequenceInputStream(new ArchivePageEnumeration(rowCount))) {
+            final ObjectMetadata metadata = ObjectMetadata.builder()
+                    .contentType(OBJECT_CONTENT_TYPE)
+                    .contentLength(Long.valueOf(expectedBytes))
+                    .build();
+            objectStorage.upload(outputBucket, objectKey, archive, metadata);
+        } catch (final CardDemoException alreadyTyped) {
+            throw alreadyTyped;
+        } catch (final IOException | RuntimeException cause) {
+            ioStatus = STATUS_PHYSICAL_IO_ERROR;
+            failure = cause instanceof RuntimeException runtime
+                    ? runtime
+                    : new IllegalStateException(cause.getMessage(), cause);
+        }
+        guardObjectOperation(ioStatus, DD_TRANSACT_BKUP, OPERATION_WRITE,
+                MSG_ERROR_WRITING_BACKUP, REASON_BACKUP_WRITE_FAILED, failure);
+
+        // Only now is the relation emptied. app/jcl/TRANBKP.jcl:L37-L45 deletes the cluster and :L51-L67
+        // defines it again; relationally that is one statement, and the schema stays where it belongs, in the
+        // Flyway migrations. The DELETE tolerating a not-found cluster has no analogue: a table that is
+        // already empty simply removes no rows.
+        final int removed = jdbcTemplate.update("DELETE FROM \"transaction\"");
+
+        stepExecution.getExecutionContext().putString(BACKUP_OBJECT_KEY_CONTEXT_ENTRY, objectKey);
+        stepExecution.getExecutionContext().putLong(BACKUP_RECORD_COUNT_CONTEXT_ENTRY, rowCount);
+        final ExecutionContext jobContext = jobExecution.getExecutionContext();
+        jobContext.putString(BACKUP_OBJECT_KEY_CONTEXT_ENTRY, objectKey);
+        jobContext.putLong(BACKUP_RECORD_COUNT_CONTEXT_ENTRY, rowCount);
+
+        LOG.info("{} archived {} records ({} bytes) and emptied the transaction relation, removing {} rows;"
+                        + " app/jcl/COMBTRAN.jcl:L48 now loads into an empty target, which is what makes the"
+                        + " daily stream repeatable", DD_TRANSACT_BKUP, Long.valueOf(rowCount),
+                Long.valueOf(expectedBytes), Integer.valueOf(removed));
+    }
+
+    /**
+     * Reads the per-run archive instruction.
+     *
+     * @param jobExecution the running execution
+     * @return {@code true} when the stream asked for the archive and reset
+     */
+    private static boolean archiveInstructed(final JobExecution jobExecution) {
+        return Boolean.parseBoolean(
+                jobExecution.getJobParameters().getString(JOB_PARAMETER_ARCHIVE_MASTER, "false"));
+    }
+
+    /**
+     * The key of the {@code TRANSACT.BKUP(+1)} generation this run creates.
+     *
+     * <p>The job instance is the generation, which makes the generation monotonic in creation time: Spring
+     * Batch allocates instance identifiers from one sequence, so a later run always sorts above an earlier
+     * one <b>across jobs as well as within one</b>. That is what lets the report branch's producer and this
+     * one share the base without either shadowing the other, and it is the property
+     * {@code (0)} depends on.
+     *
+     * @param jobInstanceId the job instance, scoping the generation to one logical run
+     * @return the object key, never {@code null}
+     */
+    private String composeBackupObjectKey(final long jobInstanceId) {
+        return String.format(Locale.ROOT, BACKUP_OBJECT_KEY_TEMPLATE, backupPrefix,
+                Long.valueOf(jobInstanceId));
+    }
+
+    /**
+     * Serves the archive one page of rows at a time, so the whole relation is never resident.
+     *
+     * <p>{@link SequenceInputStream} pulls lazily, so each page is fetched, rendered and discarded before the
+     * next is read. Ordering is by the identifier, which is the cluster's own key at
+     * {@code app/jcl/TRANBKP.jcl:L58} {@code KEYS(16 0)}, so the archive is in the order a sequential
+     * unload of the cluster would have produced.
+     */
+    private final class ArchivePageEnumeration implements Enumeration<InputStream> {
+
+        /** How many rows the archive was declared to hold. */
+        private final long declaredRows;
+
+        /** The next page to fetch. */
+        private int page;
+
+        /** How many rows have been served, so a relation that changed under the read is detectable. */
+        private long served;
+
+        /**
+         * Creates the enumeration.
+         *
+         * @param declaredRows the row count the content length was computed from
+         */
+        private ArchivePageEnumeration(final long declaredRows) {
+            this.declaredRows = declaredRows;
+        }
+
+        @Override
+        public boolean hasMoreElements() {
+            return served < declaredRows;
+        }
+
+        @Override
+        public InputStream nextElement() {
+            if (!hasMoreElements()) {
+                throw new NoSuchElementException("the declared archive length has already been served");
+            }
+            final List<Transaction> rows = transactionRepository.findAll(
+                    PageRequest.of(page, ARCHIVE_PAGE_SIZE, Sort.by(Sort.Direction.ASC, "transactionId")))
+                    .getContent();
+            page++;
+            if (rows.isEmpty()) {
+                throw new DataIntegrityException(String.format(Locale.ROOT,
+                        "%s declared %d records but the relation ran out after %d. The archive of"
+                                + " app/jcl/TRANBKP.jcl:L23-L33 must be a complete unload, so a relation"
+                                + " that shrank under the read is a failure rather than a short object.",
+                        DD_TRANSACT_BKUP, Long.valueOf(declaredRows), Long.valueOf(served)),
+                        BACKUP_OBJECT_KEY_CONTEXT_ENTRY, DD_TRANSACT_BKUP);
+            }
+            final StringBuilder image =
+                    new StringBuilder(rows.size() * TransactionWriter.RECORD_LENGTH);
+            for (final Transaction row : rows) {
+                if (served >= declaredRows) {
+                    break;
+                }
+                image.append(transactionWriter.composeFixedWidthImage(row));
+                served++;
+            }
+            return new ByteArrayInputStream(image.toString().getBytes(FIXED_WIDTH_CHARSET));
+        }
     }
 
     /**
@@ -1022,17 +1362,20 @@ public class CombineTransactionsJob {
      *   <li><b>Close the input</b>, unconditionally, in a {@code finally}.</li>
      * </ol>
      *
-     * <p>The record image is accumulated because {@code SORTOUT} is one generation; the bound that makes that
-     * explicit is {@link #maxRecordsPerRun}, and exceeding it fails rather than truncating. Contrast
-     * {@code app/cbl/CBSTM03A.CBL}, whose fixed table silently overran - that hazard is not reproduced here,
-     * and this is the deliberate guard that replaces it. (That member's name is upper case on disk, unlike its
-     * twenty-six lower-case siblings; the casing is load-bearing in a citation.)
+     * <p><b>Each record image is written straight through to a bounded staging file</b>, because
+     * {@code SORTOUT} is one generation and {@code :L33-L37} allocates it on {@code UNIT=SYSDA} - the sort's
+     * output is disk, and staging it to disk is the faithful model as well as the bounded one. An earlier
+     * revision accumulated the whole generation in storage and needed an invented per-run record cap to keep
+     * that from exhausting the heap; the JCL declares no such cap, and with the accumulation gone none is
+     * needed. Contrast {@code app/cbl/CBSTM03A.CBL}, whose fixed table silently overran - that hazard is not
+     * reproduced here, and streaming rather than a ceiling is what replaces it. (That member's name is upper
+     * case on disk, unlike its twenty-six lower-case siblings; the casing is load-bearing in a citation.)
      *
      * @param stepExecution the running step, carrying the job execution the key is published on
      * @param reader the ordered concatenated {@code SORTIN}
      * @param processor the per-record validator
      * @throws FatalProcessingException if the input cannot be read, a record is not exactly
-     *     {@value #COMBINED_RECORD_LENGTH} bytes, the per-run bound is exceeded, or the upload fails
+     *     {@value #COMBINED_RECORD_LENGTH} bytes, or the write fails
      * @throws CardDemoException if the reader or processor rejects a record; the typed subtype is theirs
      */
     private void executeStep05r(
@@ -1041,35 +1384,92 @@ public class CombineTransactionsJob {
             final TransactionCombineProcessor processor) {
 
         final ExecutionContext stepContext = stepExecution.getExecutionContext();
-        final StringBuilder image = new StringBuilder();
+        final Path work = createWorkFile();
         int recordCount = 0;
 
-        // 1000-SORTIN-OPEN equivalent: app/jcl/COMBTRAN.jcl:L23-L26. The reader owns both (0) resolutions and
-        // owns the absent-generation decisions; neither is duplicated here.
-        openSortInput(reader, stepContext);
         try {
-            // The read loop of SORT FIELDS=(TRAN-ID,A) at :L30 over TRAN-ID,1,16,CH at :L28.
-            for (Transaction record = readNextSortInput(reader);
-                    record != null;
-                    record = readNextSortInput(reader)) {
+            // 1000-SORTIN-OPEN equivalent: app/jcl/COMBTRAN.jcl:L23-L26. The reader owns both (0)
+            // resolutions and owns the absent-generation decisions; neither is duplicated here.
+            openSortInput(reader, stepContext);
+            try (OutputStream sortOut = new BufferedOutputStream(
+                    Files.newOutputStream(work, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING),
+                    WORK_BUFFER_BYTES)) {
 
-                final Transaction validated = processor.process(record);
-                image.append(requireCombinedRecordImage(validated));
-                recordCount++;
-                requireWithinRecordBound(recordCount);
+                // The read loop of SORT FIELDS=(TRAN-ID,A) at :L30 over TRAN-ID,1,16,CH at :L28. Each
+                // 350-byte image is written straight through to the SORTOUT work file, so the resident set
+                // is one record plus the stream buffer whatever the generation holds.
+                for (Transaction record = readNextSortInput(reader);
+                        record != null;
+                        record = readNextSortInput(reader)) {
+
+                    final Transaction validated = processor.process(record);
+                    sortOut.write(requireCombinedRecordImage(validated).getBytes(FIXED_WIDTH_CHARSET));
+                    recordCount++;
+                }
+            } catch (final IOException cause) {
+                throw abendProgram(MSG_ERROR_WRITING_COMBINED_FILE, REASON_WRITE_FAILED, DD_SORTOUT,
+                        OPERATION_WRITE, cause);
+            } finally {
+                closeSortInput(reader);
             }
+
+            LOG.info("{} read {} records in TRAN-ID order: {} from TRANSACT.BKUP(0), {} from SYSTRAN(0)",
+                    DD_SORTIN, Integer.valueOf(recordCount), Long.valueOf(reader.getBackupRecordsRead()),
+                    Long.valueOf(reader.getSystranRecordsRead()));
+            logResolvedInputGenerations(reader);
+
+            // SORTOUT at :L33-L37, one generation, then the (+1) handoff for :L44.
+            final String objectKey = writeCombinedGeneration(stepExecution, work, recordCount);
+            publishCombinedGeneration(stepExecution, objectKey, recordCount);
         } finally {
-            closeSortInput(reader);
+            deleteWorkFile(work);
         }
+    }
 
-        LOG.info("{} read {} records in TRAN-ID order: {} from TRANSACT.BKUP(0), {} from SYSTRAN(0)",
-                DD_SORTIN, Integer.valueOf(recordCount), Long.valueOf(reader.getBackupRecordsRead()),
-                Long.valueOf(reader.getSystranRecordsRead()));
-        logResolvedInputGenerations(reader);
+    /**
+     * Creates the bounded staging file that stands in for {@code SORTOUT}'s allocated space.
+     *
+     * <p>{@code app/jcl/COMBTRAN.jcl:L33-L37} allocates {@code SORTOUT} on {@code UNIT=SYSDA} with
+     * {@code SPACE=(CYL,(1,1),RLSE)} - the sort's output has always been <em>disk</em>, never storage. An
+     * earlier revision of this step accumulated the whole generation in a {@code StringBuilder}, converted it
+     * to a {@code String} and then to a {@code byte[]}, which held three full copies of the output at once and
+     * needed an invented per-run record cap to stop a large input exhausting the heap. Staging to a temporary
+     * file restores the source's own storage model, makes the resident set independent of the record count, and
+     * removes the reason the cap existed.
+     *
+     * <p>The file lives wherever {@code java.io.tmpdir} points, is created with the platform's default
+     * owner-only permissions, and is deleted in a {@code finally} block whether the step succeeds or fails.
+     * It holds transaction images, so it is deleted rather than left for inspection.
+     *
+     * @return the empty work file, never {@code null}
+     * @throws FatalProcessingException if the file cannot be created
+     */
+    private Path createWorkFile() {
+        try {
+            return Files.createTempFile(WORK_FILE_PREFIX, WORK_FILE_SUFFIX);
+        } catch (final IOException cause) {
+            LOG.error("{} could not allocate the SORTOUT staging file of app/jcl/COMBTRAN.jcl:L33-L37",
+                    DD_SORTOUT);
+            throw abendProgram(MSG_ERROR_WRITING_COMBINED_FILE, REASON_WRITE_FAILED, DD_SORTOUT,
+                    OPERATION_WRITE, cause);
+        }
+    }
 
-        // SORTOUT at :L33-L37, one generation, then the (+1) handoff for :L44.
-        final String objectKey = writeCombinedGeneration(stepExecution, image.toString(), recordCount);
-        publishCombinedGeneration(stepExecution, objectKey, recordCount);
+    /**
+     * Deletes the staging file, reporting a failure to delete without masking the step's own outcome.
+     *
+     * <p>A failed delete is logged rather than thrown: the step's result is already decided by the time this
+     * runs, and replacing a real failure - or a real success - with a housekeeping error would lose the
+     * outcome that matters. The file is named in the warning so an operator can remove it.
+     *
+     * @param work the staging file, never {@code null}
+     */
+    private static void deleteWorkFile(final Path work) {
+        try {
+            Files.deleteIfExists(work);
+        } catch (final IOException cause) {
+            LOG.warn("Could not delete the SORTOUT staging file {}; remove it manually", work, cause);
+        }
     }
 
     /**
@@ -1103,11 +1503,50 @@ public class CombineTransactionsJob {
 
         // :L43-L44 - the exact generation STEP05R created, never a re-resolved "latest".
         final String objectKey = requirePublishedGenerationKey(stepExecution);
-        final String image = readCombinedGeneration(objectKey);
-        final List<Transaction> records = decodeCombinedGeneration(image, objectKey);
-        requireExpectedRecordCount(stepExecution, records.size(), objectKey);
 
-        if (records.isEmpty()) {
+        // REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM) - app/jcl/COMBTRAN.jcl:L48 - streamed rather than
+        // materialised. An earlier revision downloaded the whole generation with readAllBytes(), copied it
+        // into a String, and decoded it into one List<Transaction> before loading anything, which held four
+        // full copies of the generation at peak. IDCAMS REPRO is a record-at-a-time copy with a buffer, so a
+        // bounded batch is both the faithful shape and the one whose cost does not grow with the input.
+        int decoded = 0;
+        int loaded = 0;
+        final List<Transaction> batch = new ArrayList<>(chunkSize);
+        try (InputStream generation = openCombinedGeneration(objectKey)) {
+            final byte[] recordBytes = new byte[COMBINED_RECORD_LENGTH];
+            while (true) {
+                final int filled = generation.readNBytes(recordBytes, 0, COMBINED_RECORD_LENGTH);
+                if (filled == 0) {
+                    break;
+                }
+                if (filled != COMBINED_RECORD_LENGTH) {
+                    LOG.error("{} ends {} bytes into a record; app/jcl/COMBTRAN.jcl:L35 DCB=(*.SORTIN) fixes"
+                            + " the geometry at {} bytes, so the object was not written by this job or was"
+                            + " written with a different one", objectKey, Integer.valueOf(filled),
+                            Integer.valueOf(COMBINED_RECORD_LENGTH));
+                    throw abendProgram(MSG_ERROR_READING_COMBINED_FILE, REASON_BAD_RECORD_LENGTH,
+                            DD_TRANSACT, OPERATION_READ, null);
+                }
+                batch.add(decodeRecord(new String(recordBytes, FIXED_WIDTH_CHARSET)));
+                decoded++;
+                if (batch.size() == chunkSize) {
+                    loaded += loadBatch(batch, processor);
+                    batch.clear();
+                }
+            }
+        } catch (final CardDemoException alreadyTyped) {
+            throw alreadyTyped;
+        } catch (final IOException cause) {
+            throw abendProgram(MSG_ERROR_READING_COMBINED_FILE, REASON_READ_FAILED, DD_TRANSACT,
+                    OPERATION_READ, cause);
+        }
+        if (!batch.isEmpty()) {
+            loaded += loadBatch(batch, processor);
+        }
+
+        requireExpectedRecordCount(stepExecution, decoded, objectKey);
+
+        if (decoded == 0) {
             // Explicit, not silent: an empty generation is a real outcome when both (0) inputs were empty,
             // and STEP05R has already logged the per-source counts that say which one was.
             LOG.warn("{} loaded 0 records from {}; app/jcl/COMBTRAN.jcl:L48 REPRO copied an empty generation"
@@ -1115,15 +1554,22 @@ public class CombineTransactionsJob {
             return;
         }
 
-        // REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM) - app/jcl/COMBTRAN.jcl:L48.
-        int loaded = 0;
-        for (int offset = 0; offset < records.size(); offset += chunkSize) {
-            final List<Transaction> batch =
-                    records.subList(offset, Math.min(offset + chunkSize, records.size()));
-            loaded += loadBatch(batch, processor);
-        }
-
-        metricsConfig.countRecordsProcessed(loaded);
+        // FINDING H-01, severity HIGH. metricsConfig.countRecordsProcessed(loaded) stood here and has been
+        // removed with its collaborator. carddemo.batch.records.processed mirrors ADD 1 TO WS-TRANSACTION-COUNT
+        // at app/cbl/CBTRN02C.cbl:L206, so its population is the daily-transaction records the POSTTRAN job
+        // read - and nothing else. The rows this step loads are rows an EARLIER run already counted: they
+        // entered the transaction relation once through the posting job and are being re-read here out of a
+        // generation object, so counting them again made an untagged series the sum of two populations.
+        // Untagged is what makes that irreversible: there is no job dimension to group away afterwards, so no
+        // PromQL expression could recover either figure.
+        //
+        // This step's volume is not lost. It is published to the job execution context as
+        // COMBINED_LOADED_RECORD_COUNT_CONTEXT_ENTRY - and COMBINED_RECORD_COUNT_CONTEXT_ENTRY, which
+        // requireExpectedRecordCount has already proved equal to the decoded count - and it is available
+        // continuously as the Spring Batch step metrics spring_batch_step_seconds_count and
+        // spring_batch_item_write_seconds_count, both tagged by name. Those carry a job dimension by
+        // construction, which is exactly what this application counter cannot.
+        publishLoadedRecordCount(stepExecution, loaded);
         LOG.info("{} loaded {} records from {} into the transaction relation", DD_TRANVSAM,
                 Integer.valueOf(loaded), objectKey);
     }
@@ -1242,47 +1688,32 @@ public class CombineTransactionsJob {
     }
 
     /**
-     * Enforces the per-run record bound.
-     *
-     * @param recordCount records accumulated so far
-     * @throws FatalProcessingException if the bound is exceeded, which is a hard failure and never a
-     *     truncation
-     */
-    private void requireWithinRecordBound(final int recordCount) {
-        if (recordCount > maxRecordsPerRun) {
-            LOG.error("{} exceeded carddemo.batch.combtran.max-records-per-run={} while accumulating the"
-                    + " single SORTOUT generation of app/jcl/COMBTRAN.jcl:L33-L37; failing rather than"
-                    + " truncating", DD_SORTOUT, Integer.valueOf(maxRecordsPerRun));
-            throw abendProgram(MSG_ERROR_WRITING_COMBINED_FILE, REASON_RECORD_LIMIT, DD_SORTOUT,
-                    OPERATION_WRITE, null);
-        }
-    }
-
-    /**
      * {@code //SORTOUT  DD DISP=(NEW,CATLG,DELETE) ... DSN=AWS.M2.CARDDEMO.TRANSACT.COMBINED(+1)} -
      * {@code app/jcl/COMBTRAN.jcl:L33-L37}.
      *
-     * <p>Writes the accumulated image as <b>one</b> object under a new, monotonically increasing key, which is
-     * what {@code (+1)} means over a versioned bucket. The payload length is asserted to be a whole number of
+     * <p>Streams the staged work file as <b>one</b> object under a new, monotonically increasing key, which is
+     * what {@code (+1)} means over a versioned bucket. The staged length is asserted to be a whole number of
      * {@value #COMBINED_RECORD_LENGTH}-byte records before the request is made, so a geometry defect is caught
-     * on this side of the boundary rather than by the load step.
+     * on this side of the boundary rather than by the load step. The content length is declared from that same
+     * measured length, so the request never has to buffer the payload to discover its size and the whole
+     * generation is never resident in the heap.
      *
      * @param stepExecution the running step, for the job instance the key is scoped to
-     * @param image the accumulated record image
-     * @param recordCount the number of records the image holds
+     * @param work the staged work file holding the sorted, fixed-width record images
+     * @param recordCount the number of records the work file holds
      * @return the concrete object key created, never {@code null}
      * @throws FatalProcessingException if the payload geometry is wrong or the upload fails
      */
     private String writeCombinedGeneration(
-            final StepExecution stepExecution, final String image, final int recordCount) {
+            final StepExecution stepExecution, final Path work, final int recordCount) {
 
-        final byte[] payload = image.getBytes(FIXED_WIDTH_CHARSET);
-        final int expectedBytes = recordCount * COMBINED_RECORD_LENGTH;
-        if (payload.length != expectedBytes) {
+        final long stagedBytes = workFileLength(work);
+        final long expectedBytes = (long) recordCount * COMBINED_RECORD_LENGTH;
+        if (stagedBytes != expectedBytes) {
             LOG.error("{} composed {} bytes for {} records but app/jcl/COMBTRAN.jcl:L35 DCB=(*.SORTIN) fixes"
                     + " the record at {} bytes, so {} were expected", DD_SORTOUT,
-                    Integer.valueOf(payload.length), Integer.valueOf(recordCount),
-                    Integer.valueOf(COMBINED_RECORD_LENGTH), Integer.valueOf(expectedBytes));
+                    Long.valueOf(stagedBytes), Integer.valueOf(recordCount),
+                    Integer.valueOf(COMBINED_RECORD_LENGTH), Long.valueOf(expectedBytes));
             throw abendProgram(MSG_ERROR_WRITING_COMBINED_FILE, REASON_BAD_RECORD_LENGTH, DD_SORTOUT,
                     OPERATION_WRITE, null);
         }
@@ -1292,26 +1723,45 @@ public class CombineTransactionsJob {
 
         String ioStatus = STATUS_SUCCESS;
         RuntimeException failure = null;
-        try {
+        // The staged file is streamed to the object store with its length declared up front, so the client
+        // sends it without buffering it: nothing here holds more than the stream buffer, whatever the
+        // generation's size.
+        try (InputStream staged = new BufferedInputStream(Files.newInputStream(work), WORK_BUFFER_BYTES)) {
             final ObjectMetadata metadata = ObjectMetadata.builder()
                     .contentType(OBJECT_CONTENT_TYPE)
-                    .contentLength(Long.valueOf(payload.length))
+                    .contentLength(Long.valueOf(stagedBytes))
                     .build();
-            // No try-with-resources: a ByteArrayInputStream holds no operating-system handle and its close()
-            // declares an IOException it cannot raise, so wrapping it would add a catch for an impossibility.
-            objectStorage.upload(outputBucket, objectKey, new ByteArrayInputStream(payload), metadata);
+            objectStorage.upload(outputBucket, objectKey, staged, metadata);
         } catch (final CardDemoException alreadyTyped) {
             throw alreadyTyped;
-        } catch (final RuntimeException cause) {
+        } catch (final IOException | RuntimeException cause) {
             ioStatus = STATUS_PHYSICAL_IO_ERROR;
-            failure = cause;
+            failure = cause instanceof RuntimeException runtime
+                    ? runtime
+                    : new IllegalStateException(cause.getMessage(), cause);
         }
         guardObjectOperation(ioStatus, DD_SORTOUT, OPERATION_WRITE, MSG_ERROR_WRITING_COMBINED_FILE,
                 REASON_WRITE_FAILED, failure);
 
         LOG.info("{} wrote {} records ({} bytes) to {}", DD_SORTOUT, Integer.valueOf(recordCount),
-                Integer.valueOf(payload.length), objectKey);
+                Long.valueOf(stagedBytes), objectKey);
         return objectKey;
+    }
+
+    /**
+     * Measures the staged {@code SORTOUT} file.
+     *
+     * @param work the staging file
+     * @return its length in bytes
+     * @throws FatalProcessingException if the length cannot be read
+     */
+    private long workFileLength(final Path work) {
+        try {
+            return Files.size(work);
+        } catch (final IOException cause) {
+            throw abendProgram(MSG_ERROR_WRITING_COMBINED_FILE, REASON_WRITE_FAILED, DD_SORTOUT,
+                    OPERATION_WRITE, cause);
+        }
     }
 
     /**
@@ -1332,6 +1782,27 @@ public class CombineTransactionsJob {
         jobContext.putInt(COMBINED_RECORD_COUNT_CONTEXT_ENTRY, recordCount);
         LOG.debug("Published TRANSACT.COMBINED(+1)={} with {} records for app/jcl/COMBTRAN.jcl:L44",
                 objectKey, Integer.valueOf(recordCount));
+    }
+
+    /**
+     * Publishes how many rows {@code STEP10}'s {@code REPRO} loaded, into this job's own execution context.
+     *
+     * <p><strong>This is deliberately not a Micrometer counter.</strong>
+     * {@code com.cardemo.observability.MetricsConfig#METRIC_RECORDS_PROCESSED} is defined as the
+     * {@code DALYTRAN} population of {@code app/cbl/CBTRN02C.cbl:L206} - one increment per record that job
+     * read - and the counter is untagged, so no query can afterwards separate a second source's contribution
+     * from it. An earlier revision advanced it here with the loaded row count, which double-counted every
+     * transaction the posting job had already counted and then counted the interest rows a second time on any
+     * subsequent combine, inflating an untagged series irrecoverably. The volume this step moves is real
+     * information, so it is published where it belongs: the job execution context, keyed and readable by an
+     * operator, a test and the pipeline orchestrator alike.
+     *
+     * @param stepExecution the running step
+     * @param loaded the rows the bulk load reported
+     */
+    private static void publishLoadedRecordCount(final StepExecution stepExecution, final int loaded) {
+        stepExecution.getJobExecution().getExecutionContext()
+                .putInt(COMBINED_LOADED_RECORD_COUNT_CONTEXT_ENTRY, loaded);
     }
 
     /**
@@ -1373,15 +1844,13 @@ public class CombineTransactionsJob {
      * @return the whole generation as text, never {@code null}
      * @throws FatalProcessingException if the object is absent or the download fails
      */
-    private String readCombinedGeneration(final String objectKey) {
+    private InputStream openCombinedGeneration(final String objectKey) {
         String ioStatus = STATUS_SUCCESS;
         RuntimeException failure = null;
-        String image = "";
+        InputStream stream = null;
         try {
             final S3Resource resource = objectStorage.download(outputBucket, objectKey);
-            try (InputStream byteStream = resource.getInputStream()) {
-                image = new String(byteStream.readAllBytes(), FIXED_WIDTH_CHARSET);
-            }
+            stream = new BufferedInputStream(resource.getInputStream(), WORK_BUFFER_BYTES);
         } catch (final CardDemoException alreadyTyped) {
             throw alreadyTyped;
         } catch (final IOException | RuntimeException cause) {
@@ -1392,40 +1861,7 @@ public class CombineTransactionsJob {
         }
         guardObjectOperation(ioStatus, DD_TRANSACT, OPERATION_READ, MSG_ERROR_READING_COMBINED_FILE,
                 REASON_READ_FAILED, failure);
-        return image;
-    }
-
-    /**
-     * Splits the generation on the {@value #COMBINED_RECORD_LENGTH}-byte boundary and decodes each record.
-     *
-     * <p>The geometry is checked <b>before</b> any field is read, because a stream whose length is not a whole
-     * number of records cannot be aligned and parsing it anyway would silently shift every field of every
-     * record. Rule 1 Clause A: object-storage content is untrusted input, so the length is validated rather
-     * than assumed.
-     *
-     * @param image the downloaded generation
-     * @param objectKey the key it came from, for the diagnostic
-     * @return the decoded records in the order the generation holds them, never {@code null}
-     * @throws FatalProcessingException if the length is not a multiple of {@value #COMBINED_RECORD_LENGTH} or
-     *     a field cannot be decoded
-     */
-    private List<Transaction> decodeCombinedGeneration(final String image, final String objectKey) {
-        if (image.length() % COMBINED_RECORD_LENGTH != 0) {
-            LOG.error("{} is {} characters, which is not a whole number of {}-byte records;"
-                    + " app/jcl/COMBTRAN.jcl:L35 DCB=(*.SORTIN) fixes the geometry, so the object was not"
-                    + " written by this job or was written with a different one", objectKey,
-                    Integer.valueOf(image.length()), Integer.valueOf(COMBINED_RECORD_LENGTH));
-            throw abendProgram(MSG_ERROR_READING_COMBINED_FILE, REASON_BAD_RECORD_LENGTH, DD_TRANSACT,
-                    OPERATION_READ, null);
-        }
-
-        final int recordCount = image.length() / COMBINED_RECORD_LENGTH;
-        final List<Transaction> records = new ArrayList<>(recordCount);
-        for (int index = 0; index < recordCount; index++) {
-            final int begin = index * COMBINED_RECORD_LENGTH;
-            records.add(decodeRecord(image.substring(begin, begin + COMBINED_RECORD_LENGTH)));
-        }
-        return records;
+        return stream;
     }
 
     /**
@@ -1438,7 +1874,7 @@ public class CombineTransactionsJob {
      *
      * <p><b>The two timestamps are lifted as twenty-six-character text and handed on untouched.</b> Nothing
      * parses, reformats, normalises or timezone-converts them, because the batch producer's
-     * millisecond-precision-plus-four-zeros rendering is a byte-level contract that any round trip through a
+     * hundredths-plus-four-zeros rendering is a byte-level contract that any round trip through a
      * date type would quietly rewrite. Character fields keep their space padding, which is data on a
      * {@code CHAR(n)} column rather than noise to trim.
      *
@@ -1747,7 +2183,9 @@ public class CombineTransactionsJob {
      * @param operation the attempted operation
      * @param message the legacy diagnostic to emit before failing
      * @param reason the abend reason
-     * @param failure the underlying throwable, or {@code null}
+     * @param failure the underlying throwable, or {@code null}; declared as {@link Throwable} because a
+     *     streamed write fails with a checked {@link IOException} and wrapping it here would add a synthetic
+     *     frame to a cause chain the mapper and the abend both already preserve
      * @throws CardDemoException if {@code ioStatus} is not exactly {@code '00'}; the subtype is the mapper's
      */
     private void guardObjectOperation(
@@ -1756,7 +2194,7 @@ public class CombineTransactionsJob {
             final String operation,
             final String message,
             final String reason,
-            final RuntimeException failure) {
+            final Throwable failure) {
 
         if (STATUS_SUCCESS.equals(ioStatus)) {
             return;
@@ -1858,25 +2296,22 @@ public class CombineTransactionsJob {
     }
 
     /**
-     * Normalises a generation prefix by stripping any trailing separator, so that key composition has exactly
-     * one separator wherever the configured value did or did not carry one.
+     * Validates a generation prefix against the one shared grammar.
+     *
+     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This method used to strip whitespace and
+     * trailing separators and check nothing else, and five sibling classes each carried a variant of it that
+     * differed. {@link GenerationPrefixContract#requireRelativePrefix(String, String)} is now the only
+     * grammar, and it refuses a trailing separator rather than trimming one, so a configured value and the
+     * value in force can no longer differ silently. Both declared values - {@code gdg/transact-combined} and
+     * {@code gdg/transact-bkup} - satisfy it, so no shipped configuration changes behaviour.
      *
      * @param value the injected prefix
      * @param property the property name, for the diagnostic
-     * @return the prefix with no trailing separator, never blank
-     * @throws IllegalArgumentException if {@code value} is absent, blank or only separators
+     * @return the prefix unchanged, once it satisfies the shared grammar
+     * @throws IllegalArgumentException if {@code value} is absent, blank or malformed
      */
     private static String requireGenerationPrefix(final String value, final String property) {
-        final String configured = requireConfiguredText(value, property).strip();
-        int end = configured.length();
-        while (end > 0 && configured.charAt(end - 1) == '/') {
-            end--;
-        }
-        if (end == 0) {
-            throw new IllegalArgumentException(
-                    property + " must name a key prefix but held only separators");
-        }
-        return configured.substring(0, end);
+        return GenerationPrefixContract.requireRelativePrefix(value, property);
     }
 
     /**
@@ -1914,7 +2349,7 @@ public class CombineTransactionsJob {
      *
      * <p><b>This decider is not a {@code COND} gate.</b> {@code app/jcl/COMBTRAN.jcl:L41} carries no
      * {@code COND} parameter and neither does {@code :L22}, so nothing in this member gates one step on
-     * another; see {@link CombineTransactionsJob#combineTransactionsFlow(Step, Step)} for how the
+     * another; see {@link CombineTransactionsJob#combineTransactionsFlow(Step, Step, Step)} for how the
      * absence is modelled. This decider exists only to distinguish outcomes <b>after</b> the work, because
      * without it a failed step and an abended step would both simply fail the flow and the orchestrated
      * pipeline could not tell return code 8 from return code 12.
@@ -1977,22 +2412,39 @@ public class CombineTransactionsJob {
     }
 
     /**
-     * Establishes the diagnostic context for the run and clears it afterwards.
+     * Establishes the diagnostic context for the run and restores it afterwards.
      *
-     * <p>{@link CorrelationIdFilter} is HTTP-scoped and never runs for batch work, so a batch job that logged
-     * nothing here would emit records carrying no {@code jobInstanceId} and no {@code correlationId} - and the
-     * observability package is not permitted a {@link JobExecutionListener} of its own. This listener therefore
-     * does it, and it does it through {@link CorrelationIdFilter}'s own constants and helpers rather than
-     * through literals, so the key names have one definition and cannot be renamed in one place only.
-     * {@code traceId} and {@code spanId} are published by the tracing bridge under the same two constants and
-     * are not set here.
+     * <p>{@link CorrelationIdFilter}'s request path is HTTP-scoped and never runs for batch work, so a batch
+     * job that did nothing here would emit records carrying no {@code jobInstanceId} and no
+     * {@code correlationId} - and the observability package is not permitted a {@link JobExecutionListener} of
+     * its own. This listener therefore establishes the context, and it does so through
+     * {@link CorrelationIdFilter}'s own scope helpers rather than through literals and hand-rolled
+     * put-and-remove pairs, so the key names have one definition and the lifecycle has one implementation.
+     * {@code traceId} and {@code spanId} are published by the tracing bridge from real span identity and are
+     * never set here.
+     *
+     * <p><b>Finding H-03, severity High.</b> This listener used to publish the job instance identifier with a
+     * bare {@code propagateJobInstanceId} whose return value it discarded, and then end the run with an
+     * unconditional {@code propagateJobInstanceId(null)}. Because Spring Batch runs jobs on pooled threads and
+     * this job is launched from inside {@code BatchPipelineOrchestrator}'s stream, that removal erased the
+     * enclosing pipeline's identity: every pipeline event emitted after the nested job finished carried no
+     * {@code jobInstanceId} at all, and the correlation between a run's logs and its output objects - the
+     * whole reason the key exists - was lost for the remainder of the stream. The correlation identifier was
+     * already handled correctly by a mint-if-absent, clear-only-if-ours rule; the job instance identifier was
+     * not, and one entry restored while the other is removed is the worst of both.
+     *
+     * <p>The fix is not a second hand-rolled snapshot. Both entries now go through
+     * {@link CorrelationIdFilter#enterBatchScope(long, String)} and
+     * {@link CorrelationIdFilter#exitBatchScope()}, which is the single authoritative implementation of the
+     * park-and-restore contract - an entry that was absent is removed, an entry that existed is put back, and
+     * scopes nest so an inner job restores its caller's context rather than the absence of one. See finding
+     * M-02 for why five copies of that contract became one.
      *
      * <p><b>The correlation identifier is derived, not random.</b> {@value #CORRELATION_ID_PREFIX} followed by
-     * the job execution identifier is deterministic, which is what lets {@link #afterJob(JobExecution)} clear
-     * <b>only what this listener minted</b>: if the entry still holds that exact value it is ours to remove,
-     * and if it holds anything else an outer scope owns it and it is left alone. That removes the need for a
-     * snapshot field or a {@code ThreadLocal}, so this class carries <b>no mutable state at all</b> and the
-     * enclosing configuration carries no static mutable field.
+     * the job execution identifier is deterministic, so a run's identifier can be recomputed from its
+     * execution record when the logs are read back. The listener itself still carries <b>no mutable state at
+     * all</b>: the displaced values live on the thread that displaced them, which is the only scope that could
+     * correctly own them.
      */
     private static final class CombineTransactionsJobListener implements JobExecutionListener {
 
@@ -2005,26 +2457,25 @@ public class CombineTransactionsJob {
          * {@inheritDoc}
          *
          * <p>Publishes the job instance identifier, and mints a correlation identifier only when no outer
-         * scope has already established one.
+         * scope has already established one. What either entry displaced is remembered on the thread so that
+         * {@link #afterJob(JobExecution)} can put it back.
          *
          * @param jobExecution the starting execution
          */
         @Override
         public void beforeJob(final JobExecution jobExecution) {
-            CorrelationIdFilter.propagateJobInstanceId(
-                    Long.toString(jobExecution.getJobInstance().getInstanceId()));
-            if (CorrelationIdFilter.currentCorrelationId() == null) {
-                CorrelationIdFilter.propagate(mintedCorrelationId(jobExecution));
-            }
+            CorrelationIdFilter.enterBatchScope(
+                    jobExecution.getJobInstance().getInstanceId(), mintedCorrelationId(jobExecution));
             LOG.info("START OF EXECUTION OF app/jcl/COMBTRAN.jcl - no COBOL program, SORT then IDCAMS REPRO");
         }
 
         /**
          * {@inheritDoc}
          *
-         * <p>Clears the diagnostic context in a {@code finally}, so an exception raised while logging the end
-         * of the run cannot leave the entries on a pooled thread for an unrelated job to inherit and be
-         * mislabelled by.
+         * <p><b>Restores</b> the diagnostic context in a {@code finally}, so an exception raised while logging
+         * the end of the run cannot leave this job's entries on a pooled thread for an unrelated later job to
+         * inherit and be mislabelled by - and so an enclosing scope's entries survive this job rather than
+         * being cleared along with it. Restoring serves both obligations; removing serves only the first.
          *
          * @param jobExecution the finishing execution
          */
@@ -2034,11 +2485,7 @@ public class CombineTransactionsJob {
                 LOG.info("END OF EXECUTION OF app/jcl/COMBTRAN.jcl with exit status {}",
                         jobExecution.getExitStatus());
             } finally {
-                if (mintedCorrelationId(jobExecution)
-                        .equals(CorrelationIdFilter.currentCorrelationId())) {
-                    CorrelationIdFilter.propagate(null);
-                }
-                CorrelationIdFilter.propagateJobInstanceId(null);
+                CorrelationIdFilter.exitBatchScope();
             }
         }
 

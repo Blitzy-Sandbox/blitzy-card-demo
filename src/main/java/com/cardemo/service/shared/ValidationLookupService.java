@@ -70,7 +70,7 @@ import org.springframework.stereotype.Service;
  * reference data inside a compilation unit, and would make the element counts hard to audit against the copybook.
  * Rule 1 Clause C forbids that duplication and Clause A asks for minimal complexity; Clause A's performance clause is
  * satisfied either way, because membership is an immutable hash-set probe in both designs and the tables are read
- * once at startup. Externalising the data is therefore the justified tradeoff, and it is owed an entry in the planned
+ * once at startup. Externalising the data is therefore the justified tradeoff, and it is owed an entry in the
  * {@code DECISION_LOG.md}. Generating a constants class instead is a <strong>High</strong> severity defect.
  *
  * <h3>1.1 The source structure, verbatim</h3>
@@ -229,7 +229,7 @@ import org.springframework.stereotype.Service;
  * else in the corpus. The condition name sits on {@code US-STATE-AND-FIRST-ZIP2 PIC X(4)} alone, so the
  * legacy system validates a state code and the first two digits of a zip code and never the last three.
  *
- * <p><strong>Retained parity artefact, severity Low, owed an entry in the planned {@code DECISION_LOG.md}.</strong> The
+ * <p><strong>Retained parity artefact, severity Low, owed an entry in the {@code DECISION_LOG.md}.</strong> The
  * field is reproduced here as documentation and as the width constant
  * {@link #LAST_THREE_OF_ZIP_WIDTH_NOT_VALIDATED}, and it is intentionally never consulted by any lookup.
  * Rule 1 Clause B forbids <em>untracked</em> dead code; this is tracked, cited and justified. Inventing
@@ -276,7 +276,7 @@ import org.springframework.stereotype.Service;
  *       default.</li>
  *   <li><strong>High</strong> - generating a constants class from the 1318 line copybook; inventing or omitting a
  *       single code; enabling polymorphic Jackson typing; fetching the numbering-plan registry over the network.
- *       <em>Remedy:</em> none of the four is present, and each is argued against explicitly above and in the planned
+ *       <em>Remedy:</em> none of the four is present, and each is argued against explicitly above and in the
  *       {@code DECISION_LOG.md}.</li>
  *   <li><strong>Medium</strong> - merging the full area-code table into its two subsets and dropping a condition
  *       name; sorting the state table instead of preserving source order; depending on hash iteration order for any
@@ -800,8 +800,8 @@ public final class ValidationLookupService {
      *       characters, because the resource path is required in the message and truncating to the legacy
      *       width would discard exactly the part an operator needs. The constructor stores the message
      *       unchanged, so the widening is contained here and is documented at this declaration. It is owed an
-     *       entry for {@code DECISION_LOG.md}, which is <strong>not available</strong> as measured
-     *       1 August 2026, so this Javadoc is the record until that file is authored.</li>
+     *       entry in {@code DECISION_LOG.md}, which is <strong>authored at the repository root</strong>; a
+     *       reading of 1 August 2026 recording it as not available is withdrawn.</li>
      * </ul>
      *
      * @param resourcePath the classpath-relative resource that could not be turned into a table

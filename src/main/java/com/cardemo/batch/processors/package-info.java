@@ -104,7 +104,7 @@
  * <p><strong>The empty fee paragraph is retained.</strong> {@code app/cbl/CBACT04C.cbl:L518-L520} is a comment
  * and an exit, and it is <strong>genuinely reachable</strong> - performed at {@code :L216}. It is kept as an
  * empty private method with an explicit intentional-no-op marker, its locator, its reachability proof and an
- * acknowledgement that it is owed an entry in the planned {@code DECISION_LOG.md}. This is the single place in
+ * acknowledgement that it is owed an entry in the {@code DECISION_LOG.md}. This is the single place in
  * the tree where Rule 1 Clause B's prohibition on dead code yields to the parity mandate, on the reading that
  * the clause forbids <em>untracked</em> dead code; deleting the call site would break the paragraph map the
  * scope-coverage gate verifies.
@@ -127,13 +127,12 @@
  * <p><strong>The statement table's hard ceiling is removed.</strong>
  * {@code app/cbl/CBSTM03A.CBL:L225-L233} declares 51 card entries of 10 transactions - 510 - and the building
  * loop increments both indices with <strong>no bounds check whatsoever</strong>, so a 511th transaction overran
- * storage silently. Java uses unbounded collections, which removes the corruption, and then needs a bound of
- * its own so that untrusted input cannot exhaust the heap: {@code StatementProcessor} enforces
- * {@code carddemo.batch.statement-processor.max-transactions-per-run} and <em>fails loudly</em> rather than
- * truncating. Note also that this processor is genuinely <strong>resident, not streaming</strong> - AAP
- * section 0.5.1.8 describes it as streaming and is wrong: the table is built from the card-sorted transaction
- * stream while the mainline iterates the cross-reference stream independently, so holding only "the current
- * card" is structurally impossible.
+ * storage silently. Java uses unbounded collections, which removes the corruption. <strong>No authored ceiling
+ * takes its place.</strong> {@code StatementProcessor} enforced two - one per run, one per card group - and
+ * finding BAT-002 removed both: neither has a source, and a refusal at an invented threshold reproduces
+ * neither the legacy number nor the legacy behaviour. What bounds the resident set is the control break itself:
+ * the processor advances one card group at a time, so one card's transactions are held rather than the run's,
+ * and a run that crosses the legacy per-card capacity logs one WARN naming {@code :L228} instead of failing.
  *
  * <p><strong>The self-modifying dispatch is gone, and its order is not.</strong>
  * {@code app/cbl/CBSTM03A.CBL:L296-L314} rewrites the target of an unconditional branch at
@@ -167,14 +166,21 @@
  * <ul>
  *   <li><strong>Build.</strong> {@code ./mvnw clean verify}. Maven 3.9.11 from the pinned wrapper, Java
  *       {@code [25,)} enforced, {@code release} 25, {@code -Xlint:all -Werror failOnWarning}.</li>
- *   <li><strong>Run.</strong> These are {@code ItemProcessor} beans and are never invoked directly; a step
- *       supplies the items. Three of the five are {@code @StepScope} and declare it on themselves, because no
- *       central batch configuration class exists to declare it for them - resolving one outside a step context
- *       therefore fails by design.</li>
+ *   <li><strong>Run.</strong> These are {@code ItemProcessor} implementations and are never invoked directly;
+ *       a step supplies the items. <strong>Four of the five are beans and one is not.</strong> The four carry
+ *       {@code @Component}, two of them with {@code @StepScope} declared on themselves, and each is injected
+ *       as a {@code @Bean Step} method parameter by the job that drives it, so resolving a step-scoped one
+ *       outside a step context fails by design. The fifth, {@code TransactionReportProcessor}, carries neither
+ *       annotation: {@code com.cardemo.batch.jobs.TransactionReportJob} constructs it inside each STEP10R
+ *       tasklet body and is its sole owner. That is finding <strong>F-008</strong> - the class was previously
+ *       annotated while the job built it with {@code new}, so the bean definition was resolved by nothing and
+ *       the annotations documented a lifecycle that never ran.</li>
  *   <li><strong>Test.</strong> Unit tests belong in {@code src/test/java/com/cardemo/unit/batch}.
  *       {@code TransactionCombineProcessorTest} and {@code TransactionCombineProcessorCoverageTest} cover the
  *       combine processor; {@code TransactionReportProcessorScopeIsolationTest} proves the report processor's
- *       per-execution isolation across nested and concurrent step executions; {@code ParityLoggerRoutingTest}
+ *       single ownership and its per-execution isolation across interleaved and concurrent executions, and
+ *       asserts that neither it nor {@code TransactionBackupReader} holds static mutable state, which is what
+ *       makes construction per execution a complete guarantee; {@code ParityLoggerRoutingTest}
  *       proves that no monetary value from this package reaches the application log stream.
  *       <strong>Measured 4 August 2026:</strong> every processor in this package now has a unit test class of
  *       its own - {@code TransactionPostingProcessorTest}, {@code InterestCalculationProcessorTest},
@@ -197,16 +203,18 @@
  * <h2>Key configuration and defaults</h2>
  *
  * <ul>
- *   <li>{@code carddemo.batch.statement-processor.max-transactions-per-run}, default {@code 1000000}. A
- *       <strong>safety limit, not a tuning knob</strong>: it replaces the legacy 510-entry ceiling that had no
- *       bounds check, sits three orders of magnitude above the largest fixture so no legitimate run reaches
- *       it, and is expected to be <em>lowered</em> by a deployment whose heap is smaller, never raised. At
- *       roughly 800 bytes retained per entry it bounds the table near 800 MB; a parity run over the 300 records
- *       of {@code app/data/ASCII/dailytran.txt} retains 300 entries, about 240 kB.</li>
+ *   <li><strong>No record ceiling, and no property for one.</strong>
+ *       {@code carddemo.batch.statement-processor.max-transactions-per-run} was published here and is gone
+ *       with the code that read it - finding BAT-002. {@code StatementProcessor} takes exactly one
+ *       constructor argument, its {@code FileService}, and nothing about a run's size is configurable. Cost
+ *       per resident entry is unchanged and worth knowing: one projected record is 350 characters, on the
+ *       order of 800 bytes retained, and a parity run over the 300 records of
+ *       {@code app/data/ASCII/dailytran.txt} holds one card group at a time - a few kilobytes.</li>
  *   <li>Report window dates arrive as <strong>job parameters</strong> - {@code startDate} and {@code endDate},
  *       ten characters each - replacing the {@code DATEPARM} control input of {@code app/jcl/TRANREPT.jcl}.
- *       They are bound on the constructor, because the bean is step scoped and therefore created once per
- *       execution. A per-run value in a property file would be shared by two concurrent runs.</li>
+ *       The owning step reads them from the job parameters and passes them to the constructor, which validates
+ *       them, so one instance carries one window and construction happens once per execution. A per-run value
+ *       in a property file would be shared by two concurrent runs.</li>
  *   <li>The interest date is likewise a job parameter: ten numeric characters, eight date digits then two
  *       zeros, concatenated into generated identifiers and never reformatted.</li>
  *   <li>{@code carddemo.decimal.rounding-mode: HALF_EVEN}, {@code monetary-scale: 2} and
@@ -249,8 +257,9 @@
  *       <em>Remediation:</em> reproduce the truncation. <strong>Severity: High.</strong></p></li>
  *   <li><p><strong>Symptom: a generated timestamp differs from the baseline in its final digits.</strong>
  *       Cause: nanosecond precision. The legacy generator produces 26 characters whose <strong>final four
- *       digits are always zeros</strong>. <em>Remediation:</em> format to millisecond precision followed by
- *       four zeros. <strong>Severity: High.</strong></p></li>
+ *       digits are always zeros</strong>. <em>Remediation:</em> format to hundredths-of-a-second precision
+ *       followed by four literal zeros - not milliseconds, which would need a seventh fraction character.
+ *       <strong>Severity: High.</strong></p></li>
  *   <li><p><strong>Symptom: two overlapping report executions produce mixed totals.</strong> Cause: a
  *       {@code @StepScope} annotation was removed, or per-run state moved to a static or singleton field.
  *       <em>Remediation:</em> restore the scope; the report processor carries nine mutable accumulators and one
@@ -277,7 +286,7 @@
  *       109 - each carrying its exact literal description. They are never thrown.</li>
  *   <li><strong>Every legacy quirk is reproduced or labelled, never silently corrected</strong>, and every
  *       retained no-op is marked at its own declaration with its locator, a reachability proof, an explicit
- *       intentional-no-op marker and an acknowledgement that it is owed an entry in the planned
+ *       intentional-no-op marker and an acknowledgement that it is owed an entry in the
  *       {@code DECISION_LOG.md}. No file in this tree keeps a global tally of them.</li>
  *   <li><strong>The frozen corpus stays frozen.</strong> Nothing here reads {@code app/} at build or run
  *       time; those files are cited as evidence and must survive byte for byte.</li>

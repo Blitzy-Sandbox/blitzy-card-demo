@@ -1295,7 +1295,7 @@ final class UserSecurityDtoTest {
 
             assertThatCode(() -> pageOf(List.of(ownRow)))
                     .as("app/cbl/COUSR03C.cbl never compares the target identifier against the signed-on "
-                            + "one; that absent guard is preserved and owed an entry in the planned DECISION_LOG.md")
+                            + "one; that absent guard is preserved and owed an entry in the DECISION_LOG.md")
                     .doesNotThrowAnyException();
             assertThat(pageOf(List.of(ownRow)).rows().get(0).userId()).isEqualTo(signedOnUser);
             assertThat(isSelected(pageOf(List.of(ownRow)).rows().get(0).selectionFlag()))

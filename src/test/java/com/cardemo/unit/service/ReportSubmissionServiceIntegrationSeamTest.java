@@ -97,6 +97,16 @@ import org.springframework.beans.factory.ObjectProvider;
  */
 @DisplayName("ReportSubmissionService: the SQS seam is validated, bounded, propagating and quiet")
 class ReportSubmissionServiceIntegrationSeamTest {
+    /**
+     * The key the queue envelope code is derived from.
+     *
+     * <p>Local to this test and long enough to be a plausible signing key, so nothing here is a credential of
+     * any deployment. Finding M-11: the producer signs every submission with a key derived from the
+     * application signing key, and there is no unsigned mode, so a subject cannot be built without one.
+     */
+    private static final String ENVELOPE_SIGNING_KEY =
+            "integration-seam-test-envelope-key-0123456789";
+
 
     /** The physical queue name, carrying the {@code .fifo} suffix AWS requires. */
     private static final String QUEUE_NAME = "carddemo-report-jobs.fifo";
@@ -169,7 +179,7 @@ class ReportSubmissionServiceIntegrationSeamTest {
         return new ReportSubmissionService(sqsTemplate, mock(SnsTemplate.class),
                 mock(DateValidationService.class), FIXED_CLOCK,
                 providerOf(tracer), QUEUE_NAME, QUEUE_LOGICAL_NAME, messageGroupId,
-                "carddemo-notifications");
+                "carddemo-notifications", ENVELOPE_SIGNING_KEY);
     }
 
     /**
@@ -405,6 +415,11 @@ class ReportSubmissionServiceIntegrationSeamTest {
             // that consumes the message - could not be reconstructed. The two identifiers above are the
             // specification's own example values, and this is the single header every OpenTelemetry and
             // Micrometer Tracing consumer extracts unprompted.
+            //
+            // Finding M-03, severity Medium. The trailing octet is now the span's own sampling decision rather
+            // than a hard-coded 01. This span reports sampled, so 01 is the truth here; the unsampled arm is
+            // asserted by unsampledSpanIsNotAdvertisedAsSampled below, and without that second case a flag
+            // that only ever reads 01 would be indistinguishable from the constant it replaced.
             assertThat(onlySend().headers())
                     .containsEntry(CorrelationIdFilter.TRACE_PARENT_HEADER,
                             "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
@@ -415,6 +430,46 @@ class ReportSubmissionServiceIntegrationSeamTest {
             assertThat(span.started).isTrue();
             assertThat(span.ended).isTrue();
             assertThat(span.errors).isEmpty();
+        }
+
+        @Test
+        @DisplayName("finding M-03: an unsampled span publishes -00, so no consumer records a dropped trace")
+        void unsampledSpanIsNotAdvertisedAsSampled() {
+            stubSuccessfulSend();
+            final RecordedSpan span = new RecordedSpan(
+                    "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7", Boolean.FALSE);
+            final io.micrometer.tracing.Span spanDouble = span.mock();
+            final Tracer tracer = mock(Tracer.class);
+            when(tracer.nextSpan()).thenReturn(spanDouble);
+
+            submitMonthly(newService(MESSAGE_GROUP_ID, tracer));
+
+            assertThat(onlySend().headers())
+                    .as("this process decided not to record the trace. Under application-prod.yml's sampling "
+                            + "probability of 0.1 that is the common case, and asserting 01 there told nine "
+                            + "consumers in ten to export a child whose parent would never arrive")
+                    .containsEntry(CorrelationIdFilter.TRACE_PARENT_HEADER,
+                            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00");
+        }
+
+        @Test
+        @DisplayName("a deferred decision publishes -01, the documented default rather than an accident")
+        void deferredDecisionPublishesSampled() {
+            stubSuccessfulSend();
+            final RecordedSpan span =
+                    new RecordedSpan("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7", null);
+            final io.micrometer.tracing.Span spanDouble = span.mock();
+            final Tracer tracer = mock(Tracer.class);
+            when(tracer.nextSpan()).thenReturn(spanDouble);
+
+            submitMonthly(newService(MESSAGE_GROUP_ID, tracer));
+
+            assertThat(onlySend().headers())
+                    .as("a null decision means no sampler has run yet, not decided-against: this process may "
+                            + "still export the span, and an orphaned child is harder to diagnose than a "
+                            + "trace sampled more eagerly than a probability suggested")
+                    .containsEntry(CorrelationIdFilter.TRACE_PARENT_HEADER,
+                            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
         }
 
         @Test
@@ -566,6 +621,16 @@ class ReportSubmissionServiceIntegrationSeamTest {
 
         private final String spanId;
 
+        /**
+         * The sampling decision the double's {@code TraceContext} reports.
+         *
+         * <p>Finding M-03: this had to become explicit. Mockito's default answer for a {@link Boolean} return
+         * is {@code FALSE} rather than {@code null}, so an unstubbed {@code sampled()} silently asserted "not
+         * sampled" - which was invisible while the trace-flags octet was hard-coded and became a real
+         * assertion the moment the octet started describing the decision.
+         */
+        private final Boolean sampled;
+
         private final Map<String, String> tags = new LinkedHashMap<>();
 
         private final List<Throwable> errors = new ArrayList<>();
@@ -577,8 +642,13 @@ class ReportSubmissionServiceIntegrationSeamTest {
         private boolean ended;
 
         private RecordedSpan(final String traceId, final String spanId) {
+            this(traceId, spanId, Boolean.TRUE);
+        }
+
+        private RecordedSpan(final String traceId, final String spanId, final Boolean sampled) {
             this.traceId = traceId;
             this.spanId = spanId;
+            this.sampled = sampled;
         }
 
         /**
@@ -592,6 +662,7 @@ class ReportSubmissionServiceIntegrationSeamTest {
                     Mockito.mock(io.micrometer.tracing.TraceContext.class);
             when(context.traceId()).thenReturn(traceId);
             when(context.spanId()).thenReturn(spanId);
+            when(context.sampled()).thenReturn(sampled);
             when(span.context()).thenReturn(context);
             when(span.name(any())).thenAnswer(invocation -> {
                 name = invocation.getArgument(0);

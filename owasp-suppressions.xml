@@ -70,35 +70,84 @@
     - Never add a wildcard, a bare cpe without a packageUrl, or a vendor wide
       entry. Every suppression is scoped to one coordinate.
     - Never add a Tier 4 entry without an until date and a named fix version.
+    - A Tier 1, 2 or 3 entry normally needs no expiry, because it argues that the
+      record does not apply rather than accepting that it does. ONE exception: an
+      entry answering a record AT OR ABOVE the CVSS gate threshold carries an until
+      date as well, because docs/validation-gates.md fixes the remediation order for
+      such a record as pin forward first and, failing that, an evidence-based
+      suppression with an explicit expiry "so the finding returns rather than
+      disappearing". That clause is about the record's score, not its tier. The
+      Tier 2 org.apache.tomcat.embed entry is the only one of these today.
     - Never accept a Tier 4 risk for a coordinate whose version
       spring-boot-dependencies exposes as an overridable property. Pin the fixed
       version forward in pom.xml, with the CVE named beside it, and add no entry
       here. Accepting what can be fixed is the one thing this file must not do.
     - Never widen this file to turn a red scan green. If a new record appears,
-      assess it; if it applies and cannot be remediated, it is a finding to
+      assess it; if it APPLIES and cannot be remediated, it is a finding to
       report, not a line to add here.
+    - An entry that is the difference between a red scan and a green one carries
+      the heaviest evidential burden in this file, and only Tier 1 or Tier 2 can
+      carry it: an identifier proof or a jar listing, reproducible by a command
+      written into the note, never an argument from likelihood. Say in the note
+      that the entry is load bearing, so nobody deletes it believing it is
+      decorative or keeps it believing something else holds the line.
     - Removing an entry is always safe. Adding one requires the evidence above.
 
-  REGISTER CURRENCY - LAST VERIFIED AGAINST A LIVE SCAN ON 4 AUGUST 2026
+  REGISTER CURRENCY - LAST VERIFIED AGAINST A LIVE SCAN ON 7 AUGUST 2026
 
   Reproduce with:
       ./mvnw -B -ntp org.owasp:dependency-check-maven:12.1.0:check
-  Measured outcome on the pinned dependency set, re-measured after the Tier 1
-  hibernate-validator identifier correction below was added: 166 dependencies
-  scanned, ONE active finding - CVE-2026-40977 against spring-boot-3.5.11.jar at
-  CVSS 6.7, MEDIUM, disclosed as residual risk in pom.xml because its fix is a
-  newer spring-boot-starter-parent - and therefore HIGHEST ACTIVE CVSS 6.7 and
-  ZERO findings at or above the failBuildOnCVSS 7 gate. The gate passes on
-  remediation rather than on suppression, and BUILD SUCCESS was observed.
-  Absolute counts here move with the NVD feed as well as with this file, so treat
-  the reproduce command as the authority and this line as its last reading.
+  A 4 AUGUST 2026 READING IS SUPERSEDED HERE, and the difference is the reason
+  this block is dated. That reading recorded 166 dependencies scanned, ONE active
+  finding, HIGHEST ACTIVE CVSS 6.7 and ZERO findings at or above the
+  failBuildOnCVSS 7 gate. Re-measured on 6 August 2026 against the same commit
+  and the same pins, with NVD data refreshed, the scan exited 1: 166 dependencies
+  scanned and TWO active findings, because the feed had newly attributed
+  CVE-2026-66299 at CVSS 7.5 to tomcat-embed-core-10.1.57.jar. Nothing in this
+  file or in pom.xml had changed. That is what a register whose absolute counts
+  move with the feed looks like when the feed moves, and it is why the reproduce
+  command is the authority and any count written here is only its last reading.
+
+  Measured outcome as of 6 August 2026, after the Tier 2 tomcat-embed entry below
+  was added on jar-listing evidence: BUILD SUCCESS in 23.8 s; 166 dependencies
+  scanned; the active set is ONE finding - CVE-2026-40977 against
+  spring-boot-3.5.11.jar at CVSS 6.7, MEDIUM, disclosed as residual risk in
+  pom.xml because its fix is a newer spring-boot-starter-parent - therefore
+  HIGHEST ACTIVE CVSS 6.7 and ZERO findings at or above the gate, with
+  CVE-2026-66299 present in the report as a SUPPRESSED row rather than absent from
+  it. The 7.5 record is withdrawn by evidence that the vulnerable component is
+  absent from every artefact it is attributed to, not by an acceptance and not by a
+  threshold change: failBuildOnCVSS stays at 7, no plugin skip exists in any
+  profile, and the scan runs in every build.
+
+  RE-MEASURED INDEPENDENTLY ON 7 AUGUST 2026 and the 6 August reading above
+  reproduced exactly, which is why it is corroborated rather than superseded.
+  A second no-skip verify - ./mvnw -B -ntp clean verify, with NO
+  -Ddependency-check.skip - reported BUILD SUCCESS from engine 12.1.0 against a
+  report timestamped 2026-08-07T03:42:57Z: 166 dependencies scanned, the active
+  set exactly ONE finding at CVSS 6.7 MEDIUM (CVE-2026-40977 against
+  spring-boot-3.5.11.jar, disclosed as residual risk in pom.xml because its fix
+  is a newer spring-boot-starter-parent), therefore HIGHEST ACTIVE CVSS 6.7 and
+  ZERO findings at or above the failBuildOnCVSS 7 gate, with CVE-2026-66299
+  present as a SUPPRESSED row rather than absent. owasp.failBuildOnCVSS is still
+  7, pom.xml carries no functional change, and the tomcat-embed entry below could
+  not be pinned forward: the advisory names the fix as 10.1.58 "when released",
+  and repo1.maven.org returns HTTP 404 for tomcat-embed-core 10.1.58, 10.1.59 and
+  10.1.60 while the coordinate metadata lists 10.1.57 as the highest 10.1.x, which
+  this project already pins. Absolute counts here move with the NVD feed as well
+  as with this file, so the reproduce command stays the authority and every count
+  written here is only its last reading.
 
   ELEVEN ENTRIES WERE DELETED when the forward security pins in pom.xml
   (spring-security 6.5.11, spring-framework 6.2.19, tomcat 10.1.57, postgresql
   42.7.13) replaced the parent managed versions. Verified 4 August 2026: none of
   the identifiers named below is declared in any <cve> element of this file, so
-  the deletions are real and not merely intended. This file now declares 17 <cve>
-  identifiers across 19 <suppress> entries.
+  the deletions are real and not merely intended. Counted 6 August 2026 by
+  parsing this file: it declares 18 <cve> identifiers, all distinct, and 9 <cpe>
+  identifiers across 17 <suppress> entries. An earlier revision of this sentence
+  said 19 entries while the paragraph below it said sixteen; both numerals are
+  now measured rather than remembered, and BuildProvenanceTest.SuppressionPremises
+  fails if either drifts from the file again.
 
     SIX Tier 4 acceptances became remediations - CVE-2026-22732, CVE-2026-41842,
     CVE-2026-41293, CVE-2026-24880, CVE-2026-41284, CVE-2026-42198. An earlier
@@ -118,11 +167,28 @@
     CVE-2026-34487, CVE-2026-34483, CVE-2026-43513, CVE-2026-42498 and
     CVE-2026-29129.
 
-  What remains is SIXTEEN entries: nine Tier 1 identifier corrections, three
+  What remains is SEVENTEEN entries: nine Tier 1 identifier corrections, four
   Tier 2, three Tier 3 and the single Tier 4 acceptance whose fix is a newer
-  spring-boot-starter-parent. Every one of the sixteen was confirmed to still
-  match something in the report that produced the numbers above; an entry that
-  matches nothing belongs in the deletion list, not in this file.
+  spring-boot-starter-parent. The seventeenth is the tomcat-embed-core entry added
+  on 6 August 2026; it is the fourth Tier 2 record and the only non-Tier-4 entry
+  carrying an until date, for the reason its own note gives.
+
+  TWO OF THE SEVENTEEN MATCHED NOTHING in the 6 August 2026 scan, and saying so
+  is more useful than an unqualified claim that all of them are load bearing. The
+  Unused Suppression Rule Analyzer named the log4j-api Tier 2 entry
+  (CVE-2026-34478, CVE-2026-34479, CVE-2026-34480, CVE-2026-34481) and the
+  jackson-databind Tier 3 entry (CVE-2026-54512, CVE-2026-54513). Both are
+  consistent with the forward pins recorded in pom.xml - log4j2 2.26.1 and
+  jackson-bom 2.22.1 - having moved those artefacts out of the affected ranges, in
+  which case the entries are inert and the rule above says an inert entry belongs
+  in the deletion list. They are RETAINED for now rather than deleted because
+  "matched nothing in one scan" is weaker evidence than "cannot match": the feed
+  demonstrably re-attributes records, as the CVE-2026-66299 reading above shows,
+  and neither entry can absorb anything outside the coordinate and CVE it names.
+  Deleting them is a separate, reversible change that wants its own re-measure,
+  and it is reported as an observation rather than performed as a side effect of
+  adding an unrelated entry. Every other entry was confirmed by the same analyzer
+  to still match something in the report that produced the numbers above.
 -->
 <suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
 
@@ -401,6 +467,123 @@
     ]]></notes>
     <packageUrl regex="true">^pkg:maven/io\.netty/netty-[a-z0-9-]+@.*$</packageUrl>
     <cve>CVE-2026-56816</cve>
+  </suppress>
+
+  <suppress until="2026-10-01Z">
+    <notes><![CDATA[
+      TIER 2, AND THE ONE ENTRY IN THIS FILE THAT CARRIES AN EXPIRY WITHOUT BEING
+      A TIER 4 ACCEPTANCE. CVE-2026-66299, CVSS 7.5 HIGH as scored by NVD
+      (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H - availability only, uncontrolled
+      resource consumption), reported against
+      org.apache.tomcat.embed:tomcat-embed-core 10.1.57. It is the ONLY record
+      this dependency set carries at or above the failBuildOnCVSS 7 gate, so this
+      single entry is the difference between a red scan and a green one and is
+      written to be read on that basis.
+
+      WHAT THE ADVISORY IS. Its own text, quoted from the scan's JSON report
+      rather than paraphrased: "Uncontrolled Resource Consumption vulnerability in
+      Apache Tomcat's WebSocket chat example. ... Users who have followed the
+      security guidance to remove the examples web application are not affected by
+      this issue. Users are recommended to remove the examples web application or
+      to upgrade to version 11.0.25, 10.1.58 or 9.0.121 (when released)."
+      Machine readable affected range: 10.1.24 inclusive to 10.1.58 exclusive,
+      which is why the resolved 10.1.57 jar is matched. The vulnerable component is
+      the chat servlet of the Tomcat EXAMPLES web application, which Apache ships
+      only inside the apache-tomcat binary distribution under webapps/examples. It
+      is not published as a Maven artefact and it is in no tomcat-embed module.
+
+      EVIDENCE THAT THE FLAGGED ARTEFACT DOES NOT CONTAIN IT - a jar listing,
+      which is what Tier 2 requires. Measured 6 August 2026 against the artefacts
+      this build actually resolves:
+        tomcat-embed-core-10.1.57.jar - the flagged artefact
+          sha256 9e230f12579c8c7158df5cbae0479fb93c81a1f1c33c5d56e75605e2074a4fa7
+          3698204 bytes, 1681 entries
+          entries matching example|chat, case insensitive .............. 0
+          .jsp, .html, .xhtml, .tag or .war entries .................... 0
+          entries whose name contains websocket ....................... 0
+        tomcat-embed-websocket-10.1.57.jar - the module that DOES carry the
+        WebSocket implementation, resolved transitively through
+        spring-boot-starter-web's spring-boot-starter-tomcat
+          sha256 335c00fad89e389fe041cad16d22bc83e6ef746571442b3dc5e2a8f0388bad21
+          191 entries, 185 of them the org.apache.tomcat.websocket implementation
+          entries matching example|chat, case insensitive .............. 0
+        tomcat-embed-el-10.1.57.jar - the third and last embed module on the graph
+          sha256 d0d0b86ec9d466ccaa8acf948a8c6564f09e21dcccc385805df248a053a3b449
+          164 entries
+          entries matching example|chat, case insensitive .............. 0
+      Reproduce without unzip:
+          python3 -c "import zipfile,sys;print(len(zipfile.ZipFile(sys.argv[1]).namelist()))" JAR
+      All three embed modules are checked because all three are matched by the
+      pattern below, and a pattern must not cover an artefact nobody looked at.
+
+      WHY THE PATTERN COVERS THE EMBED MODULES AND NOT ONLY THE ONE THE REPORT
+      NAMED - measured, not assumed, and worth recording because the first attempt
+      was wrong. Dependency-Check reported this record against
+      tomcat-embed-core-10.1.57.jar, so the entry was first scoped to
+      tomcat-embed-core alone. Re-running the scan then failed on
+      "tomcat-embed-websocket-10.1.57.jar (... cpe:2.3:a:apache:tomcat:10.1.57 ...)
+      : CVE-2026-66299(7.5)" - the same CVE, the same CVSS, the same Tomcat
+      product CPE at the same version, now attributed to the sibling module,
+      because the bundling analyzer had been reporting the group under one primary
+      artefact. Narrowing to the artefact the report happens to name therefore does
+      not narrow the risk assessment at all; it only moves which module is printed.
+      The pattern is scoped to the three tomcat-embed modules of this one Maven
+      group with this one named CVE, which is the same shape and the same reason as
+      the io.netty entry immediately above. Any tomcat artefact OUTSIDE
+      org.apache.tomcat.embed - a servlet container installed beside this
+      application, or tomcat-catalina pulled in for any reason - is deliberately
+      NOT matched, because the absence evidence above is about these three jars.
+
+      CORROBORATION AT THE APPLICATION LAYER - Tier 3 grounds, stated because a
+      second independent reason is cheap and because the jar listing above is
+      about the artefact while this is about the deployment. This project is
+      packaging jar with one embedded container and deploys no additional web
+      application, so there is no webapps directory into which an examples context
+      could be installed. It declares no spring-boot-starter-websocket, registers
+      no jakarta.websocket.server.ServerEndpoint and configures no message broker:
+      a search of src/main for websocket, ServerEndpoint, SockJS and STOMP returns
+      nothing. BuildProvenanceTest.SuppressionPremises holds the coordinate half
+      of that true for as long as this entry lives.
+
+      WHY THIS IS NOT A TIER 4 ACCEPTANCE, which matters because the rules above
+      forbid accepting a risk on a coordinate whose version this build controls.
+      tomcat.version IS an overridable property and IS already pinned forward in
+      pom.xml, so an APPLICABLE advisory here would have to be fixed by moving
+      that pin and no entry would be permitted. Nothing is being accepted: the
+      vulnerable component is absent from the artefact, so there is no exposure to
+      accept. The pin could not be moved in any case - the advisory names 10.1.58
+      "(when released)" and 10.1.58 is not released. Measured 6 August 2026 from
+      repo1.maven.org's maven-metadata.xml for this coordinate, the 10.1 line ends
+      10.1.52, 10.1.53, 10.1.54, 10.1.55, 10.1.56, 10.1.57.
+
+      WHY IT CARRIES AN until DATE WHEN NO OTHER TIER 2 ENTRY DOES. Because here
+      the remedy is a version and that version is imminent, which is not true of
+      the Tier 2 entries above. An evidence-based suppression that outlives its
+      remedy turns into the one thing this file must never hold: configuration
+      that keeps a scan green after the honest fix became available. The expiry
+      forces the question to be asked again rather than trusting that someone will.
+
+      REMEDIATION, in the order to try it. Raise tomcat.version to 10.1.58 or
+      later the moment it publishes, name this CVE beside the pin exactly as the
+      four security pins in pom.xml are named, and DELETE this entry - a forward
+      pin and a suppression for the same record must never coexist, which is the
+      rule the eleven deletions recorded above followed. If 10.1.58 has still not
+      published when this entry expires, re-measure both jars, re-read the
+      advisory and renew only on fresh evidence. Serving this application from a
+      container that also serves webapps/examples, or adding a WebSocket surface,
+      invalidates the corroboration above and requires re-examining this record
+      first.
+      This suppression EXPIRES on 2026-10-01. When it does the record returns and
+      the build fails again, which is the intended behaviour.
+
+      SCOPE OF THE PATTERN: one Maven group, one named CVE. Dependency-Check
+      attaches the same Apache Tomcat product identifier to every
+      org.apache.tomcat.embed module, so the pattern enumerates that group with
+      this single record. No other Tomcat advisory is touched, and a new one would
+      still fail the build.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.apache\.tomcat\.embed/tomcat-embed-[a-z0-9-]+@.*$</packageUrl>
+    <cve>CVE-2026-66299</cve>
   </suppress>
 
   <!-- ==================================================================

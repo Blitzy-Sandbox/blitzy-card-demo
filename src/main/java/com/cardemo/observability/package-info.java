@@ -246,15 +246,16 @@
  *
  * <p><strong>Toolchain.</strong> Java 25 with {@code maven.compiler.release} at {@code 25} and no preview
  * features, Maven 3.9.11 through the pinned repository wrapper, parent
- * {@code org.springframework.boot:spring-boot-starter-parent:3.5.11}. Load the git-ignored {@code .env}
- * first with {@code set -a; . ./.env; set +a}, because the JWT signing key has no default and the context
- * fails fast without it.
+ * {@code org.springframework.boot:spring-boot-starter-parent:3.5.11}. Load the git-ignored {@code .env} inside a
+ * subshell that also carries the command - {@code ( set -a; . ./.env; set +a; ./mvnw -B -ntp verify )} - because
+ * the JWT signing key has no default and the context fails fast without it. The parentheses confine the exported
+ * values to that subshell rather than leaving every later child inheriting them.
  *
  * <ul>
  *   <li>Compile: {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean compile}</li>
  *   <li>Unit tests: {@code ./mvnw -B -ntp -Ddependency-check.skip=true test}</li>
  *   <li><strong>Fast local verification</strong>, which does <strong>not</strong> satisfy the zero-warning
- *       build gate: {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}</li>
+ *       build gate: {@code ./mvnw -B -ntp clean verify}</li>
  *   <li><strong>The full gate</strong>, online and with nothing skipped:
  *       {@code ./mvnw -B -ntp clean verify}</li>
  * </ul>

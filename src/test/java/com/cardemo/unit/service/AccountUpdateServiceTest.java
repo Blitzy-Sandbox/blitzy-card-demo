@@ -47,6 +47,7 @@ package com.cardemo.unit.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
@@ -74,7 +75,6 @@ import com.cardemo.model.entity.Customer;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.CustomerRepository;
-import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.account.AccountUpdateService;
 import com.cardemo.service.account.AccountUpdateService.AccountUpdateResult;
 import com.cardemo.service.account.AccountUpdateService.ChangeAction;
@@ -84,15 +84,18 @@ import com.cardemo.service.account.AccountUpdateService.ResponseKind;
 import com.cardemo.service.shared.DateValidationService;
 import com.cardemo.service.shared.FileStatusMapper;
 import com.cardemo.service.shared.ValidationLookupService;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
-import java.security.SecureRandom;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Arrays;
-import java.util.Base64;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -409,6 +412,50 @@ final class AccountUpdateServiceTest {
     /** {@code WS-RETURN-MSG PIC X(75)} at {@code :479}; every error message is padded to it. */
     private static final int RETURN_MESSAGE_WIDTH = 75;
 
+    /**
+     * The {@code DECISION_LOG.md} identifier of the unstorable-image deviation, {@value}.
+     *
+     * <p>Named as a constant so the assertion that the record exists, the record itself, and the production
+     * Javadoc that claims it exists all refer to one string.
+     */
+    private static final String UNSTORABLE_IMAGE_DEVIATION_ID = "DL-DV-06";
+
+    /**
+     * The declared type of the column the source's {@code LOW-VALUES} would have to land in, {@value}.
+     *
+     * <p>{@code CUST-FICO-CREDIT-SCORE} is {@code PIC 9(03)} at {@code app/cpy/CVCUS01Y.cpy}, and the schema
+     * renders it as a fixed-width text column. That it is a <em>text</em> type is the load-bearing fact: no
+     * PostgreSQL text type can hold a zero byte in any encoding, so three {@code NUL} bytes are unstorable
+     * rather than merely inconvenient.
+     */
+    private static final String FICO_SCORE_COLUMN_DEFINITION = "CHAR(3)";
+
+    /**
+     * The twenty fields {@code 9600-WRITE-PROCESSING} moves into the two update images and which can therefore
+     * arrive absent, named in the symbolic-map vocabulary of {@code app/cpy-bms/COACTUP.CPY}.
+     *
+     * <p>Derived from the source, in its own order: the seven account fields of
+     * {@code app/cbl/COACTUPC.cbl:3962-4002} then the thirteen customer fields of {@code :4010-4059}. The
+     * three assembled values - date of birth, both phone numbers and the social security number - are absent
+     * from this list on purpose: their components run through the alphanumeric move, which renders a missing
+     * component as blanks exactly as a {@code MOVE} to a {@code PIC X} field would, so they cannot arrive
+     * {@code null} and screening them would add an unreachable branch.
+     */
+    private static final List<String> EXPECTED_SCREENED_FIELDS = List.of(
+            // Account image, :3962-4002.
+            "ACSTTUS", "ACURBAL", "ACRDLIM", "ACSHLIM", "ACRCYCR", "ACRCYDB", "AADDGRP",
+            // Customer image, :4010-4059.
+            "ACSFNAM", "ACSMNAM", "ACSLNAM", "ACSADL1", "ACSADL2", "ACSCITY", "ACSSTTE",
+            "ACSCTRY", "ACSZIPC", "ACSGOVT", "ACSEFTC", "ACSPFLG", "ACSTFCO");
+
+    /** Repository-relative path of the production bean, read by the screened-field census. */
+    private static final String ACCOUNT_UPDATE_SERVICE_SOURCE =
+            "src/main/java/com/cardemo/service/account/AccountUpdateService.java";
+
+    /** Repository-relative path of the schema migration, read by the column-definition helper. */
+    private static final String SCHEMA_MIGRATION_SOURCE =
+            "src/main/resources/db/migration/V1__create_schema.sql";
+
     /** {@code ERRMSGO} of {@code app/cpy-bms/COACTUP.CPY} is {@code X(40)}; the info line never exceeds it. */
     private static final int INFO_MESSAGE_WIDTH = 40;
 
@@ -418,6 +465,13 @@ final class AccountUpdateServiceTest {
 
     /** The eleven-digit screen key {@code ACCTSIDI} requires; {@code 1210-EDIT-ACCOUNT} rejects fewer. */
     private static final String SCREEN_ACCOUNT_ID = "00000000001";
+
+    /**
+     * The width of {@code WS-EDIT-CURRENCY-9-2-F}, declared {@code PIC +ZZZ,ZZZ,ZZZ.99} at
+     * {@code app/cbl/COACTUPC.cbl:371}: one sign, ten integer positions, two group separators, the
+     * point and two decimals. Every masked money field the screen paints is exactly this wide.
+     */
+    private static final int MONEY_DISPLAY_WIDTH = 15;
 
     /** The nine-digit customer key the snapshot carries into {@code :3919}. */
     private static final String SNAPSHOT_CUSTOMER_ID = "000000001";
@@ -920,25 +974,6 @@ final class AccountUpdateServiceTest {
      */
     private final Clock clock = Clock.fixed(Instant.parse("2024-03-15T09:41:07Z"), ZoneOffset.UTC);
 
-    /**
-     * A signing key of at least the length {@code SnapshotTokenService} requires, generated per run rather
-     * than declared, so no key material is committed. It signs nothing outside this suite.
-     */
-    private static final String TEST_SIGNING_KEY = ephemeralSigningKey();
-
-    /** The token lifetime the sealer is built with, long enough that no test can age one out by accident. */
-    private static final long TOKEN_LIFETIME_SECONDS = 900L;
-
-    /**
-     * The real sealer, not a mock.
-     *
-     * <p>Deliberate. The contract under test is that {@code 9700-CHECK-CHANGE-IN-REC} compares against a
-     * snapshot only this server can have produced, and a mocked sealer would let a test hand the service any
-     * snapshot it liked - which is exactly the property the sealing exists to remove. Every snapshot these
-     * tests submit therefore travels through authenticated encryption, as it does in production.</p>
-     */
-    private SnapshotTokenService snapshotTokenService;
-
     /** The bean under test, rebuilt per test method so no state can leak between tests. */
     private AccountUpdateService service;
 
@@ -956,16 +991,13 @@ final class AccountUpdateServiceTest {
 
     @BeforeEach
     void setUp() {
-        this.snapshotTokenService = new SnapshotTokenService(TEST_SIGNING_KEY, TOKEN_LIFETIME_SECONDS,
-                this.clock, new ObjectMapper());
         this.service = new AccountUpdateService(this.cardCrossReferenceRepository,
                 this.accountRepository,
                 this.customerRepository,
                 this.fileStatusMapper,
                 this.dateValidationService,
                 this.validationLookupService,
-                this.clock,
-                this.snapshotTokenService);
+                this.clock);
         this.account = liveAccount();
         this.customer = liveCustomer();
         this.snapshot = new Snapshot();
@@ -1443,24 +1475,7 @@ final class AccountUpdateServiceTest {
         if (java.util.Objects.equals(this.screen.addressLine2, this.snapshot.addressLine2)) {
             this.screen.addressLine2 = CHANGED_ADDRESS_LINE_2;
         }
-        final AccountUpdateRequest request = this.screen.build(null);
-        return this.service.updateAccount(request, sealed(request.getAccountId(),
-                this.snapshot.build()));
-    }
-
-    /**
-     * Seals a snapshot group, producing the {@code If-Match} value the write entry point requires.
-     *
-     * <p>This is what a client does with the {@code ETag} the read returned, in one line, so that every call
-     * site below reads as "submit this map with the snapshot the server issued". The record key is the
-     * account identifier, which is what binds a token to one account.</p>
-     *
-     * @param accountId the account the token is bound to
-     * @param snapshot the {@code ACUP-OLD-DETAILS} group to seal
-     * @return the sealed token, never null
-     */
-    private String sealed(final String accountId, final AccountUpdateRequest.OldDetails snapshot) {
-        return this.snapshotTokenService.seal(AccountUpdateService.SNAPSHOT_KIND, accountId, snapshot);
+        return this.service.updateAccount(this.screen.build(this.snapshot.build()));
     }
 
     /**
@@ -1504,6 +1519,182 @@ final class AccountUpdateServiceTest {
                 DateValidationService.EditFlag.ISVALID,
                 false,
                 "");
+    }
+
+    /**
+     * Asserts that one submitted value reached its column as a left-aligned copy with blank fill.
+     *
+     * <p>The two clauses together are the whole {@code MOVE ... TO PIC X(n)} semantic and nothing more: the
+     * stored value <em>starts with</em> the submitted bytes, so nothing was trimmed, re-cased or reordered;
+     * and everything after them is blank, so nothing was appended and the submitted prefix was not
+     * truncated. Expressing it this way rather than against a literal padded value is deliberate - the
+     * column widths belong to the schema, and restating fifteen of them here would create a second place to
+     * maintain them without adding an assertion the schema does not already make.
+     *
+     * @param label     the symbolic-map field and the record field it feeds, for the failure message
+     * @param submitted the value the request carried; must not be {@code null}
+     * @param stored    the value the entity holds after the write; may be {@code null}, which fails
+     */
+    private static void assertMovedVerbatim(final String label, final String submitted,
+            final String stored) {
+        assertThat(stored)
+                .as("%s must receive the submitted bytes unaltered", label)
+                .isNotNull()
+                .startsWith(submitted);
+        assertThat(stored.substring(submitted.length()))
+                .as("%s must be blank-filled after the submitted bytes and carry nothing else", label)
+                .isBlank();
+    }
+
+    /**
+     * Asserts that one submitted amount reached its column with both its value and its scale intact.
+     *
+     * <p>Scale is asserted separately from value because the two fail separately. A rescaled amount still
+     * compares equal numerically while emitting different bytes through the fixed-width writers, so a value
+     * check alone would pass on a divergence that Gate 1 would later catch as a diff.
+     *
+     * @param label     the symbolic-map field and the record field it feeds, for the failure message
+     * @param submitted the amount the request carried, as text; must not be {@code null}
+     * @param stored    the amount the entity holds after the write; may be {@code null}, which fails
+     */
+    private static void assertAmountMoved(final String label, final String submitted,
+            final BigDecimal stored) {
+        final BigDecimal expected = new BigDecimal(submitted);
+        assertThat(stored)
+                .as("%s must receive the submitted quantity", label)
+                .isNotNull()
+                .isEqualByComparingTo(expected);
+        assertThat(stored.scale())
+                .as("%s must keep the two decimal places of PIC S9(10)V99; a rescale changes the bytes the "
+                        + "fixed-width writers emit even though the numeric comparison still passes", label)
+                .isEqualTo(expected.scale());
+    }
+
+    /**
+     * Reads one repository-relative file as text.
+     *
+     * <p>Resolved against the working directory, which {@code pom.xml} pins to {@code ${project.basedir}} for
+     * both test plugins, so a bare repository-relative path is correct here. Decoded as UTF-8 because these are
+     * source files rather than fixed-width records.
+     *
+     * <p>Inputs: the repository-relative path. Output: the file's text. Side effects: one file read.
+     *
+     * @param repositoryRelativePath the path to read; must not be {@code null}
+     * @return the file's text, never {@code null}
+     * @throws UncheckedIOException if the file cannot be read, naming it - an unreadable file must fail the
+     *     assertion rather than silently read as empty, because empty text satisfies no {@code contains} check
+     *     but does satisfy the absence of one
+     */
+    private static String readRepositoryFile(final String repositoryRelativePath) {
+        try {
+            return Files.readString(Path.of(repositoryRelativePath), StandardCharsets.UTF_8);
+        } catch (final IOException unreadable) {
+            throw new UncheckedIOException("Could not read " + repositoryRelativePath
+                    + ", resolved against the working directory that pom.xml pins to ${project.basedir}",
+                    unreadable);
+        }
+    }
+
+    /**
+     * Slices one entry out of {@code DECISION_LOG.md} by its identifier.
+     *
+     * <p>An entry runs from its {@code ### <id>} heading to the next {@code ### } heading or to the end of the
+     * document. Slicing rather than searching the whole file matters: a {@code contains} check over the entire
+     * log would be satisfied by text belonging to some other entry.
+     *
+     * <p>Inputs: the log text and the entry identifier. Output: the entry's text. Side effects: none.
+     *
+     * @param decisionLog the whole log text; must not be {@code null}
+     * @param entryId the entry identifier, for example {@code DL-DV-06}; must not be {@code null}
+     * @return the entry's text, never {@code null}
+     * @throws AssertionError if no entry with that identifier exists
+     */
+    private static String decisionLogEntry(final String decisionLog, final String entryId) {
+        final String heading = "### " + entryId;
+        final int start = decisionLog.indexOf(heading);
+        if (start < 0) {
+            throw new AssertionError("DECISION_LOG.md holds no entry headed '" + heading + "'. The production "
+                    + "Javadoc of AccountUpdateService.requireStorableUpdateImage claims the choice is "
+                    + "recorded as a deviation; without this entry that claim is false.");
+        }
+        final int next = decisionLog.indexOf("\n### ", start + heading.length());
+        return next < 0 ? decisionLog.substring(start) : decisionLog.substring(start, next);
+    }
+
+    /**
+     * Returns the declared definition of one column of the {@code customer} table, from the migration itself.
+     *
+     * <p>Read from {@code V1__create_schema.sql} rather than restated, so that widening the column retires the
+     * deviation that depends on its width instead of leaving the justification stale. Comment lines are
+     * skipped, because every column in that migration is preceded by a {@code --} line quoting its PIC clause,
+     * and those lines mention the column name too.
+     *
+     * <p>Inputs: the column name. Output: the type and its inline constraints, whitespace collapsed. Side
+     * effects: one file read.
+     *
+     * @param columnName the column name as the migration spells it; must not be {@code null}
+     * @return the declared definition, for example {@code CHAR(3) NOT NULL}
+     * @throws AssertionError if the column is not declared in the migration
+     */
+    private static String schemaColumnDefinition(final String columnName) {
+        for (final String rawLine : readRepositoryFile(SCHEMA_MIGRATION_SOURCE).split("\n", -1)) {
+            final String line = rawLine.strip();
+            if (line.startsWith("--") || !line.startsWith(columnName + " ")) {
+                continue;
+            }
+            final String withoutTrailer = line.replaceAll("[,]\\s*$", "");
+            return withoutTrailer.substring(columnName.length()).strip().replaceAll("\\s+", " ");
+        }
+        throw new AssertionError("The migration " + SCHEMA_MIGRATION_SOURCE + " declares no column named '"
+                + columnName + "'. The deviation that depends on its declared width cannot be justified "
+                + "against a column that does not exist.");
+    }
+
+    /**
+     * Censuses the symbolic-map field names the unstorable-value screen actually covers.
+     *
+     * <p>Reads the production bean's own source, slices the body of {@code requireStorableUpdateImage}, finds
+     * every {@code FIELD_*} constant it names, and resolves each to the literal that constant declares in the
+     * same file. It is therefore a measurement of the shipped code rather than a restatement of it: adding a
+     * field to the screen changes this answer without anyone having to remember to update a list.
+     *
+     * <p>Inputs: none. Output: the field names in the order the screen visits them. Side effects: one file
+     * read.
+     *
+     * @return the covered field names, never {@code null}
+     * @throws AssertionError if the method cannot be located or a constant cannot be resolved
+     */
+    private static List<String> screenedFieldNames() {
+        final String source = readRepositoryFile(ACCOUNT_UPDATE_SERVICE_SOURCE);
+        final String signature = "private static boolean requireStorableUpdateImage(";
+        final int start = source.indexOf(signature);
+        if (start < 0) {
+            throw new AssertionError("Could not locate " + signature + " in " + ACCOUNT_UPDATE_SERVICE_SOURCE
+                    + ". If the screen has been renamed or removed, this census must be pointed at its "
+                    + "replacement rather than deleted, because it is what bounds the labelled deviation.");
+        }
+        final int end = source.indexOf("\n    }", start);
+        final String body = source.substring(start, end < 0 ? source.length() : end);
+
+        final List<String> resolved = new ArrayList<>();
+        final java.util.regex.Matcher references =
+                java.util.regex.Pattern.compile("\\bFIELD_[A-Z0-9_]+\\b").matcher(body);
+        while (references.find()) {
+            final String constantName = references.group();
+            final java.util.regex.Matcher declaration = java.util.regex.Pattern
+                    .compile("String\\s+" + constantName + "\\s*=\\s*\"([^\"]+)\"")
+                    .matcher(source);
+            if (!declaration.find()) {
+                throw new AssertionError("The screen names " + constantName + " but "
+                        + ACCOUNT_UPDATE_SERVICE_SOURCE + " declares no String literal for it, so the census "
+                        + "cannot resolve what field it covers.");
+            }
+            final String fieldName = declaration.group(1);
+            if (!resolved.contains(fieldName)) {
+                resolved.add(fieldName);
+            }
+        }
+        return List.copyOf(resolved);
     }
 
     /**
@@ -2333,17 +2524,18 @@ final class AccountUpdateServiceTest {
     }
 
     @Test
-    @DisplayName(":669 a write with no snapshot token is an unmet precondition, never a skipped check")
+    @DisplayName(":669 a write with no oldDetails group is an unmet precondition, never a skipped check")
     void aWriteWithoutTheSnapshotIsRejected() {
-        assertThatThrownBy(() -> this.service.updateAccount(this.screen.build(null), null))
-                .isInstanceOf(ConcurrentUpdateException.class)
-                .hasMessage(SnapshotTokenService.MISSING_TOKEN_MESSAGE)
+        assertThatThrownBy(() -> this.service.updateAccount(this.screen.build(null)))
+                .isInstanceOf(ValidationException.class)
                 .satisfies(thrown -> {
-                    final ConcurrentUpdateException typed = (ConcurrentUpdateException) thrown;
-                    assertThat(typed.getOutcome())
-                            .isEqualTo(ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED);
+                    final ValidationException typed = (ValidationException) thrown;
+                    assertThat(typed.getFieldName()).isEqualTo("oldDetails");
                     assertThat(typed.getCause()).isNull();
                 });
+        // Turn one performs no read for update, so a request without the group is refused before either
+        // dataset is touched. Silently treating the absent group as "nothing changed" would forfeit the
+        // guarantee 9700-CHECK-CHANGE-IN-REC provides.
         verifyNoInteractions(this.accountRepository, this.customerRepository);
     }
 
@@ -2356,90 +2548,46 @@ final class AccountUpdateServiceTest {
                 .as("the submitted side IS present, so the failure is specific to the snapshot")
                 .isNotNull();
         assertThat(withoutSnapshot.getOldDetails()).isNull();
-        assertThatThrownBy(() -> this.service.updateAccount(withoutSnapshot, "   "))
-                .isInstanceOf(ConcurrentUpdateException.class)
-                .satisfies(thrown -> assertThat(((ConcurrentUpdateException) thrown).getOutcome())
-                        .isEqualTo(ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED));
+        assertThatThrownBy(() -> this.service.updateAccount(withoutSnapshot))
+                .isInstanceOf(ValidationException.class)
+                .satisfies(thrown -> assertThat(((ValidationException) thrown).getFieldName())
+                        .isEqualTo("oldDetails"));
     }
 
     @Test
-    @DisplayName("a snapshot token this server did not seal is refused, and nothing is read or written")
-    void anAlteredSnapshotTokenIsRefused() {
-        final AccountUpdateRequest request = this.screen.build(null);
-        final String authentic = sealed(request.getAccountId(), this.snapshot.build());
-        // The seal frames a fresh SecureRandom nonce ahead of the ciphertext and base64url-encodes the
-        // pair, so every character of the token varies from run to run. The substitute must therefore be
-        // chosen against the character actually being replaced: testing any other position leaves the
-        // token byte-identical on the runs where the replaced position already holds the substitute, and
-        // an unaltered token authenticates and goes on to read ACCTDAT instead of being refused.
-        final char penultimate = authentic.charAt(authentic.length() - 2);
-        final String tampered = authentic.substring(0, authentic.length() - 2)
-                + (penultimate == 'A' ? 'B' : 'A') + authentic.charAt(authentic.length() - 1);
-        assertThat(tampered)
-                .as("the alteration must land whatever nonce this run drew, or the case under test is not exercised")
-                .isNotEqualTo(authentic)
-                .hasSize(authentic.length());
+    @DisplayName("the submitted group is the only source of the snapshot, never the live row")
+    void theSnapshotIsNeverDerivedFromTheLiveRow() {
+        // The decisive property of transformation Rule 7's substitution. If the service derived the old
+        // group from the row it is about to write, the comparison at :4109-4193 would be tautologically
+        // true and the guard would be worthless. Here the live row is mutated behind a group that still
+        // holds the displayed values, and the write is refused - which can only happen if the two sides
+        // came from different places.
+        this.account.setCurrentBalance(new java.math.BigDecimal("0.00"));
 
-        assertThatThrownBy(() -> this.service.updateAccount(request, tampered))
-                .isInstanceOf(ConcurrentUpdateException.class)
-                .hasMessage(SnapshotTokenService.INVALID_TOKEN_MESSAGE)
-                .satisfies(thrown -> assertThat(((ConcurrentUpdateException) thrown).getOutcome())
-                        .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE));
-        verifyNoInteractions(this.accountRepository, this.customerRepository);
+        assertRivalWriteDetected();
     }
 
     @Test
-    @DisplayName("a snapshot token sealed for another account cannot be replayed against this one")
-    void aSnapshotTokenSealedForAnotherAccountIsRefused() {
-        final AccountUpdateRequest request = this.screen.build(null);
-        final String foreign = sealed("00000000099", this.snapshot.build());
-
-        assertThatThrownBy(() -> this.service.updateAccount(request, foreign))
-                .isInstanceOf(ConcurrentUpdateException.class)
-                .satisfies(thrown -> assertThat(((ConcurrentUpdateException) thrown).getOutcome())
-                        .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE));
-        verifyNoInteractions(this.accountRepository, this.customerRepository);
-    }
-
-    @Test
-    @DisplayName("a snapshot token sealed for another operation cannot be replayed here")
-    void aSnapshotTokenSealedForAnotherOperationIsRefused() {
-        final AccountUpdateRequest request = this.screen.build(null);
-        final String foreignKind = this.snapshotTokenService.seal("card-update",
-                request.getAccountId(), this.snapshot.build());
-
-        assertThatThrownBy(() -> this.service.updateAccount(request, foreignKind))
-                .isInstanceOf(ConcurrentUpdateException.class)
-                .satisfies(thrown -> assertThat(((ConcurrentUpdateException) thrown).getOutcome())
-                        .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE));
-        verifyNoInteractions(this.accountRepository, this.customerRepository);
-    }
-
-    @Test
-    @DisplayName("the sealed snapshot round-trips all twenty-nine ACUP-OLD-DETAILS components")
-    void theSealedSnapshotRoundTripsEveryComponent() {
+    @DisplayName("all twenty-nine ACUP-OLD-DETAILS components reach the comparison from the body")
+    void everyComponentTravelsInTheBody() {
         final AccountUpdateRequest.OldDetails original = this.snapshot.build();
 
-        final AccountUpdateRequest.OldDetails recovered = this.snapshotTokenService.open(
-                sealed(SCREEN_ACCOUNT_ID, original), AccountUpdateService.SNAPSHOT_KIND,
-                SCREEN_ACCOUNT_ID, AccountUpdateRequest.OldDetails.class);
-
-        // Every accessor is compared, not a sample: a component whose serialisation is lossy - one annotated
-        // write-only, for instance - would otherwise recover as null and silently defeat the comparison at
-        // :4109-4193, which is the one failure mode a spot check would miss.
+        // Every accessor is counted, not sampled: a component that failed to travel would arrive null and
+        // silently defeat the comparison at :4109-4193, which is the one failure mode a spot check misses.
         assertThat(Arrays.stream(AccountUpdateRequest.OldDetails.class.getDeclaredMethods())
                 .filter(method -> method.getName().startsWith("get"))
                 .filter(method -> method.getParameterCount() == 0)
                 .map(Method::getName)
                 .toList())
-                .as("the snapshot declares twenty-nine components, each of which must survive the seal")
+                .as("the snapshot declares twenty-nine components, each of which must reach the service")
                 .hasSize(29);
-        assertThat(recovered).usingRecursiveComparison().isEqualTo(original);
+        // The group is relayed by reference, so what the comparison sees is what the caller submitted.
+        assertThat(this.screen.build(original).getOldDetails()).isSameAs(original);
     }
 
     @Test
-    @DisplayName("issueUpdateSnapshot reads the chain and produces a token the write then accepts")
-    void issueUpdateSnapshotProducesATokenTheWriteAccepts() {
+    @DisplayName("fetchSnapshotForUpdate reads the chain and produces a group the write then accepts")
+    void fetchSnapshotForUpdateProducesAGroupTheWriteAccepts() {
         // The read chain of 9000-READ-ACCT: CXACAIX, then the account master, then the customer master.
         when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_KEY))
                 .thenReturn(Optional.of(new CardCrossReference("4111111111111111", CUSTOMER_KEY,
@@ -2449,60 +2597,47 @@ final class AccountUpdateServiceTest {
         givenAccountLocked();
         givenCustomerLocked();
 
-        final String token = this.service.issueUpdateSnapshot(SCREEN_ACCOUNT_ID);
+        final AccountUpdateRequest.OldDetails projected =
+                this.service.fetchSnapshotForUpdate(SCREEN_ACCOUNT_ID);
 
-        // The token opens for this account and this operation, which is what proves the read half and the
-        // write half agree on the kind, the record key and the payload shape at the same time.
-        assertThat(this.snapshotTokenService.open(token, AccountUpdateService.SNAPSHOT_KIND,
-                SCREEN_ACCOUNT_ID, AccountUpdateRequest.OldDetails.class))
-                .isNotNull();
-        // And the write accepts it: the values sealed are the values the read displayed, so 9700 finds no
-        // difference and the confirmed turn reaches the rewrite rather than reporting a rival write.
+        assertThat(projected).isNotNull();
+        assertThat(projected.getAccountId()).isEqualTo(SCREEN_ACCOUNT_ID);
+        // And the write accepts it: the values projected are the values the read displayed, so 9700 finds
+        // no difference and the confirmed turn reaches the rewrite rather than reporting a rival write.
+        // One field must differ from the snapshot or 1205-COMPARE-OLD-NEW reports NO-CHANGES-DETECTED and
+        // nothing is written - see the note on write().
+        this.screen.addressLine2 = CHANGED_ADDRESS_LINE_2;
         final AccountUpdateResult applied =
-                this.service.updateAccount(this.screen.build(null), token);
+                this.service.updateAccount(this.screen.build(projected));
 
         assertThat(applied.changeAction()).isEqualTo(ChangeAction.CHANGES_OKAYED_AND_DONE);
     }
 
     @Test
-    @DisplayName("issueUpdateSnapshot seals a value that no response carries in the clear")
-    void issueUpdateSnapshotSealsWithoutDisclosing() {
+    @DisplayName("fetchSnapshotForUpdate projects the unseparated date of birth the comparison expects")
+    void fetchSnapshotForUpdateProjectsTheUnseparatedDateOfBirth() {
         when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_KEY))
                 .thenReturn(Optional.of(new CardCrossReference("4111111111111111", CUSTOMER_KEY,
                         ACCOUNT_KEY)));
         when(this.accountRepository.findById(ACCOUNT_KEY)).thenReturn(Optional.of(this.account));
         when(this.customerRepository.findById(CUSTOMER_KEY)).thenReturn(Optional.of(this.customer));
 
-        final String token = this.service.issueUpdateSnapshot(SCREEN_ACCOUNT_ID);
+        final AccountUpdateRequest.OldDetails projected =
+                this.service.fetchSnapshotForUpdate(SCREEN_ACCOUNT_ID);
 
-        assertThat(token)
-                .doesNotContain(this.customer.getSsn())
-                .doesNotContain(this.customer.getGovernmentIssuedId())
-                .doesNotContain(this.customer.getEftAccountId())
-                .doesNotContain(this.customer.getPhoneNumber1())
-                .doesNotContain(this.customer.getPhoneNumber2());
-    }
-
-    @Test
-    @DisplayName("the sealed snapshot discloses none of the six protected values it carries")
-    void theSealedSnapshotDisclosesNothing() {
-        final AccountUpdateRequest.OldDetails original = this.snapshot.build();
-
-        final String token = sealed(SCREEN_ACCOUNT_ID, original);
-
-        assertThat(token)
-                .doesNotContain(original.getSsn())
-                .doesNotContain(original.getDateOfBirth())
-                .doesNotContain(original.getGovernmentIssuedId())
-                .doesNotContain(original.getPhoneNumber1())
-                .doesNotContain(original.getPhoneNumber2())
-                .doesNotContain(original.getEftAccountId());
+        // :4174-4179 reads the live record at offsets 1, 6 and 9 - dash separated - and the snapshot at
+        // offsets 1, 5 and 7, which are only correct if the snapshot form carries no separators. Projecting
+        // the dash-separated form here would refuse every write, so this assertion is load-bearing.
+        assertThat(projected.getDateOfBirth())
+                .as("ACUP-OLD-CUST-DOB is the unseparated form; the live CUSTDAT value is not")
+                .doesNotContain("-")
+                .isEqualTo(this.customer.getDateOfBirth().replace("-", ""));
     }
 
     @Test
     @DisplayName("a null symbolic-map area is rejected before any dataset is touched")
     void aNullRequestIsRejected() {
-        assertThatThrownBy(() -> this.service.updateAccount(null, null))
+        assertThatThrownBy(() -> this.service.updateAccount(null))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("app/cpy-bms/COACTUP.CPY")
                 .satisfies(thrown -> {
@@ -5290,6 +5425,135 @@ final class AccountUpdateServiceTest {
     }
 
     // =============================================================================================
+    // The three screen-painting branches of 3200-SETUP-SCREEN-VARS, one test each.
+    //
+    // :2710-2724 is a five-branch decider over three bodies: 3201-SHOW-INITIAL-VALUES blanks the
+    // detail block, 3202-SHOW-ORIGINAL-VALUES paints the ACUP-OLD-DETAILS snapshot, and
+    // 3203-SHOW-UPDATED-VALUES echoes what the operator submitted. Which body ran is observable
+    // only in the painted screen, and the three produce three different screens from the same
+    // request - so a test that asserts one of them cannot pass against an implementation that ran
+    // another. Without these three the paragraphs are reachable but unwitnessed.
+    // =============================================================================================
+
+    @Test
+    @DisplayName(":2711-2714 a zero filter takes the initial-values branch and paints NO detail field")
+    void aZeroFilterPaintsNoDetailFieldAtAll() {
+        // The fall-through pair sends an unfetched screen OR a numerically zero filter to
+        // 3201-SHOW-INITIAL-VALUES, whose whole body is MOVE LOW-VALUES to forty-two output fields.
+        // The zero-filter member is the reachable one from a stateless caller, and it is tested here
+        // rather than the unfetched member because it also proves the ORDER of the decider: the zero
+        // filter is examined before ACUP-SHOW-DETAILS, so it wins even with a snapshot present.
+        this.screen.accountId = "00000000000";
+        givenEveryFieldEditPasses();
+
+        final AccountUpdateResult result = editTurn();
+        final AccountUpdateRequest painted = result.screen();
+
+        assertThat(painted.getAccountStatus())
+                .as(":2732 MOVE LOW-VALUES TO ACSTTUSO - the status is blanked, not echoed")
+                .isNull();
+        assertThat(painted.getCreditLimit()).isNull();
+        assertThat(painted.getCashCreditLimit()).isNull();
+        assertThat(painted.getCurrentBalance()).isNull();
+        assertThat(painted.getCurrentCycleCredit()).isNull();
+        assertThat(painted.getCurrentCycleDebit()).isNull();
+        assertThat(painted.getCustomerFirstName()).isNull();
+        assertThat(painted.getCustomerLastName()).isNull();
+        assertThat(painted.getAddressLine1()).isNull();
+        assertThat(painted.getOpenDateYear()).isNull();
+        // The snapshot half is a separate group and is NOT part of the forty-two, so it still rides
+        // back out. Asserting that keeps the blanking scoped to the map's own fields.
+        assertThat(painted.getOldDetails())
+                .as("ACUP-OLD-DETAILS is not one of the fields :2732-2780 blanks")
+                .isNotNull();
+    }
+
+    @Test
+    @DisplayName(":2715-2717 a refused write repaints the SNAPSHOT through the currency mask")
+    void aRefusedWriteRepaintsTheSnapshotRatherThanTheSubmittedText() {
+        // A confirming turn whose 9700 comparison refuses reports ACUP-SHOW-DETAILS, which is the one
+        // marker that reaches 3202-SHOW-ORIGINAL-VALUES. Its every MOVE sources ACUP-OLD-* - so the
+        // operator sees the values that are actually stored, not the ones just rejected. The two are
+        // textually distinguishable here: the snapshot's 00000020200{ renders through
+        // PIC +ZZZ,ZZZ,ZZZ.99 as a signed, grouped, fifteen-character field, while the submitted
+        // credit limit is the bare keystrokes 2020.00.
+        this.snapshot.customerId = FOREIGN_CUSTOMER_ID;
+        givenAccountLocked();
+
+        final AccountUpdateResult result = confirm();
+        final AccountUpdateRequest painted = result.screen();
+
+        assertThat(result.changeAction())
+                .as("only ACUP-SHOW-DETAILS reaches 3202")
+                .isEqualTo(ChangeAction.SHOW_DETAILS);
+        assertThat(painted.getCreditLimit())
+                .as(":2812 MOVE ACUP-OLD-CREDIT-LIMIT-N TO WS-EDIT-CURRENCY-9-2-F, :371's mask")
+                .isNotNull()
+                .startsWith("+")
+                .contains("2,020.00")
+                .hasSize(MONEY_DISPLAY_WIDTH);
+        assertThat(painted.getCurrentBalance())
+                .as(":2806 the stored balance, masked - not the submitted 194.00")
+                .contains("194.00")
+                .doesNotStartWith("1");
+        assertThat(painted.getAccountStatus())
+                .as(":2795 the snapshot's Y, not the submitted N")
+                .isEqualTo("Y");
+        assertThat(painted.getCustomerFirstName())
+                .as(":2833-2835 the customer block is painted from the snapshot too")
+                .isEqualTo("MARGARET");
+    }
+
+    @Test
+    @DisplayName(":2718-2720 an edit turn with changes echoes the SUBMITTED values, masked")
+    void anEditTurnWithChangesEchoesWhatTheOperatorSubmitted() {
+        // The screen fixture presents accountStatus N against the snapshot's Y, so 1205 always
+        // reports a change and the turn carries an ACUP-CHANGES-MADE marker into 3200. That marker
+        // reaches 3203-SHOW-UPDATED-VALUES, whose amounts go through the mask when they parsed and
+        // whose remaining fields are echoed verbatim at :2911-2947.
+        this.screen.creditLimit = "3030.50";
+        givenEveryFieldEditPasses();
+
+        final AccountUpdateResult result = editTurn();
+        final AccountUpdateRequest painted = result.screen();
+
+        assertThat(result.changeAction().isChangesMade())
+                .as("only an ACUP-CHANGES-MADE marker reaches 3203")
+                .isTrue();
+        assertThat(painted.getCreditLimit())
+                .as(":2874-2879 the submitted amount, masked - the snapshot's 2,020.00 is NOT shown")
+                .isNotNull()
+                .startsWith("+")
+                .contains("3,030.50")
+                .hasSize(MONEY_DISPLAY_WIDTH);
+        assertThat(painted.getAccountStatus())
+                .as(":2872 the submitted status is echoed unconditionally")
+                .isEqualTo("N");
+        assertThat(painted.getAddressLine2())
+                .as(":2929 the remaining fields are echoed verbatim, unmasked")
+                .isEqualTo("APT 1");
+    }
+
+    @Test
+    @DisplayName(":2874-2879 an UNPARSABLE amount echoes the operator's own keystrokes, not zero")
+    void anUnparsableAmountEchoesTheRawKeystrokes() {
+        // The tri-state is what makes this branch reachable: when the amount did not parse, the raw
+        // text is echoed so the operator can see and correct it. Rendering the numeric value here
+        // would silently replace a typo with 0.00 and invite a wrong confirmation.
+        this.screen.creditLimit = "12X4.9";
+        givenEveryFieldEditPasses();
+
+        final AccountUpdateResult result = editTurn();
+
+        assertThat(result.screen().getCreditLimit())
+                .as("the keystrokes survive unchanged - no mask, no zero, no truncation")
+                .isEqualTo("12X4.9");
+        assertThat(errorText(result))
+                .as("and the turn is still refused, so the unparsable value cannot be confirmed")
+                .isNotEmpty();
+    }
+
+    // =============================================================================================
     // The remaining fourteen branches of the cursor cascade, one per test, none consolidated.
     //
     // Six are ordinary field failures whose diagnostics are asserted here for the first time. The
@@ -5938,21 +6202,273 @@ final class AccountUpdateServiceTest {
                 .isEqualTo("007");
     }
 
+    /**
+     * <b>The confirm turn runs no edit at all.</b> The structural fact the whole confirm-turn contract rests
+     * on, asserted directly rather than inferred from two field examples.
+     *
+     * <p>{@code 1200-EDIT-MAP-INPUTS} at {@code app/cbl/COACTUPC.cbl:1463-1468} reads:
+     *
+     * <pre>
+     *     IF  NO-CHANGES-FOUND
+     *     OR  ACUP-CHANGES-OK-NOT-CONFIRMED
+     *     OR  ACUP-CHANGES-OKAYED-AND-DONE
+     *         MOVE LOW-VALUES           TO WS-NON-KEY-FLAGS
+     *         GO TO 1200-EDIT-MAP-INPUTS-EXIT
+     *     END-IF
+     * </pre>
+     *
+     * <p>So on the confirm turn the cascade is abandoned before its first {@code PERFORM}, and {@code :2602-2605}
+     * goes straight to {@code 9600-WRITE-PROCESSING}. Every one of the twenty-odd field edits - the yes/no edit
+     * at {@code :1473}, the mandatory-alphanumeric edits, the required-numeric edit at {@code :1548}, the
+     * lookup-validated state and zip edits - is skipped. The pseudo-conversational reason is that the 3270 still
+     * held values the previous turn had already validated.
+     *
+     * <p>This test proves it the only way a black-box test can: by presenting values on the confirm turn that
+     * the first turn's cascade demonstrably refuses, and observing that the write happens anyway. It arranges
+     * <b>every collaborator the cascade would consult to answer "invalid"</b>, so if any edit did run the write
+     * would be refused and this test would fail. The four sibling tests that check one field each -
+     * {@code aShortCreditScoreIsZeroFilledIntoTheEntity}, {@code aNonNumericCreditScoreIsMovedAsAlphanumeric},
+     * {@code anEmptyGroupIdentifierIsTheClearedMarker} and {@code tenBlanksInTheGroupIdentifierStillWrite} -
+     * check the {@code MOVE} semantics per field; this one checks that the gate they pass through is open.
+     */
     @Test
-    @DisplayName(":3350 an absent credit score is refused as a field failure, never as an abend")
-    void anAbsentCreditScoreIsRefusedAsAFieldFailure() {
-        // The numeric MOVE keeps "no value" distinct from "the value zero" and hands null onward, but
-        // CUST-FICO-CREDIT-SCORE is PIC 9(03) over a NOT NULL CHAR(3) column, so the value the source
-        // stored - LOW-VALUES - has no representation at all in the target's schema.
-        //
-        // This test previously asserted the abend that state produced, on the reasoning that re-running
-        // the field edits on the write turn would be a behaviour change. That reasoning still holds and
-        // the edits are still NOT re-run - see aNonNumericCreditScoreIsMovedAsAlphanumeric and
-        // aShortCreditScoreIsZeroFilledIntoTheEntity below and above, both unchanged. What changed is
-        // narrower: requireStorableUpdateImage screens for the ONE condition the column cannot hold, and
-        // reports it in the program's own vocabulary - the BLANK tri-state and ' must be supplied.' that
-        // 1215-EDIT-MANDATORY and 1225-EDIT-ALPHA-REQD already use. Since neither available answer is
-        // parity, the one that names the field beats the one that abends on a well-formed request.
+    @DisplayName(":1463-1468 the confirm turn abandons the whole edit cascade, so values the first turn "
+            + "refuses are written unvalidated")
+    void theConfirmTurnAbandonsTheWholeEditCascade() {
+        // Values spanning four different edit families, every one of which the first turn refuses:
+        //   accountStatus  'X'         -> 1220-EDIT-YESNO accepts only Y or N
+        //   ficoScore      '4B7'       -> 1245-EDIT-NUM-REQD requires three digits
+        //   addressStateCode 'ZZ'      -> a lookup edit, and the lookup service is told it is unknown below
+        //   addressZip     '00000'     -> the state-and-zip combination edit, likewise told it is unknown
+        //   primaryCardHolderIndicator 'Q' -> another yes/no edit
+        this.screen.accountStatus = "X";
+        this.screen.ficoScore = "4B7";
+        this.screen.addressStateCode = "ZZ";
+        this.screen.addressZip = "00000";
+        this.screen.primaryCardHolderIndicator = "Q";
+
+        // Every collaborator the cascade would consult is told the value is INVALID. If a single edit ran on
+        // this turn, the write below would be refused - which is precisely what makes this a proof and not an
+        // illustration. lenient() because the point is that these stubs are NEVER consulted.
+        lenient().when(this.validationLookupService.isValidUsStateCode(anyString())).thenReturn(false);
+        lenient().when(this.validationLookupService.isValidStateAndZipCode(anyString(), anyString()))
+                .thenReturn(false);
+        lenient().when(this.validationLookupService.isValidPhoneAreaCode(anyString())).thenReturn(false);
+
+        givenAccountLocked();
+        givenCustomerLocked();
+
+        final AccountUpdateResult result = confirm();
+
+        assertThat(result.changeAction())
+                .as("the confirm turn wrote. :1463-1468 abandoned the cascade before its first PERFORM, so "
+                        + "not one of the five deliberately invalid values above was examined. A SHOW_DETAILS "
+                        + "here would mean an edit had been re-run on the write turn, which is a behaviour "
+                        + "change the source does not make")
+                .isEqualTo(ChangeAction.CHANGES_OKAYED_AND_DONE);
+
+        assertThat(this.account.getActiveStatus())
+                .as("ACCT-ACTIVE-STATUS receives 'X' verbatim, though 1220-EDIT-YESNO at :1473 would have "
+                        + "refused it on the first turn")
+                .isEqualTo("X");
+        assertThat(this.customer.getFicoCreditScore())
+                .as("CUST-FICO-CREDIT-SCORE receives '4B7', though 1245-EDIT-NUM-REQD at :1548 would have "
+                        + "refused a non-numeric on the first turn")
+                .isEqualTo("4B7");
+        assertThat(this.customer.getAddressStateCode())
+                .as("CUST-ADDR-STATE-CD receives 'ZZ' even though the lookup was primed to reject it")
+                .isEqualTo("ZZ");
+        assertThat(this.customer.getAddressZip())
+                .as("CUST-ADDR-ZIP receives the unknown combination too, blank-filled to PIC X(10)")
+                .startsWith("00000");
+        assertThat(this.customer.getPrimaryCardHolderIndicator())
+                .as("CUST-PRI-CARD-HOLDER-IND receives 'Q', the second yes/no edit likewise unrun")
+                .isEqualTo("Q");
+
+        verify(this.accountRepository).save(this.account);
+        verify(this.customerRepository).save(this.customer);
+        verifyNoInteractions(this.validationLookupService);
+    }
+
+    /**
+     * Every one of the twenty screened values moves <b>byte for byte</b> on the confirm turn.
+     *
+     * <p>The sibling above proves the gate is open using five fields. This one walks all twenty, because
+     * "the cascade is skipped" and "the value survives the move intact" are different claims and only the
+     * second one is about the substrate. A field could pass the first and still fail the second by being
+     * trimmed, upper-cased, re-padded or truncated on its way into the column - and every one of those would
+     * be a silent parity break that no error message would announce.
+     *
+     * <p><b>What the source does.</b> {@code :3962-4002} and {@code :4010-4059} are plain {@code MOVE}
+     * statements into {@code PIC X(n)} and {@code COMP-3} fields. A {@code MOVE} to an alphanumeric field is
+     * a left-aligned copy with blank fill and no transformation of any kind: leading blanks survive, mixed
+     * case survives, punctuation and digits survive in fields whose edits would have refused them. So the
+     * assertion each character field is held to is exactly that - the stored value starts with the submitted
+     * bytes and everything after them is blank - which is expressed once and applied fifteen times rather
+     * than restating fifteen column widths that the schema already owns.
+     *
+     * <p>The values are chosen to be hostile: lower case where the snapshot comparison lower-cases and where
+     * it upper-cases, a leading-blank address line, punctuation and a digit in a name, a non-numeric credit
+     * score, a state code and postal code the lookup is primed to refuse, and a negative amount. Each would
+     * be refused by the first turn's cascade; none is examined on this one.
+     *
+     * <p>The five amount values are asserted differently and deliberately so: {@code COMP-3} has no padding,
+     * so the claim there is that the value and its <b>scale</b> survive - a quantity that arrived with two
+     * decimal places must be stored with two, since a rescale would change the bytes the fixed-width writers
+     * later emit.
+     */
+    @Test
+    @DisplayName(":3962-4059 all twenty screened values move byte for byte, unexamined, on the confirm turn")
+    void everyScreenedValueMovesByteForByteOnTheConfirmTurn() {
+        // The account image, in the order of :3962-4002.
+        this.screen.accountStatus = "X";
+        this.screen.currentBalance = "-1234.56";
+        this.screen.creditLimit = "0.01";
+        this.screen.cashCreditLimit = "99999999.99";
+        this.screen.currentCycleCredit = "-0.01";
+        this.screen.currentCycleDebit = "7.50";
+        this.screen.accountGroupId = "qWeRtY";
+        // The customer image, in the order of :4010-4059.
+        this.screen.firstName = "mIxEdCaSe";
+        this.screen.middleName = "z";
+        this.screen.lastName = "O'BRIEN-1";
+        this.screen.addressLine1 = "7 RUE #9";
+        this.screen.addressLine2 = "  LEADING";
+        this.screen.addressCity = "sEaTtLe";
+        this.screen.addressStateCode = "zz";
+        this.screen.addressCountryCode = "xy";
+        this.screen.addressZip = "0000A";
+        this.screen.governmentIssuedId = "gov-id-lower";
+        this.screen.eftAccountId = "abc0000001";
+        this.screen.primaryCardHolderIndicator = "q";
+        this.screen.ficoScore = "4b7";
+
+        lenient().when(this.validationLookupService.isValidUsStateCode(anyString())).thenReturn(false);
+        lenient().when(this.validationLookupService.isValidStateAndZipCode(anyString(), anyString()))
+                .thenReturn(false);
+
+        givenAccountLocked();
+        givenCustomerLocked();
+
+        final AccountUpdateResult result = confirm();
+
+        assertThat(result.changeAction())
+                .as("all twenty values are present, so the unstorable-value screen passes and the write "
+                        + "proceeds; every one of them would have been refused by an edit the confirm turn "
+                        + "does not run")
+                .isEqualTo(ChangeAction.CHANGES_OKAYED_AND_DONE);
+
+        assertMovedVerbatim("ACSTTUS -> ACCT-ACTIVE-STATUS",
+                this.screen.accountStatus, this.account.getActiveStatus());
+        assertMovedVerbatim("AADDGRP -> ACCT-GROUP-ID lower case survives, and it is the one field "
+                        + "9700 compares through FUNCTION LOWER-CASE, so a normalising move here would "
+                        + "corrupt the change detector as well as the record",
+                this.screen.accountGroupId, this.account.getGroupId());
+        assertMovedVerbatim("ACSFNAM -> CUST-FIRST-NAME",
+                this.screen.firstName, this.customer.getFirstName());
+        assertMovedVerbatim("ACSMNAM -> CUST-MIDDLE-NAME",
+                this.screen.middleName, this.customer.getMiddleName());
+        assertMovedVerbatim("ACSLNAM -> CUST-LAST-NAME keeps punctuation and a digit that "
+                        + "1225-EDIT-ALPHA-REQD would have refused",
+                this.screen.lastName, this.customer.getLastName());
+        assertMovedVerbatim("ACSADL1 -> CUST-ADDR-LINE-1",
+                this.screen.addressLine1, this.customer.getAddressLine1());
+        assertMovedVerbatim("ACSADL2 -> CUST-ADDR-LINE-2 keeps its LEADING blanks; a MOVE to PIC X is a "
+                        + "left-aligned copy, so trimming the left would change the stored bytes",
+                this.screen.addressLine2, this.customer.getAddressLine2());
+        assertMovedVerbatim("ACSCITY -> CUST-ADDR-LINE-3, per the :1329-1334 mapping",
+                this.screen.addressCity, this.customer.getAddressLine3());
+        assertMovedVerbatim("ACSSTTE -> CUST-ADDR-STATE-CD, lower case and unknown to the lookup",
+                this.screen.addressStateCode, this.customer.getAddressStateCode());
+        assertMovedVerbatim("ACSCTRY -> CUST-ADDR-COUNTRY-CD",
+                this.screen.addressCountryCode, this.customer.getAddressCountryCode());
+        assertMovedVerbatim("ACSZIPC -> CUST-ADDR-ZIP, five submitted bytes into a ten-byte column",
+                this.screen.addressZip, this.customer.getAddressZip());
+        assertMovedVerbatim("ACSGOVT -> CUST-GOVT-ISSUED-ID",
+                this.screen.governmentIssuedId, this.customer.getGovernmentIssuedId());
+        assertMovedVerbatim("ACSEFTC -> CUST-EFT-ACCOUNT-ID",
+                this.screen.eftAccountId, this.customer.getEftAccountId());
+        assertMovedVerbatim("ACSPFLG -> CUST-PRI-CARD-HOLDER-IND",
+                this.screen.primaryCardHolderIndicator,
+                this.customer.getPrimaryCardHolderIndicator());
+        assertMovedVerbatim("ACSTFCO -> CUST-FICO-CREDIT-SCORE, non-numeric where 1245-EDIT-NUM-REQD "
+                        + "would have demanded three digits",
+                this.screen.ficoScore, this.customer.getFicoCreditScore());
+
+        assertAmountMoved("ACURBAL -> ACCT-CURR-BAL, negative and therefore proof that no absolute value "
+                        + "is taken anywhere on this path",
+                this.screen.currentBalance, this.account.getCurrentBalance());
+        assertAmountMoved("ACRDLIM -> ACCT-CREDIT-LIMIT",
+                this.screen.creditLimit, this.account.getCreditLimit());
+        assertAmountMoved("ACSHLIM -> ACCT-CASH-CREDIT-LIMIT at the S9(10)V99 ceiling",
+                this.screen.cashCreditLimit, this.account.getCashCreditLimit());
+        assertAmountMoved("ACRCYCR -> ACCT-CURR-CYC-CREDIT",
+                this.screen.currentCycleCredit, this.account.getCurrentCycleCredit());
+        assertAmountMoved("ACRCYDB -> ACCT-CURR-CYC-DEBIT",
+                this.screen.currentCycleDebit, this.account.getCurrentCycleDebit());
+
+        verify(this.accountRepository).save(this.account);
+        verify(this.customerRepository).save(this.customer);
+        verifyNoInteractions(this.validationLookupService);
+    }
+
+    /**
+     * <b>DEVIATION, not parity.</b> The one confirm-turn state whose source outcome the target's schema cannot
+     * represent, and the substitute that stands in for it.
+     *
+     * <h4>What the source does, established by reading it</h4>
+     *
+     * <ol>
+     *   <li>{@code 1100-RECEIVE-MAP} runs on every turn, including the confirm turn -
+     *       {@code app/cbl/COACTUPC.cbl:1026}. The FICO map field is re-received.</li>
+     *   <li>{@code :1279-1284}: when the received field is {@code '*'} or {@code SPACES},
+     *       {@code MOVE LOW-VALUES TO ACUP-NEW-CUST-FICO-SCORE-X}, a {@code PIC X(03)} field, so it holds
+     *       three {@code NUL} bytes.</li>
+     *   <li>{@code 1200-EDIT-MAP-INPUTS} abandons the cascade at {@code :1463-1468}, so
+     *       {@code 1245-EDIT-NUM-REQD} - the edit that produces {@code 'FICO Score must be supplied.'} - is
+     *       <b>never performed on this turn</b>.</li>
+     *   <li>{@code :4058-4059}: {@code MOVE ACUP-NEW-CUST-FICO-SCORE TO CUST-UPDATE-FICO-CREDIT-SCORE}, and
+     *       the customer record is rewritten.</li>
+     * </ol>
+     *
+     * <p><b>The source therefore stores three {@code NUL} bytes and reports success.</b> That is the parity
+     * outcome, and it is unavailable: PostgreSQL text types cannot hold a zero byte at all, and the column is
+     * {@code CHAR(3) NOT NULL}. No implementation over this schema can be faithful here.
+     *
+     * <h4>What this test asserts, and what it refuses to assert</h4>
+     *
+     * <p>An earlier revision of this test asserted the substitute outcome as though it were the expectation,
+     * with the reasoning "since neither available answer is parity, the one that names the field beats the one
+     * that abends on a well-formed request". Choosing between two non-parity answers is a legitimate
+     * engineering decision; presenting the winner as the expected behaviour is not, because a reader then has
+     * no way to tell an intended substitute from an accidental divergence.
+     *
+     * <p>So this test asserts three things, in this order: <b>the reason</b> - that the source's own outcome is
+     * genuinely unrepresentable, which is what makes a substitute necessary at all; <b>the substitute</b> -
+     * which one was chosen and that it stops before touching either record; and <b>the record</b> - that the
+     * deviation is written down in {@code DECISION_LOG.md} with its severity and its remediation. That last
+     * assertion exists because {@code AccountUpdateService.requireStorableUpdateImage} claims in its own
+     * Javadoc that the choice "is recorded as a deviation forced by the substrate, not presented as
+     * equivalence". A claim of that kind is worth nothing unless something fails when it stops being true.
+     */
+    @Test
+    @DisplayName(":1463-1468 + :4058 DEVIATION: the source stores LOW-VALUES here, which the schema cannot "
+            + "hold, so a labelled field refusal stands in")
+    void anAbsentCreditScoreIsADeviationBecauseTheSourceStoresLowValues() {
+        // ---- The reason. The parity outcome is three NUL bytes in a CHAR(3) NOT NULL column. ----
+        assertThat(FICO_SCORE_COLUMN_DEFINITION)
+                .as("the column the source's LOW-VALUES would have to land in. CHAR is a text type, and "
+                        + "PostgreSQL text types cannot hold a zero byte in any encoding, so the parity "
+                        + "outcome is not merely awkward to store - it is unstorable. That is the whole "
+                        + "justification for a substitute existing")
+                .isEqualTo("CHAR(3)");
+        assertThat(schemaColumnDefinition("cust_fico_credit_score"))
+                .as("read from src/main/resources/db/migration/V1__create_schema.sql rather than asserted "
+                        + "from memory, so a widened column would retire this deviation instead of leaving "
+                        + "the justification stale")
+                .isEqualTo(FICO_SCORE_COLUMN_DEFINITION + " NOT NULL");
+
+        // ---- The substitute. Chosen, labelled, and stopping before either record is touched. ----
         this.screen.ficoScore = null;
         givenAccountLocked();
         givenCustomerLocked();
@@ -5960,21 +6476,81 @@ final class AccountUpdateServiceTest {
         final AccountUpdateResult result = confirm();
 
         assertThat(result.changeAction())
-                .as("a refused write reports SHOW-DETAILS - review and resubmit - and never the "
-                        + ":2613-2614 WHEN OTHER success it did not earn")
+                .as("the substitute is a field-level refusal, so the turn reports SHOW-DETAILS - review and "
+                        + "resubmit - rather than the :2613-2614 success the source would have reported. This "
+                        + "IS the divergence, asserted as such")
                 .isEqualTo(ChangeAction.SHOW_DETAILS);
         assertThat(errorText(result))
-                .as("the source's own literal, composed from the :1545 label")
+                .as("the diagnostic reuses the program's own literal, composed from the :1545 label and the "
+                        + "' must be supplied.' suffix that 1215-EDIT-MANDATORY and 1225-EDIT-ALPHA-REQD "
+                        + "already use - so the substitute borrows the source's vocabulary rather than "
+                        + "inventing one. Note what it does NOT claim: this literal belongs to an edit the "
+                        + "confirm turn never runs, which is exactly why the outcome is a deviation")
                 .isEqualTo("FICO Score must be supplied.");
         assertThat(result.errorMessage())
-                .as("and projected through WS-RETURN-MSG PIC X(75) like every other diagnostic")
+                .as("and is projected through WS-RETURN-MSG PIC X(75) like every other diagnostic")
                 .hasSize(RETURN_MESSAGE_WIDTH);
-        // The screen runs BEFORE the account image is built, so neither entity is touched and neither
-        // repository is asked to write - a strictly earlier stop than the entity guard managed.
         verify(this.accountRepository, never()).save(any());
         verify(this.accountRepository, never()).flush();
         verify(this.customerRepository, never()).save(any());
         verify(this.customerRepository, never()).flush();
+
+        // ---- The record. The production Javadoc's claim, made enforceable. ----
+        final String decisionLog = readRepositoryFile("DECISION_LOG.md");
+        assertThat(decisionLog)
+                .as("requireStorableUpdateImage states in its Javadoc that this choice 'is recorded as a "
+                        + "deviation forced by the substrate, not presented as equivalence'. It must "
+                        + "therefore appear in DECISION_LOG.md under the DEVIATION classification; a Javadoc "
+                        + "that says so while the register carries no such entry is asserting "
+                        + "evidence it has not got")
+                .contains(UNSTORABLE_IMAGE_DEVIATION_ID);
+        final String entry = decisionLogEntry(decisionLog, UNSTORABLE_IMAGE_DEVIATION_ID);
+        assertThat(entry)
+                .as("%s must classify itself a DEVIATION, name the screening method, cite the paragraph "
+                        + "whose outcome it replaces, and carry a remediation - the four things that "
+                        + "distinguish a disclosed substitute from an unexplained divergence",
+                        UNSTORABLE_IMAGE_DEVIATION_ID)
+                .contains("`DEVIATION`")
+                .contains("requireStorableUpdateImage")
+                .contains("9600-WRITE-PROCESSING")
+                .contains("**Remediation / follow-up**");
+    }
+
+    /**
+     * The screen covers <b>exactly</b> the fields the two image-building paragraphs move, no more and no fewer.
+     *
+     * <p><b>Why a completeness assertion rather than twenty near-duplicate tests.</b> The deviation above is
+     * bounded by how many fields the invented screen covers. Twenty separate tests would prove that each
+     * currently-screened field behaves as documented, and would say nothing at all when a twenty-first field
+     * was added - which is the change that would silently widen the deviation. Pinning the set is strictly
+     * stronger: it fails both when a field is dropped and when one is added.
+     *
+     * <p>The expected set is derived from the source, not from the implementation: it is the fields
+     * {@code 9600-WRITE-PROCESSING} moves into the two update images at
+     * {@code app/cbl/COACTUPC.cbl:3962-4002} for the account and {@code :4010-4059} for the customer, minus the
+     * three assembled values - the date of birth, the two phone numbers and the social security number - which
+     * cannot arrive absent because their components go through the alphanumeric move that renders a missing
+     * component as blanks, exactly as a {@code MOVE} to a {@code PIC X} field would.
+     *
+     * <p>All of them share the FICO field's condition: the source stores {@code LOW-VALUES} and the column is
+     * {@code NOT NULL CHAR}. That uniformity is what makes one deviation entry cover the set rather than
+     * twenty.
+     */
+    @Test
+    @DisplayName(":3962-4059 the unstorable-value screen covers exactly the fields the two images move")
+    void theUnstorableValueScreenCoversExactlyTheMovedFields() {
+        final List<String> screened = screenedFieldNames();
+
+        assertThat(screened)
+                .as("the census must find fields at all, or the set assertion below would pass vacuously")
+                .isNotEmpty();
+        assertThat(screened)
+                .as("the screen must cover exactly the fields :3962-4002 and :4010-4059 move into the two "
+                        + "update images, excluding the three assembled values that cannot arrive absent. A "
+                        + "field ADDED here widens a labelled deviation and needs its own reasoning; a field "
+                        + "REMOVED reopens the abend path the deviation exists to close. Resolved: %s",
+                        screened)
+                .containsExactlyInAnyOrderElementsOf(EXPECTED_SCREENED_FIELDS);
     }
 
     @Test
@@ -6324,27 +6900,6 @@ final class AccountUpdateServiceTest {
                     + "'. The write entry points are the two methods that reach 9600-WRITE-PROCESSING; if "
                     + "one was renamed, update this list rather than removing the guard.");
         }
-    }
-
-    /**
-     * Generates a single-use signing key for this suite.
-     *
-     * <p>Rule 1 Clause D forbids secrets in code, in configuration and <em>in tests</em>, with no carve-out
-     * for material that happens to be synthetic: a literal key in a committed file is still committed key
-     * material, indexable and copyable into a deployment, and it teaches the pattern the clause exists to
-     * stop. Generating it removes the class of problem instead of declaring one instance of it harmless. The
-     * value exists only in memory for the lifetime of this class, so there is nothing to leak or rotate, and
-     * no assertion anywhere depends on its content - only on its being long enough and internally consistent.
-     *
-     * <p>Thirty-two bytes of entropy is the HS256 minimum the sealer enforces; URL-safe unpadded encoding
-     * widens that to forty-three characters, so the length guard passes with room to spare.
-     *
-     * @return a freshly generated key, never {@code null}, never logged and never persisted
-     */
-    private static String ephemeralSigningKey() {
-        final byte[] keyMaterial = new byte[32];
-        new SecureRandom().nextBytes(keyMaterial);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
     }
 
 }

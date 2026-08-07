@@ -84,8 +84,18 @@
     exceptionClass  rootCauseClass  rootCauseMessage  stackTrace
                     (throwable bearing events only)
 
-  traceId and spanId are placed in MDC by Micrometer tracing bridged to
-  OpenTelemetry. correlationId is placed in MDC by CorrelationIdFilter,
+  traceId and spanId are read from the active span, which Micrometer tracing
+  bridged to OpenTelemetry supplies, and are placed in MDC by
+  CorrelationIdFilter.applyTraceContext - the bridge does not write these keys
+  itself, which the filter's own ORDER documentation records: before its order
+  was corrected to run behind the span opener, both keys were never populated.
+  That matters beyond accuracy. Because one method writes both keys from one
+  TraceContext, finding M-03 could put the sampling decision beside them under
+  a fourth key, traceFlags, and rely on all three describing the same span.
+  That key is a propagation carrier for the outbound W3C traceparent header and
+  is deliberately NOT a log field: it is absent from the pattern template below
+  and from the <mdc> allow list, so it appears in no record.
+  correlationId is also placed in MDC by CorrelationIdFilter,
   which is an ADDITIVE capability rather than a translation of EIBTRNID. The
   specification motivates the filter by analogy with that field, but the
   analogy is not a replacement relationship: EIBTRNID is supplied by the
@@ -331,6 +341,7 @@
   <property name="REDACTION_CARD" value="[REDACTED_CARD_NUMBER]"/>
   <property name="REDACTION_CVV" value="[REDACTED_CVV]"/>
   <property name="REDACTION_PII" value="[REDACTED_PII]"/>
+  <property name="REDACTION_ACCOUNT_KEY" value="[REDACTED_ACCOUNT]"/>
 
   <!--
     ==============================================================
@@ -1335,6 +1346,53 @@
           <value><![CDATA[(?i)(Failing row contains)[^\n]*]]></value>
           <mask>$1 ${REDACTION}</mask>
         </valueMask>
+
+        <!--
+          R19. THE ACCOUNT SEGMENT OF A STATEMENT OBJECT KEY, finding m-03.
+
+          A statement key is composed by
+          batch/writers/StatementWriter.java objectKey as
+
+            statements/account=<11 digits>/month=<uuuu-MM>
+              /generation=<19 digits>/statement=<19 digits>/STATEMNT.PS
+
+          so the key is itself an account-and-month disclosure wherever it is
+          rendered. Neither StatementWriter nor StatementGenerationJob ever
+          names a key in a message or a log line - the job renders
+          STMTFILE[3] instead, see its statementObjectReference - but an
+          object store failure carries the bucket, the key and often the
+          request URL inside ITS OWN message, and that throwable reaches this
+          appender whenever the framework logs a failed step.
+
+          WHY THIS DOES NOT CONTRADICT THE PARAGRAPH ABOVE THAT REFUSES TO
+          MASK accountId. This rule is keyed on the literal
+          'statements/account=', so it fires only on a composed statement key.
+          A labelled 'accountId=00000000011' in a batch diagnostic, the
+          control break key of app/cbl/CBACT04C.cbl:L194, and the account
+          identifier of the 133 byte report line are all left exactly as they
+          are, which is what Gate 1's byte for byte comparison requires. The
+          eleven digit bound is the exact width of ACCT-ID PIC 9(11) at
+          app/cpy/CVACT01Y.cpy:L5, so this cannot grow into a general digit
+          redactor either.
+
+          WHAT SURVIVES: the root, the month, the generation, the statement
+          ordinal and the object name. A failed object stays findable by an
+          operator who can read the bucket, while the one segment that names a
+          customer's account does not travel.
+
+          THIS IS THE DEFENCE IN DEPTH HALF. The primary control is at source
+          and it reaches further than this rule can: Spring Batch renders the
+          same throwable into the EXIT_MESSAGE column of its own metadata,
+          which no appender rule can touch, so
+          StatementWriter.sanitizedCause rebuilds a key bearing cause chain
+          before it is ever thrown - preserving each type name, each message
+          and each stack trace, and replacing these digits with the same
+          literal this mask substitutes.
+        -->
+        <valueMask>
+          <value><![CDATA[(statements/account=)\d{1,11}]]></value>
+          <mask>$1${REDACTION_ACCOUNT_KEY}</mask>
+        </valueMask>
       </jsonGeneratorDecorator>
 
       <!--
@@ -1438,9 +1496,13 @@
           schema stays valid when tracing is disabled or a correlation
           identifier never got set, instead of the key vanishing.
 
-          traceId and spanId are placed in MDC by Micrometer tracing bridged
-          to OpenTelemetry. correlationId is placed there by
-          CorrelationIdFilter. It is ADDITIVE capability, not a translation of
+          traceId and spanId are read from the active span - supplied by
+          Micrometer tracing bridged to OpenTelemetry - and placed in MDC by
+          CorrelationIdFilter, which also places correlationId there. The
+          filter writes a fourth key, traceFlags, from the same TraceContext;
+          it is absent from this template and from the <mdc> allow list below
+          on purpose, being a carrier for the outbound traceparent header
+          rather than anything an operator reads. It is ADDITIVE capability, not a translation of
           EIBTRNID: that field is supplied by the transaction monitor rather
           than declared by the application and occurs ZERO times in app/cbl,
           so no source line citation for it exists. app/cbl/CBTRN02C.cbl and

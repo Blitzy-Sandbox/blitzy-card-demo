@@ -995,7 +995,7 @@ class InterestCalculationJobTest extends AbstractBatchIntegrationTest {
 
             assertThat(field(record, 279, 26))
                     .as("the timestamp is generated once and moved into TRAN-ORIG-TS at CBACT04C.cbl:497, "
-                            + "at millisecond precision followed by four literal zeros")
+                            + "at hundredths-of-a-second precision followed by four literal zeros")
                     .isEqualTo(expectedTimestamp);
             assertThat(field(record, 305, 26))
                     .as("the same value is moved into TRAN-PROC-TS at CBACT04C.cbl:498, so the two agree")
@@ -1218,8 +1218,9 @@ class InterestCalculationJobTest extends AbstractBatchIntegrationTest {
      * Builds the 26-character timestamp {@code Z-GET-DB2-FORMAT-TIMESTAMP} produces, from the injected clock.
      *
      * <p>The source assembles the value from the current date and time and then moves four literal zeros into
-     * its final positions, so the rendering is millisecond precision followed by {@code 0000} - never
-     * nanosecond precision, which would be six digits of real fraction and a different string. The instant
+     * its final positions, so the rendering is hundredths-of-a-second precision followed by {@code 0000} -
+     * never millisecond precision, which would need a seventh fraction character, and never nanosecond
+     * precision, which would be six digits of real fraction and a different string. The instant
      * comes from the parent's fixed clock, so nothing here reads a moving clock, and the formatter is given
      * {@code java.util.Locale#ROOT} explicitly rather than inheriting a platform default.
      *

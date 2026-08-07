@@ -487,7 +487,7 @@ import org.springframework.stereotype.Repository;
  *       {@code spring.jpa.show-sql: false}. Spring Batch metadata tables come from the
  *       framework's own script through {@code spring.batch.jdbc.initialize-schema} and never
  *       from a fourth migration. Connection-pool tuning is out of scope and is recorded as
- *       residual risk in the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md}.</li>
+ *       residual risk in the {@code DECISION_LOG.md} and {@code docs/validation-gates.md}.</li>
  *   <li><strong>Troubleshooting</strong> - a startup failure whose message begins
  *       {@code Schema-validation:} and names {@code daily_transaction} means the migration
  *       disagrees with the column contract above; compare it against that table before

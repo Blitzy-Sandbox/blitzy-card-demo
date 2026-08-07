@@ -62,8 +62,7 @@ import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.OutputStream;
+import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -166,16 +165,21 @@ class RejectWriterTest {
     private S3Operations s3Operations;
 
     /**
-     * Every object the writer opened, in the order it opened them, mapped to the bytes it wrote there.
+     * A fake object store: every object it currently holds, keyed by object key, insertion ordered.
      *
-     * <p>The writer no longer hands the store a finished buffer: it opens one stream per generation and appends
-     * to it, so what a test has to observe is the stream rather than an upload argument. Insertion ordered, so a
-     * test can still assert how many objects a run created and in what order - which is exactly what finding
-     * H-04 is about.
+     * <p><b>Why a store rather than a captured stream.</b> Before finding M-06 the writer held one
+     * {@code OutputStream} open across the whole step, so a test could observe the stream and call that the
+     * object. It no longer does: each chunk uploads a complete part object and the close concatenates the parts
+     * into the generation object and deletes them. Both halves of that - that the parts really are complete
+     * objects, and that they are gone afterwards - can only be observed against something that models
+     * completion and deletion, so this map is read AND written by the stubs below.
      */
-    private Map<String, ByteArrayOutputStream> openedObjects;
+    private Map<String, byte[]> store;
 
-    /** The metadata stated on each opened object, keyed the same way. */
+    /** Every key the writer uploaded, in upload order, including parts it later deleted. */
+    private List<String> uploadOrder;
+
+    /** The metadata stated on each uploaded object, keyed the same way. */
     private Map<String, ObjectMetadata> openedMetadata;
 
     /** Whether {@link #commitGeneration()} has already closed the writer, so it is closed exactly once. */
@@ -198,11 +202,11 @@ class RejectWriterTest {
     @BeforeEach
     void buildWriterAndCaptureLogs() {
         s3Operations = Mockito.mock(S3Operations.class);
-        openedObjects = new LinkedHashMap<>();
+        store = new LinkedHashMap<>();
+        uploadOrder = new ArrayList<>();
         openedMetadata = new LinkedHashMap<>();
         generationClosed = false;
-        Mockito.when(s3Operations.createResource(Mockito.anyString(), Mockito.anyString()))
-                .thenAnswer(invocation -> recordingResource(invocation.getArgument(1, String.class)));
+        stubObjectStore();
         meterRegistry = new SimpleMeterRegistry();
         metricsConfig = new MetricsConfig(meterRegistry);
         stepExecution = stepExecution(JOB_INSTANCE_ID, JOB_EXECUTION_ID);
@@ -327,27 +331,93 @@ class RejectWriterTest {
     }
 
     /**
-     * Builds a stand-in for one object-store resource that records everything written to it.
+     * Installs the recording facade over the mocked object store: upload, list, download, exists and delete.
      *
-     * <p>The stream deliberately does <em>not</em> discard bytes on {@code close()}: the writer completes its
-     * single generation there, and a test asserting the object's content has to be able to read it afterwards.
-     *
-     * @param key the object key the writer asked for
-     * @return the recording resource
+     * <p>Every stub reads and writes the {@link #store} map rather than capturing a stream, for the reason
+     * that field records: after finding M-06 the writer uploads each chunk as a complete part object and
+     * concatenates the parts on close, so completion and deletion are the two things a test has to be able to
+     * observe, and neither is visible in a stream held open across the step.
      */
-    private S3Resource recordingResource(final String key) {
-        ByteArrayOutputStream sink = openedObjects.computeIfAbsent(key, unused -> new ByteArrayOutputStream());
-        S3Resource resource = Mockito.mock(S3Resource.class);
+    private void stubObjectStore() {
+        Mockito.when(s3Operations.upload(Mockito.anyString(), Mockito.anyString(),
+                        Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class)))
+                .thenAnswer(invocation -> {
+                    final String key = invocation.getArgument(1, String.class);
+                    final byte[] bytes;
+                    try (InputStream body = invocation.getArgument(2, InputStream.class)) {
+                        bytes = body.readAllBytes();
+                    }
+                    store.put(key, bytes);
+                    uploadOrder.add(key);
+                    openedMetadata.put(key, invocation.getArgument(3, ObjectMetadata.class));
+                    return storedResource(key);
+                });
+        Mockito.when(s3Operations.listObjects(Mockito.anyString(), Mockito.anyString()))
+                .thenAnswer(invocation -> {
+                    final String prefix = invocation.getArgument(1, String.class);
+                    final List<S3Resource> found = new ArrayList<>();
+                    for (final String key : new ArrayList<>(store.keySet())) {
+                        if (key.startsWith(prefix)) {
+                            found.add(storedResource(key));
+                        }
+                    }
+                    return found;
+                });
+        Mockito.when(s3Operations.download(Mockito.anyString(), Mockito.anyString()))
+                .thenAnswer(invocation -> storedResource(invocation.getArgument(1, String.class)));
+        Mockito.when(s3Operations.objectExists(Mockito.anyString(), Mockito.anyString()))
+                .thenAnswer(invocation -> Boolean.valueOf(
+                        store.containsKey(invocation.getArgument(1, String.class))));
         Mockito.doAnswer(invocation -> {
-            openedMetadata.put(key, invocation.getArgument(0, ObjectMetadata.class));
+            store.remove(invocation.getArgument(1, String.class));
             return null;
-        }).when(resource).setObjectMetadata(Mockito.any(ObjectMetadata.class));
+        }).when(s3Operations).deleteObject(Mockito.anyString(), Mockito.anyString());
+    }
+
+    /**
+     * Builds a resource view of one object the fake store holds.
+     *
+     * @param key the object key
+     * @return a resource reporting that object's key, length and content
+     */
+    private S3Resource storedResource(final String key) {
+        final S3Resource resource = Mockito.mock(S3Resource.class);
+        final byte[] bytes = store.getOrDefault(key, new byte[0]);
+        Mockito.when(resource.getFilename()).thenReturn(key);
+        Mockito.when(resource.contentLength()).thenReturn(Long.valueOf(bytes.length));
         try {
-            Mockito.when(resource.getOutputStream()).thenReturn((OutputStream) sink);
+            Mockito.when(resource.getInputStream()).thenReturn(new ByteArrayInputStream(bytes));
         } catch (java.io.IOException impossible) {
             throw new IllegalStateException("stubbing cannot fail", impossible);
         }
         return resource;
+    }
+
+    /**
+     * The key of the part an earlier attempt would have left at one ordinal.
+     *
+     * @param ordinal the zero-based part ordinal
+     * @return the part key under this generation
+     */
+    private static String partKey(final long ordinal) {
+        return String.format(Locale.ROOT, "%s/%019d/parts/reject-part-%019d.dat",
+                REJECT_PREFIX, Long.valueOf(JOB_INSTANCE_ID), Long.valueOf(ordinal));
+    }
+
+    /**
+     * Plants the durable parts an interrupted earlier attempt of this generation left behind.
+     *
+     * <p>This is what a real failure leaves, and it is the correction to how the restart used to be tested.
+     * The previous harness stubbed a <em>completed</em> prior generation object - a state a failed attempt can
+     * never leave, because its upload is abandoned - so the consolidation path was being verified against a
+     * fiction while the real path silently lost records. Finding M-06.
+     *
+     * @param parts each earlier chunk's payload, in the order it was written
+     */
+    private void stubPriorAttemptParts(final byte[]... parts) {
+        for (int ordinal = 0; ordinal < parts.length; ordinal++) {
+            store.put(partKey(ordinal), parts[ordinal]);
+        }
     }
 
     /**
@@ -382,23 +452,32 @@ class RejectWriterTest {
      */
     private byte[] uploadedBytes() {
         commitGeneration();
-        assertThat(openedObjects).as("exactly one generation object per run").hasSize(1);
-        return openedObjects.values().iterator().next().toByteArray();
+        assertThat(store).as("exactly one generation object per run").hasSize(1);
+        return store.values().iterator().next();
     }
 
     /** @return the object key of the single generation the writer created. */
     private String uploadedKey() {
         commitGeneration();
-        assertThat(openedObjects)
-                .as("app/jcl/POSTTRAN.jcl:L38 names ONE dataset, so a run creates ONE object")
+        assertThat(store)
+                .as("app/jcl/POSTTRAN.jcl:L38 names ONE dataset, so a run creates ONE object and the "
+                        + "durable chunk parts it was assembled from are gone")
                 .hasSize(1);
-        return openedObjects.keySet().iterator().next();
+        return store.keySet().iterator().next();
     }
 
-    /** @return every object key the writer created, in order. */
+    /**
+     * @return every object key the store still holds after the close, in insertion order - the generation
+     *     objects, the parts having been deleted once the generation was committed
+     */
     private List<String> uploadedKeys() {
         commitGeneration();
-        return List.copyOf(openedObjects.keySet());
+        return List.copyOf(store.keySet());
+    }
+
+    /** @return every key the writer uploaded, parts included, in upload order. */
+    private List<String> allUploadedKeys() {
+        return List.copyOf(uploadOrder);
     }
 
     /** @return the metadata of the single generation the writer created. */
@@ -700,8 +779,8 @@ class RejectWriterTest {
             assertThatExceptionOfType(FatalProcessingException.class)
                     .isThrownBy(() -> writer.writeReject(transaction, RejectCode.INVALID_CARD_NUMBER))
                     .withMessageContaining("does not fit its picture clause");
-            Mockito.verify(s3Operations, Mockito.never())
-                    .createResource(Mockito.anyString(), Mockito.anyString());
+            Mockito.verify(s3Operations, Mockito.never()).upload(Mockito.anyString(), Mockito.anyString(),
+                    Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
         }
 
         @Test
@@ -888,57 +967,108 @@ class RejectWriterTest {
             other.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
             other.close();
 
+            // Order is not asserted: each generation object comes into existence at its own close, and the
+            // two closes here are interleaved by the test rather than by the writers. What matters is that
+            // the two job instances landed under two different prefixes.
             assertThat(uploadedKeys())
-                    .containsExactly(
+                    .containsExactlyInAnyOrder(
                             String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", 7L, 42L),
                             String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", 8L, 43L));
         }
 
+        /**
+         * A chunk's records are durable objects the moment the chunk is written, not only at close.
+         *
+         * <p>Purpose: assert finding M-06 directly, rather than through its restart consequence. The defect was
+         * that {@link RejectWriter#update(ExecutionContext)} published a record count at every chunk boundary
+         * while the records themselves existed only inside an upload that a failure would abandon - so the
+         * checkpoint described bytes that were about to cease to exist. What is asserted here is the property
+         * that makes the checkpoint honest: after a write and before any close, the store already holds the
+         * chunk's bytes, and the count the writer publishes agrees with them.
+         */
         @Test
-        @DisplayName("a restart consolidates the superseded attempt's records into ONE object, and deletes "
-                + "the superseded object only after the consolidated one is committed")
+        @DisplayName("M-06: a written chunk is a complete object BEFORE the close, so the checkpoint the "
+                + "writer publishes describes bytes that already exist")
+        void aWrittenChunkIsDurableBeforeTheClose() {
+            writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
+            writer.writeReject(rejected("0000000000000002", "1.00"), RejectCode.OVERLIMIT_TRANSACTION);
+
+            // No close yet. Under the previous implementation the store held nothing at this point.
+            assertThat(store.keySet())
+                    .as("each chunk's records are a complete object as soon as they are written, so a failure "
+                            + "from here on cannot lose them")
+                    .containsExactly(partKey(0L), partKey(1L));
+            assertThat(store.get(partKey(0L)))
+                    .as("and each part carries whole 430-byte records, so it can be read on its own")
+                    .hasSize(RECORD_LENGTH);
+
+            final ExecutionContext checkpoint = new ExecutionContext();
+            writer.update(checkpoint);
+            assertThat(checkpoint.getLong(RejectWriter.REJECT_RECORD_COUNT_CONTEXT_KEY))
+                    .as("the published count describes durable objects rather than buffered bytes")
+                    .isEqualTo(2L);
+            assertThat(checkpoint.getLong(RejectWriter.REJECT_PART_COUNT_CONTEXT_KEY))
+                    .as("and the part count says how many objects that is")
+                    .isEqualTo(2L);
+
+            long durableBytes = 0L;
+            for (final byte[] part : store.values()) {
+                durableBytes += part.length;
+            }
+            assertThat(durableBytes / RECORD_LENGTH)
+                    .as("the durable record total must equal the published count, which is exactly the "
+                            + "reconciliation that was impossible before")
+                    .isEqualTo(checkpoint.getLong(RejectWriter.REJECT_RECORD_COUNT_CONTEXT_KEY));
+        }
+
+        @Test
+        @DisplayName("a restart carries the failed attempt's durable parts into ONE object, and deletes them "
+                + "only after that object is committed")
         void aRestartConsolidatesRatherThanFragmentingTheGeneration() throws Exception {
-            // The shape a restart actually produces. The generation prefix carries the job INSTANCE, so both
-            // attempts share it, while the object key carries the job EXECUTION, so the restarted attempt
-            // writes a different key. Measured before this fix, on the 300-row fixture with a forced failure
-            // at record 46: two objects of 430x4 and 430x34 under one generation, a manifest naming only the
-            // second, and a published record count of 34 beside a reject count of 38.
+            // THE SHAPE A REAL FAILURE LEAVES. Finding M-06. This case used to plant a COMPLETED prior
+            // generation object - a state a failed attempt can never leave behind, because the object it was
+            // building existed only inside an upload that the failure abandoned. The consolidation path was
+            // therefore being verified against a fiction while the real path silently lost every reject the
+            // failed attempt had found. What a failure leaves now is durable chunk parts, so that is what is
+            // planted here.
             //
-            // Deleting the failed attempt's object instead of carrying it forward would satisfy the
-            // one-object rule by destroying evidence: the restart resumes the reader at the cursor the failed
-            // attempt reached, so those first records are unreproducible.
-            final String priorKey =
-                    String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", JOB_INSTANCE_ID, 41L);
-            final byte[] priorRecords = new byte[2 * RECORD_LENGTH];
-            java.util.Arrays.fill(priorRecords, (byte) 'A');
-            stubSupersededObject(priorKey, priorRecords);
+            // Measured before the H-04 fix, on the 300-row fixture with a forced failure at record 46: two
+            // objects of 430x4 and 430x34 under one generation, a manifest naming only the second, and a
+            // published record count of 34 beside a reject count of 38.
+            final byte[] firstPart = new byte[RECORD_LENGTH];
+            final byte[] secondPart = new byte[RECORD_LENGTH];
+            java.util.Arrays.fill(firstPart, (byte) 'A');
+            java.util.Arrays.fill(secondPart, (byte) 'B');
+            stubPriorAttemptParts(firstPart, secondPart);
 
             final ExecutionContext restored = new ExecutionContext();
-            restored.putString(RejectWriter.REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY, priorKey);
             restored.putLong(RejectWriter.REJECT_RECORD_COUNT_CONTEXT_KEY, 2L);
 
             writer.open(restored);
             writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
 
             // Asserted before the generation is committed, because the ordering is the safety property: while
-            // the consolidated object is still open there must be two readable copies, so a failure here
-            // cannot lose the records that exist nowhere else.
+            // the generation object does not yet exist the parts are the only copy of the run's rejects, so a
+            // failure here cannot lose records that exist nowhere else.
             Mockito.verify(s3Operations, Mockito.never())
                     .deleteObject(Mockito.anyString(), Mockito.anyString());
 
             assertThat(uploadedKeys())
-                    .as("the restarted attempt writes its own key and nothing else; the generation must end "
-                            + "as one object")
+                    .as("the generation must end as ONE object, with the parts it was assembled from deleted")
                     .containsExactly(String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat",
                             JOB_INSTANCE_ID, JOB_EXECUTION_ID));
             assertThat(uploadedPayload())
-                    .as("the superseded records come first, then this attempt's, which is the order an "
-                            + "uninterrupted run would have written them in")
+                    .as("the failed attempt's records come first, in ordinal order, then this attempt's - the "
+                            + "order an uninterrupted run would have written them in")
                     .hasSize(3 * RECORD_LENGTH)
                     .startsWith("AAAA");
+            assertThat(uploadedPayload().substring(RECORD_LENGTH, RECORD_LENGTH + 4))
+                    .as("and the second part follows the first, not the other way round: the ordinal is zero "
+                            + "padded so lexicographic key order is write order")
+                    .isEqualTo("BBBB");
 
-            Mockito.verify(s3Operations)
-                    .deleteObject(BUCKET, priorKey);
+            Mockito.verify(s3Operations).deleteObject(BUCKET, partKey(0L));
+            Mockito.verify(s3Operations).deleteObject(BUCKET, partKey(1L));
 
             final ExecutionContext published = new ExecutionContext();
             writer.update(published);
@@ -949,65 +1079,68 @@ class RejectWriterTest {
         }
 
         @Test
-        @DisplayName("a restart that rejects nothing keeps the carried-forward object and republishes it, "
-                + "rather than naming an object it never created")
+        @DisplayName("a restart that rejects nothing still promotes the failed attempt's parts, so the "
+                + "generation holds its records rather than being lost with them")
         void aRestartThatRejectsNothingRepublishesTheCarriedForwardObject() {
-            final String priorKey =
-                    String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", JOB_INSTANCE_ID, 41L);
-            stubSupersededObject(priorKey, new byte[2 * RECORD_LENGTH]);
+            stubPriorAttemptParts(new byte[RECORD_LENGTH], new byte[RECORD_LENGTH]);
 
             final ExecutionContext restored = new ExecutionContext();
-            restored.putString(RejectWriter.REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY, priorKey);
             restored.putLong(RejectWriter.REJECT_RECORD_COUNT_CONTEXT_KEY, 2L);
 
             writer.open(restored);
             writer.close();
 
-            assertThat(uploadedKeys())
-                    .as("nothing was rejected on this attempt, so no new object exists")
-                    .isEmpty();
-            Mockito.verify(s3Operations, Mockito.never())
-                    .deleteObject(Mockito.anyString(), Mockito.anyString());
+            final String expectedKey = String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat",
+                    JOB_INSTANCE_ID, JOB_EXECUTION_ID);
+            assertThat(store.keySet())
+                    .as("this attempt rejected nothing of its own, but the failed attempt's records are real "
+                            + "and unreproducible - the reader has moved past them - so the close still "
+                            + "promotes them into the generation")
+                    .containsExactly(expectedKey);
+            assertThat(store.get(expectedKey))
+                    .as("both carried records, and nothing invented")
+                    .hasSize(2 * RECORD_LENGTH);
             assertThat(stepExecution.getExecutionContext()
                     .getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY, ""))
-                    .as("the manifest must name the object that actually holds the run, which is still the "
-                            + "carried-forward one")
-                    .isEqualTo(priorKey);
+                    .as("and the manifest names the object that actually holds them")
+                    .isEqualTo(expectedKey);
         }
 
         @Test
         @DisplayName("a superseded object whose length is not a whole number of records is refused rather "
                 + "than copied, because copying it would misalign every record after it")
         void aMisframedSupersededObjectIsRefused() {
-            final String priorKey =
-                    String.format(Locale.ROOT, "dalyrejs/%019d/%019d.dat", JOB_INSTANCE_ID, 41L);
-            stubSupersededObject(priorKey, new byte[RECORD_LENGTH + 7]);
+            // A part whose length is not a whole multiple of the reject record length is not a shorter run,
+            // it is a corrupt one, and adopting it would misalign every record after it.
+            stubPriorAttemptParts(new byte[RECORD_LENGTH + 7]);
 
             final ExecutionContext restored = new ExecutionContext();
-            restored.putString(RejectWriter.REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY, priorKey);
+            restored.putLong(RejectWriter.REJECT_RECORD_COUNT_CONTEXT_KEY, 1L);
 
-            writer.open(restored);
-
-            // The failure funnels through the writer's universal FILE STATUS guard, exactly as any other
-            // failed write does, so the typed outcome is a CardDemoException carrying the rendered legacy
-            // status. What matters is that the misframing is refused and its reason survives in the cause
-            // chain rather than being copied into the consolidated object.
+            // Refused at open, which is earlier than the old behaviour managed: the misframing is detected
+            // when the parts are adopted rather than when the first new record is written, so nothing is ever
+            // appended on top of a misaligned carry-forward.
             assertThatExceptionOfType(CardDemoException.class)
-                    .isThrownBy(() -> writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER))
+                    .isThrownBy(() -> writer.open(restored))
                     .withStackTraceContaining("not a whole number of");
         }
 
         @Test
-        @DisplayName("the object metadata declares an opaque content type and no content length")
+        @DisplayName("the object metadata declares an opaque content type and the exact content length")
         void theMetadataDeclaresAnOpaqueContentType() {
             writer.writeReject(rejected(), RejectCode.INVALID_CARD_NUMBER);
 
             ObjectMetadata metadata = uploadedMetadata();
-            assertThat(metadata.getContentType()).isEqualTo("application/octet-stream");
+            assertThat(metadata.getContentType())
+                    .as("a generic octet stream, so that no intermediary treats a fixed-width record stream "
+                            + "as text and translates line endings it does not have")
+                    .isEqualTo("application/octet-stream");
             assertThat(metadata.getContentLength())
-                    .as("the total is unknown until the last chunk has been appended, so no length is stated; "
-                            + "framing is proven per record instead, which is the stronger guarantee")
-                    .isNull();
+                    .as("since finding M-06 the parts are complete objects and the generation is assembled "
+                            + "from them, so the total IS known before the upload begins - and declaring it "
+                            + "is what makes a short or long concatenation a refused upload rather than a "
+                            + "stored one")
+                    .isEqualTo(Long.valueOf(RECORD_LENGTH));
         }
 
         @Test
@@ -1055,7 +1188,11 @@ class RejectWriterTest {
 
         @BeforeEach
         void makeTheStoreFail() {
-            Mockito.when(s3Operations.createResource(Mockito.anyString(), Mockito.anyString()))
+            // The failure is injected on the upload of a chunk's durable part, which is where a WRITE now
+            // reaches the store (finding M-06). Before, it was injected on createResource, because a write
+            // only opened a stream.
+            Mockito.when(s3Operations.upload(Mockito.anyString(), Mockito.anyString(),
+                            Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class)))
                     .thenThrow(new IllegalStateException("the bucket is unreachable"));
         }
 
@@ -1184,8 +1321,8 @@ class RejectWriterTest {
             writer.write(chunk());
             writer.close();
 
-            Mockito.verify(s3Operations, Mockito.never())
-                    .createResource(Mockito.anyString(), Mockito.anyString());
+            Mockito.verify(s3Operations, Mockito.never()).upload(Mockito.anyString(), Mockito.anyString(),
+                    Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
             assertThat(loggedMessages())
                     .contains("No rejected transactions in this chunk; nothing is appended to the DALYREJS "
                             + "generation")
@@ -1273,11 +1410,18 @@ class RejectWriterTest {
                             RejectCode.OVERLIMIT_TRANSACTION)));
             writer.close();
 
-            Mockito.verify(s3Operations, Mockito.times(1))
-                    .createResource(Mockito.eq(BUCKET), Mockito.anyString());
-            assertThat(openedObjects.values().iterator().next().size())
+            assertThat(store)
+                    .as("app/jcl/POSTTRAN.jcl:L38 names ONE dataset, so two chunks leave ONE object and the "
+                            + "durable parts they were assembled from have been deleted")
+                    .hasSize(1);
+            assertThat(store.values().iterator().next())
                     .as("all three records are in the one generation object")
-                    .isEqualTo(3 * RECORD_LENGTH);
+                    .hasSize(3 * RECORD_LENGTH);
+            assertThat(allUploadedKeys())
+                    .as("two chunks upload two durable parts, then the close promotes them into the one "
+                            + "generation object - which is what makes a written reject survive a failure "
+                            + "(finding M-06)")
+                    .containsExactly(partKey(0L), partKey(1L), uploadedKey());
         }
 
         @Test
@@ -1291,8 +1435,8 @@ class RejectWriterTest {
                             new RejectWriter.RejectedTransaction(rejected(), RejectCode.INVALID_CARD_NUMBER),
                             new RejectWriter.RejectedTransaction(broken, RejectCode.OVERLIMIT_TRANSACTION))));
 
-            Mockito.verify(s3Operations, Mockito.never())
-                    .createResource(Mockito.anyString(), Mockito.anyString());
+            Mockito.verify(s3Operations, Mockito.never()).upload(Mockito.anyString(), Mockito.anyString(),
+                    Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class));
             assertThat(rejectCount(100))
                     .as("the whole chunk is built before any byte is written, so nothing is half-counted")
                     .isZero();

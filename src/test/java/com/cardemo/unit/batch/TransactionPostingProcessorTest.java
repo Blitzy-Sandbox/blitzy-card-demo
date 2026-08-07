@@ -164,7 +164,7 @@ import org.springframework.dao.DuplicateKeyException;
  *
  * <p><b>How to build and test.</b> {@code ./mvnw -B -ntp -Dtest='TransactionPostingProcessorTest' test}
  * runs this class alone; it needs no container, no database and no cloud emulator. The full gate is
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}.
+ * {@code ./mvnw -B -ntp clean verify}.
  *
  * <p><b>This class is collected by Surefire, not by Failsafe, and that is a build contract rather than an
  * accident.</b> The root {@code pom.xml} gives Surefire the includes {@code **}{@code /*Test.java} and
@@ -238,7 +238,7 @@ import org.springframework.dao.DuplicateKeyException;
  * reject write and the counter increment live exclusively in the {@code ELSE} arm at {@code :L213-L215},
  * and {@code :L208} clears the field on the next iteration. Parity governs, and clause B is satisfied on
  * its own terms - it prohibits artefacts <em>without a tracking reference</em>, and this one is owed
- * an entry in the planned {@code DECISION_LOG.md}, a row in the planned
+ * an entry in the {@code DECISION_LOG.md}, a row in the
  * {@code TRACEABILITY_MATRIX.md}, the source locator in the Javadoc
  * of every test that touches it, and an explicit intentional-retention marker. Deleting the constant
  * would break the paragraph map that the scope-coverage gate verifies.
@@ -1594,7 +1594,7 @@ class TransactionPostingProcessorTest {
 
             String procTs = postedTransaction(processor.process(dailyTransaction("1.00"))).getProcTs();
             assertThat(procTs.substring(procTs.length() - 4))
-                    .as("millisecond precision plus four zeros, never nanosecond precision")
+                    .as("hundredths-of-a-second precision plus four zeros, never millisecond or nanosecond")
                     .isEqualTo("0000");
         }
 
@@ -2891,18 +2891,26 @@ class TransactionPostingProcessorTest {
      *
      * <p><b>Read the constraint before reading the tests.</b> Everything asserted here is a property of the
      * <b>input data alone</b> - which card numbers appear, which account identifiers they resolve to, which
-     * expiry dates the accounts carry, which overpunch signs the amounts use. Input properties are
-     * model-independent: they hold no matter how the posting cascade is modelled, which is exactly why they
-     * are safe to assert when the Gate 1 output baseline is {@code Not available}.
+     * expiry dates the accounts carry, which overpunch signs the amounts use. Those are the properties this
+     * class can establish without running a whole-fixture pass, and they are what it establishes.
      *
      * <p><b>What is deliberately absent, and why.</b> There is no assertion anywhere in this group - or in
-     * this file - on the number of records the fixture would reject, post, or on the return code a whole-
-     * fixture run would produce. Those are <em>output</em> properties and they are model-sensitive: a
-     * stateless single pass over these exact fixtures and a faithful stateful model, which re-reads the
-     * account per transaction at {@code :L393-L395} while {@code :L547-L551} mutates its accumulators,
-     * produce different totals. Asserting either would be asserting a modelling choice while appearing to
-     * assert the legacy system. Per-record behaviour from hand-built input, which the preceding groups do,
-     * is the honest substitute.
+     * this file - on the number of records the fixture would reject or post, or on the return code a
+     * whole-fixture run would produce. The reason is <b>tier</b>, not uncertainty: those are whole-run output
+     * properties, this is a unit suite over hand-built single records, and a unit test that folded 300 fixture
+     * rows through the processor to total them would be an end-to-end test wearing a unit test's name.
+     *
+     * <p>An earlier revision gave a different reason - that the totals were "model-sensitive" because a
+     * stateless single pass and a faithful stateful model, the latter re-reading the account at
+     * {@code :L393-L395} while {@code :L547-L551} mutates its accumulators, "produce different totals".
+     * <b>That reason is withdrawn.</b> {@code 2800-UPDATE-ACCOUNT-REC} ends in
+     * {@code REWRITE FD-ACCTFILE-REC} at {@code :L561}, and a VSAM {@code REWRITE} replaces the record in the
+     * cluster, so the re-read returns the mutated accumulators: the stateless reading is a misreading of
+     * {@code REWRITE} rather than a rival model. Exactly one faithful model exists,
+     * {@code com.cardemo.e2e.PostingParityOracle} re-derives it from the frozen source and fixtures without
+     * importing any production type, and the totals ARE asserted - against the real run, in
+     * {@code src/test/java/com/cardemo/e2e/BatchPipelineE2ETest.java} and the two integration suites that
+     * launch the posting job.
      *
      * <p>The fixtures are reached only through {@link FixtureLoader.Fixture}, which spells
      * {@code dailytran.txt} once, in one place - see the fixture-name trap in this class's Javadoc.

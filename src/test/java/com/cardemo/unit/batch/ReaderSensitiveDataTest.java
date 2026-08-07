@@ -562,9 +562,9 @@ class ReaderSensitiveDataTest {
                     .doesNotContain(CARD_NUMBER)
                     .doesNotContain(EMBOSSED_NAME.trim())
                     .doesNotContain("2025-12-31");
-            // There is no card verification value to leak: app/cpy/CVACT02Y.cpy:L7 declares CARD-CVV-CD but
-            // this system persists none - no column, no entity field, no seeded value - so the label is
-            // asserted absent as a regression guard against a renderer that reintroduced one.
+            // The card verification value cannot leak: app/cpy/CVACT02Y.cpy:L7 declares CARD-CVV-CD and
+            // this system does persist it, but write-once and accessor-less - so no read path exists and
+            // the label is asserted absent as a regression guard against a renderer that added one.
             assertThat(capturedText()).doesNotContain("CVV");
         }
 

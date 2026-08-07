@@ -335,7 +335,7 @@ import java.util.Optional;
  *       are supplied through {@code carddemo.pagination.*}. No listing screen reads the customer
  *       master, so no page size applies to this interface at all.</li>
  *   <li><strong>Connection-pool tuning is out of scope</strong> and is recorded as residual risk
- *       in the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. Stating it plainly is the
+ *       in the {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. Stating it plainly is the
  *       honest discharge of Rule 1 Clause A's requirement to justify performance tradeoffs rather
  *       than to make undocumented ones.</li>
  *   </ul>

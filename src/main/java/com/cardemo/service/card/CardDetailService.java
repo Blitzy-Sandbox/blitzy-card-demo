@@ -77,7 +77,7 @@ import jakarta.persistence.PersistenceException;
  * <h2>How to build, run and test</h2>
  *
  * <p>Build and test with {@code ./mvnw -B -ntp clean compile} and {@code ./mvnw -B -ntp test}, or the whole gate with
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The build pins {@code maven.compiler.release} to
+ * {@code ./mvnw -B -ntp clean verify}. The build pins {@code maven.compiler.release} to
  * 25 with no preview features and runs {@code -Xlint:all -Werror} with {@code failOnWarning}, so a single raw type or
  * unchecked cast in this file is a build failure rather than a warning - an unused import is not, because
  * {@code javac} 25 publishes no {@code unused} lint key; {@code jacoco-maven-plugin} enforces an 80% LINE floor at
@@ -85,8 +85,9 @@ import jakarta.persistence.PersistenceException;
  * Maven 3.9.11 are installed on the host, so no container is required to compile; where a host toolchain is genuinely
  * absent the equivalent is
  * {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -B -ntp -q -e verify}. Environment
- * values are supplied by the git-ignored {@code .env}, sourced with {@code set -a; . ./.env; set +a} before invoking
- * Maven.
+ * values are supplied by the git-ignored {@code .env}, sourced inside a subshell that also carries the Maven
+ * invocation - {@code ( set -a; . ./.env; set +a; ./mvnw -B -ntp verify )} - so the exported values die with that
+ * subshell rather than being inherited by every later child of the shell.
  *
  * <p>Unit tests for this service live under {@code src/test/java/com/cardemo/unit/service/} and are
  * owned by a different agent; no test file is created alongside this one. What this class owes them is
@@ -2153,7 +2154,7 @@ public class CardDetailService {
      * {@code GO TO} and no {@code THRU} reference anywhere. The only paragraph that could have reached it,
      * {@code 9000-READ-DATA} at {@code :726}, performs
      * {@code 9100-GETCARD-BYACCTCARD THRU 9100-GETCARD-BYACCTCARD-EXIT} and nothing else. It is preserved so the
-     * paragraph map stays mechanically provable for the scope-coverage gate, and it is owed an entry in the planned
+     * paragraph map stays mechanically provable for the scope-coverage gate, and it is owed an entry in the
      * {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}. Severity <b>Low</b>.
      *
      * <p><b>The body is deliberately empty and must stay empty.</b> A repository call here would
@@ -2195,7 +2196,7 @@ public class CardDetailService {
      *
      * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> Its body in the source is the single statement
      * {@code EXIT} at {@code :811}, so it is a genuine no-operation there too - unreachable and empty on
-     * both sides of the migration. Owed an entry in the planned {@code DECISION_LOG.md} and
+     * both sides of the migration. Owed an entry in the {@code DECISION_LOG.md} and
      * {@code TRACEABILITY_MATRIX.md} alongside its partner; severity <b>Low</b>. It is kept as a separate
      * method because the mandate forbids consolidating a label with its {@code -EXIT} partner.
      */
@@ -2213,7 +2214,7 @@ public class CardDetailService {
      * The field it would have sent, {@code WS-LONG-MSG PIC X(500)} declared at {@code :125}, is referenced only
      * inside this dead body, at {@code :822} and {@code :823}, and nowhere else. Contrast {@code SEND-PLAIN-TEXT} at
      * {@code :838}, which <i>is</i> performed - from {@code :379-380} - and is therefore implemented for real. Owed
-     * an entry in the planned {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}; severity <b>Low</b>.
+     * an entry in the {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}; severity <b>Low</b>.
      *
      * <p><b>What the source would have done</b>, from {@code :821-829}: {@code EXEC CICS SEND TEXT
      * FROM(WS-LONG-MSG) LENGTH(LENGTH OF WS-LONG-MSG) ERASE FREEKB} followed by {@code EXEC CICS RETURN}.
@@ -2232,7 +2233,7 @@ public class CardDetailService {
      * <p>Source: {@code app/cbl/COCRDSLC.cbl} paragraph {@code SEND-LONG-TEXT-EXIT.} at line 831, body
      * {@code EXIT} at {@code :832}.
      *
-     * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> Owed an entry in the planned {@code DECISION_LOG.md} and
+     * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> Owed an entry in the {@code DECISION_LOG.md} and
      * {@code TRACEABILITY_MATRIX.md} with its partner; severity <b>Low</b>. Kept separate for the same
      * reason: a label and its {@code -EXIT} are two labels.
      */

@@ -231,6 +231,118 @@ final class TestTierContractTest {
         }
     }
 
+    /** Method ordering: permitted only where a between-test mechanism is the subject, and only if declared. */
+    @Nested
+    @DisplayName("a suite that orders its methods says why, and no route suite orders them at all")
+    final class MethodOrderingIsJustified {
+
+        /** The annotation that imposes an order on a suite's methods. */
+        private static final String ORDERING_ANNOTATION = "@TestMethodOrder";
+
+        /** The declaration a suite must carry to be allowed to impose one. */
+        private static final String ORDERING_JUSTIFICATION = "ORDERING IS DELIBERATE";
+
+        /** The suite whose scenarios must each be runnable on their own, named because that was the defect. */
+        private static final String ROUTE_SUITE =
+                "src/test/java/com/cardemo/e2e/OnlineTransactionE2ETest.java";
+
+        /**
+         * Whether a source <em>uses</em> the ordering annotation, as opposed to mentioning it.
+         *
+         * <p>The distinction is not pedantic and it is why this is a method rather than a
+         * {@code contains} call. The suite that had its ordering removed now documents that removal, and
+         * this class names the annotation in a constant so it can report it. A plain text search would
+         * classify both as ordered - the first for saying it is not, the second for being the rule - so the
+         * rule would fail on precisely the two files that prove it holds. An annotation is used only where it
+         * opens a line, so that is what is matched.
+         *
+         * @param body the source text
+         * @return {@code true} when a line begins with the ordering annotation
+         */
+        private boolean imposesAnOrder(final String body) {
+            return body.lines().map(String::strip).anyMatch(line -> line.startsWith(ORDERING_ANNOTATION));
+        }
+
+        /**
+         * Every suite imposing an order declares, in its own text, why the order is the subject.
+         *
+         * <p><strong>A declaration requirement rather than a prohibition, and rather than a list of exempt
+         * file names.</strong> Ordering is occasionally correct: when the behaviour under test is what
+         * happens <em>between</em> two tests, the assertion cannot live inside either one of them. A blanket
+         * ban would delete that assertion. A list of exempt names would go stale the moment a file was
+         * renamed and would say nothing about why any name was on it. Requiring the reason at the site
+         * scales to a suite nobody has written yet and puts the justification where a reader meets the
+         * annotation.
+         *
+         * <p>What this refuses is the far commoner case: ordering used to let each test inherit a
+         * precondition an earlier test happened to leave behind. That arrangement cannot be run one test at
+         * a time, and its first failure masks every test after it.
+         */
+        @Test
+        @DisplayName("every suite imposing an order declares the reason at the site")
+        void orderedSuitesDeclareWhy() {
+            final List<String> undeclared = new ArrayList<>();
+            int ordered = 0;
+            for (final String path : testTreeSources()) {
+                final String body = read(path);
+                if (!imposesAnOrder(body)) {
+                    continue;
+                }
+                ordered++;
+                if (!body.contains(ORDERING_JUSTIFICATION)) {
+                    undeclared.add(path);
+                }
+            }
+
+            assertThat(ordered)
+                    .as("at least one suite must impose an order, or this rule guards an empty set and "
+                            + "passes without asserting anything")
+                    .isPositive();
+            assertThat(undeclared)
+                    .as("each of these suites imposes a method order without declaring '%s' and the reason "
+                            + "for it. Either the order is the subject - a between-test mechanism, where one "
+                            + "method must act and the next must observe - in which case say so at the site, "
+                            + "or it is inherited setup, in which case each test should provision what it "
+                            + "needs and the annotation should go",
+                            ORDERING_JUSTIFICATION)
+                    .isEmpty();
+        }
+
+        /**
+         * The route suite imposes no order and pins no method position.
+         *
+         * <p>Asserted by name because this is the regression it closes rather than a general principle. That
+         * suite covers seventeen REST operations, and the first thing anyone changing one of them does is run
+         * its scenario alone - which an imposed order does not support. It previously carried twenty-two
+         * {@code @Order} positions over principals created once for the whole class, so a failure early in
+         * the sequence masked every scenario after it and one scenario deleted a principal the others
+         * authenticated with.
+         */
+        @Test
+        @DisplayName("the seventeen-operation route suite imposes no order and pins no position")
+        void theRouteSuiteImposesNoOrder() {
+            final String body = read(ROUTE_SUITE);
+
+            assertThat(imposesAnOrder(body))
+                    .as("%s must not impose a method order: every route scenario has to be runnable on its "
+                            + "own, and an order is what makes that unsupported", ROUTE_SUITE)
+                    .isFalse();
+            assertThat(body.lines().map(String::strip).filter(line -> line.startsWith("@Order(")).count())
+                    .as("and it must pin no individual method position either - the annotation and the "
+                            + "positions are removable only together, and leaving the positions behind "
+                            + "would restore the coupling the moment the class annotation came back")
+                    .isZero();
+            assertThat(body.lines().map(String::strip)
+                    .anyMatch(line -> line.startsWith("@TestInstance(")))
+                    .as("nor may it hold principals across methods: a per-class instance lifecycle is what "
+                            + "let one scenario's deletion be observed by the next")
+                    .isFalse();
+            assertThat(body.lines().map(String::strip).anyMatch(line -> line.equals("@BeforeEach")))
+                    .as("and each test must provision what it needs for itself")
+                    .isTrue();
+        }
+    }
+
     /** Working directory: the contract the file-reading tests depend on. */
     @Nested
     @DisplayName("the working directory is the repository root, by declaration not by luck")

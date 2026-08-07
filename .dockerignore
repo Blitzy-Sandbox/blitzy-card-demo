@@ -218,22 +218,38 @@ blitzy
 # would later hide those archives from a clone if copied across.
 samples
 
-# The EBCDIC datasets were excluded here in an earlier revision - 204 KB
-# of fixed-width .PS files retained as byte-level codepage reference,
-# never transcoded and, as source, never read by the build. That
-# exclusion is WITHDRAWN, and the reason is a test rather than a
-# preference: SourceCitationResolutionTest asserts that every `app/...`
-# path cited anywhere in the tree resolves on disk, and seven committed
-# citations name app/data/EBCDIC - DailyTransactionReader.java,
-# RejectWriter.java, TransactionWriter.java, AwsConfig.java twice,
-# application-test.yml and UserSecurityTest.java. The Dockerfile runs the
-# unit tier inside the build stage, so pruning the subtree turned those
-# seven citations into "cited but does not resolve" and failed the image
-# build on a defect that exists only in the build context. The files
-# enter the context and are still never parsed; nothing from app/ crosses
-# into the runtime stage, so the shipped image is byte-identical either
-# way. The ASCII fixtures under app/data/ASCII remain the authoritative
-# seed and test input.
+# The EBCDIC datasets: 204 KB of fixed-width .PS files kept as byte-level
+# codepage reference, never transcoded and never read by any build step.
+# The AAP puts them out of scope, so they are pruned here.
+#
+# HOW THIS WAS GOT WRONG ONCE, recorded because the wrong fix looked like
+# the right one. The exclusion was WITHDRAWN in an earlier revision to get
+# a green image build: SourceCitationResolutionTest resolves every
+# `app/...` path cited anywhere in the tree against disk, thirteen
+# committed citations name app/data/EBCDIC - AwsConfig.java,
+# DailyTransactionReader.java, RejectWriter.java, TransactionWriter.java,
+# TransactionBackupReader.java, CombinedTransactionReader.java, three
+# package-info files, application-test.yml, UserSecurityTest.java and
+# BatchPipelineE2ETest.java - and the Dockerfile runs the unit tier inside
+# the builder stage, where a pruned subtree turns each of them into "cited
+# but does not resolve". Admitting the data was the wrong lever: it fixed a
+# build-context artefact by widening what the daemon receives, and left
+# out-of-scope material in the context permanently.
+#
+# The right lever is the test, and it was narrowed rather than weakened.
+# Its exemption is keyed on the DIRECTORY being absent, not on a file being
+# absent, so with app/data/EBCDIC present - in a clone, in CI, in any
+# developer build - every one of those citations is still resolved
+# strictly and a mistyped dataset name still fails. Only a context that
+# carries none of these files passes them over.
+# See SourceCitationResolutionTest.PRUNABLE_TREE and
+# theEbcdicExemptionIsNarrowAndSelfLimiting.
+#
+# Nothing from app/ crosses into the runtime stage, so the shipped image is
+# byte-identical either way; what changes is what the daemon receives. The
+# ASCII fixtures under app/data/ASCII remain the authoritative seed and
+# test input and are NOT pruned.
+app/data/EBCDIC
 
 # Everything else is protected by OMISSION, not by negation: app/, src/,
 # docs/, diagrams/, observability/,

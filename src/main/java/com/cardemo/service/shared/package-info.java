@@ -120,7 +120,7 @@
  * source cannot produce it. The bean is consequently <strong>{@code @JobScope}</strong>, which reproduces the
  * source's own lifetime exactly - survival within one run, isolation between runs. This is an explicit exception to
  * Rule 1 Clause B's preference against retained mutable state, justified by the parity mandate, and it is
- * <strong>owed an entry in the planned {@code DECISION_LOG.md}</strong>, which does not exist at this commit.
+ * <strong>owed an entry in {@code DECISION_LOG.md}</strong>, which is authored at the repository root.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -184,7 +184,9 @@
  *       <strong>build failure</strong>.</li>
  *   <li><strong>Run.</strong> These are Spring beans and are never invoked directly; a controller or a batch
  *       step calls them. A manual exercise needs the compose stack up - {@code docker compose up -d} - and the
- *       environment loaded with {@code set -a; . ./.env; set +a}, because {@code JWT_SIGNING_KEY} has no default and
+ *       environment scoped to that one command rather than exported into the shell:
+ *       {@code ( set -a; . ./.env; set +a; <command> )}. The parentheses confine the values to the subshell
+ *       instead of leaving every later child inheriting them. {@code JWT_SIGNING_KEY} has no default and
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service} and
  *       {@code src/test/java/com/cardemo/unit/validation}. {@code DateValidationServiceTest},
@@ -215,7 +217,7 @@
  *       package.</li>
  *   <li><strong>One documented exception to the no-retained-state preference:</strong> {@code FileService}'s status
  *       registers, scoped to a job, justified at their own declaration with the source proof, and owed an entry in
- *       the planned {@code DECISION_LOG.md}. Nothing else here retains anything.</li>
+ *       the {@code DECISION_LOG.md}. Nothing else here retains anything.</li>
  *   <li><strong>One private method per COBOL paragraph, never consolidated</strong>, each carrying a Javadoc
  *       citation to its source label. That correspondence is what makes the scope-coverage gate provable by
  *       inspection rather than by assertion.</li>

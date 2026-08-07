@@ -95,10 +95,14 @@
  * <ul>
  *   <li>{@code ./mvnw -q -DskipTests compile} - compiles the module. Use this as the fast check after
  *       editing anything in this package.</li>
- *   <li>{@code ./mvnw -q verify} - the full gate: compile, unit tests, coverage enforcement and the
- *       dependency vulnerability scan. It runs <strong>no integration test</strong>: measured
- *       1 August 2026 the {@code src/test/java/com/cardemo/integration} and {@code .../e2e} trees are
- *       <strong>not available</strong>, so failsafe has nothing to bind.</li>
+ *   <li>{@code ./mvnw -q verify} - the full gate: compile, unit tests, Failsafe's integration and
+ *       end-to-end tiers, coverage enforcement and the dependency vulnerability scan. A reading of
+ *       1 August 2026 recorded {@code src/test/java/com/cardemo/integration} and {@code .../e2e} as not
+ *       available and concluded that Failsafe had nothing to bind; <strong>both trees are authored</strong>
+ *       and that reading is withdrawn. The integration and end-to-end tiers need a container runtime with an
+ *       accessible socket, because they stand PostgreSQL 16 and LocalStack up through Testcontainers; where
+ *       one is missing the correct report is {@code Not available} for those tiers specifically, never for the
+ *       trees themselves.</li>
  *   </ul>
  *
  * <p>{@code maven-compiler-plugin:3.14.1} is configured with {@code -Xlint:all} and {@code -Werror}, and
@@ -128,9 +132,10 @@
  * live rather than pre-emptive - {@code src/test/java/com/cardemo/integration} exists, holding the two
  * abstract Testcontainers bases {@code batch/AbstractBatchIntegrationTest} and
  * {@code repository/AbstractRepositoryIntegrationTest} - so that pattern is what keeps a container-dependent
- * class out of the unit phase. The {@code e2e} exclusion remains pre-emptive, because that tree has not been
- * authored yet and the pattern therefore matches nothing. An earlier revision of this sentence said neither
- * tree existed; the {@code integration} half of that is false and is withdrawn.
+ * class out of the unit phase. <strong>The {@code e2e} exclusion is now live too</strong>: that tree holds
+ * {@code BatchPipelineE2ETest}, {@code OnlineTransactionE2ETest} and {@code GateVerificationTest}, so the
+ * pattern matches three classes rather than nothing. Two earlier revisions are withdrawn - the first said
+ * neither tree existed, the second said the {@code e2e} half of that was still true.
  * <strong>No test file lives in this package</strong>, and none should: production and test sources are
  * never mixed in the same directory in this tree.
  *
@@ -153,8 +158,8 @@
  * transitive reader is advanced: {@code org.ow2.asm:asm}, {@code asm-commons} and {@code asm-tree} to
  * <strong>9.9</strong>, with the runtime agent at the matching <strong>0.8.14</strong> build. Both halves are
  * required. The measurement is recorded beside the property in {@code pom.xml}; the divergence is
- * <strong>owed an entry in the planned {@code DECISION_LOG.md}</strong>, which does not exist at this
- * commit.
+ * <strong>owed an entry in {@code DECISION_LOG.md}</strong>, which is authored at the repository
+ * root.
  *
  * <p>The plugin pin is {@code 0.8.12}, exactly as the requirement names it, and it is not raised. Java 25
  * emits class file major version 69 and the ASM 9.7 build inside 0.8.12 has a ceiling of 67, so the naive
@@ -695,11 +700,13 @@
  *
  * <p><strong>Parity governs</strong>, because the clause forbids dead code that is <em>untracked</em>. What
  * makes a retained no-op tracked is stated per artefact, at its own declaration: its COBOL locator, a proof of
- * reachability, an explicit intentional-no-op marker, and - until the file exists - an acknowledgement that it
- * is <strong>owed an entry in the planned {@code DECISION_LOG.md}</strong>. Neither
- * {@code DECISION_LOG.md} nor {@code TRACEABILITY_MATRIX.md} exists at this commit, so no artefact may yet be
- * described as already cited or already justified in them, and an earlier revision of this paragraph that said
- * so is corrected here.
+ * reachability, an explicit intentional-no-op marker, and an acknowledgement that it
+ * is <strong>owed an entry in {@code DECISION_LOG.md}</strong>. Both
+ * {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md} are authored at the repository root, so a
+ * present-tense claim about either is a true statement. Two earlier revisions are withdrawn: the first said
+ * each artefact was already cited in both files while neither existed, the second said neither existed after
+ * both were authored. The per-artefact marker remains the primary record because it cannot drift from the
+ * code it governs.
  *
  * <p><strong>No retained parity artefact lives in this package</strong> - and that local fact is all that is
  * asserted. An earlier revision added "the tree has five of them" and enumerated five, while

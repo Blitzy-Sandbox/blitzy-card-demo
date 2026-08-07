@@ -2156,9 +2156,23 @@ public class WebConfig implements WebMvcConfigurer {
             }
 
             final String correlationId = currentCorrelationId();
-            LOGGER.warn("Refused {} {} at the framework boundary with {}: errorCode {}, condition {}",
-                    request.getMethod(), request.getRequestURI(), status.value(), errorCode,
-                    failure.getClass().getSimpleName());
+            // FINDING C-01, severity CRITICAL. The request method and URI used to be logged here. Both are
+            // caller-chosen text on a boundary an unauthenticated caller reaches, so either can carry a card
+            // number, a password, a customer name or a government identifier - and the masking in
+            // src/main/resources/logback-spring.xml redacts LABELLED values, so a bare protected value in a
+            // path segment or a query string survives verbatim. JSON encoding prevents a forged record; it
+            // does not prevent disclosure.
+            //
+            // Every value below is drawn from a closed set: the status and the error code are constants of
+            // this class, the condition is a framework exception's simple name, and the correlation
+            // identifier is validated to [A-Za-z0-9_-] by CorrelationIdFilter. The correlation identifier is
+            // what an operator joins to - the caller received the same value in the refusal envelope - so the
+            // record stays actionable without echoing the request. No route template is logged either: at
+            // this boundary the request matched no mapping, so there is no template to name, and the
+            // exception's own type already says which of the five conditions fired.
+            LOGGER.warn("Refused a request at the framework boundary with {}: errorCode {}, condition {},"
+                            + " correlationId {}",
+                    status.value(), errorCode, failure.getClass().getSimpleName(), correlationId);
 
             if (response.isCommitted()) {
                 // Nothing can be written over a committed response. Reported so the gap is visible rather
@@ -2330,7 +2344,8 @@ public class WebConfig implements WebMvcConfigurer {
          *
          * @param request   the rejected request; never null
          * @param response  the response to render onto; never null
-         * @param rejection the rejection, whose message is logged but never published; never null
+         * @param rejection the rejection, whose type is logged and whose message is neither logged nor
+         *                  published, because the firewall quotes the offending request back in it; never null
          * @throws IOException when the response cannot be written
          */
         @Override
@@ -2338,9 +2353,19 @@ public class WebConfig implements WebMvcConfigurer {
                 final RequestRejectedException rejection) throws IOException {
 
             final String correlationId = currentCorrelationId();
-            LOGGER.warn("Firewall rejected {} {} with {}: errorCode {}, reason {}", request.getMethod(),
-                    request.getRequestURI(), HttpStatus.BAD_REQUEST.value(), ERROR_CODE_REQUEST_REJECTED,
-                    rejection.getMessage());
+            // FINDING C-01, severity CRITICAL. The method, the URI and the firewall's own message used to be
+            // logged here, and this site was the worst of the three: the firewall rejects a request BECAUSE
+            // its URI is malformed, and its message quotes the offending value back. A caller who puts a card
+            // number or a government identifier into a path segment therefore had it written to the log twice,
+            // pre-authentication, past a masking layer that only redacts labelled values.
+            //
+            // The rejection's TYPE is logged in place of its message: RequestRejectedException is raised by
+            // one firewall, so its simple name identifies the class of rejection without carrying any part of
+            // the request. Everything else here is a constant of this class or the validated correlation
+            // identifier the caller also received.
+            LOGGER.warn("Firewall rejected a request with {}: errorCode {}, condition {}, correlationId {}",
+                    HttpStatus.BAD_REQUEST.value(), ERROR_CODE_REQUEST_REJECTED,
+                    rejection.getClass().getSimpleName(), correlationId);
 
             if (response.isCommitted()) {
                 LOGGER.warn("Response for correlationId {} was already committed; the firewall refusal "

@@ -57,13 +57,30 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Guards the data-tier half of the account-update contract, which lives entirely in configuration.
  *
- * <p><strong>Why a text-level assertion rather than a bean-level one.</strong> Neither control has a bean to
- * interrogate. The lock ceiling is a session setting pushed through the pool's connection-initialisation
- * statement, and the runtime principal is a pair of credentials bound from the environment. A test that started
- * a context would prove only that the context started under whatever values the test environment happened to
- * carry; the property worth protecting is that the shipped configuration text indirects both to the
- * environment and supplies no committed credential. That is exactly the shape
- * {@code JwtTokenLifetimeContractTest} already uses for the signing key, so this class follows it.
+ * <p><strong>What this tier proves, and what it deliberately leaves to another tier.</strong> Neither control
+ * has a bean to interrogate: the lock ceiling is a session setting carried as a driver startup option, and the
+ * runtime principal is a pair of credentials bound from the environment. What this tier can prove is that the
+ * shipped configuration <em>text</em> indirects both to the environment and supplies no committed credential -
+ * the same shape {@code JwtTokenLifetimeContractTest} uses for the signing key.
+ *
+ * <p>What it cannot prove is that the ceiling is <em>in effect</em>. That distinction is not academic, and an
+ * earlier revision of this class understated it by describing a running-context test as proving "only that the
+ * context started under whatever values the test environment happened to carry". A running context proves
+ * considerably more than that: it can read {@code lock_timeout} back out of a pooled session and it can hold two
+ * sessions open and contend a row. Both are now done, in
+ * {@code src/test/java/com/cardemo/integration/repository/RepositorySchemaAndFinderIntegrationTest.java} -
+ * {@code theShippedLockCeilingIsInEffectOnAPooledSession} reads the value out of the live session and asserts it
+ * survives a rollback, and {@code aContendedRowFailsWithinTheCeilingRatherThanStalling} locks a row in one
+ * session, contends it from a second, and asserts the refusal arrives with SQL state {@code 55P03} inside the
+ * ceiling. Measured: with the shipped ceiling the contending session is refused after 5.02 s; with the ceiling
+ * changed to 1500 ms it is refused after 1.523 s; with it set to {@code 0} both of those tests fail rather than
+ * hanging.
+ *
+ * <p>The division of labour is therefore explicit rather than implied, and it is stated here because the
+ * failure mode it guards against is a reader taking a passing text assertion for a passing behaviour. This tier
+ * owns <em>what the configuration says</em>. That tier owns <em>what the database does</em>. Neither is
+ * sufficient alone: a correct value delivered by the wrong mechanism passes here and fails there, and a
+ * database that happens to be configured correctly by some other route passes there and fails here.
  *
  * <h2>The bounded wait — why it is required at all</h2>
  *
@@ -159,8 +176,15 @@ final class DataTierPrincipalContractTest {
         return Files.readString(path, StandardCharsets.UTF_8);
     }
 
+    /**
+     * The configuration half of the bounded wait: what the shipped profiles say.
+     *
+     * <p>Named for what it asserts rather than for the behaviour it supports. The behaviour - that a contended
+     * row actually fails fast - is asserted against a running database by the two methods named in this class's
+     * documentation, because no reading of a text file can establish it.
+     */
     @Nested
-    @DisplayName("A contended row fails fast instead of stalling")
+    @DisplayName("The lock ceiling is written into the shipped configuration, and delivered by a mechanism that works")
     final class BoundedLockWait {
 
         @Test
@@ -170,7 +194,10 @@ final class DataTierPrincipalContractTest {
 
             assertThat(live)
                     .as("the ceiling must reach every pooled connection, so it is a driver-level startup "
-                            + "option rather than a statement issued after the connection exists")
+                            + "option rather than a statement issued after the connection exists. This "
+                            + "assertion is about the TEXT; that the option is in effect is asserted "
+                            + "against a live session by theShippedLockCeilingIsInEffectOnAPooledSession "
+                            + "in RepositorySchemaAndFinderIntegrationTest")
                     .contains("options: -c lock_timeout=${" + LOCK_TIMEOUT_VARIABLE);
         }
 
@@ -184,7 +211,11 @@ final class DataTierPrincipalContractTest {
                             BEGIN / SET lock_timeout / ROLLBACK and the rollback reverts the value to 0 - \
                             wait forever, which is the defect this control exists to remove. Measured \
                             directly: with connection-init-sql a contended write blocked for the full \
-                            duration of the competing transaction. Do not reintroduce it.""")
+                            duration of the competing transaction. That measurement is now re-runnable \
+                            rather than historical: theShippedLockCeilingIsInEffectOnAPooledSession in \
+                            RepositorySchemaAndFinderIntegrationTest reads the ceiling back after an \
+                            explicit BEGIN and ROLLBACK, which is the assertion a transactional delivery \
+                            mechanism fails. Do not reintroduce it.""")
                     .doesNotContain("connection-init-sql");
         }
 
@@ -228,37 +259,52 @@ final class DataTierPrincipalContractTest {
     final class LeastPrivilegeRuntimePrincipal {
 
         @Test
-        @DisplayName("the base profile binds the runtime role, with a transition fallback and no committed secret")
+        @DisplayName("the base profile binds the runtime role outright, with no fallback and no committed secret")
         void theBaseProfileBindsTheRuntimeRole() throws IOException {
             final String live = liveYaml(profile("application.yml"));
 
             assertThat(live)
-                    .as("the request-serving connection must be able to use a DML-only role")
-                    .contains("username: ${" + APP_USER_VARIABLE + ":${POSTGRES_USER}}")
-                    .contains("password: ${" + APP_PASSWORD_VARIABLE + ":${POSTGRES_PASSWORD}}");
+                    .as("the request-serving connection must name the DML-only role, and only that role")
+                    .contains("username: ${" + APP_USER_VARIABLE + "}")
+                    .contains("password: ${" + APP_PASSWORD_VARIABLE + "}");
+        }
+
+        @ParameterizedTest(name = "{0} requires its role variables outright")
+        @ValueSource(strings = {"application.yml", "application-local.yml", "application-prod.yml"})
+        @DisplayName("no profile that binds a role can fall back to the bootstrap superuser")
+        void noProfileFallsBackToTheBootstrapRole(final String resourceName) throws IOException {
+            final String live = liveYaml(profile(resourceName));
+
             assertThat(live)
-                    .as("the fallback must change WHICH variable is read, never whether one is required, so no "
-                            + "literal default may terminate the chain")
-                    .doesNotContain("${POSTGRES_PASSWORD:");
+                    .as("""
+                            A ':' inside any of the four placeholders reintroduces exactly the defect this \
+                            closes. The base and local profiles once read \
+                            ${CARDDEMO_DB_APP_USER:${POSTGRES_USER}} as a transition aid, and while that \
+                            existed an ABSENT variable - the default state of every deployment not yet told \
+                            about these roles - silently reconnected the runtime as the cluster bootstrap \
+                            SUPERUSER. Nothing reported it, because falling back is indistinguishable from \
+                            succeeding. %s must fail instead.""", resourceName)
+                    .doesNotContain(APP_USER_VARIABLE + ":")
+                    .doesNotContain(APP_PASSWORD_VARIABLE + ":")
+                    .doesNotContain(MIGRATION_USER_VARIABLE + ":")
+                    .doesNotContain(MIGRATION_PASSWORD_VARIABLE + ":");
+            assertThat(live)
+                    .as("the bootstrap pair is a SUPERUSER credential and no profile may read it for any "
+                            + "purpose; %s composes the URL from POSTGRES_HOST, POSTGRES_PORT and "
+                            + "POSTGRES_DB alone", resourceName)
+                    .doesNotContain("${POSTGRES_USER")
+                    .doesNotContain("${POSTGRES_PASSWORD");
         }
 
         @Test
         @DisplayName("production requires all four values outright, so it cannot silently run as the superuser")
         void productionSuppliesNoFallbackAtAll() throws IOException {
-            final String live = liveYaml(profile("application-prod.yml"));
-
-            assertThat(live)
+            assertThat(liveYaml(profile("application-prod.yml")))
                     .as("a production start must fail rather than fall back to the bootstrap superuser")
                     .contains("username: ${" + APP_USER_VARIABLE + "}")
                     .contains("password: ${" + APP_PASSWORD_VARIABLE + "}")
                     .contains("user: ${" + MIGRATION_USER_VARIABLE + "}")
                     .contains("password: ${" + MIGRATION_PASSWORD_VARIABLE + "}");
-            assertThat(live)
-                    .as("no default and no fallback: a ':' inside any of the four placeholders would reintroduce one")
-                    .doesNotContain(APP_USER_VARIABLE + ":")
-                    .doesNotContain(APP_PASSWORD_VARIABLE + ":")
-                    .doesNotContain(MIGRATION_USER_VARIABLE + ":")
-                    .doesNotContain(MIGRATION_PASSWORD_VARIABLE + ":");
         }
 
         @Test
@@ -266,8 +312,24 @@ final class DataTierPrincipalContractTest {
         void flywayBindsTheMigrationRole() throws IOException {
             assertThat(liveYaml(profile("application-local.yml")))
                     .as("the only principal that may reshape the schema must be the one that migrates it")
-                    .contains("user: ${" + MIGRATION_USER_VARIABLE + ":${POSTGRES_USER:carddemo}}")
-                    .contains("password: ${" + MIGRATION_PASSWORD_VARIABLE + ":${POSTGRES_PASSWORD}}");
+                    .contains("user: ${" + MIGRATION_USER_VARIABLE + "}")
+                    .contains("password: ${" + MIGRATION_PASSWORD_VARIABLE + "}");
+        }
+
+        @Test
+        @DisplayName("the local profile inherits the runtime credentials rather than restating them")
+        void theLocalProfileInheritsTheRuntimeCredentials() throws IOException {
+            final String live = liveYaml(profile("application-local.yml"));
+
+            assertThat(live)
+                    .as("""
+                            This is the profile docker-compose.yml activates, so whatever it declares decides \
+                            the local principal whatever the base says - which is why its two fallbacks, not \
+                            the base's, were what actually connected every local run as the superuser. \
+                            Inheriting the base's bare placeholders is the control: restating them could only \
+                            weaken it, and repeating them identically would be duplication that can drift.""")
+                    .doesNotContain("username:")
+                    .doesNotContain(APP_PASSWORD_VARIABLE);
         }
 
         @Test
@@ -332,6 +394,30 @@ final class DataTierPrincipalContractTest {
             return repositoryFile("docker-compose.yml");
         }
 
+        /**
+         * The provisioning script itself, with its explanatory comments removed.
+         *
+         * <p>The block documents at length the fail-open shape it replaced - the {@code :-} defaults, the
+         * blank-password check and the {@code exit 0} that followed it - so an assertion made against the raw
+         * text would be satisfied, or defeated, by prose. Only the executable lines survive this filter.
+         *
+         * @return the script's live shell and SQL lines
+         * @throws IOException if the Compose definition cannot be read
+         */
+        private String provisioningScript() throws IOException {
+            final String content = compose();
+            final int start = content.indexOf("postgres-least-privilege-roles:");
+            assertThat(start).as("the provisioning config block must be present").isNotNegative();
+            return content.substring(start).lines()
+                    .filter(line -> !line.stripLeading().startsWith("#"))
+                    // "-- " is an SQL comment; "--set" and "--no-psqlrc" are psql options and must survive,
+                    // because an option is exactly what these assertions are looking for.
+                    .filter(line -> !line.stripLeading().startsWith("-- "))
+                    .reduce(new StringBuilder(), (builder, line) -> builder.append(line).append('\n'),
+                            StringBuilder::append)
+                    .toString();
+        }
+
         @Test
         @DisplayName("the roles config is mounted read-only into the database's initialisation directory")
         void theConfigIsMountedReadOnly() throws IOException {
@@ -372,6 +458,105 @@ final class DataTierPrincipalContractTest {
                     .doesNotContain("DROP TABLE");
         }
 
+        @ParameterizedTest(name = "{0} is required with a :? guard, not defaulted")
+        @ValueSource(strings = {
+            "CARDDEMO_DB_APP_USER", "CARDDEMO_DB_APP_PASSWORD",
+            "CARDDEMO_DB_MIGRATION_USER", "CARDDEMO_DB_MIGRATION_PASSWORD"})
+        @DisplayName("all four role variables are guarded, so an absent or empty value stops `compose config`")
+        void allFourRoleVariablesAreGuarded(final String variable) throws IOException {
+            // The `services:` region only. Compose interpolates these four names exactly twice each, on the
+            // application service and on the database service, and the `:-` prohibition below belongs to that
+            // region alone: the provisioning script uses POSIX `${name:-}` expansions deliberately, so that
+            // `set -u` cannot abort before the guard has had a chance to name the missing variable.
+            final String compose = compose();
+            final String services = compose.substring(
+                    compose.indexOf("\nservices:"), compose.indexOf("\nconfigs:"));
+
+            assertThat(services)
+                    .as("""
+                            Compose's `:-` treats an EMPTY value as unset, so the earlier \
+                            ${%s:-...} form resolved a blank variable to the bootstrap \
+                            POSTGRES_USER/POSTGRES_PASSWORD pair and started a stack that looked healthy while \
+                            serving every request as the cluster superuser. `:?` turns the same condition into \
+                            a named failure out of `docker compose config`, before a container exists.""",
+                            variable)
+                    .contains("${" + variable + ":?");
+            assertThat(services)
+                    .as("a `:-` default on %s would reinstate the fail-open path", variable)
+                    .doesNotContain("${" + variable + ":-");
+        }
+
+        @Test
+        @DisplayName("the application service is never handed the bootstrap superuser credential")
+        void theApplicationServiceReceivesNoBootstrapCredential() throws IOException {
+            final String content = compose();
+            final int start = content.indexOf("\n  app:");
+            final int end = content.indexOf("\n  postgres:");
+            assertThat(start).as("the app service must be present").isNotNegative();
+            assertThat(end).as("the postgres service must follow it").isGreaterThan(start);
+            final String appService = content.substring(start, end).lines()
+                    .filter(line -> !line.stripLeading().startsWith("#"))
+                    .reduce(new StringBuilder(), (builder, line) -> builder.append(line).append('\n'),
+                            StringBuilder::append)
+                    .toString();
+
+            assertThat(appService)
+                    .as("""
+                            No profile the application activates reads POSTGRES_USER or POSTGRES_PASSWORD any \
+                            longer, so passing them into this container would hand it a cluster SUPERUSER \
+                            credential it has no use for. A credential that never arrives cannot be bound, \
+                            logged or leaked. The database service still receives the pair, because the image \
+                            itself needs it to initialise the cluster.""")
+                    .doesNotContain("POSTGRES_USER")
+                    .doesNotContain("POSTGRES_PASSWORD");
+        }
+
+        @Test
+        @DisplayName("provisioning fails closed: it exits non-zero rather than leaving the superuser in place")
+        void provisioningFailsClosedOnAMissingValue() throws IOException {
+            final String script = provisioningScript();
+
+            assertThat(script)
+                    .as("""
+                            The earlier script defaulted both role names, treated a blank password as a reason \
+                            to `exit 0` with an explanatory log line, and so reported success for a run that \
+                            had left the bootstrap SUPERUSER serving every request. Measured against the \
+                            delivered script: with CARDDEMO_DB_APP_PASSWORD absent the container now exits 1 \
+                            and names the missing variable, and initialisation aborts.""")
+                    .contains("exit 1")
+                    .doesNotContain("exit 0")
+                    .doesNotContain("carddemo_app")
+                    .doesNotContain("carddemo_migrator");
+        }
+
+        @Test
+        @DisplayName("neither role password is passed as a psql argument, where argv would expose it")
+        void neitherPasswordReachesProcessArgv() throws IOException {
+            final String script = provisioningScript();
+
+            assertThat(script)
+                    .as("""
+                            A --set assignment puts the value in psql's argv, which /proc/<pid>/cmdline and \
+                            `ps` expose to anything else running in the container for as long as psql lives. \
+                            \\getenv imports the same value from the environment psql already inherits, so it \
+                            never appears on a command line. Verified against a provisioned container: the \
+                            stored SCRAM-SHA-256 verifier for each role is the one derived from the imported \
+                            password, so the import is real rather than an unsubstituted literal.""")
+                    .doesNotContain("--set app_password")
+                    .doesNotContain("--set migration_password")
+                    .doesNotContain("--set app_user")
+                    .doesNotContain("--set migration_user")
+                    .contains("\\getenv app_password " + APP_PASSWORD_VARIABLE)
+                    .contains("\\getenv migration_password " + MIGRATION_PASSWORD_VARIABLE);
+            assertThat(script)
+                    .as("both values are dropped once they have been used - the psql variables so that a \\set "
+                            + "listing cannot print them, and the environment copies so that nothing the "
+                            + "entrypoint runs afterwards inherits them")
+                    .contains("\\unset app_password")
+                    .contains("\\unset migration_password")
+                    .contains("unset " + APP_PASSWORD_VARIABLE + " " + MIGRATION_PASSWORD_VARIABLE);
+        }
+
         @Test
         @DisplayName("every shell expansion inside the inline config is escaped against Compose interpolation")
         void everyShellExpansionIsEscaped() throws IOException {
@@ -386,6 +571,222 @@ final class DataTierPrincipalContractTest {
             assertThat(unescaped.find())
                     .as("an unescaped '$' in a Compose config body is interpolated by Compose, not by the shell")
                     .isFalse();
+        }
+    }
+
+    /**
+     * One spelling of each role principal, across every layer that names one.
+     *
+     * <p>The defect these assertions close was a SPLIT PAIR. The app service defaulted both role
+     * names to {@code ${POSTGRES_USER:-carddemo}} - the cluster bootstrap SUPERUSER - while the
+     * postgres service and the {@code postgres-least-privilege-roles} config defaulted them to
+     * {@code carddemo_app} and {@code carddemo_migrator}, and the app service took its passwords from
+     * {@code POSTGRES_PASSWORD} while the provisioning step skipped both roles when the dedicated
+     * passwords were absent. A start that supplied nothing therefore created two least-privilege
+     * roles that nothing then used, and served every request as the superuser - with the entire
+     * least-privilege block apparently in place. The name was read from one source and the password
+     * from another, so the pair could disagree about which role was meant.
+     *
+     * <p>Every assertion here reads the TEXT of the committed files rather than a running stack,
+     * because the defect lived in the DEFAULTS - the values that apply precisely when nobody supplied
+     * anything, which is the one case no deployment exercises on purpose.
+     */
+    @Nested
+    @DisplayName("One spelling of each database role, across app, postgres, the role script and CI")
+    final class OneSpellingOfEachRole {
+
+        /** The four variables that name and authenticate the two dedicated roles. */
+        private final List<String> roleVariables = List.of(
+                APP_USER_VARIABLE, APP_PASSWORD_VARIABLE, MIGRATION_USER_VARIABLE, MIGRATION_PASSWORD_VARIABLE);
+
+        /**
+         * Reads the Compose definition.
+         *
+         * @return the committed Compose text
+         * @throws IOException if it cannot be read
+         */
+        private String compose() throws IOException {
+            return repositoryFile("docker-compose.yml");
+        }
+
+        /**
+         * Reads the continuous-integration workflow.
+         *
+         * @return the committed workflow text
+         * @throws IOException if it cannot be read
+         */
+        private String workflow() throws IOException {
+            return repositoryFile(".github/workflows/build.yml");
+        }
+
+        /**
+         * Extracts one top-level service block, from its key to the next key at the same indent.
+         *
+         * @param service the service name, such as {@code app}
+         * @return that service's block, comments included
+         * @throws IOException if the Compose definition cannot be read
+         */
+        private String serviceBlock(final String service) throws IOException {
+            final String content = compose();
+            final int start = content.indexOf("\n  " + service + ":\n");
+            assertThat(start).as("the %s service must be declared", service).isNotNegative();
+            final Matcher next = Pattern.compile("^  [a-zA-Z0-9_-]+:", Pattern.MULTILINE)
+                    .matcher(content);
+            final int end = next.find(start + service.length() + 4) ? next.start() : content.length();
+            return content.substring(start, end);
+        }
+
+        /**
+         * Reads the right-hand side of one environment entry inside a service block.
+         *
+         * @param block the service block
+         * @param variable the environment variable name
+         * @return the interpolation expression exactly as committed
+         */
+        private String expression(final String block, final String variable) {
+            final Matcher matcher = Pattern.compile(
+                    "^\\s*" + Pattern.quote(variable) + ": (.*)$", Pattern.MULTILINE).matcher(block);
+            assertThat(matcher.find()).as("%s must be set on this service", variable).isTrue();
+            return matcher.group(1).strip();
+        }
+
+        @Test
+        @DisplayName("the app and postgres services spell all four role expressions identically")
+        void theTwoServicesSpellEveryRoleExpressionIdentically() throws IOException {
+            final String app = serviceBlock("app");
+            final String database = serviceBlock("postgres");
+
+            for (final String variable : roleVariables) {
+                assertThat(expression(app, variable))
+                        .as("""
+                                %s must be spelled identically on both services. The role the                                 provisioning script creates and the role the application                                 authenticates as are then read from one variable with one default,                                 so they cannot diverge - which is what they did.""", variable)
+                        .isEqualTo(expression(database, variable));
+            }
+        }
+
+        @Test
+        @DisplayName("no role expression can resolve to the bootstrap superuser")
+        void noRoleExpressionCanResolveToTheBootstrapSuperuser() throws IOException {
+            final Matcher fallback = Pattern.compile(
+                    Pattern.quote("CARDDEMO_DB_") + "(?:APP|MIGRATION)_(?:USER|PASSWORD)"
+                            + ":-\\$\\{POSTGRES_").matcher(liveYaml(compose()));
+
+            assertThat(fallback.find())
+                    .as("""
+                            POSTGRES_USER is created by the postgres image as a cluster SUPERUSER, and a                             superuser ignores every grant, every row-level policy and every column                             privilege. A dedicated role that falls back to it is not a dedicated role.""")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("both role passwords stop the stack rather than defaulting to anything")
+        void bothRolePasswordsStopTheStackRatherThanDefaulting() throws IOException {
+            for (final String service : List.of("app", "postgres")) {
+                final String block = serviceBlock(service);
+                for (final String variable : List.of(APP_PASSWORD_VARIABLE, MIGRATION_PASSWORD_VARIABLE)) {
+                    assertThat(expression(block, variable))
+                            .as("""
+                                    %s on the %s service must carry Compose's `:?` guard, like                                     POSTGRES_PASSWORD and the signing key. A default here is what lets a                                     name arrive without its password.""", variable, service)
+                            .contains(":?");
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("the provisioning script creates the very name the application authenticates with")
+        void theProvisioningScriptCreatesTheNameTheApplicationAuthenticatesWith() throws IOException {
+            final String content = compose();
+
+            // The services guard all four names with `:?` and carry no `:-` default, so each name has
+            // exactly ONE source and the role that gets created cannot differ from the role the
+            // application authenticates as. What has to be asserted is therefore that the script reads
+            // the SAME variable rather than a default of its own: an earlier revision defaulted the two
+            // names inside the script while the app service defaulted them to POSTGRES_USER, so the
+            // provisioning step created two roles nobody used and every request ran as the superuser.
+            for (final String variable : List.of(APP_USER_VARIABLE, MIGRATION_USER_VARIABLE)) {
+                assertThat(Pattern.compile("\\\\getenv\\s+\\w+\\s+" + Pattern.quote(variable))
+                                .matcher(content)
+                                .find())
+                        .as("""
+                                the script must bind %s through psql's \\getenv - which also keeps the \
+                                value out of process argv - rather than deriving the name from a literal \
+                                of its own""", variable)
+                        .isTrue();
+
+                final Matcher literalDefault = Pattern.compile(
+                        Pattern.quote(variable) + ":-([^}\n]+)}").matcher(content);
+                while (literalDefault.find()) {
+                    assertThat(literalDefault.group(1).strip())
+                            .as("""
+                                    a non-empty `:-` default for %s inside the provisioning config would \
+                                    override the single guarded source the services read, which is how a \
+                                    role came to be created under one name and authenticated under \
+                                    another""", variable)
+                            .isEmpty();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("the provisioning script refuses rather than skipping when a password is absent")
+        void theProvisioningScriptRefusesRatherThanSkipping() throws IOException {
+            final String content = compose();
+
+            assertThat(content)
+                    .as("""
+                            Skipping left the roles uncreated while the application connected as the                             superuser - the exact outcome the script exists to prevent - and reported it                             only on stderr during initialisation, where nobody reads it.""")
+                    .contains("refusing to initialise")
+                    .doesNotContain("exit 0");
+        }
+
+        @Test
+        @DisplayName("continuous integration exports both role names beside both generated passwords")
+        void continuousIntegrationExportsBothNamesBesideBothPasswords() throws IOException {
+            assertThat(workflow())
+                    .as("""
+                            The workflow generated both role passwords and exported neither name, so its                             rendered topology took the app service's superuser default. Names are not                             secret, so they belong in the plain block beside the generated values.""")
+                    .contains("generated " + APP_PASSWORD_VARIABLE)
+                    .contains("generated " + MIGRATION_PASSWORD_VARIABLE)
+                    .contains(APP_USER_VARIABLE + "=carddemo_app")
+                    .contains(MIGRATION_USER_VARIABLE + "=carddemo_migrator");
+        }
+
+        @Test
+        @DisplayName("continuous integration validates the rendered contract, not just the committed text")
+        void continuousIntegrationValidatesTheRenderedContract() throws IOException {
+            final String content = workflow();
+
+            assertThat(content)
+                    .as("""
+                            Interpolation decides the outcome, so the assertion has to be made on the                             output of `docker compose config` rather than on the file - a default is                             invisible until it is resolved.""")
+                    .contains("configs.postgres-least-privilege-roles")
+                    .contains("to match the rendered service value")
+                    .contains("a dedicated role distinct ");
+            for (final String variable : roleVariables) {
+                assertThat(content)
+                        .as("the rendered check must cover %s", variable)
+                        .contains(variable);
+            }
+        }
+
+        @Test
+        @DisplayName("the template documents all four names and ships neither password with a value")
+        void theTemplateShipsNeitherPasswordWithAValue() throws IOException {
+            final String template = repositoryFile(".env.example");
+
+            for (final String variable : roleVariables) {
+                assertThat(template)
+                        .as("%s must be documented so a reader knows it exists", variable)
+                        .contains(variable + "=");
+            }
+            for (final String variable : List.of(APP_PASSWORD_VARIABLE, MIGRATION_PASSWORD_VARIABLE)) {
+                final Matcher assignment = Pattern.compile(
+                        "^" + Pattern.quote(variable) + "=(.*)$", Pattern.MULTILINE).matcher(template);
+                assertThat(assignment.find()).as("%s must be assigned", variable).isTrue();
+                assertThat(assignment.group(1))
+                        .as("""
+                                a committed value for %s is a committed credential, and a predictable                                 one is worse than none: it is the value a reader copies.""", variable)
+                        .isEmpty();
+            }
         }
     }
 }

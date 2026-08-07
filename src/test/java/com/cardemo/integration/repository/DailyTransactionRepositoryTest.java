@@ -316,12 +316,20 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * and system-output captures, and for the reject, report and statement datasets by name returns only
  * dataset <em>definition</em> members and zero captured data. What would be needed is a captured 430-byte
  * reject dataset together with the resulting transaction, account and category-balance images from a real
- * posting run at a known input state. Until that exists, this class creates no baseline artefact,
- * fabricates no expected bytes, and asserts <strong>no reject count and no posted count</strong>. A
- * Java-generated baseline would be circular, and a hand-simulated one is not an oracle: a stateless model
- * over these fixtures yields a different reject total from a stateful one, which proves the number is
- * model-sensitive rather than authoritative. The prohibition binds hardest here, because this is the input
- * table of the very pipeline such a baseline would describe.
+ * posting run at a known input state, and it would corroborate the source-derived expectation rather than
+ * replace it.
+ *
+ * <p>This class still creates no baseline artefact, fabricates no expected bytes and asserts
+ * <strong>no reject count and no posted count</strong> - but for a narrower reason than an earlier revision
+ * gave. That revision held that "a hand-simulated one is not an oracle: a stateless model over these fixtures
+ * yields a different reject total from a stateful one, which proves the number is model-sensitive rather than
+ * authoritative". That is withdrawn: {@code 2800-UPDATE-ACCOUNT-REC} ends in {@code REWRITE FD-ACCTFILE-REC}
+ * at {@code app/cbl/CBTRN02C.cbl:561} and a VSAM {@code REWRITE} replaces the record in the cluster, so the
+ * stateless reading is a misreading rather than a second model. The expectation IS derivable and is derived,
+ * by {@code com.cardemo.e2e.PostingParityOracle} into {@code src/test/resources/expected/posttran}. The reason
+ * it is not asserted <em>here</em> is scope: this class owns the input table, and the posting outcome belongs
+ * to the suites that run the posting job. A Java-generated baseline would still be circular and is still
+ * refused.
  *
  * <p><strong>Second: file status {@code '35'}, file unavailable, is Not available.</strong> A census across
  * the 28 programs of {@code app/cbl} finds that literal zero times and {@code DFHRESP(NOTOPEN)} zero times;

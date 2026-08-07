@@ -80,6 +80,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cardemo.batch.jobs.DailyTransactionPostingJob;
+import com.cardemo.e2e.PostingParityOracle;
 import com.cardemo.batch.writers.RejectWriter;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.model.enums.RejectCode;
@@ -120,14 +121,21 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
  *       simulated account rewrite failure leaves neither the earlier category change nor a transaction row.</li>
  * </ul>
  *
- * <p>Two evidence gaps are stated rather than invented. A Gate 1 baseline is
- * <strong>Not available</strong>: the repository contains no captured 430-byte {@code DALYREJS} generation
- * or resulting transaction, account and category-balance images from a real source run. Closing that gap
- * requires those artefacts at one known input state; a Java-produced baseline would be circular. File status
- * {@code '35'} is also <strong>Not available</strong>: it occurs nowhere in the frozen COBOL corpus, so a
- * faithful test would require a source occurrence or a captured legacy run that exercises an unavailable
- * dataset. An exact reject count is likewise not asserted: the count is model-sensitive fixture data, while
- * the contracts are that it is positive, every shipped-fixture reject is code 102, and no input vanishes.
+ * <p>One evidence gap is stated rather than invented. File status {@code '35'} is
+ * <strong>Not available</strong>: it occurs nowhere in the frozen COBOL corpus, so a faithful test would
+ * require a source occurrence or a captured legacy run that exercises an unavailable dataset.
+ *
+ * <p><strong>The exact reject count IS asserted.</strong> An earlier revision declined it, holding that "the
+ * count is model-sensitive fixture data". That was withdrawn: {@code 2800-UPDATE-ACCOUNT-REC} ends in
+ * {@code REWRITE FD-ACCTFILE-REC} at {@code app/cbl/CBTRN02C.cbl:561} and a VSAM {@code REWRITE} replaces the
+ * record in the cluster, so the re-read at {@code :394} returns the mutated accumulators and the stateless
+ * reading is a misreading rather than a second model. Exactly one faithful model exists,
+ * {@code com.cardemo.e2e.PostingParityOracle} re-derives it from the frozen source and fixtures without
+ * importing any production type, and its result is committed under
+ * {@code src/test/resources/expected/posttran}. The count asserted below is read from that committed
+ * expectation rather than restated here, so this class cannot disagree with the Gate 1 suites about it. A
+ * captured legacy 430-byte {@code DALYREJS} generation with its resulting images remains
+ * <strong>Not available</strong> and would corroborate that reading against the real runtime.
  *
  * <h2>How to run, build and test</h2>
  *
@@ -456,10 +464,17 @@ class DailyTransactionPostingJobTest extends AbstractBatchIntegrationTest {
         assertThat(processed)
                 .as("app/cbl/CBTRN02C.cbl:206 increments WS-TRANSACTION-COUNT for every row the loop sees")
                 .isEqualTo(seededDailyTransactionCount);
-        assertThat(rejected)
-                .as("app/cbl/CBTRN02C.cbl:410 is reachable in the fixture, so the run must reject at least "
-                        + "one row without pinning a model-sensitive exact total")
+        final long expectedRejects =
+                PostingParityOracle.readCommittedExpectation("rejects.txt").size();
+        assertThat(expectedRejects)
+                .as("the premise: the committed expectation must carry at least one reject, or the assertion "
+                        + "below would be satisfied by a run that rejected nothing")
                 .isPositive();
+        assertThat(rejected)
+                .as("app/cbl/CBTRN02C.cbl:410 is reachable in the fixture, and the exact total is now "
+                        + "asserted rather than declined: it is derived from the frozen source and fixtures by "
+                        + "PostingParityOracle and committed under src/test/resources/expected/posttran")
+                .isEqualTo(expectedRejects);
         assertThat(committedTransactionCount() + rejected)
                 .as("every one of the 300 staged rows is either committed or rejected; processedSeen itself "
                         + "already includes rejects because app/cbl/CBTRN02C.cbl:206 precedes the branch")

@@ -44,7 +44,9 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -72,6 +74,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.cardemo.batch.jobs.TransactionReportJob;
 import com.cardemo.batch.processors.TransactionReportProcessor;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
@@ -359,6 +362,18 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
     @Qualifier("transactionReportGenerateStep")
     private Step transactionReportGenerateStep;
 
+    /**
+     * STEP05R, {@code app/proc/TRANREPT.prc:35}, injected as the production bean.
+     *
+     * <p>Injected for one reason the assembled flow cannot supply: a {@code SORTIN} generation carrying record
+     * separators. STEP01R writes undelimited fixed blocks, so a separated object can only be planted, and the
+     * refusal that finding F-012 added has to be driven against the production step to mean anything. See
+     * {@code launchReportOverSeparatedBackupGeneration}.
+     */
+    @Autowired
+    @Qualifier("transactionReportSortStep")
+    private Step transactionReportSortStep;
+
     /** The relation STEP01R backs up; used to commit the synthetic posted rows each test needs. */
     @Autowired
     private TransactionRepository transactionRepository;
@@ -442,6 +457,18 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
     /** {@code RECLN = 350}, {@code app/cpy/CVTRA05Y.cpy:2}, and {@code LRECL=350} at {@code TRANREPT.prc:29}. */
     private final int transactionRecordLength = 350;
 
+    /**
+     * Zero-based offset of {@code TRAN-CARD-NUM}, whose {@code SYMNAMES} entry at
+     * {@code app/proc/TRANREPT.prc:39} is {@code TRAN-CARD-NUM,263,16,ZD} - one-based 263, so 262 here.
+     */
+    private final int cardNumberOffset = 262;
+
+    /** Width of {@code TRAN-CARD-NUM PIC X(16)}, {@code app/cpy/CVTRA05Y.cpy}. */
+    private final int cardNumberLength = 16;
+
+    /** Width of {@code TRAN-ID PIC X(16)}, which the sort's tiebreak reads from offset zero. */
+    private final int transactionIdLength = 16;
+
     /** The offset of the edited amount on every totals line: 13 plus 84, and 11 plus 86, both resolve here. */
     private final int totalAmountOffset = 97;
 
@@ -468,6 +495,7 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
 
     /** STEP10R, {@code app/proc/TRANREPT.prc:57}. */
     private final String generateStepName = "transactionReportGenerateStep";
+    private final String categoryBalanceStepName = "transactionReportCategoryBalanceStep";
 
     /** Execution-context entry carrying the concrete {@code TRANSACT.BKUP} generation STEP01R created. */
     private final String backupObjectKeyEntry = "carddemo.tranrept.transact-bkup.objectKey";
@@ -576,8 +604,10 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
                     .as("app/proc/TRANREPT.prc declares STEP01R at :21, STEP05R at :35 and STEP10R at :57 "
                             + "before // PEND at :79, so the flow reproduces exactly that sequence with no "
                             + "step repeated and none suppressed - app/jcl/TRANREPT.jcl carries no COND, so "
-                            + "nothing gates them")
-                    .containsExactly(backupStepName, sortStepName, generateStepName);
+                            + "nothing gates them. The fourth is app/jcl/PRTCATBL.jcl, a separate member, "
+                            + "and it follows the report rather than interleaving with it")
+                    .containsExactly(
+                            backupStepName, sortStepName, generateStepName, categoryBalanceStepName);
         }
 
         /**
@@ -662,6 +692,80 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
                         .isNotEqualTo((byte) '\r')
                         .isNotEqualTo((byte) '\n');
             }
+        }
+
+        /**
+         * The instructed {@code app/jcl/PRTCATBL.jcl} step unloads {@code TCATBALF} and prints that unload.
+         *
+         * <p>Purpose: assert finding M-05 end to end. {@code TCATBALF.BKUP} was a catalogued generation base
+         * declared in configuration with <b>no producer and no consumer anywhere in the target</b>, while the
+         * traceability matrix claimed the member was mapped. This case proves the pair exists: one object
+         * appears under the base at {@code LRECL=50} holding every row of the relation, and the report is
+         * derived from <em>that object</em> rather than from the relation, which is what
+         * {@code SORTIN DSN=...TCATBALF.BKUP(+1)} at {@code app/jcl/PRTCATBL.jcl:L44-L45} says.
+         *
+         * <p>The line geometry carries a preserved legacy divergence. The {@code OUTREC} field list at
+         * {@code :L53-L56} totals 41 bytes into a {@code SORTOUT} declared {@code LRECL=40} at {@code :L61};
+         * the declared record length wins, because it is the contract a consumer of the report reads. The
+         * report is therefore asserted at exactly 40 bytes per line.
+         */
+        @Test
+        @DisplayName("app/jcl/PRTCATBL.jcl:L29-L39 then :L43-L63 - the instructed print unloads TCATBALF to "
+                + "TCATBALF.BKUP(+1) at LRECL=50 and prints THAT object at the declared LRECL=40")
+        @Transactional(propagation = Propagation.NOT_SUPPORTED)
+        void theInstructedCategoryBalancePrintUnloadsAndPrints() {
+            final Long seeded = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM transaction_category_balance", Long.class);
+            assertThat(seeded)
+                    .as("the harness seeds app/data/ASCII/tcatbal.txt, or this case would assert nothing")
+                    .isNotNull()
+                    .isPositive();
+
+            final Map<String, String> instructed = new HashMap<>(reportWindowParameters());
+            instructed.put(TransactionReportJob.JOB_PARAMETER_PRINT_CATEGORY_BALANCES, "true");
+            final JobExecution execution =
+                    launchJob(transactionReportJob, runIdParameters(instructed));
+            assertRunCompleted(execution);
+
+            // The producer: one object under the base, holding the whole relation at 50 bytes a record.
+            final String backupKey = requiredContextString(
+                    execution, TransactionReportJob.CATEGORY_BALANCE_BACKUP_KEY_CONTEXT);
+            assertThat(requiredContextLong(
+                    execution, TransactionReportJob.CATEGORY_BALANCE_BACKUP_COUNT_CONTEXT))
+                    .as("app/jcl/PRTCATBL.jcl:L32-L33 unloads the whole cluster")
+                    .isEqualTo(seeded.longValue());
+            final byte[] unloaded = objectBytes(batchOutputBucket, backupKey);
+            assertThat(unloaded.length)
+                    .as("DCB=(LRECL=50,RECFM=FB) at :L37 means fixed blocks with no delimiter")
+                    .isEqualTo((int) (seeded.longValue() * 50));
+
+            // The consumer: the report is the same row count, at the declared 40 bytes a line.
+            final byte[] report = objectBytes(batchOutputBucket, requiredContextString(
+                    execution, TransactionReportJob.CATEGORY_BALANCE_REPORT_KEY_CONTEXT));
+            assertThat(report.length)
+                    .as("DCB=(LRECL=40,RECFM=FB) at :L61 wins over the 41-byte OUTREC field list of "
+                            + ":L53-L56, and RECFM=FB carries no delimiter")
+                    .isEqualTo((int) (seeded.longValue() * 40));
+
+            final List<String> lines = fixedWidthRecords(report, 40);
+            final List<String> keys = new ArrayList<>(lines.size());
+            for (final String line : lines) {
+                // OUTREC FIELDS=(TRANCAT-ACCT-ID,X, TRANCAT-TYPE-CD,X, TRANCAT-CD,X, TRAN-CAT-BAL,EDIT=...)
+                assertThat(line.charAt(11)).as("the first X of :L53 is one blank").isEqualTo(' ');
+                assertThat(line.charAt(14)).as("the second X of :L54").isEqualTo(' ');
+                assertThat(line.charAt(19)).as("the third X of :L55").isEqualTo(' ');
+                assertThat(line.charAt(29))
+                        .as("EDIT=(TTTTTTTTT.TT) at :L56 places the decimal point after nine digits")
+                        .isEqualTo('.');
+                assertThat(line.substring(32))
+                        .as("the trailing filler is blanks, one fewer than the 9X of :L56 asks for")
+                        .isBlank();
+                keys.add(line.substring(0, 18));
+            }
+            assertThat(keys)
+                    .as("SORT FIELDS=(TRANCAT-ACCT-ID,A,TRANCAT-TYPE-CD,A,TRANCAT-CD,A) at :L52 orders the "
+                            + "report by the composite key ascending")
+                    .isSorted();
         }
     }
 
@@ -1448,6 +1552,165 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         }
 
         /**
+         * {@code SORTOUT} carries the {@code SORT FIELDS=(TRAN-CARD-NUM,A)} permutation, byte for byte.
+         *
+         * <p><strong>Why this has to be asserted rather than inferred, and why now.</strong> Finding
+         * <strong>F-012</strong> replaced the mechanism behind this step: it used to read the whole
+         * {@code SORTIN} generation into a {@code List<byte[]>} and sort it in heap, and it now pages an
+         * ordered query and streams the result. Every existing assertion in this class about STEP05R covers the
+         * generation's <em>key</em> and its <em>record count</em>, and both are unchanged by a wrong ordering -
+         * so the one property the change could plausibly have broken was the only one nothing checked.
+         *
+         * <p>The rows are seeded on cards in <strong>descending</strong> order with ascending identifiers, so
+         * insertion order is the reverse of the required output order on the sort key and coincides with it on
+         * the tiebreak. A step that emitted rows in insertion order, or that ordered on the wrong field, fails
+         * here; one that merely happened to receive them ordered cannot pass by luck.
+         *
+         * <p>The tiebreak is asserted too. {@code app/proc/TRANREPT.prc:44} names one field, so DFSORT leaves
+         * ties unordered, and the previous implementation resolved them to ascending {@code TRAN-ID} only
+         * because a stable {@code List.sort} ran over a generation that happened to be in {@code TRAN-ID}
+         * order. The replacement states that tiebreak in the query. Asserting it fixes the behaviour that was
+         * previously incidental.
+         */
+        @Test
+        @DisplayName("STEP05R emits SORTOUT ordered by TRAN-CARD-NUM ascending then TRAN-ID ascending, "
+                + "app/proc/TRANREPT.prc:44")
+        @Transactional(propagation = Propagation.NOT_SUPPORTED)
+        void theSortStepEmitsTheCardNumberPermutation() {
+            final List<String> cards = seededCardNumbersAscending();
+            assertThat(cards.size())
+                    .as("this probe needs at least three distinct card keys to order")
+                    .isGreaterThanOrEqualTo(3);
+            final List<String> chosen = List.of(cards.get(0), cards.get(1), cards.get(2));
+
+            // Seeded in DESCENDING card order, and two rows on the middle card so the tiebreak is exercised.
+            seedTransaction(probeTransactionId(1), chosen.get(2), new BigDecimal("10.00"),
+                    fixedClockProcessingTimestamp());
+            seedTransaction(probeTransactionId(2), chosen.get(1), new BigDecimal("11.00"),
+                    fixedClockProcessingTimestamp());
+            seedTransaction(probeTransactionId(3), chosen.get(1), new BigDecimal("12.00"),
+                    fixedClockProcessingTimestamp());
+            seedTransaction(probeTransactionId(4), chosen.get(0), new BigDecimal("13.00"),
+                    fixedClockProcessingTimestamp());
+
+            final JobExecution execution = launchTransactionReport();
+            assertRunCompleted(execution);
+
+            final String dailyKey = requiredContextString(execution, dailyObjectKeyEntry);
+            final List<String> records =
+                    fixedWidthRecords(objectBytes(batchOutputBucket, dailyKey), transactionRecordLength);
+
+            assertThat(records)
+                    .as("four seeded rows are all in window, so all four reach SORTOUT")
+                    .hasSize(4);
+            assertThat(sortKeysOf(records))
+                    .as("app/proc/TRANREPT.prc:44 SORT FIELDS=(TRAN-CARD-NUM,A) over the character image at "
+                            + "bytes 263-278, with the TRAN-ID at bytes 1-16 breaking ties ascending")
+                    .containsExactly(
+                            chosen.get(0) + probeTransactionId(4),
+                            chosen.get(1) + probeTransactionId(2),
+                            chosen.get(1) + probeTransactionId(3),
+                            chosen.get(2) + probeTransactionId(1));
+            assertThat(requiredContextLong(execution, dailyRecordCountEntry))
+                    .as("the published count is the number of records actually written")
+                    .isEqualTo(4L);
+        }
+
+        /**
+         * {@code SORTOUT} is undelimited: no record separator byte appears anywhere in it.
+         *
+         * <p>{@code app/proc/TRANREPT.prc:29} declares {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)}, which is
+         * fixed blocked and carries no delimiter. This is asserted on the object this step <em>writes</em>
+         * because the next step <em>reads</em> it as fixed blocks: a terminator per record would shift every
+         * record after the first by one byte, and each shifted record would still be 350 bytes long and so
+         * still pass a length check.
+         */
+        @Test
+        @DisplayName("STEP05R writes SORTOUT undelimited: an exact multiple of 350 bytes and no 0x0A or 0x0D")
+        @Transactional(propagation = Propagation.NOT_SUPPORTED)
+        void theSortStepWritesUndelimitedFixedBlocks() {
+            seedInWindowTransactionsOnDistinctCards(3);
+
+            final JobExecution execution = launchTransactionReport();
+            assertRunCompleted(execution);
+
+            final byte[] payload = objectBytes(batchOutputBucket,
+                    requiredContextString(execution, dailyObjectKeyEntry));
+
+            assertThat(payload.length % transactionRecordLength)
+                    .as("RECFM=FB holds a whole number of records; a remainder means no offset after it can "
+                            + "be trusted")
+                    .isZero();
+            assertThat(separatorBytesIn(payload))
+                    .as("app/proc/TRANREPT.prc:29 declares RECFM=FB, which is undelimited, so a separator "
+                            + "byte would be corrupt geometry rather than a terminator")
+                    .isEmpty();
+        }
+
+        /**
+         * A {@code SORTIN} generation carrying separator bytes is refused, and named.
+         *
+         * <p>This is the third of the three fixed-block object read paths to be hardened - the two in
+         * {@code batch/readers} were done under finding <strong>F-013</strong> - and it was the one that failed
+         * least usefully. Reading 350 bytes at a time from an object with a one-byte terminator per record
+         * returns a full-length buffer every time, so the old loop's length check passed while every record
+         * after the first was misaligned and read as valid; the run failed, if at all, only on the short final
+         * remainder, reporting a length error about the last record when the defect was in the second. The step
+         * now names the byte, its offset and its row.
+         */
+        @Test
+        @DisplayName("STEP05R refuses a SORTIN generation that carries record separators, naming the byte")
+        @Transactional(propagation = Propagation.NOT_SUPPORTED)
+        void theSortStepRefusesASeparatedSortInput() {
+            seedInWindowTransactionsOnDistinctCards(2);
+
+            final JobExecution execution = launchReportOverSeparatedBackupGeneration();
+
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(failureMessagesOf(execution))
+                    .as("the diagnostic must name the separator, its byte value and the DCB that forbids it, "
+                            + "and must not quote any record content")
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("separator")
+                            .contains("0x0A")
+                            .contains("TRANREPT.prc:L29"));
+        }
+
+        /**
+         * A {@code SORTIN} generation whose population disagrees with the relation is refused.
+         *
+         * <p><strong>This is the guard that makes finding F-012's fix sound rather than merely faster.</strong>
+         * The step no longer emits the generation's bytes; it emits the ordered relation, which is legitimate
+         * only because {@code app/ctl/REPROCT.ctl:15} is {@code REPRO INFILE(FILEIN) OUTFILE(FILEOUT)} with no
+         * selection, so STEP01R's generation and the relation hold the same records. That equivalence is a
+         * premise, and a premise that is never checked is an assumption - so the step checks it, and a
+         * disagreement fails the run rather than producing a report over a population {@code SORTIN} does not
+         * contain. This is also what closes the one behavioural gap the substrate change opens: the frozen
+         * snapshot semantics of {@code DISP=SHR} would hide a write that landed after STEP01R ran, and here it
+         * is detected instead.
+         *
+         * <p>The planted generation is well formed - correct geometry, no separators - and holds one record
+         * where the relation holds two, so the only thing under test is the population check itself.
+         */
+        @Test
+        @DisplayName("STEP05R refuses a SORTIN generation whose record count disagrees with the relation")
+        @Transactional(propagation = Propagation.NOT_SUPPORTED)
+        void theSortStepRefusesASortInputThatDisagreesWithTheRelation() {
+            seedInWindowTransactionsOnDistinctCards(2);
+
+            final JobExecution execution = launchReportOverBackupGeneration(
+                    List.of(paddedRecordFor(firstSeededCardNumber())));
+
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(failureMessagesOf(execution))
+                    .as("the diagnostic must name both counts and the control card that makes them equal, and "
+                            + "must not quote any record content")
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("app/ctl/REPROCT.ctl:L15")
+                            .contains("transaction relation holds 2"));
+        }
+
+        /**
          * The retention conflict for the report generation base is resolved to ten.
          *
          * <p>Purpose: two source members declare different limits for the same base, and object storage needs one
@@ -1567,6 +1830,160 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
                 .start(transactionReportGenerateStep)
                 .build();
         return launchJob(probe, runIdParameters(reportWindowParameters()));
+    }
+
+    /**
+     * Runs STEP05R over a {@code SORTIN} generation this test deliberately wrote with record separators.
+     *
+     * <p>The generation is planted under the very execution-context entry STEP01R publishes, so the step reads
+     * it exactly as it would read a real handoff, and the only thing synthetic is the object's geometry. The
+     * production step bean, launcher and job repository are used unchanged. A separated object could not be
+     * produced by the assembled flow - STEP01R writes undelimited blocks - which is why it has to be planted.
+     *
+     * @return the execution, which must be failed
+     */
+    private JobExecution launchReportOverSeparatedBackupGeneration() {
+        // Two well-formed 350-byte images, each followed by one LF, which is what a writer treating the
+        // records as text lines produces. The object length is therefore 702 rather than 700.
+        final StringBuilder payload = new StringBuilder();
+        for (int record = 0; record < 2; record++) {
+            payload.append(paddedRecordFor(firstSeededCardNumber())).append('\n');
+        }
+        return launchSortStepOverPlantedBackup("Separated",
+                payload.toString().getBytes(StandardCharsets.ISO_8859_1));
+    }
+
+    /**
+     * Runs STEP05R over a well-formed {@code SORTIN} generation holding exactly the given record images.
+     *
+     * @param records the 350-character images to plant; must not be {@code null}
+     * @return the execution
+     */
+    private JobExecution launchReportOverBackupGeneration(final List<String> records) {
+        final StringBuilder payload = new StringBuilder(records.size() * transactionRecordLength);
+        for (final String record : records) {
+            assertThat(record.length())
+                    .as("a planted generation must carry the geometry app/proc/TRANREPT.prc:29 declares")
+                    .isEqualTo(transactionRecordLength);
+            payload.append(record);
+        }
+        return launchSortStepOverPlantedBackup("Population",
+                payload.toString().getBytes(StandardCharsets.ISO_8859_1));
+    }
+
+    /**
+     * Plants a {@code SORTIN} generation verbatim and runs the production STEP05R bean over it.
+     *
+     * <p>The generation is planted under the very execution-context entry STEP01R publishes, so the step reads
+     * it exactly as it would read a real handoff, and the only thing synthetic is the object's content. The
+     * production step bean, launcher and job repository are used unchanged. Because the probe job runs STEP05R
+     * alone, no {@code recordCount} is published for it, which is deliberate: it isolates the population check
+     * against the relation from the separate check against what STEP01R published.
+     *
+     * @param probeSuffix distinguishes the probe job name, since one job name owns one parameter identity
+     * @param payload the exact object bytes to plant, geometry included
+     * @return the execution
+     */
+    private JobExecution launchSortStepOverPlantedBackup(final String probeSuffix, final byte[] payload) {
+        final String backupKey = backupPrefix + "/generation="
+                + String.format(Locale.ROOT, "%0" + generationSegmentWidth + "d",
+                        Long.valueOf(syntheticGenerationOrdinal))
+                + "/TRANSACT.BKUP";
+        s3Client.putObject(
+                PutObjectRequest.builder()
+                        .bucket(batchOutputBucket)
+                        .key(backupKey)
+                        .contentType("application/octet-stream")
+                        .build(),
+                RequestBody.fromBytes(payload));
+
+        final Job probe = new JobBuilder(probeJobName + probeSuffix, jobRepository)
+                .listener(new DailyGenerationHandoff(backupObjectKeyEntry, backupKey))
+                .start(transactionReportSortStep)
+                .build();
+        return launchJob(probe, runIdParameters(reportWindowParameters()));
+    }
+
+    /**
+     * Renders one syntactically valid 350-byte record image on a given card.
+     *
+     * <p>Only the geometry matters to the caller, which asserts a separator refusal rather than any field, so
+     * the image is a blank-filled record carrying the card number at its declared offset.
+     *
+     * @param cardNumber the sixteen-character card key
+     * @return exactly {@code transactionRecordLength} characters
+     */
+    private String paddedRecordFor(final String cardNumber) {
+        final char[] image = new char[transactionRecordLength];
+        Arrays.fill(image, ' ');
+        final String identifier = probeTransactionId(1);
+        identifier.getChars(0, identifier.length(), image, 0);
+        cardNumber.getChars(0, cardNumber.length(), image, cardNumberOffset);
+        return new String(image);
+    }
+
+    /**
+     * The sort key and its tiebreak, concatenated, for each record image in emission order.
+     *
+     * <p>{@code TRAN-CARD-NUM} occupies bytes 263-278 and {@code TRAN-ID} bytes 1-16, both one-based, as
+     * {@code app/proc/TRANREPT.prc:39-40} declares through its {@code SYMNAMES}. Returning the pair as one
+     * string lets the caller assert the exact permutation in one statement.
+     *
+     * @param records the record images in emission order
+     * @return one thirty-two-character key per record, never {@code null}
+     */
+    private List<String> sortKeysOf(final List<String> records) {
+        final List<String> keys = new ArrayList<>(records.size());
+        for (final String record : records) {
+            keys.add(record.substring(cardNumberOffset, cardNumberOffset + cardNumberLength)
+                    + record.substring(0, transactionIdLength));
+        }
+        return keys;
+    }
+
+    /**
+     * Every offset in a payload that holds a record separator byte.
+     *
+     * <p>Returned as offsets rather than as a boolean so a failure names where the corruption is. No byte of
+     * record content is included in the result.
+     *
+     * @param payload the object bytes
+     * @return the one-based offsets carrying {@code 0x0A} or {@code 0x0D}, empty when there are none
+     */
+    private List<Integer> separatorBytesIn(final byte[] payload) {
+        final List<Integer> offsets = new ArrayList<>();
+        for (int offset = 0; offset < payload.length; offset++) {
+            if (payload[offset] == (byte) '\n' || payload[offset] == (byte) '\r') {
+                offsets.add(Integer.valueOf(offset + 1));
+            }
+        }
+        return offsets;
+    }
+
+    /**
+     * The failure messages of every step of an execution, plus the job-level ones.
+     *
+     * <p>A tasklet failure is recorded on its step, and the whole cause chain is walked because the message a
+     * test asserts on is raised inside the step body and wrapped by the framework on its way out.
+     *
+     * @param execution the finished execution
+     * @return one entry per throwable in the execution's failure chains, never {@code null}
+     */
+    private List<String> failureMessagesOf(final JobExecution execution) {
+        final List<String> messages = new ArrayList<>();
+        final List<Throwable> roots = new ArrayList<>(execution.getAllFailureExceptions());
+        for (final StepExecution step : execution.getStepExecutions()) {
+            roots.addAll(step.getFailureExceptions());
+        }
+        for (final Throwable root : roots) {
+            for (Throwable cause = root; cause != null; cause = cause.getCause()) {
+                messages.add(String.valueOf(cause.getMessage()));
+                if (cause.getCause() == cause) {
+                    break;
+                }
+            }
+        }
+        return messages;
     }
 
     // =================================================================================================
@@ -2034,7 +2451,7 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
 
     // =================================================================================================
     // Timestamps. All three producers in the corpus emit CHAR(26); this one reproduces the batch shape,
-    // which is Z-GET-DB2-FORMAT-TIMESTAMP: millisecond precision followed by four literal zeros.
+    // which is Z-GET-DB2-FORMAT-TIMESTAMP: hundredths-of-a-second precision plus four literal zeros.
     // =================================================================================================
 
     /**
@@ -2068,7 +2485,7 @@ class TransactionReportJobTest extends AbstractBatchIntegrationTest {
         final String stamp = reportDate + "-" + timeOfDay + "0000";
         assertThat(stamp.length())
                 .as("TRAN-PROC-TS is PIC X(26) at app/cpy/CVTRA05Y.cpy:17, and the batch producer emits "
-                        + "millisecond precision followed by four literal zeros")
+                        + "hundredths-of-a-second precision followed by four literal zeros")
                 .isEqualTo(26);
         return stamp;
     }

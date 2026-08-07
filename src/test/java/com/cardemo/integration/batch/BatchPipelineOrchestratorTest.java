@@ -88,17 +88,21 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cardemo.batch.jobs.DailyTransactionPostingJob;
+import com.cardemo.e2e.PostingParityOracle;
 import com.cardemo.batch.jobs.InterestCalculationJob;
+import com.cardemo.batch.readers.CombinedTransactionReader;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.model.enums.RejectCode;
 import com.cardemo.observability.HealthIndicators;
 
 import software.amazon.awssdk.core.ResponseBytes;
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Object;
 
 /**
@@ -261,22 +265,29 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *       {@code app/cbl/CBACT04C.cbl:219-220} is structurally unreachable, so N accounts receive N-1 updates.
  *       Measured, and asserted by test 7. Remediation, for the root-owned decision log rather than for this
  *       file: correct the prose to match the corpus.</dd>
- *   <dt>High - the stage-4 split contends on job-execution creation</dt>
- *   <dd><strong>Measured.</strong> Both branches always execute, but their outcomes race:
- *       {@code spring.batch.jdbc.isolation-level-for-create} is {@code SERIALIZABLE}, so the two concurrent
- *       child launches conflict and PostgreSQL cancels one as a pivot, surfacing as a fatal stage failure.
- *       Across repeated runs the statement branch lost, then the report branch lost twice, then neither lost.
- *       This class therefore asserts that both branches <em>execute</em> and that each outcome is its own, and
- *       deliberately asserts neither a completion nor an ordering, because either would be flaky.
- *       Remediation, for the root-owned decision log rather than for this file: serialise the two child
- *       launches, or narrow the create isolation, or retry on SQL state {@code 40001}.</dd>
- *   <dt>High - the composed stream cannot pass stage 3 in one run over the seeded state</dt>
- *   <dd><strong>Measured and reproducible.</strong> Stage 1 commits its posted transactions, and stage 3's
- *       concatenated input re-reads them and re-loads them, so the keyed relation rejects the repeat and the
- *       stage halts. That is the duplicate-key exposure the migration requires to surface rather than be
- *       smoothed over with a retry, an upsert or a substituted sequence, and the store failure is translated
- *       rather than swallowed. This class asserts the resulting bypass as behaviour instead of pretending the
- *       run reaches the split, and reaches the split separately through the production split flow.</dd>
+ *   <dt>High - the stage-4 split contended on job-execution creation. RESOLVED</dt>
+ *   <dd><strong>Measured, then fixed.</strong> Both branches always execute, and their outcomes used to
+ *       race: {@code spring.batch.jdbc.isolation-level-for-create} was {@code SERIALIZABLE}, so the two
+ *       concurrent child launches conflicted and PostgreSQL cancelled one as a pivot, surfacing as a fatal
+ *       stage failure and return code 12. Across repeated runs the statement branch lost, then the report
+ *       branch lost twice, then neither lost. It was left unfixed here because the stream could not reach
+ *       the split at all - stage 3 always halted first, for the unrelated substrate reason that was finding
+ *       M-01 - so the race was latent. With M-01 corrected the split is reached on every run and the race
+ *       became a reproducible failure, so the second of the three remediations named here was taken:
+ *       {@code isolation-level-for-create} is now {@code REPEATABLE_READ}, which refuses a genuine write
+ *       conflict but not the false read/write dependency between two unrelated inserts. Serialising the
+ *       launches was rejected because it would discard the parallelism the two independent JCL branches
+ *       model. The rationale is carried in full in {@code src/main/resources/application.yml}.</dd>
+ *   <dt>High - the composed stream could not pass stage 3 in one run. RESOLVED</dt>
+ *   <dd><strong>Measured and reproducible, then fixed.</strong> Stage 1 committed its posted transactions,
+ *       and stage 3's concatenated input re-read and re-loaded them, so the keyed relation rejected the
+ *       repeat and the stage halted. The cause was not a property of the stream but a misconfiguration:
+ *       {@code carddemo.batch.combined-transaction-reader.source} defaulted to {@code repository}, so
+ *       stage 3's first leg was the very relation it loads into. Finding M-01. The property is now declared
+ *       {@code object-storage} and the orchestrator refuses the stage on any other value, so the first leg
+ *       is a generation, nothing is re-read, and the stream runs to the end. The duplicate-key exposure the
+ *       migration requires to surface is unaffected and remains asserted in the combine job's own suite,
+ *       where it is a property of the load rather than of a substrate choice.</dd>
  *   <dt>Medium - the {@code TRANREPT} retention limits disagree</dt>
  *   <dd>{@code app/jcl/DEFGDGB.jcl:37-39} declares {@code LIMIT(5)} and {@code app/jcl/REPTFILE.jcl:22-28}
  *       declares {@code LIMIT(10)} for the same generation base. Resolved to 10 - the one legacy
@@ -389,6 +400,18 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
     /** The statements bucket, bound from the same key the statement stage binds. */
     @Value("${carddemo.aws.s3.statements-bucket}")
     private String statementsBucket;
+
+    /**
+     * The {@code TRANSACT.BKUP} generation prefix, bound from the key the combined reader itself binds.
+     *
+     * <p>Bound rather than restated as a literal, unlike the four prefixes this class only ever <em>reads</em>
+     * under. This one is a <em>write</em> target: {@link #seedBackupGeneration()} plants an object beneath it
+     * and stage 3 then has to find it, so a literal that drifted from the configured value would land the
+     * object where nothing looks for it and surface as an unallocatable {@code SORTIN} rather than as a
+     * configuration mismatch.
+     */
+    @Value("${carddemo.aws.s3.gdg-prefixes.transact-bkup:gdg/transact-bkup}")
+    private String backupPrefix;
 
     // =================================================================================================
     // Contract values. Every one is an immutable INSTANCE field rather than a static constant, because
@@ -554,6 +577,21 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
 
     /** Object-store prefix of the per-record transaction images stage 1 emits. */
     private final String transactionImageKeyPrefix = "transact/";
+
+    /**
+     * Generation segment of the planted {@code TRANSACT.BKUP} generation.
+     *
+     * <p>Nineteen digits, which is the width every generation writer in this codebase uses so that
+     * lexicographic and generation order coincide. The value is the lowest usable one, so a generation the
+     * report branch creates later in the same test always sorts above it.
+     */
+    private final String plantedGenerationSegment = "0000000000000000001";
+
+    /** Object name the report branch gives the backup it writes, reused so the planted shape is the real one. */
+    private final String backupObjectName = "TRANSACT.BKUP";
+
+    /** Content type of a fixed-block generation object: opaque records, not a text document. */
+    private final String generationContentType = "application/octet-stream";
 
     /** Report line length - {@code LRECL=133} at {@code app/proc/TRANREPT.prc:76}. */
     private final int reportLineLength = 133;
@@ -819,27 +857,37 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
     }
 
     /**
-     * Stage 3 reads exactly the generation stage 2 created, carried across as a concrete key.
+     * Stage 3 reads exactly the generation stage 2 created, handed over as a job parameter before it launches.
      *
-     * <p>Purpose: assert the one genuine data dependency in the stream, and assert that it is honoured by
-     * <em>hand-off</em> rather than by re-resolution. Inputs: the seeded state. Output: none. Side effects:
-     * the run commits and is undone by the harness.
+     * <p>Purpose: assert the one genuine data dependency in the stream, and assert that it is honoured
+     * <em>before stage 3 starts</em> rather than checked after it finishes. Inputs: the seeded state. Output:
+     * none. Side effects: the run commits and is undone by the harness.
      *
      * <p>{@code app/jcl/INTCALC.jcl:37-41} allocates a brand new {@code SYSTRAN} generation on every run and
-     * {@code app/jcl/COMBTRAN.jcl:25-26} reads {@code SYSTRAN(0)} - the current one. On the object store a
-     * next generation is a new key under a monotonically increasing prefix and a current generation is the
-     * lexicographically greatest existing prefix, so re-resolving {@code (0)} in stage 3 would be correct only
-     * while nothing else wrote in between. Carrying the concrete key forward removes the window entirely, and
-     * the recorded hand-off outcome is what makes the two comparable at all.
+     * {@code app/jcl/COMBTRAN.jcl:25-26} reads {@code SYSTRAN(0)} - the current one. On the object store a next
+     * generation is a new prefix that sorts above every existing one and a current generation is the greatest
+     * existing prefix, so re-resolving {@code (0)} inside stage 3 would be correct only while nothing else
+     * wrote in between. The stream closes that window by passing the resolved generation to the child as
+     * {@value com.cardemo.batch.readers.CombinedTransactionReader#SYSTRAN_GENERATION_JOB_PARAMETER} at launch,
+     * which narrows stage 3's listing to that one generation and removes the greatest-prefix selection from
+     * stage 3 entirely. <strong>That parameter is the assertion that matters here</strong>: the recorded
+     * outcome afterwards is corroboration, and on its own it could only ever report a wrong generation that had
+     * already been loaded.
      *
-     * <p>The key is also asserted to carry no relative generation notation, because a key that still spelled
-     * {@code (+1)} or {@code (0)} would mean the resolution had been deferred rather than performed.
+     * <p><strong>A generation, not a single key.</strong> Stage 2 writes one object per chunk under one
+     * generation prefix, so {@code SYSTRAN(0)} is the whole prefix and any single key beneath it is one chunk
+     * of the dataset. Pinning a key would hand stage 3 a fraction of {@code SYSTRAN(0)} and report success, so
+     * the pinned value is the prefix and every published key is required to sit beneath it.
      *
-     * <p>Error modes: a mismatch is recorded rather than substituted, so a stage 3 that read a different
-     * generation fails here on the recorded outcome; a stage 2 that published nothing fails on the key count.
+     * <p>The pinned value is also asserted to carry no relative generation notation, because a value that still
+     * spelled {@code (+1)} or {@code (0)} would mean the resolution had been deferred rather than performed.
+     *
+     * <p>Error modes: a stream that stopped handing the generation over fails on the absent job parameter; a
+     * stage 3 that resolved a different generation fails on the recorded outcome, which records a mismatch
+     * rather than substituting one; a stage 2 that published nothing fails on the key count.
      */
     @Test
-    @DisplayName("4. stage 3 consumes exactly the SYSTRAN generation stage 2 created, by concrete key")
+    @DisplayName("4. stage 3 consumes exactly the SYSTRAN generation stage 2 created, pinned before launch")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void theCombineStageConsumesExactlyTheGenerationTheInterestStageCreated() {
         final JobExecution pipeline = launchPipeline();
@@ -854,32 +902,52 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
         for (int index = 0; index < publishedKeys; index++) {
             keys.add(contextString(pipeline, systranKeyIndexPrefix + index));
         }
-        final String greatestKey = new TreeSet<>(keys).last();
-        final String pinnedKey = contextString(pipeline, systranGenerationEntry);
+        final String pinnedGeneration = contextString(pipeline, systranGenerationEntry);
         final String resolvedKey = contextString(pipeline, systranResolvedEntry);
 
-        assertThat(pinnedKey)
-                .as("SYSTRAN(0) at app/jcl/COMBTRAN.jcl:26 is the CURRENT generation, which on the object "
-                        + "store is the lexicographically greatest of the keys stage 2 wrote. Published: %s",
-                        keys)
-                .isEqualTo(greatestKey);
-        assertThat(resolvedKey)
-                .as("and stage 3 read that exact key rather than resolving the relative generation again "
-                        + "for itself, which is the whole point of the hand-off")
-                .isEqualTo(pinnedKey);
-        assertThat(contextString(pipeline, systranHandoffEntry))
-                .as("so the recorded hand-off outcome is a verification rather than a mismatch, an absence "
-                        + "or a not-applicable")
-                .isEqualTo(handoffVerified);
-        assertThat(pinnedKey)
-                .as("a carried-forward key is concrete. Relative generation notation surviving into the key "
+        assertThat(pinnedGeneration)
+                .as("a carried-forward generation is concrete. Relative generation notation surviving into it "
                         + "would mean the resolution had been deferred to whoever reads it next")
                 .doesNotContain("(+1)")
                 .doesNotContain("(0)")
                 .isNotBlank();
-        assertThat(pinnedKey)
+        assertThat(pinnedGeneration)
                 .as("and it addresses the interest generation rather than some other prefix")
                 .startsWith(systranKeyPrefix);
+        assertThat(keys)
+                .as("SYSTRAN(0) at app/jcl/COMBTRAN.jcl:26 is the CURRENT GENERATION, not one object of it: "
+                        + "stage 2 emits one object per chunk, so every key it published has to sit beneath "
+                        + "the pinned generation '%s' or the pin would hand stage 3 a fraction of the "
+                        + "dataset. Published: %s", pinnedGeneration, keys)
+                .isNotEmpty()
+                .allSatisfy(key -> assertThat(key).startsWith(pinnedGeneration + "/"));
+
+        final JobExecution combine = childExecution(pipeline, combTranInfix);
+        assertThat(combine.getJobParameters()
+                        .getString(CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER))
+                .as("the generation was handed to stage 3 as a job parameter BEFORE it launched, which is "
+                        + "what makes re-resolution impossible rather than merely detectable: stage 3's "
+                        + "listing is narrowed to this one generation, so a concurrent run that catalogued a "
+                        + "higher one between stage 2 and stage 3 cannot be picked up")
+                .isEqualTo(pinnedGeneration);
+        assertThat(childExecution(pipeline, postTranInfix).getJobParameters()
+                        .getString(CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER))
+                .as("and only stage 3 receives it - a parameter added to every stage would be inherited "
+                        + "state rather than a hand-off between two named stages")
+                .isNull();
+
+        assertThat(resolvedKey)
+                .as("stage 3 then opened an object of that exact generation rather than resolving the "
+                        + "relative generation again for itself")
+                .startsWith(pinnedGeneration + "/");
+        assertThat(keys)
+                .as("and the object it opened is one stage 2 actually wrote, not a neighbour that happened "
+                        + "to sit under the same prefix")
+                .contains(resolvedKey);
+        assertThat(contextString(pipeline, systranHandoffEntry))
+                .as("so the recorded hand-off outcome is a verification rather than a mismatch, an absence "
+                        + "or a not-applicable")
+                .isEqualTo(handoffVerified);
 
         final JobExecution interest = childExecution(pipeline, intCalcInfix);
         final int childKeys = (int) contextLong(interest,
@@ -898,85 +966,91 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
                 .as("and the keys themselves are the same objects, not a re-derivation of them. Stage 2 "
                         + "published %s", childPublished)
                 .containsExactlyElementsOf(keys);
-        assertThat(new TreeSet<>(childPublished).last())
-                .as("so the generation stage 3 read is the current one of exactly what stage 2 created at "
-                        + "app/jcl/INTCALC.jcl:37-41")
-                .isEqualTo(resolvedKey);
+        assertThat(childExecution(pipeline, intCalcInfix).getExecutionContext()
+                        .getString(InterestCalculationJob.SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY, ""))
+                .as("so the generation stage 3 was pinned to is exactly the one stage 2 recorded creating at "
+                        + "app/jcl/INTCALC.jcl:37-41, with nothing derived in between")
+                .isEqualTo(pinnedGeneration);
     }
 
     /**
-     * A halted stage bypasses every downstream stage, which therefore has no step execution at all.
+     * Every stage runs, because stage 3 no longer reads the relation it is about to load.
      *
-     * <p>Purpose: assert the gating semantics the stream inherits from {@code COND=(0,NE)}, which is a
-     * <em>bypass</em> and not a skipped status. On the legacy side a step whose condition tests true is never
-     * given a step at all, so the faithful observation here is the absence of an execution rather than the
-     * presence of one carrying a no-operation status. Inputs: the seeded state. Output: none. Side effects:
-     * the run commits and is undone by the harness.
+     * <p>Purpose: assert the pipeline's end-to-end flow now that the combine stage takes its concatenated
+     * {@code SORTIN} from object storage. Inputs: the seeded state. Output: none. Side effects: the run
+     * commits and is undone by the harness.
      *
-     * <p>The halt this test observes is real rather than injected, and is the second High finding in the class
-     * documentation: stage 1 commits its posted transactions and stage 3's concatenated input re-reads and
-     * re-loads them, so the keyed relation refuses the repeat. That refusal is the duplicate-key exposure the
-     * migration requires to surface, and it reaches this test as return code 8 and the halt gate - never as a
-     * retry, an upsert or a substituted sequence.
+     * <p><b>This test previously asserted the opposite, and the change is the point.</b> It observed stage 3
+     * halting with return code 8, and documented the halt as the duplicate-key exposure the migration
+     * requires to surface: stage 1 committed its posted transactions, and stage 3's first leg re-read and
+     * re-loaded them, so the keyed relation refused the repeat. That halt was real, but its cause was a
+     * misconfiguration rather than a property of the stream -
+     * {@code carddemo.batch.combined-transaction-reader.source} defaulted to {@code repository}, so the
+     * first leg <em>was</em> the load target. Finding M-01. With the object-storage substrate declared and
+     * enforced, the first leg is a generation, nothing is re-read, and the stream runs to the end - which is
+     * what {@code app/jcl/COMBTRAN.jcl:L23-L26} followed by {@code :L41-L48} describes.
      *
-     * <p>Error modes: a downstream stage that ran anyway fails on the step-execution assertion; a halt
-     * quietly downgraded to a success fails on the aggregate outcome; a bypass implemented as a
-     * no-operation step execution fails on the exact step-name set.
+     * <p>The duplicate-key exposure itself is not lost: it remains asserted where it is genuinely a property
+     * of the load rather than of a substrate choice, in the combine job's own suite. Nor are the
+     * {@code COND=(0,NE)} bypass semantics this test used to demonstrate - that a gated-out step receives no
+     * step execution at all rather than one labelled skipped - which the unit tier asserts directly, on an
+     * injected stage outcome, under "return code 8 - the dependent chain halts and nothing downstream runs".
+     *
+     * <p>Error modes: a stage that did not run fails on the step-name set; a stage 3 that halted again fails
+     * on its gate, which would mean the substrate is not the one the deployment declares.
      */
     @Test
-    @DisplayName("5. a halted stage bypasses the downstream stages, which get no StepExecution at all")
+    @DisplayName("5. every stage runs: the combine stage reads a generation, not the relation it loads")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    void aHaltedStageBypassesEveryDownstreamStageWithNoStepExecution() {
+    void everyStageRunsOnceTheCombineStageReadsAGeneration() {
         final JobExecution pipeline = launchPipeline();
 
         assertThat(stepNamed(pipeline, combTranStepBeanName).getExitStatus().getExitCode())
-                .as("stage 3 halts: app/jcl/COMBTRAN.jcl:48 loads a keyed cluster, and the identifiers stage "
-                        + "1 already committed cannot be loaded a second time")
-                .isEqualTo(gateHalt);
+                .as("stage 3 proceeds: its first leg is a TRANSACT.BKUP generation, not the relation "
+                        + "app/jcl/COMBTRAN.jcl:48 loads into, so there is no identifier to repeat")
+                .isEqualTo(gateProceed);
         assertThat(stageReturnCode(pipeline, combTranInfix))
-                .as("an unsuccessful stage is return code 8")
-                .isEqualTo(returnCodeFailed);
+                .as("a completed stage is return code 0")
+                .isEqualTo(returnCodeCompleted);
+
+        // NO ROW-COUNT ASSERTION HERE, DELIBERATELY, and its absence is the point of this test rather than
+        // an omission from it. An earlier revision asserted that the relation still held exactly what stage 1
+        // posted - "the refused load committed nothing" - which was true only while
+        // carddemo.batch.combined-transaction-reader.source defaulted to `repository` and stage 3 therefore
+        // halted before loading anything. With the object-storage substrate declared and enforced the stage
+        // COMPLETES and loads the interest generation into that same relation, so the relation legitimately
+        // holds stage 1's rows plus stage 2's, and asserting the old equality would require stage 3 to fail in
+        // order to pass. That is the assertion inverting the behaviour it is meant to observe.
+        //
+        // Neither concern the old assertion carried is lost, and both are asserted where they are a property
+        // of the thing under test rather than of a substrate choice. The duplicate-identifier exposure - that
+        // a repeated TRAN-ID fails the load as a typed DuplicateRecordException with no row left behind - is
+        // asserted by CombineTransactionsJobTest's "a repeated TRAN-ID fails the load as a typed duplicate".
+        // The COND=(0,NE) bypass semantics, that a gated-out step receives no step execution at all rather
+        // than one labelled skipped, are asserted on an injected stage outcome by the unit tier's "return code
+        // 8 - the dependent chain halts and nothing downstream runs". The stage-1 population itself is
+        // reconciled in this class by the posting-stage test, which excludes the interest identifier prefix
+        // precisely so stage 3's 50 loaded rows are not attributed to stage 1.
 
         assertThat(stepNames(pipeline))
-                .as("the executed steps are exactly the three sequential launchers. Neither branch of stage "
-                        + "4 appears, because COND=(0,NE) bypasses a step entirely rather than running it "
-                        + "and labelling it skipped. Resolved: %s", stepNames(pipeline))
-                .containsExactlyInAnyOrder(postTranStepBeanName, intCalcStepBeanName, combTranStepBeanName)
-                .doesNotContain(creaStmtStepBeanName, tranReptStepBeanName);
+                .as("all five launchers run: the three sequential stages and both branches of the stage-4 "
+                        + "split. Resolved: %s", stepNames(pipeline))
+                .containsExactlyInAnyOrder(postTranStepBeanName, intCalcStepBeanName, combTranStepBeanName,
+                        creaStmtStepBeanName, tranReptStepBeanName);
         assertThat(findStep(pipeline, creaStmtStepBeanName))
-                .as("the statement branch has no step execution, so its five steps and the three "
-                        + "COND=(0,NE) gates of app/jcl/CREASTMT.JCL:56, :66 and :79 were never reached")
-                .isEmpty();
+                .as("the statement branch of app/jcl/CREASTMT.JCL now has a step execution")
+                .isPresent();
         assertThat(findStep(pipeline, tranReptStepBeanName))
-                .as("nor has the report branch of app/proc/TRANREPT.prc:21, :35 and :57")
-                .isEmpty();
-        assertThat(pipeline.getExecutionContext().containsKey(
-                pipelineContextPrefix + creaStmtInfix + ".returnCode"))
-                .as("and no outcome was recorded for a stage that never ran; an entry here would mean a "
-                        + "bypassed stage had nonetheless reported something")
-                .isFalse();
-        assertThat(pipeline.getExecutionContext().containsKey(
-                pipelineContextPrefix + tranReptInfix + ".returnCode"))
-                .as("for the report branch equally")
-                .isFalse();
+                .as("as does the report branch of app/proc/TRANREPT.prc")
+                .isPresent();
 
         assertThat(contextInt(pipeline, aggregateReturnCodeEntry))
-                .as("the aggregate is the highest code any stage reported, so stage 1's 4 is not allowed to "
-                        + "mask stage 3's 8")
-                .isEqualTo(returnCodeFailed);
-        assertThat(contextString(pipeline, aggregateOutcomeEntry))
-                .as("which publishes as a failure")
-                .isEqualTo(ExitStatus.FAILED.getExitCode());
+                .as("the aggregate is the highest code any stage reported, and stage 1's rejects make that 4 "
+                        + "per app/cbl/CBTRN02C.cbl:229 rather than 0")
+                .isEqualTo(returnCodeCompletedWithRejects);
         assertThat(pipeline.getStatus())
-                .as("and the stream itself ends failed rather than completing with a swallowed stage failure")
-                .isEqualTo(BatchStatus.FAILED);
-        assertThat(pipeline.getExitStatus().getExitCode())
-                .as("consistently in the exit status")
-                .isEqualTo(ExitStatus.FAILED.getExitCode());
-        assertThat(pipeline.getAllFailureExceptions())
-                .as("nothing was swallowed: the child's own throwable is promoted onto the stream so the "
-                        + "root cause survives")
-                .isNotEmpty();
+                .as("a stream whose only non-zero code is the documented reject code completes")
+                .isEqualTo(BatchStatus.COMPLETED);
     }
 
     // =================================================================================================
@@ -992,12 +1066,17 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
      * Inputs: the 300 records of {@code app/data/ASCII/dailytran.txt}, consumed by classpath resource name and
      * never copied, trimmed or re-encoded. Output: none. Side effects: the run commits and is undone.
      *
-     * <p><strong>No exact reject count is asserted, deliberately.</strong> Two defensible models of the
-     * validation cascade over these exact fixtures disagree, because one reads the account once per pass and
-     * the other re-reads it per transaction with the cycle accumulators already mutated. That disagreement is
-     * itself the proof that a literal count is a property of the model rather than an oracle, so the
-     * assertions here are the model-independent ones: the population is non-empty, it is closed under the
-     * code the fixture can reach, and it balances against 300.
+     * <p><strong>The exact reject count IS asserted, against a derived oracle.</strong> An earlier revision
+     * declined it, arguing that "two defensible models of the validation cascade over these exact fixtures
+     * disagree, because one reads the account once per pass and the other re-reads it per transaction with the
+     * cycle accumulators already mutated". That argument was withdrawn: {@code 2800-UPDATE-ACCOUNT-REC} ends in
+     * {@code REWRITE FD-ACCTFILE-REC} at {@code app/cbl/CBTRN02C.cbl:561}, and a VSAM {@code REWRITE} replaces
+     * the record in the cluster, so the re-read at {@code :394} returns the mutated accumulators. The
+     * once-per-pass reading is not a second defensible model - it is a misreading of what {@code REWRITE}
+     * means. Exactly one faithful model exists, {@code com.cardemo.e2e.PostingParityOracle} implements it, and
+     * its result is committed under {@code src/test/resources/expected/posttran}. The count asserted below is
+     * read from that committed expectation rather than restated here, so this suite and the Gate 1 suites
+     * cannot disagree about it.
      *
      * <p>Of the five reject codes only the over-limit one is reachable over unmodified fixtures. The
      * cross-reference and account lookups cannot fail because the fixture's card numbers and account
@@ -1026,17 +1105,35 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
 
         final long processed = contextLong(posting, DailyTransactionPostingJob.PROCESSED_COUNT_CONTEXT_ENTRY);
         final long rejected = contextLong(posting, DailyTransactionPostingJob.REJECT_COUNT_CONTEXT_ENTRY);
-        final long posted = countRows("SELECT count(*) FROM \"transaction\"");
+        // The posting stage's OWN rows. Stage 3 later loads the interest generation into the same relation,
+        // so a bare count would attribute those 50 records to the posting stage and make the reconciliation
+        // below fail by exactly that number. Interest identifiers are the ten-character interest date
+        // followed by a six-digit suffix (app/cbl/CBACT04C.cbl:473-516), so excluding that prefix isolates
+        // the population this assertion is about. Before the substrate fix of finding M-01 the question did
+        // not arise, because stage 3 halted before loading anything.
+        final long posted = countRows("SELECT count(*) FROM \"transaction\" WHERE tran_id NOT LIKE '"
+                + interestDateParameter + "%'");
 
         assertThat(processed)
                 .as("WS-TRANSACTION-COUNT is incremented at app/cbl/CBTRN02C.cbl:206, BEFORE validation runs "
                         + "at :210, so the legacy figure is posted plus rejected and equals the whole file")
                 .isEqualTo(300L);
+        final long expectedRejects =
+                PostingParityOracle.readCommittedExpectation("rejects.txt").size();
+        assertThat(expectedRejects)
+                .as("the premise: the committed expectation must carry at least one reject, or the assertion "
+                        + "below would be satisfied by a stage that rejected nothing")
+                .isPositive();
         assertThat(rejected)
-                .as("the fixture drives the over-limit branch, so the reject population is non-empty - which "
-                        + "is what makes app/cbl/CBTRN02C.cbl:229 true and return code 4 the outcome. The "
-                        + "count itself is model-sensitive and is deliberately not asserted")
-                .isGreaterThan(0L);
+                .as("WS-REJECT-COUNT must equal the source-derived expectation exactly. It is positive, which "
+                        + "is what makes app/cbl/CBTRN02C.cbl:229 true and return code 4 the outcome - but the "
+                        + "exact figure is now asserted rather than declined, because it is derived from the "
+                        + "frozen source and fixtures by PostingParityOracle rather than guessed")
+                .isEqualTo(expectedRejects);
+        assertThat(posted)
+                .as("and the posted side equals the expectation too, so neither arm of "
+                        + "app/cbl/CBTRN02C.cbl:211-216 can drift while the other absorbs the difference")
+                .isEqualTo(PostingParityOracle.readCommittedExpectation("transactions.txt").size());
         assertThat(posted + rejected)
                 .as("and nothing is lost or counted twice between the two populations: %d posted plus %d "
                         + "rejected accounts for the whole file", Long.valueOf(posted), Long.valueOf(rejected))
@@ -1193,19 +1290,31 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
      * running the stream first, then the production stage-4 flow. Output: none. Side effects: both launches
      * commit and are undone by the harness.
      *
-     * <p><strong>What is deliberately not asserted.</strong> No ordering between the branches, no
-     * interleaving, no elapsed time, and no completion. The first three are not guaranteed by a split and
-     * asserting any of them would make this test flaky. The fourth is the first High finding in the class
-     * documentation: the create isolation for job executions is serialisable, so the two concurrent child
-     * launches conflict and the store cancels one as a pivot. Across repeated measured runs the loser varied -
-     * statement, then report twice, then neither - so a completion assertion would fail roughly two runs in
-     * three, and would fail for a reason that has nothing to do with the composition being tested.
+     * <p><strong>What is deliberately not asserted, and what no longer needs to be excused.</strong> No
+     * ordering between the branches, no interleaving and no elapsed time: none is guaranteed by a split and
+     * asserting any of them would make this test flaky.
      *
-     * <p>What is asserted is exactly what a split guarantees and what the finding does not disturb: both
-     * branch launchers get a step execution, so both branches were entered; each carries its own outcome; and
-     * no branch is labelled a no-operation, which is what a silently skipped branch would look like. That last
-     * assertion is the one that distinguishes independence from bypass, and it is the reason a bypass is
-     * asserted as an <em>absent</em> execution in test 5 rather than as a status.
+     * <p>An earlier revision also declined to assert <em>completion</em>, and gave a reason that has since been
+     * addressed rather than accommodated. It read: the create isolation for job executions is serialisable, so
+     * the two concurrent child launches conflict and the store cancels one as a pivot; across repeated measured
+     * runs the loser varied, so a completion assertion "would fail roughly two runs in three". That was a real
+     * defect in {@code BatchPipelineOrchestrator.launchStage}, not a property of the test.
+     * {@code launchStage} now retries a launch a bounded number of times when the creating transaction reports
+     * SQLSTATE {@code 40001} or {@code 40P01}, confined to the creation phase by construction: the launcher
+     * creates the execution row and only then hands off to the job, so a transient data-access failure escaping
+     * it cannot have come from a step and retrying it repeats no business work. The isolation level is
+     * unchanged and the branches are still parallel.
+     *
+     * <p>Branch completion is therefore now asserted - through the whole stream rather than through a probe -
+     * by {@code com.cardemo.integration.batch.SuccessfulPipelineRunTest}, which is also the only place in the
+     * tree where all five stages run to a successful end. This test keeps its own narrower scope: it observes
+     * the split in isolation, which is the level at which independence rather than success is the question.
+     *
+     * <p>What is asserted here is exactly what a split guarantees: both branch launchers get a step execution,
+     * so both branches were entered; each carries its own outcome; and no branch is labelled a no-operation,
+     * which is what a silently skipped branch would look like. That last assertion is the one that
+     * distinguishes independence from bypass, and it is the reason a bypass is asserted as an <em>absent</em>
+     * execution in test 5 rather than as a status.
      *
      * <p>Error modes: a branch that never entered fails on the step-name set; a branch marked no-operation
      * because its sibling failed fails on the status assertion; a topology that serialised the two would still
@@ -1233,9 +1342,13 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
                     .isNotBlank()
                     .isNotEqualTo(ExitStatus.NOOP.getExitCode());
             assertThat(execution.getStatus())
-                    .as("and it genuinely ran: a branch left unstarted would still be starting, which is "
-                            + "what a bypass caused by the other branch would look like")
-                    .isNotEqualTo(BatchStatus.STARTING);
+                    .as("and it genuinely ran to a terminal state: a branch left unstarted would still be "
+                            + "starting, which is what a bypass caused by the other branch would look like, "
+                            + "and a branch aborted by the serialization conflict the bounded launch retry "
+                            + "now absorbs would be FAILED. Both are excluded rather than only the first, "
+                            + "which is stricter than the assertion this replaces")
+                    .isNotEqualTo(BatchStatus.STARTING)
+                    .isNotEqualTo(BatchStatus.FAILED);
         }
 
         assertThat(stepNamed(stageFour, creaStmtStepBeanName).getId())
@@ -1342,9 +1455,10 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
      * Side effects: none.
      *
      * <p>The sorts of {@code app/jcl/COMBTRAN.jcl:30}, {@code app/jcl/CREASTMT.JCL:53} and
-     * {@code app/proc/TRANREPT.prc:44} became in-process comparators and the {@code REPRO} card of
-     * {@code app/jcl/COMBTRAN.jcl:48} became a parameterised batched insert, so the absence assertion and the
-     * two positive assertions together are what prove the translation rather than merely assert it. Injection
+     * {@code app/proc/TRANREPT.prc:44} became, respectively, an in-process comparator and the relation's own
+     * {@code ORDER BY}, and the {@code REPRO} card of {@code app/jcl/COMBTRAN.jcl:48} became a parameterised
+     * batched insert, so the absence assertion and the three positive assertions together are what prove the
+     * translation rather than merely assert it. Injection
      * is covered by the same positive assertion: content lifted from a generation object is bound as a
      * parameter, never spliced into a statement.
      *
@@ -1411,8 +1525,16 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
                 .as("the two key sort of app/jcl/CREASTMT.JCL:53 is an in-process comparator")
                 .contains("Comparator");
         assertThat(stageSources.get("TransactionReportJob"))
-                .as("as is the card-number sort of app/proc/TRANREPT.prc:44")
-                .contains("Comparator");
+                .as("the card-number sort of app/proc/TRANREPT.prc:44 is an indexed ORDER BY rather than an "
+                        + "in-heap comparator, which is finding F-012: the step used to materialise the whole "
+                        + "SORTIN generation into a List<byte[]> and sort it in memory with no bound. AAP "
+                        + "section 0.4.3 nominates \"Comparator plus repository ordering\" and this stage uses "
+                        + "the second half, because its SORTIN is a verbatim REPRO of the transaction relation "
+                        + "(app/ctl/REPROCT.ctl:15) so the same permutation is available from an index. The "
+                        + "no-external-process invariant is discharged for this stage by the forbidden-token "
+                        + "sweep above, not by the presence of a Comparator")
+                .contains("findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc")
+                .doesNotContain("records.sort(");
     }
 
     /**
@@ -1668,12 +1790,95 @@ class BatchPipelineOrchestratorTest extends AbstractBatchIntegrationTest {
     private final int healthProbeAttemptLimit = 4;
 
     /**
-     * Launches the whole composed stream with the parameters its job control supplies.
+     * Launches the whole composed stream with the parameters its job control supplies, over its declared
+     * operational precondition.
+     *
+     * <p>{@link #seedBackupGeneration()} runs first because the stream does not create everything it consumes.
+     * {@code app/jcl/COMBTRAN.jcl:L23-L24} concatenates {@code TRANSACT.BKUP(0)} with {@code DISP=SHR}, and
+     * {@code STEP01R} of {@code app/proc/TRANREPT.prc:L21} is what creates that generation - in the
+     * <em>preceding</em> cycle. Allocating a {@code DISP=SHR} generation that is not catalogued fails before
+     * {@code SORT} is given control, so the generation is a precondition of submitting the stream rather than
+     * something the stream produces for itself, and planting it here is what makes stage 3 reach its own
+     * logic instead of failing allocation.
      *
      * @return the finished pipeline execution, never {@code null}
      */
     private JobExecution launchPipeline() {
+        seedBackupGeneration();
         return launchJob(batchPipelineJob, runIdParameters(pipelineParameters()));
+    }
+
+    /**
+     * Plants the {@code TRANSACT.BKUP(0)} generation stage 3's first concatenated leg reads.
+     *
+     * <p><strong>Why the fixture images, and not an empty generation.</strong> On the mainframe
+     * {@code TRANSACT.BKUP} is a copy <em>of the transaction cluster</em>, and {@code STEP10} of
+     * {@code app/jcl/COMBTRAN.jcl:L47-L48} then {@code REPRO}s the combined result back into that same cluster
+     * - so the backup's records are, by construction, records the cluster already holds, and re-loading them
+     * is refused on the key. That refusal is the duplicate-key exposure this class asserts in test 5, and it
+     * is a property of the overlap between the backup and the cluster rather than of any one record. This
+     * harness starts with an empty relation - the three migrations seed no transaction row - and stage 1 is
+     * what fills it, from {@code app/data/ASCII/dailytran.txt}. Planting that same fixture as the backup
+     * therefore reproduces the overlap exactly: after stage 1 has posted, the planted generation and the
+     * relation intersect, and {@code STEP10} refuses the intersection.
+     *
+     * <p>Every one of the 300 fixture records is loadable in its own right, which is what makes the outcome the
+     * duplicate the test names rather than an unrelated failure. The relational substrate enforces referential
+     * integrity that {@code VSAM} does not, and all three of the transaction relation's foreign keys are
+     * satisfied by the fixture: every card number it carries is one of the fifty {@code carddata.txt} seeds,
+     * and both type-and-category pairs it carries are among the eighteen {@code trancatg.txt} seeds. Nothing is
+     * filtered, trimmed, re-encoded or synthesised here.
+     *
+     * <p>The object is written as one fixed-block member with <strong>no record delimiter</strong>, because
+     * {@code app/jcl/INTCALC.jcl:L39} declares {@code RECFM=F} and the reader refuses a separator byte inside a
+     * fixed-block generation. Encoding is single byte, so one character of a record image is one byte of the
+     * object and the record boundary is an index rather than a search.
+     */
+    private void seedBackupGeneration() {
+        final List<String> records = readFixture(dailyTransactionFixture);
+        assertThat(records)
+                .as("app/data/ASCII/dailytran.txt is the Gate 1 fixture, and an empty one would plant an "
+                        + "empty backup generation and silence the duplicate-key exposure of test 5")
+                .isNotEmpty();
+
+        final StringBuilder payload = new StringBuilder(records.size() * transactionRecordLength);
+        for (final String record : records) {
+            assertThat(record.length())
+                    .as("app/cpy/CVTRA05Y.cpy declares a 350 byte record and app/jcl/COMBTRAN.jcl:35 carries "
+                            + "it onto the output, so a planted generation must carry the same geometry or "
+                            + "the reader is right to refuse it")
+                    .isEqualTo(transactionRecordLength);
+            payload.append(record);
+        }
+
+        s3Client.putObject(
+                PutObjectRequest.builder()
+                        .bucket(batchOutputBucket)
+                        .key(plantedBackupGenerationKey())
+                        .contentType(generationContentType)
+                        .build(),
+                RequestBody.fromBytes(payload.toString().getBytes(StandardCharsets.ISO_8859_1)));
+    }
+
+    /**
+     * The key of the one {@code TRANSACT.BKUP} generation object this class plants.
+     *
+     * <p>Composed the way the report branch composes the backup it writes - the configured prefix, a
+     * {@code generation=} segment and the object's own name - so stage 3 resolves a planted generation by
+     * exactly the mechanism it resolves a produced one.
+     *
+     * @return the object key, never {@code null}
+     */
+    private String plantedBackupGenerationKey() {
+        String prefix = backupPrefix;
+        while (prefix.endsWith("/")) {
+            prefix = prefix.substring(0, prefix.length() - 1);
+        }
+        assertThat(prefix)
+                .as("the TRANSACT.BKUP generation prefix must be configured, or the planted object has no "
+                        + "home and stage 3 would fail allocation for a configuration reason")
+                .isNotBlank();
+        return prefix + "/generation=" + plantedGenerationSegment + "/" + backupObjectName;
     }
 
     /**

@@ -270,11 +270,18 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       {@code .out} and system-output captures, and for the reject, report, statement and HTML dataset
  *       names returns dataset <em>definition</em> job control only and zero captured data. What is needed
  *       is a captured 430-byte reject dataset together with the resulting transaction, account and
- *       category-balance images from a real posting run at a known input state. This class therefore
- *       creates no baseline file and fabricates no expected bytes. A baseline generated from this Java
- *       implementation would be circular, and hand-simulating the posting program is not a substitute:
- *       two models over these same fixtures disagree on the reject count, which proves the count is
- *       model-sensitive and not an oracle.</li>
+ *       category-balance images from a real posting run at a known input state, which would corroborate the
+ *       source-derived expectation rather than replace it. This class still creates no baseline file and
+ *       fabricates no expected bytes, and a baseline generated from this Java implementation would still be
+ *       circular. But the further claim an earlier revision made - that "two models over these same fixtures
+ *       disagree on the reject count, which proves the count is model-sensitive and not an oracle" - is
+ *       <strong>withdrawn</strong>. {@code 2800-UPDATE-ACCOUNT-REC} ends in {@code REWRITE FD-ACCTFILE-REC}
+ *       at {@code app/cbl/CBTRN02C.cbl:561}, and a VSAM {@code REWRITE} replaces the record in the cluster,
+ *       so the next {@code READ} of that key returns the mutated accumulators: the stateless reading is a
+ *       misreading rather than a second model. Exactly one faithful model exists and
+ *       {@code com.cardemo.e2e.PostingParityOracle} re-derives it into
+ *       {@code src/test/resources/expected/posttran}. The reason no posting outcome is asserted <em>here</em>
+ *       is scope - this class owns a reference table, not the posting job.</li>
  *   <li><strong>The file-unavailable status is Not available.</strong> The literal file status for a
  *       closed file occurs zero times across {@code app/cbl}, as does the equivalent condition name, so
  *       there is no source behaviour to reproduce and no test for it is invented here.</li>

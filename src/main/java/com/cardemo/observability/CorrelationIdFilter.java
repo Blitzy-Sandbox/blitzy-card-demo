@@ -40,6 +40,8 @@
 package com.cardemo.observability;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -88,7 +90,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * decays into. Severity of what that left in place: <strong>High</strong>. The governing rule instead is
  * per-artefact: <strong>a retained no-op is justified at its own declaration</strong>, where it must carry its
  * COBOL locator, a proof of reachability, an explicit intentional-no-op marker, and an acknowledgement that it
- * is owed an entry in the planned {@code DECISION_LOG.md}. The only claim this class makes is the local one:
+ * is owed an entry in the {@code DECISION_LOG.md}. The only claim this class makes is the local one:
  * nothing in {@code com.cardemo.observability} carries such a marker, so anything here resembling dead code is
  * dead code.
  *
@@ -372,8 +374,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * build, targeting Java 25 with no preview features.
  * <p>
  * The unit test for this class lives at
- * {@code src/test/java/com/cardemo/unit/infrastructure/CorrelationIdFilterTest.java}. Re-derive with
- * {@code grep -rl CorrelationIdFilter src/test}. It drives the filter through the public
+ * {@code src/test/java/com/cardemo/unit/observability/CorrelationIdFilterTest.java} - one file, in the
+ * package that owns this class. A second rendition of the same suite previously sat under
+ * {@code unit/infrastructure}; it was consolidated into that one file, so there is exactly one place to
+ * look and exactly one place to extend. Re-derive with {@code grep -rl CorrelationIdFilter src/test}. It drives the filter through the public
  * {@code doFilter(ServletRequest, ServletResponse, FilterChain)} entry point - the same one the container
  * uses - with {@code MockHttpServletRequest}, {@code MockHttpServletResponse} and {@code MockFilterChain},
  * and supplies a stubbed {@link Tracer}. The class holds no static mutable state and depends on no clock,
@@ -503,17 +507,46 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
     /**
      * MDC key for the batch job instance identifier: {@value}.
      *
-     * <p><strong>This class never sets this key</strong> - it is HTTP-scoped and batch execution does not
-     * pass through it. The constant exists here because this is the single point of definition for the
-     * application's MDC key contract, and {@code logback-spring.xml} passes this one key through by name
-     * as the marker that an event is a batch event. Populating it is the responsibility of the batch layer:
-     * {@code com.cardemo.config.BatchConfig} declares the shared {@code JobExecutionListener} that
-     * establishes it, and every job configuration in {@code com.cardemo.batch.jobs} writes it through
-     * {@link #propagateJobInstanceId(String)}. It is a published
+     * <p><strong>The request path never sets this key</strong> - this filter is HTTP-scoped and batch
+     * execution does not pass through it. The constant is defined here because this is the single point of
+     * definition for the application's MDC key contract, and {@code logback-spring.xml} passes this one key
+     * through by name as the marker that an event is a batch event. Publishing it is the responsibility of a
+     * {@code JobExecutionListener}, which each of the six job classes in {@code com.cardemo.batch.jobs}
+     * registers on its own job - a listener bean is never applied to a job implicitly - and every one of
+     * them establishes the entry through {@link #enterBatchScope(long, String)} or
+     * {@link #propagateJobInstanceId(String)} rather than through a literal of its own. It is a published
      * contract constant, not dead code: the batch writers key their object-storage prefixes off the same
      * job instance identifier, which is what makes a run's logs and its output objects correlatable.
      */
     public static final String MDC_KEY_JOB_INSTANCE_ID = "jobInstanceId";
+
+    /**
+     * MDC key for the W3C trace-flags octet of the trace identity in scope: {@value}.
+     *
+     * <p><strong>Finding M-03, severity Medium.</strong> The sampling decision has to reach
+     * {@link #currentTraceParent()}, which composes an outbound header from the ambient context rather than
+     * from a span it holds. It travels in the diagnostic context, beside the two identifiers it describes, for
+     * three reasons that a {@link ThreadLocal} of its own would not satisfy:
+     *
+     * <ul>
+     *   <li><strong>It is written by exactly one place.</strong> {@link #applyTraceContext(String)} is the sole
+     *       populator of {@link #MDC_KEY_TRACE_ID} and {@link #MDC_KEY_SPAN_ID} - see {@link #ORDER} for the
+     *       evidence - so a fourth entry written in the same statement cannot disagree with the two it
+     *       qualifies. A separate carrier could go stale against them.</li>
+     *   <li><strong>It survives a thread hand-off.</strong> {@code BatchPipelineOrchestrator} carries context
+     *       into its split branches with {@link MDC#getCopyOfContextMap()}, which copies this entry along with
+     *       the identifiers. A thread-local would be left behind, and the branch would fall back to a guess.</li>
+     *   <li><strong>It is set and cleared with the identifiers.</strong> It is restored in the same
+     *       {@code finally} as the other three, so there is one lifetime rather than two to keep in step.</li>
+     * </ul>
+     *
+     * <p><strong>It is never logged.</strong> {@code src/main/resources/logback-spring.xml} renders the trio
+     * from a pattern provider and passes only {@link #MDC_KEY_JOB_INSTANCE_ID} through its {@code <mdc>} allow
+     * list, so this entry appears in no log record. It is a propagation carrier, not a log field, and adding it
+     * to the rendered output would put an operator-facing flag on every line that answers a question nobody
+     * reading a log asks.
+     */
+    public static final String MDC_KEY_TRACE_FLAGS = "traceFlags";
 
     /**
      * Span tag key carrying the correlation identifier: {@value}.
@@ -577,19 +610,47 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
     private static final Pattern CORRELATION_ID_PATTERN =
             Pattern.compile("\\A[A-Za-z0-9_-]{1," + MAX_CORRELATION_ID_LENGTH + "}\\z");
 
+    /**
+     * What each batch scope on the calling thread displaced, most recent first.
+     *
+     * <p>Written only by {@link #enterBatchScope(long, String)} and read only by
+     * {@link #exitBatchScope()}. A stack rather than a single slot because a job launched from inside
+     * another job runs on the same thread, and the inner scope must restore the outer one rather than the
+     * absence of one. Thread-confined for its whole life, exactly like the {@link MDC} it shadows, so an
+     * unsynchronised {@link ArrayDeque} is correct and the field is shared static state without being
+     * mutable static state. The entry is released as soon as its last scope closes, so a pooled thread
+     * holds no reference between runs.
+     */
+    private static final ThreadLocal<Deque<BatchScope>> BATCH_SCOPES = new ThreadLocal<>();
+
     /** The only {@value #TRACE_PARENT_HEADER} version this application emits, {@value}. */
     private static final String TRACE_PARENT_VERSION = "00";
 
     /**
-     * The trace-flags octet emitted with every {@value #TRACE_PARENT_HEADER}, {@value} - the sampled bit set.
+     * The {@value #TRACE_PARENT_HEADER} trace-flags octet meaning <em>sampled</em>, {@value}.
      *
-     * <p>The diagnostic context carries identifiers and not the sampling decision, so the flag is asserted
-     * rather than read. Asserting <em>sampled</em> is the only defensible direction: the identifiers are present
-     * only when this process has an active span it is exporting, and emitting {@code 00} would invite the next
-     * hop to discard its half of a trace whose first half is already on its way to the collector - producing a
-     * broken trace, which is worse than none.
+     * <p><strong>Finding M-03, severity Medium.</strong> This octet was emitted unconditionally, on the
+     * reasoning that the diagnostic context carried identifiers but not the sampling decision. Both halves of
+     * that reasoning were wrong. The decision <em>is</em> available - {@code TraceContext.sampled()} reports
+     * it, and {@link #applyTraceContext(String)} reads the same context it takes the identifiers from - and the
+     * base profile samples every trace while {@code application-prod.yml} samples one in ten, so in production
+     * nine outbound headers in ten advertised as sampled a trace this process had already decided to drop.
+     * That is not a conservative default; it is a false statement about a trace, and the downstream hop acts on
+     * it by exporting spans whose parent will never arrive. The flags octet is now composed from the real
+     * decision: this constant for {@code TRUE} and {@link #TRACE_PARENT_FLAGS_NOT_SAMPLED} for {@code FALSE}.
      */
     private static final String TRACE_PARENT_FLAGS_SAMPLED = "01";
+
+    /**
+     * The {@value #TRACE_PARENT_HEADER} trace-flags octet meaning <em>not sampled</em>, {@value}.
+     *
+     * <p>Emitted when the sampling decision is known to be negative. It does not suppress the header: the
+     * specification's {@code sampled} flag is advice about recording, not about propagation, so a downstream
+     * hop still receives the trace and parent identifiers and can join them if its own sampler decides to. What
+     * changes is that it is told the truth about this process's decision, which is what lets it make its own
+     * consistently.
+     */
+    private static final String TRACE_PARENT_FLAGS_NOT_SAMPLED = "00";
 
     /** Length in hexadecimal characters of a W3C trace identifier, {@value}. */
     private static final int TRACE_ID_HEX_LENGTH = 32;
@@ -651,10 +712,10 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
      *   <li>The {@value #CORRELATION_ID_HEADER} response header is <em>set</em> - not added - so a second
      *       pass cannot duplicate it and a caller can quote the value in a support request.</li>
      *   <li>The active span, if any, is tagged with {@link #SPAN_TAG_CORRELATION_ID}, and
-     *       {@link #MDC_KEY_TRACE_ID} and {@link #MDC_KEY_SPAN_ID} are put into the diagnostic context when
-     *       a usable trace identity exists.</li>
+     *       {@link #MDC_KEY_TRACE_ID}, {@link #MDC_KEY_SPAN_ID} and {@link #MDC_KEY_TRACE_FLAGS} are put into
+     *       the diagnostic context when a usable trace identity exists.</li>
      *   <li>The remainder of the chain runs.</li>
-     *   <li>All three diagnostic context entries are restored to the values they held on entry.</li>
+     *   <li>All four diagnostic context entries are restored to the values they held on entry.</li>
      * </ol>
      *
      * <p><strong>Configuration and defaults.</strong> The header name is {@value #CORRELATION_ID_HEADER},
@@ -694,6 +755,7 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
         final String previousCorrelationId = MDC.get(MDC_KEY_CORRELATION_ID);
         final String previousTraceId = MDC.get(MDC_KEY_TRACE_ID);
         final String previousSpanId = MDC.get(MDC_KEY_SPAN_ID);
+        final String previousTraceFlags = MDC.get(MDC_KEY_TRACE_FLAGS);
 
         try {
             MDC.put(MDC_KEY_CORRELATION_ID, correlationId);
@@ -704,6 +766,9 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
             restoreMdcEntry(MDC_KEY_CORRELATION_ID, previousCorrelationId);
             restoreMdcEntry(MDC_KEY_TRACE_ID, previousTraceId);
             restoreMdcEntry(MDC_KEY_SPAN_ID, previousSpanId);
+            // Finding M-03: the sampling decision shares the identifiers' lifetime exactly, so it is restored
+            // in the same block. One lifetime cannot drift out of step with itself; two can.
+            restoreMdcEntry(MDC_KEY_TRACE_FLAGS, previousTraceFlags);
         }
     }
 
@@ -788,6 +853,12 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
      * {@code logback-spring.xml} renders them as empty strings. That is the documented, expected outcome
      * and not an error, which is why it is handled by an explicit test rather than by catching anything.
      *
+     * <p><strong>Finding M-03, severity Medium.</strong> The sampling decision is taken from the same
+     * {@link TraceContext} as the identifiers and published under {@link #MDC_KEY_TRACE_FLAGS}, so that
+     * {@link #currentTraceParent()} can state it rather than assert it. Reading it here rather than at the
+     * point of composition is what makes the three entries one consistent snapshot of one span: a later read
+     * could land after a different span had become current.
+     *
      * <p>No exception from the tracing facade is caught here. A tracer that throws indicates a broken
      * application context, and Rule 1 Clause B forbids swallowing that: it must surface loudly rather than
      * be hidden behind a silently uncorrelated request. The diagnostic context is still restored, because
@@ -809,6 +880,29 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
         }
         putIfUsable(MDC_KEY_TRACE_ID, context.traceId());
         putIfUsable(MDC_KEY_SPAN_ID, context.spanId());
+        MDC.put(MDC_KEY_TRACE_FLAGS, traceFlags(context.sampled()));
+    }
+
+    /**
+     * Renders a sampling decision as the W3C trace-flags octet.
+     *
+     * <p><strong>The unknown case is the one that needs a decision, and it is not the common case.</strong>
+     * {@code TraceContext.sampled()} returns a {@link Boolean}, and {@code null} means the decision has been
+     * <em>deferred</em> - no sampler has run yet - which is a genuinely different state from "decided against".
+     * It is reported as sampled, for a reason specific to this application: with a deferred decision this
+     * process may still export the span, and telling the next hop {@code 00} would produce a trace whose child
+     * spans were dropped while its parent arrived at the collector. A broken trace is harder to diagnose than a
+     * complete one that was sampled more eagerly than a probability suggested. A decision that has actually
+     * been taken is always reported exactly, which is the whole content of the finding.
+     *
+     * <p>A pure function of its argument, with no side effects.
+     *
+     * @param sampled the decision as the tracing bridge reports it; {@code null} when deferred
+     * @return {@value #TRACE_PARENT_FLAGS_NOT_SAMPLED} only for an explicit {@code FALSE}, otherwise
+     *     {@value #TRACE_PARENT_FLAGS_SAMPLED}
+     */
+    private static String traceFlags(final Boolean sampled) {
+        return Boolean.FALSE.equals(sampled) ? TRACE_PARENT_FLAGS_NOT_SAMPLED : TRACE_PARENT_FLAGS_SAMPLED;
     }
 
     /**
@@ -930,13 +1024,20 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
      * rejects it starts a fresh trace anyway, and a consumer that accepts it records parentage onto a trace that
      * does not exist. The failure mode is therefore a missing header.
      *
+     * <p><strong>Finding M-03, severity Medium.</strong> The trace-flags octet is read from
+     * {@link #MDC_KEY_TRACE_FLAGS}, which {@link #applyTraceContext(String)} wrote from the same
+     * {@link TraceContext} as the two identifiers, so the flag describes the span it is attached to instead of
+     * being asserted. An absent entry - a caller composing a header outside any request this filter ran for -
+     * falls back to sampled, which is the same deferred-decision reasoning {@code traceFlags} documents.
+     *
      * <p>Side effects: none. It reads the diagnostic context and nothing else.
      *
      * @return a well-formed {@value #TRACE_PARENT_HEADER} value, or {@code null} when no usable trace identity
      *         is in scope
      */
     public static String currentTraceParent() {
-        return traceParent(MDC.get(MDC_KEY_TRACE_ID), MDC.get(MDC_KEY_SPAN_ID));
+        return traceParent(MDC.get(MDC_KEY_TRACE_ID), MDC.get(MDC_KEY_SPAN_ID),
+                Boolean.valueOf(!TRACE_PARENT_FLAGS_NOT_SAMPLED.equals(MDC.get(MDC_KEY_TRACE_FLAGS))));
     }
 
     /**
@@ -951,19 +1052,30 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
      * all-zero identifier in either field is refused: the specification declares both invalid, and they are what
      * a no-op tracer reports.
      *
+     * <p><strong>Finding M-03, severity Medium.</strong> The sampling decision is a parameter rather than an
+     * assumption. A caller holding a span reads it from that span's own {@code TraceContext.sampled()}, so the
+     * flag it publishes describes the span whose identifiers it publishes. Passing {@code true} unconditionally
+     * is what this finding was: in production, where the sampling probability is one in ten, nine headers in ten
+     * asserted that a dropped trace was being recorded.
+     *
      * <p>A pure function of its arguments, with no side effects.
      *
      * @param traceId the trace identifier, possibly {@code null}
      * @param spanId  the span identifier that becomes the parent field, possibly {@code null}
+     * @param sampled the decision as the tracing bridge reports it, so a caller holding a
+     *     {@link TraceContext} passes {@code sampled()} straight through without deciding for itself what a
+     *     {@code null} means. {@code TRUE} and a deferred {@code null} emit
+     *     {@value #TRACE_PARENT_FLAGS_SAMPLED}; only an explicit {@code FALSE} emits
+     *     {@value #TRACE_PARENT_FLAGS_NOT_SAMPLED}
      * @return a well-formed {@value #TRACE_PARENT_HEADER} value, or {@code null} when either field is unusable
      */
-    public static String traceParent(final String traceId, final String spanId) {
+    public static String traceParent(final String traceId, final String spanId, final Boolean sampled) {
         final String trace = normalisedTraceField(traceId, TRACE_ID_HEX_LENGTH);
         final String parent = normalisedTraceField(spanId, SPAN_ID_HEX_LENGTH);
         if (trace == null || parent == null) {
             return null;
         }
-        return TRACE_PARENT_VERSION + '-' + trace + '-' + parent + '-' + TRACE_PARENT_FLAGS_SAMPLED;
+        return TRACE_PARENT_VERSION + '-' + trace + '-' + parent + '-' + traceFlags(sampled);
     }
 
     /**
@@ -1074,6 +1186,127 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
         }
         MDC.put(MDC_KEY_JOB_INSTANCE_ID, jobInstanceId);
         return previous;
+    }
+
+    /**
+     * Establishes a batch run's diagnostic context on the calling thread and remembers what it displaced.
+     *
+     * <p><strong>Finding M-02, severity Medium.</strong> Five batch listeners each carried their own
+     * snapshot-and-restore of {@link #MDC_KEY_JOB_INSTANCE_ID} and {@link #MDC_KEY_CORRELATION_ID}, two of
+     * them under string literals of their own rather than these constants. Five copies of one contract
+     * diverged exactly as duplication does: one listener cleared the job instance entry unconditionally and
+     * erased the enclosing pipeline's identity from a pooled thread (H-03), and one minted
+     * {@code traceId} and {@code spanId} from random UUIDs so that logs pointed at traces no backend held
+     * (H-02). This method and {@link #exitBatchScope()} are the one authoritative implementation those
+     * copies are replaced by, and they live here because the class that owns a diagnostic-context key owns
+     * the discipline for mutating it - the same reason {@link #propagateJobInstanceId(String)} lives here.
+     *
+     * <p><strong>What it writes.</strong> Exactly two entries, and only these two:
+     *
+     * <ul>
+     *   <li>{@link #MDC_KEY_JOB_INSTANCE_ID} is always written, from a {@code long}, so no value can be
+     *       rejected by the grammar guard and no caller has to render it.</li>
+     *   <li>{@link #MDC_KEY_CORRELATION_ID} is written <em>only when the thread has none</em>. A job
+     *       launched from inside a traced request keeps that request's identifier, so the whole causal chain
+     *       - request, queue message, batch run - shares one. {@link #currentCorrelationId()} performs the
+     *       read rather than a bare {@link MDC#get(String)} because it validates: an inherited value that
+     *       could inject into the log format is treated as absent and replaced rather than propagated.</li>
+     * </ul>
+     *
+     * <p><strong>What it deliberately does not write.</strong> {@link #MDC_KEY_TRACE_ID} and
+     * {@link #MDC_KEY_SPAN_ID} are never touched. They belong to real span identity, published by
+     * {@link #applyTraceContext(String)} in HTTP scope and by the tracing bridge elsewhere; a batch listener
+     * that filled them in by hand would replace that identity with a fabrication, and a fabricated trace
+     * identifier is worse than an absent one because it looks resolvable and is not. A batch run that is
+     * genuinely not traced therefore emits no trace identifier, which is the honest rendering.
+     *
+     * <p><strong>Nesting.</strong> Displaced values are pushed onto a per-thread stack, so a job launched
+     * from inside another job on the same thread restores its caller's context rather than the absence of
+     * one. The stack is thread-confined, exactly like the {@link MDC} it shadows, which is why an
+     * unsynchronised {@link ArrayDeque} is correct and why this is shared static state without being
+     * mutable static state.
+     *
+     * <p><strong>The balance contract.</strong> Every call must be matched by exactly one
+     * {@link #exitBatchScope()} on the same thread, from a {@code finally} block, so the context cannot leak
+     * onto a pooled thread. A {@code JobExecutionListener} satisfies this by calling this method in
+     * {@code beforeJob} and {@link #exitBatchScope()} in {@code afterJob}: Spring Batch invokes
+     * {@code afterJob} from a {@code finally} of its own, so the pairing holds even when the job fails.
+     *
+     * <p>Side effects: mutates one or two diagnostic context entries and pushes one entry onto this thread's
+     * displacement stack.
+     *
+     * @param jobInstanceId the Spring Batch instance identifier to publish
+     * @param correlationId the identifier to mint when, and only when, the thread carries none; must be
+     *     well-formed on the terms {@link #propagate(String)} states
+     * @throws IllegalArgumentException if {@code correlationId} is {@code null} or not well-formed. It is
+     *     validated even when the thread already carries an identifier, so a malformed one is a defect
+     *     reported on every run rather than only on the runs that happen to need it
+     */
+    public static void enterBatchScope(final long jobInstanceId, final String correlationId) {
+        if (!isWellFormed(correlationId)) {
+            throw new IllegalArgumentException("A batch scope correlation identifier must be at most "
+                    + MAX_CORRELATION_ID_LENGTH + " characters of ASCII letters, digits, '-' and '_'. The "
+                    + "rejected value is withheld from this message.");
+        }
+        final String displacedJobInstanceId = propagateJobInstanceId(Long.toString(jobInstanceId));
+        final String displacedCorrelationId = currentCorrelationId();
+        if (displacedCorrelationId == null) {
+            propagate(correlationId);
+        }
+        // ThreadLocal has no computeIfAbsent, so the stack is created on first use for this thread.
+        Deque<BatchScope> displaced = BATCH_SCOPES.get();
+        if (displaced == null) {
+            displaced = new ArrayDeque<>();
+            BATCH_SCOPES.set(displaced);
+        }
+        displaced.push(new BatchScope(displacedJobInstanceId, displacedCorrelationId));
+    }
+
+    /**
+     * Puts the diagnostic context back exactly as the matching {@link #enterBatchScope(long, String)} found
+     * it, undoing that invocation's displacement and no other.
+     *
+     * <p>Restoring rather than removing is the whole point, and it is the half that the divergent copies got
+     * wrong. An entry that was absent is removed, so nothing leaks onto the next job to borrow this pooled
+     * thread; an entry that existed is put back, so context owned by an outer scope survives. A blanket
+     * {@link MDC#remove(String)} satisfies the first obligation and violates the second - which is precisely
+     * how a nested job came to erase its pipeline's job instance identifier.
+     *
+     * <p>The most recent displacement is the one this call owns, because pushes and pops are paired and
+     * nest. An empty or absent stack is tolerated by doing nothing: that is reachable rather than defensive
+     * padding, because a listener whose {@code beforeJob} failed before the push leaves nothing to undo, and
+     * a diagnostic aid must never be the thing that fails a run.
+     *
+     * <p>Side effects: mutates two diagnostic context entries, pops one entry, and releases this thread's
+     * displacement stack once its last entry is gone, so a pooled thread retains no reference.
+     */
+    public static void exitBatchScope() {
+        final Deque<BatchScope> displaced = BATCH_SCOPES.get();
+        if (displaced == null || displaced.isEmpty()) {
+            return;
+        }
+        final BatchScope scope = displaced.pop();
+        try {
+            propagateJobInstanceId(scope.jobInstanceId());
+            propagate(scope.correlationId());
+        } finally {
+            if (displaced.isEmpty()) {
+                BATCH_SCOPES.remove();
+            }
+        }
+    }
+
+    /**
+     * What the diagnostic context held before a batch scope replaced it.
+     *
+     * <p>A record, so a snapshot cannot be mutated after it is taken. A {@code null} component means the
+     * entry was absent - or held a value the grammar guard refuses, which is treated as absent for the
+     * reason {@link #propagateJobInstanceId(String)} gives - and must be removed rather than restored.
+     *
+     * @param jobInstanceId the displaced job instance identifier, or {@code null} if there was none
+     * @param correlationId the displaced correlation identifier, or {@code null} if there was none
+     */
+    private record BatchScope(String jobInstanceId, String correlationId) {
     }
 
     /**

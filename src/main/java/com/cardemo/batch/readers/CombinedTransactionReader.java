@@ -65,6 +65,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Component;
 
+import com.cardemo.batch.GenerationPrefixContract;
 import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.FatalProcessingException;
@@ -195,7 +196,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * chunks would shift the input underneath it. <b>Remediation if the symptom appears:</b> if a run is
  * observed to change generation part-way through a step, a key was re-resolved instead of carried forward;
  * the fix is to route it through {@link #resolveGeneration(ConcatenatedSource, String, String,
- * ExecutionContext)} at open time and through nothing else.
+ * ExecutionContext, String)} at open time and through nothing else.
  *
  * <h3>Blocker: end of the first source is a transition, not end of input</h3>
  * {@link #read()} answers {@code null} <b>only when both sources are exhausted</b>. End of data on
@@ -298,15 +299,23 @@ import com.cardemo.service.shared.FileStatusMapper;
  * Build and static gates, from the repository root. The host carries JDK 25 and Maven 3.9.11 on the
  * {@code PATH}, and Docker Engine with {@code docker compose} is available for the container-backed tiers:
  * <ul>
- * <li>{@code set -a; . ./.env; set +a} - the profile values, including the mandatory JWT secret. The file
- *     is git-ignored and must never be committed.</li>
- * <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean compile} - compiles the tree under
- *     {@code -Xlint:all -Werror} with {@code failOnWarning}, at {@code release 25}.</li>
- * <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} - the full gate, including JaCoCo at
- *     an 0.80 line floor with no exclusions and the Javadoc gate at {@code failOnWarnings}.</li>
+ * <li>{@code ( set -a; . ./.env; set +a; <command> )} - the profile values, including the mandatory JWT
+ *     secret, loaded in a subshell around the one command that needs them rather than exported into the
+ *     shell, where every later child would inherit them. The file is git-ignored, must already be at mode
+ *     {@code 0600}, and must never be committed.</li>
+ * <li>{@code ./mvnw -B -ntp clean compile} - compiles the tree under {@code -Xlint:all -Werror} with
+ *     {@code failOnWarning}, at {@code release 25}.</li>
+ * <li><strong>{@code ./mvnw -B -ntp clean verify} is the full gate and the only evidentiary command</strong>:
+ *     the unit tier, Failsafe's container-backed tiers, JaCoCo at an 0.80 line floor with no exclusions, the
+ *     Javadoc {@code doclint-gate} at {@code failOnWarnings} and the OWASP dependency check. It is the same
+ *     single invocation the CI workflow runs, with nothing skipped.</li>
+ * <li>{@code -Ddependency-check.skip=true} is a <strong>local convenience only</strong> - the scan needs
+ *     network access to the vulnerability feed and is slow on a cold cache. A run carrying that flag is not
+ *     gate evidence, and it must never stand in for the full command above when a result is being reported.
+ *     An earlier revision of this list published the skipping form as the full gate; that is withdrawn.</li>
  * <li>The pinned container is an equivalent route where a host toolchain is not wanted:
  *     {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -q -DskipTests
- *     compile}.</li>
+ *     compile}. The image tag is pinned rather than floating, so the route is reproducible.</li>
  * </ul>
  * Tests belong in {@code src/test/java/com/cardemo/unit/batch} for the decode, the merge and the
  * boundary conditions; {@code src/test/java/com/cardemo/integration/batch} for the step and its restart;
@@ -378,14 +387,18 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     carried forward. See the carry-forward section above.</li>
  * <li><b>A {@code null} or trimmed 26-byte timestamp</b> means it was wrongly normalised. It must be 26
  *     characters, spaces included.</li>
- * <li><b>A generation prefix holding more than one object is refused</b>, with
- *     {@link DataIntegrityException} naming every candidate key. <b>A GDG generation is one dataset, so it is
- *     one object</b> - the invariant {@code RejectWriter} states and this reader now enforces on the reading
- *     side. Resolution used to keep the lexicographically greatest key and discard siblings in silence, which
- *     turned two objects under one {@code TRANSACT.BKUP} generation into a {@code COMPLETED} run with a
- *     record count of 2 and one identifier simply missing. Reading every sibling instead of refusing is not
- *     an option: their concatenation order is undefined, so it would substitute an arbitrary order for a
- *     dropped record. See {@link #requireOneObjectInResolvedGeneration}.
+ * <li><b>Every object of the resolved generation is read, in ascending key order, and a generation whose
+ *     order is undefined is refused</b> with {@link DataIntegrityException} naming every candidate key.
+ *     <b>A GDG generation is one sequential dataset</b>, but it is not necessarily one object:
+ *     {@code com.cardemo.batch.jobs.InterestCalculationJob} emits one object per chunk beneath a single
+ *     {@code SYSTRAN} generation prefix, each named with one fixed-width zero-padded ordinal, so ascending
+ *     key order is ascending emission order and the concatenation reproduces the sequential dataset byte for
+ *     byte. Multiple objects are therefore accepted <em>only</em> on that evidence; anything else is refused,
+ *     because reading one would drop the rest and report success while reading all would impose an arbitrary
+ *     order. Resolution used to keep the lexicographically greatest key across the whole base and discard
+ *     siblings in silence, which turned two objects under one {@code TRANSACT.BKUP} generation into a
+ *     {@code COMPLETED} run with a record count of 2 and one identifier simply missing. See
+ *     {@link #requireOrderedGenerationObjects} and {@link #isOrdinalKeyedGeneration}.
  *     <p><b>Three key conventions coexist</b> across the seven generation bases and resolution is agnostic to
  *     all of them, because in each the generation is the leading component after the base:
  *     {@code <base>/<19-digit>/<object>}, {@code <base>/generation=<19-digit>/<object>}, and the per-record
@@ -393,26 +406,33 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     generation <em>segment</em>, not the greatest key, and {@link #generationSegmentOf} is the single place
  *     that reading depends on the convention. A key written directly under a base with no further separator
  *     is treated as its own generation rather than as an error.</li>
- * <li><b>An absent or empty generation on either leg is a successful empty read</b>, and the two legs are
- *     deliberately <b>symmetric</b>. {@code app/jcl/COMBTRAN.jcl} carries no {@code COND=} on either
- *     {@code :L22} {@code STEP05R} or {@code :L41} {@code STEP10}, so the member asserts no precondition on
- *     either DD; {@code app/jcl/INTCALC.jcl} is a separate job that need not have run; and
- *     {@code app/jcl/TRANBKP.jcl}, the member that produces {@code TRANSACT.BKUP} generations on the
- *     mainframe, has <b>no Java analogue by recorded decision</b>, so on a clean environment the first leg
- *     is absent by construction rather than by error.
- *     <p>An earlier revision reported an absent {@code TRANSACT.BKUP} generation as {@code '35'} while
- *     treating an absent {@code SYSTRAN} generation as an empty read. <b>That asymmetry is withdrawn.</b> It
- *     was too strict, because the only producer of a {@code TRANSACT.BKUP} generation in this application is
- *     {@code TransactionReportJob}'s {@code STEP01R} ({@code app/proc/TRANREPT.prc:L21}) in <b>stage 4</b>,
- *     downstream of the stage this reader serves, which made the five-stage pipeline unsatisfiable on a clean
- *     environment. It was also too weak, because a generation object that existed but held no records
- *     satisfied it while still combining nothing.
- *     <p>The hazard the old rule named - a zero-record combine reporting success - is addressed by being
- *     <b>explicit rather than refused</b>, which is what the source does: {@code app/jcl/COMBTRAN.jcl:L33-L37}
- *     allocates {@code SORTOUT} unconditionally and {@code :L48} copies it, so a copy of nothing is a copy
- *     that succeeds. Accordingly a run in which neither leg contributes a record still creates an empty
- *     combined generation, publishes a record count of zero, and logs the per-source counts so the empty leg
- *     is named rather than inferred. Refusing it here would contradict the member.</li>
+ * <li><b>An absent current generation on either leg is a failure, and the two legs are symmetric in that.</b>
+ *     {@code app/jcl/COMBTRAN.jcl:L23-L26} allocates both halves of the concatenated {@code SORTIN} with
+ *     {@code DISP=SHR}, and {@code DISP=SHR} on a relative generation reference fails <b>allocation</b> -
+ *     before {@code SORT} receives control - when the generation is not catalogued. The absence of a
+ *     {@code COND=} parameter on {@code :L22} or {@code :L41} does not make either DD optional:
+ *     {@code COND} gates step <em>execution</em> on a preceding return code, and allocation happens first and
+ *     unconditionally. Both legs therefore abend through the same guard every other unexpected status in this
+ *     reader takes - {@link FatalProcessingException} carrying a {@link FileAccessException} cause whose
+ *     status is {@code '35'}, file not available - so the step ends failed and nothing is swallowed.
+ *     <p><b>Two earlier readings are withdrawn.</b> The first reported an absent {@code TRANSACT.BKUP}
+ *     generation as {@code '35'} while treating an absent {@code SYSTRAN} generation as an empty read - an
+ *     asymmetry the member does not support. The second replaced it with symmetric <em>success</em>, on the
+ *     grounds that the pipeline's own stage ordering places the sole {@code TRANSACT.BKUP} producer
+ *     downstream. That reasoning inverted the dependency: a topology that cannot satisfy a precondition is a
+ *     topology to state honestly, not a reason to redefine the precondition, and reporting an unsatisfied
+ *     input as a {@code COMPLETED} run with a record count of zero is the one outcome an operator cannot
+ *     distinguish from a genuinely empty input.
+ *     <p>The operational consequence is therefore stated rather than engineered around. {@code COMBTRAN}
+ *     cannot run until a {@code TRANSACT.BKUP} generation exists, exactly as on the mainframe: there
+ *     {@code app/jcl/TRANBKP.jcl} - realised in this application as {@code STEP01R} of
+ *     {@code TransactionReportJob}, {@code app/proc/TRANREPT.prc:L21} - produces it in the preceding daily
+ *     cycle, which is why {@code (0)} rather than {@code (+1)} appears at {@code :L25}. On a virgin object
+ *     store the first pipeline run fails stage 3 with {@code '35'} naming that remediation. What
+ *     {@code app/jcl/COMBTRAN.jcl:L33-L37} genuinely does allow is a generation that <em>exists</em> and
+ *     holds zero records: {@code SORTOUT} is allocated unconditionally and {@code :L48} copies it, so a copy
+ *     of nothing is a copy that succeeds, and that case still creates an empty combined generation and
+ *     publishes a record count of zero.</li>
  * <li><b>Any status that is neither {@code '00'} nor {@code '10'}</b> renders the legacy line
  *     {@code FILE STATUS IS: NNNN} followed by four characters ({@code app/cbl/CBTRN02C.cbl:L714-L731})
  *     and abends with abend code {@value com.cardemo.exception.FatalProcessingException#BATCH_ABEND_CODE}
@@ -453,13 +473,24 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
 
     /**
      * Default object-key prefix for {@code AWS.M2.CARDDEMO.TRANSACT.BKUP} generations.
+     *
+     * <p><b>Finding m-02, severity Minor, RESOLVED.</b> This constant read {@code gdg/transact-bkup/}, with
+     * a trailing separator, while {@code src/main/resources/application.yml} declares the same key as
+     * {@code gdg/transact-bkup} without one. The two spellings composed identical object keys only because
+     * this class repaired them, so the divergence was invisible - and it is the configured value, not this
+     * fallback, that every other consumer of this base validates. The relative form is now the single
+     * spelling on both sides and {@link GenerationPrefixContract#listingPrefixOf(String)} derives the
+     * listing form from it.
      */
-    public static final String DEFAULT_BACKUP_GENERATION_PREFIX = "gdg/transact-bkup/";
+    public static final String DEFAULT_BACKUP_GENERATION_PREFIX = "gdg/transact-bkup";
 
     /**
      * Default object-key prefix for {@code AWS.M2.CARDDEMO.SYSTRAN} generations.
+     *
+     * <p>Relative, for the reason given on {@link #DEFAULT_BACKUP_GENERATION_PREFIX}: the trailing
+     * separator is derived where a listing needs one, never carried in configuration.
      */
-    public static final String DEFAULT_SYSTRAN_GENERATION_PREFIX = "gdg/systran/";
+    public static final String DEFAULT_SYSTRAN_GENERATION_PREFIX = "gdg/systran";
 
     /** Property selecting the repository or object-storage input substrate. */
     private static final String PROPERTY_SOURCE =
@@ -480,6 +511,47 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     /** Property naming the {@code SYSTRAN} generation prefix. */
     private static final String PROPERTY_SYSTRAN_GENERATION_PREFIX =
             "carddemo.aws.s3.gdg-prefixes.systran";
+
+    /**
+     * Job parameter carrying the exact {@code SYSTRAN} generation the preceding stage created.
+     *
+     * <p><strong>This is the stage-2 to stage-3 handoff contract, and it is a pre-launch contract by
+     * construction.</strong> {@code app/jcl/INTCALC.jcl:L37-L41} allocates {@code SYSTRAN(+1)} with
+     * {@code DISP=(NEW,CATLG,DELETE)}, so the catalogue entry that {@code app/jcl/COMBTRAN.jcl:L25-L26}
+     * then resolves as {@code SYSTRAN(0)} is <em>the generation that job just created</em> - the mainframe
+     * updates the catalogue atomically at close, so no other generation can win the race. Two separate
+     * Spring Batch jobs have no shared catalogue, so the identity has to travel explicitly, and a job
+     * parameter is the only mechanism that carries it <em>before</em> the child launches. Seeding a child's
+     * execution context from an outer job is not a supported framework operation; adding a job parameter is.
+     *
+     * <p>When this parameter is present the reader uses <strong>only</strong> that generation and performs no
+     * lexical-greatest resolution at all. A standalone {@code COMBTRAN} run - one an operator submits without
+     * the pipeline - leaves it absent, and only then does {@code (0)} mean "the greatest existing generation".
+     *
+     * <p>The value is a generation <em>prefix</em> and not a single object key, because
+     * {@code com.cardemo.batch.jobs.InterestCalculationJob} emits one object per chunk under one generation
+     * prefix, so a generation legitimately holds several objects whose fixed-width ordinal defines their
+     * order. Pinning one key would silently drop every other object of the same generation.
+     *
+     * <p><b>Finding C-04, severity Critical, is what this parameter closes.</b> Resolving the equivalent by
+     * listing the prefix and taking the greatest key is latest-wins: a second interest run catalogued between
+     * stage 2 and stage 3 redirects stage 3 onto a generation its own pipeline did not produce, and nothing in
+     * the run reports it, because reading the newest generation is exactly what the reader was asked to do.
+     * Pinning removes the choice rather than guarding it - the listing is narrowed to the pinned generation,
+     * so no lexical-greatest selection takes place at all on the handoff path.
+     *
+     * <p>Two values are legitimate instructions rather than keys. A pinned generation that holds
+     * <em>no object</em> is the counterpart of the catalogued but empty dataset
+     * {@code app/jcl/INTCALC.jcl:L37-L41} leaves behind, and reads zero records. The literal
+     * {@value #ABSENT_GENERATION_MARKER} says the preceding stage catalogued no generation at all, and
+     * suppresses the listing rather than falling back to it - a fallback would read the previous run's
+     * generation, which is the worst of the available outcomes. Absent altogether the reader resolves the
+     * relative reference itself, which is correct for a standalone submission: there is no preceding stage
+     * whose output could be pinned, so the greatest existing generation is the only defensible meaning
+     * of {@code (0)}.
+     */
+    public static final String SYSTRAN_GENERATION_JOB_PARAMETER =
+            "carddemo.combtran.systran-generation";
 
     /** Environment variable that supplies {@link #PROPERTY_OUTPUT_BUCKET}. */
     private static final String ENV_OUTPUT_BUCKET = "CARDDEMO_S3_BATCH_OUTPUT_BUCKET";
@@ -531,6 +603,7 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
 
     /** Execution-context marker preserving that no current generation existed. */
     private static final String ABSENT_GENERATION_MARKER = "<absent>";
+
 
     /** Execution-context marker identifying the relational backup substrate. */
     private static final String REPOSITORY_SOURCE_MARKER = "<repository>";
@@ -734,8 +807,24 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
         /** Immutable source described by this cursor. */
         private final ConcatenatedSource source;
 
-        /** Concrete object key resolved at open, or {@code null} when no object is used. */
+        /** Concrete object key currently open, or {@code null} when no object is used. */
         private String resolvedObjectKey;
+
+        /**
+         * Every object of the resolved generation, in ascending key order, or empty when none is used.
+         *
+         * <p>A generation data group generation is one dataset on the mainframe, and this application models
+         * it as one <em>or more</em> objects sharing one generation segment: {@code TRANSACT.BKUP} carries a
+         * single object per generation while {@code SYSTRAN} carries one per chunk, each named with a
+         * fixed-width zero-padded ordinal so ascending key order is ascending emission order. Reading the
+         * whole generation in that order reproduces the single sequential dataset byte for byte; reading only
+         * the greatest key would drop every earlier chunk and still report success, which is the failure mode
+         * {@link #requireOrderedGenerationObjects} now refuses to make possible.
+         */
+        private List<String> resolvedObjectKeys = List.of();
+
+        /** Index into {@link #resolvedObjectKeys} of the object {@link #recordStream} is reading. */
+        private int objectIndex;
 
         /** Open fixed-width character stream on an object source. */
         private BufferedReader recordStream;
@@ -789,6 +878,8 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
         /** Restores every mutable cursor member to its cold-start value. */
         private void reset() {
             resolvedObjectKey = null;
+            resolvedObjectKeys = List.of();
+            objectIndex = 0;
             recordStream = null;
             recordBuffer = null;
             pageBuffer = List.of();
@@ -832,6 +923,14 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     /** Validated {@code SYSTRAN} object-key prefix. */
     private final String systranGenerationPrefix;
 
+    /**
+     * The exact {@code SYSTRAN} generation the launching pipeline pinned, or {@code null} standalone.
+     *
+     * <p>See {@link #SYSTRAN_GENERATION_JOB_PARAMETER}. Non-{@code null} means the generation is fixed before
+     * this step runs and no resolution of "the greatest existing generation" may take place.
+     */
+    private final String pinnedSystranGeneration;
+
     /** Step-scoped cursor for the first concatenated source. */
     private final SourceCursor backupCursor;
 
@@ -873,6 +972,9 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
      * @param outputBucket the generation bucket, from {@value #PROPERTY_OUTPUT_BUCKET}
      * @param backupGenerationPrefix the {@code TRANSACT.BKUP} prefix
      * @param systranGenerationPrefix the {@code SYSTRAN} prefix
+     * @param pinnedSystranGeneration the exact generation the launching pipeline created, from
+     *     {@value #SYSTRAN_GENERATION_JOB_PARAMETER}; {@code null} or blank on a standalone submission, and
+     *     only then is {@code SYSTRAN(0)} resolved by listing
      * @throws NullPointerException if a collaborator is {@code null}
      * @throws IllegalArgumentException if a selector, page size, prefix, or required bucket is invalid
      */
@@ -881,7 +983,7 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
             final S3Operations objectStorage,
             final S3Client objectStoreClient,
             final FileStatusMapper fileStatusMapper,
-            @Value("${" + PROPERTY_SOURCE + ":repository}") final String configuredSource,
+            @Value("${" + PROPERTY_SOURCE + ":object-storage}") final String configuredSource,
             @Value("${" + PROPERTY_PAGE_SIZE + ":" + DEFAULT_PAGE_SIZE + "}") final int pageSize,
             @Value("${" + PROPERTY_OUTPUT_BUCKET + ":}") final String outputBucket,
             @Value("${" + PROPERTY_BACKUP_GENERATION_PREFIX + ":"
@@ -889,7 +991,9 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                     final String backupGenerationPrefix,
             @Value("${" + PROPERTY_SYSTRAN_GENERATION_PREFIX + ":"
                     + DEFAULT_SYSTRAN_GENERATION_PREFIX + "}")
-                    final String systranGenerationPrefix) {
+                    final String systranGenerationPrefix,
+            @Value("#{jobParameters['" + SYSTRAN_GENERATION_JOB_PARAMETER + "']}")
+                    final String pinnedSystranGeneration) {
         this.transactionRepository =
                 Objects.requireNonNull(transactionRepository, "transactionRepository must not be null");
         this.objectStorage = Objects.requireNonNull(objectStorage, "objectStorage must not be null");
@@ -902,12 +1006,13 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
         this.outputBucket = requireOutputBucket(outputBucket, this.inputSource);
         this.backupGenerationPrefix = requireGenerationPrefix(
                 backupGenerationPrefix,
-                PROPERTY_BACKUP_GENERATION_PREFIX,
-                DEFAULT_BACKUP_GENERATION_PREFIX);
+                PROPERTY_BACKUP_GENERATION_PREFIX);
         this.systranGenerationPrefix = requireGenerationPrefix(
                 systranGenerationPrefix,
-                PROPERTY_SYSTRAN_GENERATION_PREFIX,
-                DEFAULT_SYSTRAN_GENERATION_PREFIX);
+                PROPERTY_SYSTRAN_GENERATION_PREFIX);
+        this.pinnedSystranGeneration = requirePinnedGeneration(
+                pinnedSystranGeneration,
+                this.systranGenerationPrefix);
         this.backupCursor = new SourceCursor(ConcatenatedSource.BACKUP);
         this.systranCursor = new SourceCursor(ConcatenatedSource.SYSTRAN);
     }
@@ -935,16 +1040,18 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
 
         try {
             if (inputSource == InputSource.OBJECT_STORAGE) {
-                backupCursor.resolvedObjectKey = resolveGeneration(
+                assignResolvedGeneration(backupCursor, resolveGeneration(
                         ConcatenatedSource.BACKUP,
                         backupGenerationPrefix,
                         CONTEXT_KEY_BACKUP_OBJECT_KEY,
-                        executionContext);
-                systranCursor.resolvedObjectKey = resolveGeneration(
+                        executionContext,
+                        null));
+                assignResolvedGeneration(systranCursor, resolveGeneration(
                         ConcatenatedSource.SYSTRAN,
                         systranGenerationPrefix,
                         CONTEXT_KEY_SYSTRAN_OBJECT_KEY,
-                        executionContext);
+                        executionContext,
+                        pinnedSystranGeneration));
                 recordResolvedGenerationKeys(executionContext);
                 openObjectSource(backupCursor);
                 openObjectSource(systranCursor);
@@ -1037,56 +1144,100 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     }
 
     /**
-     * Resolves {@code (0)} to the one object of the greatest generation, refusing an ambiguous generation.
+     * Resolves {@code (0)} to every object of the greatest generation, refusing an unordered generation.
      *
-     * <p><b>A GDG generation is one dataset, so it is one object.</b> That invariant was already stated by
-     * {@code RejectWriter}, but nothing enforced it on the reading side: this resolution kept the
-     * lexicographically greatest key and discarded every sibling without a log, an exception or a count
-     * check. The measured consequence was a run that reported {@code COMPLETED} with return code 0 and a
-     * combined record count of 2 while one of the three planted identifiers had vanished - the worst
-     * available outcome, because a subset loaded under a success status is indistinguishable from a correct
-     * run.
+     * <p><b>A GDG generation is one sequential dataset, so its objects have to be read in one defined
+     * order.</b> Nothing enforced that on the reading side: this resolution kept the lexicographically
+     * greatest key and discarded every sibling without a log, an exception or a count check. The measured
+     * consequence was a run that reported {@code COMPLETED} with return code 0 and a combined record count of
+     * 2 while one of the three planted identifiers had vanished - the worst available outcome, because a
+     * subset loaded under a success status is indistinguishable from a correct run.
      *
-     * <p>Refusing is the right response rather than reading every object under the generation. The order in
-     * which siblings would be concatenated is undefined - they are not one sorted stream and no convention
-     * says which comes first - so reading them all would substitute an arbitrary order for a missing record.
-     * A restart is one way this shape arises, so the diagnostic names every candidate key: an operator needs
-     * to know which objects are in contention, not merely that contention exists.
+     * <p>The generation's objects are therefore all returned, in ascending key order, when that order is
+     * <em>defined</em> - which {@link #isOrdinalKeyedGeneration} decides, and which the one writer that emits
+     * several objects per generation satisfies by construction. When it is not defined the generation is
+     * refused rather than read: no convention says which sibling comes first, so reading them all would
+     * substitute an arbitrary order for a missing record, and reading one would drop the rest under a success
+     * status. A restart is one way the ambiguous shape arises, so the diagnostic names every candidate key: an
+     * operator needs to know which objects are in contention, not merely that contention exists.
      *
      * @param candidatesByGeneration every listed object grouped by generation segment, may be empty
      * @param generationPrefix the base prefix, named in the diagnostic
      * @param source the concatenated source being resolved, named in the diagnostic
-     * @return the single object key of the greatest generation, or {@code null} when no generation exists
-     * @throws DataIntegrityException if the greatest generation holds more than one object
+     * @return every object of the greatest generation in ascending key order, empty when no generation exists
+     * @throws DataIntegrityException if the greatest generation holds several objects whose relative order no
+     *     naming convention defines
      */
-    private static String requireOneObjectInResolvedGeneration(
+    private static List<String> requireOrderedGenerationObjects(
             final NavigableMap<String, List<String>> candidatesByGeneration,
             final String generationPrefix,
             final ConcatenatedSource source) {
 
         final Map.Entry<String, List<String>> resolved = candidatesByGeneration.lastEntry();
         if (resolved == null) {
-            return null;
+            return List.of();
         }
 
-        final List<String> keys = resolved.getValue();
-        if (keys.size() > 1) {
-            final List<String> ambiguous = new ArrayList<>(keys);
-            ambiguous.sort(Comparator.naturalOrder());
+        final List<String> keys = new ArrayList<>(resolved.getValue());
+        keys.sort(Comparator.naturalOrder());
+        if (keys.size() > 1 && !isOrdinalKeyedGeneration(keys)) {
             throw new DataIntegrityException(String.format(Locale.ROOT,
-                    "%s resolved generation '%s' under prefix '%s' to %d objects, and a generation is one "
-                            + "dataset so it is one object. Reading one of them would drop the rest and "
-                            + "report success, and reading all of them would impose an order no convention "
-                            + "defines. Candidates: %s",
+                    "%s resolved generation '%s' under prefix '%s' to %d objects whose relative order no "
+                            + "convention defines. A generation is one sequential dataset, so its objects "
+                            + "must either be a single object or be named with one fixed-width zero-padded "
+                            + "ordinal each. Reading one would drop the rest and report success; reading all "
+                            + "would impose an arbitrary order. Candidates: %s",
                     source.datasetName,
                     resolved.getKey(),
                     generationPrefix,
                     Integer.valueOf(keys.size()),
-                    ambiguous),
+                    keys),
                     generationPrefix,
                     source.datasetName);
         }
-        return keys.get(0);
+        return List.copyOf(keys);
+    }
+
+    /**
+     * Reports whether every key of one generation carries an equal-width ordinal, so their order is defined.
+     *
+     * <p>{@code com.cardemo.batch.jobs.InterestCalculationJob} names each object it writes
+     * {@code <name>-<19 zero-padded digits>.dat}, one per chunk, so the whole generation is an ordered
+     * sequence and ascending key order is ascending emission order - which is exactly the order the single
+     * {@code SYSTRAN(+1)} sequential dataset held on the mainframe. The widths must be <em>equal</em> for
+     * that equivalence to hold: mixed widths make lexicographic and numeric order diverge at the first
+     * decade boundary, so a mixed-width generation is refused rather than read in an order that would be
+     * wrong for exactly the inputs large enough to matter.
+     *
+     * @param sortedKeys the generation's keys in ascending order, at least two of them
+     * @return {@code true} when every key ends in an equal-width run of digits before a common suffix
+     */
+    private static boolean isOrdinalKeyedGeneration(final List<String> sortedKeys) {
+        int digitWidth = -1;
+        for (final String key : sortedKeys) {
+            final int lastSeparator = key.lastIndexOf(KEY_SEPARATOR);
+            final String name = lastSeparator < 0 ? key : key.substring(lastSeparator + 1);
+            final int suffix = name.lastIndexOf('.');
+            final String stem = suffix <= 0 ? name : name.substring(0, suffix);
+
+            int width = 0;
+            for (int index = stem.length() - 1; index >= 0; index--) {
+                final char character = stem.charAt(index);
+                if (character < '0' || character > '9') {
+                    break;
+                }
+                width++;
+            }
+            if (width == 0 || width == stem.length()) {
+                return false;
+            }
+            if (digitWidth < 0) {
+                digitWidth = width;
+            } else if (digitWidth != width) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -1384,11 +1535,12 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
             }
             systranCursor.exhausted = true;
         } else {
-            systranCursor.resolvedObjectKey = resolveGeneration(
+            assignResolvedGeneration(systranCursor, resolveGeneration(
                     ConcatenatedSource.SYSTRAN,
                     systranGenerationPrefix,
                     CONTEXT_KEY_SYSTRAN_OBJECT_KEY,
-                    executionContext);
+                    executionContext,
+                    pinnedSystranGeneration));
             recordResolvedGenerationKeys(executionContext);
             openObjectSource(systranCursor);
             positionObjectCursorAfterRestart(systranCursor);
@@ -1406,33 +1558,48 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     }
 
     /**
-     * Resolves one current generation from a checkpoint or a complete paged listing.
+     * Resolves one current generation from a checkpoint, from the pinned handoff, or from a paged listing.
+     *
+     * <p><strong>An absent required current generation is a failure, not an empty leg.</strong>
+     * {@code app/jcl/COMBTRAN.jcl:L23-L26} allocates both halves of the concatenated {@code SORTIN} with
+     * {@code DISP=SHR}, and {@code DISP=SHR} on a relative generation reference fails <em>allocation</em> -
+     * before {@code SORT} receives control - when the generation is not catalogued. The absence of a
+     * {@code COND=} parameter says nothing about whether a DD is optional: {@code COND} gates step
+     * <em>execution</em> on a preceding return code, while allocation happens first and unconditionally.
+     * An earlier revision of this method returned {@code null} for an absent generation and described a
+     * zero-record combine as parity; that reading is withdrawn, because it turned an unsatisfied
+     * precondition into a {@code COMPLETED} run with a record count of zero - the one outcome an operator
+     * cannot distinguish from a genuinely empty input.
+     *
+     * <p>The operational consequence is stated rather than engineered around: {@code COMBTRAN} cannot run
+     * until a {@code TRANSACT.BKUP} generation exists, exactly as on the mainframe, where
+     * {@code app/jcl/TRANBKP.jcl} - realised here as {@code STEP01R} of {@code TransactionReportJob},
+     * {@code app/proc/TRANREPT.prc:L21} - produces it in the preceding daily cycle. On a virgin object store
+     * the first pipeline run therefore fails stage 3 with {@code FILE STATUS '35'} naming that remediation,
+     * which is the same thing the mainframe does and is information the operator needs.
      *
      * @param source logical concatenated source
      * @param generationPrefix validated generation prefix
      * @param contextKey execution-context key carrying a prior resolution
      * @param executionContext current step context, or {@code null}
-     * @return validated concrete object key, or {@code null} for an absent optional source
+     * @param pinnedGeneration the exact generation the launching pipeline created, or {@code null} standalone
+     * @return every object of the resolved generation in ascending key order, never {@code null}; empty only
+     *     when a <em>pinned</em> generation was allocated by the preceding stage and holds no object, which is
+     *     the catalogued-but-empty dataset {@code DISP=(NEW,CATLG,DELETE)} leaves behind
+     * @throws FatalProcessingException if no current generation exists, or the listing fails
+     * @throws DataIntegrityException if restart state is inconsistent or the generation's order is undefined
      */
-    private String resolveGeneration(
+    private List<String> resolveGeneration(
             final ConcatenatedSource source,
             final String generationPrefix,
             final String contextKey,
-            final ExecutionContext executionContext) {
+            final ExecutionContext executionContext,
+            final String pinnedGeneration) {
         if (executionContext != null && executionContext.containsKey(contextKey)) {
             final String checkpointed = executionContext.getString(contextKey, "");
             if (ABSENT_GENERATION_MARKER.equals(checkpointed)) {
-                // Either leg may legitimately be absent, so the absence is carried forward for both rather
-                // than only for SYSTRAN. This branch previously abended for BACKUP; see the class javadoc
-                // for why that asymmetry was withdrawn.
-                LOG.info(
-                        "{} carried forward the absence of {} (SORTIN DD {}) under execution-context key"
-                                + " '{}'; that leg contributes no records to this restart",
-                        LOGICAL_FILE,
-                        source.datasetName,
-                        Integer.valueOf(source.ddOrdinal),
-                        contextKey);
-                return null;
+                throw absentGenerationFailure(source, generationPrefix,
+                        "the step execution context recorded no generation for this leg");
             }
             if (REPOSITORY_SOURCE_MARKER.equals(checkpointed)) {
                 throw new DataIntegrityException(String.format(Locale.ROOT,
@@ -1442,26 +1609,121 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                         contextKey,
                         source.datasetName);
             }
-            return requireKeyWithinGeneration(
+            // The checkpoint carries the object that was open when the step stopped, and the generation it
+            // belongs to is that key's leading segment. The whole generation is re-listed rather than the one
+            // key restored, because positioning replays from the first object of the leg - see
+            // positionObjectCursorAfterRestart - so the ordered object list has to be complete for the skip
+            // to land where it did before. The checkpointed key is then required to be a member of what was
+            // re-listed, which is what detects a generation that changed underneath a restart.
+            final String verified = requireKeyWithinGeneration(
                     checkpointed,
                     generationPrefix,
                     source,
                     "the step execution context");
+            final String restartGeneration =
+                    generationPrefix + generationSegmentOf(verified, generationPrefix) + KEY_SEPARATOR;
+            final List<String> restored =
+                    listGenerationObjects(source, generationPrefix, restartGeneration);
+            if (!restored.contains(verified)) {
+                throw new DataIntegrityException(String.format(Locale.ROOT,
+                        "%s restart cannot resume %s: checkpointed object '%s' is no longer present in "
+                                + "generation '%s', which now holds %s",
+                        LOGICAL_FILE,
+                        source.datasetName,
+                        verified,
+                        restartGeneration,
+                        restored),
+                        contextKey,
+                        source.datasetName);
+            }
+            return restored;
         }
 
-        // Candidates are grouped by generation rather than reduced to one greatest key, because a GDG
-        // generation is one dataset and therefore one object. Keeping only the greatest key across the whole
-        // base silently discarded any sibling under the resolved generation: two 350-byte objects under one
-        // transact-bkup generation produced a COMPLETED run with a record count of 2 and one identifier
-        // simply gone. Grouping first makes that shape detectable; selection is unchanged, because the
-        // generation segment is the leading component of every key under all conventions in use, so the
-        // greatest segment still resolves to what the greatest key resolved to.
+        if (ABSENT_GENERATION_MARKER.equals(pinnedGeneration)) {
+            LOG.info(
+                    "{} was instructed that {} has no current generation, so SORTIN DD {} reads zero records"
+                            + " and no listing is performed; a fallback would have read the previous run's"
+                            + " generation, which app/jcl/COMBTRAN.jcl:L25-L26 could never have done inside"
+                            + " one operator stream",
+                    LOGICAL_FILE,
+                    source.datasetName,
+                    Integer.valueOf(source.ddOrdinal));
+            return List.of();
+        }
+
+        // The listing is narrowed to the pinned generation when the launching pipeline supplied one, so no
+        // lexical-greatest selection can take place at all on the handoff path: a concurrent run that
+        // published a higher generation between stage 2 and stage 3 cannot be picked up, which is precisely
+        // the race the pinned parameter exists to close. Standalone, the base prefix is listed and (0) means
+        // the greatest generation segment.
+        final String listingPrefix = pinnedGeneration == null ? generationPrefix : pinnedGeneration;
+        final List<String> resolved = listGenerationObjects(source, generationPrefix, listingPrefix);
+
+        if (resolved.isEmpty()) {
+            if (pinnedGeneration == null) {
+                throw absentGenerationFailure(source, listingPrefix,
+                        "no generation is catalogued under the base prefix");
+            }
+            // A pinned generation that holds no object is the object-store counterpart of the catalogued but
+            // EMPTY dataset that app/jcl/INTCALC.jcl:L37-L41 leaves behind: DISP=(NEW,CATLG,DELETE) allocates
+            // and catalogues SYSTRAN(+1) whether or not app/cbl/CBACT04C.cbl:L214 suppressed every write, so
+            // COMBTRAN's SORTIN allocation succeeds and SORT reads zero records from that half. The pin is
+            // what distinguishes the two cases: the launching pipeline asserting "stage 2 allocated this
+            // generation" is exactly the catalogue entry, whereas a standalone submission finding nothing at
+            // all under the base prefix has no allocation to inherit and fails as above.
+            LOG.info(
+                    "{} pinned {} generation '{}' holds no object; app/jcl/INTCALC.jcl:L37-L41 catalogues"
+                            + " SYSTRAN(+1) even when every disclosure rate was zero, so SORTIN DD {} reads"
+                            + " zero records rather than failing allocation",
+                    LOGICAL_FILE,
+                    source.datasetName,
+                    listingPrefix,
+                    Integer.valueOf(source.ddOrdinal));
+            return List.of();
+        }
+
+        LOG.info(
+                "{} resolved {}{} once at open; generation={} objects={} firstKey={}",
+                LOGICAL_FILE,
+                source.datasetName,
+                pinnedGeneration == null ? "(0)" : "(pinned)",
+                listingPrefix,
+                Integer.valueOf(resolved.size()),
+                resolved.get(0));
+        return resolved;
+    }
+
+    /**
+     * Lists one generation's objects in ascending key order through a complete paged listing.
+     *
+     * <p>Candidates are grouped by generation segment rather than reduced to one greatest key, because the
+     * segment is the leading component of every key under all three conventions in use, so the greatest
+     * segment resolves to the same generation the greatest key belonged to while keeping that generation's
+     * siblings visible. Keeping only the greatest key across the whole base was the defect that turned two
+     * 350-byte objects under one {@code transact-bkup} generation into a {@code COMPLETED} run with a record
+     * count of 2 and one identifier simply gone.
+     *
+     * <p>When {@code listingPrefix} names one generation the map holds at most one entry, which is what makes
+     * the pinned-handoff path exact. When it is the base prefix, the last entry is {@code (0)}.
+     *
+     * @param source logical concatenated source, named in every diagnostic
+     * @param generationPrefix the validated base prefix every key must sit under
+     * @param listingPrefix the prefix actually listed: the base, or one pinned generation beneath it
+     * @return the resolved generation's objects in ascending key order, empty when nothing is catalogued
+     * @throws FatalProcessingException if the listing fails
+     * @throws DataIntegrityException if a key sits outside the base prefix or the order is undefined
+     */
+    private List<String> listGenerationObjects(
+            final ConcatenatedSource source,
+            final String generationPrefix,
+            final String listingPrefix) {
+
         final NavigableMap<String, List<String>> candidatesByGeneration = new TreeMap<>();
         try {
             for (final S3Object listed : objectStoreClient.listObjectsV2Paginator(
                     ListObjectsV2Request.builder()
                             .bucket(outputBucket)
-                            .prefix(generationPrefix)
+                            .prefix(listingPrefix)
                             .build())
                     .contents()) {
                 final String candidate = listed.key();
@@ -1493,35 +1755,43 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                     "ERROR LISTING " + source.displayName);
         }
 
-        final String greatestKey = requireOneObjectInResolvedGeneration(
-                candidatesByGeneration, generationPrefix, source);
+        return requireOrderedGenerationObjects(candidatesByGeneration, listingPrefix, source);
+    }
 
-        if (greatestKey == null) {
-            // Both concatenated legs are optional. Neither app/jcl/COMBTRAN.jcl:L22 (STEP05R) nor :L41
-            // (STEP10) carries a COND=, so the member asserts no precondition on either DD, and nothing in
-            // this application produces a TRANSACT.BKUP generation before this stage runs: the sole producer
-            // is TransactionReportJob's STEP01R (app/proc/TRANREPT.prc:L21), which is stage 4 of the
-            // pipeline, downstream of stage 3. Failing here on an absent first leg therefore made the
-            // authored five-stage topology unsatisfiable on a clean environment. The "combining nothing into
-            // the master" hazard the old branch named is handled by being explicit rather than by refusing:
-            // COMBTRAN.jcl:L33-L37 allocates SORTOUT unconditionally and :L48 copies it, so an empty combine
-            // creates an empty generation, publishes a zero count, and logs which leg was empty.
-            LOG.info(
-                    "{} found no current {} generation under prefix '{}'; SORTIN DD {} contributes no"
-                            + " records to this run",
-                    LOGICAL_FILE,
-                    source.datasetName,
-                    generationPrefix,
-                    Integer.valueOf(source.ddOrdinal));
-            return null;
-        }
+    /**
+     * Builds the typed failure raised when a required current generation is not catalogued.
+     *
+     * <p>{@code FILE STATUS '35'} is the file-not-available member of the status taxonomy, and it is the
+     * status this application maps a missing object to everywhere else, so an unallocatable {@code DISP=SHR}
+     * generation reports the same thing a missing dataset reports. The message names the prefix that was
+     * searched and the remediation, because "SORTIN unavailable" without the prefix is not actionable.
+     *
+     * @param source the concatenated source whose leg is missing
+     * @param searchedPrefix the exact prefix that was listed
+     * @param reason the specific reason, appended verbatim
+     * @return the typed failure, for the caller to throw
+     */
+    private RuntimeException absentGenerationFailure(
+            final ConcatenatedSource source,
+            final String searchedPrefix,
+            final String reason) {
 
-        LOG.info(
-                "{} resolved {}(0) once at open; key={}",
-                LOGICAL_FILE,
-                source.datasetName,
-                greatestKey);
-        return greatestKey;
+        return statusException(
+                source,
+                STATUS_FILE_UNAVAILABLE,
+                OPERATION_OPEN,
+                null,
+                String.format(Locale.ROOT,
+                        "%s cannot allocate SORTIN DD %d: %s is required by app/jcl/COMBTRAN.jcl:L23-L26"
+                                + " with DISP=SHR and %s under prefix '%s'. Produce the generation before"
+                                + " submitting COMBTRAN - TRANSACT.BKUP comes from STEP01R of the"
+                                + " transaction report job (app/proc/TRANREPT.prc:L21) and SYSTRAN from the"
+                                + " interest calculation job (app/jcl/INTCALC.jcl:L37-L41)",
+                        LOGICAL_FILE,
+                        Integer.valueOf(source.ddOrdinal),
+                        source.datasetName,
+                        reason,
+                        searchedPrefix));
     }
 
     /**
@@ -1555,6 +1825,24 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                             ? ABSENT_GENERATION_MARKER
                             : systranCursor.resolvedObjectKey);
         }
+    }
+
+    /**
+     * Fixes one cursor's resolved generation and positions it on the generation's first object.
+     *
+     * <p>The list is the whole generation in ascending key order; {@code resolvedObjectKey} tracks the object
+     * currently open, which is what the diagnostics, the restart checkpoint and the pipeline handoff
+     * verification all name. Resolution happens exactly once, at open, and never in {@link #read()}.
+     *
+     * @param cursor the cursor to position
+     * @param resolvedKeys every object of the resolved generation in ascending key order, never empty
+     */
+    private static void assignResolvedGeneration(final SourceCursor cursor,
+            final List<String> resolvedKeys) {
+
+        cursor.resolvedObjectKeys = resolvedKeys;
+        cursor.objectIndex = 0;
+        cursor.resolvedObjectKey = resolvedKeys.isEmpty() ? null : resolvedKeys.get(0);
     }
 
     /**
@@ -1952,10 +2240,27 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     }
 
     /**
-     * Reads exactly one 350-character image and consumes an optional terminator.
+     * Reads exactly one 350-character image from the generation, advancing objects at a boundary.
+     *
+     * <p><strong>The stream is undelimited and a separator byte is a hard failure.</strong> The two
+     * concatenated {@code SORTIN} halves of {@code app/jcl/COMBTRAN.jcl:L23-L26} inherit
+     * {@code DCB=(RECFM=F,LRECL=350)} from {@code app/jcl/INTCALC.jcl:L39}, so a generation is a whole number
+     * of 350-byte records and nothing else: there is no record terminator on the mainframe and this
+     * application's writers emit none. An earlier revision tolerated an optional {@code LF}, {@code CRLF} or
+     * {@code CR} after each record on the grounds that an ASCII fixture carries one. That tolerance is
+     * withdrawn on this path, because it made corrupt object geometry indistinguishable from valid input: an
+     * object written by something other than this application, or truncated mid-transfer, would be read as
+     * though every record after the first stray byte were correctly aligned. Line-oriented ingestion of
+     * {@code app/data/ASCII/*.txt} belongs to the seed migration and to test fixtures, which read the files
+     * as text by name; it is deliberately not a mode of this reader.
+     *
+     * <p>The exact-multiple rule is enforced by construction rather than by a separate length probe: a short
+     * final read is a geometry failure naming the observed length, and a full read followed by a separator
+     * byte is a delimiter failure naming the byte. Between them, an object whose length is not a whole
+     * multiple of {@value #RECORD_LENGTH} cannot be consumed silently.
      *
      * @param cursor open object cursor
-     * @return exact image, or {@code null} at a record-boundary end of stream
+     * @return exact image, or {@code null} once every object of the generation is exhausted
      * @throws IOException if the stream fails
      */
     private String readFixedWidthImage(final SourceCursor cursor) throws IOException {
@@ -1969,6 +2274,41 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                     OPERATION_READ);
         }
 
+        int filled = fillRecordBuffer(cursor);
+        while (filled == 0 && advanceToNextGenerationObject(cursor)) {
+            filled = fillRecordBuffer(cursor);
+        }
+
+        if (filled == 0) {
+            return null;
+        }
+        if (filled != RECORD_LENGTH) {
+            throw new DataIntegrityException(String.format(Locale.ROOT,
+                    "%s source %s object '%s' ends %d bytes into a record; app/jcl/INTCALC.jcl:L39 "
+                            + "DCB=(RECFM=F,LRECL=%d) and app/cpy/CVTRA05Y.cpy:L2 make the object length an "
+                            + "exact multiple of %d bytes",
+                    LOGICAL_FILE,
+                    cursor.source.datasetName,
+                    cursor.resolvedObjectKey,
+                    Integer.valueOf(filled),
+                    Integer.valueOf(RECORD_LENGTH),
+                    Integer.valueOf(RECORD_LENGTH)),
+                    "CVTRA05Y RECLN",
+                    cursor.source.datasetName);
+        }
+
+        rejectRecordSeparator(cursor);
+        return new String(cursor.recordBuffer, 0, RECORD_LENGTH);
+    }
+
+    /**
+     * Fills the cursor's record buffer with up to one whole record from the object currently open.
+     *
+     * @param cursor open object cursor
+     * @return the number of characters obtained, {@code 0} at a clean end of the current object
+     * @throws IOException if the stream fails
+     */
+    private static int fillRecordBuffer(final SourceCursor cursor) throws IOException {
         int filled = 0;
         while (filled < RECORD_LENGTH) {
             final int read = cursor.recordStream.read(
@@ -1989,50 +2329,72 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
                 filled += read;
             }
         }
-
-        if (filled == 0) {
-            return null;
-        }
-        if (filled != RECORD_LENGTH) {
-            throw new DataIntegrityException(String.format(Locale.ROOT,
-                    "%s source %s row %d has observed length %d; "
-                            + "app/cpy/CVTRA05Y.cpy:L2 requires %d bytes",
-                    LOGICAL_FILE,
-                    cursor.source.datasetName,
-                    Long.valueOf(cursor.fetchedCount + 1L),
-                    Integer.valueOf(filled),
-                    Integer.valueOf(RECORD_LENGTH)),
-                    "CVTRA05Y RECLN",
-                    cursor.source.datasetName);
-        }
-
-        consumeRecordTerminator(cursor);
-        return new String(cursor.recordBuffer, 0, RECORD_LENGTH);
+        return filled;
     }
 
     /**
-     * Consumes an optional LF, CRLF, or CR without consuming the next record's first byte.
+     * Closes the exhausted object and opens the next one of the same generation, if there is one.
      *
-     * @param cursor open object cursor
-     * @throws IOException if mark, read, or reset fails
+     * <p>A generation is one sequential dataset. Where this application realises it as several objects - one
+     * per chunk, each carrying a fixed-width ordinal - the objects are consumed back to back in ascending key
+     * order, which reproduces reading the single mainframe dataset from start to end. The transition is not a
+     * record boundary event for the caller: {@link #readFixedWidthImage} loops across it so a record never
+     * spans two objects and a caller never sees a spurious end of file.
+     *
+     * @param cursor the cursor whose current object is exhausted
+     * @return {@code true} when a further object was opened, {@code false} at the end of the generation
+     * @throws IOException if closing the exhausted stream fails
      */
-    private static void consumeRecordTerminator(final SourceCursor cursor) throws IOException {
+    private boolean advanceToNextGenerationObject(final SourceCursor cursor) throws IOException {
+        if (cursor.objectIndex + 1 >= cursor.resolvedObjectKeys.size()) {
+            return false;
+        }
+
+        cursor.recordStream.close();
+        cursor.recordStream = null;
+        cursor.objectIndex++;
+        cursor.resolvedObjectKey = cursor.resolvedObjectKeys.get(cursor.objectIndex);
+        LOG.debug("{} advanced {} to object {} of {} in the resolved generation; key={}",
+                LOGICAL_FILE,
+                cursor.source.datasetName,
+                Integer.valueOf(cursor.objectIndex + 1),
+                Integer.valueOf(cursor.resolvedObjectKeys.size()),
+                cursor.resolvedObjectKey);
+        openObjectSource(cursor);
+        return cursor.recordStream != null;
+    }
+
+    /**
+     * Refuses a record separator following a complete record image.
+     *
+     * @param cursor open object cursor positioned immediately after a whole record
+     * @throws IOException if mark, read, or reset fails
+     * @throws DataIntegrityException if the next byte is {@code LF} or {@code CR}
+     */
+    private void rejectRecordSeparator(final SourceCursor cursor) throws IOException {
         if (cursor.recordStream == null) {
             return;
         }
 
-        cursor.recordStream.mark(2);
-        final int first = cursor.recordStream.read();
-        if (first == END_OF_STREAM || first == LINE_FEED) {
+        cursor.recordStream.mark(1);
+        final int next = cursor.recordStream.read();
+        if (next == END_OF_STREAM) {
             return;
         }
-        if (first == CARRIAGE_RETURN) {
-            cursor.recordStream.mark(1);
-            final int second = cursor.recordStream.read();
-            if (second != END_OF_STREAM && second != LINE_FEED) {
-                cursor.recordStream.reset();
-            }
-            return;
+        if (next == LINE_FEED || next == CARRIAGE_RETURN) {
+            throw new DataIntegrityException(String.format(Locale.ROOT,
+                    "%s source %s object '%s' carries a 0x%02X record separator after row %d; "
+                            + "app/jcl/INTCALC.jcl:L39 DCB=(RECFM=F,LRECL=%d) is undelimited, so a separator "
+                            + "means the object was not written by this application or was corrupted in "
+                            + "transfer",
+                    LOGICAL_FILE,
+                    cursor.source.datasetName,
+                    cursor.resolvedObjectKey,
+                    Integer.valueOf(next),
+                    Long.valueOf(cursor.fetchedCount + 1L),
+                    Integer.valueOf(RECORD_LENGTH)),
+                    "RECFM=F",
+                    cursor.source.datasetName);
         }
         cursor.recordStream.reset();
     }
@@ -2554,35 +2916,84 @@ public class CombinedTransactionReader implements ItemStreamReader<Transaction> 
     }
 
     /**
-     * Normalises a generation prefix to one trailing separator.
+     * Validates a configured generation prefix against the one shared grammar and returns its listing form.
      *
-     * @param configured configured prefix
-     * @param property property named in diagnostics
-     * @param defaultValue documented fallback
-     * @return validated normalised prefix
+     * <p><b>Finding m-02, severity Minor, RESOLVED.</b> This method used to carry the seventh copy of that
+     * grammar, and it was the second-weakest of the seven: it stripped surrounding whitespace, refused only
+     * {@code ..} and {@code //}, and then <em>appended</em> a separator when one was missing - so a leading
+     * separator passed, a value already ending in a separator was accepted in a second spelling, and a
+     * control character inside an otherwise printable value passed as well. The review named six classes;
+     * this one was not among them, yet it consumes two of the same bases - {@code TRANSACT.BKUP} and
+     * {@code SYSTRAN} - so leaving it behind would have left the duplication the finding is about intact on
+     * exactly the roots the other consumers had just been tightened on. It now delegates, which is why
+     * {@link GenerationPrefixContract#requireRelativePrefix(String, String)} is the only prefix grammar in
+     * the tier.
+     *
+     * <p>The listing form is <b>derived</b> from the validated relative one rather than tolerated in
+     * configuration, for the reason stated on {@link GenerationPrefixContract#listingPrefixOf(String)}:
+     * object storage has no directories, so without the separator {@code gdg/systran} also matches
+     * {@code gdg/systran-shadow} and a generation of an unrelated base could be selected as the greatest
+     * key.
+     *
+     * @param configured the value bound from {@code property}, possibly {@code null} or blank.
+     * @param property the property name to name in a failure, never the value.
+     * @return the validated prefix with exactly one trailing separator, never {@code null}
+     * @throws IllegalArgumentException if the configured value is blank or breaks the shared grammar
      */
-    private static String requireGenerationPrefix(
-            final String configured,
-            final String property,
-            final String defaultValue) {
+    private static String requireGenerationPrefix(final String configured, final String property) {
+        return GenerationPrefixContract.listingPrefixOf(
+                GenerationPrefixContract.requireRelativePrefix(configured, property));
+    }
+
+    /**
+     * Validates the pinned {@code SYSTRAN} generation handed over by the launching pipeline.
+     *
+     * <p>Absence is legitimate and means "standalone submission": {@code null}, an empty value and an
+     * all-blank value are all normalised to {@code null}, and only then does {@code SYSTRAN(0)} mean the
+     * greatest existing generation. A value that <em>is</em> present is untrusted input on a path that becomes
+     * an object-storage prefix, so it is validated on exactly the terms
+     * {@link #requireGenerationPrefix(String, String)} applies - printable ASCII, no {@code ..} and no
+     * {@code //} - and additionally has to sit under the configured base prefix, because a pinned generation
+     * that pointed outside the generation data group would read another dataset entirely.
+     *
+     * @param configured the raw job-parameter value, which may be {@code null}
+     * @param basePrefix the validated {@code SYSTRAN} base prefix the value must sit under
+     * @return the normalised generation prefix ending in a separator, or {@code null} when not supplied
+     * @throws IllegalArgumentException if a supplied value is not a printable key under {@code basePrefix}
+     */
+    private static String requirePinnedGeneration(final String configured, final String basePrefix) {
         if (configured == null || configured.isBlank()) {
-            throw new IllegalArgumentException(String.format(Locale.ROOT,
-                    "%s must not be blank; its documented default is '%s'",
-                    property,
-                    defaultValue));
+            return null;
         }
 
         final String stripped = configured.strip();
+        if (ABSENT_GENERATION_MARKER.equals(stripped)) {
+            // An instruction, not a key, so the prefix rules below do not apply to it. Refusing it here would
+            // turn the one value that says "there is nothing to read" into a hard failure, and the caller's
+            // only remaining option would be to omit the parameter - which means the opposite: resolve the
+            // greatest existing generation, and therefore read the previous run's.
+            return stripped;
+        }
         if (!isPrintableAscii(stripped)
                 || stripped.contains("..")
-                || stripped.contains("//")) {
+                || stripped.contains("//")
+                || stripped.length() > MAX_OBJECT_KEY_LENGTH) {
             throw new IllegalArgumentException(String.format(Locale.ROOT,
-                    "%s must be a printable object-key prefix without '..' or '//' segments",
-                    property));
+                    "%s must be a printable object-key prefix of at most %d characters without '..' or '//'"
+                            + " segments",
+                    SYSTRAN_GENERATION_JOB_PARAMETER,
+                    Integer.valueOf(MAX_OBJECT_KEY_LENGTH)));
         }
-        return stripped.endsWith(KEY_SEPARATOR)
-                ? stripped
-                : stripped + KEY_SEPARATOR;
+
+        final String normalised = stripped.endsWith(KEY_SEPARATOR) ? stripped : stripped + KEY_SEPARATOR;
+        if (!normalised.startsWith(basePrefix) || normalised.equals(basePrefix)) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT,
+                    "%s must name one generation beneath '%s' but was '%s'",
+                    SYSTRAN_GENERATION_JOB_PARAMETER,
+                    basePrefix,
+                    normalised));
+        }
+        return normalised;
     }
 
     /**

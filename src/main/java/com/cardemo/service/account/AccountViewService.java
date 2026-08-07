@@ -233,7 +233,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>Eight legacy behaviours below are defects, redundancies or unreachable artefacts. Seven are reproduced
  * rather than repaired, because behavioural parity is the acceptance contract and the paragraph-level
  * traceability matrix must stay mechanically provable; the eighth cannot be reproduced and is labelled a
- * deviation rather than dressed up as parity. Each is owed an entry in the planned {@code DECISION_LOG.md} and
+ * deviation rather than dressed up as parity. Each is owed an entry in the {@code DECISION_LOG.md} and
  * {@code TRACEABILITY_MATRIX.md}, so none is untracked deferred work, and no deferred-work marker token of
  * any kind appears anywhere in this file.</p>
  *
@@ -1060,7 +1060,7 @@ public class AccountViewService {
             context.abendReason = ABEND_REASON_SPACES;
             context.returnMessage = UNEXPECTED_DATA_SCENARIO_MESSAGE;
             LOG.warn("CAVW unexpected data scenario; abend payload built and discarded "
-                            + "(code={} culprit={} reason-length={}) - see the planned DECISION_LOG.md defect V6",
+                            + "(code={} culprit={} reason-length={}) - see the DECISION_LOG.md defect V6",
                     context.abendCode, context.abendCulprit, context.abendReason.length());
             return sendPlainText(context);
         } catch (final CardDemoException typed) {
@@ -1122,7 +1122,7 @@ public class AccountViewService {
      * admits no exception for duplicates and the scope-coverage gate reads the citations.</p>
      */
     private void mainExit0000AtLine408() {
-        // Intentional unreachable no-op preserved for control-flow parity; see the planned DECISION_LOG.md
+        // Intentional unreachable no-op preserved for control-flow parity; see the DECISION_LOG.md
     }
 
     /**
@@ -1135,7 +1135,7 @@ public class AccountViewService {
      * scope-coverage gate verifies, so two are emitted with distinct citations.</p>
      */
     private void mainExit0000AtLine411() {
-        // Intentional unreachable no-op preserved for control-flow parity; see the planned DECISION_LOG.md
+        // Intentional unreachable no-op preserved for control-flow parity; see the DECISION_LOG.md
     }
 
     /**
@@ -1177,7 +1177,7 @@ public class AccountViewService {
      * {@code :441}, into the same {@code WS-CURDATE-DATA} area. The first read is redundant: nothing consumes
      * it before the second overwrites it. Both invocations are reproduced through the injected
      * {@code java.time.Clock} and the redundancy is made observable on the trace log rather than quietly
-     * dropped (severity Low; see the planned {@code DECISION_LOG.md}). Reading through the injected clock rather than
+     * dropped (severity Low; see the {@code DECISION_LOG.md}). Reading through the injected clock rather than
      * {@code LocalDateTime.now()} is what makes this paragraph deterministic and testable.</p>
      *
      * <p>The renderings are {@code MM/dd/yy} at {@code :443-447} - a two-digit year, taken by the reference
@@ -1202,7 +1202,7 @@ public class AccountViewService {
         // :441 MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA - the read the header actually consumes
         final LocalDateTime headerTimestamp = LocalDateTime.now(this.clock);
         if (LOG.isTraceEnabled()) {
-            // Intentional redundant re-read preserved for parity; see the planned DECISION_LOG.md
+            // Intentional redundant re-read preserved for parity; see the DECISION_LOG.md
             LOG.trace("CAVW header timestamp read twice at :434 and :441 (first={} second={})",
                     redundantFirstRead, headerTimestamp);
         }
@@ -1327,7 +1327,7 @@ public class AccountViewService {
                 }
                 // When the guard passes on FOUND-CUST-IN-MASTER alone - reachable only because of defect V1 -
                 // the source renders residual ACCOUNT-RECORD storage. Undefined storage has no Java
-                // counterpart, so the ten components above stay unset. See the planned DECISION_LOG.md.
+                // counterpart, so the ten components above stay unset. See the DECISION_LOG.md.
             }
 
             // :493 IF FOUND-CUST-IN-MASTER
@@ -1450,7 +1450,7 @@ public class AccountViewService {
             // :549 WHEN FLG-ACCTFILTER-NOT-OK / WHEN FLG-ACCTFILTER-BLANK
             context.cursorPosition = CURSOR_ON_ACCOUNT_FILTER;
         } else {
-            // :551 WHEN OTHER - Intentional redundant decision preserved for parity; see the planned DECISION_LOG.md
+            // :551 WHEN OTHER - Intentional redundant decision preserved for parity; see the DECISION_LOG.md
             context.cursorPosition = CURSOR_ON_ACCOUNT_FILTER;
         }
         // :555 MOVE DFHDFCOL TO ACCTSIDC
@@ -1741,7 +1741,7 @@ public class AccountViewService {
      * {@code :708-711}.</strong> The general claim that a downstream lookup must not run once an upstream one failed
      * is true here <em>only</em> of cross-reference to account; the account-to-customer transition is unguarded. This
      * is reproduced verbatim. No guard the source lacks is added, and the two dead guards are retained as written so
-     * that the paragraph map stays provable. Severity High; owed an entry in the planned {@code DECISION_LOG.md} and
+     * that the paragraph map stays provable. Severity High; owed an entry in the {@code DECISION_LOG.md} and
      * {@code TRACEABILITY_MATRIX.md}.</p>
      *
      * @param context the per-request work areas; the cross-reference, account and customer results plus the
@@ -1764,7 +1764,7 @@ public class AccountViewService {
         getAcctDataByAcct9300(context);
         // :704-706 IF DID-NOT-FIND-ACCT-IN-ACCTDAT / GO TO 9000-READ-ACCT-EXIT
         // Intentional no-op: the source SET is commented out at app/cbl/COACTVWC.cbl:L792; the guard can
-        // never fire, so the chain falls through to the customer lookup. See the planned DECISION_LOG.md defect V1.
+        // never fire, so the chain falls through to the customer lookup. See the DECISION_LOG.md defect V1.
         if (DID_NOT_FIND_ACCOUNT_IN_ACCTDAT.equals(context.returnMessage)) {
             readAcct9000Exit();
             return;
@@ -1775,7 +1775,7 @@ public class AccountViewService {
         getCustDataByCust9400(context);
         // :713-715 IF DID-NOT-FIND-CUST-IN-CUSTDAT / GO TO 9000-READ-ACCT-EXIT
         // Intentional no-op: the source SET is commented out at app/cbl/COACTVWC.cbl:L842; the guard can
-        // never fire. See the planned DECISION_LOG.md defect V1.
+        // never fire. See the DECISION_LOG.md defect V1.
         if (DID_NOT_FIND_CUSTOMER_IN_CUSTDAT.equals(context.returnMessage)) {
             readAcct9000Exit();
             return;
@@ -2137,7 +2137,7 @@ public class AccountViewService {
      */
     private AccountViewResult sendLongText(final ViewContext context) {
         // Intentional unreachable: all three PERFORM sites are commented out at
-        // app/cbl/COACTVWC.cbl:L768, :L818, :L867. See the planned DECISION_LOG.md defect V2.
+        // app/cbl/COACTVWC.cbl:L768, :L818, :L867. See the DECISION_LOG.md defect V2.
         // :897-902 EXEC CICS SEND TEXT FROM(WS-LONG-MSG) LENGTH(LENGTH OF WS-LONG-MSG) ERASE FREEKB
         final String text = padRight(context.longMessage, LONG_MESSAGE_LENGTH);
         LOG.debug("CAVW long-text diagnostic response of {} bytes issued", text.length());
@@ -2162,7 +2162,7 @@ public class AccountViewService {
      * defect V2.
      */
     private void sendLongTextExit() {
-        // Intentional unreachable: reached only from SEND-LONG-TEXT. See the planned DECISION_LOG.md defect V2.
+        // Intentional unreachable: reached only from SEND-LONG-TEXT. See the DECISION_LOG.md defect V2.
     }
 
     /**
@@ -2189,7 +2189,7 @@ public class AccountViewService {
      * {@code ABEND-MSG} holds blanks rather than {@code LOW-VALUES}; the program assigns it nowhere. Under a strict
      * reading the test at {@code :918} is therefore false and seventy-two blanks are sent. A thrown exception has no
      * terminal to send blanks to, so the unset message is treated as absent here and the substitution fires - a
-     * labelled deviation, severity Low, recorded in the class-level register and in the planned
+     * labelled deviation, severity Low, recorded in the class-level register and in the
      * {@code DECISION_LOG.md}.</p>
      *
      * <p>Reconciliation: the abend code here is the <strong>online</strong> four-character

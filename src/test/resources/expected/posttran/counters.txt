@@ -1,0 +1,8 @@
+processedCount=300
+rejectCount=38
+returnCode=4
+postedTransactionCount=262
+accountCount=50
+categoryBalanceCount=100
+createdCategoryBalanceCount=50
+rejectRecordWidth=430

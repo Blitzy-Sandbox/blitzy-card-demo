@@ -33,19 +33,18 @@ package com.cardemo.unit.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
-import static org.mockito.Mockito.mock;
 
-import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
 import com.cardemo.batch.jobs.BatchPipelineOrchestrator;
 import com.cardemo.batch.jobs.DailyTransactionPostingJob;
 import com.cardemo.batch.jobs.InterestCalculationJob;
+import com.cardemo.batch.readers.CombinedTransactionReader;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.ValidationException;
+import com.cardemo.observability.CorrelationIdFilter;
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -58,15 +57,18 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
@@ -88,11 +90,10 @@ import org.springframework.batch.core.repository.JobExecutionAlreadyRunningExcep
 import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.repository.JobRestartException;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.support.transaction.ResourcelessTransactionManager;
-import org.springframework.beans.factory.ListableBeanFactory;
-import org.springframework.beans.factory.support.StaticListableBeanFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.web.servlet.server.ServletWebServerFactory;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.task.SyncTaskExecutor;
 import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -150,6 +151,13 @@ final class BatchPipelineOrchestratorTest {
     /** The harness pipeline name, distinct from any configured value. */
     private static final String PIPELINE_NAME = "TEST-PIPELINE";
 
+    /** The only substrate the combine stage may run on; see finding M-01. */
+    private static final String READER_SOURCE_OBJECT_STORAGE = "object-storage";
+
+    /** The job parameter the pinned generation travels in; see finding C-04. */
+    private static final String SYSTRAN_KEY_JOB_PARAMETER =
+            CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER;
+
     /** A valid interest date: ten digits, no separator, two trailing zeros. */
     private static final String VALID_PARM_DATE = "2022071800";
 
@@ -162,26 +170,40 @@ final class BatchPipelineOrchestratorTest {
     /** How long a branch waits for its sibling before the parallelism assertion fails. */
     private static final int BARRIER_TIMEOUT_SECONDS = 20;
 
+    // Finding M-02: these four names were re-spelled here as string literals, mirroring literals the
+    // production class also re-spelled. Both sets are now read from the single public definition, so a
+    // rename in either direction fails this test rather than silently emptying a log field.
+
     /** Diagnostic key carrying the job instance identifier. */
-    private static final String MDC_KEY_JOB_INSTANCE_ID = "jobInstanceId";
+    private static final String MDC_KEY_JOB_INSTANCE_ID = CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID;
 
     /** Diagnostic key carrying the correlation identifier. */
-    private static final String MDC_KEY_CORRELATION_ID = "correlationId";
+    private static final String MDC_KEY_CORRELATION_ID = CorrelationIdFilter.MDC_KEY_CORRELATION_ID;
 
     /** Diagnostic key carrying the trace identifier. */
-    private static final String MDC_KEY_TRACE_ID = "traceId";
+    private static final String MDC_KEY_TRACE_ID = CorrelationIdFilter.MDC_KEY_TRACE_ID;
 
     /** Diagnostic key carrying the span identifier. */
-    private static final String MDC_KEY_SPAN_ID = "spanId";
+    private static final String MDC_KEY_SPAN_ID = CorrelationIdFilter.MDC_KEY_SPAN_ID;
 
     /** Thread-name prefix the split executor uses. */
     private static final String SPLIT_THREAD_NAME_PREFIX = "carddemo-pipeline-split-";
 
-    /** A representative object key stage 2 would create for {@code SYSTRAN(+1)}. */
-    private static final String SYSTRAN_KEY_ONE = "gdg/systran/generation=0000000000000000001/systran.dat";
+    /** The generation prefix stage 2 would publish for the {@code SYSTRAN(+1)} it created. */
+    private static final String SYSTRAN_GENERATION = "gdg/systran/generation=0000000000000000002";
 
-    /** A later object key, lexicographically greater than {@link #SYSTRAN_KEY_ONE}. */
-    private static final String SYSTRAN_KEY_TWO = "gdg/systran/generation=0000000000000000002/systran.dat";
+    /** A different generation, standing in for one a concurrent run left behind. */
+    private static final String OTHER_SYSTRAN_GENERATION = "gdg/systran/generation=0000000000000000009";
+
+    /** A representative object key stage 2 would create under {@link #SYSTRAN_GENERATION}. */
+    private static final String SYSTRAN_KEY_ONE = SYSTRAN_GENERATION + "/systran-0000000000000000001.dat";
+
+    /** A second object of the same generation, which stage 2 emits one per chunk. */
+    private static final String SYSTRAN_KEY_TWO = SYSTRAN_GENERATION + "/systran-0000000000000000002.dat";
+
+    /** An object of a different generation, which stage 3 must never resolve once a generation is pinned. */
+    private static final String OTHER_GENERATION_KEY =
+            OTHER_SYSTRAN_GENERATION + "/systran-0000000000000000001.dat";
 
     /** The step execution-context key the combined-transaction reader records its resolved key under. */
     private static final String READER_SYSTRAN_OBJECT_KEY_ENTRY = "carddemo.gdg.systran.objectKey";
@@ -250,6 +272,9 @@ final class BatchPipelineOrchestratorTest {
     /** The assembled pipeline job. */
     private Job pipelineJob;
 
+    /** The harness job repository, retained so a test can seed a newly created pipeline execution. */
+    private HarnessJobRepository harnessRepository;
+
     /** The assembled pipeline flow, kept so the topology can be inspected directly. */
     private Flow pipelineFlow;
 
@@ -265,7 +290,8 @@ final class BatchPipelineOrchestratorTest {
         creaStmt = new StubJob("CREASTMT", invocations);
         tranRept = new StubJob("TRANREPT", invocations);
 
-        final JobRepository repository = new HarnessJobRepository();
+        final HarnessJobRepository repository = new HarnessJobRepository();
+        harnessRepository = repository;
         final TaskExecutorJobLauncher pipelineLauncher = new TaskExecutorJobLauncher();
         pipelineLauncher.setJobRepository(repository);
         // Synchronous, so the pipeline runs on this thread and the diagnostic-context assertions that look
@@ -274,8 +300,10 @@ final class BatchPipelineOrchestratorTest {
         final JobLauncher launcher = new HarnessJobLauncher(pipelineLauncher);
         transactionManager = new RecordingTransactionManager();
 
+        // The substrate the combine stage requires (finding M-01): the orchestrator refuses that stage on
+        // any other value, so the harness supplies the one a real deployment declares.
         orchestrator = new BatchPipelineOrchestrator(postTran, intCalc, combTran, creaStmt, tranRept,
-                repository, launcher, transactionManager, PIPELINE_NAME);
+                repository, launcher, transactionManager, PIPELINE_NAME, READER_SOURCE_OBJECT_STORAGE);
 
         final Step postTranStep = orchestrator.batchPipelinePostTranStep();
         final Step intCalcStep = orchestrator.batchPipelineIntCalcStep();
@@ -304,6 +332,87 @@ final class BatchPipelineOrchestratorTest {
     }
 
     /**
+     * Runs the production pipeline flow with the aggregate return-code entry pre-seeded.
+     *
+     * <p>The job is composed around the <em>production</em> flow - the same five launcher steps and the same
+     * four gates - with one listener added that writes the entry before the first step runs. A stage cannot
+     * produce a value outside {0, 4, 8, 12}, so seeding is the only way to reach the gaps and the malformed
+     * state through a real execution rather than through a reflective call.
+     *
+     * @param seeded the value to place under the aggregate entry; an {@code Integer} for a band test and
+     *     any other type for the malformed-entry test
+     * @return the finished pipeline execution
+     */
+    private JobExecution runWithSeededAggregate(final Object seeded) {
+        harnessRepository.onFirstStep(execution ->
+                execution.getExecutionContext().put(PIPELINE_RETURN_CODE_ENTRY, seeded));
+        return run();
+    }
+
+    /**
+     * Invokes {@code BatchPipelineOrchestrator.gateFor(int)} reflectively.
+     *
+     * @param returnCode the return code to band
+     * @return the gate outcome the flow would transition on
+     */
+    private static String gateFor(final int returnCode) {
+        return invokePrivateBanding("gateFor", returnCode);
+    }
+
+    /**
+     * Invokes {@code BatchPipelineOrchestrator.outcomeFor(int)} reflectively.
+     *
+     * @param returnCode the return code to band
+     * @return the exit code the pipeline would publish
+     */
+    private static String outcomeFor(final int returnCode) {
+        return invokePrivateBanding("outcomeFor", returnCode);
+    }
+
+    /**
+     * Invokes {@code BatchPipelineOrchestrator.readAggregateReturnCode(ExecutionContext)} reflectively.
+     *
+     * @param context the execution context to read
+     * @return the aggregate return code under the documented policy
+     */
+    private static int readAggregate(final ExecutionContext context) {
+        try {
+            final Method method = BatchPipelineOrchestrator.class
+                    .getDeclaredMethod("readAggregateReturnCode", ExecutionContext.class);
+            method.setAccessible(true);
+            return ((Integer) method.invoke(null, context)).intValue();
+        } catch (final ReflectiveOperationException unreachable) {
+            throw new AssertionError("BatchPipelineOrchestrator.readAggregateReturnCode(ExecutionContext) "
+                    + "is the documented policy method; a rename must update this test rather than remove "
+                    + "the assertion.", unreachable);
+        }
+    }
+
+    /**
+     * Invokes one of the two private banding methods.
+     *
+     * <p>Both keep the same shape: one {@code int} in, one {@code String} out, no state. Sharing the
+     * reflection here means a rename fails with a message that names the method rather than with a bare
+     * {@link NoSuchMethodException}.
+     *
+     * @param methodName the banding method's name
+     * @param returnCode the return code to band
+     * @return the banded value
+     */
+    private static String invokePrivateBanding(final String methodName, final int returnCode) {
+        try {
+            final Method method =
+                    BatchPipelineOrchestrator.class.getDeclaredMethod(methodName, int.class);
+            method.setAccessible(true);
+            return (String) method.invoke(null, Integer.valueOf(returnCode));
+        } catch (final ReflectiveOperationException unreachable) {
+            throw new AssertionError("BatchPipelineOrchestrator." + methodName + "(int) is the documented "
+                    + "banding policy; a rename must update this test rather than remove the assertion.",
+                    unreachable);
+        }
+    }
+
+    /**
      * Makes the two stage-4 stubs wait for each other, so the test fails unless they overlap.
      *
      * @param concurrent set to {@code false} if either branch waited out its timeout
@@ -323,6 +432,14 @@ final class BatchPipelineOrchestratorTest {
         creaStmt.onExecute(rendezvous);
         tranRept.onExecute(rendezvous);
     }
+
+    // The read-only dataset verification topology is asserted where it is declared: the four Step beans and
+    // the Job that composes them live in com.cardemo.config.BatchConfig, so
+    // com.cardemo.unit.config.BatchConfigTest.DatasetVerificationTopology covers the bean methods and
+    // com.cardemo.integration.batch.DatasetVerificationJobTest launches the job against real
+    // infrastructure. A nest here would have been a second definition site for the same job - the exact
+    // duplication findings F-006 and TEST-012 were both closing - so this class asserts only the five-stage
+    // pipeline it declares.
 
     /** Stage order, the split, and the shape of the composed flow. */
     @Nested
@@ -526,6 +643,18 @@ final class BatchPipelineOrchestratorTest {
         }
 
         @Test
+        @DisplayName("an absent aggregate entry reads as 0 rather than as unknown")
+        void anAbsentAggregateEntryReadsAsZero() {
+            // The entry is written by the stage runner as each stage finishes, so before the first stage
+            // finishes it is absent - and absence has to mean "clean so far" rather than "unknown", or the
+            // gate after stage 1 would have nothing to decide on. Asserted on the policy method itself,
+            // because by the time a run ends the entry always exists and the case is unobservable.
+            assertThat(readAggregate(new ExecutionContext()))
+                    .as("an execution context with no aggregate entry reads as return code 0")
+                    .isZero();
+        }
+
+        @Test
         @DisplayName("a launcher step that dies before recording anything still halts the pipeline")
         void aStepThatRecordsNothingStillHalts() {
             // The stage runner is what records a stage's return code, so a step that fails before reaching it
@@ -599,23 +728,239 @@ final class BatchPipelineOrchestratorTest {
         }
     }
 
+    /** The precondition stage 3 imposes on the input substrate. */
+    @Nested
+    @DisplayName("the combine stage refuses the relational substrate (M-01)")
+    class SubstratePrecondition {
+
+        @Test
+        @DisplayName("a pipeline configured for the relation refuses stage 3 rather than loading from it")
+        void theRelationalSubstrateIsRefused() {
+            // FINDING M-01, severity Major. carddemo.batch.combined-transaction-reader.source defaults to
+            // `repository`, in which case stage 3's first leg IS the transaction relation that
+            // app/jcl/COMBTRAN.jcl:L41-L48 then loads into - so the stage reads the rows it is about to
+            // re-insert. This was previously documented as an operator prerequisite and left unchecked,
+            // which meant the pipeline's default path was the wrong one.
+            final JobRepository harnessRepository = new HarnessJobRepository();
+            final TaskExecutorJobLauncher pipelineLauncher = new TaskExecutorJobLauncher();
+            pipelineLauncher.setJobRepository(harnessRepository);
+            pipelineLauncher.setTaskExecutor(new SyncTaskExecutor());
+            final BatchPipelineOrchestrator relational = new BatchPipelineOrchestrator(
+                    postTran, intCalc, combTran, creaStmt, tranRept, harnessRepository,
+                    new HarnessJobLauncher(pipelineLauncher), new RecordingTransactionManager(),
+                    PIPELINE_NAME, "repository");
+            final Step postTranStep = relational.batchPipelinePostTranStep();
+            final Step intCalcStep = relational.batchPipelineIntCalcStep();
+            final Step combTranStep = relational.batchPipelineCombTranStep();
+            final Step creaStmtStep = relational.batchPipelineCreaStmtStep();
+            final Step tranReptStep = relational.batchPipelineTranReptStep();
+            final Flow relationalFlow = relational.batchPipelineFlow(postTranStep, intCalcStep, combTranStep,
+                    relational.batchPipelineStatementReportSplitFlow(creaStmtStep, tranReptStep));
+
+            final JobExecution execution = relational.launchPipeline(
+                    relational.batchPipelineJob(relationalFlow),
+                    VALID_PARM_DATE, VALID_START_DATE, VALID_END_DATE);
+
+            assertThat(execution.getStatus())
+                    .as("a refused precondition must stop the stream, not be logged and continued")
+                    .isEqualTo(BatchStatus.FAILED);
+            assertThat(invocations)
+                    .as("stage 3 must never have been launched: the point is that the wrong data is not "
+                            + "read, so refusing after the launch would be too late. Launched: %s",
+                            invocations)
+                    .noneSatisfy(invocation -> assertThat(invocation.stage()).isEqualTo("COMBTRAN"));
+            assertThat(execution.getAllFailureExceptions())
+                    .anySatisfy(failure -> assertThat(failure)
+                            .isInstanceOf(ValidationException.class)
+                            .hasMessageContaining("combined-transaction-reader.source")
+                            .hasMessageContaining("object-storage"));
+        }
+
+        @Test
+        @DisplayName("the object-storage substrate runs the stage, so the guard admits the correct value")
+        void theObjectStorageSubstrateIsAdmitted() {
+            intCalc.onExecute(execution -> publishNothing(execution));
+
+            final JobExecution execution = run();
+
+            assertThat(invocations)
+                    .as("the guard must not refuse the value a correct deployment declares")
+                    .anySatisfy(invocation -> assertThat(invocation.stage()).isEqualTo("COMBTRAN"));
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        }
+
+        /**
+         * Publishes an empty {@code SYSTRAN} generation, as a zero-rate interest run would.
+         *
+         * @param execution stage 2's execution
+         */
+        private void publishNothing(final JobExecution execution) {
+            execution.getExecutionContext().putLong(
+                    InterestCalculationJob.SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY, 0L);
+        }
+    }
+
+    /**
+     * The return codes that are <em>not</em> 0, 4, 8 or 12, and the two malformed states of the entry.
+     *
+     * <p><strong>Why this exists.</strong> The four canonical codes are what a stage produces, so the suite
+     * above covers everything the stage runner can emit. The aggregate is not a stage's code, though: it is a
+     * {@link Math#max} accumulated across five stages in an execution context that survives a restart, so a
+     * value between two canonical codes - or of the wrong type entirely - is reachable and had no asserted
+     * behaviour. Production banded such values silently, which is a defensible policy and was an
+     * <em>undocumented</em> one; a reader could not tell an intended band from an accident of comparison
+     * operators, and nothing would have noticed if the operators changed.
+     *
+     * <p>The policy is now stated on {@code gateFor} and {@code readAggregateReturnCode} and asserted here
+     * twice over: directly on the mapping, for every boundary and every gap value, and again through a real
+     * flow execution, because a mapping that is right in isolation is worth little if the gate reads the entry
+     * differently from the way this test reads it.
+     *
+     * <p><strong>Why reflection.</strong> The three methods are private static, and they should stay private:
+     * they are internal to one class's decision-making and exposing them for a test would widen the published
+     * surface to make it observable, which Rule 1 clause B's separation-of-concerns clause weighs against. The
+     * flow-execution assertions below are the ones that prove the policy is wired; the reflective ones prove
+     * it is total, which no reachable flow can, because a stage cannot produce a 5.
+     */
+    @Nested
+    @DisplayName("the return codes between and beyond the four, and a malformed aggregate entry")
+    class UnknownAndMalformedReturnCodes {
+
+        @ParameterizedTest(name = "return code {0} gates as {1} and publishes {2}")
+        @CsvSource({
+            // Below the reject band, negatives included: nothing has gone wrong.
+            "-1,PROCEED,COMPLETED",
+            "0,PROCEED,COMPLETED",
+            "1,PROCEED,COMPLETED",
+            "3,PROCEED,COMPLETED",
+            // The reject band. 4 is the source's own value; 5 to 7 are the gap above it.
+            "4,PROCEED WITH REJECTS,COMPLETED WITH REJECTS",
+            "5,PROCEED WITH REJECTS,COMPLETED WITH REJECTS",
+            "7,PROCEED WITH REJECTS,COMPLETED WITH REJECTS",
+            // The halt band. 8 is the source's own value; 9 to 11 are the gap above it.
+            "8,HALT,FAILED",
+            "9,HALT,FAILED",
+            "11,HALT,FAILED",
+            // The abend band is open-ended upward: a code worse than the worst named one is not better.
+            "12,ABEND,ABEND",
+            "13,ABEND,ABEND",
+            "2147483647,ABEND,ABEND",
+        })
+        @DisplayName("every integer bands monotonically, and the gate and the exit status always agree")
+        void everyIntegerBandsMonotonically(final int returnCode, final String gate, final String outcome) {
+            assertThat(gateFor(returnCode))
+                    .as("""
+                            The bands are thresholds, exactly as COND=(0,NE) tests a threshold rather than \
+                            enumerating the codes a program is known to set. A value in a gap keeps the \
+                            meaning of the named code it has reached and no more, so 5 is still "completed \
+                            with rejects" and 9 is still a failure rather than an abend.""")
+                    .isEqualTo(gate);
+            assertThat(outcomeFor(returnCode))
+                    .as("and the published exit status is banded on the same thresholds, so the gate the "
+                            + "flow transitions on can never disagree with the status the run reports")
+                    .isEqualTo(outcome);
+        }
+
+        @Test
+        @DisplayName("a seeded 5 proceeds with rejects through the real flow, and every stage still runs")
+        void aSeededFiveProceedsWithRejects() {
+            final JobExecution execution = runWithSeededAggregate(Integer.valueOf(5));
+
+            assertThat(invocations.stream().map(Invocation::stage).toList())
+                    .as("5 is in the reject band, and a reject does not stop the stream")
+                    .hasSize(5);
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            assertThat(execution.getExitStatus().getExitCode()).isEqualTo("COMPLETED WITH REJECTS");
+            assertThat(execution.getExecutionContext().getInt(PIPELINE_RETURN_CODE_ENTRY, -1))
+                    .as("the seeded value survives: Math.max over the stages' zeros leaves it unchanged, so "
+                            + "the aggregate is not quietly rounded to 4")
+                    .isEqualTo(5);
+        }
+
+        @Test
+        @DisplayName("a seeded 9 halts the real flow at the first gate, exactly as an 8 would")
+        void aSeededNineHalts() {
+            final JobExecution execution = runWithSeededAggregate(Integer.valueOf(9));
+
+            assertThat(invocations.stream().map(Invocation::stage).toList())
+                    .as("the gate after stage 1 reads 9, bands it as HALT, and no downstream stage is given "
+                            + "a step - a bypass, not a skipped status")
+                    .containsExactly("POSTTRAN");
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(execution.getExitStatus().getExitCode()).isEqualTo(ExitStatus.FAILED.getExitCode());
+            assertThat(execution.getExecutionContext().getString(PIPELINE_OUTCOME_ENTRY, ""))
+                    .isEqualTo("FAILED");
+        }
+
+        @Test
+        @DisplayName("a seeded 13 is reported as an abend, not as a plain failure")
+        void aSeededThirteenAbends() {
+            final JobExecution execution = runWithSeededAggregate(Integer.valueOf(13));
+
+            assertThat(invocations.stream().map(Invocation::stage).toList())
+                    .containsExactly("POSTTRAN");
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(execution.getExitStatus().getExitCode())
+                    .as("13 is above the abend floor, so it keeps the abend label that distinguishes 12 "
+                            + "from 8 rather than being flattened into a failure")
+                    .isEqualTo("ABEND");
+        }
+
+        @Test
+        @DisplayName("a non-integer aggregate entry abends with the key named, rather than reading as clean")
+        void aCorruptAggregateEntryAbends() {
+            final JobExecution execution = runWithSeededAggregate("not-an-integer");
+
+            assertThat(execution.getStatus())
+                    .as("""
+                            Only this class writes that entry, so a value of another type means the context \
+                            is not the one this run built - a manipulated restart, or a second writer. The \
+                            two alternatives are both wrong: getInt raises a bare ClassCastException from \
+                            inside a listener, naming neither the key nor the pipeline, and defaulting to 0 \
+                            would report a clean run over a corrupted context.""")
+                    .isEqualTo(BatchStatus.FAILED);
+            assertThat(execution.getAllFailureExceptions())
+                    .as("the abend carries the corpus's own abend code and names the offending entry")
+                    .anySatisfy(failure -> {
+                        assertThat(failure).isInstanceOf(FatalProcessingException.class);
+                        assertThat(((FatalProcessingException) failure).getAbendReason())
+                                .isEqualTo("CORRUPT PIPELINE RETURN CODE");
+                        assertThat(failure.getMessage())
+                                .contains(PIPELINE_RETURN_CODE_ENTRY)
+                                .contains("java.lang.String");
+                    });
+        }
+    }
+
     /** The generation handoff between {@code SYSTRAN(+1)} and {@code SYSTRAN(0)}. */
     @Nested
     @DisplayName("the generation handoff is published and then checked, never re-resolved")
     class GenerationHandoff {
 
         @Test
-        @DisplayName("the greatest key stage 2 created is pinned, and stage 3 reading it verifies")
-        void thePinnedKeyIsVerified() {
+        @DisplayName("the generation stage 2 created is handed to stage 3 before it launches, and verifies")
+        void thePinnedGenerationIsHandedOverBeforeLaunchAndVerified() {
             intCalc.onExecute(execution -> publishKeys(execution, SYSTRAN_KEY_ONE, SYSTRAN_KEY_TWO));
-            combTran.onExecute(execution -> recordResolvedKey(execution, SYSTRAN_KEY_TWO));
+            combTran.onExecute(execution -> recordResolvedKey(execution, SYSTRAN_KEY_ONE));
 
             final JobExecution execution = run();
 
+            // The pre-launch contract, asserted where it is observable: stage 3 was launched carrying the
+            // exact generation, so it could not have resolved a lexical-greatest of its own. This is what
+            // distinguishes a contract from the after-the-fact comparison below it.
+            assertThat(parametersFor("COMBTRAN")
+                    .getString(CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER))
+                    .as("stage 3 receives the exact generation as a job parameter, before it runs")
+                    .isEqualTo(SYSTRAN_GENERATION);
+            assertThat(parametersFor("POSTTRAN").getParameters())
+                    .as("no other stage receives it, because no other stage reads SYSTRAN")
+                    .doesNotContainKey(CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER);
+
             assertThat(execution.getExecutionContext()
                     .getString(PIPELINE_SYSTRAN_GENERATION_ENTRY, ""))
-                    .as("SYSTRAN(0) is the lexicographically greatest existing key")
-                    .isEqualTo(SYSTRAN_KEY_TWO);
+                    .as("the pinned value is the generation stage 2 created, not one of its objects: stage 2 "
+                            + "emits one object per chunk, so a single key is a fraction of SYSTRAN(0)")
+                    .isEqualTo(SYSTRAN_GENERATION);
             assertThat(execution.getExecutionContext()
                     .getString(PIPELINE_SYSTRAN_HANDOFF_ENTRY, ""))
                     .isEqualTo(HANDOFF_VERIFIED);
@@ -626,10 +971,10 @@ final class BatchPipelineOrchestratorTest {
         }
 
         @Test
-        @DisplayName("stage 3 reading a different key is an abend that names both")
-        void aDifferentKeyIsAnAbend() {
+        @DisplayName("stage 3 reading a different generation is an abend that names both")
+        void aDifferentGenerationIsAnAbend() {
             intCalc.onExecute(execution -> publishKeys(execution, SYSTRAN_KEY_ONE));
-            combTran.onExecute(execution -> recordResolvedKey(execution, SYSTRAN_KEY_TWO));
+            combTran.onExecute(execution -> recordResolvedKey(execution, OTHER_GENERATION_KEY));
 
             final JobExecution execution = run();
 
@@ -639,8 +984,8 @@ final class BatchPipelineOrchestratorTest {
             assertThat(execution.getExitStatus().getExitCode()).isEqualTo("ABEND");
             assertThat(execution.getAllFailureExceptions())
                     .anyMatch(failure -> failure instanceof FatalProcessingException
-                            && failure.getMessage().contains(SYSTRAN_KEY_ONE)
-                            && failure.getMessage().contains(SYSTRAN_KEY_TWO));
+                            && failure.getMessage().contains(SYSTRAN_GENERATION)
+                            && failure.getMessage().contains(OTHER_GENERATION_KEY));
             assertThat(invocations.stream().map(Invocation::stage).toList())
                     .as("stage 4 must not run on a broken handoff")
                     .containsExactly("POSTTRAN", "INTCALC", "COMBTRAN");
@@ -679,6 +1024,105 @@ final class BatchPipelineOrchestratorTest {
             assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
         }
 
+        @Test
+        @DisplayName("stage 3 is HANDED the pinned generation, as an identifying parameter")
+        void theCombineStageIsHandedThePinnedGeneration() {
+            // FINDING C-04, severity Critical. Pinning the key in the pipeline's own context and comparing
+            // afterwards leaves stage 3 free to resolve "newest generation" for itself in between, which a
+            // concurrent interest run redirects. The key is therefore given to stage 3 before it opens its
+            // input - the object-store equivalent of the catalogue resolving SYSTRAN(0) atomically at open.
+            final AtomicReference<JobParameters> handed = new AtomicReference<>();
+            intCalc.onExecute(execution -> publishKeys(execution, SYSTRAN_KEY_ONE, SYSTRAN_KEY_TWO));
+            combTran.onExecute(execution -> {
+                handed.set(execution.getJobParameters());
+                recordResolvedKey(execution, SYSTRAN_KEY_TWO);
+            });
+
+            run();
+
+            final JobParameters parameters = handed.get();
+            assertThat(parameters).as("stage 3 must have been launched").isNotNull();
+            assertThat(parameters.getString(SYSTRAN_KEY_JOB_PARAMETER))
+                    .as("the GENERATION stage 2 catalogued, handed over rather than re-derived. Not one of "
+                            + "its object keys: stage 2 emits one object per chunk under one generation "
+                            + "prefix, so pinning a key would hand stage 3 a fraction of SYSTRAN(0) and "
+                            + "report success")
+                    .isEqualTo(SYSTRAN_GENERATION);
+            assertThat(parameters.getParameters().get(SYSTRAN_KEY_JOB_PARAMETER).isIdentifying())
+                    .as("IDENTIFYING, and deliberately so: two runs over different interest generations are "
+                            + "two distinct stage-3 instances, so the generation belongs in the identity. The "
+                            + "pipeline's own instance is keyed on its own parameters, which is what keeps "
+                            + "one pipeline run meaning one run of each stage")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("a stage that published no generation prefix at all is recorded, not fabricated")
+        void anAbsentPrefixIsRecordedRatherThanFabricated() {
+            final AtomicReference<JobParameters> handed = new AtomicReference<>();
+            intCalc.onExecute(execution -> publishKeys(execution));
+            combTran.onExecute(execution -> handed.set(execution.getJobParameters()));
+
+            final JobExecution execution = run();
+
+            // Distinguish the two absences. An EMPTY generation is still a generation: stage 2 publishes the
+            // prefix it owns even when every disclosure rate was zero, which is the counterpart of
+            // DISP=(NEW,CATLG,DELETE) cataloguing an empty dataset, and that prefix is pinned and read as zero
+            // records. This case is the other one - stage 2 published no prefix whatsoever - and the pipeline
+            // records it rather than inventing a value it did not observe.
+            assertThat(handed.get().getParameters())
+                    .as("nothing is fabricated: the pipeline saw no generation, so it names none")
+                    .doesNotContainKey(SYSTRAN_KEY_JOB_PARAMETER);
+            assertThat(execution.getExecutionContext().getString(PIPELINE_SYSTRAN_GENERATION_ENTRY, ""))
+                    .as("and it is recorded where an operator reads the run, so the omission is evidence "
+                            + "rather than silence. The reader then means (0) as a standalone submission "
+                            + "does - the greatest existing generation - which the run's own warning states")
+                    .isEqualTo(HANDOFF_ABSENT);
+        }
+
+        @Test
+        @DisplayName("only stage 3 is handed the key; the other stages' parameters are untouched")
+        void onlyTheCombineStageIsHandedTheKey() {
+            final AtomicReference<JobParameters> postTranParameters = new AtomicReference<>();
+            final AtomicReference<JobParameters> intCalcParameters = new AtomicReference<>();
+            postTran.onExecute(execution -> postTranParameters.set(execution.getJobParameters()));
+            intCalc.onExecute(execution -> {
+                intCalcParameters.set(execution.getJobParameters());
+                publishKeys(execution, SYSTRAN_KEY_ONE);
+            });
+            combTran.onExecute(execution -> recordResolvedKey(execution, SYSTRAN_KEY_ONE));
+
+            run();
+
+            assertThat(postTranParameters.get().getParameters())
+                    .as("stage 1 runs before the generation exists, so a key here would be meaningless")
+                    .doesNotContainKey(SYSTRAN_KEY_JOB_PARAMETER);
+            assertThat(intCalcParameters.get().getParameters())
+                    .as("stage 2 CREATES the generation; being told which one to read would be circular")
+                    .doesNotContainKey(SYSTRAN_KEY_JOB_PARAMETER);
+        }
+
+        @Test
+        @DisplayName("stage 3 reading a generation it was told did not exist is an abend, not a pass")
+        void aSubstitutedGenerationUnderAnInstructedAbsenceIsAnAbend() {
+            // The arm that used to be accepted unconditionally. Stage 2 catalogued nothing, so stage 3 was
+            // told to read nothing; a key here means it read an EARLIER run's generation, which would load
+            // transactions this pipeline did not generate. Accepting it made the one case where a stale
+            // generation could be read the one case that was never checked.
+            intCalc.onExecute(execution -> publishKeys(execution));
+            combTran.onExecute(execution -> recordResolvedKey(execution, SYSTRAN_KEY_ONE));
+
+            final JobExecution execution = run();
+
+            assertThat(execution.getExecutionContext()
+                    .getString(PIPELINE_SYSTRAN_HANDOFF_ENTRY, ""))
+                    .isEqualTo(HANDOFF_MISMATCH);
+            assertThat(execution.getAllFailureExceptions())
+                    .anySatisfy(failure -> assertThat(failure)
+                            .isInstanceOf(FatalProcessingException.class));
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+        }
+
         /**
          * Publishes the {@code SYSTRAN} keys a stage-2 run would have created.
          *
@@ -691,6 +1135,12 @@ final class BatchPipelineOrchestratorTest {
             for (int index = 0; index < keys.length; index++) {
                 execution.getExecutionContext().putString(
                         InterestCalculationJob.SYSTRAN_GENERATION_KEYS_INDEX_PREFIX + index, keys[index]);
+            }
+            if (keys.length > 0) {
+                // Stage 2 publishes the generation it owns alongside the keys, and the generation is what the
+                // pipeline hands on: one generation, one dataset, however many chunk objects realise it.
+                execution.getExecutionContext().putString(
+                        InterestCalculationJob.SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY, SYSTRAN_GENERATION);
             }
         }
 
@@ -956,7 +1406,8 @@ final class BatchPipelineOrchestratorTest {
         private Throwable refusalOf(final Exception cause) {
             final BatchPipelineOrchestrator refusing = new BatchPipelineOrchestrator(
                     postTran, intCalc, combTran, creaStmt, tranRept, new HarnessJobRepository(),
-                    new RefusingJobLauncher(cause), new RecordingTransactionManager(), PIPELINE_NAME);
+                    new RefusingJobLauncher(cause), new RecordingTransactionManager(), PIPELINE_NAME,
+                    READER_SOURCE_OBJECT_STORAGE);
             try {
                 refusing.launchPipeline(pipelineJob, VALID_PARM_DATE, VALID_START_DATE, VALID_END_DATE);
             } catch (final RuntimeException thrown) {
@@ -979,187 +1430,89 @@ final class BatchPipelineOrchestratorTest {
     }
 
     /**
-     * The operator submission path: the runner that makes the six jobs reachable in a deployed application.
+     * How a job is started, now that this class declares no runner of its own.
      *
-     * <p>Before this existed, {@code launchPipeline} had no caller anywhere in {@code src/main}: the
-     * application declared six jobs, seventeen endpoints and {@code spring.batch.job.enabled=false} and could
-     * start none of them outside a test classpath. These assertions are what keeps that from returning.
+     * <p>Finding CFG-001, severity High. An earlier revision declared a property-gated
+     * {@code ApplicationRunner}, {@code carddemo.batch.launch}, and a dozen assertions here exercised it: that
+     * each of the six jobs could be submitted, that an unknown name was refused, that a web context was warned
+     * about. All of it launched a job from inside {@code SpringApplication.run}, which is a boot-time launch
+     * however narrowly the bean was gated, and the contract for this class is that nothing here runs on
+     * startup.
+     *
+     * <p>What the runner was written to solve was real - {@code launchPipeline} had no {@code src/main} caller,
+     * so a deployed application could start none of its six jobs - and it is still solved, by the framework's
+     * own {@code JobLauncherApplicationRunner} rather than by an authored one. These assertions pin the three
+     * properties that makes true: no runner is declared here, the six job names an operator submits are the
+     * ones this application answers to, and nothing on the launch path terminates the process.
      */
     @Nested
-    @DisplayName("the operator submission path can start each of the six jobs, and only those six")
+    @DisplayName("no runner is declared here; the framework's own launcher is the operator submission path")
     class OperatorSubmission {
 
-        /** The container the runner resolves the requested job from. */
-        private StaticListableBeanFactory beanFactory;
-
-        /** Registers the pipeline job and the five stage jobs under their published bean names. */
-        @BeforeEach
-        void registerJobs() {
-            beanFactory = new StaticListableBeanFactory();
-            beanFactory.addBean("batchPipelineJob", pipelineJob);
-            beanFactory.addBean("dailyTransactionPostingJob", postTran);
-            beanFactory.addBean("interestCalculationJob", intCalc);
-            beanFactory.addBean("combineTransactionsJob", combTran);
-            beanFactory.addBean("statementGenerationJob", creaStmt);
-            beanFactory.addBean("transactionReportJob", tranRept);
+        @Test
+        @DisplayName("this class declares no ApplicationRunner and no CommandLineRunner")
+        void noRunnerIsDeclared() {
+            assertThat(Stream.of(BatchPipelineOrchestrator.class.getDeclaredMethods())
+                    .filter(method -> ApplicationRunner.class.isAssignableFrom(method.getReturnType())
+                            || CommandLineRunner.class.isAssignableFrom(method.getReturnType()))
+                    .map(Method::getName))
+                    .as("a runner declared here launches during context refresh, which is precisely what "
+                            + "spring.batch.job.enabled=false exists to prevent; an operator submission goes "
+                            + "through the framework's own runner, switched on for that one process")
+                    .isEmpty();
         }
 
         @Test
-        @DisplayName("the whole stream is launchable, which is what the deployed application could not do")
-        void theWholeStreamIsLaunchable() throws Exception {
-            submit("batchPipelineJob");
+        @DisplayName("no carddemo.batch.launch property survives anywhere, in code or in any profile")
+        void theLaunchPropertyIsGone() throws Exception {
+            final List<Path> files = new ArrayList<>(List.of(
+                    Path.of("src", "main", "java", "com", "cardemo", "batch", "jobs",
+                            "BatchPipelineOrchestrator.java"),
+                    Path.of("src", "main", "java", "com", "cardemo", "config", "BatchConfig.java")));
+            for (final String profile : List.of("application.yml", "application-local.yml",
+                    "application-test.yml", "application-prod.yml")) {
+                files.add(Path.of("src", "main", "resources", profile));
+            }
 
-            assertThat(invocations.stream().map(Invocation::stage))
-                    .as("every stage of app/jcl's job stream ran from one command-line submission")
-                    .contains("POSTTRAN", "INTCALC", "COMBTRAN");
+            for (final Path file : files) {
+                final String live = Files.readAllLines(file).stream()
+                        .map(String::trim)
+                        .filter(line -> !line.startsWith("//") && !line.startsWith("#")
+                                && !line.startsWith("*") && !line.startsWith("/*"))
+                        .collect(Collectors.joining("\n"));
+                assertThat(live)
+                        .as("%s still reads or publishes the removed launch property, so a key that binds "
+                                + "nothing would be documented as though it did", file)
+                        .doesNotContain("carddemo.batch.launch");
+            }
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"dailyTransactionPostingJob", "interestCalculationJob",
-            "combineTransactionsJob", "statementGenerationJob", "transactionReportJob"})
-        @DisplayName("each single stage is launchable, the equivalent of running one JCL member")
-        void eachSingleStageIsLaunchable(final String jobBeanName) throws Exception {
-            submit(jobBeanName);
+        @ValueSource(strings = {"CARDDEMO-PIPELINE", "POSTTRAN", "INTCALC", "COMBTRAN", "CREASTMT",
+            "TRANREPT"})
+        @DisplayName("each submittable job name is the default the profile publishes and the code binds")
+        void eachSubmittableJobNameIsPublished(final String jobName) throws Exception {
+            // spring.batch.job.name is matched against Job.getName(), not against the bean name - verified
+            // against the compiled JobLauncherApplicationRunner of Spring Boot 3.5.11. Every job in this
+            // stream is named after the JCL member it replaces, so these six strings are what an operator
+            // actually types. A default that drifted from the published one would make the documented
+            // submission command resolve nothing and, because the runner treats an unmatched name as "skip",
+            // it would do so silently.
+            final String pipeline = Files.readString(Path.of("src", "main", "java", "com", "cardemo", "batch",
+                    "jobs", "BatchPipelineOrchestrator.java"));
+            final String profile = Files.readString(
+                    Path.of("src", "main", "resources", "application.yml"));
 
-            assertThat(invocations)
-                    .as("running one member must launch exactly that member")
-                    .hasSize(1);
-        }
-
-        @Test
-        @DisplayName("an unknown job name is refused, naming the six an operator may ask for")
-        void anUnknownJobNameIsRefused() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> submit("someOtherJob"))
-                    .withMessageContaining("batchPipelineJob")
-                    .withMessageContaining("dailyTransactionPostingJob")
-                    .withMessageContaining("someOtherJob");
-        }
-
-        @Test
-        @DisplayName("a blank job name is refused rather than resolving to something arbitrary")
-        void aBlankJobNameIsRefused() {
-            assertThatExceptionOfType(ValidationException.class).isThrownBy(() -> submit("  "));
-        }
-
-        @Test
-        @DisplayName("a malformed interest date is refused before anything is launched")
-        void aMalformedInterestDateIsRefused() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> orchestrator
-                            .batchOperatorLauncher(beanFactory, "batchPipelineJob", "2022-07-18",
-                                    VALID_START_DATE, VALID_END_DATE)
-                            .run(null));
-            assertThat(invocations).as("nothing may run when a parameter is unusable").isEmpty();
-        }
-
-        @Test
-        @DisplayName("a failed run throws, so the process exits non-zero for a shell or a scheduler")
-        void aFailedRunThrows() {
-            postTran.onExecute(execution -> execution.setStatus(BatchStatus.FAILED));
-
-            assertThatExceptionOfType(FatalProcessingException.class)
-                    .isThrownBy(() -> submit("batchPipelineJob"))
-                    .withMessageContaining("batchPipelineJob");
-        }
-
-        @Test
-        @DisplayName("return code 4 does not throw: completing with rejects is a success, not a failure")
-        void returnCodeFourDoesNotThrow() throws Exception {
-            // app/cbl/CBTRN02C.cbl:L202-L234 sets RC 4 when and only when the reject count exceeds zero, and
-            // the stream continues. A runner that treated the exit code rather than the status as the verdict
-            // would abort the pipeline on an ordinary rejecting run.
-            postTran.onExecute(execution -> execution.setExitStatus(new ExitStatus("COMPLETED WITH REJECTS")));
-
-            submit("batchPipelineJob");
-
-            assertThat(invocations.stream().map(Invocation::stage))
-                    .as("the stages after a rejecting POSTTRAN still run")
-                    .contains("INTCALC", "COMBTRAN");
-        }
-
-        @Test
-        @DisplayName("the runner is property-gated, so an ordinary boot declares no launcher at all")
-        void theRunnerIsPropertyGated() throws Exception {
-            final ConditionalOnProperty condition = BatchPipelineOrchestrator.class
-                    .getMethod("batchOperatorLauncher", ListableBeanFactory.class, String.class, String.class,
-                            String.class, String.class)
-                    .getAnnotation(ConditionalOnProperty.class);
-
-            assertThat(condition)
-                    .as("an unconditional runner would launch on every boot of every context, including the "
-                            + "web deployment and the slice tests that pin this class's bean inventory")
-                    .isNotNull();
-            assertThat(condition.name()).containsExactly("carddemo.batch.launch");
-        }
-
-        @Test
-        @DisplayName("a submission in a web context warns that the process will not end on its own")
-        void aSubmissionInAWebContextWarns() throws Exception {
-            // A submitted mainframe job ended and freed its initiator. A Boot web application does not, so a
-            // submission made without --spring.main.web-application-type=none finishes its work and then
-            // appears to hang. The warning is the only thing that can be done from here: the application type
-            // is decided before the context exists.
-            beanFactory.addBean("servletWebServerFactory", mock(ServletWebServerFactory.class));
-            final ListAppender<ILoggingEvent> appender = attachAppender();
-            try {
-                submit("dailyTransactionPostingJob");
-            } finally {
-                detachAppender(appender);
-            }
-
-            assertThat(appender.list.stream()
-                    .filter(event -> event.getLevel() == Level.WARN)
-                    .map(ILoggingEvent::getFormattedMessage))
-                    .as("the warning must name the property that fixes it, not merely observe the symptom")
-                    .anySatisfy(message ->
-                            assertThat(message).contains("spring.main.web-application-type=none"));
-        }
-
-        @Test
-        @DisplayName("a submission with no servlet container warns about nothing")
-        void aSubmissionWithNoServletContainerIsSilent() throws Exception {
-            final ListAppender<ILoggingEvent> appender = attachAppender();
-            try {
-                submit("dailyTransactionPostingJob");
-            } finally {
-                detachAppender(appender);
-            }
-
-            assertThat(appender.list.stream()
-                    .filter(event -> event.getLevel() == Level.WARN)
-                    .map(ILoggingEvent::getFormattedMessage))
-                    .as("a correctly formed submission must not be warned at")
-                    .noneSatisfy(message ->
-                            assertThat(message).contains("spring.main.web-application-type"));
-        }
-
-        /**
-         * Attaches a capturing appender to this class's logger.
-         *
-         * @return the attached appender, already started
-         */
-        private ListAppender<ILoggingEvent> attachAppender() {
-            final ListAppender<ILoggingEvent> appender = new ListAppender<>();
-            appender.start();
-            ((Logger) LoggerFactory.getLogger(BatchPipelineOrchestrator.class)).addAppender(appender);
-            return appender;
-        }
-
-        /**
-         * Detaches a capturing appender, so no test observes another's log events.
-         *
-         * @param appender the appender to detach
-         */
-        private void detachAppender(final ListAppender<ILoggingEvent> appender) {
-            ((Logger) LoggerFactory.getLogger(BatchPipelineOrchestrator.class)).detachAppender(appender);
-            appender.stop();
+            assertThat(pipeline + profile)
+                    .as("%s must appear as a default in the code that binds it or in the profile that "
+                            + "publishes it", jobName)
+                    .contains(jobName);
         }
 
         @Test
         @DisplayName("the submission path terminates no process: no System.exit and no shutdown hook")
         void theSubmissionPathTerminatesNoProcess() throws Exception {
-            // A runner that called System.exit would skip context close, abandoning the connection pool and
+            // A launcher that called System.exit would skip context close, abandoning the connection pool and
             // the final metrics flush. The outcome travels out as an exception instead, which Spring Boot
             // turns into a non-zero exit status by itself.
             // Comment lines are excluded, because the class documents the prohibition in prose and a plain
@@ -1170,20 +1523,9 @@ final class BatchPipelineOrchestratorTest {
                     .map(String::trim)
                     .filter(line -> !line.startsWith("//") && !line.startsWith("*")
                             && !line.startsWith("/*"))
-                    .collect(java.util.stream.Collectors.joining("\n"));
+                    .collect(Collectors.joining("\n"));
 
             assertThat(code).doesNotContain("System.exit").doesNotContain("addShutdownHook");
-        }
-
-        /**
-         * Submits one job through the operator path with valid parameters.
-         *
-         * @param jobBeanName the job to submit
-         * @throws Exception if the runner's contract declares one; none is expected
-         */
-        private void submit(final String jobBeanName) throws Exception {
-            orchestrator.batchOperatorLauncher(beanFactory, jobBeanName, VALID_PARM_DATE, VALID_START_DATE,
-                    VALID_END_DATE).run(null);
         }
     }
 
@@ -1194,7 +1536,26 @@ final class BatchPipelineOrchestratorTest {
      * @param thread the name of the thread the stage was launched on
      * @param diagnostic the diagnostic context as it stood on that thread, never {@code null}
      */
-    private record Invocation(String stage, String thread, Map<String, String> diagnostic) {
+    private record Invocation(String stage, String thread, Map<String, String> diagnostic,
+            JobParameters parameters) {
+    }
+
+    /**
+     * The parameters one stage was actually launched with.
+     *
+     * <p>This is what makes the pre-launch handoff of the {@code SYSTRAN} generation observable: the parameter
+     * set is fixed before the child's first step runs, so asserting on it asserts a contract rather than an
+     * after-the-fact comparison.
+     *
+     * @param stage the stage's display name
+     * @return that stage's launch parameters, never {@code null}
+     */
+    private JobParameters parametersFor(final String stage) {
+        return invocations.stream()
+                .filter(invocation -> stage.equals(invocation.stage()))
+                .map(Invocation::parameters)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("stage " + stage + " was never launched"));
     }
 
     /**
@@ -1277,7 +1638,7 @@ final class BatchPipelineOrchestratorTest {
             execution.setExitStatus(ExitStatus.COMPLETED);
             final Map<String, String> diagnostic = MDC.getCopyOfContextMap();
             log.add(new Invocation(name, Thread.currentThread().getName(),
-                    diagnostic == null ? new HashMap<>() : new HashMap<>(diagnostic)));
+                    diagnostic == null ? new HashMap<>() : new HashMap<>(diagnostic), parameters));
             execute(execution);
             return execution;
         }
@@ -1401,6 +1762,34 @@ final class BatchPipelineOrchestratorTest {
         private final Map<String, JobExecution> executions = new LinkedHashMap<>();
 
         /**
+         * Applied once, to the pipeline execution, as its first step execution is registered.
+         *
+         * <p>The seam exists for one reason and its position is exact. A test that needs the aggregate
+         * return-code entry pre-populated cannot seed it before the run: the pipeline's own outcome listener
+         * zeroes that entry in {@code beforeJob}, which is correct - a fresh run starts clean - so anything
+         * written earlier is discarded. Nor can it seed from a stage stub, which is handed the child execution
+         * and never the pipeline's. Registering a step execution is the first point after {@code beforeJob}
+         * at which the pipeline execution is reachable, and it happens before the stage runner reads the
+         * entry. Composing a job around the flow with an extra listener would also work and was rejected: it
+         * drops the pipeline's own outcome listener, so the test would assert against a topology production
+         * does not build.
+         */
+        private Consumer<JobExecution> onFirstStep = execution -> { };
+
+        /** Whether {@link #onFirstStep} has already fired, so it seeds once rather than once per step. */
+        private boolean firstStepSeen;
+
+        /**
+         * Registers the hook applied to the pipeline execution as its first step is registered.
+         *
+         * @param hook the hook; must not be {@code null}
+         */
+        void onFirstStep(final Consumer<JobExecution> hook) {
+            onFirstStep = hook;
+            firstStepSeen = false;
+        }
+
+        /**
          * The instance key for one name and parameter set.
          *
          * @param jobName the job name
@@ -1450,6 +1839,10 @@ final class BatchPipelineOrchestratorTest {
         @Override
         public synchronized void add(final StepExecution stepExecution) {
             stepExecution.setId(Long.valueOf(identifiers.incrementAndGet()));
+            if (!firstStepSeen) {
+                firstStepSeen = true;
+                onFirstStep.accept(stepExecution.getJobExecution());
+            }
         }
 
         @Override

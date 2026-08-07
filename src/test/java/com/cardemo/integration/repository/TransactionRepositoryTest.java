@@ -654,7 +654,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                             + "engineered away: substituting a serialised generator would change the "
                             + "generated values and forfeit baseline comparison. The chosen remedy is to "
                             + "let the primary key surface the collision, which the service layer maps to "
-                            + "a duplicate-record condition. Owed an entry in the planned DECISION_LOG.md. "
+                            + "a duplicate-record condition. Owed an entry in the DECISION_LOG.md. "
                             + "The base key IS "
                             + "unique - LISTCAT.txt:3595 carries no NONUNIQKEY - while the alternate key "
                             + "is not")

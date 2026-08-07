@@ -265,6 +265,46 @@ final class CorrelationPropagationTest {
         }
 
         @Test
+        @DisplayName("finding M-03: an unsampled decision reaches the wire as -00, not as -01")
+        void anUnsampledDecisionReachesTheWire() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_ID, "4bf92f3577b34da6a3ce929d0e0e4736");
+            MDC.put(CorrelationIdFilter.MDC_KEY_SPAN_ID, "00f067aa0ba902b7");
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_FLAGS, "00");
+
+            assertThat(traceParentHeader(intercept(outboundRequest("s3.localhost.localstack.cloud", "/b/k"))))
+                    .as("the octet was hard-coded to 01, so with the production sampling probability of one in "
+                            + "ten this header told nine consumers in ten to record a child of a trace this "
+                            + "process had already dropped")
+                    .containsExactly("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00");
+        }
+
+        @Test
+        @DisplayName("a sampled decision reaches the wire as -01, so both arms are exercised")
+        void aSampledDecisionReachesTheWire() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_ID, "4bf92f3577b34da6a3ce929d0e0e4736");
+            MDC.put(CorrelationIdFilter.MDC_KEY_SPAN_ID, "00f067aa0ba902b7");
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_FLAGS, "01");
+
+            assertThat(traceParentHeader(intercept(outboundRequest("sqs.localhost.localstack.cloud", "/q"))))
+                    .as("a flag that only ever reads 01 is indistinguishable from a hard-coded one, which is "
+                            + "why the negative case above is asserted beside this one")
+                    .containsExactly("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+        }
+
+        @Test
+        @DisplayName("an absent decision falls back to sampled, the deferred case being documented")
+        void anAbsentDecisionFallsBackToSampled() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_ID, "4bf92f3577b34da6a3ce929d0e0e4736");
+            MDC.put(CorrelationIdFilter.MDC_KEY_SPAN_ID, "00f067aa0ba902b7");
+
+            assertThat(traceParentHeader(intercept(outboundRequest("sns.localhost.localstack.cloud", "/t"))))
+                    .as("batch work reaches this interceptor without ever passing through the servlet filter, "
+                            + "so the entry can be absent; that is the deferred case, and it is reported as "
+                            + "sampled rather than suppressing the header")
+                    .containsExactly("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+        }
+
+        @Test
         @DisplayName("an absent span identifier produces no header, a trace alone being unusable")
         void anAbsentSpanIdentifierProducesNoHeader() {
             MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_ID, "4bf92f3577b34da6a3ce929d0e0e4736");

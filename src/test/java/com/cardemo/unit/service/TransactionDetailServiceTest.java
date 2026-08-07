@@ -125,7 +125,7 @@ import org.springframework.dao.QueryTimeoutException;
  * would be collected by neither plugin and would silently never run. Run it with
  * {@code ./mvnw -B -ntp test -Dtest=TransactionDetailServiceTest}, the whole unit tier with
  * {@code ./mvnw -B -ntp test}, and the gated build with
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}.
+ * {@code ./mvnw -B -ntp clean verify}.
  *
  * <p><strong>3. Key configs and defaults.</strong> A pure-JVM tier: no Spring context, no container, no
  * database and no network, so nothing here can reach an external endpoint. {@link MockitoExtension} supplies

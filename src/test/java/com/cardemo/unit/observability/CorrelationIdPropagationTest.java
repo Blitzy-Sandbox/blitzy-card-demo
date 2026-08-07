@@ -28,7 +28,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cardemo.observability.CorrelationIdFilter;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -45,8 +51,16 @@ import org.slf4j.MDC;
  * feeds a text-based log format, so an unvalidated value is a log-injection vector, and a restore that could
  * itself throw would leave a pooled thread mislabelled - so both are pinned here rather than left to the one
  * happy path the job exercises.
+ *
+ * <p>It also covers {@link CorrelationIdFilter#enterBatchScope(long, String)} and
+ * {@link CorrelationIdFilter#exitBatchScope()}, for the same reason one step further on. Findings H-02, H-03
+ * and M-02 were one root cause - five hand-rolled copies of park-and-restore, two of them under private
+ * re-spellings of the key names - and the remedy was to reduce them to the single implementation those helpers
+ * provide. A property proved once on that implementation holds for every caller; the same property proved five
+ * times in five job tests is five things that can drift apart again. The final nested class asserts the key
+ * names structurally, because key drift raises no error and produces no output.
  */
-@DisplayName("Diagnostic context propagation across a thread boundary (M-03)")
+@DisplayName("Diagnostic context propagation across a thread boundary (M-03, H-02, H-03, M-02)")
 class CorrelationIdPropagationTest {
 
     private static final String KEY = CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID;
@@ -204,6 +218,284 @@ class CorrelationIdPropagationTest {
             assertThat(CorrelationIdFilter.currentCorrelationId()).isNull();
             assertThat(CorrelationIdFilter.propagate("valid-id")).isNull();
             assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isEqualTo("valid-id");
+        }
+    }
+
+    /**
+     * Contract of the batch scope pair, which is the one implementation five job listeners now share.
+     *
+     * <p>Findings H-02, H-03 and M-02 were all one root cause: five hand-rolled copies of park-and-restore,
+     * two of them under private re-spellings of the key names. The copies diverged, and each assertion below
+     * pins the specific divergence that cost something. They are pinned here, on the mechanism, because a
+     * property proved once on the shared implementation holds for every caller, whereas the same property
+     * proved five times in five job tests is five things that can drift apart again.
+     */
+    @Nested
+    @DisplayName("The shared batch scope establishes two entries, fabricates none, and restores exactly")
+    class BatchScope {
+
+        /** A job instance identifier standing in for a real run. */
+        private static final long INSTANCE_ID = 4242L;
+
+        /** The identifier a listener would mint for a run that inherits none. */
+        private static final String MINTED = "combtran-77";
+
+        /** The deepest nesting any test in this class establishes. */
+        private static final int MAX_NESTING = 4;
+
+        /**
+         * Closes any scope a test opened, before the enclosing class clears the diagnostic context.
+         *
+         * <p>The displacement stack is thread-confined and this class runs its tests on one thread, so an
+         * unbalanced {@code enterBatchScope} would leave an entry that the <em>next</em> test's
+         * {@code exitBatchScope} consumed - and that next test's assertion would then fail for a reason
+         * belonging to a different test. Draining is bounded rather than conditional because an empty stack
+         * makes {@code exitBatchScope} a documented no-op, so an extra call is free and no termination
+         * condition has to be inferred. This is test hygiene, not a production concern: Spring Batch invokes
+         * {@code afterJob} from a {@code finally}, which is what guarantees the pairing at run time.
+         */
+        @AfterEach
+        void releaseAnyScopeLeftOpen() {
+            for (int depth = 0; depth < MAX_NESTING; depth++) {
+                CorrelationIdFilter.exitBatchScope();
+            }
+        }
+
+        @Test
+        @DisplayName("it publishes the instance identifier under the shared key, not a re-spelling")
+        void itPublishesTheInstanceIdentifier() {
+            CorrelationIdFilter.enterBatchScope(INSTANCE_ID, MINTED);
+
+            assertThat(MDC.get(KEY))
+                    .as("the key is CorrelationIdFilter's own constant, so it has exactly one definition")
+                    .isEqualTo(Long.toString(INSTANCE_ID));
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isEqualTo(MINTED);
+        }
+
+        @Test
+        @DisplayName("finding H-02: it fabricates no trace or span identifier, so no log names a false trace")
+        void itFabricatesNoTraceIdentity() {
+            CorrelationIdFilter.enterBatchScope(INSTANCE_ID, MINTED);
+
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_TRACE_ID))
+                    .as("an untraced batch run has no trace to name; a minted value would point a reader at "
+                            + "a trace no backend holds, which is worse than an absent field")
+                    .isNull();
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_SPAN_ID)).isNull();
+        }
+
+        @Test
+        @DisplayName("an inherited trace context is left exactly as the tracing bridge published it")
+        void anInheritedTraceContextSurvivesUntouched() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_TRACE_ID, "0af7651916cd43dd8448eb211c80319c");
+            MDC.put(CorrelationIdFilter.MDC_KEY_SPAN_ID, "b7ad6b7169203331");
+
+            CorrelationIdFilter.enterBatchScope(INSTANCE_ID, MINTED);
+            CorrelationIdFilter.exitBatchScope();
+
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_TRACE_ID))
+                    .as("the scope owns two entries and must not touch the two the tracer owns")
+                    .isEqualTo("0af7651916cd43dd8448eb211c80319c");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_SPAN_ID)).isEqualTo("b7ad6b7169203331");
+        }
+
+        @Test
+        @DisplayName("an inherited correlation identifier is kept, so a queue-driven run shares one chain")
+        void anInheritedCorrelationIdentifierIsKept() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_CORRELATION_ID, "from-the-request");
+
+            CorrelationIdFilter.enterBatchScope(INSTANCE_ID, MINTED);
+
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID))
+                    .as("request, queue message and batch run are one causal chain and share one identifier")
+                    .isEqualTo("from-the-request");
+        }
+
+        @Test
+        @DisplayName("exit removes what it established, so nothing leaks onto a pooled thread")
+        void exitRemovesWhatItEstablished() {
+            CorrelationIdFilter.enterBatchScope(INSTANCE_ID, MINTED);
+            CorrelationIdFilter.exitBatchScope();
+
+            assertThat(MDC.get(KEY))
+                    .as("a leaked entry would mislabel an unrelated later run on the same pooled thread")
+                    .isNull();
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isNull();
+        }
+
+        @Test
+        @DisplayName("finding H-03: exit puts back an inherited job instance identifier rather than removing it")
+        void exitRestoresAnInheritedJobInstanceIdentifier() {
+            MDC.put(KEY, "99");
+            MDC.put(CorrelationIdFilter.MDC_KEY_CORRELATION_ID, "pipeline-7");
+
+            CorrelationIdFilter.enterBatchScope(INSTANCE_ID, MINTED);
+            CorrelationIdFilter.exitBatchScope();
+
+            assertThat(MDC.get(KEY))
+                    .as("the entry belonged to the enclosing pipeline; an unconditional removal left every "
+                            + "later pipeline event on that thread unlabelled")
+                    .isEqualTo("99");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isEqualTo("pipeline-7");
+        }
+
+        @Test
+        @DisplayName("nested scopes each restore their own caller, not the absence of one")
+        void nestedScopesRestoreTheirOwnCaller() {
+            CorrelationIdFilter.enterBatchScope(1L, "pipeline-1");
+            CorrelationIdFilter.enterBatchScope(2L, "combtran-2");
+
+            assertThat(MDC.get(KEY)).isEqualTo("2");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID))
+                    .as("the inner scope inherits rather than replaces, so the whole stream shares one")
+                    .isEqualTo("pipeline-1");
+
+            CorrelationIdFilter.exitBatchScope();
+            assertThat(MDC.get(KEY))
+                    .as("this is the exact shape of H-03: a nested job must hand the thread back labelled")
+                    .isEqualTo("1");
+
+            CorrelationIdFilter.exitBatchScope();
+            assertThat(MDC.get(KEY)).isNull();
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isNull();
+        }
+
+        @Test
+        @DisplayName("an unmatched exit does nothing, because a diagnostic aid must never fail a run")
+        void anUnmatchedExitIsTolerated() {
+            MDC.put(KEY, "99");
+
+            assertThatCode(CorrelationIdFilter::exitBatchScope).doesNotThrowAnyException();
+
+            assertThat(MDC.get(KEY))
+                    .as("a listener whose beforeJob failed before the push left nothing to undo")
+                    .isEqualTo("99");
+        }
+
+        @Test
+        @DisplayName("a malformed minted identifier is refused before anything is written")
+        void aMalformedMintedIdentifierIsRefused() {
+            assertThatThrownBy(() -> CorrelationIdFilter.enterBatchScope(INSTANCE_ID, "bad id\nINFO fake"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("withheld")
+                    .hasMessageNotContaining("fake");
+
+            assertThat(MDC.get(KEY))
+                    .as("validation precedes every write, so a refused scope leaves the thread untouched")
+                    .isNull();
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isNull();
+        }
+
+        @Test
+        @DisplayName("the minted identifier is validated even when an inherited one makes it unused")
+        void theMintedIdentifierIsValidatedEvenWhenUnused() {
+            MDC.put(CorrelationIdFilter.MDC_KEY_CORRELATION_ID, "from-the-request");
+
+            assertThatThrownBy(() -> CorrelationIdFilter.enterBatchScope(INSTANCE_ID, null))
+                    .as("a defect reported only on the runs that happen to need the value is a defect that "
+                            + "reaches production")
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    /**
+     * Structural guard that the three unambiguous key names are spelled in exactly one place.
+     *
+     * <p>Finding M-02 was that two classes re-spelled them as private literals. A code review caught it once;
+     * a tree scan catches it every build. This is asserted structurally rather than behaviourally because key
+     * drift produces <em>no error and no output</em> - {@code logback-spring.xml} simply renders an empty
+     * field - so no runtime assertion can be relied on to notice it.
+     */
+    @Nested
+    @DisplayName("The MDC key names are spelled in exactly one file, and a tree scan proves it")
+    class KeyNamesHaveOneDefinition {
+
+        /**
+         * The keys with no legitimate second meaning anywhere in the tree.
+         *
+         * <p>{@code correlationId} is deliberately excluded: it is also the name of a JSON property on the
+         * failure envelope of every controller, which is a different contract that happens to share a
+         * spelling. Narrowing the scan to the three unambiguous keys keeps it exact rather than approximate.
+         */
+        private static final List<String> UNAMBIGUOUS_KEYS = List.of(
+                "\"jobInstanceId\"", "\"traceId\"", "\"spanId\"");
+
+        /** The one file entitled to spell them. */
+        private static final String OWNER = "CorrelationIdFilter.java";
+
+        @Test
+        @DisplayName("no class but the owner carries the literals, ignoring documentation that cites them")
+        void onlyTheOwnerSpellsTheKeys() {
+            for (final String key : UNAMBIGUOUS_KEYS) {
+                assertThat(filesCarrying(key))
+                        .as("%s must have one definition; a second spelling can be renamed in one place only "
+                                + "and then silently empties a log field", key)
+                        .containsExactly(OWNER);
+            }
+        }
+
+        /**
+         * The source files carrying a literal on a line of code, excluding comment and documentation lines.
+         *
+         * <p>Comment lines are skipped because the removal notes and the Javadoc of several classes cite these
+         * key names deliberately, and a scan that counted prose would make the assertion unsatisfiable without
+         * deleting the very documentation that explains the contract.
+         *
+         * @param literal the quoted key literal to look for
+         * @return the simple names of the files carrying it, sorted and deduplicated
+         */
+        private List<String> filesCarrying(final String literal) {
+            try (Stream<Path> tree = Files.walk(Path.of("src", "main", "java"))) {
+                return tree.filter(path -> path.getFileName().toString().endsWith(".java"))
+                        .filter(path -> codeLinesOf(path).anyMatch(line -> line.contains(literal)))
+                        .map(path -> path.getFileName().toString())
+                        .distinct()
+                        .sorted()
+                        .toList();
+            } catch (final IOException unreadable) {
+                throw new UncheckedIOException(unreadable);
+            }
+        }
+
+        /**
+         * The lines of one source file that are code rather than comment or documentation.
+         *
+         * @param path the source file
+         * @return its code lines, in order
+         */
+        private Stream<String> codeLinesOf(final Path path) {
+            final List<String> code = new ArrayList<>();
+            boolean inBlockComment = false;
+            for (final String line : readLines(path)) {
+                final String trimmed = line.strip();
+                if (inBlockComment) {
+                    inBlockComment = !trimmed.contains("*/");
+                    continue;
+                }
+                if (trimmed.startsWith("/*")) {
+                    inBlockComment = !trimmed.contains("*/");
+                    continue;
+                }
+                if (trimmed.startsWith("*") || trimmed.startsWith("//")) {
+                    continue;
+                }
+                code.add(line);
+            }
+            return code.stream();
+        }
+
+        /**
+         * Reads one source file, converting the checked failure into an unchecked one.
+         *
+         * @param path the source file
+         * @return its lines, in order
+         */
+        private List<String> readLines(final Path path) {
+            try {
+                return Files.readAllLines(path);
+            } catch (final IOException unreadable) {
+                throw new UncheckedIOException(unreadable);
+            }
         }
     }
 }

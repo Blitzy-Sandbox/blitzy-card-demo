@@ -136,7 +136,7 @@ import org.springframework.dao.DuplicateKeyException;
  * <pre>
  *   ./mvnw -B -ntp -Ddependency-check.skip=true test
  *   ./mvnw -B -ntp -Ddependency-check.skip=true -Dtest=TransactionCombineProcessorTest test
- *   ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ *   ./mvnw -B -ntp clean verify
  * </pre>
  *
  * <p><strong>Do not move or rename this file.</strong> A test class outside the two include sets matches
@@ -232,7 +232,7 @@ import org.springframework.dao.DuplicateKeyException;
  *   <li>This file has <strong>no retained-no-op instance of its own</strong>. The parity mandate does force
  *       some deliberately empty constructs elsewhere in the migration - they live in
  *       {@code InterestCalculationProcessorTest}, {@code StatementProcessorTest} and the {@code RejectCode}
- *       enum, each owed an entry in the planned {@code DECISION_LOG.md} and a row in the planned
+ *       enum, each owed an entry in the {@code DECISION_LOG.md} and a row in the
  *       {@code TRACEABILITY_MATRIX.md} - but
  *       inventing one here to look consistent would be fabrication, so none exists.</li>
  * </ul>
@@ -1405,7 +1405,7 @@ final class TransactionCombineProcessorTest {
                     .as("the whole of SORT FIELDS=(TRAN-ID,A) at app/jcl/COMBTRAN.jcl:L30 reduces to one "
                             + "in-process comparator. No temporary sort work file is created and no child "
                             + "process is started, so there is nothing to clean up and nothing to inject "
-                            + "into. This is a labelled mechanism substitution owed an entry in the planned "
+                            + "into. This is a labelled mechanism substitution owed an entry in "
                             + "DECISION_LOG.md, "
                             + "not a performance claim")
                     .isInstanceOf(Comparator.class);

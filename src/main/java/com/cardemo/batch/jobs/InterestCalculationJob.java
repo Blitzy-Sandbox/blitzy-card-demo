@@ -27,13 +27,19 @@
 package com.cardemo.batch.jobs;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.SequenceInputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -72,9 +78,12 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import com.cardemo.batch.GenerationPrefixContract;
 import com.cardemo.batch.processors.InterestCalculationProcessor;
 import com.cardemo.batch.writers.TransactionWriter;
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
+import com.cardemo.exception.FileAccessException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.entity.TransactionCategoryBalance;
@@ -170,7 +179,7 @@ import io.awspring.cloud.s3.S3Operations;
  * at all, so that program has no flush construct to reason about.
  *
  * <p><b>Numbering divergence, severity Low.</b> The folder requirements number this finding 3 while a
- * sibling prompt numbers it 2. It is owed a <em>single</em> entry in the planned {@code DECISION_LOG.md}, against the
+ * sibling prompt numbers it 2. It is owed a <em>single</em> entry in the {@code DECISION_LOG.md}, against the
  * Agent Action Plan claim it corrects. Neither number is asserted here, because asserting either would
  * contradict the other source.
  *
@@ -217,7 +226,7 @@ import io.awspring.cloud.s3.S3Operations;
  * {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}. The generation prefix is
  * {@code carddemo.aws.s3.gdg-prefixes.systran}, whose shipped value is {@code gdg/systran} and whose
  * comment names {@code app/jcl/DEFGDGB.jcl:L49} as its origin. This class binds the declared names.
- * The divergence is owed an entry in the planned {@code DECISION_LOG.md} under clause F.
+ * The divergence is owed an entry in the {@code DECISION_LOG.md} under clause F.
  *
  * <h2>Finding 4 - Low - three locator corrections</h2>
  *
@@ -274,12 +283,21 @@ import io.awspring.cloud.s3.S3Operations;
  *
  * <h2>Output and side effects</h2>
  *
- * <p>One object per chunk under the {@code SYSTRAN} generation prefix of the versioned batch-output
- * bucket, every record exactly {@value TransactionWriter#RECORD_LENGTH} bytes with no delimiter, so
- * each object's length is an exact multiple of the record length. {@code RECFM=F} at
+ * <p><b>Exactly one object per run</b> under the {@code SYSTRAN} generation prefix of the versioned
+ * batch-output bucket, every record exactly {@value TransactionWriter#RECORD_LENGTH} bytes with no
+ * delimiter, so the object's length is an exact multiple of the record length. {@code RECFM=F} at
  * {@code app/jcl/INTCALC.jcl:L39} is fixed <em>unblocked</em> - deliberately unlike every
  * {@code SORT} and {@code REPRO} output in the corpus, which use {@code RECFM=FB} - and the asymmetry
  * is preserved rather than normalised.
+ *
+ * <p>Chunks are staged as parts one level below the generation segment and concatenated into that single
+ * object at close, which is where the {@code CATLG} of {@code DISP=(NEW,CATLG,DELETE)} takes effect; an
+ * abnormal end applies the {@code DELETE} instead and leaves nothing catalogued. This class previously
+ * emitted one object per chunk and catalogued each as it went, so a multi-chunk run produced a generation
+ * of several objects - which {@code CombinedTransactionReader} refuses to read - and an abended run left
+ * objects behind that a later pipeline resolved to as though they were a complete interest run. Findings
+ * C-03 and C-05 respectively; see {@link #SYSTRAN_PART_KEYS_COUNT_CONTEXT_ENTRY} and
+ * {@link #settleSystranGeneration(JobExecution)}.
  *
  * <p>The {@code (+1)} relative generation reference becomes a monotonically increasing job-instance
  * segment, so lexicographic order and generation order coincide and a later
@@ -425,11 +443,11 @@ import io.awspring.cloud.s3.S3Operations;
  * They are documented from here because a reader of the <em>job</em> is who needs to know which flush the
  * source reaches; they are not re-declared here, because a second never-invoked copy of a method the
  * processor already owns would be the very dead code and duplication clauses B and C forbid. Severity
- * of that placement decision: <b>Low</b>, owed an entry in the planned {@code DECISION_LOG.md}.
+ * of that placement decision: <b>Low</b>, owed an entry in the {@code DECISION_LOG.md}.
  *
  * <p><b>Parity governs</b>, because clause B forbids <em>untracked</em> dead code and deferred-work markers "without
  * owners or tracking reference". Both members carry, in the processor, an explicit {@code intentional-no-op} marker,
- * a {@code path:line} citation and an entry in the planned {@code DECISION_LOG.md} and
+ * a {@code path:line} citation and an entry in the {@code DECISION_LOG.md} and
  * {@code TRACEABILITY_MATRIX.md}. Neither is abandoned residue; each is a documented faithful reproduction of a
  * paragraph that exists in the system of record. Deleting either would produce code that is marginally tidier and
  * demonstrably less traceable, failing a stated acceptance criterion to satisfy a stylistic one.
@@ -472,7 +490,7 @@ import io.awspring.cloud.s3.S3Operations;
  * <h2>How to build, run and test it</h2>
  *
  * <p>Build with {@code ./mvnw -B -ntp clean compile} and verify with
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}, on JDK 25 and Maven 3.9.11. The
+ * {@code ./mvnw -B -ntp clean verify}, on JDK 25 and Maven 3.9.11. The
  * compiler runs {@code -Xlint:all -Werror}, so a single warning {@code javac} emits - one deprecated builder
  * overload, one raw type, one dangling documentation comment - fails the build. An unused import is not one
  * of them: {@code javac} 25 publishes no {@code unused} lint key, so that prohibition is review-enforced.
@@ -624,7 +642,7 @@ public class InterestCalculationJob {
      * {@code SYSTRAN(+1)} generation. A downstream job reads this rather than re-resolving "latest",
      * so a concurrent run cannot redirect it.
      */
-    private static final String SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY =
+    public static final String SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY =
             "carddemo.systran.generation.prefix";
 
     /**
@@ -638,9 +656,11 @@ public class InterestCalculationJob {
      * by a comma, and the Javadoc justified that by asserting a key "never contains the separator because it is
      * built from digits, the configured prefix and a fixed suffix". <b>That justification was false.</b> The
      * prefix is {@code carddemo.aws.s3.gdg-prefixes.systran}, an externally configured value, and
-     * {@link #normalisePrefix(String)} only strips trailing separators and rejects an empty result - a prefix
-     * written {@code gdg,systran} passes validation and silently splits one key into two on read, so a
-     * downstream step would resolve a generation to object names that were never created.
+     * the prefix validator of the day only stripped trailing separators and rejected an empty result - a
+     * prefix written {@code gdg,systran} passed validation and silently split one key into two on read, so a
+     * downstream step would resolve a generation to object names that were never created. The shared grammar
+     * of {@link GenerationPrefixContract} is stricter but still does not forbid a comma, and deliberately so:
+     * see the next paragraph.
      *
      * <p>The remedy is structural rather than another validation rule, and that choice is the point. Rejecting
      * the comma would make correctness depend on a constraint this class imposes on configuration it does not
@@ -660,6 +680,55 @@ public class InterestCalculationJob {
     public static final String SYSTRAN_GENERATION_KEYS_INDEX_PREFIX = "carddemo.systran.generation.keys.";
 
     /**
+     * Job execution context entry counting the <em>parts</em> this run has durably staged so far. The part
+     * keys live one per entry under {@link #SYSTRAN_PART_KEYS_INDEX_PREFIX}, read with the same
+     * count-then-indexed-entries protocol as the generation keys above.
+     *
+     * <p><b>Finding C-03, severity Critical, RESOLVED - and this entry is the mechanism.</b> The writer used
+     * to upload one object per chunk directly into this run's generation and publish every one of them as a
+     * generation key. A generation is one sequential dataset: {@code app/jcl/INTCALC.jcl:L37}-{@code :L41}
+     * allocates {@code DSN=AWS.M2.CARDDEMO.SYSTRAN(+1)} with {@code DISP=(NEW,CATLG,DELETE)} and
+     * {@code DCB=(RECFM=F,LRECL=350)}, which is a single dataset written from open to close, not one dataset
+     * per commit interval. So a run of more than one chunk published a generation of several objects, and
+     * {@code CombinedTransactionReader} - correctly - refuses to read a generation holding more than one
+     * object, because concatenating siblings would impose an order no convention defines. The two components
+     * therefore disagreed, and the disagreement was invisible for any run small enough to fit one chunk,
+     * which is every unit test.
+     *
+     * <p>Parts are the resolution rather than a reader change. They are staged under a {@code parts/} segment
+     * <em>inside</em> this run's generation, concatenated in ordinal order into exactly one generation object
+     * at close, and then deleted - so what a downstream step ever sees under the generation prefix is one
+     * object, which is what the source produced. The part keys are deliberately <b>not</b> published as
+     * generation keys: the public entries above name the generation's contents, and during the run the
+     * generation has no contents yet.
+     *
+     * <p>Staging inside the generation prefix rather than beside it is also deliberate. A sibling segment
+     * such as {@code staging/} would sort <em>above</em> every zero-padded numeric generation, so the
+     * lexicographically-greatest resolution that finds the newest generation would have selected the staging
+     * area instead. Nesting keeps the generation namespace numeric.
+     */
+    private static final String SYSTRAN_PART_KEYS_COUNT_CONTEXT_ENTRY =
+            "carddemo.systran.part.keys.count";
+
+    /**
+     * Prefix of the indexed part-key entries described on {@link #SYSTRAN_PART_KEYS_COUNT_CONTEXT_ENTRY}.
+     * The entry for index {@code n} is this prefix followed by {@code n}.
+     */
+    private static final String SYSTRAN_PART_KEYS_INDEX_PREFIX = "carddemo.systran.part.keys.";
+
+    /**
+     * Job execution context entry holding the total byte count this run has staged across all its parts.
+     *
+     * <p>Recorded as the run proceeds so that promotion can state the length of the object it is about to
+     * create <em>before</em> streaming it, which the upload contract requires, and so that the summed actual
+     * lengths of the staged parts can be checked against an independently accumulated expectation. A part
+     * that vanished or was truncated between staging and promotion changes one of the two numbers and not
+     * the other, and that is the only way this class can detect it.
+     */
+    private static final String SYSTRAN_GENERATION_BYTES_CONTEXT_ENTRY =
+            "carddemo.systran.generation.bytes";
+
+    /**
      * Zero-padding width of both numeric key segments. Nineteen digits is the widest a signed 64-bit
      * value needs, so lexicographic and numeric order coincide for every possible identifier - which
      * is what makes a {@code (0)} generation read resolve to the newest generation. It matches the
@@ -667,9 +736,27 @@ public class InterestCalculationJob {
      */
     private static final int KEY_NUMBER_WIDTH = 19;
 
-    /** Key template: prefix, job instance, base name, ordinal, suffix. */
-    private static final String KEY_TEMPLATE =
-            "%s/%0" + KEY_NUMBER_WIDTH + "d/%s-%0" + KEY_NUMBER_WIDTH + "d%s";
+    /**
+     * Path segment holding this run's staged parts, one level below the generation segment. See
+     * {@link #SYSTRAN_PART_KEYS_COUNT_CONTEXT_ENTRY} for why it is nested rather than a sibling.
+     */
+    private static final String PART_SEGMENT = "parts";
+
+    /** Base name of a staged part. */
+    private static final String PART_BASE_NAME = "part";
+
+    /** Part key template: prefix, job instance, parts segment, base name, ordinal, suffix. */
+    private static final String PART_KEY_TEMPLATE =
+            "%s/%0" + KEY_NUMBER_WIDTH + "d/%s/%s-%0" + KEY_NUMBER_WIDTH + "d%s";
+
+    /**
+     * Key template of the one object a generation holds: prefix, job instance, base name, suffix.
+     *
+     * <p>No ordinal, because there is no second object to distinguish it from. That absence is the visible
+     * form of finding C-03's resolution: a generation is one dataset.
+     */
+    private static final String GENERATION_KEY_TEMPLATE =
+            "%s/%0" + KEY_NUMBER_WIDTH + "d/%s%s";
 
     /** Base name of every emitted object, from the generation-data-group name {@code SYSTRAN}. */
     private static final String OBJECT_BASE_NAME = "systran";
@@ -740,7 +827,7 @@ public class InterestCalculationJob {
      * second DD. The agent brief describes {@code XREFFIL1} as "a second logical view of the same dataset"; that is
      * true of the JCL's intent but not of the program's behaviour, so the brief is corrected here rather than
      * followed. Retained as a named constant so the unreferenced allocation is traceable and is reported at
-     * {@code DEBUG} by {@link #openCrossReferenceFile()} instead of vanishing silently; owed an entry in the planned
+     * {@code DEBUG} by {@link #openCrossReferenceFile()} instead of vanishing silently; owed an entry in the
      * {@code DECISION_LOG.md}.
      *
      * <p>The Java consequence is nil: both DDs would collapse onto
@@ -808,7 +895,7 @@ public class InterestCalculationJob {
      * <b>This is a legacy copy-and-paste defect in the diagnostic text and it is preserved verbatim,
      * not repaired.</b> The literal is part of the observable output the parity comparison is measured
      * against, so correcting it here would register as a diff. Severity <b>Medium</b>: an operator
-     * reading this line is pointed at the wrong dataset. It is owed an entry in the planned {@code DECISION_LOG.md}
+     * reading this line is pointed at the wrong dataset. It is owed an entry in the {@code DECISION_LOG.md}
      * alongside the other preserved legacy defects.
      */
     private static final String MSG_ERROR_OPENING_DISCGRP = "ERROR OPENING DALY REJECTS FILE";
@@ -1093,7 +1180,7 @@ public class InterestCalculationJob {
      * to the wrong location, which is precisely what clause D's least-privilege standard forbids. The
      * agent brief's instruction to "put a documented default on every {@code @Value}" is therefore
      * honoured for the job name, the chunk size and the generation prefix, and consciously not honoured
-     * for the bucket. Severity of the divergence: <b>Low</b>; owed an entry in the planned {@code DECISION_LOG.md}.
+     * for the bucket. Severity of the divergence: <b>Low</b>; owed an entry in the {@code DECISION_LOG.md}.
      */
     private final String batchOutputBucket;
 
@@ -1161,8 +1248,7 @@ public class InterestCalculationJob {
         this.jobName = requireText(jobName, "carddemo.batch.jobs.intcalc.name");
         this.chunkSize = requirePositive(chunkSize, "carddemo.batch.intcalc.chunk-size");
         this.batchOutputBucket = requireText(batchOutputBucket, "carddemo.aws.s3.batch-output-bucket");
-        this.systranPrefix = normalisePrefix(
-                requireText(systranPrefix, "carddemo.aws.s3.gdg-prefixes.systran"));
+        this.systranPrefix = requireSystranPrefix(systranPrefix);
     }
 
     /**
@@ -1241,25 +1327,34 @@ public class InterestCalculationJob {
     }
 
     /**
-     * Strips any trailing separator from the configured generation prefix so that
-     * {@link #composeObjectKey(long, long)} produces exactly one separator between segments whether the
-     * property is written {@code gdg/systran} or {@code gdg/systran/}. A doubled separator would create a
-     * distinct, empty-named folder in the object store and break the lexicographic ordering that makes
-     * a {@code (0)} generation read resolve to the newest generation.
+     * Validates the configured {@code SYSTRAN} generation prefix against the one shared grammar.
      *
-     * @param prefix the configured, already non-blank prefix
-     * @return the prefix without a trailing separator
+     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This class used to carry its own
+     * {@code normalisePrefix}, which stripped trailing separators and refused an empty result and checked
+     * nothing else - no whitespace, no leading separator, no doubled separator, no traversal segment, no
+     * character range. It was the weakest of six divergent validators.
+     * {@link GenerationPrefixContract#requireRelativePrefix(String, String)} is now the only grammar, and it
+     * <em>refuses</em> a trailing separator rather than trimming one: silent normalisation means the value an
+     * operator wrote and the value in force can differ with nothing reporting it. The declared value is
+     * {@code gdg/systran}, which satisfies the grammar, so no shipped configuration changes behaviour.
+     *
+     * <p>The shared grammar raises {@link IllegalArgumentException}, which is what six of the seven original
+     * validators raised. This class reports every configuration defect as an abend instead - see
+     * {@link #requireText(String, String)} and {@link #requirePositive(int, String)} - so the shared failure
+     * is translated rather than allowed to escape in a second shape. The cause is preserved.
+     *
+     * @param prefix the configured value
+     * @return the prefix unchanged, once it satisfies the shared grammar
+     * @throws FatalProcessingException if the prefix is absent, blank or malformed
      */
-    private static String normalisePrefix(final String prefix) {
-        String normalised = prefix;
-        while (normalised.endsWith("/")) {
-            normalised = normalised.substring(0, normalised.length() - 1);
-        }
-        if (normalised.isEmpty()) {
+    private static String requireSystranPrefix(final String prefix) {
+        try {
+            return GenerationPrefixContract.requireRelativePrefix(
+                    prefix, "carddemo.aws.s3.gdg-prefixes.systran");
+        } catch (final IllegalArgumentException invalid) {
             throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "INVALID CONFIGURATION",
-                    "Property carddemo.aws.s3.gdg-prefixes.systran must name a prefix, not only separators.");
+                    invalid.getMessage(), invalid);
         }
-        return normalised;
     }
 
     /**
@@ -1469,7 +1564,7 @@ public class InterestCalculationJob {
      * arithmetic ({@link FileStatusMapper#applResultForGuard(String)}) and of the status rendering
      * ({@link FileStatusMapper#displayIoStatus(String)}); only the choice of terminal type is local, and
      * it is local because the source made it so. Severity of the divergence from the sibling precedent:
-     * Low, and owed an entry in the planned {@code DECISION_LOG.md}.
+     * Low, and owed an entry in the {@code DECISION_LOG.md}.
      *
      * @param ioStatus the status the operation reported, {@code '00'} on success
      * @param logicalName the DD name, for the success trace
@@ -1668,7 +1763,7 @@ public class InterestCalculationJob {
      * realised as <em>release and confirm</em>: the same bounded probe as the open, which makes the guard genuinely
      * reachable - a run that exhausted or broke the connection pool reports {@code '35'} here and abends, which is
      * the class of end-of-run failure the source's close guard exists to catch. Cost is one bounded query per dataset
-     * per run. Owed an entry in the planned {@code DECISION_LOG.md}.
+     * per run. Owed an entry in the {@code DECISION_LOG.md}.
      *
      * @throws FatalProcessingException if the driving dataset is no longer reachable at end of run
      */
@@ -1791,25 +1886,18 @@ public class InterestCalculationJob {
             failure = cause;
         }
 
+        // The staged parts are reported here; whether they become a catalogued generation is decided by
+        // settleSystranGeneration, which runs after every CLOSE paragraph and reads the execution's own
+        // outcome. Separating the two is what makes the DISP=(NEW,CATLG,DELETE) abnormal disposition of
+        // app/jcl/INTCALC.jcl:L37 expressible at all: this method cannot know yet whether the run ended
+        // normally, and cataloguing from here is precisely the mistake finding C-05 reported.
         final ExecutionContext context = jobExecution.getExecutionContext();
-        if (!context.containsKey(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY)) {
-            // Nothing was emitted: publish the generation this run owns anyway, so a downstream step
-            // reads this run's (empty) generation instead of resolving "latest" to an earlier one.
-            context.putString(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY,
-                    composeGenerationPrefix(jobExecution.getJobInstance().getInstanceId()));
-            context.putLong(SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY, 0L);
-            LOG.info("{} closed with no generation object; every disclosure rate was zero, so "
-                    + "app/cbl/CBACT04C.cbl:L214 suppressed every write", DD_TRANSACT);
-        } else if (publishedGenerationKeyCount(context) == 0) {
-            ioStatus = OBJECT_STORE_IO_STATUS;
-        } else {
-            // The count, not the keys. A key carries the configured prefix and the generation, and this line
-            // is an operator-visible end-of-run marker; the exact object names are already in the context for
-            // a downstream step that needs them, so naming them again here only widens what a log carries.
-            LOG.info("{} closed; generation {} holds {} objects", DD_TRANSACT,
-                    context.getString(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY),
-                    Integer.valueOf(publishedGenerationKeyCount(context)));
-        }
+        final int staged = publishedPartKeyCount(context);
+        // The count, not the keys. A key carries the configured prefix and the generation, and this line is
+        // an operator-visible end-of-run marker; the exact object names are already in the context for a
+        // downstream step that needs them, so naming them again here only widens what a log carries.
+        LOG.info("{} closed with {} staged part(s) awaiting cataloguing", DD_TRANSACT,
+                Integer.valueOf(staged));
 
         guardFileOperation(ioStatus, DD_TRANSACT, MSG_ERROR_CLOSING_TRANFILE, REASON_CLOSE_FAILED, failure);
     }
@@ -1891,20 +1979,32 @@ public class InterestCalculationJob {
     }
 
     /**
-     * The concrete object key of one emitted part, within this run's generation.
+     * The key of one staged part of this run's generation.
      *
-     * <p>Both numeric segments are zero-padded to {@value #KEY_NUMBER_WIDTH} digits so that keys sort in
-     * creation order, which is what makes concatenating the parts in key order reproduce the sequential
-     * dataset byte for byte. The shape matches {@link TransactionWriter}'s own key template, so the two
-     * generation writers in this codebase produce comparable layouts.
+     * <p>Deterministic in the job instance and the ordinal, and that is load-bearing for restart. The ordinal
+     * counter lives in the step execution context, which Spring Batch persists as part of the chunk
+     * transaction, so a chunk that rolled back never advanced it: the restarted attempt re-reads the same
+     * items, derives the same ordinal, and overwrites the orphaned part rather than adding a second one. No
+     * truncation bookkeeping is needed because an object store PUT replaces rather than appends.
      *
      * @param jobInstanceId the instance identifier of the running job, the generation segment
      * @param ordinal the one-based ordinal of this part within the generation
-     * @return the object key, never {@code null}
+     * @return the part key, never {@code null}
      */
-    private String composeObjectKey(final long jobInstanceId, final long ordinal) {
-        return String.format(Locale.ROOT, KEY_TEMPLATE, systranPrefix, Long.valueOf(jobInstanceId),
-                OBJECT_BASE_NAME, Long.valueOf(ordinal), OBJECT_SUFFIX);
+    private String composePartKey(final long jobInstanceId, final long ordinal) {
+        return String.format(Locale.ROOT, PART_KEY_TEMPLATE, systranPrefix, Long.valueOf(jobInstanceId),
+                PART_SEGMENT, PART_BASE_NAME, Long.valueOf(ordinal), OBJECT_SUFFIX);
+    }
+
+    /**
+     * The key of the single object this run's generation holds once it has been catalogued.
+     *
+     * @param jobInstanceId the instance identifier of the running job, the generation segment
+     * @return the generation's one object key, never {@code null}
+     */
+    private String composeGenerationObjectKey(final long jobInstanceId) {
+        return String.format(Locale.ROOT, GENERATION_KEY_TEMPLATE, systranPrefix,
+                Long.valueOf(jobInstanceId), OBJECT_BASE_NAME, OBJECT_SUFFIX);
     }
 
 
@@ -1947,37 +2047,6 @@ public class InterestCalculationJob {
     }
 
     /**
-     * Publishes the generation this run created into the job execution context, so a later job or step
-     * reads back exactly these keys.
-     *
-     * <p>This is the substitute for the catalogue entry that closing a {@code DISP=(NEW,CATLG,DELETE)}
-     * dataset would create. <b>A downstream consumer must read these entries rather than re-resolving
-     * "latest"</b>: re-resolving would race a concurrent run and could merge a generation this run did not
-     * produce, which the relative reference {@code SYSTRAN(0)} could never do on the mainframe because the
-     * catalogue is updated atomically at close.
-     *
-     * <p>The context is per-execution, which is what makes the accumulation here correct without any field
-     * to hold it - the reason the ordinal counter lives in the step execution context too. Each key is stored
-     * in its own entry, indexed by creation order, with the count kept alongside it; see
-     * {@link #SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY} for the read protocol and for the finding that
-     * replaced the delimited form this method used to write.
-     *
-     * @param jobExecution the running execution whose context is written
-     * @param jobInstanceId the instance identifier forming the generation segment
-     * @param objectKey the key just created
-     */
-    private void publishGeneration(final JobExecution jobExecution, final long jobInstanceId,
-            final String objectKey) {
-
-        final ExecutionContext context = jobExecution.getExecutionContext();
-        context.putString(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY,
-                composeGenerationPrefix(jobInstanceId));
-        final int published = publishedGenerationKeyCount(context);
-        context.putString(generationKeysIndexEntry(published), objectKey);
-        context.putLong(SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY, published + 1L);
-    }
-
-    /**
      * Renders the job execution context entry name holding the object key at {@code index}.
      *
      * <p>Rendered with {@link Integer#toString(int)} rather than a formatted width, because the entry name is
@@ -1989,6 +2058,70 @@ public class InterestCalculationJob {
      */
     private static String generationKeysIndexEntry(final int index) {
         return SYSTRAN_GENERATION_KEYS_INDEX_PREFIX + Integer.toString(index);
+    }
+
+    /**
+     * Records a staged part against the run, so that promotion can find every part in ordinal order and
+     * discard can delete every part it staged.
+     *
+     * <p>The generation prefix is published here as well as the part, because a run that fails before
+     * promotion must still be identifiable as having owned that generation - the discard path needs to know
+     * which prefix to clean.
+     *
+     * @param jobExecution the running execution whose context is written
+     * @param jobInstanceId the instance identifier forming the generation segment
+     * @param partKey the part key just created
+     * @param byteCount the number of bytes that part holds
+     */
+    private void publishPart(final JobExecution jobExecution, final long jobInstanceId,
+            final String partKey, final int byteCount) {
+
+        final ExecutionContext context = jobExecution.getExecutionContext();
+        context.putString(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY,
+                composeGenerationPrefix(jobInstanceId));
+        final int staged = publishedPartKeyCount(context);
+        context.putString(partKeysIndexEntry(staged), partKey);
+        context.putLong(SYSTRAN_PART_KEYS_COUNT_CONTEXT_ENTRY, staged + 1L);
+        context.putLong(SYSTRAN_GENERATION_BYTES_CONTEXT_ENTRY,
+                context.getLong(SYSTRAN_GENERATION_BYTES_CONTEXT_ENTRY, 0L) + byteCount);
+    }
+
+    /**
+     * Renders the job execution context entry name holding the part key at {@code index}.
+     *
+     * @param index zero-based position of the part in creation order
+     * @return the context entry name for that position
+     */
+    private static String partKeysIndexEntry(final int index) {
+        return SYSTRAN_PART_KEYS_INDEX_PREFIX + Integer.toString(index);
+    }
+
+    /**
+     * Reads how many parts have been staged into a job execution context so far.
+     *
+     * @param context the job execution context to read
+     * @return the number of parts already staged, never negative
+     */
+    private static int publishedPartKeyCount(final ExecutionContext context) {
+        return Math.toIntExact(context.getLong(SYSTRAN_PART_KEYS_COUNT_CONTEXT_ENTRY, 0L));
+    }
+
+    /**
+     * Reads the staged part keys back in ordinal order.
+     *
+     * @param context the job execution context to read
+     * @return the part keys in creation order, empty when nothing was staged
+     */
+    private static List<String> stagedPartKeys(final ExecutionContext context) {
+        final int staged = publishedPartKeyCount(context);
+        final List<String> keys = new ArrayList<>(staged);
+        for (int index = 0; index < staged; index++) {
+            final String key = context.getString(partKeysIndexEntry(index), null);
+            if (key != null && !key.isEmpty()) {
+                keys.add(key);
+            }
+        }
+        return keys;
     }
 
     /**
@@ -2004,6 +2137,367 @@ public class InterestCalculationJob {
      */
     private static int publishedGenerationKeyCount(final ExecutionContext context) {
         return Math.toIntExact(context.getLong(SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY, 0L));
+    }
+
+    /**
+     * Catalogues this run's generation on success, or leaves the object store exactly as it found it on
+     * failure. Runs once per execution, after every {@code CLOSE} paragraph.
+     *
+     * <p><b>Finding C-05, severity Critical, RESOLVED.</b>
+     * {@code app/jcl/INTCALC.jcl:L37}-{@code :L41} allocates the output with
+     * {@code DISP=(NEW,CATLG,DELETE)}. The third positional sub-parameter is the <em>abnormal</em>
+     * disposition, and it says {@code DELETE}: a step that ends abnormally leaves <b>no catalogued
+     * generation</b> behind. The previous implementation uploaded each chunk as it went, so a run that
+     * abended after its third chunk left three catalogued objects that no successful run had produced and
+     * that nothing would ever remove. The next pipeline execution then resolved "the newest generation" to
+     * the wreckage of a failed one, and read it as though it were a complete interest run.
+     *
+     * <p>The two dispositions are therefore both implemented here, and which one applies is decided from the
+     * execution's own outcome rather than from whether this method was reached:
+     *
+     * <ul>
+     *   <li><b>Normal end</b> - the staged parts are concatenated, in ordinal order, into the one object the
+     *       generation holds, and only then are the parts deleted. The generation becomes readable at that
+     *       instant and not before, which is what {@code CATLG} at close means.</li>
+     *   <li><b>Abnormal end</b> - every staged part is deleted, along with the generation object should a
+     *       promotion have got that far, and the published generation keys are withdrawn so that no
+     *       downstream step can be handed a generation this run did not complete.</li>
+     * </ul>
+     *
+     * <p>It does not throw. It is called from a {@code finally} inside
+     * {@link JobExecutionListener#afterJob(JobExecution)}, where Spring Batch catches and logs anything
+     * raised rather than failing the job with it, and where throwing would additionally skip the exit-status
+     * and diagnostic-context handling that follows. A promotion failure is instead <em>recorded</em> against
+     * the execution - preserved with its cause, logged, and reflected in the status a caller inspects - and
+     * then the abnormal disposition is applied, because a generation that could not be catalogued completely
+     * must not be left half catalogued.
+     *
+     * @param jobExecution the finishing execution
+     */
+    private void settleSystranGeneration(final JobExecution jobExecution) {
+        final ExecutionContext context = jobExecution.getExecutionContext();
+        final long jobInstanceId = jobExecution.getJobInstance().getInstanceId();
+        // The step execution argument is null deliberately: containsAbend already scans the job's own
+        // failure list, and by afterJob time a step abend has been propagated onto it.
+        final boolean abnormal = jobExecution.getStatus().isUnsuccessful()
+                || containsAbend(jobExecution, null);
+
+        if (abnormal) {
+            discardSystranGeneration(jobExecution, jobInstanceId, context);
+            persistExecutionContext(jobExecution);
+            return;
+        }
+
+        try {
+            promoteSystranGeneration(jobExecution, jobInstanceId, context);
+            persistExecutionContext(jobExecution);
+        } catch (final RuntimeException promotionFailed) {
+            LOG.error("{} could not catalogue its {} generation; recording the failure against the"
+                            + " execution and applying the abnormal disposition of"
+                            + " app/jcl/INTCALC.jcl:L37 DISP=(NEW,CATLG,DELETE), so no partial"
+                            + " generation is left behind", ABEND_CULPRIT, DD_TRANSACT, promotionFailed);
+            jobExecution.addFailureException(promotionFailed);
+            jobExecution.setStatus(BatchStatus.FAILED);
+            jobExecution.setExitStatus(ExitStatus.FAILED
+                    .addExitDescription(MSG_ERROR_CLOSING_TRANFILE));
+            discardSystranGeneration(jobExecution, jobInstanceId, context);
+            persistExecutionContext(jobExecution);
+        }
+    }
+
+    /**
+     * Writes the job execution context back to the job repository.
+     *
+     * <p><b>Required, and not obvious.</b> {@code AbstractJob.execute} calls
+     * {@link JobRepository#update(JobExecution)} after the {@code afterJob} callbacks - which persists the
+     * status and exit status, and is why {@link #applyAbendExitStatus(JobExecution)} needs nothing further -
+     * but it never calls {@link JobRepository#updateExecutionContext(JobExecution)}. The job execution
+     * context is persisted by the step handler, once per step, so <b>every context mutation made in
+     * {@code afterJob} exists only in the in-memory execution and is absent from the stored record.</b>
+     *
+     * <p>That is load-bearing here because cataloguing the generation is precisely an end-of-run act: a
+     * downstream step, an orchestrator reading the child execution back from the repository, or an operator
+     * inspecting a completed run would all see the staged parts and no generation. It was already the reason
+     * a zero-rate run's empty generation never reached the stored context under the previous implementation.
+     *
+     * <p>It does not throw: a generation that is catalogued in the store but whose manifest could not be
+     * written back is reported rather than turned into a second failure, because the objects themselves are
+     * correct and the run's status is already settled.
+     *
+     * @param jobExecution the finishing execution whose context is to be stored
+     */
+    private void persistExecutionContext(final JobExecution jobExecution) {
+        try {
+            jobRepository.updateExecutionContext(jobExecution);
+        } catch (final RuntimeException unstored) {
+            LOG.error("{} settled its {} generation but could not store the job execution context;"
+                            + " the objects are correct and the in-memory execution is accurate, but a"
+                            + " reader loading this execution from the repository will not see the"
+                            + " manifest", ABEND_CULPRIT, DD_TRANSACT, unstored);
+        }
+    }
+
+    /**
+     * Concatenates the staged parts into the one object this generation holds, then removes the parts.
+     *
+     * <p>The parts are streamed rather than read into memory. Each is opened only when the preceding one has
+     * been consumed, so the resident cost is one part regardless of how many chunks the run took - the same
+     * reason the source could write a dataset larger than its own region. The total length is taken from the
+     * count accumulated during the run, and checked against the lengths the store actually reports, because
+     * the upload has to declare its length up front and a part that vanished or was truncated between
+     * staging and promotion would otherwise produce a silently short generation.
+     *
+     * <p>An empty generation is a real outcome, not an error: the processor returns {@code null} for a zero
+     * disclosure rate, reproducing the suppression at {@code app/cbl/CBACT04C.cbl:L214}-{@code :L217}, and a
+     * run in which every rate was zero writes nothing at all. That publishes the prefix with a key count of
+     * zero, so a downstream step reads this run's empty generation instead of resolving to an earlier one.
+     *
+     * @param jobExecution the finishing execution, whose context carries the staged parts
+     * @param jobInstanceId the instance identifier forming the generation segment
+     * @param context the job execution context, read for the parts and written with the generation
+     * @throws DataIntegrityException if the staged parts do not add up to the recorded byte count, or the
+     * total is not a whole number of records
+     * @throws FileAccessException if the object store refuses the concatenating upload
+     */
+    private void promoteSystranGeneration(final JobExecution jobExecution, final long jobInstanceId,
+            final ExecutionContext context) {
+
+        final String generationPrefix = composeGenerationPrefix(jobInstanceId);
+        final List<String> parts = stagedPartKeys(context);
+
+        if (parts.isEmpty()) {
+            context.putString(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY, generationPrefix);
+            context.putLong(SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY, 0L);
+            LOG.info("{} closed with no generation object; every disclosure rate was zero, so "
+                    + "app/cbl/CBACT04C.cbl:L214 suppressed every write", DD_TRANSACT);
+            return;
+        }
+
+        final long expectedBytes = context.getLong(SYSTRAN_GENERATION_BYTES_CONTEXT_ENTRY, 0L);
+        final long actualBytes = sumPartLengths(parts, generationPrefix);
+        if (actualBytes != expectedBytes) {
+            throw new DataIntegrityException(String.format(Locale.ROOT,
+                    "%s staged %d parts totalling %d bytes under generation '%s', but the object store"
+                            + " reports %d. A part that vanished or was truncated between staging and"
+                            + " cataloguing would produce a generation that is silently short, so the"
+                            + " generation is discarded rather than catalogued.",
+                    DD_TRANSACT, Integer.valueOf(parts.size()), Long.valueOf(expectedBytes),
+                    generationPrefix, Long.valueOf(actualBytes)),
+                    generationPrefix, DD_TRANSACT);
+        }
+        if (expectedBytes % TransactionWriter.RECORD_LENGTH != 0L) {
+            throw new DataIntegrityException(String.format(Locale.ROOT,
+                    "%s would catalogue %d bytes under generation '%s', which is not a whole number of"
+                            + " %d-byte records. app/jcl/INTCALC.jcl:L39 declares"
+                            + " DCB=(RECFM=F,LRECL=%d), so a partial trailing record is not a"
+                            + " representable dataset.",
+                    DD_TRANSACT, Long.valueOf(expectedBytes), generationPrefix,
+                    Integer.valueOf(TransactionWriter.RECORD_LENGTH),
+                    Integer.valueOf(TransactionWriter.RECORD_LENGTH)),
+                    generationPrefix, DD_TRANSACT);
+        }
+
+        final String generationKey = composeGenerationObjectKey(jobInstanceId);
+        String ioStatus;
+        RuntimeException failure = null;
+        try (InputStream concatenated =
+                new SequenceInputStream(new PartStreamEnumeration(parts))) {
+            final ObjectMetadata metadata = ObjectMetadata.builder()
+                    .contentType(OBJECT_CONTENT_TYPE)
+                    .contentLength(Long.valueOf(expectedBytes))
+                    .build();
+            s3Operations.upload(batchOutputBucket, generationKey, concatenated, metadata);
+            ioStatus = SUCCESS_STATUS;
+        } catch (final CardDemoException alreadyTyped) {
+            throw alreadyTyped;
+        } catch (final IOException | RuntimeException cause) {
+            ioStatus = OBJECT_STORE_IO_STATUS;
+            failure = cause instanceof RuntimeException runtime
+                    ? runtime
+                    : new IllegalStateException(cause.getMessage(), cause);
+        }
+        guardFileOperation(ioStatus, DD_TRANSACT, MSG_ERROR_CLOSING_TRANFILE, REASON_CLOSE_FAILED,
+                failure);
+
+        // Published before the parts are removed: the generation is complete and readable at this point,
+        // and a failure during part removal must not make it look as though it were not.
+        context.putString(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY, generationPrefix);
+        context.putString(generationKeysIndexEntry(0), generationKey);
+        context.putLong(SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY, 1L);
+
+        final int removed = deleteQuietly(parts);
+        clearStagedParts(context, parts.size());
+
+        LOG.info("{} closed; generation {} holds 1 object of {} bytes ({} records), concatenated from"
+                        + " {} staged part(s), {} of which were removed", DD_TRANSACT, generationPrefix,
+                Long.valueOf(expectedBytes),
+                Long.valueOf(expectedBytes / TransactionWriter.RECORD_LENGTH),
+                Integer.valueOf(parts.size()), Integer.valueOf(removed));
+    }
+
+    /**
+     * Applies the abnormal disposition: nothing this run created survives.
+     *
+     * <p>Deletion is best-effort <em>per object</em> and total in aggregate: a refusal on one key is logged
+     * and the remaining keys are still attempted, because stopping at the first failure would leave more
+     * behind than it cleaned. The published generation entries are withdrawn regardless of what the store
+     * did, so a downstream step is never handed a generation this run did not complete - a leftover object
+     * that could not be deleted is inert if nothing points at it, whereas a context entry pointing at a
+     * partial generation is not.
+     *
+     * @param jobExecution the finishing execution, named in the diagnostic
+     * @param jobInstanceId the instance identifier forming the generation segment
+     * @param context the job execution context, read for the parts and cleared of the generation
+     */
+    private void discardSystranGeneration(final JobExecution jobExecution, final long jobInstanceId,
+            final ExecutionContext context) {
+
+        final String generationPrefix = composeGenerationPrefix(jobInstanceId);
+        final List<String> parts = stagedPartKeys(context);
+        final List<String> doomed = new ArrayList<>(parts);
+        doomed.add(composeGenerationObjectKey(jobInstanceId));
+
+        final int removed = deleteQuietly(doomed);
+        clearStagedParts(context, parts.size());
+        context.remove(SYSTRAN_GENERATION_BYTES_CONTEXT_ENTRY);
+        withdrawPublishedGeneration(context);
+
+        LOG.warn("{} ended abnormally with status {}; applying the DISP=(NEW,CATLG,DELETE) abnormal"
+                        + " disposition of app/jcl/INTCALC.jcl:L37 - generation {} is not catalogued and"
+                        + " {} of its {} object(s) were removed", DD_TRANSACT,
+                jobExecution.getStatus(), generationPrefix, Integer.valueOf(removed),
+                Integer.valueOf(doomed.size()));
+    }
+
+    /**
+     * Removes the published generation entries so that no downstream step can read an uncatalogued
+     * generation.
+     *
+     * @param context the job execution context to clear
+     */
+    private static void withdrawPublishedGeneration(final ExecutionContext context) {
+        final int published = publishedGenerationKeyCount(context);
+        for (int index = 0; index < published; index++) {
+            context.remove(generationKeysIndexEntry(index));
+        }
+        context.remove(SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY);
+        context.remove(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY);
+    }
+
+    /**
+     * Removes the staged-part bookkeeping, the parts themselves having been dealt with by the caller.
+     *
+     * @param context the job execution context to clear
+     * @param staged how many indexed part entries were written
+     */
+    private static void clearStagedParts(final ExecutionContext context, final int staged) {
+        for (int index = 0; index < staged; index++) {
+            context.remove(partKeysIndexEntry(index));
+        }
+        context.remove(SYSTRAN_PART_KEYS_COUNT_CONTEXT_ENTRY);
+    }
+
+    /**
+     * Sums the lengths the object store reports for the staged parts.
+     *
+     * @param parts the staged part keys, in ordinal order
+     * @param generationPrefix the generation being promoted, named in the diagnostic
+     * @return the total byte count across every part
+     * @throws DataIntegrityException if a part cannot be measured, which means it cannot be concatenated
+     */
+    private long sumPartLengths(final List<String> parts, final String generationPrefix) {
+        long total = 0L;
+        for (final String part : parts) {
+            try {
+                // S3Resource narrows Resource#contentLength() to declare no IOException, so only a
+                // runtime failure is catchable here; adding IOException would be an unreachable catch and
+                // this build treats that as an error rather than a warning.
+                total += s3Operations.download(batchOutputBucket, part).contentLength();
+            } catch (final CardDemoException alreadyTyped) {
+                throw alreadyTyped;
+            } catch (final RuntimeException cause) {
+                throw new DataIntegrityException(String.format(Locale.ROOT,
+                        "%s could not measure a staged part of generation '%s'. Every part must be"
+                                + " readable for the generation to be concatenated, so the generation is"
+                                + " discarded rather than catalogued short.",
+                        DD_TRANSACT, generationPrefix),
+                        generationPrefix, DD_TRANSACT, cause);
+            }
+        }
+        return total;
+    }
+
+    /**
+     * Deletes each key, reporting how many were removed and never abandoning the rest over one refusal.
+     *
+     * @param keys the object keys to remove
+     * @return how many deletions the store accepted
+     */
+    private int deleteQuietly(final List<String> keys) {
+        int removed = 0;
+        for (final String key : keys) {
+            try {
+                s3Operations.deleteObject(batchOutputBucket, key);
+                removed++;
+            } catch (final RuntimeException refused) {
+                // Logged rather than raised: this runs on the cleanup path, where the caller has either
+                // already recorded a failure or is finishing normally with the generation safely
+                // catalogued. An orphaned part under a generation that holds its object is inert.
+                LOG.warn("{} could not remove object {} during end of run processing; it is orphaned"
+                        + " but nothing points at it", DD_TRANSACT, key, refused);
+            }
+        }
+        return removed;
+    }
+
+    /**
+     * Opens each staged part only when the preceding one has been consumed.
+     *
+     * <p>{@link SequenceInputStream} pulls from this enumeration lazily, so bounding the resident cost to one
+     * part is a property of opening late rather than of the stream. Building the enumeration from a list of
+     * already-opened streams would hold every part open at once, which for a long run is exactly the
+     * whole-object-in-memory shape this design exists to avoid.
+     */
+    private final class PartStreamEnumeration implements Enumeration<InputStream> {
+
+        /** The part keys still to be opened, in ordinal order. */
+        private final List<String> remaining;
+
+        /** Position of the next part to open. */
+        private int cursor;
+
+        /**
+         * Creates the enumeration.
+         *
+         * @param parts the part keys in ordinal order
+         */
+        private PartStreamEnumeration(final List<String> parts) {
+            this.remaining = List.copyOf(parts);
+        }
+
+        @Override
+        public boolean hasMoreElements() {
+            return cursor < remaining.size();
+        }
+
+        @Override
+        public InputStream nextElement() {
+            if (!hasMoreElements()) {
+                throw new NoSuchElementException("every staged part has already been opened");
+            }
+            final String key = remaining.get(cursor);
+            cursor++;
+            try {
+                return s3Operations.download(batchOutputBucket, key).getInputStream();
+            } catch (final CardDemoException alreadyTyped) {
+                throw alreadyTyped;
+            } catch (final IOException | RuntimeException cause) {
+                throw new FileAccessException(String.format(Locale.ROOT,
+                        "%s could not open a staged part while cataloguing its generation.",
+                        DD_TRANSACT),
+                        OBJECT_STORE_IO_STATUS, DD_TRANSACT, REASON_CLOSE_FAILED, cause);
+            }
+        }
     }
 
     /**
@@ -2104,7 +2598,7 @@ public class InterestCalculationJob {
      * source would have accepted. That is required rather than accidental - clause A demands inputs be
      * treated as untrusted, and a malformed parameter would otherwise corrupt every identifier in the
      * generation and only surface downstream in the combine job's load. The JCL's own value passes
-     * unchanged. Severity <b>Low</b>, and owed an entry in the planned {@code DECISION_LOG.md}.
+     * unchanged. Severity <b>Low</b>, and owed an entry in the {@code DECISION_LOG.md}.
      *
      * <p>Failures are reported as {@link JobParametersInvalidException}, which is what this interface
      * declares and what Spring Batch turns into a refusal to start the job. It is not
@@ -2189,13 +2683,21 @@ public class InterestCalculationJob {
     }
 
     /**
-     * Emits each chunk of synthesised interest transactions as one part of this run's {@code SYSTRAN}
+     * Stages each chunk of synthesised interest transactions as one part of this run's {@code SYSTRAN}
      * generation, and writes to nothing else.
      *
      * <p>It stands in for the {@code WRITE FD-TRANFILE-REC FROM TRAN-RECORD} of
      * {@code app/cbl/CBACT04C.cbl:L500} and the guard at {@code :L501}-{@code :L514}, against the
      * sequential dataset that {@code app/jcl/INTCALC.jcl:L37}-{@code :L41} allocates as a brand-new
      * generation with {@code DISP=(NEW,CATLG,DELETE)} and {@code DCB=(RECFM=F,LRECL=350,BLKSIZE=0)}.
+     *
+     * <p><b>A part is not a generation object.</b> {@code SYSTRAN(+1)} is one sequential dataset written
+     * from open to close, so the parts this writer stages are concatenated into exactly one object by
+     * {@link #promoteSystranGeneration(JobExecution, long, ExecutionContext)} at close, and only then does
+     * the generation exist. Staging rather than emitting is what makes both halves of
+     * {@code DISP=(NEW,CATLG,DELETE)} expressible: see finding C-03 on
+     * {@link #SYSTRAN_PART_KEYS_COUNT_CONTEXT_ENTRY} for the cardinality, and finding C-05 on
+     * {@link #settleSystranGeneration(JobExecution)} for the abnormal disposition.
      *
      * <p><b>It does not touch the transaction table.</b> That is the whole reason this writer exists
      * rather than {@link TransactionWriter}, whose {@code write} also persists rows because its own source
@@ -2279,7 +2781,10 @@ public class InterestCalculationJob {
             stepContextData.putLong(OBJECT_ORDINAL_CONTEXT_ENTRY, ordinal);
 
             final long jobInstanceId = jobExecution.getJobInstance().getInstanceId();
-            final String objectKey = composeObjectKey(jobInstanceId, ordinal);
+            // A PART key, not a generation key. See SYSTRAN_PART_KEYS_COUNT_CONTEXT_ENTRY (finding C-03):
+            // a generation is one dataset, so the chunks are staged and concatenated at close rather than
+            // each becoming an object of the generation.
+            final String objectKey = composePartKey(jobInstanceId, ordinal);
 
             String ioStatus;
             RuntimeException failure = null;
@@ -2303,7 +2808,7 @@ public class InterestCalculationJob {
             guardFileOperation(ioStatus, DD_TRANSACT, MSG_ERROR_WRITING_TRANSACTION_RECORD,
                     REASON_WRITE_FAILED, failure);
 
-            publishGeneration(jobExecution, jobInstanceId, objectKey);
+            publishPart(jobExecution, jobInstanceId, objectKey, payload.length);
 
             // The records-processed counter is deliberately NOT advanced here. It reproduces
             // DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT at app/cbl/CBTRN02C.cbl:L227 - a counter
@@ -2313,8 +2818,8 @@ public class InterestCalculationJob {
             // This job's own volume is published by Spring Batch as spring.batch.item.write and
             // spring.batch.step, per step and per job, so nothing is lost by not double-counting it here.
 
-            LOG.debug("{} wrote {} records ({} bytes) to {}", DD_TRANSACT,
-                    Integer.valueOf(recordCount), Integer.valueOf(payload.length), objectKey);
+            LOG.debug("{} staged {} records ({} bytes) as part {} of its generation", DD_TRANSACT,
+                    Integer.valueOf(recordCount), Integer.valueOf(payload.length), Long.valueOf(ordinal));
         }
     }
 
@@ -2482,6 +2987,10 @@ public class InterestCalculationJob {
                 jobExecution.addFailureException(abend);
                 jobExecution.setStatus(BatchStatus.FAILED);
             } finally {
+                // Runs whatever happened above, including a close that abended before reaching
+                // closeTransactionFile: an execution that never settled its generation would leave the
+                // staged parts behind, which is the litter finding C-05 is about.
+                settleSystranGeneration(jobExecution);
                 applyAbendExitStatus(jobExecution);
                 restoreDiagnosticContext();
             }

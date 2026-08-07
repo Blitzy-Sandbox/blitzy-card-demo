@@ -97,7 +97,7 @@
 # and the concrete host values; this base profile carries neither:
 #     SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
 # Container image and readiness probe: Dockerfile builds the single JAR and its
-# HEALTHCHECK at Dockerfile:495-496 issues GET /actuator/health/readiness and
+# HEALTHCHECK instruction issues GET /actuator/health/readiness and
 # greps for UP, so the readiness group declared below must exist and resolve.
 # Prometheus scrapes /actuator/prometheus every 15 seconds; the scrape
 # configuration is owned by observability/prometheus.yml and is deliberately
@@ -110,9 +110,9 @@
 #
 #   - NO DEFAULT is given to a secret or to anything that names a specific
 #     host, database or cloud resource. Those are JWT_SIGNING_KEY, POSTGRES_HOST,
-#     POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, the three bucket
-#     variables, the queue variable, the topic variable, the region pair and
-#     the OTLP endpoint. An absent value fails placeholder resolution and
+#     POSTGRES_DB, CARDDEMO_DB_APP_USER, CARDDEMO_DB_APP_PASSWORD, the three
+#     bucket variables, the queue variable, the topic variable, the region pair
+#     and the OTLP endpoint. An absent value fails placeholder resolution and
 #     therefore fails startup. That is the intended behaviour, not a defect:
 #     Rule 1 Clause B requires null and empty cases to be handled explicitly,
 #     and silently booting with a guessed database host or a generated signing
@@ -144,11 +144,13 @@
 #     of entropy; .env.example shows how to generate one and ships the entry
 #     empty. Never add a default here to make the message go away.
 #   - Startup aborts on the datasource URL or credentials. POSTGRES_HOST,
-#     POSTGRES_DB, POSTGRES_USER or POSTGRES_PASSWORD is absent. Supply them,
-#     or override spring.datasource.url, .username and .password directly,
-#     which SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME and
-#     SPRING_DATASOURCE_PASSWORD do by relaxed binding at a higher precedence
-#     than this file.
+#     POSTGRES_DB, CARDDEMO_DB_APP_USER or CARDDEMO_DB_APP_PASSWORD is absent.
+#     Supply them - the two role variables are REQUIRED, deliberately, and
+#     there is no fallback to the bootstrap POSTGRES_USER/POSTGRES_PASSWORD
+#     pair any more - or override spring.datasource.url, .username and
+#     .password directly, which SPRING_DATASOURCE_URL,
+#     SPRING_DATASOURCE_USERNAME and SPRING_DATASOURCE_PASSWORD do by relaxed
+#     binding at a higher precedence than this file.
 #   - Connection refused to PostgreSQL. The substrate is not running: use
 #     `docker compose up -d` and wait for the postgres service to report
 #     healthy. Parallel clones must export CLONE_INDEX so published ports do
@@ -175,19 +177,34 @@
 #     framework swallows the already-exists failures; the measured behaviour,
 #     the mechanism and the consequence are recorded verbatim under RUNTIME
 #     VALIDATION EVIDENCE below rather than asserted.
-#   - AWS calls fail to resolve, or an unexpected bucket or queue is created.
-#     This base profile declares no endpoint override by design, so the SDK
-#     resolves the real service. Activate the local or test profile, which
-#     point S3, SQS and SNS at LocalStack. Do not export AWS_ENDPOINT_URL
-#     globally: the SDK honours it and would redirect Testcontainers clients
-#     onto the shared LocalStack instance.
+#   - AWS calls fail to resolve, or startup aborts saying an endpoint host is
+#     not permitted. THE AUTHORITATIVE ENDPOINT POLICY IS ONE SENTENCE: every
+#     profile, THIS BASE PROFILE INCLUDED, must point S3, SQS and SNS at the
+#     local emulator, and com.cardemo.config.AwsConfig refuses to start unless
+#     all three do. So the remedy is to supply AWS_ENDPOINT_URL for the
+#     environment being started, not to switch profiles. This base profile
+#     supplies no literal default for it, deliberately, so an unset variable
+#     fails placeholder resolution instead of being hidden; the local and test
+#     profiles carry developer defaults.
+#     An earlier revision of this comment said the opposite - that the base
+#     profile declared no override "by design" and that the local or test
+#     profile should be activated to reach the emulator. That reasoning was
+#     wrong and is withdrawn here rather than left to be rediscovered: with no
+#     override the SDK DERIVES a real regional endpoint from the region and
+#     walks its default credential chain, so silence is not a refusal to call
+#     live infrastructure but a silent election to. See the AWS block below,
+#     which states the same policy at the keys that implement it.
+#     Do not export AWS_ENDPOINT_URL globally on a developer machine: the SDK
+#     honours it and would redirect Testcontainers clients onto the shared
+#     LocalStack instance instead of the per-test container.
 #   - Queue not found. queue-not-found-strategy is FAIL, so a missing queue is
 #     a loud error rather than a silently auto-created one. Run
 #     localstack-init/init-aws.sh, which is idempotent.
 #   - Startup aborts on an unresolvable OTEL_EXPORTER_OTLP_ENDPOINT. The trace
 #     collector has not been declared. Export it - `docker compose up -d`
-#     publishes the Jaeger OTLP HTTP receiver, and .env.example:172 ships the
-#     matching value - or bind management.otlp.tracing.endpoint directly with
+#     publishes the Jaeger OTLP HTTP receiver, and .env.example ships the
+#     matching OTEL_EXPORTER_OTLP_ENDPOINT value - or bind
+#     management.otlp.tracing.endpoint directly with
 #     the higher-precedence MANAGEMENT_OTLP_TRACING_ENDPOINT, which the
 #     template deliberately does NOT ship, because shipping both spellings for
 #     one value leaves whichever loses precedence dead while appearing to work.
@@ -196,7 +213,7 @@
 #     value would create no exporter at all and every span would be dropped in
 #     silence. Failing loudly is the whole point.
 #   - /actuator/health/readiness returns 404. The liveness and readiness
-#     groups below were removed or renamed; Dockerfile:495-496 and the compose
+#     groups below were removed or renamed; the Dockerfile HEALTHCHECK and the compose
 #     probe both depend on them.
 #   - An actuator endpoint returns 404. Only health, info and prometheus are
 #     exposed, deliberately. Do not widen the exposure list to "*".
@@ -204,7 +221,7 @@
 # PROFILE LAYERING CONTRACT
 #
 # spring.profiles.active is deliberately ABSENT. The runtime supplies it:
-# Dockerfile:476 sets SPRING_PROFILES_ACTIVE to the empty string precisely so
+# the Dockerfile ENV sets SPRING_PROFILES_ACTIVE to the empty string precisely so
 # the image stays neutral. Hardcoding an active profile here would make the
 # base profile non-neutral and fight the deployment contract. Overrides that
 # belong to the three sibling profiles and must NOT appear in this file:
@@ -289,8 +306,9 @@
 #     modes because nothing reports it.
 #     Resolution: the decomposed POSTGRES_* and OTEL_* form is canonical,
 #     because it is what makes the base profile free of any hostname, port or
-#     URL, and .env.example:111 and :172 now ship exactly it while shipping
-#     neither composed name. Relaxed binding still lets a deployment supply a
+#     URL, and .env.example now ships exactly it - POSTGRES_HOST and
+#     OTEL_EXPORTER_OTLP_ENDPOINT - while shipping neither composed name.
+#     Relaxed binding still lets a deployment supply a
 #     whole URL, deliberately and in its own environment, INSTEAD OF the
 #     decomposed group - never both spellings for one value in one environment.
 #     EnvironmentTemplateContractTest asserts both halves: every placeholder
@@ -428,13 +446,19 @@
 #     management.otlp.tracing.endpoint and at nothing else.
 #   - Environment neutrality. The AWS region chain resolves from either
 #     spelling: a boot with only AWS_REGION set reported region eu-west-1 and a
-#     boot with only AWS_DEFAULT_REGION set reported us-east-1. No endpoint
-#     override and no static credential is bound - the bean graph shows
-#     spring.cloud.aws.s3.endpoint and .sqs.endpoint null,
-#     spring.cloud.aws.credentials.access-key null, and credentialsProvider as
-#     the SDK's DefaultCredentialsProvider - while s3Client, s3Template,
-#     snsClient, snsTemplate, sqsAsyncClient and sqsTemplate are all present,
-#     so the three enable flags are genuinely consumed.
+#     boot with only AWS_DEFAULT_REGION set reported us-east-1.
+#     THE REST OF THIS READING IS SUPERSEDED, AND IS RETAINED ONLY AS DATED
+#     HISTORY. It was taken BEFORE this profile pinned the three endpoints, and
+#     it recorded spring.cloud.aws.s3.endpoint and .sqs.endpoint as null,
+#     spring.cloud.aws.credentials.access-key as null and credentialsProvider as
+#     the SDK's DefaultCredentialsProvider, while s3Client, s3Template,
+#     snsClient, snsTemplate, sqsAsyncClient and sqsTemplate were all present.
+#     That state is exactly what the AWS block below now refuses: the three
+#     endpoints and the placeholder credential pair are bound here, and
+#     AwsConfig aborts startup on any endpoint that does not name the emulator.
+#     The bean presences remain accurate, so the three enable flags are still
+#     shown to be genuinely consumed; the null endpoints and null access key are
+#     not, and must not be read as current.
 #   - Batch launch neutrality. jobRepository, jobLauncher, jobRegistry, jobScope
 #     and stepScope exist, but no JobLauncherApplicationRunner and no batch
 #     schema initialiser bean does, which is spring.batch.job.enabled false and
@@ -592,24 +616,31 @@ spring:
     #
     # CARDDEMO_DB_APP_* is a DML-only role: SELECT, INSERT, UPDATE and DELETE on
     # the domain and Spring Batch tables plus sequence usage, and nothing else.
-    # spring.flyway below binds the separate DDL-owning migration role, so the
-    # only principal that may reshape the schema is the one that migrates it.
-    # docker-compose.yml provisions both, read only and idempotently.
+    # The separate DDL-owning migration role is bound on spring.flyway by
+    # application-local.yml and application-prod.yml - this base file
+    # deliberately leaves spring.flyway.user unbound, because Boot derives a
+    # second DataSource the moment that property is non-null and
+    # application-test.yml must keep the credentials Testcontainers injects - so
+    # the only principal that may reshape the schema is the one that migrates
+    # it. docker-compose.yml provisions both, read only and idempotently.
     #
-    # The fallback keeps an existing deployment working unchanged: with the
-    # variable unset this is exactly the previous behaviour. It is a TRANSITION
-    # AID, not the target state - application-prod.yml requires the role
-    # explicitly with no fallback, so a production start cannot silently run as
-    # the superuser. Note that the fallback fires only when the variable is
-    # ABSENT; a variable set to the empty string is used as given, which is why
-    # docker-compose.yml resolves its own default with Compose's `:-` form.
-    username: ${CARDDEMO_DB_APP_USER:${POSTGRES_USER}}
-    # The same one-level transition fallback as the user above, and NO literal
-    # default behind it: the chain terminates at POSTGRES_PASSWORD, which itself
-    # declares none. So an absent password still fails startup rather than
-    # resolving to a committed value - the fallback changes WHICH variable is
-    # read, never whether one is required.
-    password: ${CARDDEMO_DB_APP_PASSWORD:${POSTGRES_PASSWORD}}
+    # REQUIRED, WITH NO FALLBACK. An earlier revision read
+    # ${CARDDEMO_DB_APP_USER:${POSTGRES_USER}} as a transition aid so that a
+    # volume created before these roles existed kept working. The cost of that
+    # courtesy was the finding itself: with the variable absent - which is the
+    # default state of any deployment that has not been told about it - the
+    # runtime silently reconnected as the cluster BOOTSTRAP role, and nothing
+    # reported it, because falling back is indistinguishable from succeeding.
+    #
+    # Both names are now bound bare, exactly as application-prod.yml has always
+    # bound them, so every profile that binds a role at all binds the dedicated
+    # one. An ABSENT value aborts property resolution with the variable named
+    # and no value echoed; an EMPTY value is used as given and PostgreSQL
+    # refuses it at authentication. Both outcomes stop the process, and neither
+    # reaches the superuser. docker-compose.yml guards both with Compose's `:?`
+    # so the same condition is caught before a container is even created.
+    username: ${CARDDEMO_DB_APP_USER}
+    password: ${CARDDEMO_DB_APP_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
       # MINIMAL, DELIBERATELY UNTUNED. Connection-pool tuning is explicitly out
@@ -808,24 +839,35 @@ spring:
     job:
       # Jobs must NOT auto-launch on startup. The framework default is true,
       # which would run every job on every boot. Launching is explicit, through
-      # the two paths the mainframe had, and both are authored:
+      # the two paths the mainframe had:
       #
       #   1. An operator submitting the deck (TSO SUBMIT / SDSF). That is the
-      #      runner in com.cardemo.batch.jobs.BatchPipelineOrchestrator, which
-      #      exists only when carddemo.batch.launch names a job:
-      #        java -jar carddemo.jar \
+      #      FRAMEWORK's own JobLauncherApplicationRunner, which this flag
+      #      keeps switched off and which an operator switches on for one
+      #      process:
+      #        java -jar carddemo-1.0.0.jar \
       #          --spring.main.web-application-type=none \
-      #          --carddemo.batch.launch=batchPipelineJob \
-      #          --carddemo.batch.launch.parm-date=2022071800 \
-      #          --carddemo.batch.launch.start-date=2022-01-01 \
-      #          --carddemo.batch.launch.end-date=2022-07-06
-      #      Without carddemo.batch.launch the artefact is a server, not a
-      #      submission. web-application-type=none is equally required: it is
-      #      what makes the process END when the job ends, as a submitted job
-      #      freed its initiator. Omit it and the run finishes correctly but
-      #      the embedded container holds the JVM open, so the submission
-      #      looks hung. The runner logs a WARN naming this property when it
-      #      detects that case.
+      #          --spring.batch.job.enabled=true \
+      #          --spring.batch.job.name=CARDDEMO-PIPELINE \
+      #          parm-date=2022071800 start-date=2022-01-01 end-date=2022-07-06
+      #      The value is the JOB NAME, not a bean name: the runner compares it
+      #      with Job.getName(), and every job here is named after the JCL
+      #      member it replaces - CARDDEMO-PIPELINE, or POSTTRAN, INTCALC,
+      #      COMBTRAN, CREASTMT, TRANREPT for one stage (see
+      #      carddemo.batch.jobs below, which publishes each default). OMITTING
+      #      the name runs every job, so it is effectively required. The three
+      #      dates travel as name=value job parameters, which is the form the
+      #      JCL parameter cards arrive in.
+      #      An earlier revision documented an AUTHORED runner here, gated on
+      #      carddemo.batch.launch. It launched a job from inside
+      #      SpringApplication.run, which is a boot-time launch however
+      #      narrowly the bean was gated, so both the runner and the property
+      #      were removed; nothing is lost, because every parameter is
+      #      validated by the job that owns it rather than by the launcher.
+      #      web-application-type=none is equally required: it is what makes
+      #      the process END when the job ends, as a submitted job freed its
+      #      initiator. Omit it and the run finishes correctly but the embedded
+      #      container holds the JVM open, so the submission looks hung.
       #
       #   2. The online tier writing to the JOBS data queue for the JES2
       #      internal reader - EXEC CICS WRITEQ TD QUEUE('JOBS') in
@@ -846,7 +888,48 @@ spring:
       initialize-schema: never
       # table-prefix is deliberately left at the framework default BATCH_ so
       # the framework script and the runtime agree without a second contract.
-      isolation-level-for-create: SERIALIZABLE
+      #
+      # REPEATABLE_READ RATHER THAN THE FRAMEWORK'S SERIALIZABLE DEFAULT, and
+      # the reason is measured rather than theoretical. The pipeline's stage 4
+      # is a FlowBuilder.split - the statement and report branches of
+      # app/jcl/CREASTMT.JCL and app/proc/TRANREPT.prc have no ordering
+      # dependency, so they run on two threads - and each branch launches a
+      # child job. Creating a JobExecution runs at this isolation level, so the
+      # two concurrent creations both read and write the same BATCH_* metadata
+      # rows. PostgreSQL implements SERIALIZABLE with predicate locking, and it
+      # resolves the resulting read/write dependency by CANCELLING one of the
+      # transactions:
+      #
+      #   ERROR: could not serialize access due to read/write dependencies
+      #   among transactions
+      #   Detail: Reason code: Canceled on identification as a pivot ...
+      #
+      # which reaches the pipeline as a fatal stage failure and return code 12,
+      # on whichever branch happened to lose. It is a false conflict: the two
+      # branches launch DIFFERENT jobs and insert DIFFERENT rows, and there is
+      # no anomaly for SERIALIZABLE to be preventing.
+      #
+      # This was previously observed, documented as a High finding in the
+      # pipeline's own test class, and left unfixed, because the stream could
+      # not reach the split at all - stage 3 always halted first for the
+      # unrelated substrate reason recorded above under
+      # combined-transaction-reader. With that corrected the split is reached on
+      # every run, so the race is no longer latent and the value is narrowed
+      # here rather than the split being serialised: serialising it would
+      # discard the parallelism the two independent JCL branches are modelling.
+      #
+      # REPEATABLE_READ is the level the framework documents for databases whose
+      # SERIALIZABLE cannot support concurrent job creation. Under PostgreSQL's
+      # snapshot isolation a write conflict is still refused, so a genuine
+      # same-row contention is not silently permitted; what is no longer refused
+      # is the read/write dependency between two unrelated inserts. The guard
+      # this gives up is the detection of two concurrent creations of the SAME
+      # job instance, which is not a shape this application produces: it has
+      # exactly two launchers, the pipeline and the report queue listener, and
+      # their parameter sets differ so they address different instances. The
+      # listener additionally handles JobExecutionAlreadyRunningException by
+      # returning the message to the queue rather than consuming it.
+      isolation-level-for-create: REPEATABLE_READ
 
   # --------------------------------------------------------------------------
   # AWS - S3, SQS FIFO and SNS via Spring Cloud AWS 3.3.0
@@ -920,7 +1003,8 @@ spring:
       # global key against the same emulator allowlist, so a deployment that sets
       # it is checked rather than silently unvalidated - a key the application
       # otherwise never reads is exactly where an unapproved address would slip in
-      # unnoticed. See the fuller note at application-local.yml:484-487.
+      # unnoticed. See the fuller note under `carddemo.aws` in
+      # application-local.yml.
       s3:
         enabled: true
         endpoint: ${AWS_ENDPOINT_URL}
@@ -966,12 +1050,28 @@ spring:
 # moves to request parameters and response metadata, never to the server.
 server:
   # A port is not a secret, so a documented non-secret default is acceptable.
-  # 8080 matches Dockerfile:460 EXPOSE and the observability/prometheus.yml
+  # 8080 matches the Dockerfile EXPOSE and the observability/prometheus.yml
   # scrape targets.
   port: ${SERVER_PORT:8080}
   # Drain in-flight requests, and let a running batch step finish, instead of
   # dropping work on SIGTERM.
   shutdown: graceful
+  # Request LINE and headers, read before any body and before any
+  # authentication. 8 KB is Tomcat's own default, restated because a bound that
+  # matters should be visible rather than inherited.
+  #
+  # DECLARED HERE AND NOT UNDER server.tomcat, which is finding CFG-004: this
+  # key stood at server.tomcat.max-http-request-header-size, where NOTHING
+  # BINDS IT. Spring Boot 3.5.11's own configuration metadata declares
+  # server.max-http-request-header-size (DataSize, default 8KB) and, under the
+  # tomcat prefix, only max-http-response-header-size and max-part-header-size;
+  # ServerProperties ignores unknown fields, so the old spelling was accepted
+  # in silence and bound nothing. The value happened to equal the container
+  # default, so nothing observable changed - which is exactly why an inert key
+  # is dangerous: an operator who lowered it would have been protected by
+  # nothing. RequestBoundaryHardeningTest asserts both halves - that this
+  # spelling binds, and that the old one does not.
+  max-http-request-header-size: 8KB
   tomcat:
     # REQUEST BOUNDS AT THE CONTAINER, AND WHAT THEY DO NOT COVER.
     #
@@ -994,10 +1094,6 @@ server:
     # the ordinary case of a client that sent a small body we chose not to
     # read.
     max-swallow-size: 8KB
-    # Request LINE and headers, which are read before any body and before any
-    # authentication. 8 KB is Tomcat's own default, restated because a bound
-    # that matters should be visible rather than inherited.
-    max-http-request-header-size: 8KB
     #
     # THE JSON BODY ITSELF IS BOUNDED IN TWO PLACES, NEITHER OF THEM HERE,
     # AND THAT IS NOT AN OVERSIGHT - NO PROPERTY EXPRESSES EITHER:
@@ -1067,7 +1163,7 @@ management:
         # made TRANSACT, CCXREF, ACCTDAT, CXACAIX and USRSEC available to the
         # online region. All five are VSAM datasets, so all five map to the
         # relational substrate and are covered by the db contributor.
-        # Dockerfile:495-496 issues GET /actuator/health/readiness and greps for
+        # the Dockerfile HEALTHCHECK issues GET /actuator/health/readiness and greps for
         # UP, so this group must exist and resolve.
         # Object-storage and queue contributors now exist and are named below.
         # com.cardemo.observability.HealthIndicators declares exactly two beans,
@@ -1339,8 +1435,9 @@ carddemo:
   aws:
     s3:
       # The three buckets are provisioned idempotently by
-      # localstack-init/init-aws.sh:529-531 under exactly these variable names,
-      # which .env.example:153-155 also declares. None carries a literal default,
+      # localstack-init/init-aws.sh, whose readonly INPUT_BUCKET, OUTPUT_BUCKET
+      # and STATEMENTS_BUCKET read exactly these variable names, which
+      # .env.example declares under the same three CARDDEMO_S3_* spellings. None carries a literal default,
       # so a missing bucket name fails startup instead of writing a statement
       # run into whatever bucket happens to exist.
       batch-input-bucket: ${CARDDEMO_S3_BATCH_INPUT_BUCKET}
@@ -1380,18 +1477,79 @@ carddemo:
         # by com.cardemo.batch.jobs.InterestCalculationJob, which reads it with
         # gdg/systran as its own default and fails on a blank value.
         systran: gdg/systran
-        # app/jcl/DEFGDGB.jcl:L43 - the category-balance backup.
+        # app/jcl/DEFGDGB.jcl:L43 - the category-balance backup, written by
+        # app/jcl/PRTCATBL.jcl:L29-L39 STEP05R at LRECL=50 and read back by
+        # that member's STEP10R at :L41-L69 to print TCATBALF.REPT.
+        # Bound by com.cardemo.batch.jobs.TransactionReportJob, whose
+        # transactionReportCategoryBalanceStep is both the producer and the
+        # consumer. Before finding M-05 this base was declared here with
+        # neither, so the prefix existed and nothing ever wrote it.
+          #
+        # THE KEY IS STILL LOAD-BEARING, and it is worth saying why, because it
+        # reads like the dead configuration this file withdraws elsewhere and it
+        # is not. A generation base without a prefix HAS NO NAMESPACE OF ITS
+        # OWN, so its objects would land inside another base's namespace. That
+        # invariant belongs to the whole seven-base layout of the versioned
+        # output bucket, not to whichever job happens to write a given base, so
+        # com.cardemo.config.AwsConfig binds ALL SEVEN of these keys in its
+        # startup guard and aborts the context refresh if any is blank or if two
+        # of them collide or nest. That is the consumer: the layout contract is
+        # enforced once, at startup, for every base - including this one, whose
+        # producer is a JCL member with no Java realisation.
+        # integration/aws/S3BucketProvisioningIntegrationTest asserts the same
+        # seven-prefix contract, and localstack-init/init-aws.sh provisions the
+        # base itself under this same prefix.
         tcatbalf-bkup: gdg/tcatbalf-bkup
         # app/jcl/REPTFILE.jcl:L26 and app/jcl/DEFGDGB.jcl:L37 - the 133-byte
         # report generations.
         tranrept: gdg/tranrept
-        # app/proc/TRANREPT.prc:L21 STEP01R - the pre-report transaction
-        # backup.
+        # The transaction backup, with TWO producers, exactly as the mainframe
+        # catalogue has: app/proc/TRANREPT.prc:L21 STEP01R (the pre-report
+        # backup, in TransactionReportJob) and app/jcl/TRANBKP.jcl:L23-L33 (the
+        # archive-and-reset that precedes the combine, in
+        # CombineTransactionsJob). Both write
+        # <prefix>/generation=<19-digit>/TRANSACT.BKUP so that neither shadows
+        # the other and (0) always resolves to the later of the two;
+        # CombinedTransactionReader reads it as the first SORTIN leg of
+        # app/jcl/COMBTRAN.jcl:L23-L26.
         transact-bkup: gdg/transact-bkup
         # app/jcl/COMBTRAN.jcl:L41 STEP10 - the combined output.
         transact-combined: gdg/transact-combined
         # app/jcl/DEFGDGB.jcl:L31 - the daily transaction generations.
         transact-daly: gdg/transact-daly
+      # THE STATEMENT JOB'S WORK AREA IS NOT A GDG BASE EITHER, so it is declared
+      # apart from the seven above for the same reason the posted-transaction
+      # mirror below is, and on exactly the terms of the per-job tuning keys under
+      # carddemo.batch: it is read at runtime by
+      # com.cardemo.batch.jobs.StatementGenerationJob and appeared in no profile,
+      # which made the effective prefix invisible to whoever operates the job. The
+      # value is exactly that class's DEFAULT_WORK_PREFIX, so declaring it changes
+      # no behaviour.
+      #
+      # It is NOT a generation prefix and is deliberately outside gdg-prefixes.
+      # app/jcl/CREASTMT.JCL:L22 DELDEF01 defines AWS.M2.CARDDEMO.TRXFL as an
+      # INDEXED work CLUSTER - KEYS(32 0) at :L30 and RECORDSIZE(350 350) at :L32,
+      # the 32-byte key confirming the TRNX-KEY composition of
+      # app/cpy/COSTM01.CPY. It is scratch space between STEP010's sort and
+      # STEP020's REPRO, transient by construction, never catalogued as a
+      # generation group and never read by a later run, so versioning or retaining
+      # it would keep objects the legacy system never had. That is why it carries
+      # no generation segment.
+      #
+      # TWO EARLIER DELETION LOCATORS ARE WITHDRAWN, because the corpus supports
+      # neither. One said ":L34 DELETES it again at the end of the run"; :L34 is
+      # the `ERASE` attribute of the DEFINE CLUSTER at :L29, not a DELETE. The
+      # other said ":L66 STEP030 deletes it again in the same job"; :L66 is
+      # `EXEC PGM=IEFBR14` and its two DD statements are HTMLFILE at :L67 and
+      # STMTFILE at :L72, so that step deletes the PREVIOUS RUN'S REPORT OUTPUTS
+      # and never touches TRXFL. What the job actually does is PRE-delete it:
+      # DELDEF01 issues `DELETE AWS.M2.CARDDEMO.TRXFL.SEQ` at :L25 and
+      # `DELETE AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS` at :L26 before defining it at
+      # :L29, and nothing later in the job removes it - the NEXT run's pre-delete
+      # does. The conclusion both readings drew is unaffected and stands; only the
+      # locators were wrong, and the source governs.
+      work-prefixes:
+        trxfl: work/trxfl
       # THE POSTED-TRANSACTION MIRROR IS NOT A GDG BASE, AND IS DECLARED
       # SEPARATELY FOR THAT REASON. app/jcl/POSTTRAN.jcl:L26-27 writes posted
       # transactions to AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, an INDEXED cluster
@@ -1444,9 +1602,10 @@ carddemo:
       # app/cbl/CORPT00C.cbl is the authority and prose is not.
       # The logical contract is carddemo-report-jobs. AWS requires a .fifo
       # suffix on the physical name, which is permitted and is what
-      # localstack-init/init-aws.sh:532 provisions and .env.example:157
-      # declares; init-aws.sh:548 records the same logical-versus-physical
-      # split.
+      # localstack-init/init-aws.sh provisions through readonly REPORT_QUEUE
+      # and .env.example declares as CARDDEMO_SQS_REPORT_QUEUE; that script's
+      # readonly QUEUE_LOGICAL and QUEUE_PHYSICAL record the same
+      # logical-versus-physical split.
       report-queue: ${CARDDEMO_SQS_REPORT_QUEUE}
       report-queue-logical-name: carddemo-report-jobs
       # A single message group makes ordering deterministic across the whole
@@ -1455,7 +1614,8 @@ carddemo:
       report-message-group-id: carddemo-report-jobs
     sns:
       # Replaces operator notification. Provisioned by
-      # localstack-init/init-aws.sh:533; declared at .env.example:162.
+      # localstack-init/init-aws.sh (readonly NOTIFICATION_TOPIC); declared in
+      # .env.example as CARDDEMO_SNS_NOTIFICATION_TOPIC.
       notification-topic: ${CARDDEMO_SNS_NOTIFICATION_TOPIC}
 
   # --------------------------------------------------------------------------
@@ -1478,11 +1638,144 @@ carddemo:
   # and there is no other determinant.
   batch:
     chunk-size: 100
+
+    # THE INPUT SUBSTRATE OF THE CONCATENATED SORTIN of app/jcl/COMBTRAN.jcl:
+    # L23-L26, which reads TRANSACT.BKUP(0) followed by SYSTRAN(0).
+    #
+    # Declared here rather than left to the reader's own literal default, which
+    # is `repository`. The key was read at runtime and appeared in no profile,
+    # so the value that actually governed a deployment was invisible to whoever
+    # had to operate it - and the value it silently took was the wrong one for
+    # the five-stage pipeline. On the `repository` substrate the first leg IS
+    # the live transaction relation, which is the same relation :L41-L48 then
+    # loads the combined output into, so the stage reads the rows it is about to
+    # re-insert; the only thing standing between that and a corrupt load is the
+    # duplicate-identifier refusal happening to fire.
+    #
+    # `object-storage` is also the substrate the migration specifies for these
+    # generation data groups: both legs are byte-faithful objects under the
+    # gdg-prefixes declared above, which is what the two DD statements name.
+    # com.cardemo.batch.jobs.BatchPipelineOrchestrator REFUSES to run its
+    # combine stage on any other value rather than trusting this declaration,
+    # because a prerequisite nothing checks is not a prerequisite.
+    #
+    # `repository` remains a legitimate value for a STANDALONE combine against
+    # the relation, which is why the reader still supports it.
+    #
+    # THE KEY ITSELF IS DECLARED ONCE, further down beside the other reader
+    # declarations, because com.cardemo.batch.readers.CombinedTransactionReader
+    # binds a SECOND key on the same node - page-size, at that class's :L501,
+    # alongside source at its :L497 - and a mapping repeated here would either
+    # shadow that pair or, as YAML, refuse to parse at all. The reasoning above is
+    # about the VALUE and is kept here where the substrate is discussed; the
+    # reasoning about the two generations and about what page-size is not is kept
+    # at the declaration.
+
+    # THE JOB REGISTRY BELOW IS THE FIVE JOB NAMES AND NOTHING ELSE, and what it
+    # no longer carries is worth stating so its absence is not read as an
+    # oversight. Every name is bound: posttran, intcalc, combtran and creastmt by
+    # their own job classes, and tranrept by
+    # com.cardemo.batch.jobs.TransactionReportJob - which until this revision read
+    # carddemo.batch.tranrept.name, one segment short of what is declared here, so
+    # the key below bound nothing and the key that governed appeared in no
+    # profile. The job now reads this spelling, which makes
+    # carddemo.batch.jobs.<id>.name the one authoritative namespace for all five.
+    #
+    # A per-job `enabled` flag and a creastmt `steps` count were declared here and
+    # bound by NOTHING - not by any job class, not by
+    # com.cardemo.config.BatchConfig, not by anything. They are withdrawn rather
+    # than given a binder, on the test this file applies throughout: a key is KEPT
+    # when it is the one place the value lives, and REMOVED when it cannot govern
+    # the value. Neither could. `steps` cannot: com.cardemo.batch.jobs
+    # .StatementGenerationJob has five steps because app/jcl/CREASTMT.JCL has five
+    # steps and the flow is compiled that way, so a profile setting 4 or 6 would
+    # be read by nobody and believed by whoever read it. `enabled` cannot either,
+    # and giving it a binder would go further than closing the drift: the five
+    # stages are constructor dependencies of
+    # com.cardemo.batch.jobs.BatchPipelineOrchestrator, so a conditionally absent
+    # job would fail the context rather than skip a stage, and selective job
+    # disablement is not a capability the migration specifies. The evidence those
+    # keys carried - which JCL member each job replaces - is what was worth
+    # keeping, so it is kept as the comments below.
+
+    # THE PER-JOB OVERRIDES OF chunk-size ABOVE.
+    #
+    # Each key below is read at runtime by exactly one job class and, until this
+    # revision, appeared in NO profile. That is the defect this file already
+    # states its own rule against a few blocks down and applies to the six
+    # readers: a key that is read at runtime but appears in no profile is
+    # invisible to whoever has to operate the job, which is what Rule 1 Clause E
+    # forbids. Declaring them changes NO behaviour - every value below is
+    # exactly the constant the binding class already falls back to - it only
+    # makes the effective value auditable from the configuration.
+    #
+    # Each chunk-size resolves through a two-level placeholder:
+    #   ${carddemo.batch.<job>.chunk-size:${carddemo.batch.chunk-size:100}}
+    # so the per-job key wins, then the global chunk-size above, then the
+    # class's own 100. Overriding one job therefore never disturbs another.
+    #
+    # NOTE the namespace split, which is deliberate and is now consistent.
+    # A JOB'S NAME lives under carddemo.batch.jobs.<id>.name, because it is
+    # registry metadata; A JOB'S TUNING lives under carddemo.batch.<id>.*,
+    # because it is an operational knob. Every one of the five jobs obeys both
+    # halves. TransactionReportJob previously read carddemo.batch.tranrept.name
+    # for its name, so the registry entry below was declared and bound nothing
+    # while the key it actually read appeared nowhere - one drift with two
+    # symptoms. It now binds carddemo.batch.jobs.tranrept.name like the others.
+    posttran:
+      # com.cardemo.batch.jobs.DailyTransactionPostingJob.DEFAULT_CHUNK_SIZE.
+      # Independent of POSTING_COMMIT_INTERVAL, which is a parity contract
+      # grounded on the three separate commits of app/cbl/CBTRN02C.cbl:L440-L442
+      # and is therefore NOT configurable.
+      chunk-size: 100
+    intcalc:
+      # com.cardemo.batch.jobs.InterestCalculationJob.DEFAULT_CHUNK_SIZE.
+      chunk-size: 100
+    tranrept:
+      # com.cardemo.batch.jobs.TransactionReportJob's constructor fallback.
+      chunk-size: 100
+    combtran:
+      # com.cardemo.batch.jobs.CombineTransactionsJob.DEFAULT_CHUNK_SIZE.
+      chunk-size: 100
+      # A `max-records-per-run: 1000000` key stood here and is withdrawn, on the
+      # same test this file applies throughout: a key is KEPT when it is the one
+      # place the value lives, and REMOVED when it cannot govern the value. This
+      # one cannot. It was read by
+      # com.cardemo.batch.jobs.CombineTransactionsJob.DEFAULT_MAX_RECORDS_PER_RUN,
+      # which no longer exists: the ceiling only ever guarded an earlier revision
+      # that accumulated the whole generation in a StringBuilder, a String and a
+      # byte[] at once, and the sort now writes each 350-byte image straight
+      # through to a staging file, so the resident set does not grow with the
+      # record count and there is nothing left to bound. Evidence retained:
+      # app/jcl/COMBTRAN.jcl:L22 sorts a concatenated SORTIN and :L33-L37
+      # allocates SORTOUT on UNIT=SYSDA with SPACE=(CYL,(1,1),RLSE), which is a
+      # space allocation and not a record limit - the member declares no record
+      # ceiling anywhere, which is why inventing one was the defect.
+    creastmt:
+      # com.cardemo.batch.jobs.StatementGenerationJob.DEFAULT_CHUNK_SIZE.
+      chunk-size: 100
+      # A `max-work-records: 5000000` key stood here and is withdrawn for the
+      # same reason as the combtran bound above: its binder,
+      # com.cardemo.batch.jobs.StatementGenerationJob.DEFAULT_MAX_WORK_RECORDS,
+      # no longer exists. The work file's size is now REPORTED rather than
+      # capped - the projection step puts its record count into the job
+      # execution context as carddemo.creastmt.work.recordCount, which an
+      # operator can read after the fact and which no profile value can
+      # contradict. Evidence retained: this was never the legacy
+      # 510-transaction ceiling of app/cbl/CBSTM03A.CBL:L226-L232, a fixed
+      # table with no bounds check at all, whose removal stands as a labelled
+      # deviation in DECISION_LOG.md.
+    # The orchestrator name is NOT declared here. It lives with the other job
+    # names, at carddemo.batch.jobs.pipeline.name below, because that is the key
+    # com.cardemo.batch.jobs.BatchPipelineOrchestrator binds. A second declaration
+    # stood here and was read by nothing; one name, one spelling, under the
+    # namespace that job identity uses.
+
     # THE JOB REGISTRY BELOW IS RETAINED DELIBERATELY, and the distinction from
     # the documentary blocks removed elsewhere in this file is worth stating so
     # it is not read as an oversight. carddemo.batch.jobs.intcalc.name is bound
     # today by com.cardemo.batch.jobs.InterestCalculationJob. The remaining
-    # names and enabled flags are the binding surface of
+    # names are the binding surface of
     # com.cardemo.config.BatchConfig, which the target design names as one of
     # the classes of com.cardemo.config and which now exists, and of the job
     # classes it wires - so these are the one place the value lives, not a
@@ -1513,30 +1806,30 @@ carddemo:
     customer-reader:
       page-size: 100
 
-    # THE TWO READERS THAT FEED A JOB, declared on exactly the terms of the four
-    # above. They were the only readers whose keys appeared in no profile at all,
-    # which is the same defect the four above were declared to close, so they are
-    # closed the same way. Every value below is exactly the reader's own constant,
-    # so declaring them changes no behaviour - it only makes the effective value
-    # auditable by whoever operates the job.
+    # THE DALYTRAN READER OF app/jcl/POSTTRAN.jcl, declared on exactly the terms
+    # of the four above. Its keys appeared in no profile at all, which is the same
+    # defect the four above were declared to close, so it is closed the same way.
+    # Every value below is exactly the reader's own constant, so declaring them
+    # changes no behaviour - it only makes the effective value auditable by
+    # whoever operates the job. It is declared here and not merely constructed
+    # because DailyTransactionPostingJob injects it as a step-bean parameter, so
+    # the container really does bind these keys.
     #
     # source selects the input SUBSTRATE and is the one key here that is not a
-    # tuning knob. Both readers accept `repository` or `object-storage`, and both
+    # tuning knob. The reader accepts `repository` or `object-storage`, and both
     # branches are reachable, so neither is dead code (Rule 1 Clause B). The
     # default is `repository` because the relational substrate is the migration
     # target of record: app/catlg/LISTCAT.txt catalogues these as VSAM clusters,
     # and AAP section 0.1.2.2 replaces VSAM with PostgreSQL. `object-storage`
     # exists because app/jcl/POSTTRAN.jcl reads DALYTRAN as a physical sequential
-    # dataset and app/proc/TRANREPT.prc:STEP01R reads a GDG generation, and both
-    # of those become S3 objects under AAP section 0.5.2.2. Selecting
-    # object-storage makes the bucket key mandatory: DailyTransactionReader then
-    # requires carddemo.aws.s3.batch-input-bucket and TransactionBackupReader
-    # requires carddemo.aws.s3.batch-output-bucket, each of which is declared
-    # below with no inline default precisely so an unconfigured environment
-    # cannot silently read from somewhere the operator never named.
+    # dataset, which becomes an S3 object under AAP section 0.5.2.2. Selecting
+    # object-storage makes the bucket key mandatory: the reader then requires
+    # carddemo.aws.s3.batch-input-bucket, which is declared below with no inline
+    # default precisely so an unconfigured environment cannot silently read from
+    # somewhere the operator never named.
     #
     # page-size is the same fetch size as the four verification readers, and 100
-    # is each reader's own DEFAULT_PAGE_SIZE. It is NOT a pagination contract:
+    # is the reader's own DEFAULT_PAGE_SIZE. It is NOT a pagination contract:
     # the parity page sizes of 7, 10 and 10 live under carddemo.pagination and
     # are unrelated to these.
     #
@@ -1547,12 +1840,92 @@ carddemo:
     # the mainframe DD name and dataset are DALYTRAN, but the ASCII fixture at
     # app/data/ASCII/dailytran.txt spells the word in full, and the fixture's own
     # name is what the key must carry.
+    #
+    # FINDING M-11, severity Major, RESOLVED - AND A PREREQUISITE OF THE
+    # object-storage PATH. Selecting object-storage here makes the DALYTRAN object
+    # an EXTERNAL, UNTRUSTED input: the bucket lives in an emulator whose
+    # community edition was measured to enforce no authorisation at all (the
+    # evidence is on the localstack service in docker-compose.yml), so any
+    # principal that can reach port 4566 could replace the object with 350-byte
+    # records that parse perfectly and post as real transactions.
+    #
+    # DailyTransactionReader therefore refuses an object that is not vouched for.
+    # The producer must set three user-metadata members - carddemo-writer,
+    # carddemo-content-sha256 and carddemo-signature - and the reader verifies the
+    # keyed code over the six-line canonical manifest AND re-measures the content
+    # digest before it parses the first record. The whole contract, including the
+    # derivation label and the two openssl calls that satisfy it, is documented on
+    # DailyTransactionReader.InputObjectEnvelope.
+    #
+    # Two consequences worth stating here rather than discovering at run time:
+    # selecting object-storage also makes carddemo.security.jwt.signing-key
+    # mandatory, because the authenticity key is derived from it; and there is NO
+    # unverified mode, deliberately, since a control that can be switched off by
+    # omitting configuration is a control that will be off. The repository path
+    # authenticates nothing and needs no key, because nothing external is read.
     daily-transaction-reader:
       source: repository
       page-size: 100
       object-key: dalytran/dailytran.txt
-    transaction-backup-reader:
-      source: repository
+
+    # TransactionBackupReader HAS NO KEYS HERE, DELIBERATELY. An earlier revision
+    # declared transaction-backup-reader.source and .page-size and bound them with
+    # @Value on that reader's constructor, but its only owner -
+    # com.cardemo.batch.jobs.TransactionReportJob - always passed its own literals
+    # instead, so both keys were read by nothing on every production path. That is
+    # finding F-008, and removing them is the resolution rather than declaring
+    # values nothing consumes (Rule 1 Clause B forbids both dead code and dead
+    # configuration).
+    #
+    # Neither key can be revived, because neither names a decision an operator
+    # gets to make. The SUBSTRATE is fixed by the DD the calling step reproduces:
+    # STEP01R passes `repository` because app/proc/TRANREPT.prc:L23 declares
+    # FILEIN over the transaction cluster, and STEP10R passes `object-storage`
+    # because :L59 declares TRANFILE over the sorted TRANSACT.DALY generation. One
+    # profile value cannot be both, which is why the owner was overriding it. The
+    # PAGE SIZE is already published as carddemo.batch.tranrept.chunk-size, which
+    # sizes every round trip that job makes; a second reader-scoped key sizing the
+    # same behaviour is the ambiguity Rule 1 Clause B rules out.
+    #
+    # The two keys that reader still reads are declared elsewhere and are shared
+    # rather than reader-scoped: carddemo.aws.s3.batch-output-bucket and
+    # carddemo.aws.s3.gdg-prefixes.transact-bkup, both below.
+
+    # THE CONCATENATED SORTIN READER OF app/jcl/COMBTRAN.jcl:L23-L26, and the one
+    # place in this block where the declared substrate is NOT `repository`.
+    #
+    # source is object-storage because the member says so. Both halves of the
+    # concatenated SORTIN are relative generation references -
+    # AWS.M2.CARDDEMO.TRANSACT.BKUP(0) at :L25 and AWS.M2.CARDDEMO.SYSTRAN(0) at
+    # :L26 - and AAP section 0.5.2.2 makes a GDG generation an S3 object. An
+    # earlier revision left the default at `repository`, which read the live
+    # transaction relation as the first leg while every test overrode the key to
+    # object-storage: the production default was therefore a substrate no test
+    # exercised and the JCL does not name. That is corrected here rather than in
+    # code alone, so the effective value is auditable.
+    #
+    # `repository` remains reachable and is NOT dead code (Rule 1 Clause B), but
+    # it is a separately specified path rather than the default: it reads the
+    # ordered transaction relation in place of the backup generation, which is
+    # useful for a local run with no generation history and is what the reader's
+    # own unit tests exercise directly. Selecting it does not relax any
+    # precondition on the SYSTRAN leg.
+    #
+    # BOTH generations are REQUIRED when object-storage is selected. DISP=SHR on
+    # a relative generation reference fails ALLOCATION - before SORT receives
+    # control - when the generation is not catalogued, and the absence of a COND=
+    # parameter on :L22 or :L41 does not make a DD optional. An absent generation
+    # therefore raises FILE STATUS '35' and the step ends failed. The operational
+    # consequence is real and is stated rather than engineered around: COMBTRAN
+    # cannot run until a TRANSACT.BKUP generation exists, exactly as on the
+    # mainframe, where app/jcl/TRANBKP.jcl - realised here as STEP01R of the
+    # transaction report job, app/proc/TRANREPT.prc:L21 - produces it in the
+    # preceding daily cycle. That is why :L25 reads (0) and not (+1).
+    #
+    # page-size is the fetch size used only by the `repository` path, and 100 is
+    # the reader's own DEFAULT_PAGE_SIZE. It is not a pagination contract.
+    combined-transaction-reader:
+      source: object-storage
       page-size: 100
 
     # ROWS PER KEYSET WINDOW for the dataset-window helper of
@@ -1565,11 +1938,12 @@ carddemo:
     dataset-window-size: 100
 
     # THE PER-JOB CHUNK SIZES ARE DELIBERATELY NOT GIVEN VALUES HERE, and the
-    # omission is the opposite of the one the readers above closed. Each job
-    # reads a TWO-LEVEL fallback - carddemo.batch.posttran.chunk-size,
-    # carddemo.batch.intcalc.chunk-size and carddemo.batch.creastmt.chunk-size
+    # omission is the opposite of the one the readers above closed. All FIVE jobs
+    # read a TWO-LEVEL fallback - carddemo.batch.posttran.chunk-size,
+    # carddemo.batch.intcalc.chunk-size, carddemo.batch.creastmt.chunk-size,
+    # carddemo.batch.tranrept.chunk-size and carddemo.batch.combtran.chunk-size
     # each fall back to carddemo.batch.chunk-size and only then to the job's own
-    # DEFAULT_CHUNK_SIZE constant, which is 100 in all three. Declaring a per-job
+    # DEFAULT_CHUNK_SIZE constant, which is 100 in all five. Declaring a per-job
     # key here would RESOLVE the first level, and the global
     # carddemo.batch.chunk-size declared at the top of this block would stop
     # reaching that job for good - so a value here would change behaviour, which
@@ -1579,36 +1953,22 @@ carddemo:
     # that wants to tune one job in isolation sets its per-job key in its own
     # profile. A chunk size is a COMMIT INTERVAL and a tunable, never a parity
     # contract: no COBOL program in app/cbl commits per record.
-    # RETENTION BOUND for the statement job's in-memory transaction table. A
-    # SAFETY LIMIT, NOT A TUNING KNOB - read that before changing it.
+    # NO RETENTION BOUND is published for the statement job, and none exists in
+    # code. A statement-processor.max-transactions-per-run key stood here at
+    # 1000000, alongside a second ceiling on one card group; finding BAT-002
+    # removed both, because app/cbl/CBSTM03A.CBL refuses no run by record count.
+    # Its table (51 cards of 10 transactions, :L225-L233) overran SILENTLY when
+    # the building loop at :L818-L848 passed 510 with no bounds check, so a Java
+    # refusal at an authored threshold reproduced neither the number nor the
+    # behaviour - it invented a business rule the corpus does not have.
     #
-    # app/cbl/CBSTM03A.CBL:L225-L233 declares the table as 51 card entries of 10
-    # transactions each, a hard ceiling of 510, and the building loop at
-    # :L818-L848 increments both indices with NO bounds check whatsoever: a
-    # 511th transaction overran the storage silently. Removing that ceiling
-    # removes the silent corruption, so the table needs a bound of its own or an
-    # endlessly repeating dataset would exhaust the heap instead (Rule 1
-    # Clause A2, untrusted input). Exceeding this raises
-    # FatalProcessingException - it fails loudly and never truncates.
-    #
-    # Per-entry cost, so the worst case is arithmetic rather than a surprise:
-    # one projected record is 16 + 16 + 318 = 350 characters, which with two
-    # bytes per char and per-object overhead is on the order of 800 bytes
-    # retained. The value below therefore bounds the table at roughly 800 MB,
-    # which a default heap will NOT accommodate - deliberately, because the
-    # bound sits three orders of magnitude above the largest fixture so no
-    # legitimate run reaches it. A deployment whose input could approach it
-    # lowers this to a value its heap holds; it does not raise it. A parity run
-    # over the 300 records of app/data/ASCII/dailytran.txt retains 300 entries,
-    # about 240 kB.
-    #
-    # Declared here, and not only as a constant in code, for the same reason as
-    # the four reader page sizes above: a key that is read at runtime but
-    # appears in no profile is invisible to whoever operates the job. The value
-    # is exactly StatementProcessor.MAX_TRANSACTIONS_PER_RUN, so declaring it
-    # changes no behaviour.
-    statement-processor:
-      max-transactions-per-run: 1000000
+    # What bounds a statement run now is its input, exactly as DFSORT was
+    # bounded: StatementProcessor advances one control-break group at a time, so
+    # the resident set is one card's transactions rather than the run's, and
+    # CREASTMT's projection and load both stream one record at a time. A run
+    # that crosses the legacy per-card capacity of 10 logs one WARN naming
+    # app/cbl/CBSTM03A.CBL:L228 - the divergence from historical capacity stays
+    # visible without being enforced.
     # BOUND on the indexed object-key manifest TransactionWriter publishes into
     # the job execution context. A SCALE BOUND on a diagnostic record, not a
     # bound on the run: the exact object count, the generation prefix and the
@@ -1633,39 +1993,87 @@ carddemo:
     # unique to the job instance and therefore deterministic.
     #
     # Declared here, and not only as a constant in code, for the same reason as
-    # max-transactions-per-run above: a key that is read at runtime but appears
-    # in no profile is invisible to whoever operates the job. The value is
-    # exactly TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS, so declaring it
-    # changes no behaviour.
+    # the four reader page sizes above: a key that is read at runtime but
+    # appears in no profile is invisible to whoever operates the job. The value
+    # is exactly TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS, so declaring
+    # it changes no behaviour. Note that this is a bound on a DIAGNOSTIC record
+    # and not a refusal: reaching it stops the per-key enumeration and nothing
+    # else, which is what distinguishes it from the removed record ceilings.
     transaction-writer:
       max-indexed-object-keys: 1000
+    # ONE SPELLING PER JOB NAME, AND NO KEY WITHOUT A CONSUMER.
+    #
+    # Every one of the six job names below is bound by exactly one @Value, all of
+    # them on this same carddemo.batch.jobs.<id>.name spelling, so the key an
+    # operator edits is the key the job reads. TransactionReportJob previously
+    # bound carddemo.batch.tranrept.name instead - a second spelling of the same
+    # decision - which left tranrept.name below inert: editing it changed
+    # nothing, with no error anywhere to say so. Keeping one spelling is the
+    # remedy rather than declaring the second key, because two bindings for one
+    # decision is precisely the drift this file warns against elsewhere.
+    #
+    # `enabled` and `creastmt.steps` USED TO BE DECLARED HERE AND ARE WITHDRAWN.
+    # Nothing bound either of them on any path: no @Value, no
+    # @ConfigurationProperties and no Environment lookup, so an operator reading
+    # `enabled: true` would reasonably believe a job could be switched off from a
+    # profile, and it could not. Giving them a consumer would have meant binding
+    # them into a bean nothing consumes, which is dead code, so withdrawal is the
+    # resolution (Rule 1 Clause B forbids dead configuration as well as dead
+    # code). The five-step structure of CREASTMT is not configuration either: it
+    # is fixed by app/jcl/CREASTMT.JCL, which declares exactly five steps, and
+    # BatchConfig builds those five from the JCL rather than from a count.
+    #
+      # What actually governs each withdrawn key, so the evidence is not lost:
+      #   * WHETHER A JOB RUNS is governed by spring.batch.job.enabled (false,
+      #     above) plus an explicit launch - the framework's own
+      #     JobLauncherApplicationRunner via spring.batch.job.name, or the single
+      #     @SqsListener in com.cardemo.config.BatchConfig for the queue path. An
+      #     `enabled` flag per job could not add to that without a second,
+      #     contradictory switch.
+      #   * THE FIVE STEPS OF CREASTMT are structural, not configurable:
+      #     com.cardemo.batch.jobs.StatementGenerationJob declares them from
+      #     app/jcl/CREASTMT.JCL's DELDEF01 :L22, STEP010 :L44, STEP020 :L56,
+      #     STEP030 :L66 and STEP040 :L79. A profile cannot make a job have four.
+      #
+    # The switch that DOES exist belongs to the framework: `spring.batch.job.name`,
+    # matched against Job.getName(), which is why every job here is named after its
+    # JCL member. A second switch in this namespace would be two switches for one
+    # decision. The CREASTMT step count was likewise a fact about
+    # StatementGenerationJob.STEP_COUNT and is asserted there, not configured here.
     jobs:
       # app/jcl/POSTTRAN.jcl:L23 EXEC PGM=CBTRN02C, with app/cbl/CBTRN01C.cbl
       # folded in as the read-only pre-flight step described above.
       posttran:
         name: POSTTRAN
-        enabled: true
       # app/jcl/INTCALC.jcl:L22 EXEC PGM=CBACT04C,PARM='2022071800'.
       intcalc:
         name: INTCALC
-        enabled: true
       # app/jcl/TRANREPT.jcl:L59 EXEC PGM=CBTRN03C, driven through
-      # app/proc/TRANREPT.prc.
+      # app/proc/TRANREPT.prc. Bound by
+      # com.cardemo.batch.jobs.TransactionReportJob, which reads THIS key; it
+      # bound carddemo.batch.tranrept.name until finding CFG-002, so this
+      # declaration was inert while the key it read appeared in no profile.
       tranrept:
         name: TRANREPT
-        enabled: true
       # app/jcl/COMBTRAN.jcl - SORT at :L22 then IDCAMS REPRO at :L41. NO
       # COBOL PROGRAM EXISTS for this job; the JCL is the source of truth.
       combtran:
         name: COMBTRAN
-        enabled: true
       # app/jcl/CREASTMT.JCL - five steps, DELDEF01 :L22, STEP010 :L44,
       # STEP020 :L56, STEP030 :L66, STEP040 :L79 - running app/cbl/CBSTM03A.CBL
-      # which reaches its five datasets through app/cbl/CBSTM03B.CBL.
+      # which reaches its five datasets through app/cbl/CBSTM03B.CBL. The step
+      # count is a structural fact of that member, reproduced in the job's flow;
+      # it is not settable, which is why no `steps` key is declared.
       creastmt:
         name: CREASTMT
-        enabled: true
-        steps: 5
+      # The end-to-end pipeline that composes the five jobs above. It is NOT one
+      # of them and has no JCL member of its own: app/jcl has no driver deck, the
+      # sequence being the operator's running order, so this name identifies the
+      # composed Spring Batch job rather than a translated step. Read by
+      # com.cardemo.batch.jobs.BatchPipelineOrchestrator, which defaults to this
+      # same value, so declaring it changes no behaviour.
+      pipeline:
+        name: CARDDEMO-PIPELINE
     # FIXED-WIDTH RECORD GEOMETRY IS DELIBERATELY NOT CONFIGURATION.
     #
     # Each length below is a byte contract, not a preference: the parity

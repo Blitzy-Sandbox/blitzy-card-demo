@@ -176,9 +176,14 @@ import jakarta.validation.constraints.Size;
  * whereupon {@code :1464-1465} moves the unpopulated field into {@code CARD-CVV-CD-X PIC X(03)} and
  * reinterprets it through the redefining alias {@code CARD-CVV-CD-N PIC 9(03)} ({@code :107-109}) on the
  * way to {@code CARD-UPDATE-CVV-CD PIC 9(03)} ({@code :317}) - destroying the stored value on every
- * successful update. That path is <strong>not</strong> reproduced and no component exists for it: card
- * verification data is not persisted by this system, so there is nothing to destroy and nothing to
- * accept. See the deviation on {@link com.cardemo.model.entity.Card}. The quirk that IS preserved is the
+ * successful update. That path is <strong>not</strong> reproduced and no component exists for it. The value
+ * is stored here - {@code card_cvv_cd CHAR(3) NOT NULL} at {@code V1__create_schema.sql:741}, mapped on
+ * {@link com.cardemo.model.entity.Card} and seeded at {@code V3__seed_data.sql:744} - so this is a labelled
+ * deviation and not an absence: reproducing the two {@code MOVE}s would overwrite live authentication data
+ * with spaces, which Rule 1 Clause D forbids, and the entity's field is write-once with no getter, so there
+ * is no read path to obtain the operand through either. No component is declared here for the same reason
+ * the screen has none - {@code app/cpy-bms/COCRDUP.CPY} declares no verification field, so no caller could
+ * supply one, and accepting one would put authentication data on the wire. The quirk that IS preserved is the
  * second one: {@code CCUP-NEW-EXPDAY} is moved unconditionally at {@code :621}, whereas every other new
  * leaf is guarded by an {@code '*'}-or-SPACES test that substitutes LOW-VALUES. That asymmetry is
  * contract, not oversight.</p>
@@ -263,7 +268,8 @@ import jakarta.validation.constraints.Size;
  * {@code app/cpy-bms/COCRDUP.CPY:72}. The snapshot groups carry their own copies of the card number, the
  * embossed name and the card expiry components. The graver value the legacy groups also carried, the
  * verification value of {@code app/cbl/COCRDUPC.cbl:294} and {@code :306}, is handled by not being
- * declared: a component that does not exist cannot be emitted, and cannot be accepted either. A
+ * declared on the wire: a component that does not exist cannot be emitted, and cannot be accepted either.
+ * The value itself is stored, and unreadable where it is stored. A
  * record's implicitly generated
  * {@code toString()} renders <em>every</em> component, so an override is mandatory on this type and
  * on each of the three nested snapshot types; each emits only values that carry no cardholder or
@@ -542,7 +548,8 @@ public record CardUpdateRequest(
      *
      * <p><strong>Security.</strong> The card number is a never-emit value. The card verification value
      * that this group would otherwise have carried is handled more strongly than by never emitting it:
-     * it is not declared at all, so it cannot be accepted, stored, compared or rendered. The generated
+     * it is not declared at all, so this type cannot accept, compare or render one. It is stored on
+     * {@link com.cardemo.model.entity.Card}, where it is write-once and has no read path. The generated
      * rendering for a record lists every component, so {@link #toString()} is overridden to emit only
      * the account identifier and the nested group, whose own rendering is equally redacted. Equality
      * and hash code are left as the compiler generates them; they consider every
@@ -570,14 +577,17 @@ public record CardUpdateRequest(
             String cardNumber,
 
             // 10 CCUP-xxx-CVV-CD  PIC X(3)   app/cbl/COCRDUPC.cbl:294 / :306 - DELIBERATELY ABSENT.
-            //    Card verification data is not persisted by this system at all: V1 declares no
-            //    card_cvv_cd column, the entity carries no field and the seed loads no value. There is
-            //    therefore nothing for a snapshot to be compared against and no reason to accept one over
-            //    the wire - a request component would be the same retention problem one hop earlier, and
-            //    a component that is accepted and then ignored fails silently, which is the worst of the
-            //    available behaviours. app/cpy-bms/COCRDUP.CPY declares no CVV field either, so no
-            //    symbolic-map contract is lost. See the deviation recorded on
-            //    com.cardemo.model.entity.Card.
+            //    The value IS persisted: V1__create_schema.sql:741 declares card_cvv_cd CHAR(3) NOT NULL,
+            //    com.cardemo.model.entity.Card maps it and V3__seed_data.sql:744 seeds it. What is
+            //    withheld is the READ path - the entity field is write-once with no getter of any
+            //    visibility, recorded at V1__create_schema.sql:694 - so no snapshot can be projected
+            //    from it. And app/cpy-bms/COCRDUP.CPY declares no CVV field, so the operator never typed
+            //    one and no caller could echo one: no symbolic-map contract is lost by omitting it.
+            //    Accepting one over the wire would be a retention problem one hop earlier, and a
+            //    component accepted then ignored fails silently, which is the worst available behaviour.
+            //    Both source predicates that used it (:1503 and its restores at :1354 and :1512) had
+            //    server-side operands only, so the question they asked - did the row change between the
+            //    display read and the write read - is answered by @Version on the entity.
 
             // 10 CCUP-xxx-CARDDATA  app/cbl/COCRDUPC.cbl:295-301 / :307-313 - compared as a group
             @Valid CardData cardData) {

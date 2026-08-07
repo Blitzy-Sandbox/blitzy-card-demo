@@ -146,22 +146,26 @@ import com.cardemo.service.shared.FileStatusMapper;
  * </ol>
  *
  * <h2>How to run, build and test</h2>
- * <strong>The batch tier around this reader is largely delivered, and the one thing still owed is precisely
- * identified.</strong> An earlier revision of this paragraph said the owning {@code Job} and {@code Step} were
- * wired in {@code com.cardemo.config.BatchConfig} and that {@code com.cardemo.batch.jobs} held
- * {@code InterestCalculationJob} only; both statements are withdrawn. {@code com.cardemo.batch.jobs} now holds
- * <strong>three of its six target jobs</strong> - {@code InterestCalculationJob},
- * {@code DailyTransactionPostingJob} and {@code StatementGenerationJob} - and each declares its own
- * {@code Step} beans itself; {@code BatchConfig} owns the dataset bindings and record rendering rather than
- * step topology. What is genuinely still owed is <strong>the read-only verification step that would own this
- * reader</strong>, the Java counterpart of {@code app/jcl/READACCT.jcl}, together with the name-driven
- * launcher above it. That launcher, {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, is authored -
- * an earlier revision of this sentence called it planned, which is withdrawn - so what remains owed is the
- * verification step itself, not the launcher. What both rely on is already true:
- * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no
- * job runs at application startup. This class carries {@code @Component} and {@code @StepScope}, so the
- * component scan registers a definition for it while no instance is constructed until a step is executing -
- * and with no {@code Step} yet referencing it, none is constructed at runtime today.
+ * <strong>The read-only verification step that owns this reader is authored, and nothing about the batch tier
+ * around it is outstanding.</strong> Two earlier revisions of this paragraph are withdrawn: the first said the
+ * owning {@code Job} and {@code Step} were wired in {@code com.cardemo.config.BatchConfig} and that
+ * {@code com.cardemo.batch.jobs} held {@code InterestCalculationJob} only; the second said the verification
+ * step was "genuinely still owed" and that no {@code Step} referenced this reader, so none was constructed at
+ * runtime. The step exists:
+ * {@link com.cardemo.config.BatchConfig#datasetVerificationReadAccountStep} is the
+ * Java counterpart of {@code app/jcl/READACCT.jcl}, and
+ * {@link com.cardemo.config.BatchConfig#datasetVerificationJob} composes it with the three
+ * sibling members as one operator submission, selectable by name through the framework's own {@code spring.batch.job.name}
+ * property, which is the launch signal that survives after the bespoke operator launcher was
+ * withdrawn.
+ * The step writes nothing: its sink reaches no relation, no object store and no queue, because
+ * {@code app/cbl/CBACT01C.cbl} performs {@code OPEN}, {@code READ} and {@code CLOSE} only.
+ * {@code com.cardemo.batch.jobs} holds its six target jobs and each declares its own {@code Step} beans;
+ * {@code BatchConfig} owns the dataset bindings and record rendering rather than step topology.
+ * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no job
+ * runs at application startup and every submission is deliberate. This class carries {@code @Component} and
+ * {@code @StepScope}, so the component scan registers a definition for it and the step scope gives each step
+ * execution its own instance.
  * <p>
  * Two build paths are available; both are pinned and either may be used. Each is stated as a required
  * <em>capability</em> rather than as a dated reading of one host, because a version measured on one machine
@@ -401,7 +405,7 @@ public class AccountReader implements ItemStreamReader<Account> {
     // citation, entity property, column name - breaks compilation against the entity contract or the schema.
     // Remediation: do not rename it. A sanctioned rename must be atomic across the entity, the Flyway
     // migration, every reader and writer and the expected-output baselines, and is owed an entry in the
-    // planned DECISION_LOG.md as a deliberate divergence from the frozen corpus.
+    // DECISION_LOG.md as a deliberate divergence from the frozen corpus.
     //
     // The three PIC X(10) date fields are carried as String over CHAR(10) columns and are never parsed into a
     // java.time type by this reader: a verification scan must be able to hold a value no date parser would
@@ -445,7 +449,7 @@ public class AccountReader implements ItemStreamReader<Account> {
      * compilation against the entity contract or byte-comparison of the emitted label, and the two failures
      * surface in different gates. <i>Remediation:</i> do not rename it. Should a rename ever be sanctioned, it
      * must be applied atomically across the entity, the Flyway migration, every reader and writer, and the
-     * expected-output baselines, and owed an entry in the planned {@code DECISION_LOG.md} as a deliberate divergence
+     * expected-output baselines, and owed an entry in the {@code DECISION_LOG.md} as a deliberate divergence
      * from the frozen corpus.
      *
      * @see Account#getExpiraionDate()

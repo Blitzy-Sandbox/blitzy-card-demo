@@ -1219,11 +1219,12 @@ footer .lic{font-size:0.83rem}
       <p>The authoritative ledger &mdash; which defines each gate, states its prerequisites,
       gives the literal command that runs it and records its current standing &mdash; is
       <a href="validation-gates.md">validation-gates.md</a>. <strong>Read the standing of any
-      gate there, not here.</strong> That ledger has since closed the prerequisite for gate 7
-      and recorded the outcome of running its harness; consistent with its own wording, that is
-      reported there as measured assertions rather than as a pass, and this page does not
-      restate it. Any change to a result is made by producing evidence, never by softening a
-      sentence.</p>
+      gate there, not here.</strong> <strong>All eight gates have since been executed</strong>
+      and their outcomes are recorded in that ledger against a named commit, a command and an
+      exit code; consistent with its own wording, gate 3 is reported there as a measured
+      baseline rather than as a pass, gate 7 as measured assertions, and gate 8 as partly
+      available. This page restates none of them. Any change to a result is made by producing
+      evidence, never by softening a sentence.</p>
     </div>
 
     <div class="tablewrap">
@@ -1631,12 +1632,19 @@ footer .lic{font-size:0.83rem}
       thorough, is never a pass. The standing of each gate is maintained in
       <a href="validation-gates.md">validation-gates.md</a> and should be read there.</dd>
 
-      <dt><strong>No expected legacy baseline output artefact exists in the repository.</strong></dt>
-      <dd>End-to-end parity is defined as a byte-level comparison against what the COBOL
-      produces, and the thing being compared against &mdash; a captured, agreed baseline output
-      &mdash; is not present. Parity therefore <strong>cannot yet be executed as a true
-      diff</strong>. <strong>Capturing or agreeing that baseline is a named prerequisite</strong>
-      and is the single largest gap in the evidence chain.</dd>
+      <dt><strong>No capture from the real legacy runtime exists, and this entry previously
+      overstated that gap.</strong></dt>
+      <dd>An earlier revision of this entry read <em>&ldquo;no expected legacy baseline output
+      artefact exists in the repository&rdquo;</em> and concluded that parity
+      <em>&ldquo;cannot yet be executed as a true diff&rdquo;</em>. <strong>Both halves are
+      withdrawn.</strong> End-to-end parity is now executed as a true byte-level diff against
+      <strong>two independent expectations</strong> held in the repository: the frozen program's
+      own output, produced by compiling <code>app/cbl/CBTRN02C.cbl</code> unmodified and running
+      it against the frozen fixtures, and a second expectation re-derived from the same source by
+      a harness that imports no production type. What remains absent is narrower and is stated as
+      such: <strong>a capture from the real runtime &mdash; the frozen COBOL executed on z/OS or
+      a licensed emulator</strong>, which would corroborate both expectations rather than replace
+      either. That capture cannot be produced from inside this repository.</dd>
 
       <dt><strong>Documentation publication has a genuinely silent failure path.</strong></dt>
       <dd>A page absent from the site navigation never appears in the published site and
@@ -1784,9 +1792,10 @@ footer .lic{font-size:0.83rem}
     <p><strong>All quantitative claims in this document are cited to repository paths at anchor
     commit <code>7756d895ffeb65f7ea72aaa609e356d9899afcec</code></strong> (short
     <code>7756d89</code>), and the legacy corpus under <code>app/</code> is frozen and byte for
-    byte unchanged. <strong>No validation-gate evidence has yet been generated: every gate
-    result in this document reads <span class="na">Not available</span>, and design alone never
-    constitutes a pass.</strong> The authoritative ledger is
+    byte unchanged. <strong>Every gate result in this document reads
+    <span class="na">Not available</span> because this document records none of them, not because
+    none exists</strong> &mdash; all eight gates have been executed and design alone never
+    constitutes a pass. The authoritative ledger is
     <a href="validation-gates.md">validation-gates.md</a>.</p>
 
     <p class="lic">Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. Licensed

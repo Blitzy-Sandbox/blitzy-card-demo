@@ -89,9 +89,10 @@ import org.springframework.stereotype.Repository;
  * the method name a useful assertion: it is a machine-checked statement that the entity really does
  * expose {@code id.accountId}, {@code id.typeCd} and {@code id.catCd}.
  *
- * <p>Integration coverage belongs in {@code src/test/java/com/cardemo/integration/repository} against a
- * Testcontainers PostgreSQL 16 instance, and four cases are required rather than optional, because each
- * one pins a behaviour that a plausible wrong implementation would break:
+ * <p>Integration coverage is authored in {@code src/test/java/com/cardemo/integration/repository}, in
+ * {@code TransactionCategoryBalanceRepositoryTest} against a Testcontainers PostgreSQL 16 instance, and four
+ * cases are required rather than optional, because each one pins a behaviour that a plausible wrong
+ * implementation would break:
  *
  * <ol>
  *   <li>the create branch, where the key is absent and {@code findById} yields an empty result;</li>

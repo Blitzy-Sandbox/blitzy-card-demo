@@ -105,7 +105,12 @@
  *   <li>{@code carddemo.decimal.rounding-mode: HALF_EVEN} and {@code monetary-scale: 2}. Equality is by
  *       {@code compareTo}, never {@code equals}.</li>
  *   <li>Timestamps are 26 characters and the generated form's <strong>final four digits are always zeros</strong>,
- *       so any generator here formats to millisecond precision followed by four zeros. Three mutually
+ *       so any generator here formats to <strong>hundredths-of-a-second</strong> precision followed by four
+ *       zeros. An earlier revision said millisecond precision; that is withdrawn, because three fraction
+ *       digits plus four zeros is seven characters and the field holds six -
+ *       {@code app/cbl/CBTRN02C.cbl:L159-L174} splits the fraction into {@code DB2-MIL PIC 9(002)} and
+ *       {@code DB2-REST PIC X(04)}, and {@code :L700-L701} moves the two-digit hundredths in and the literal
+ *       {@code '0000'} after it. Three mutually
  *       incompatible producers exist upstream and all three must survive untouched, including pure
  *       pass-through.</li>
  *   <li>A {@code java.time.Clock} is injected, published once as {@code Clock.systemDefaultZone()} - region-local
@@ -137,7 +142,8 @@
  *       plain decimal string was returned instead of the edited mask. <em>Remediation:</em> format on the mask -
  *       mandatory sign, eight integer digits, two decimals. <strong>Severity: Medium.</strong></p></li>
  *   <li><p><strong>Symptom: a generated timestamp differs from the baseline in its final digits.</strong> Cause:
- *       nanosecond precision. <em>Remediation:</em> millisecond precision followed by four zeros.
+ *       nanosecond or millisecond precision. <em>Remediation:</em> hundredths-of-a-second precision followed
+ *       by four literal zeros, which is what fits the six-character fraction field.
  *       <strong>Severity: High.</strong></p></li>
  *   <li><p><strong>Symptom: a card number appears in a log line or an error payload.</strong> Cause: a diagnostic
  *       quoted the value. <em>Remediation:</em> mask it; the card number sits at bytes 263-278 of the record and
@@ -157,7 +163,9 @@
  *       <strong>build failure</strong>.</li>
  *   <li><strong>Run.</strong> These are Spring beans and are never invoked directly; a controller or a batch
  *       step calls them. A manual exercise needs the compose stack up - {@code docker compose up -d} - and the
- *       environment loaded with {@code set -a; . ./.env; set +a}, because {@code JWT_SIGNING_KEY} has no default and
+ *       environment scoped to that one command rather than exported into the shell:
+ *       {@code ( set -a; . ./.env; set +a; <command> )}. The parentheses confine the values to the subshell
+ *       instead of leaving every later child inheriting them. {@code JWT_SIGNING_KEY} has no default and
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service}.
  *       {@code TransactionListServiceTest}, {@code TransactionDetailServiceTest} and

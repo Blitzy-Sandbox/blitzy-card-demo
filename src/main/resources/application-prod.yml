@@ -229,7 +229,7 @@
 #   - THE BUCKET AND REGION VARIABLE SPELLINGS ARE THE PROVISIONED ONES.
 #     carddemo.aws.s3.batch-input-bucket and .batch-output-bucket read
 #     CARDDEMO_S3_BATCH_INPUT_BUCKET and CARDDEMO_S3_BATCH_OUTPUT_BUCKET, the
-#     names .env.example:80-81 provision, and spring.cloud.aws.region.static
+#     names .env.example declares, and spring.cloud.aws.region.static
 #     reads ${AWS_REGION:${AWS_DEFAULT_REGION}}, where the fallback is a second
 #     VARIABLE rather than a literal, so no literal default exists and an absent
 #     pair still fails startup. A profile that read a variable name nothing
@@ -599,6 +599,18 @@ management:
       # so no reader has to know an implicit value to predict behaviour.
       # A specific investigation raises MANAGEMENT_TRACING_SAMPLING_PROBABILITY
       # for its duration instead of editing this file.
+      #
+      # FINDING M-03, severity Medium. This value is the reason that finding
+      # mattered. CorrelationIdFilter used to emit the W3C traceparent
+      # trace-flags octet as a hard-coded "01" - sampled - on the reasoning
+      # that the diagnostic context carried identifiers but not the decision.
+      # Under the base profile's 1.0 that assertion happened to be true, so the
+      # defect was invisible in every test and in local running; here at 0.1 it
+      # was wrong nine times in ten, and each wrong header told the next hop to
+      # record a child of a trace this process had already dropped, leaving an
+      # orphaned half-trace at the collector. The octet is now composed from
+      # TraceContext.sampled(), so lowering or raising this probability changes
+      # what the header states rather than only what this process exports.
       probability: 0.1
 
 # ============================================================================

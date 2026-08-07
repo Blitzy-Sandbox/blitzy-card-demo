@@ -116,7 +116,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>How to run, build and test</h2>
  *
  * <p>{@code ./mvnw -B -ntp -Ddependency-check.skip=true test} runs this class;
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} runs it inside the full gate. Maven
+ * {@code ./mvnw -B -ntp clean verify} runs it inside the full gate. Maven
  * Surefire owns this tier: it collects {@code **}{@code /*Test.java} while excluding
  * {@code **}{@code /integration/**} and {@code **}{@code /e2e/**}, so a class moved out of
  * {@code src/test/java/com/cardemo/unit/} would be collected by neither Surefire nor Failsafe and would
@@ -416,7 +416,7 @@ final class BillPaymentRequestTest {
      * same successor. It is retained exactly as written, because parity is the contract - a database
      * sequence would generate different values and a collision is meant to surface as a duplicate-key
      * failure from the primary key, which is what the source's own duplicate handling did. It is owed
-     * an entry in the planned {@code DECISION_LOG.md}.</p>
+     * an entry in the {@code DECISION_LOG.md}.</p>
      *
      * @param highestOnFile the identifier the browse returned, or {@code null} for the end-of-file case
      * @return the next identifier, sixteen characters and zero padded so leading zeros survive
@@ -1278,7 +1278,7 @@ final class BillPaymentRequestTest {
                             + "212-217 is racy exactly as written. It is kept, because a database "
                             + "sequence would generate different values and break the parity baseline; "
                             + "the collision is meant to surface as a duplicate-key failure from the "
-                            + "primary key. Owed an entry in the planned DECISION_LOG.md")
+                            + "primary key. Owed an entry in the DECISION_LOG.md")
                     .isEqualTo(first);
         }
 

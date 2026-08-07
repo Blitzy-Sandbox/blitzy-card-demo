@@ -66,6 +66,7 @@ import com.cardemo.model.dto.UserListResponse;
 import com.cardemo.model.dto.UserSecurityDto;
 import com.cardemo.model.dto.UserUpdateRequest;
 import com.cardemo.model.dto.UserUpdateResponse;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.service.admin.UserAddService;
 import com.cardemo.service.admin.UserDeleteService;
 import com.cardemo.service.admin.UserListService;
@@ -660,16 +661,6 @@ public class AdminController {
      * support can retrieve the internal detail while a caller holding the response body cannot.</p>
      */
     private static final String CORRELATION_ID_PROPERTY = "correlationId";
-
-    /**
-     * The diagnostic-context key under which the correlation identifier is published.
-     *
-     * <p>The literal rather than a reference: {@code CorrelationIdFilter} owns the three keys
-     * {@code correlationId}, {@code traceId} and {@code spanId} and is the single point that mints and
-     * removes them. This class only reads one of them and adds, renames, overwrites and clears none, so it
-     * takes on no dependency of its own on the filter.</p>
-     */
-    private static final String MDC_KEY_CORRELATION_ID = "correlationId";
 
     /**
      * The value substituted when no correlation identifier is in the diagnostic context.
@@ -2326,7 +2317,7 @@ public class AdminController {
 
         problem.setProperty(ERROR_CODE_PROPERTY, errorCode);
 
-        final String correlationId = MDC.get(MDC_KEY_CORRELATION_ID);
+        final String correlationId = MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID);
         problem.setProperty(CORRELATION_ID_PROPERTY,
                 correlationId == null || correlationId.isEmpty()
                         ? CORRELATION_ID_UNAVAILABLE : correlationId);

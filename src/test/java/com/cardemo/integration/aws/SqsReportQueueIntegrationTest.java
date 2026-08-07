@@ -35,6 +35,7 @@
 package com.cardemo.integration.aws;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 import ch.qos.logback.classic.Level;
@@ -88,6 +89,21 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 import software.amazon.awssdk.services.sqs.model.QueueDeletedRecentlyException;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
+import com.cardemo.config.BatchConfig;
+import org.mockito.ArgumentCaptor;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.launch.JobLauncher;
+import io.awspring.cloud.sqs.listener.SqsHeaders;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Verifies the first-in-first-out queue that replaces the CICS extrapartition transient data queue, and the
@@ -361,6 +377,16 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  */
 @DisplayName("SQS FIFO report queue - the DEFINE TDQUEUE(JOBS) bridge and the typed report message")
 class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
+    /**
+     * The key the queue envelope code is derived from.
+     *
+     * <p>Local to this test and long enough to be a plausible signing key, so nothing here is a credential of
+     * any deployment. Finding M-11: the producer signs every submission with a key derived from the
+     * application signing key, and there is no unsigned mode, so a subject cannot be built without one.
+     */
+    private static final String ENVELOPE_SIGNING_KEY =
+            "sqs-report-queue-integration-envelope-key-0123456789";
+
 
     /**
      * Sole constructor, invoked by the test framework.
@@ -751,6 +777,21 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     }
 
     /**
+     * Walks a throwable to its root cause, so an assertion can name the validation that refused a body
+     * without depending on how many layers wrapped it.
+     *
+     * @param thrown the throwable to unwrap, never {@code null}
+     * @return the deepest cause, or {@code thrown} itself when it has none
+     */
+    private Throwable rootCauseOf(final Throwable thrown) {
+        Throwable current = thrown;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    /**
      * Renders a typed message as the body the production publisher would have produced.
      *
      * @param message the message to render
@@ -758,11 +799,24 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
      * @throws IllegalStateException if the message could not be rendered, with the cause preserved
      */
     private String bodyOf(final JobSubmissionMessage message) {
+        return writeValueAsString(message);
+    }
+
+    /**
+     * Renders any value through the same mapper the publisher uses.
+     *
+     * <p>Used where the escaping guarantee has to be proven on a value the typed message may no longer carry:
+     * since finding C-02 the record refuses a report name outside its three literals, so the encoder's
+     * treatment of hostile text is asserted on the text itself rather than through the record.
+     *
+     * @param value the value to render
+     * @return the rendered JSON
+     */
+    private String writeValueAsString(final Object value) {
         try {
-            return this.objectMapper.writeValueAsString(message);
+            return this.objectMapper.writeValueAsString(value);
         } catch (final JsonProcessingException unrenderable) {
-            throw new IllegalStateException(
-                    "The typed job submission message could not be rendered as a body.", unrenderable);
+            throw new IllegalStateException("The value could not be rendered as a body.", unrenderable);
         }
     }
 
@@ -817,7 +871,7 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     private ReportSubmissionService serviceOn(final Clock pinnedClock, final String targetQueueName) {
         return new ReportSubmissionService(sqsTemplate(), this.snsTemplate, this.dateValidationService,
                 pinnedClock, this.tracerProvider, targetQueueName, reportQueueLogicalName(),
-                this.reportMessageGroupId, notificationTopic());
+                this.reportMessageGroupId, notificationTopic(), ENVELOPE_SIGNING_KEY);
     }
 
     /**
@@ -1880,6 +1934,161 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
     //    asserted, or a value neutralised by the boundary - and never a silent acceptance.
     // =================================================================================================
 
+    /**
+     * The producer and the consumer against ONE real queue, which is the seam finding C-01 broke.
+     *
+     * <p>Every other group in this class receives with a raw client, and that is precisely why the defect
+     * survived: the library's default converter wrote a payload type header on send and resolved it with
+     * {@code Class.forName} on receive, so the production listener - which binds text - was handed a record
+     * and failed inside the framework's conversion step, above its own error handling. A raw receive never
+     * saw it. This group closes that gap by publishing with the production service and then feeding the
+     * delivered body and headers to the production listener.
+     */
+    @Nested
+    @DisplayName("the producer and the production listener over one real queue")
+    class ProducerAndListenerContract {
+
+        /**
+         * Sole constructor, invoked by the test framework.
+         *
+         * <p>Declared and empty: every collaborator it uses is injected into the enclosing instance, and the
+         * launcher it needs is a local test double built inside each test.
+         */
+        ProducerAndListenerContract() {
+            // Intentionally empty; this group holds no state.
+        }
+
+        @Test
+        @DisplayName("a published submission carries no payload type header for a caller to choose")
+        void aPublishedSubmissionCarriesNoPayloadTypeHeader() {
+            final String queueUrl = provisionScopedFifoQueue("contract-header");
+            submitAndReceiveOne(serviceOn(clock(), queueNameOf(queueUrl)), confirmedMonthlyForm(), queueUrl);
+
+            // The publish above already deleted its message, so republish and read the raw delivery.
+            final String republished = queueNameOf(queueUrl);
+            reportSubmissionService(republished).submitScreen(
+                    ReportSubmissionService.AttentionIdentifier.ENTER, confirmedMonthlyForm());
+            final List<Message> delivered = receiveRawWithAttributes(queueUrl);
+
+            assertThat(delivered).hasSize(1);
+            assertThat(delivered.get(0).messageAttributes())
+                    .as("FINDING C-01: the JavaType attribute is what made the producer's message unreadable "
+                            + "by the listener, and what let a publisher name the class this application loads")
+                    .doesNotContainKey("JavaType");
+            assertThat(delivered.get(0).messageAttributes())
+                    .as("the envelope code of finding M-11 travels as a message attribute, so the consumer "
+                            + "can verify authenticity before it launches anything")
+                    .containsKey(ReportSubmissionService.JobSubmissionEnvelope.SIGNATURE_HEADER);
+        }
+
+        @Test
+        @DisplayName("the production listener launches the report job from a genuinely published message")
+        void theProductionListenerLaunchesFromAGenuinelyPublishedMessage() throws Exception {
+            final String queueUrl = provisionScopedFifoQueue("contract-launch");
+            reportSubmissionService(queueNameOf(queueUrl)).submitScreen(
+                    ReportSubmissionService.AttentionIdentifier.ENTER, confirmedMonthlyForm());
+            final List<Message> delivered = receiveRawWithAttributes(queueUrl);
+            assertThat(delivered).hasSize(1);
+
+            final JobLauncher launcher = mock(JobLauncher.class);
+            final Job reportJob = mock(Job.class);
+            final JobExecution completed = mock(JobExecution.class);
+            when(completed.getStatus()).thenReturn(BatchStatus.COMPLETED);
+            when(completed.getExitStatus()).thenReturn(ExitStatus.COMPLETED);
+            when(reportJob.getName()).thenReturn("TRANREPT");
+            when(launcher.run(eq(reportJob), any(JobParameters.class))).thenReturn(completed);
+            final BatchConfig.ReportJobQueueListener listener = new BatchConfig(100)
+                    .reportJobQueueListener(launcher, reportJob, objectMapper, ENVELOPE_SIGNING_KEY);
+
+            listener.drainReportJobQueue(delivered.get(0).body(),
+                    headersOf(delivered.get(0)), null);
+
+            final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+            verify(launcher).run(eq(reportJob), captor.capture());
+            assertThat(captor.getValue().getString("reportName"))
+                    .as("the whole point of the bridge: what the online tier submitted is what the batch tier "
+                            + "runs")
+                    .isEqualTo(reportNameMonthly);
+            assertThat(captor.getValue().getString("startDate")).hasSize(10);
+        }
+
+        @Test
+        @DisplayName("a message published without the envelope code launches nothing")
+        void aMessagePublishedWithoutTheEnvelopeCodeLaunchesNothing() throws Exception {
+            final String queueUrl = provisionScopedFifoQueue("contract-unsigned");
+            // Published by a raw client, which is exactly the principal the code exists to exclude: it can
+            // reach the emulator port, and the emulator's community edition enforces no authorisation.
+            sendUnderGroup(queueUrl, bodyOf(new JobSubmissionMessage("Monthly", "2022-01-01", "2022-01-31")),
+                    reportMessageGroupId, "unsigned-submission");
+            final List<Message> delivered = receiveRawWithAttributes(queueUrl);
+            assertThat(delivered).hasSize(1);
+
+            final JobLauncher launcher = mock(JobLauncher.class);
+            final Job reportJob = mock(Job.class);
+            final BatchConfig.ReportJobQueueListener listener = new BatchConfig(100)
+                    .reportJobQueueListener(launcher, reportJob, objectMapper, ENVELOPE_SIGNING_KEY);
+
+            listener.drainReportJobQueue(delivered.get(0).body(), headersOf(delivered.get(0)), null);
+
+            verify(launcher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        /**
+         * Receives every delivered message with its user attributes, which the shared helper does not request.
+         *
+         * @param queueUrl the queue to read
+         * @return the delivered messages, each deleted immediately so a group is never blocked
+         */
+        private List<Message> receiveRawWithAttributes(final String queueUrl) {
+            final List<Message> received = awaitCall(sqsAsyncClient().receiveMessage(
+                    ReceiveMessageRequest.builder()
+                            .queueUrl(queueUrl)
+                            .maxNumberOfMessages(maxReceiveBatch)
+                            .waitTimeSeconds((int) receiveWait.toSeconds())
+                            .visibilityTimeout((int) visibilityTimeout.toSeconds())
+                            .messageAttributeNames("All")
+                            .messageSystemAttributeNames(MessageSystemAttributeName.MESSAGE_GROUP_ID,
+                                    MessageSystemAttributeName.MESSAGE_DEDUPLICATION_ID)
+                            .build()),
+                    "receive with attributes from the queue at " + queueUrl).messages();
+            for (final Message message : received) {
+                awaitCall(sqsAsyncClient().deleteMessage(DeleteMessageRequest.builder()
+                                .queueUrl(queueUrl)
+                                .receiptHandle(message.receiptHandle())
+                                .build()),
+                        "delete a received message from the queue at " + queueUrl);
+            }
+            return received;
+        }
+
+        /**
+         * Renders a delivered message's attributes as the header map the listener receives.
+         *
+         * @param message the delivered message
+         * @return the headers, never {@code null}
+         */
+        private Map<String, Object> headersOf(final Message message) {
+            final Map<String, Object> headers = new java.util.LinkedHashMap<>();
+            message.messageAttributes()
+                    .forEach((name, value) -> headers.put(name, value.stringValue()));
+            headers.put(SqsHeaders.MessageSystemAttributes.SQS_MESSAGE_DEDUPLICATION_ID_HEADER,
+                    message.attributesAsStrings()
+                            .getOrDefault(MessageSystemAttributeName.MESSAGE_DEDUPLICATION_ID.toString(),
+                                    "delivered-submission"));
+            return headers;
+        }
+
+        /**
+         * Builds a service instance publishing to the named queue, with the harness clock.
+         *
+         * @param queueName the physical queue name
+         * @return the service, never {@code null}
+         */
+        private ReportSubmissionService reportSubmissionService(final String queueName) {
+            return serviceOn(clock(), queueName);
+        }
+    }
+
     /** Untrusted input at the publish boundary, and the confirmation gate that stands in front of it. */
     @Nested
     @DisplayName("hostile input at the queue boundary")
@@ -1897,31 +2106,50 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
         }
 
         /**
-         * Hostile text survives the queue round trip intact and never as a raw control byte.
+         * A hostile report name cannot be assembled into a message at all, so it never reaches the queue.
          *
-         * <p>The typed JSON boundary is what makes this safe, and it is worth being precise about why. A
-         * carriage return, a line feed and a C0 control character are all escaped by the JSON encoder, so the
-         * body that reaches the queue contains no raw control byte and cannot terminate a log line or drive a
-         * terminal. A right-to-left override is above the control range and travels as itself, which is
-         * correct: it is data, and silently stripping it would corrupt a value the caller supplied.
+         * <p><strong>Finding M-12, severity Major.</strong> This test previously asserted the opposite - that
+         * an unbounded, control-character-bearing report name round-tripped exactly - and reasoned that there
+         * was "no length contract on a JSON string field to violate". There is one, and it is the source's:
+         * {@code WS-REPORT-NAME} is {@code PIC X(10)} at {@code app/cbl/CORPT00C.cbl:L58}, and the only three
+         * values moved into it are the literals at {@code :L214}, {@code :L240} and {@code :L433}. The
+         * consequence of accepting anything else was not cosmetic: the value travelled into an
+         * <em>identifying</em> job parameter that the batch repository persists and keys a job instance on.
          *
-         * <p>An over-long value is accepted at this boundary and that is not a silent acceptance: there is no
-         * length contract on a JSON string field to violate, the value round-trips exactly, and the
-         * <em>production</em> boundary that does have length contracts - the six date components - is the
-         * subject of the next test.
+         * <p>The closed set is therefore enforced where the message is built, and the queue never sees the
+         * value. This matters twice over, and finding C-02 is the second reason: the record is also the
+         * <em>bound</em> type on the consuming side, so an unbounded report name was an unbounded
+         * publisher-chosen value flowing into identifying job parameters and into log records. Closing the
+         * contract must not weaken the encoding guarantee, so the escaping property the old assertion relied on
+         * is still asserted here, over a legitimate message's body: nothing this application publishes carries
+         * a raw control byte.
          */
         @Test
-        @DisplayName("hostile text round-trips through the queue with no raw control byte in the body")
-        void hostileTextRoundTripsThroughTheQueueWithNoRawControlByte() {
+        @DisplayName("a hostile report name is refused before the queue, and a legitimate body carries no raw control byte")
+        void aHostileReportNameNeverReachesTheQueue() {
             final String queueUrl = provisionScopedFifoQueue("hostile");
             // Built from explicit code points rather than from source escapes, so that what the test sends is
             // unambiguous to a reader and cannot be altered by how the file itself is encoded.
             final String hostile = "Monthly\r\n" + controlCharacter() + rightToLeftOverride()
                     + "X".repeat(500);
-            final JobSubmissionMessage message =
-                    new JobSubmissionMessage(hostile, "2022-01-01", "2022-01-31");
-            final String body = bodyOf(message);
 
+            assertThatIllegalArgumentException()
+                    .as("the three literals of app/cbl/CORPT00C.cbl are the whole permitted set, and a value "
+                            + "outside it - even one that merely STARTS with a permitted literal - must not "
+                            + "reach an identifying job parameter")
+                    .isThrownBy(() -> new JobSubmissionMessage(hostile, "2022-01-01", "2022-01-31"))
+                    .withMessageContaining("reportName")
+                    .withMessageNotContaining(hostile);
+            assertThatIllegalArgumentException()
+                    .as("and the same for a date, which is a ten-character fixed-width area in the source's "
+                            + "own parameter cards")
+                    .isThrownBy(() -> new JobSubmissionMessage(reportNameMonthly, hostile, "2022-01-31"))
+                    .withMessageContaining("startDate")
+                    .withMessageNotContaining(hostile);
+
+            final JobSubmissionMessage legitimate =
+                    new JobSubmissionMessage("Monthly", "2022-01-01", "2022-01-31");
+            final String body = bodyOf(legitimate);
             for (int index = 0; index < body.length(); index++) {
                 assertThat(body.charAt(index))
                         .as("the JSON encoder escapes every control character, so the body that reaches the "
@@ -1929,14 +2157,18 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
                         .isGreaterThanOrEqualTo(' ');
             }
 
-            sendUnderGroup(queueUrl, body, reportMessageGroupId, "hostile-round-trip");
+            // A submission that DOES honour the contract still round-trips byte for byte, so the screen has
+            // not started normalising, trimming or re-encoding anything it admits.
+            final JobSubmissionMessage admitted =
+                    new JobSubmissionMessage(reportNameMonthly, "2022-01-01", "2022-01-31");
+            sendUnderGroup(queueUrl, bodyOf(admitted), reportMessageGroupId, "hostile-round-trip");
             final List<Message> delivered = receiveUpTo(queueUrl, 1);
 
             assertThat(delivered).hasSize(1);
             assertThat(jobSubmissionMessageFrom(delivered.get(0).body()))
                     .as("the round trip is exact: nothing is trimmed, stripped, normalised or re-encoded, so "
                             + "a value the caller supplied is neither corrupted nor silently altered")
-                    .isEqualTo(message);
+                    .isEqualTo(legitimate);
         }
 
         /**
@@ -2020,27 +2252,44 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
          * enabled anywhere</strong>, and this asserts that behaviourally rather than by reading a setting -
          * a setting can be correct on the mapper this test inspects and wrong on the one the queue uses.
          *
-         * <p>Two shapes are checked. A class name carried as a string value arrives as that string and
-         * nothing is instantiated from it. A two-element array in the value position - the exact shape
-         * default typing would read as a type followed by a value - is refused outright, because a
-         * {@code String} component cannot be populated from an array. With default typing enabled the second
-         * shape would construct an instance of whatever the first element named, so its refusal is the
-         * discriminating observation.
+         * <p>Two shapes are checked. A class name carried as a string value is treated as <em>data</em> - since
+         * finding C-02 it is data that fails the report name's closed vocabulary, so the mapper constructs the
+         * declared record, that record's own constructor refuses the value, and nothing whatsoever is
+         * instantiated from the name. A two-element array in the value position - the exact shape default
+         * typing would read as a type followed by a value - is refused outright, because a {@code String}
+         * component cannot be populated from an array. With default typing enabled the second shape would
+         * construct an instance of whatever the first element named, so its refusal is the discriminating
+         * observation.
+         *
+         * <p>The first shape's outcome changed with the remediation and is worth being exact about, because
+         * "refused" could be misread as weaker evidence than "carried as text". It is stronger: the failure
+         * raised is Jackson's wrapper around the <em>record constructor's own</em>
+         * {@link IllegalArgumentException}, which can only be raised if the mapper had already resolved the
+         * target as {@code JobSubmissionMessage} and was populating it. A mapper that had honoured the value as
+         * a type hint would never have reached that constructor at all.
          */
         @Test
         @DisplayName("a type hint in an untrusted body is treated as data and never instantiates a type")
         void aTypeHintInAnUntrustedBodyCannotInstantiateAnArbitraryType() {
             final String typeNameAsText = "java.io.File";
 
-            final JobSubmissionMessage asData = jobSubmissionMessageFrom(
+            // A class name in a value position is data, never a type - and since findings M-12 and C-02 it is
+            // data the closed report-name set refuses, so it is now rejected twice over. The refusal, not the
+            // value, is the observation: nothing is instantiated from the name either way.
+            final Throwable asData = catchThrowable(() -> jobSubmissionMessageFrom(
                     "{\"reportName\":\"" + typeNameAsText
-                            + "\",\"startDate\":\"2022-01-01\",\"endDate\":\"2022-01-31\"}");
+                            + "\",\"startDate\":\"2022-01-01\",\"endDate\":\"2022-01-31\"}"));
             assertThat(asData)
-                    .as("the body deserialises to the declared type and to nothing else")
-                    .isExactlyInstanceOf(JobSubmissionMessage.class);
-            assertThat(asData.reportName())
-                    .as("a class name in a value position is text, and is carried as text")
-                    .isEqualTo(typeNameAsText);
+                    .as("the body is bound to the declared record and to nothing else, and the record's "
+                            + "closed vocabulary then refuses the value as data; no type is resolved from it "
+                            + "at any point")
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(rootCauseOf(asData))
+                    .as("the refusal comes from the record's OWN constructor, which the mapper can only have "
+                            + "reached by resolving the target as JobSubmissionMessage - a mapper honouring the "
+                            + "value as a type hint would never have got there")
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("reportName");
 
             final Throwable asTypeHint = catchThrowable(() -> jobSubmissionMessageFrom(
                     "{\"reportName\":[\"" + typeNameAsText
@@ -2050,6 +2299,20 @@ class SqsReportQueueIntegrationTest extends AbstractAwsIntegrationTest {
                             + "which is what proves default typing is off rather than merely configured off")
                     .isInstanceOf(IllegalStateException.class);
             assertThat(asTypeHint.getCause()).isNotNull();
+        }
+
+        /**
+         * Walks a failure to its root cause.
+         *
+         * @param failure the failure to walk; never null
+         * @return the deepest cause, which is {@code failure} itself when it has none
+         */
+        private Throwable rootCauseOf(final Throwable failure) {
+            Throwable deepest = failure;
+            while (deepest.getCause() != null) {
+                deepest = deepest.getCause();
+            }
+            return deepest;
         }
 
         /**

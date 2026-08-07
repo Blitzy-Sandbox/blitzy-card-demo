@@ -521,6 +521,11 @@ class S3GenerationKeyIntegrationTest extends AbstractAwsIntegrationTest {
      * {@code app/proc/TRANREPT.prc:L27-L31}, so both ends of the handoff are configured with the value the
      * pipeline actually uses. It is handed in as a constructor argument rather than read from the context's
      * configuration, because the objects land in this class's own bucket and must not touch the shared one.
+     *
+     * <p>The constant carries no trailing separator, and that is now a rule rather than an accident: finding
+     * m-02 centralized the prefix grammar, which refuses the trailing form, so the writer this value is handed
+     * to would reject it. Every assertion below that lists or matches under this prefix therefore matches a
+     * base name rather than a path segment; the reader derives the separator for its own listing.
      */
     private final String handoffGenerationPrefix = TransactionBackupReader.DEFAULT_GENERATION_PREFIX;
 

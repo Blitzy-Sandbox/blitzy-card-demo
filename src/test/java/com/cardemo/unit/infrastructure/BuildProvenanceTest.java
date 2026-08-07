@@ -44,12 +44,20 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
 
 /**
  * Asserts the build-provenance properties of {@code pom.xml} that a reader must be able to
@@ -627,6 +635,524 @@ final class BuildProvenanceTest {
                         explicitly false, because hiding those findings lets a base image drift out of \
                         support while this job stays green.""")
                     .contains("--ignore-unfixed=false");
+        }
+    }
+
+    /**
+     * The premises {@code owasp-suppressions.xml} rests on, and the gate it must never weaken.
+     *
+     * <p>A suppression entry is an argument, and an argument has premises. Two of this file's entries state
+     * theirs as repository facts: the Actuator bypass acceptance turns on no Health Group
+     * {@code additional-path} being configured, because the bypass requires an additional path that collides
+     * with a secured application endpoint; and the Tomcat examples entry turns on this build declaring no
+     * WebSocket surface. Both premises were true when the entries were written and neither was enforced, so
+     * the configuration change that would silently invalidate one of them - three lines of YAML - would have
+     * produced a green build and a false record. That is the gap these assertions close.
+     *
+     * <p>Each guard is written to <em>retire with its entry</em> rather than to outlive it. While the entry is
+     * declared the premise is enforced; once the entry is gone the assertion inverts into a statement about
+     * why it is no longer needed, so a reader who deletes an entry is told what else to delete rather than
+     * left with a constraint whose reason has been removed from the tree.
+     *
+     * <p>Two further assertions guard the gate itself rather than an entry. One holds the threshold, the
+     * absent skip and the scan's full scope, because the recorded temptation when a scan turns red is to lower
+     * the number rather than to disposition the record. The other holds the file's own numerals to the entries
+     * it declares - the file has twice recorded a count of itself that disagreed with its contents, which is
+     * exactly the class of defect that makes a register unusable as evidence.
+     *
+     * <p>Unlike the POM assertions above, this class parses the suppression file with a DOM parser rather than
+     * with line patterns. The reason is the inverse of the POM's: there the claim is about the literal text a
+     * reviewer reads, whereas an entry's scope and its identifiers are structure, and a malformed suppression
+     * file must fail here - loudly, in the unit tier - rather than at scan time in a job whose failure looks
+     * like a vulnerability report.
+     */
+    @Nested
+    @DisplayName("owasp-suppressions.xml - the premises its dispositions rest on")
+    final class SuppressionPremises {
+
+        /** The Actuator health-group bypass whose acceptance assumes no additional path is configured. */
+        private static final String ACTUATOR_BYPASS_CVE = "CVE-2026-22731";
+
+        /** The Tomcat examples advisory whose withdrawal assumes no WebSocket surface and an absent fix. */
+        private static final String TOMCAT_EXAMPLES_CVE = "CVE-2026-66299";
+
+        /** The Tomcat release that fixes {@link #TOMCAT_EXAMPLES_CVE} on the 10.1 line. */
+        private static final String TOMCAT_FIX_VERSION = "10.1.58";
+
+        /** The parent version pinned by requirement, and the one the bypass acceptance is stated against. */
+        private static final String PINNED_PARENT = "3.5.11";
+
+        /** Every configuration surface a Spring property can be set from, relative to the repository root. */
+        private static final List<String> CONFIGURATION_SURFACES = List.of(
+                "src/main/resources/application.yml",
+                "src/main/resources/application-local.yml",
+                "src/main/resources/application-test.yml",
+                "src/main/resources/application-prod.yml",
+                "docker-compose.yml",
+                ".env.example",
+                "Dockerfile",
+                ".github/workflows/build.yml");
+
+        /** The numerals the file writes about itself, as {@code N <cve> ... M <cpe> ... across K <suppress>}. */
+        private static final Pattern SELF_COUNT = Pattern.compile(
+                "declares (\\d+) <cve> identifiers, all distinct, and (\\d+) <cpe>\\s+identifiers across "
+                        + "(\\d+) <suppress> entries");
+
+        /** The spelled tally sentence: total, then the Tier 1, Tier 2 and Tier 3 counts in order. */
+        private static final Pattern SPELLED_TALLY = Pattern.compile(
+                "What remains is (\\w+) entries: (\\w+) Tier 1 identifier corrections, (\\w+)\\s+"
+                        + "Tier 2, (\\w+) Tier 3");
+
+        /** The tier a note declares for itself. */
+        private static final Pattern TIER = Pattern.compile("TIER\\s+(\\d)");
+
+        /** An {@code until} attribute value: an ISO date with the zone suffix Dependency-Check expects. */
+        private static final Pattern UNTIL = Pattern.compile("^\\d{4}-\\d{2}-\\d{2}Z$");
+
+        /** The English number words this file uses to spell its tallies. */
+        private static final Map<String, Integer> NUMBER_WORDS = Map.ofEntries(
+                Map.entry("zero", 0), Map.entry("one", 1), Map.entry("two", 2), Map.entry("three", 3),
+                Map.entry("four", 4), Map.entry("five", 5), Map.entry("six", 6), Map.entry("seven", 7),
+                Map.entry("eight", 8), Map.entry("nine", 9), Map.entry("ten", 10),
+                Map.entry("eleven", 11), Map.entry("twelve", 12), Map.entry("thirteen", 13),
+                Map.entry("fourteen", 14), Map.entry("fifteen", 15), Map.entry("sixteen", 16),
+                Map.entry("seventeen", 17), Map.entry("eighteen", 18), Map.entry("nineteen", 19),
+                Map.entry("twenty", 20));
+
+        /**
+         * Reads the suppression file as UTF-8 text.
+         *
+         * @return the whole file, comments included
+         */
+        private String suppressionText() {
+            final Path file = ROOT.resolve("owasp-suppressions.xml");
+            assertThat(file)
+                    .as("owasp-suppressions.xml is an input to the vulnerability gate configured in pom.xml, "
+                            + "so its absence would change what the gate measures")
+                    .isRegularFile();
+            try {
+                return Files.readString(file, StandardCharsets.UTF_8);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read " + file, cause);
+            }
+        }
+
+        /**
+         * Parses the suppression file into a document.
+         *
+         * <p>External entity resolution and document type declarations are refused rather than left at their
+         * defaults: this parser reads a file from the repository, but a parser that would follow an external
+         * reference is a parser that behaves differently depending on the network, which is the property this
+         * whole class exists to keep out of the build.
+         *
+         * @return the parsed document
+         */
+        private Document suppressionDocument() {
+            final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            try {
+                factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+                factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+                factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+                factory.setXIncludeAware(false);
+                factory.setExpandEntityReferences(false);
+                final DocumentBuilder builder = factory.newDocumentBuilder();
+                return builder.parse(ROOT.resolve("owasp-suppressions.xml").toFile());
+            } catch (final ParserConfigurationException | SAXException cause) {
+                throw new IllegalStateException(
+                        "owasp-suppressions.xml is not well formed XML, so Dependency-Check cannot read it "
+                                + "and every suppression it declares is inert", cause);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read owasp-suppressions.xml", cause);
+            }
+        }
+
+        /**
+         * Collects the suppression entries the file declares.
+         *
+         * @return every {@code suppress} element, in document order
+         */
+        private List<Element> entries() {
+            final NodeList nodes = suppressionDocument().getElementsByTagName("suppress");
+            final List<Element> elements = new ArrayList<>(nodes.getLength());
+            for (int index = 0; index < nodes.getLength(); index++) {
+                elements.add((Element) nodes.item(index));
+            }
+            return elements;
+        }
+
+        /**
+         * Reports whether the file declares a suppression for an identifier.
+         *
+         * <p>Read from parsed {@code cve} elements rather than from the raw text, because the file's own
+         * commentary names identifiers it has DELETED, and a text search would count those as live.
+         *
+         * @param cve the identifier to look for
+         * @return {@code true} when some entry names it
+         */
+        private boolean declares(final String cve) {
+            final NodeList nodes = suppressionDocument().getElementsByTagName("cve");
+            for (int index = 0; index < nodes.getLength(); index++) {
+                if (cve.equals(nodes.item(index).getTextContent().strip())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Finds every configured Health Group additional path across the configuration surfaces.
+         *
+         * <p>Comment lines are skipped, and deliberately: the property is discussed at length in this
+         * repository's commentary - including in the suppression entry this guard protects - and a check that
+         * could not tell prose from configuration would either fail on its own justification or be deleted.
+         * Names are normalised by removing hyphens and underscores so that the YAML spelling
+         * {@code additional-path}, the relaxed camel spelling and the environment variable spelling
+         * {@code ...ADDITIONALPATH} are all caught by one comparison.
+         *
+         * @param scanned collects the surfaces actually read, so a vacuous pass is detectable
+         * @return one {@code file:line} description per offending line
+         */
+        private List<String> configuredAdditionalPaths(final List<String> scanned) {
+            final List<String> offenders = new ArrayList<>();
+            for (final String surface : CONFIGURATION_SURFACES) {
+                final Path file = ROOT.resolve(surface);
+                if (!Files.isRegularFile(file)) {
+                    continue;
+                }
+                scanned.add(surface);
+                final List<String> lines;
+                try {
+                    lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+                } catch (final IOException cause) {
+                    throw new UncheckedIOException("Cannot read " + file, cause);
+                }
+                for (int index = 0; index < lines.size(); index++) {
+                    final String stripped = lines.get(index).strip();
+                    if (stripped.startsWith("#")) {
+                        continue;
+                    }
+                    final String normalised = stripped
+                            .replace("-", "")
+                            .replace("_", "")
+                            .toLowerCase(Locale.ROOT);
+                    if (normalised.contains("additionalpath")) {
+                        offenders.add(surface + ":" + (index + 1) + " " + stripped);
+                    }
+                }
+            }
+            return offenders;
+        }
+
+        /**
+         * Compares two dotted numeric versions.
+         *
+         * @param left  the version to compare
+         * @param right the version to compare it against
+         * @return a negative number, zero or a positive number as {@code left} orders before, with or after
+         *         {@code right}
+         */
+        private int compareVersions(final String left, final String right) {
+            final String[] leftParts = left.split("\\.");
+            final String[] rightParts = right.split("\\.");
+            for (int index = 0; index < Math.max(leftParts.length, rightParts.length); index++) {
+                final int leftValue = index < leftParts.length ? numericPrefix(leftParts[index]) : 0;
+                final int rightValue = index < rightParts.length ? numericPrefix(rightParts[index]) : 0;
+                if (leftValue != rightValue) {
+                    return Integer.compare(leftValue, rightValue);
+                }
+            }
+            return 0;
+        }
+
+        /**
+         * Reads the leading integer of a version component.
+         *
+         * @param component one dot-separated component
+         * @return its leading digits as an integer, or zero when it begins with none
+         */
+        private int numericPrefix(final String component) {
+            int end = 0;
+            while (end < component.length() && Character.isDigit(component.charAt(end))) {
+                end++;
+            }
+            return end == 0 ? 0 : Integer.parseInt(component.substring(0, end));
+        }
+
+        /**
+         * Reads the version the POM declares for its parent.
+         *
+         * @return the parent's literal version string
+         */
+        private String pinnedParentVersion() {
+            boolean insideParent = false;
+            for (final String line : POM) {
+                if (line.contains("<parent>")) {
+                    insideParent = true;
+                }
+                if (insideParent) {
+                    final Matcher version = VERSION.matcher(line);
+                    if (version.find()) {
+                        return version.group(1).strip();
+                    }
+                    if (line.contains("</parent>")) {
+                        break;
+                    }
+                }
+            }
+            throw new IllegalStateException("pom.xml declares no <parent> version");
+        }
+
+        /**
+         * Translates a spelled number into its value.
+         *
+         * @param word the number word, in any case
+         * @return the value it names
+         */
+        private int spelled(final String word) {
+            final Integer value = NUMBER_WORDS.get(word.toLowerCase(Locale.ROOT));
+            assertThat(value)
+                    .as("the register spells its tallies in words; \"%s\" is not one this guard can read, so "
+                            + "either the word or this table needs correcting", word)
+                    .isNotNull();
+            return value;
+        }
+
+        @Test
+        @DisplayName("no health-group additional path is configured while the Actuator bypass entry lives")
+        void noHealthGroupAdditionalPathIsConfiguredWhileTheBypassEntryLives() {
+            final List<String> scanned = new ArrayList<>();
+            final List<String> offenders = configuredAdditionalPaths(scanned);
+
+            assertThat(scanned)
+                    .as("the guard must actually read the surfaces a property can be set from, or it passes "
+                            + "on nothing. The four profiles are the minimum; the compose file, the "
+                            + "environment template, the image and the workflow are included because a "
+                            + "Spring property is settable from each of them")
+                    .hasSizeGreaterThanOrEqualTo(7)
+                    .contains("src/main/resources/application.yml", "src/main/resources/application-prod.yml");
+
+            if (declares(ACTUATOR_BYPASS_CVE)) {
+                assertThat(offenders)
+                        .as("""
+                            the CVE-2026-22731 entry in owasp-suppressions.xml accepts an Actuator \
+                            authentication bypass on ONE compensating control: that no health group is given \
+                            an additional-path, so no secured application endpoint can be shadowed by one. \
+                            Configuring management.endpoint.health.group.*.additional-path - in a profile, in \
+                            the compose file, as an environment variable or in the image - removes that \
+                            control and makes the accepted risk live, while every gate in this build stays \
+                            green because the entry is what keeps the record out of the report. Either revert \
+                            the configuration, or advance spring-boot-starter-parent to 3.5.12 or later and \
+                            DELETE the entry along with this guard. Offending lines are listed.""")
+                        .isEmpty();
+            } else {
+                assertThat(pinnedParentVersion())
+                        .as("""
+                            the CVE-2026-22731 entry is gone from owasp-suppressions.xml, which is correct \
+                            only if the parent now carries the fix. While the parent is still %s the advisory \
+                            applies at CVSS 8.1 and the no-additional-path control is the only thing standing \
+                            in for it, so the entry documented the risk and this guard enforced it. Restore \
+                            both, or advance the parent to 3.5.12 or later - then delete this guard, which \
+                            has no premise left to protect.""", PINNED_PARENT)
+                        .isNotEqualTo(PINNED_PARENT);
+            }
+        }
+
+        @Test
+        @DisplayName("the Tomcat examples entry never coexists with the pin that fixes it")
+        void theTomcatExamplesEntryNeverCoexistsWithItsFix() {
+            final boolean suppressed = declares(TOMCAT_EXAMPLES_CVE);
+            final String pin = VERSION_PROPERTIES.get("tomcat.version");
+
+            assertThat(pin)
+                    .as("tomcat.version is the forward security pin this project controls, and both the "
+                            + "residual register in pom.xml and the suppression entry reason about its value")
+                    .isNotNull();
+
+            assertThat(suppressed && compareVersions(pin, TOMCAT_FIX_VERSION) >= 0)
+                    .as("""
+                        a forward pin and a suppression for one record must never both be in force: the pin \
+                        removes the code, after which the entry suppresses nothing and reads as though \
+                        something were still being held back. tomcat.version is %s and %s carries the fix for \
+                        %s, so the entry in owasp-suppressions.xml is now dead configuration - delete it, and \
+                        name the CVE beside the pin as the other security pins are named.""",
+                            pin, TOMCAT_FIX_VERSION, TOMCAT_EXAMPLES_CVE)
+                    .isFalse();
+
+            if (suppressed) {
+                assertThat(declaredCoordinates())
+                        .as("""
+                            the entry withdraws %s on evidence that the vulnerable component - Tomcat's \
+                            WebSocket chat EXAMPLE, which ships only in the apache-tomcat binary \
+                            distribution - is in none of the three tomcat-embed jars and that this \
+                            application has no WebSocket surface at all. Declaring a WebSocket starter, or \
+                            pulling in Jasper or a full Catalina, changes the deployment the evidence was \
+                            taken against and the record must be re-assessed before either is added.""",
+                                TOMCAT_EXAMPLES_CVE)
+                        .doesNotContain(
+                                "org.springframework.boot:spring-boot-starter-websocket",
+                                "org.apache.tomcat.embed:tomcat-embed-jasper",
+                                "org.apache.tomcat:tomcat-catalina");
+            }
+        }
+
+        @Test
+        @DisplayName("the register's numerals match the entries the file actually declares")
+        void theRegisterNumeralsMatchTheFile() {
+            final String text = suppressionText();
+            final List<Element> entries = entries();
+            final Document document = suppressionDocument();
+            final int cveCount = document.getElementsByTagName("cve").getLength();
+            final int cpeCount = document.getElementsByTagName("cpe").getLength();
+
+            final Map<Integer, Integer> byTier = new LinkedHashMap<>();
+            for (final Element entry : entries) {
+                final NodeList notes = entry.getElementsByTagName("notes");
+                assertThat(notes.getLength())
+                        .as("every entry states its evidence in a notes element, which is the file's whole "
+                                + "premise: an entry a reviewer cannot assess is an entry nobody can keep")
+                        .isEqualTo(1);
+                final Matcher tier = TIER.matcher(notes.item(0).getTextContent());
+                assertThat(tier.find())
+                        .as("every note names its tier, so a reader can see which kind of claim is being "
+                                + "made without reconstructing it from the argument")
+                        .isTrue();
+                byTier.merge(Integer.parseInt(tier.group(1)), 1, Integer::sum);
+            }
+
+            final Matcher selfCount = SELF_COUNT.matcher(text);
+            assertThat(selfCount.find())
+                    .as("the file states its own counts in the REGISTER CURRENCY block; this guard exists "
+                            + "because it has twice stated a count that disagreed with its contents")
+                    .isTrue();
+            assertThat(Integer.parseInt(selfCount.group(1)))
+                    .as("the file says it declares %s <cve> identifiers; it declares %d",
+                            selfCount.group(1), cveCount)
+                    .isEqualTo(cveCount);
+            assertThat(Integer.parseInt(selfCount.group(2)))
+                    .as("the file says it declares %s <cpe> identifiers; it declares %d",
+                            selfCount.group(2), cpeCount)
+                    .isEqualTo(cpeCount);
+            assertThat(Integer.parseInt(selfCount.group(3)))
+                    .as("the file says it holds %s <suppress> entries; it holds %d",
+                            selfCount.group(3), entries.size())
+                    .isEqualTo(entries.size());
+
+            final Matcher tally = SPELLED_TALLY.matcher(text);
+            assertThat(tally.find())
+                    .as("the same block spells the total and the per-tier breakdown in words, and the two "
+                            + "spellings of one count are exactly where the file's recorded drift happened")
+                    .isTrue();
+            assertThat(spelled(tally.group(1)))
+                    .as("the spelled total \"%s\" must agree with the %d entries on disk, and with the "
+                            + "numeral in the sentence above it", tally.group(1), entries.size())
+                    .isEqualTo(entries.size());
+            assertThat(spelled(tally.group(2)))
+                    .as("the Tier 1 tally is spelled \"%s\"; %d entries declare TIER 1",
+                            tally.group(2), byTier.getOrDefault(1, 0))
+                    .isEqualTo(byTier.getOrDefault(1, 0));
+            assertThat(spelled(tally.group(3)))
+                    .as("the Tier 2 tally is spelled \"%s\"; %d entries declare TIER 2",
+                            tally.group(3), byTier.getOrDefault(2, 0))
+                    .isEqualTo(byTier.getOrDefault(2, 0));
+            assertThat(spelled(tally.group(4)))
+                    .as("the Tier 3 tally is spelled \"%s\"; %d entries declare TIER 3",
+                            tally.group(4), byTier.getOrDefault(3, 0))
+                    .isEqualTo(byTier.getOrDefault(3, 0));
+        }
+
+        @Test
+        @DisplayName("every entry is scoped to one coordinate, and every expiring one states its own expiry")
+        void everyEntryIsScopedAndEveryExpiryIsStatedConsistently() {
+            final List<Element> entries = entries();
+
+            assertThat(entries)
+                    .as("the scan must find entries, so an empty file cannot pass this class silently")
+                    .isNotEmpty();
+
+            int expiring = 0;
+            for (int index = 0; index < entries.size(); index++) {
+                final Element entry = entries.get(index);
+                final String notes = entry.getElementsByTagName("notes").item(0).getTextContent();
+                assertThat(entry.getElementsByTagName("packageUrl").getLength())
+                        .as("entry %d must be scoped to exactly one coordinate by packageUrl. The file's own "
+                                + "rules forbid a bare cpe, a wildcard and a vendor-wide entry, because each "
+                                + "of those silently absorbs advisories nobody assessed", index + 1)
+                        .isEqualTo(1);
+
+                final String until = entry.getAttribute("until");
+                if (until.isEmpty()) {
+                    continue;
+                }
+                expiring++;
+                assertThat(until)
+                        .as("entry %d expires, so its until value must be the ISO date with the zone suffix "
+                                + "Dependency-Check parses; a value it cannot read is a suppression that "
+                                + "never expires", index + 1)
+                        .matches(UNTIL);
+                final String date = until.substring(0, until.length() - 1);
+                assertThat(notes)
+                        .as("""
+                            entry %d expires on %s, and its note must say so in the same words a reader \
+                            reaches for, plus the remediation that makes the expiry unnecessary. An expiry \
+                            recorded only in an attribute surfaces as an unexplained red scan months later, \
+                            which is how a dated acceptance turns into a mystery.""", index + 1, date)
+                        .contains("EXPIRES on " + date)
+                        .contains("REMEDIATION");
+            }
+
+            assertThat(expiring)
+                    .as("at least one entry is time boxed - the Tier 4 acceptance whose fix is a newer "
+                            + "parent - so this loop measures something. Zero would mean the expiry "
+                            + "machinery is asserted against nothing")
+                    .isGreaterThanOrEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the scan gate is not weakened: threshold 7, no skip element, and full scope")
+        void theScanGateIsNotWeakened() {
+            final String descriptor = String.join("\n", POM);
+
+            assertThat(descriptor)
+                    .as("""
+                        the failBuildOnCVSS threshold is the gate. Lowering it is the one response to a red \
+                        scan this build forbids, because it converts an unassessed High finding into a \
+                        silently passing one - and it is cheaper to type than a disposition, which is why it \
+                        is asserted rather than trusted.""")
+                    .contains("<owasp.failBuildOnCVSS>7</owasp.failBuildOnCVSS>");
+            assertThat(descriptor)
+                    .as("the suppression file stays wired, since the dispositions it holds are what let the "
+                            + "gate pass on evidence rather than on a lowered number")
+                    .contains("owasp-suppressions.xml");
+            assertThat(descriptor)
+                    .as("an analyzer that cannot complete must fail the build rather than produce a partial "
+                            + "report, which would read as a clean one")
+                    .contains("<failOnError>true</failOnError>");
+            assertThat(descriptor)
+                    .as("""
+                        and the scan keeps its full scope. Both flags default to true, which would exclude \
+                        test and provided dependencies from the report - a real exclusion that reads as \
+                        nothing at all, since the report simply has fewer rows.""")
+                    .contains("<skipTestScope>false</skipTestScope>")
+                    .contains("<skipProvidedScope>false</skipProvidedScope>");
+
+            final List<String> skips = new ArrayList<>();
+            for (int index = 0; index < POM.size(); index++) {
+                if (insideComment(index)) {
+                    continue;
+                }
+                final String line = POM.get(index).strip();
+                if (line.startsWith("<skip>")) {
+                    skips.add("pom.xml:" + (index + 1) + " " + line);
+                }
+            }
+            assertThat(skips)
+                    .as("""
+                        no skip element may be configured for any plugin in this build. The vulnerability \
+                        scan is the one that matters here: it is bound to verify with no skip, so the only \
+                        way to reach a green build without it is to pass the plugin's user property on the \
+                        command line, and that leaves a trace in the invocation. A skip in the POM would \
+                        leave none. Offending lines are listed.""")
+                    .isEmpty();
         }
     }
 }

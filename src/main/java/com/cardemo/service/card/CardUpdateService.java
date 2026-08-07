@@ -49,7 +49,6 @@ import com.cardemo.model.dto.CardDto;
 import com.cardemo.model.dto.CardUpdateRequest;
 import com.cardemo.model.entity.Card;
 import com.cardemo.repository.CardRepository;
-import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.shared.FileStatusMapper;
 
 /**
@@ -85,10 +84,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code -Xlint:all}, {@code -Werror} and {@code failOnWarning} ({@code pom.xml:861-864}), so any
  * warning in this file fails the build.</p>
  * <pre>
- * set -a; . ./.env; set +a
  * ./mvnw -B -ntp clean compile
- * ./mvnw -B -ntp test
+ * ( set -a; . ./.env; set +a; ./mvnw -B -ntp test )
  * </pre>
+ * <p>Compilation reads no environment value; only a command that starts a context does. The subshell
+ * parentheses confine the exported values to that one command rather than leaving every later child of the
+ * shell inheriting them, and the file must already be at mode {@code 0600}.</p>
  * <p>Unit tests for this bean live in {@code src/test/java/com/cardemo/unit/service/} and are owned
  * by a different agent; this file creates none. The JaCoCo gate is a merged 80% LINE floor
  * ({@code pom.xml:443}, {@code :1047-1049}) and no exclusion is added for this class. Nothing here
@@ -132,8 +133,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code FUNCTION UPPER-CASE(CCUP-OLD-CARDDATA)} as one 59-byte group: embossed name (50),
  *       expiry year (4), month (2), day (2) and status (1). The carried day therefore
  *       <em>does</em> participate, while the verification value, account id and card number sit
- *       outside the group and do not - and the first of those three is not persisted at all, so the
- *       predicate that would have compared it has nothing to compare. Reproduced by
+ *       outside the group and do not. Reproduced by
  *       {@link #renderCardDataGroup} plus
  *       {@code toUpperCase(Locale.ROOT)}; {@code Locale.ROOT} is mandatory because
  *       {@code LIT-ALL-ALPHA-FROM} at {@code :255-257} is the 52 ASCII letters and nothing else, so a
@@ -205,24 +205,28 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>Deviations from the source, and preserved source behaviours</h2>
  * <ol>
- *   <li><strong>Card verification data is not stored, so
- *       the legacy quirk that destroyed it has nothing to act on.</strong> {@code CCUP-NEW-CVV-CD} is
- *       declared at {@code :306} inside the inline {@code CCUP-NEW-DETAILS} group, is set to
- *       {@code SPACES} by {@code INITIALIZE CCUP-NEW-DETAILS} at {@code :586}, and is then
+ *   <li><strong>The legacy quirk that destroyed card verification data is not reproduced.</strong>
+ *       {@code CCUP-NEW-CVV-CD} is declared at {@code :306} inside the inline {@code CCUP-NEW-DETAILS}
+ *       group, is set to {@code SPACES} by {@code INITIALIZE CCUP-NEW-DETAILS} at {@code :586}, and is then
  *       <em>read</em> at {@code :1464} into the record that {@code :1478} rewrites. It is never assigned
  *       anywhere in the program, which a census of the two occurrences of the name - the declaration and
  *       that read - confirms, and {@code app/cpy-bms/COCRDUP.CPY} carries no verification-value field
- *       among its seventeen inputs, so the screen cannot supply one. The legacy rewrite therefore
- *       destroyed the stored card verification value on every successful update.
- *       <strong>This system stores no such value in the first place</strong>: {@code V1__create_schema.sql}
- *       declares no {@code card_cvv_cd} column, {@link com.cardemo.model.entity.Card} declares no field,
- *       {@code V3__seed_data.sql} loads none, and {@link CardUpdateRequest.CardDetails} declares no
- *       component, so nothing can be accepted, persisted, compared, rendered or destroyed. Retaining
- *       authentication data for the sole purpose of faithfully overwriting it would be indefensible under
- *       Rule 1 Clause D, and the quirk's own observable effect - that a successful update leaves no
- *       usable verification value behind - is what this system exhibits by construction. This is a deliberate
- *       deviation from byte-level parity, taken on the entity, which is where the storage decision lives;
- *       the change-detection consequence is the six-predicate comparison described below.</li>
+ *       among its seventeen inputs, so the screen cannot supply one. The legacy rewrite therefore wrote
+ *       three spaces over the stored card verification value on every successful update.
+ *       <p><strong>The value is stored here.</strong> {@code V1__create_schema.sql:741} declares
+ *       {@code card_cvv_cd CHAR(3) NOT NULL}, {@link com.cardemo.model.entity.Card} maps it, and
+ *       {@code V3__seed_data.sql:744} loads it. What is withheld is the <em>read path</em>, not the
+ *       column: the entity field is write-once with no getter of any visibility, which
+ *       {@code V1__create_schema.sql:694} records as the resolution of a High-severity finding. Both
+ *       {@code MOVE}s at {@code :1464-1465} are therefore deliberately absent, because reproducing them
+ *       would overwrite live authentication data with spaces - indefensible under Rule 1 Clause D - and
+ *       because there is no read path by which their operand could be obtained in the first place. This is
+ *       a deliberate, labelled deviation from byte-level parity: a successful update here leaves the stored
+ *       verification value intact, where the source destroyed it.</p>
+ *       <p>{@link CardUpdateRequest.CardDetails} correspondingly declares no verification component, and
+ *       that is a narrowing rather than a gap: no symbolic map declares such a field, so no client could
+ *       supply one, and accepting one over the wire would be the same retention problem one hop earlier.
+ *       The change-detection consequence is the five-predicate comparison described below.</p></li>
  *   <li><strong>Mechanism substitution, not a behaviour change.</strong> A single
  *       {@code @Transactional(rollbackFor = Exception.class)} method reproduces the source's rollback
  *       semantics by scoping. {@code 9200-WRITE-PROCESSING} touches one dataset and contains
@@ -353,18 +357,21 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       legacy {@code MOVE} between equal-width items is the identity. For {@code EXPDAYI} the clamp is
  *       <em>not</em> normalisation: what {@code :621} omits is the asterisk-and-blank test, and that
  *       omission stands untouched, so the expiry day stays un-normalised.</li>
- *   <li><strong>{@code CCUP-OLD-CVV-CD} has no counterpart, and that is why the stateless path still
- *       completes.</strong> {@code :396-400} restores the whole of
+ *   <li><strong>{@code CCUP-OLD-CVV-CD} has no counterpart, and the concurrency question it asked is
+ *       answered by the version column instead.</strong> {@code :396-400} restores the whole of
  *       {@code WS-THIS-PROGCOMMAREA} in a single {@code MOVE}, re-establishing every leaf of
  *       {@code CCUP-OLD-DETAILS} ({@code :291-301}) including {@code CCUP-OLD-CVV-CD PIC X(3)} at
- *       {@code :294}. Every other leaf is restored here from the sealed snapshot; this one is not,
- *       because the value it would be compared against is not stored at all. The trap is worth keeping
- *       visible: wherever a verification value IS compared, an unrestored snapshot component makes
- *       {@code :1503}'s first predicate fail unconditionally and every write returns
- *       {@code DATA-WAS-CHANGED-BEFORE-UPDATE}. Dropping the predicate and the
- *       component <em>together</em> is what avoids that, and it is why neither may be reinstated alone:
- *       reinstating the predicate without a stored operand refuses every update, and reinstating the
- *       component without storage compares a caller-supplied value against nothing.</li>
+ *       {@code :294}. Every other leaf is restored here from the request's {@code oldDetails} group; this
+ *       one is not, and the reason is worth stating exactly. Both operands of {@code :1503} are
+ *       <em>server-side</em>: {@code :1354} snapshots the value the display-time read returned and
+ *       {@code :1503} compares it against the value the write-time locking re-read returned. No symbolic
+ *       map declares a verification field, so the operator never typed it and no client can carry it. The
+ *       predicate therefore asks one question only - did this row change between the two reads - and
+ *       {@code @Version} on {@link com.cardemo.model.entity.Card} answers exactly that question for every
+ *       column of the row, this one included. Dropping the predicate and the component <em>together</em> is
+ *       what keeps the stateless path completing, and it is why neither may be reinstated alone:
+ *       reinstating the predicate with no read path refuses every update, and reinstating the component
+ *       would put authentication data on the wire.</li>
  *   <li><strong>Both {@code REDEFINES} views are established in
  *       {@code 1100}.</strong> {@code app/cpy/CVCRD01Y.cpy:36} declares
  *       {@code CC-ACCT-ID-N REDEFINES CC-ACCT-ID} and {@code :39} declares
@@ -390,9 +397,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <h2>Security</h2>
  * <p>Card numbers and the embossed name are the sensitive surface of this file. Neither is ever logged,
  * echoed into an exception message, returned in a projection or written into a Javadoc example. There is
- * no card verification value anywhere on this path at all - not in the entity, not in the request, not
- * in the context and not in the comparison - which is a stronger statement than the one this paragraph
- * used to make about never rendering one. {@code Card.toString()} deliberately excludes
+ * no card verification value anywhere on <em>this</em> path - not in the request, not in the context and
+ * not in the comparison. The value is stored, on {@link com.cardemo.model.entity.Card}, and it is
+ * unreadable there: the field is write-once with no getter of any visibility, so this file could not obtain
+ * it even to log it by mistake. {@code Card.toString()} deliberately excludes
  * the card number and the embossed name and offers no masking helper, so the two diagnostic log
  * statements in this file mask at the call site through {@link #maskTail}. The
  * old and new snapshot payloads are never logged as a pair, because together they carry the card number
@@ -781,35 +789,15 @@ public class CardUpdateService {
     private final Clock clock;
 
     /**
-     * Seals and opens the as-displayed snapshot that {@code CCUP-OLD-DETAILS} at
-     * {@code app/cbl/COCRDUPC.cbl:291-301} used to carry in the program's own half of the COMMAREA.
-     *
-     * <p>A mandatory collaborator, and the reason the update contract has a token at all. Regime B compares
-     * the values as they were <em>displayed</em> against the values now stored, so those displayed values
-     * have to survive the gap between the two requests, and the source kept them in its own half of the
-     * COMMAREA where no caller could reach them. Handing them back as plaintext would let a caller choose
-     * what the guard compares against, which defeats the guard; sealing them keeps the substitution honest,
-     * because the snapshot the guard opens is provably the one this service produced and issued. The
-     * group's first member at {@code :294} is the card verification value, which this system does not
-     * store and therefore does not seal - see the deviation register above.</p>
-     */
-    private final SnapshotTokenService snapshotTokenService;
-
-    /**
      * Creates the service.
      *
      * @param cardRepository repository over the {@code CARDDAT} base cluster; must not be {@code null}
      * @param clock          time source for the screen header furniture; must not be {@code null}
-     * @param snapshotTokenService the sealer and opener of the as-displayed snapshot; must not be
-     *                             {@code null}
      * @throws NullPointerException if any collaborator is {@code null}
      */
-    public CardUpdateService(final CardRepository cardRepository, final Clock clock,
-                             final SnapshotTokenService snapshotTokenService) {
+    public CardUpdateService(final CardRepository cardRepository, final Clock clock) {
         this.cardRepository = Objects.requireNonNull(cardRepository, "cardRepository must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
-        this.snapshotTokenService =
-                Objects.requireNonNull(snapshotTokenService, "snapshotTokenService must not be null");
     }
 
     /**
@@ -863,26 +851,22 @@ public class CardUpdateService {
      * distinguishable write failures plus the validation failures into exceptions rather than into a
      * redisplayed screen.</p>
      *
-     * <p><strong>The old snapshot is opened from the sealed token and is never taken from the request
-     * body, and never derived from the live row.</strong> Three separate requirements meet at this one
-     * decision. Deriving it from the live row would make the Regime B comparison at {@code :1503-1508}
-     * tautologically true and destroy the guard. Taking it from the request body would put the write
-     * precondition under the caller's control, so a caller could make the guard pass against values that
-     * were never displayed. And the snapshot's first member is the card verification value of {@code :294},
-     * which no symbolic map declares and which no read can therefore return, so a body-carried snapshot
-     * cannot be populated correctly by any client at all. Opening it from a token this service sealed
-     * satisfies all three: the values are authentic, unaltered, bound to this card, expiring, and never
-     * disclosed.</p>
+     * <p><strong>The old snapshot is taken from the request body and is never derived from the live
+     * row.</strong> Transformation Rule 7 puts it there: the COMMAREA held {@code CCUP-OLD-DETAILS} between
+     * the two turns of the pseudo-conversation and a stateless server has nowhere to put it, so the caller
+     * returns the group {@link #fetchSnapshotForUpdate(String, String)} projected. Deriving it from the live
+     * row instead would make the Regime B comparison at {@code :1503-1508} tautologically true and destroy
+     * the guard, so that is never done. What a body-carried group cannot include is the card verification
+     * value of {@code :294}: it is stored but has no read path, and no symbolic map declares a field for it,
+     * so no caller could supply one - see {@link #checkChangeInRec9300} for why the concurrency question that
+     * predicate asked is answered by the {@code @Version} column instead.</p>
      *
      * <p>Side effects: writes one row on success.</p>
      *
-     * @param request the received map plus the new-as-edited snapshot group; must not be {@code null}. Its
-     *                {@code oldDetails} group is <b>ignored</b>: the authentic snapshot comes from
-     *                {@code snapshotToken}, and the operation that calls this method refuses a body that
-     *                carries one so that no caller can believe otherwise
-     * @param snapshotToken the sealed as-displayed snapshot, as issued by
-     *                      {@link #issueUpdateSnapshot(String, String)} and returned by the client in
-     *                      {@code If-Match}; null and blank are both reported as unconfirmed
+     * @param request the received map plus <b>both</b> snapshot groups; must not be {@code null}. Its
+     *                {@code oldDetails} group is the as-displayed group
+     *                {@link #fetchSnapshotForUpdate(String, String)} projected, echoed back unaltered; an
+     *                absent or hollow group is reported as unconfirmed rather than compared against nothing
      * @return the refreshed card detail screen, never {@code null}
      * @throws NullPointerException       if {@code request} is {@code null}
      * @throws ValidationException        if any edit paragraph rejects a field; the field name and the
@@ -893,19 +877,30 @@ public class CardUpdateService {
      *                                    {@code DATA_CHANGED_BEFORE_UPDATE},
      *                                    {@code LOCKED_BUT_UPDATE_FAILED} or
      *                                    {@code CHANGES_NOT_CONFIRMED}; these four stay distinct. An absent
-     *                                    token reports {@code CHANGES_NOT_CONFIRMED} and a token that fails
-     *                                    to open reports {@code DATA_CHANGED_BEFORE_UPDATE}, because the
-     *                                    remedies differ: obtain a snapshot, versus read again
+     *                                    or hollow {@code oldDetails} group reports
+     *                                    {@code CHANGES_NOT_CONFIRMED} and a group that no longer matches the
+     *                                    stored row reports {@code DATA_CHANGED_BEFORE_UPDATE}, because the
+     *                                    remedies differ: read the card, versus read it again
      * @throws FileAccessException        if a file verb fails for any other reason
      * @throws FatalProcessingException   if the state machine reaches {@code WHEN OTHER}
      */
     @Transactional(rollbackFor = Exception.class)
-    public CardDto updateCard(final CardUpdateRequest request, final String snapshotToken) {
+    public CardDto updateCard(final CardUpdateRequest request) {
         Objects.requireNonNull(request, "request must not be null");
-        raiseIfIdentifiersUnusable(request, snapshotToken);
+        raiseIfIdentifiersUnusable(request);
+        // The snapshot is the request body's own oldDetails group and comes from nowhere else.
+        // Transformation Rule 7 moves the storage lifetime the COMMAREA held between the two turns of the
+        // pseudo-conversation onto the request, so the caller returns the group the preceding read projected.
+        // Deriving it from the live row instead would make the Regime B comparison at :1503-1508
+        // tautologically true and destroy the guard, which is why it is never done.
+        //
+        // The group's card number is the ONE member restored rather than relayed, and :1347 is the authority:
+        // MOVE CC-CARD-NUM TO CCUP-OLD-CARDID takes the RECEIVED card number, not the stored one. So the
+        // group's copy is redundant with the request's own identity field, and CardResponse withholds it on
+        // the read because it is the full sixteen digits that response otherwise masks. Restoring it here
+        // reproduces :1347 exactly. None of the five values :1503-1508 compares is touched.
         final CardUpdateRequest.CardDetails authenticOldDetails =
-                this.snapshotTokenService.open(snapshotToken, SNAPSHOT_KIND,
-                        snapshotRecordKey(request.cardNumber()), CardSnapshot.class).toDetails();
+                restoreSnapshotCardNumber(request.oldDetails(), request.cardNumber());
         if (isSnapshotEmpty(authenticOldDetails)) {
             // The token opened but carries nothing to compare, which is what a read that found no card
             // would have sealed. The Regime B guard at :1503-1508 has nothing to work with, the legacy
@@ -1007,12 +1002,9 @@ public class CardUpdateService {
      * update.
      *
      * @param request the received body; never null
-     * @param snapshotToken the sealed snapshot, or null or blank when the caller sent none
      * @throws ValidationException naming the offending identifier when one is absent, blank or malformed
-     * @throws ConcurrentUpdateException with {@code CHANGES_NOT_CONFIRMED} when the identifiers are usable
-     * but no snapshot was presented
      */
-    private void raiseIfIdentifiersUnusable(final CardUpdateRequest request, final String snapshotToken) {
+    private void raiseIfIdentifiersUnusable(final CardUpdateRequest request) {
 
         // :647-651 - the two search-key edits of the CCUP-DETAILS-NOT-FETCHED arm, run on their own.
         // They are pure: 1210-EDIT-ACCOUNT and 1220-EDIT-CARD read no dataset, so this pre-check reaches
@@ -1034,13 +1026,6 @@ public class CardUpdateService {
         // value the turn genuinely cannot proceed without - the snapshot is sealed against it - while the
         // account identifier is recoverable from the snapshot and is therefore not re-demanded.
         if (editPass.cardFilterState == FieldEditState.IS_VALID) {
-            if (snapshotToken == null || snapshotToken.isBlank()) {
-                // The card is named. The snapshot is what is missing, and that is the condition the
-                // precondition status exists for.
-                throw new ConcurrentUpdateException(
-                        ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED,
-                        SnapshotTokenService.MISSING_TOKEN_MESSAGE);
-            }
             return;
         }
 
@@ -1057,115 +1042,41 @@ public class CardUpdateService {
     }
 
     /**
-     * The operation kind every card-update snapshot token is sealed for.
-     *
-     * <p>Published so the operation that puts the token in an {@code ETag} and reads it back from
-     * {@code If-Match} names the same kind this service verifies against, once. A token sealed for any other
-     * kind cannot open here, which is what stops a token issued for an account from being presented for a
-     * card.</p>
-     */
-    public static final String SNAPSHOT_KIND = "card-update";
-
-    /**
-     * The payload a card-update snapshot token carries: the stored members of {@code CCUP-OLD-DETAILS} of
-     * {@code app/cbl/COCRDUPC.cbl:L291-L301}, flattened into seven text components.
-     *
-     * <p><strong>Why this type exists rather than sealing {@link CardUpdateRequest.CardDetails} directly.</strong>
-     * The wire record is shaped for a caller - nested, annotated, and free to change its serialisation to suit
-     * the HTTP contract - whereas a seal is a storage format whose stability the guard depends on. Keeping them
-     * apart means a future annotation or nesting change on the wire DTO cannot silently alter what a seal
-     * carries, and it keeps the flat shape the comparison consumes out of the public contract.</p>
-     *
-     * <p>It is not a wire type and never appears on one. It exists only inside a token, encrypted and
-     * authenticated.</p>
-     *
-     * <p>The group's first member at {@code :L294} is the card verification value, and it is absent here for
-     * the reason given in the enclosing service's deviation register: nothing stores it, so a seal has nothing
-     * to record and the {@code :1503} predicate that would have compared it has no operand on either side.</p>
-     *
-     * <p>All seven components are text, at the widths the copybook declares, and are neither trimmed nor case
-     * folded: the comparison at {@code :1498-1521} is a byte comparison after a one-sided fold, so any
-     * normalisation here would change which updates are accepted.</p>
-     *
-     * @param accountId {@code CCUP-OLD-ACCTID PIC X(11)} at {@code :L292}
-     * @param cardNumber {@code CCUP-OLD-CARDNUM PIC X(16)} at {@code :L293}
-     * @param cardholderName {@code CCUP-OLD-CARD-NAME PIC X(50)} at {@code :L296}
-     * @param expiryYear the {@code (1:4)} component of {@code CCUP-OLD-EXPIRAION-DATE} at {@code :L297}
-     * @param expiryMonth the {@code (6:2)} component of the same field
-     * @param expiryDay the {@code (9:2)} component of the same field
-     * @param cardStatusCode {@code CCUP-OLD-CRDSTCD PIC X(01)} at {@code :L301}
-     */
-    public record CardSnapshot(String accountId, String cardNumber,
-                               String cardholderName, String expiryYear, String expiryMonth,
-                               String expiryDay, String cardStatusCode) {
-
-        /**
-         * Flattens the nested screen group into the sealed shape.
-         *
-         * <p>Null tolerant at every level, because a snapshot may legitimately be absent or partly populated
-         * and the source's own {@code LOW-VALUES} test at {@code :959} treats a hollow group as absent rather
-         * than dereferencing it.</p>
-         *
-         * @param details the nested group, or {@code null} when the caller holds none
-         * @return the flattened snapshot, never {@code null}
-         */
-        public static CardSnapshot from(final CardUpdateRequest.CardDetails details) {
-            if (details == null) {
-                return new CardSnapshot(null, null, null, null, null, null, null);
-            }
-            final CardUpdateRequest.CardData data = details.cardData();
-            final CardUpdateRequest.ExpiraionDate expiry = data == null ? null : data.expiraionDate();
-            return new CardSnapshot(details.accountId(), details.cardNumber(),
-                    data == null ? null : data.cardholderName(),
-                    expiry == null ? null : expiry.expiryYear(),
-                    expiry == null ? null : expiry.expiryMonth(),
-                    expiry == null ? null : expiry.expiryDay(),
-                    data == null ? null : data.cardStatusCode());
-        }
-
-        /**
-         * Rebuilds the nested group the change detection consumes, so the comparison code is reached with
-         * exactly the shape it had before the snapshot travelled.
-         *
-         * @return the nested group, never {@code null}
-         */
-        public CardUpdateRequest.CardDetails toDetails() {
-            return new CardUpdateRequest.CardDetails(accountId, cardNumber,
-                    new CardUpdateRequest.CardData(cardholderName,
-                            new CardUpdateRequest.ExpiraionDate(expiryYear, expiryMonth, expiryDay),
-                            cardStatusCode));
-        }
-    }
-
-    /**
-     * Reads one card and seals its as-displayed values into the opaque snapshot the matching update
-     * requires.
+     * Reads one card and returns the as-displayed values the matching update requires.
      *
      * <p>This is the read half of the stateless substitution for the pseudo-conversation. It drives the same
      * conversation the legacy program's first pass drove - Enter, re-entered, with no snapshot carried, which
      * {@code resolveInitialAction} resolves to {@code CCUP-DETAILS-NOT-FETCHED} and which
-     * {@code 2000-DECIDE-ACTION} at {@code :954-966} answers by performing
-     * {@code 9000-READ-DATA} - and then seals exactly what {@code :1345-1367} snapshotted into
-     * {@code CCUP-OLD-DETAILS}: the card verification value, the upper-cased embossed name, the active
-     * status and the three expiry components.</p>
+     * {@code 2000-DECIDE-ACTION} at {@code :954-966} answers by performing {@code 9000-READ-DATA} - and then
+     * returns exactly what {@code :1345-1367} snapshotted into {@code CCUP-OLD-DETAILS}: the upper-cased
+     * embossed name, the active status and the three expiry components.</p>
      *
-     * <p><strong>Nothing it seals is disclosed.</strong> The return value is one opaque string. In
-     * particular the card verification value of {@code :294}, which the source itself never sent to a
-     * screen, is inside it and cannot be read out by the caller.</p>
+     * <p><strong>Why the group and not a derived form.</strong> Transformation Rule 7 carries the group in the
+     * request body of the matching write, and the caller echoes this value back unaltered. Returning the very
+     * type the write binds is what makes that possible without the caller reconstructing anything -
+     * reconstruction would not be safe, because {@code app/cpy-bms/COCRDSL.CPY} declares fifteen fields and
+     * none of them is the expiry <em>day</em> that {@code :1507} compares. The day is a member of
+     * {@code CCUP-OLD-DETAILS} that the legacy detail screen never displayed, and this is the only route by
+     * which a client obtains it.</p>
+     *
+     * <p>The card verification value of {@code :294} is not a member of the returned group. It is a stored
+     * value with no read path, for the reason set out on {@link #checkChangeInRec9300}, and no symbolic map
+     * declares a field for it, so no caller could echo one.</p>
      *
      * <p>Side effects: none. This is a read.</p>
      *
      * @param accountFilter the account identifier as typed into {@code ACCTSIDI}; relayed verbatim, so
      *                      absent, blank and populated stay distinct and the source's own edits decide
      * @param cardFilter    the card number as typed into {@code CARDSIDI}; relayed verbatim on the same terms
-     * @return the sealed snapshot, never {@code null}
+     * @return the as-displayed group, never {@code null}
      * @throws ValidationException      if either filter is refused by the edits at {@code :698-708}
      * @throws RecordNotFoundException  if no card carries that number, reproducing {@code :1395}
      * @throws FileAccessException      if the read fails, reproducing {@code :1402-1411}
      * @throws FatalProcessingException if the state machine reaches {@code WHEN OTHER}
      */
     @Transactional(readOnly = true)
-    public String issueUpdateSnapshot(final String accountFilter, final String cardFilter) {
+    public CardUpdateRequest.CardDetails fetchSnapshotForUpdate(final String accountFilter,
+                                                                final String cardFilter) {
         final CardUpdateRequest probe = new CardUpdateRequest(null, null, null, null, null, null,
                 accountFilter, cardFilter, null, null, null, null, null, null, null, null, null,
                 null, null);
@@ -1182,24 +1093,7 @@ public class CardUpdateService {
         if (context.inputError) {
             throw fieldFailure(context);
         }
-        return this.snapshotTokenService.seal(SNAPSHOT_KIND, snapshotRecordKey(cardFilter),
-                CardSnapshot.from(context.snapshotOfFetchedValues()));
-    }
-
-    /**
-     * Renders the record key a card-update token is bound to.
-     *
-     * <p>The submitted card number is used exactly as received, with no padding, trimming or case folding,
-     * because the binding must be an exact string comparison and normalising either side would let a token
-     * issued for one spelling open for another. A null or blank filter yields a fixed non-empty placeholder
-     * rather than an empty string, so that the authenticated additional data stays well formed and a token
-     * sealed for an unspecified card can never open for a specified one.</p>
-     *
-     * @param cardFilter the card number as submitted; may be null or blank
-     * @return the record key, never null and never blank
-     */
-    private static String snapshotRecordKey(final String cardFilter) {
-        return cardFilter == null || cardFilter.isBlank() ? "-" : cardFilter;
+        return context.snapshotOfFetchedValues();
     }
 
     /**
@@ -1635,8 +1529,9 @@ public class CardUpdateService {
      *
      * <p>First, {@code INITIALIZE CCUP-NEW-DETAILS} at {@code :586} clears the <em>entire</em> new-values
      * group before any field is populated. Because no statement anywhere in the program ever assigns
-     * {@code CCUP-NEW-CVV-CD}, that clear is the only thing that ever touches it, which is the root of
-     * the verification-value deviation described in the class documentation.</p>
+     * {@code CCUP-NEW-CVV-CD}, that clear is the only thing that ever touches it, which is why the source's
+     * rewrite wrote three spaces over the stored value and why the two {@code MOVE}s at {@code :1464-1465}
+     * are deliberately absent here - see the verification-value deviation in the class documentation.</p>
      *
      * <p>Second, the comment at {@code :588} reads "REPLACE * WITH LOW-VALUES" and the substitution is
      * applied to exactly <strong>six</strong> fields: the account filter at {@code :589-596}, the card
@@ -1910,7 +1805,8 @@ public class CardUpdateService {
      * validates it. The <strong>verification value, account id and card number do not</strong>, because
      * they sit outside {@code CARDDATA} in the enclosing {@code CCUP-*-DETAILS} group. In the source the
      * verification value was nevertheless compared by Regime B at {@code :1503}, which was one reason the
-     * two regimes could not be merged; that predicate is gone with the field, and the regimes
+     * two regimes could not be merged; that predicate has no counterpart here because the stored value has
+     * no read path and {@code @Version} answers the concurrency question it asked, and the regimes
      * still cannot be merged because Regime A folds a 59-byte group while Regime B compares five fields
      * against a snapshot taken at a different moment.</p>
      *
@@ -3118,10 +3014,13 @@ public class CardUpdateService {
             // :1386 INTO(CARD-RECORD) - the read replaced the record work area, so the five CARD-*
             //       fields that :673-677 pre-loaded are overwritten here.
             context.loadRecordWorkArea(card);
-            // :1354 MOVE CARD-CVV-CD TO CCUP-OLD-CVV-CD - NOT REPRODUCED, because there is no stored
-            //       verification value to snapshot. See the deviation on this class and on
-            //       com.cardemo.model.entity.Card: the value is not persisted, so :1503's first
-            //       predicate has no operands and is dropped with it.
+            // :1354 MOVE CARD-CVV-CD TO CCUP-OLD-CVV-CD - NOT REPRODUCED. The value IS stored, on
+            //       com.cardemo.model.entity.Card, but it is write-once with no getter of any
+            //       visibility, so there is no read path to snapshot it through - see
+            //       V1__create_schema.sql:694. Both operands of :1503 were server-side, so the only
+            //       question that predicate asked was whether the row changed between the display read
+            //       and the write read, and @Version answers that for every column. The predicate is
+            //       dropped together with this snapshot component, never one without the other.
             // :1356-1358 INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO LIT-UPPER - the record work
             //            area is folded IN PLACE before the snapshot is taken.
             //            The fold is applied to the work area ONLY, never to the loaded entity: an
@@ -3273,13 +3172,23 @@ public class CardUpdateService {
      * against refreshed data.</p>
      *
      * <p><strong>The two card-verification {@code MOVE}s at {@code :1464-1465} have no counterpart
-     * here.</strong> The source reads {@code CCUP-NEW-CVV-CD} - declared at {@code :306}, left as
-     * {@code SPACES} by {@code INITIALIZE CCUP-NEW-DETAILS} at {@code :586}, and never assigned anywhere
-     * in the program - into the row it rewrites at {@code :1478}, which destroys the stored verification
-     * value on every successful update. This system has no such column, field or request component to
-     * write, so the pair of {@code MOVE}s is deliberately absent rather than reproduced: the rewrite
-     * cannot destroy a value that is never retained, and retaining authentication data solely to
-     * overwrite it faithfully is not defensible.</p>
+     * here, and the reason is a legacy defect rather than a missing column.</strong> The verification value
+     * <em>is</em> retained by this system: {@code card_cvv_cd CHAR(3) NOT NULL} is declared at
+     * {@code src/main/resources/db/migration/V1__create_schema.sql:741}, {@link com.cardemo.model.entity.Card}
+     * maps it, and {@code V3__seed_data.sql} seeds a real value for every fixture row. What it has no
+     * counterpart <em>for</em> is the source's write. {@code CCUP-NEW-CVV-CD} is declared at {@code :306},
+     * left as {@code SPACES} by {@code INITIALIZE CCUP-NEW-DETAILS} at {@code :586}, and <strong>never
+     * assigned anywhere in the program</strong>, yet {@code :1464-1465} moves it into the row rewritten at
+     * {@code :1478} - so every successful legacy update overwrote the stored verification value with three
+     * spaces. That is a defect, not a rule, and reproducing it would destroy live authentication data on
+     * each write, which Rule 1 Clause D forbids. The pair of {@code MOVE}s is therefore deliberately
+     * absent, the stored value is left untouched, and the divergence is recorded rather than hidden.</p>
+     *
+     * <p>No request component could supply a replacement in any case: {@code app/cpy-bms/COCRDUP.CPY}
+     * declares no card-verification field, so the value is server-owned throughout. It is also write-once
+     * and unreadable - {@code cvvCode} exposes no getter of any visibility - so it is never rendered, and
+     * the concurrency question the source asked of it is answered instead by the {@code version} column,
+     * which covers every column of the row.</p>
      *
      * <p><strong>Lock acquisition happens at the read, not at the rewrite.</strong> The
      * {@code EXEC CICS READ ... UPDATE} of {@code :1427}-{@code :1436} is a read-for-update, so the row
@@ -3364,12 +3273,15 @@ public class CardUpdateService {
         // :1464 MOVE CCUP-NEW-CVV-CD TO CARD-CVV-CD-X
         // :1465 MOVE CARD-CVV-CD-N   TO CARD-UPDATE-CVV-CD
         //
-        // DELIBERATELY ABSENT. Both MOVEs write the stored card verification value - with the three
-        // spaces that INITIALIZE CCUP-NEW-DETAILS at :586 left in CCUP-NEW-CVV-CD, since that field is
-        // DECLARED at :306 and READ at :1464 but NEVER ASSIGNED anywhere in the program. This system
-        // retains no card verification data at any layer: no card_cvv_cd column, no entity field, no
-        // seeded value and no request component, so there is nothing for these MOVEs to target. See the
-        // class javadoc for why no verification value is stored in the first place.
+        // DELIBERATELY ABSENT, and the reason is the legacy defect rather than an absent column. Both
+        // MOVEs write the stored card verification value - with the three spaces that
+        // INITIALIZE CCUP-NEW-DETAILS at :586 left in CCUP-NEW-CVV-CD, since that field is DECLARED at
+        // :306 and READ at :1464 but NEVER ASSIGNED anywhere in the program. Reproducing them would
+        // overwrite live authentication data with spaces on every successful update, which Rule 1
+        // Clause D forbids. The column exists (V1__create_schema.sql:741 card_cvv_cd CHAR(3) NOT NULL),
+        // the entity maps it and V3__seed_data.sql:744 seeds it; what is withheld is the read path, so
+        // these MOVEs have no operand to read and no sanctioned reason to write. Labelled deviation:
+        // a successful update here leaves the stored value intact where the source destroyed it.
         // :1466 MOVE CCUP-NEW-CRDNAME TO CARD-UPDATE-EMBOSSED-NAME
         card.setEmbossedName(padRight(context.newCardholderName, WIDTH_EMBOSSED_NAME));
         // :1467-1474 STRING CCUP-NEW-EXPYEAR '-' CCUP-NEW-EXPMON '-' CCUP-NEW-EXPDAY DELIMITED BY SIZE
@@ -3447,7 +3359,8 @@ public class CardUpdateService {
      * identically, and {@code Locale.ROOT} is used so the result cannot vary with the platform locale.</p>
      *
      * <p>{@code :1503-1508} is a single {@code IF} with <strong>six {@code AND}ed predicates</strong>,
-     * every one of which must hold for the row to count as unchanged: the card verification value, the
+     * every one of which must hold for the row to count as unchanged: the card verification value - whose
+     * counterpart is the {@code @Version} column, for the reason given below - the
      * embossed name, and then <strong>the expiry date compared as three separate substrings</strong> at
      * offsets {@code (1:4)}, {@code (6:2)} and {@code (9:2)}, and finally the active status. The
      * substring comparison is mandatory rather than cosmetic: the live {@code CARD-EXPIRAION-DATE} is ten
@@ -3484,11 +3397,15 @@ public class CardUpdateService {
         // :1506 AND CARD-EXPIRAION-DATE(6:2) EQUAL TO CCUP-OLD-EXPMON
         // :1507 AND CARD-EXPIRAION-DATE(9:2) EQUAL TO CCUP-OLD-EXPDAY
         // :1508 AND CARD-ACTIVE-STATUS EQUAL TO CCUP-OLD-CRDSTCD
-        // :1503's operands do not exist - the verification value is not persisted, so neither the
-        //       record work area nor the snapshot carries one. The predicate is dropped rather than
-        //       replaced by a constant: a comparison of two absent values is not a weakened comparison,
-        //       it is no comparison. The five predicates below still guard every field the screen can
-        //       change, which is every field the legacy rewrite could change.
+        // :1503 has no counterpart, and not because the value is absent: card_cvv_cd is declared at
+        //       V1__create_schema.sql:741, mapped on the entity and seeded at V3__seed_data.sql:744.
+        //       It has no READ path - the entity field is write-once with no getter - so neither the
+        //       record work area nor the snapshot can carry it. Both of the source's operands were
+        //       server-side (a display-time read and a write-time re-read), so the predicate asked only
+        //       whether the row changed between them, and @Version answers that for every column of the
+        //       row. It is not replaced by a constant: a comparison of two absent values is not a
+        //       weakened comparison, it is no comparison. The five predicates below guard every field the
+        //       screen can change, which is every field the legacy rewrite could change.
         final boolean unchanged =
                 fixedWidthEquals(context.editEmbossedName, context.oldCardholderName,
                         WIDTH_EMBOSSED_NAME)
@@ -3507,7 +3424,8 @@ public class CardUpdateService {
         context.writeOutcome = WriteOutcome.DATA_WAS_CHANGED_BEFORE_UPDATE;
         context.returnMessage = MSG_DATA_WAS_CHANGED_BEFORE_UPDATE;
         // :1512 MOVE CARD-CVV-CD TO CCUP-OLD-CVV-CD - NOT REPRODUCED, for the same reason as :1354
-        //       and :1503.
+        //       and :1503: the stored value has no read path, and @Version carries the concurrency
+        //       question those predicates asked.
         // :1513 MOVE CARD-EMBOSSED-NAME TO CCUP-OLD-CRDNAME
         context.oldCardholderName = context.editEmbossedName;
         // :1514 MOVE CARD-EXPIRAION-DATE(1:4) TO CCUP-OLD-EXPYEAR
@@ -3977,7 +3895,8 @@ public class CardUpdateService {
      * <p>The expiry <strong>day participates</strong>, which is why an edit that changes only the day is
      * detected as a change even though no paragraph validates the day. The card verification value, the
      * account identifier and the card number do <strong>not</strong> participate, because they sit
-     * outside the group; the verification value is compared separately by Regime B at {@code :1503}.</p>
+     * outside the group; the verification value is compared separately by Regime B at {@code :1503}, whose
+     * counterpart here is the {@code @Version} column.</p>
      *
      * @param cardholderName the embossed name, possibly {@code null}
      * @param expiryYear     the four-character expiry year, possibly {@code null}
@@ -4191,8 +4110,8 @@ public class CardUpdateService {
      * own {@code toString()} while providing no masking helper of its own, so masking is this file's
      * responsibility. Only the last four characters survive; everything before them becomes an asterisk,
      * so the length of the original is preserved for diagnosis while the value is not. The card
-     * verification value is never passed here, and never anywhere else: it is carried on the entity
-     * alone.</p>
+     * verification value is never passed here, and could not be: it is stored on the entity as a
+     * write-once field with no getter of any visibility, so no code in this file can read it.</p>
      *
      * @param value the card number, possibly {@code null}
      * @return the masked form, or {@code null} when there was nothing to mask
@@ -4207,6 +4126,33 @@ public class CardUpdateService {
         }
         return "*".repeat(trimmed.length() - MASK_VISIBLE_SUFFIX_LENGTH)
                 + trimmed.substring(trimmed.length() - MASK_VISIBLE_SUFFIX_LENGTH);
+    }
+
+    /**
+     * Restores the card number the read withheld from the as-displayed group.
+     *
+     * <p>{@code app/cbl/COCRDUPC.cbl:1347} - {@code MOVE CC-CARD-NUM TO CCUP-OLD-CARDID} - sources that
+     * member from the <em>received</em> map field rather than from the stored record, so reinstating it from
+     * the request's own card number is what the source does, not a substitution for it. It is done here
+     * because {@code CardResponse} withholds the member on the read: it is the full sixteen digits that
+     * response masks everywhere else, and no comparison reads it - {@code 9300-CHECK-CHANGE-IN-REC} compares
+     * the embossed name, the three expiry components and the active status, and {@code isSnapshotEmpty} tests
+     * those same five.</p>
+     *
+     * <p>A group that already carries a card number keeps it untouched, so a client that composed the group
+     * itself is not second-guessed. Every other member is relayed by reference in both cases.</p>
+     *
+     * @param oldDetails the submitted group, or {@code null} when the body carried none
+     * @param receivedCardNumber the request's own {@code CARDSIDI} value, possibly {@code null}
+     * @return the group to compare against, or {@code null} when {@code oldDetails} was {@code null}
+     */
+    private static CardUpdateRequest.CardDetails restoreSnapshotCardNumber(
+            final CardUpdateRequest.CardDetails oldDetails, final String receivedCardNumber) {
+        if (oldDetails == null || oldDetails.cardNumber() != null) {
+            return oldDetails;
+        }
+        return new CardUpdateRequest.CardDetails(oldDetails.accountId(), receivedCardNumber,
+                oldDetails.cardData());
     }
 
     /**
@@ -4676,9 +4622,10 @@ public class CardUpdateService {
      * {@code CCUP-NEW-DETAILS} into the returned area and the next turn's Regime A and Regime B both
      * need them.</p>
      *
-     * <p>No card verification value appears anywhere in this record. {@code refreshedSnapshot} and
-     * {@code submittedDetails} deliberately leave that component {@code null}, so the value cannot leave
-     * the service even though {@code CCUP-OLD-CVV-CD} is part of the legacy group at {@code :294}.</p>
+     * <p>No card verification value appears anywhere in this record. {@link CardUpdateRequest.CardDetails}
+     * declares no such component, so neither {@code refreshedSnapshot} nor {@code submittedDetails} can
+     * carry one and the stored value cannot leave the service, even though {@code CCUP-OLD-CVV-CD} is part
+     * of the legacy group at {@code :294}.</p>
      *
      * @param responseKind      whether the reply is a screen or a transfer
      * @param screen            the rendered map, or {@code null} on a transfer
@@ -5155,11 +5102,11 @@ public class CardUpdateService {
             // every re-entered task. The snapshot is the Rule 7 substitution for that COMMAREA half.
             //
             // CCUP-OLD-CVV-CD at :294 is the one leaf with NO counterpart here, and deliberately so.
-            // The verification value is not persisted, so there is nothing for the caller to send back
-            // and nothing to compare it against; CardUpdateRequest.CardDetails declares no cvvCode
-            // component. That is a narrowing, not a gap: a request DTO carrying a verification value
-            // would mean ACCEPTING card verification data over the wire, which is the same retention
-            // problem one hop earlier.
+            // The value IS stored, but it has no read path and no symbolic map declares a field for it,
+            // so there is nothing for the caller to send back; CardUpdateRequest.CardDetails declares no
+            // cvvCode component. That is a narrowing, not a gap: a request DTO carrying a verification
+            // value would mean ACCEPTING authentication data over the wire, which is a retention problem
+            // one hop earlier. @Version carries the concurrency question :1503 asked.
             this.oldAccountId = parseDigits(snapshot == null ? null : snapshot.accountId());
             this.oldCardNumber = parseDigits(snapshot == null ? null : snapshot.cardNumber());
             this.oldCardholderName = snapshotData == null ? null : snapshotData.cardholderName();
@@ -5210,7 +5157,8 @@ public class CardUpdateService {
         /**
          * Reproduces {@code INITIALIZE CCUP-NEW-DETAILS} at {@code :586}, which clears the whole
          * new-values group including the card verification value that no statement ever assigns. That
-         * clear is the root of the verification-value deviation described in the class documentation.
+         * clear is why the source's rewrite wrote spaces over the stored value, and why the two
+         * {@code MOVE}s at {@code :1464-1465} are deliberately absent - see the class documentation.
          */
         private void clearNewDetails() {
             newAccountId = null;
@@ -5292,10 +5240,13 @@ public class CardUpdateService {
          *
          * <p>There is no card verification component, because {@link CardUpdateRequest.CardDetails}
          * declares none. The legacy group carries it at {@code :294} and {@code 9300} compares it at
-         * {@code :1503}, but this system does not persist card verification data at all - no
-         * {@code card_cvv_cd} column, no entity field, no seeded value - so the predicate has nothing
-         * to compare and the value has nowhere to come from. Retaining a caller-visible component
-         * would have been a retention problem one hop earlier and a Rule 1 Clause D violation.</p>
+         * {@code :1503}. The value is stored here - {@code card_cvv_cd CHAR(3) NOT NULL} at
+         * {@code V1__create_schema.sql:741}, mapped on the entity and seeded at
+         * {@code V3__seed_data.sql:744} - but the read path is withheld rather than the column, so it
+         * cannot be projected into a snapshot, and no symbolic map declares a field a caller could echo.
+         * Exposing a caller-visible component would be a retention problem one hop earlier and a Rule 1
+         * Clause D violation; the concurrency question {@code :1503} asked is answered by
+         * {@code @Version}.</p>
          *
          * @return the refreshed snapshot, never {@code null}
          */

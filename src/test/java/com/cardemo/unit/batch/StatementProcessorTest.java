@@ -89,11 +89,13 @@ import com.cardemo.service.shared.FileStatusMapper;
 import com.cardemo.unit.model.FixedClockProvider;
 import com.cardemo.unit.model.FixtureLoader;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.LinkedHashMap;
@@ -2142,38 +2144,55 @@ class StatementProcessorTest {
     }
 
     @Nested
-    @DisplayName("16. HIGH: over-capacity input FAILS LOUDLY and is never silently truncated")
-    class LoudCapacityFailure {
+    @DisplayName("16. Over-capacity input is neither truncated nor refused: the legacy ceiling has no successor")
+    class LegacyCapacityWithoutASuccessorCeiling {
 
         /**
-         * 🔴 The validation the source lacks entirely.
+         * The deviation, and its limit: the ceiling is gone and nothing was authored in its place.
          *
          * <p>{@code app/cbl/CBSTM03A.CBL:L225-L233} declares {@code WS-CARD-TBL OCCURS 51 TIMES} each holding
-         * {@code WS-TRAN-TBL OCCURS 10 TIMES} — a hard ceiling of <b>510 transactions per run</b> — and
+         * {@code WS-TRAN-TBL OCCURS 10 TIMES} - a hard ceiling of <b>510 transactions per run</b> - and
          * <b>neither {@code CR-CNT} nor {@code TR-CNT} is bounds-checked anywhere</b>. The subscripted
          * {@code MOVE}s at {@code :L827-L829} therefore walk off the end of the table on the 511th
-         * transaction - a latent storage-overrun defect that corrupts adjacent storage silently.
+         * transaction, corrupting adjacent storage silently. Java uses unbounded collections, so that hazard is
+         * gone; AAP 0.7.6.3 labels the removal a deliberate deviation and the legacy figures stay published as
+         * named constants.
          *
-         * <p><b>This is a DELIBERATE DEVIATION, not parity.</b> Java uses unbounded collections, so the ceiling
-         * is gone. The justification is written down rather than assumed (Rule 1 Clause A5): the removal
-         * eliminates a <b>memory-corruption and silent-truncation hazard</b>; it is <em>not</em> a performance
-         * optimisation; and the historical 510 limit stays published as named constants so the legacy
-         * capacity remains discoverable. Pretending the ceiling was
-         * preserved would be false, and pretending its removal is invisible would be worse — which is why
-         * group 4 asserts that passing each legacy threshold <em>warns</em>.
+         * <p><b>Finding BAT-002, severity High, resolved here.</b> This class used to assert the opposite of
+         * what it asserts now. Two authored ceilings stood in {@link StatementProcessor} - one per run, one per
+         * card group, both a million - and a run above either was refused with an abend. That was a business
+         * rule with no source: the corpus refuses no run by record count, and the table it did have overran
+         * rather than failing, so the refusal reproduced neither the number nor the behaviour. Removing a
+         * legacy ceiling and then legislating a new one is not parity, and the review said so.
          *
-         * <p><b>But unbounded must not mean unchecked.</b> Replacing a silent overrun with an unbounded read
-         * would swap corruption for exhaustion, so the translation adds the bound the source never had and
-         * <b>fails loudly</b> when it is exceeded. This test drives that with the
-         * {@code StatementProcessor(FileService, int)} constructor at a deliberately tiny bound, which is the
-         * only honest way to reach the limit in a unit test: the production default is
-         * {@link StatementProcessor#MAX_TRANSACTIONS_PER_RUN}, four orders of magnitude above the 300-record
-         * fixture.
+         * <p>What remains is the WARN of group 4, so the divergence from historical capacity is still visible
+         * in the log, and the control break itself, which keeps one card group resident rather than the run.
          */
         @Test
-        @DisplayName("exceeding the run bound raises FatalProcessingException instead of truncating")
-        void exceedingTheRunBoundFailsLoudly() {
-            StatementProcessor bounded = new StatementProcessor(fileService, 2);
+        @DisplayName("neither ceiling constant, the property key nor the bounded constructor survives")
+        void noCeilingConstantOrBoundedConstructorSurvives() {
+            assertThat(Arrays.stream(StatementProcessor.class.getDeclaredFields()).map(Field::getName))
+                    .as("a surviving field or key would leave the refusal one @Value away from returning")
+                    .doesNotContain("MAX_TRANSACTIONS_PER_RUN", "MAX_TRANSACTIONS_PER_CARD_GROUP",
+                            "KEY_MAX_TRANSACTIONS_PER_RUN", "maxTransactionsPerRun");
+            assertThat(StatementProcessor.class.getConstructors())
+                    .as("exactly one public constructor, taking the FileService and nothing else - which is "
+                            + "also why @Autowired is no longer needed to disambiguate")
+                    .hasSize(1)
+                    .allSatisfy(constructor -> assertThat(constructor.getParameterTypes())
+                            .containsExactly(FileService.class));
+        }
+
+        /**
+         * A run far beyond the legacy ceiling completes, and every record reaches the statement.
+         *
+         * <p>The old per-run refusal fired on the third record of a processor constructed with a bound of two.
+         * The equivalent input now produces a statement whose total is the sum of all of them, which is the
+         * behavioural half of the finding: nothing is dropped and nothing is refused.
+         */
+        @Test
+        @DisplayName("a run larger than any bound this class used to accept is emitted in full")
+        void aRunLargerThanTheOldBoundIsEmittedInFull() {
             stubTransactionFile(
                     projectedRecord("0000000000000001", CARD_LOW, "1.00", "ONE"),
                     projectedRecord("0000000000000002", CARD_LOW, "2.00", "TWO"),
@@ -2181,87 +2200,47 @@ class StatementProcessorTest {
             crossReferenceDataset.enqueueSequential("10", "");
             stubKeyedFixtureRows(1L, 1L);
 
-            assertThatExceptionOfType(FatalProcessingException.class)
-                    .as("the source silently overran at app/cbl/CBSTM03A.CBL:L827-L829; the translation"
-                            + " refuses instead, so no run can quietly lose records")
-                    .isThrownBy(() -> bounded.process(new CardCrossReference(CARD_LOW, 1L, 1L)))
-                    .withMessageContaining("exceeded the safety limit")
-                    .withMessageContaining(StatementProcessor.KEY_MAX_TRANSACTIONS_PER_RUN)
-                    .withMessageContaining(
-                            String.valueOf(StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_RUN))
-                    .withMessageContaining("app/cbl/CBSTM03A.CBL:L225-L233");
+            final Statement statement = processor.process(new CardCrossReference(CARD_LOW, 1L, 1L));
+
+            assertThat(statement.totalExpenditure())
+                    .as("all three records are admitted, so the total is their sum")
+                    .isEqualByComparingTo(new BigDecimal("6.00"));
+            assertThat(loggedMessages())
+                    .as("and no abend is announced: app/cbl/CBSTM03A.CBL:L922's literal must not appear")
+                    .noneMatch(message -> message.startsWith("ABENDING PROGRAM"));
         }
 
         /**
-         * The loud failure announces itself through the abend literal, so it cannot be mistaken for success.
+         * A group beyond the legacy per-card capacity warns and continues, rather than failing.
          *
-         * <p>Silent truncation is the specific failure mode being excluded, so it is not enough that an
-         * exception is raised: the run must also say so. {@code app/cbl/CBSTM03A.CBL:L922} displays
-         * {@code 'ABENDING PROGRAM'} on every abend path, and that literal is reproduced verbatim.
+         * <p>Eleven transactions on one card is one more than {@code WS-TRAN-TBL OCCURS 10} could hold, so this
+         * is the point the COBOL table would have overrun. The run continues - the removal of the ceiling is
+         * the deviation - and the WARN is what keeps that visible.
          */
         @Test
-        @DisplayName("the loud failure logs ABENDING PROGRAM and no statement is returned")
-        void theLoudFailureIsAnnounced() {
-            StatementProcessor bounded = new StatementProcessor(fileService, 1);
-            stubTransactionFile(
-                    projectedRecord("0000000000000001", CARD_LOW, "1.00", "ONE"),
-                    projectedRecord("0000000000000002", CARD_LOW, "2.00", "TWO"));
+        @DisplayName("a card group past the legacy per-card capacity warns once and still completes")
+        void aGroupPastTheLegacyPerCardCapacityWarnsAndCompletes() {
+            final String[] records = new String[StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_CARD + 1];
+            for (int index = 0; index < records.length; index++) {
+                records[index] = projectedRecord(
+                        String.format(Locale.ROOT, "%016d", Integer.valueOf(index + 1)),
+                        CARD_LOW, "1.00", "R" + (index + 1));
+            }
+            stubTransactionFile(records);
             crossReferenceDataset.enqueueSequential("10", "");
             stubKeyedFixtureRows(1L, 1L);
 
-            assertThatExceptionOfType(FatalProcessingException.class)
-                    .isThrownBy(() -> bounded.process(new CardCrossReference(CARD_LOW, 1L, 1L)));
+            final Statement statement = processor.process(new CardCrossReference(CARD_LOW, 1L, 1L));
 
+            assertThat(statement.totalExpenditure())
+                    .as("every one of the eleven is admitted; the eleventh is where the table would have "
+                            + "overrun at app/cbl/CBSTM03A.CBL:L228")
+                    .isEqualByComparingTo(new BigDecimal("11.00"));
             assertThat(loggedMessages())
-                    .as("app/cbl/CBSTM03A.CBL:L922 DISPLAY 'ABENDING PROGRAM', reproduced verbatim")
-                    .anyMatch(message -> message.startsWith("ABENDING PROGRAM"));
-        }
-
-        /**
-         * A non-positive bound is refused at construction, because neither extreme can ever be right.
-         *
-         * <p>A bound of zero would abend on the first record of every run and a negative bound would never
-         * trip at all, so both are configuration errors rather than policies. Rule 1 Clause B2 requires the
-         * boundary to be validated explicitly rather than discovered at run time.
-         *
-         * @param bound a rejected bound
-         */
-        @ParameterizedTest(name = "a bound of {0} is refused")
-        @ValueSource(ints = {0, -1, Integer.MIN_VALUE})
-        @DisplayName("a non-positive transaction bound is refused at construction")
-        void aNonPositiveBoundIsRefused(final int bound) {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new StatementProcessor(fileService, bound))
-                    .withMessageContaining(StatementProcessor.KEY_MAX_TRANSACTIONS_PER_RUN)
-                    .withMessageContaining("must be at least 1");
-        }
-
-        /**
-         * The default bounds sit far above the legacy ceiling, so no legitimate run is affected.
-         *
-         * <p>If the defaults had been set near 510 the removal of the ceiling would be cosmetic. They are not:
-         * both are {@link StatementProcessor#MAX_TRANSACTIONS_PER_RUN}, which is orders of magnitude above both
-         * the legacy table and the largest corpus fixture — {@code app/data/ASCII/dailytran.txt} holds 300
-         * records, per {@link FixtureLoader.Fixture#DAILY_TRANSACTION}. Note the fixture spelling:
-         * {@code dailytran.txt}, <b>not</b> {@code dalytran.txt}, despite the DD name being {@code DALYTRAN}.
-         */
-        @Test
-        @DisplayName("the default bounds are far above both the 510 ceiling and the 300-record fixture")
-        void theDefaultBoundsAreFarAboveTheLegacyCeiling() {
-            assertThat(StatementProcessor.MAX_TRANSACTIONS_PER_RUN)
-                    .as("a default near the legacy 510 would make the deviation cosmetic")
-                    .isGreaterThan(StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_RUN * 1_000);
-            assertThat(StatementProcessor.MAX_TRANSACTIONS_PER_CARD_GROUP)
-                    .isGreaterThan(StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_CARD * 1_000);
-            assertThat(FixtureLoader.Fixture.DAILY_TRANSACTION.expectedRecordCount())
-                    .as("app/data/ASCII/dailytran.txt - the full spelling, not dalytran.txt")
-                    .isEqualTo(300);
-            assertThat(FixtureLoader.Fixture.DAILY_TRANSACTION.resourceName())
-                    .as("the fixture-name trap: the DD is DALYTRAN but the ASCII fixture spells it in full")
-                    .isEqualTo("dailytran.txt");
-            assertThat(StatementProcessor.MAX_TRANSACTIONS_PER_RUN)
-                    .as("300 fixture records cannot approach the default bound")
-                    .isGreaterThan(FixtureLoader.Fixture.DAILY_TRANSACTION.expectedRecordCount());
+                    .as("the divergence from historical capacity is reported, not enforced")
+                    .anyMatch(message -> message.contains("legacy capacity"));
+            assertThat(loggedMessages())
+                    .noneMatch(message -> message.startsWith("ABENDING PROGRAM"));
         }
 
         /**
@@ -2270,7 +2249,8 @@ class StatementProcessorTest {
          *
          * <p>51 cards times 10 transactions is 510, and all three figures come from
          * {@code app/cbl/CBSTM03A.CBL:L226} and {@code :L228}. Keeping them as named constants is what lets
-         * the warning messages cite one number rather than three copies.
+         * the warning message cite one number rather than three copies - and they are <em>records of a
+         * historical capacity</em>, never thresholds this implementation enforces.
          */
         @Test
         @DisplayName("the historical 51 x 10 = 510 capacity is recorded as named constants")
@@ -2286,6 +2266,12 @@ class StatementProcessorTest {
                     .isEqualTo(StatementTransaction.LEGACY_MAX_CARDS_PER_RUN
                             * StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_CARD)
                     .isEqualTo(510);
+            assertThat(FixtureLoader.Fixture.DAILY_TRANSACTION.resourceName())
+                    .as("the fixture-name trap: the DD is DALYTRAN but the ASCII fixture spells it in full")
+                    .isEqualTo("dailytran.txt");
+            assertThat(FixtureLoader.Fixture.DAILY_TRANSACTION.expectedRecordCount())
+                    .as("app/data/ASCII/dailytran.txt - the parity run this job is measured on")
+                    .isEqualTo(300);
         }
     }
 

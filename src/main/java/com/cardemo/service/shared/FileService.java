@@ -435,10 +435,11 @@ public class FileService implements InitializingBean {
      * where an obvious hardening would break parity: defect A is observable only because a call that performs
      * no input or output leaves the previous call's status in place, and a per-invocation reset would silently
      * repair it. The acceptance is therefore an explicit exception to Rule 1 Clause B's preference against
-     * retained mutable state, justified by the parity mandate, and it is <strong>owed an entry in the planned
-     * {@code DECISION_LOG.md}</strong>; measured at this commit that file does not exist, so the register of
-     * record is this Javadoc together with the analysis in {@code docs/technical-specifications.md}. Nothing
-     * here may be described as already recorded or tracked until the entry and its stable identifier exist.
+     * retained mutable state, justified by the parity mandate, and it is <strong>owed an entry in
+     * {@code DECISION_LOG.md}</strong>, which is authored at the repository root. An earlier revision recorded
+     * that file as non-existent and forbade any present-tense mention of it; that premise has reversed and the
+     * prohibition is withdrawn. This Javadoc together with the analysis in
+     * {@code docs/technical-specifications.md} stays the record that cannot drift from the field it explains.
      */
     private final Map<Dd, AtomicReference<String>> statusRegisters;
 

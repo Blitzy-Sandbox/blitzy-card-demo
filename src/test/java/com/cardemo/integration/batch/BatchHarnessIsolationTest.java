@@ -120,6 +120,14 @@ import com.cardemo.unit.model.FixtureLoader;
  * only honest stand-in for what a launched job leaves behind. That row is removed by the very mechanism under
  * test, and the following test asserts its absence, so the class leaves the database exactly as it found it -
  * which is itself the assertion.
+ *
+ * <h2>Method ordering</h2>
+ *
+ * <p><strong>ORDERING IS DELIBERATE.</strong> The subject of this class is a between-test mechanism, so the
+ * assertion cannot live inside one test: one method commits the row and the <em>next</em> method asserts the
+ * reset removed it. Reversing them would assert absence before anything had been written, which passes
+ * vacuously. This is the one place in the test tree where a method depends on the method before it, and it is
+ * declared here so that ordering elsewhere - where it only hides coupling - stays refusable.
  */
 @DisplayName("Batch harness: committed-state reset and the mandatory unique run identifier")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)

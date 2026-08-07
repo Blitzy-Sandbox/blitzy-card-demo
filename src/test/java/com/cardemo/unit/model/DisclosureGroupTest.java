@@ -122,7 +122,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <pre>
  * ./mvnw -B -ntp -Ddependency-check.skip=true test                              # whole unit tier
  * ./mvnw -B -ntp -Ddependency-check.skip=true test -Dtest=DisclosureGroupTest   # this class alone
- * ./mvnw -B -ntp -Ddependency-check.skip=true verify                            # adds the coverage floor
+ * ./mvnw -B -ntp clean verify                                                   # the full gate, no skips
  * </pre>
  *
  * <p>This class is bound to <strong>Surefire</strong>, not Failsafe: the build descriptor gives Surefire

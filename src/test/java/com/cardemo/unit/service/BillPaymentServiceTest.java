@@ -227,7 +227,7 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>Four artefacts would read as dead or defective code in isolation. Each is a faithful reproduction of the system
  * of record, each is asserted here so the reproduction is provable rather than asserted, and each carries its
- * tracking reference owed to the planned {@code DECISION_LOG.md} with a paragraph row in
+ * tracking reference owed to the {@code DECISION_LOG.md} with a paragraph row in
  * {@code TRACEABILITY_MATRIX.md}. None is abandoned residue.</p>
  *
  * <ul>

@@ -3,21 +3,25 @@
  * Program     : TransactionReportProcessorScopeIsolationTest.java
  * Application : CardDemo
  * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
- * Function    : Proves the report processor is a genuinely step
- *               scoped bean whose reporting window and running
- *               accumulators are isolated per step execution. The
- *               class carries nine mutable accumulators - the line
- *               counter, three running totals, the control break key,
- *               the first-time flag, the cross reference, the two
- *               header dates and the stale amount - and as a
- *               singleton two overlapping executions shared every one
- *               of them, mixing one report's totals into another's.
- *               The previous note deferred the scoping to BatchConfig,
- *               a file that does not exist in this tree, so nothing
- *               enforced it. These tests assert the annotations, the
- *               job-parameter binding, per-execution instance
- *               identity, interleaved isolation on one thread and
- *               concurrent isolation across two threads.
+ * Function    : Proves the report processor and its backup reader are
+ *               owned by exactly one class, and that the reporting
+ *               window and running accumulators are isolated per step
+ *               execution. The processor carries nine mutable
+ *               accumulators - the line counter, three running totals,
+ *               the control break key, the first-time flag, the cross
+ *               reference, the two header dates and the stale amount -
+ *               so two overlapping executions sharing one instance
+ *               would mix one report's totals into another's. Finding
+ *               F-008: both classes once carried @Component @StepScope
+ *               while TransactionReportJob built them with new, so the
+ *               bean definitions were never resolved and the
+ *               annotations documented a binding that never happened.
+ *               These tests assert the annotations are absent, that
+ *               neither class is a component-scan candidate, that
+ *               neither holds static mutable state, and that
+ *               construction per execution isolates the window, the
+ *               counters and the control break key both interleaved on
+ *               one thread and concurrently across two.
  * Source      : app/cbl/CBTRN03C.cbl:L127-L137 (WS-PAGE-SIZE 20)
  *               app/cbl/CBTRN03C.cbl:L170-L206 (the read loop)
  *               app/cbl/CBTRN03C.cbl:L173-L178 (the date re-filter)
@@ -46,10 +50,16 @@
 package com.cardemo.unit.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.cardemo.batch.processors.TransactionCombineProcessor;
 import com.cardemo.batch.processors.TransactionReportProcessor;
+import com.cardemo.batch.readers.CombinedTransactionReader;
+import com.cardemo.batch.readers.DailyTransactionReader;
+import com.cardemo.batch.readers.TransactionBackupReader;
+import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.entity.TransactionCategory;
@@ -60,17 +70,21 @@ import com.cardemo.repository.TransactionCategoryRepository;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.repository.TransactionTypeRepository;
 import com.cardemo.service.shared.FileStatusMapper;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import org.junit.jupiter.api.AfterEach;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -80,43 +94,52 @@ import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.StepScope;
-import org.springframework.batch.core.scope.context.StepSynchronizationManager;
 import org.springframework.batch.test.MetaDataInstanceFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.beans.factory.support.BeanDefinitionBuilder;
-import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.stereotype.Component;
 
 /**
- * Verifies that {@link TransactionReportProcessor} is scoped and bound per step execution.
+ * Verifies the ownership model of {@link TransactionReportProcessor} and
+ * {@link TransactionBackupReader}, and that each report execution is isolated from every other.
  *
- * <p><strong>Why identity alone is not the assertion.</strong> {@code @StepScope} is
- * {@code @Scope(value = "step", proxyMode = TARGET_CLASS)}, so the container publishes a CGLIB proxy under
- * the plain bean name and the real instance under {@code scopedTarget.<beanName>}. Comparing the proxy across
- * two executions would compare one object with itself and prove nothing. These tests therefore resolve the
- * <em>target</em> bean inside each step context, which is the instance that actually holds the accumulators,
- * and additionally assert the behaviour that isolation exists to protect: two executions must not see each
- * other's reporting window, line counter, control break key or running totals.
+ * <p><strong>What changed, and why the assertions changed with it.</strong> Both classes once carried
+ * {@code @Component} and {@code @StepScope} while their only consumer,
+ * {@code com.cardemo.batch.jobs.TransactionReportJob}, constructed them with {@code new}. Nothing ever
+ * resolved either bean, so the container published two definitions no production path used and the
+ * annotations described a lifecycle that never ran - two ownership models for one type, which is finding
+ * <strong>F-008</strong>. The annotations are removed and the job is the declared single owner, so an earlier
+ * revision of this class asserting {@code @Component}, {@code @StepScope} and the presence of a
+ * {@code scopedTarget.} bean definition was asserting the defect. Those assertions are inverted here.
  *
- * <p><strong>How the two executions overlap.</strong> {@code StepSynchronizationManager} holds its contexts
- * on a per-thread deque, so registering a second execution inside the first genuinely nests them and closing
- * returns to the first - that is the single-threaded overlap. The multi-threaded case registers one execution
- * per thread and holds both open simultaneously behind a latch, which is the shape a partitioned or
- * multi-threaded step takes.
+ * <p><strong>Why the isolation guarantee still needs a test.</strong> Removing a scope only moves the
+ * guarantee; it does not weaken it, <em>provided</em> two things hold. First, the owner must construct one
+ * instance per step execution - it does, inside each tasklet body. Second, and this is the part a reader
+ * cannot verify by inspection, neither class may hold <strong>static mutable state</strong>, because a static
+ * field is shared by every instance and would defeat per-execution construction exactly as a singleton scope
+ * would. {@code StructuralOwnership.neitherClassHoldsStaticMutableState} asserts that directly over the
+ * declared fields of both classes, which is a stronger and more durable statement than the annotation checks
+ * it replaces.
  *
- * <p><strong>Side effects.</strong> None outside the test JVM: two Spring contexts, Mockito doubles for the
- * three repositories, and a two-thread executor that is always shut down. No database, no container, no
- * network. Every step context registered is closed in {@link #tearDown()}, including after a failure, so no
- * thread-local leaks into another test.
+ * <p><strong>How the two executions overlap.</strong> The single-threaded case builds one processor per
+ * execution and interleaves records between them, which is the shape a restart or a second launch takes. The
+ * multi-threaded case holds both executions open simultaneously behind a latch, which is the shape a
+ * partitioned or multi-threaded step takes and is what would expose shared static state.
+ *
+ * <p><strong>Side effects.</strong> None outside the test JVM: Mockito doubles for the three repositories, one
+ * classpath scan over {@code com.cardemo.batch}, and a two-thread executor that is always shut down. No
+ * Spring context, no database, no container, no network, and no thread-local to release - dropping
+ * {@code StepSynchronizationManager} is itself a consequence of the model, because nothing resolves a scoped
+ * bean any more.
  */
-@DisplayName("TransactionReportProcessor - step scope and per-execution isolation")
+@DisplayName("TransactionReportProcessor - single ownership and per-execution isolation")
 class TransactionReportProcessorScopeIsolationTest {
 
-    /** The bean name Spring derives from the class, and the prefix under which the real instance lives. */
+    /** The bean name Spring would derive from the processor, asserted absent from the scan candidates. */
     private static final String BEAN_NAME = "transactionReportProcessor";
 
-    /** {@code org.springframework.aop.scope.ScopedProxyUtils} prefixes the target with this. */
-    private static final String TARGET_BEAN_NAME = "scopedTarget." + BEAN_NAME;
+    /** The package the component scan walks when proving neither class is a scan candidate. */
+    private static final String SCANNED_PACKAGE = "com.cardemo.batch";
 
     /** A card number of the sixteen characters {@code TRAN-CARD-NUM PIC X(16)} declares. */
     private static final String CARD_A = "4111111111111111";
@@ -124,38 +147,27 @@ class TransactionReportProcessorScopeIsolationTest {
     /** A second card number, so the control break can be exercised. */
     private static final String CARD_B = "4222222222222222";
 
-    private AnnotationConfigApplicationContext context;
+    /** TRANFILE. The per-record body never touches it, so a bare double is enough. */
+    private TransactionRepository transactions;
+
+    /** CARDXREF, resolving both test cards and nothing else. */
+    private CardCrossReferenceRepository crossReferences;
+
+    /** TRANTYPE, resolving the single type code these fixtures use. */
+    private TransactionTypeRepository types;
+
+    /** TRANCATG, resolving the single composite key these fixtures use. */
+    private TransactionCategoryRepository categories;
 
     @BeforeEach
     void setUp() {
-        context = new AnnotationConfigApplicationContext();
-        // TRANFILE. The processor takes it so that the step it belongs to owns its own reader source; the
-        // per-record body never touches it, so a bare double is enough - but it must be registered, or the
-        // scoped target cannot be constructed at all.
-        context.registerBean(TransactionRepository.class, () -> mock(TransactionRepository.class));
-        context.registerBean(CardCrossReferenceRepository.class, this::crossReferenceRepository);
-        context.registerBean(TransactionTypeRepository.class, this::typeRepository);
-        context.registerBean(TransactionCategoryRepository.class, this::categoryRepository);
-        context.registerBean(FileStatusMapper.class, FileStatusMapper::new);
-        // The scope itself. StepScope is a BeanFactoryPostProcessor, so registering it as a bean is what
-        // registers the "step" scope with the factory - exactly as spring-boot-starter-batch does at runtime.
-        context.registerBeanDefinition("stepScope", BeanDefinitionBuilder
-                .genericBeanDefinition(org.springframework.batch.core.scope.StepScope.class)
-                .getBeanDefinition());
-        // register(Class) reads @Component and the @Scope meta-annotation on @StepScope, so the scoped proxy
-        // is created the same way the component scan creates it. Nothing here overrides the class's own
-        // declaration, which is the point: the test must fail if that declaration is removed.
-        context.register(TransactionReportProcessor.class);
-        context.refresh();
-    }
-
-    @AfterEach
-    void tearDown() {
-        // release() clears this thread's whole deque, so a test that failed mid-nesting cannot leak a context.
-        StepSynchronizationManager.release();
-        if (context != null) {
-            context.close();
-        }
+        // No Spring context and no step scope registration. Production constructs the processor directly
+        // inside the STEP10R tasklet body, so the doubles are held as plain fields and handed to the
+        // constructor exactly as TransactionReportJob hands it its repositories.
+        transactions = mock(TransactionRepository.class);
+        crossReferences = crossReferenceRepository();
+        types = typeRepository();
+        categories = categoryRepository();
     }
 
     /**
@@ -232,81 +244,169 @@ class TransactionReportProcessorScopeIsolationTest {
     }
 
     /**
-     * Resolves the real, scoped instance inside the currently registered step context.
+     * Builds one processor for one step execution, exactly as the owning step does.
      *
-     * @return the target instance the accumulators live on
+     * <p>This mirrors {@code TransactionReportJob.executeStep10r}: the two reporting dates are read from the
+     * step execution's job parameters - which is what {@code startDateSymbol} and {@code endDateSymbol} do -
+     * and passed to the constructor. Nothing resolves a bean, because there is no bean.
+     *
+     * @param execution the step execution whose job parameters carry the reporting window
+     * @return a processor owned by that execution and by nothing else
      */
-    private TransactionReportProcessor target() {
-        return context.getBean(TARGET_BEAN_NAME, TransactionReportProcessor.class);
+    private TransactionReportProcessor processorFor(StepExecution execution) {
+        JobParameters parameters = execution.getJobExecution().getJobParameters();
+        return new TransactionReportProcessor(
+                transactions,
+                crossReferences,
+                types,
+                categories,
+                new FileStatusMapper(),
+                parameters.getString(TransactionReportProcessor.START_DATE_JOB_PARAMETER),
+                parameters.getString(TransactionReportProcessor.END_DATE_JOB_PARAMETER));
     }
 
     /**
-     * Runs a body inside a freshly registered step context and closes it afterwards.
+     * Runs a body that owns its processor for the length of one execution.
      *
-     * @param execution the execution to bind
+     * <p>The step context registration the earlier revision performed is gone with the scope: the body simply
+     * runs, and its processor lives no longer than the call.
+     *
      * @param body the body to run
      * @param <T> the body's result type
      * @return the body's result
      */
-    private static <T> T inScopeOf(StepExecution execution, Callable<T> body) {
-        StepSynchronizationManager.register(execution);
+    private static <T> T forOneExecution(Callable<T> body) {
         try {
             return body.call();
         } catch (Exception failure) {
-            throw new IllegalStateException("the scoped body failed", failure);
-        } finally {
-            StepSynchronizationManager.close();
+            throw new IllegalStateException("the execution body failed", failure);
         }
     }
 
     @Nested
-    @DisplayName("the scoping is declared on the class, not deferred to a configuration file")
-    class DeclaredScoping {
+    @DisplayName("one owner: neither class is a bean, and neither shares state statically")
+    class StructuralOwnership {
 
         @Test
-        @DisplayName("the class carries @Component and @StepScope")
-        void theClassIsAStepScopedComponent() {
+        @DisplayName("neither class carries @Component or @StepScope")
+        void neitherClassIsAStepScopedComponent() {
+            // F-008. These four assertions were the inverse a revision ago, when both classes were annotated
+            // and TransactionReportJob nevertheless built them with new. The annotations promised a container
+            // lifecycle that no production path invoked, and the promise is what made the defect hard to see.
             assertThat(TransactionReportProcessor.class.getAnnotation(Component.class))
-                    .as("without @Component nothing registers the bean at all")
-                    .isNotNull();
+                    .as("the processor is constructed by TransactionReportJob, so a bean definition would be "
+                            + "a second unused provenance for one type")
+                    .isNull();
             assertThat(TransactionReportProcessor.class.getAnnotation(StepScope.class))
-                    .as("without @StepScope one singleton serves every execution")
-                    .isNotNull();
+                    .as("per-execution isolation comes from construction inside the tasklet, not from a scope")
+                    .isNull();
+            assertThat(TransactionBackupReader.class.getAnnotation(Component.class))
+                    .as("one scoped definition could not serve both reader call sites: STEP01R reads the "
+                            + "cluster and STEP10R reads a generation")
+                    .isNull();
+            assertThat(TransactionBackupReader.class.getAnnotation(StepScope.class))
+                    .isNull();
         }
 
         @Test
-        @DisplayName("both reporting dates are bound from job parameters on the constructor")
-        void bothDatesAreBoundFromJobParameters() {
+        @DisplayName("a component scan over com.cardemo.batch finds neither class")
+        void aComponentScanFindsNeitherClass() {
+            // The annotation checks above could pass while a meta-annotated stereotype still made either class
+            // a candidate. This asserts the outcome that actually matters - that the scan the application
+            // performs contributes no definition for either type - by running the same scanner Spring runs
+            // with the same default filters, which are exactly the @Component stereotype filters. No include
+            // filter is added: include filters are OR-ed, so an assignability filter would match both classes
+            // on type alone and the assertion would test nothing.
+            ClassPathScanningCandidateComponentProvider scanner =
+                    new ClassPathScanningCandidateComponentProvider(true);
+
+            Set<String> candidates = scanner.findCandidateComponents(SCANNED_PACKAGE).stream()
+                    .map(definition -> String.valueOf(definition.getBeanClassName()))
+                    .collect(Collectors.toUnmodifiableSet());
+
+            assertThat(candidates)
+                    .as("the scan must find the container-owned collaborators, or the two absences below "
+                            + "would be proved by a scan that simply found nothing")
+                    .contains(TransactionCombineProcessor.class.getName(),
+                            CombinedTransactionReader.class.getName(),
+                            DailyTransactionReader.class.getName());
+            assertThat(candidates)
+                    .as("no bean named %s may be contributed by the scan of %s", BEAN_NAME, SCANNED_PACKAGE)
+                    .doesNotContain(TransactionReportProcessor.class.getName(),
+                            TransactionBackupReader.class.getName());
+        }
+
+        @Test
+        @DisplayName("neither class holds static mutable state, which is what makes construction sufficient")
+        void neitherClassHoldsStaticMutableState() {
+            // The load-bearing assertion of this class. Per-execution construction isolates instance state by
+            // definition; it isolates nothing that lives on the class. A static non-final field would be
+            // shared by every execution and would reproduce exactly the singleton defect the scope was once
+            // added to prevent - silently, and with no annotation left to hint at it.
+            assertThat(mutableStaticFields(TransactionReportProcessor.class))
+                    .as("the processor's nine accumulators must all be instance fields")
+                    .isEmpty();
+            assertThat(mutableStaticFields(TransactionBackupReader.class))
+                    .as("the reader's row counters and stream handles must all be instance fields")
+                    .isEmpty();
+        }
+
+        /**
+         * Names every declared field that is static and not final.
+         *
+         * @param type the class to inspect
+         * @return the offending field names, empty when there are none
+         */
+        private List<String> mutableStaticFields(Class<?> type) {
+            return Arrays.stream(type.getDeclaredFields())
+                    .filter(field -> Modifier.isStatic(field.getModifiers()))
+                    .filter(field -> !Modifier.isFinal(field.getModifiers()))
+                    .filter(field -> !field.isSynthetic())
+                    .map(Field::getName)
+                    .toList();
+        }
+
+        @Test
+        @DisplayName("both reporting dates stay the last two constructor parameters, and neither is @Value bound")
+        void bothDatesArePlainConstructorParameters() {
             Parameter[] parameters = TransactionReportProcessor.class.getConstructors()[0].getParameters();
 
             assertThat(parameters)
                     .as("TRANFILE, CARDXREF, TRANTYPE, TRANCATG, the status mapper and the two dates")
                     .hasSize(7);
             assertThat(parameters[5].getType())
-                    .as("the two bound dates are the last two parameters, so an added collaborator shifts "
-                            + "them and this assertion has to say which parameter it means")
+                    .as("the two dates are the last two parameters, so an added collaborator shifts them and "
+                            + "this assertion has to say which parameter it means")
                     .isEqualTo(String.class);
             assertThat(parameters[6].getType()).isEqualTo(String.class);
             assertThat(parameters[5].getAnnotation(Value.class))
-                    .isNotNull()
-                    .extracting(Value::value)
-                    .isEqualTo("#{jobParameters['"
-                            + TransactionReportProcessor.START_DATE_JOB_PARAMETER + "']}");
+                    .as("the owning step reads jobParameters['%s'] and passes it; a @Value here would be a "
+                            + "binding nothing performs",
+                            TransactionReportProcessor.START_DATE_JOB_PARAMETER)
+                    .isNull();
             assertThat(parameters[6].getAnnotation(Value.class))
-                    .isNotNull()
-                    .extracting(Value::value)
-                    .isEqualTo("#{jobParameters['"
-                            + TransactionReportProcessor.END_DATE_JOB_PARAMETER + "']}");
+                    .as("likewise for jobParameters['%s']",
+                            TransactionReportProcessor.END_DATE_JOB_PARAMETER)
+                    .isNull();
         }
 
         @Test
-        @DisplayName("the container publishes a scoped proxy and a distinct scoped target")
-        void theContainerPublishesAScopedProxy() {
-            assertThat(context.containsBeanDefinition(BEAN_NAME)).isTrue();
-            assertThat(context.containsBeanDefinition(TARGET_BEAN_NAME))
-                    .as("the target definition is what proves the proxy mode took effect")
-                    .isTrue();
+        @DisplayName("the constructor still validates the window, so nothing was lost with the binding")
+        void theConstructorStillValidatesTheWindow() {
+            // Moving the binding out of the constructor must not move the validation out with it. An inverted
+            // period and a blank date were rejected before F-008 and are rejected now, by the same
+            // requireReportingDate and requireOrderedPeriod calls, at the same point in the lifecycle.
+            StepExecution inverted = executionFor(90L, "2026-03-31", "2026-03-01");
+            assertThatThrownBy(() -> processorFor(inverted))
+                    .as("an inverted period would silently produce an empty report")
+                    .isInstanceOf(FatalProcessingException.class);
+
+            StepExecution blank = executionFor(91L, "2026-03-01", "   ");
+            assertThatThrownBy(() -> processorFor(blank))
+                    .as("a blank WS-END-DATE cannot be compared lexically")
+                    .isInstanceOf(FatalProcessingException.class);
         }
+
     }
 
     @Nested
@@ -314,14 +414,12 @@ class TransactionReportProcessorScopeIsolationTest {
     class PerExecutionBinding {
 
         @Test
-        @DisplayName("two executions resolve two distinct instances")
-        void twoExecutionsResolveTwoInstances() {
-            TransactionReportProcessor first = inScopeOf(
-                    executionFor(1L, "2026-01-01", "2026-01-31"),
-                    TransactionReportProcessorScopeIsolationTest.this::target);
-            TransactionReportProcessor second = inScopeOf(
-                    executionFor(2L, "2026-02-01", "2026-02-28"),
-                    TransactionReportProcessorScopeIsolationTest.this::target);
+        @DisplayName("two executions own two distinct instances")
+        void twoExecutionsOwnTwoInstances() {
+            TransactionReportProcessor first = forOneExecution(() ->
+                    processorFor(executionFor(1L, "2026-01-01", "2026-01-31")));
+            TransactionReportProcessor second = forOneExecution(() ->
+                    processorFor(executionFor(2L, "2026-02-01", "2026-02-28")));
 
             assertThat(first).isNotSameAs(second);
         }
@@ -331,12 +429,10 @@ class TransactionReportProcessorScopeIsolationTest {
         void eachInstanceUsesItsOwnWindow() {
             Transaction january = transaction("0000000000000001", CARD_A, "2026-01-15", "10.00");
 
-            TransactionReportProcessor.ReportLines inJanuaryWindow = inScopeOf(
-                    executionFor(3L, "2026-01-01", "2026-01-31"),
-                    () -> TransactionReportProcessorScopeIsolationTest.this.target().process(january));
-            TransactionReportProcessor.ReportLines inFebruaryWindow = inScopeOf(
-                    executionFor(4L, "2026-02-01", "2026-02-28"),
-                    () -> TransactionReportProcessorScopeIsolationTest.this.target().process(january));
+            TransactionReportProcessor.ReportLines inJanuaryWindow = forOneExecution(() ->
+                    processorFor(executionFor(3L, "2026-01-01", "2026-01-31")).process(january));
+            TransactionReportProcessor.ReportLines inFebruaryWindow = forOneExecution(() ->
+                    processorFor(executionFor(4L, "2026-02-01", "2026-02-28")).process(january));
 
             assertThat(inJanuaryWindow).as("inside its window the record is reported").isNotNull();
             assertThat(inFebruaryWindow).as("outside its window the record is filtered").isNull();
@@ -348,45 +444,45 @@ class TransactionReportProcessorScopeIsolationTest {
     class OverlappingExecutions {
 
         @Test
-        @DisplayName("nested executions on one thread keep separate totals, counters and break keys")
-        void nestedExecutionsAreIsolated() {
-            StepExecution outer = executionFor(5L, "2026-01-01", "2026-01-31");
-            StepExecution inner = executionFor(6L, "2026-01-01", "2026-01-31");
+        @DisplayName("interleaved executions on one thread keep separate totals, counters and break keys")
+        void interleavedExecutionsAreIsolated() {
+            // Two executions, each owning its processor exactly as its STEP10R tasklet would, with records
+            // interleaved between them so a shared accumulator could not hide behind sequential runs.
+            TransactionReportProcessor firstExecution =
+                    processorFor(executionFor(5L, "2026-01-01", "2026-01-31"));
+            firstExecution.process(transaction("0000000000000001", CARD_A, "2026-01-02", "100.00"));
+            firstExecution.process(transaction("0000000000000002", CARD_A, "2026-01-03", "200.00"));
 
-            StepSynchronizationManager.register(outer);
-            TransactionReportProcessor outerProcessor = target();
-            outerProcessor.process(transaction("0000000000000001", CARD_A, "2026-01-02", "100.00"));
-            outerProcessor.process(transaction("0000000000000002", CARD_A, "2026-01-03", "200.00"));
+            // The second execution starts while the first is still mid-report.
+            TransactionReportProcessor secondExecution =
+                    processorFor(executionFor(6L, "2026-01-01", "2026-01-31"));
 
-            // The second execution starts while the first is still open and mid-report.
-            StepSynchronizationManager.register(inner);
-            TransactionReportProcessor innerProcessor = target();
-
-            assertThat(innerProcessor).isNotSameAs(outerProcessor);
-            assertThat(innerProcessor.lineCounter())
+            assertThat(secondExecution).isNotSameAs(firstExecution);
+            assertThat(secondExecution.lineCounter())
                     .as("a fresh execution must start with no lines emitted")
                     .isZero();
-            assertThat(innerProcessor.pageTotal()).isEqualByComparingTo(BigDecimal.ZERO);
-            assertThat(innerProcessor.accountTotal()).isEqualByComparingTo(BigDecimal.ZERO);
-            assertThat(innerProcessor.grandTotal()).isEqualByComparingTo(BigDecimal.ZERO);
-            assertThat(innerProcessor.currentCardNumber().strip())
+            assertThat(secondExecution.pageTotal()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(secondExecution.accountTotal()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(secondExecution.grandTotal()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(secondExecution.currentCardNumber().strip())
                     .as("the control break key must not carry the other execution's card")
                     .isEmpty();
 
-            innerProcessor.process(transaction("0000000000000003", CARD_B, "2026-01-04", "7.00"));
-            assertThat(innerProcessor.accountTotal()).isEqualByComparingTo(new BigDecimal("7.00"));
-
-            StepSynchronizationManager.close();
+            secondExecution.process(transaction("0000000000000003", CARD_B, "2026-01-04", "7.00"));
+            assertThat(secondExecution.accountTotal()).isEqualByComparingTo(new BigDecimal("7.00"));
 
             // Back in the first execution: its own state is intact and untouched by the second.
-            TransactionReportProcessor resumed = target();
-            assertThat(resumed).isSameAs(outerProcessor);
-            assertThat(resumed.accountTotal())
+            assertThat(firstExecution.accountTotal())
                     .as("the first execution's total must not have absorbed the second's 7.00")
                     .isEqualByComparingTo(new BigDecimal("300.00"));
-            assertThat(resumed.currentCardNumber().strip()).isEqualTo(CARD_A);
+            assertThat(firstExecution.currentCardNumber().strip()).isEqualTo(CARD_A);
 
-            StepSynchronizationManager.close();
+            // And a record arriving late on the first execution still sees only the first execution's key.
+            firstExecution.process(transaction("0000000000000004", CARD_A, "2026-01-05", "50.00"));
+            assertThat(firstExecution.accountTotal()).isEqualByComparingTo(new BigDecimal("350.00"));
+            assertThat(secondExecution.accountTotal())
+                    .as("the second execution must not have absorbed the first's late 50.00")
+                    .isEqualByComparingTo(new BigDecimal("7.00"));
         }
 
         @Test
@@ -424,19 +520,15 @@ class TransactionReportProcessorScopeIsolationTest {
          */
         private BigDecimal runWindow(StepExecution execution, String cardNumber, String amount,
                 CountDownLatch bothStarted) throws InterruptedException {
-            StepSynchronizationManager.register(execution);
-            try {
-                TransactionReportProcessor processor = target();
-                bothStarted.countDown();
-                assertThat(bothStarted.await(30L, TimeUnit.SECONDS))
-                        .as("both executions must be open at the same time")
-                        .isTrue();
-                processor.process(transaction("000000000000000" + cardNumber.charAt(1),
-                        cardNumber, "2026-01-10", amount));
-                return processor.accountTotal();
-            } finally {
-                StepSynchronizationManager.close();
-            }
+            TransactionReportProcessor processor = processorFor(execution);
+            bothStarted.countDown();
+            assertThat(bothStarted.await(30L, TimeUnit.SECONDS))
+                    .as("both executions must be live at the same time, which is what would expose a static "
+                            + "field shared across instances")
+                    .isTrue();
+            processor.process(transaction("000000000000000" + cardNumber.charAt(1),
+                    cardNumber, "2026-01-10", amount));
+            return processor.accountTotal();
         }
     }
 }

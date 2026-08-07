@@ -28,20 +28,25 @@
  */
 package com.cardemo.batch.writers;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.SequenceInputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.List;
 import java.util.Locale;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
-import io.awspring.cloud.s3.S3OutputStream;
 import io.awspring.cloud.s3.S3Resource;
 
 import org.slf4j.Logger;
@@ -56,6 +61,7 @@ import org.springframework.batch.item.ItemStreamWriter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import com.cardemo.batch.GenerationPrefixContract;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.DailyTransaction;
 import com.cardemo.model.enums.FileStatus;
@@ -97,7 +103,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li>{@code carddemo.aws.s3.batch-output-bucket} - the destination bucket, declared as
  *       {@code carddemo.aws.s3.batch-output-bucket} in {@code src/main/resources/application.yml} and
  *       backed by the
- *       {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET} environment variable that {@code .env.example:81} ships.
+ *       {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET} environment variable that {@code .env.example} ships.
  *       <strong>There is deliberately no default.</strong>
  *       A missing value fails the context at startup rather than silently writing somewhere unintended, which
  *       is the fail-fast standard this migration applies to every externalised setting.</li>
@@ -146,10 +152,20 @@ import com.cardemo.service.shared.FileStatusMapper;
  * under one generation prefix while {@code app/jcl/POSTTRAN.jcl:L38} names a single dataset. A later
  * {@code (0)} reference resolves the greatest key under the prefix, so it saw only the <em>last</em> chunk and
  * silently reported a fraction of the run's rejects as all of them - the worst kind of defect, because the
- * output looked entirely well formed. This writer now opens one stream at the first record, appends every
- * chunk to it and completes it once, at {@code 9300-DALYREJS-CLOSE}. Peak memory is the object-store client's
- * own part buffer rather than the reject volume, because that stream switches to a multi-part upload when its
- * buffer fills; the run is never held in the heap.
+ * output looked entirely well formed. The generation is now one object, assembled once at
+ * {@code 9300-DALYREJS-CLOSE}.
+ *
+ * <p><strong>Finding M-06, severity Major, RESOLVED. A written reject is durable when its chunk commits.</strong>
+ * The H-04 fix above was first implemented as a single {@code OutputStream} held open across every chunk, and
+ * that stream was itself a defect: the object did not exist until {@link #close()} completed it, while
+ * {@link #update(ExecutionContext)} published a record count and an attempt key at every chunk boundary. A step
+ * that failed part way therefore left a checkpoint describing records that existed nowhere, because the
+ * in-flight upload was abandoned - and since a restart resumes the reader at the cursor the failed attempt
+ * reached, those rejects were unreproducible and silently lost from what is, in a card system, a regulated audit
+ * trail. Each chunk now uploads its own complete part object under the generation's {@value #PART_SEGMENT}
+ * segment, and {@link #close()} concatenates the parts into the one generation object and deletes them. A
+ * restart adopts the parts the failed attempt left and carries every record forward. Peak memory is one part's
+ * transfer buffer rather than the reject volume; the run is never held in the heap.
  *
  * <p>The concrete key is published twice, at two scopes and for two readers, and in both cases only once the
  * object exists. It goes into the step execution context under {@link #REJECT_OBJECT_KEY_CONTEXT_KEY},
@@ -263,6 +279,16 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * {@code app/cbl/CBTRN02C.cbl:L229-L231}; publishing it does not decide anything here.
      */
     public static final String REJECT_RECORD_COUNT_CONTEXT_KEY = "carddemo.dalyrejs.record.count";
+
+    /**
+     * Step execution context entry holding how many durable parts this generation has, {@value}.
+     *
+     * <p>Written at every chunk boundary, and unlike a count of records buffered in an open stream it
+     * describes objects the store has already accepted. It is a diagnostic rather than the recovery
+     * authority: {@link #open(ExecutionContext)} lists the parts instead of trusting this number, because a
+     * context persisted at the previous chunk boundary can lag the last part actually written.
+     */
+    public static final String REJECT_PART_COUNT_CONTEXT_KEY = "carddemo.dalyrejs.part.count";
 
     /**
      * Job execution context entry holding how many objects this job instance's reject generation contains, as a
@@ -403,6 +429,22 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * file, and the extension says so.
      */
     private static final String OBJECT_KEY_SUFFIX = ".dat";
+
+    /**
+     * Key segment holding this generation's durable per-chunk parts, {@value}.
+     *
+     * <p><strong>Finding M-06, severity Major, RESOLVED.</strong> Each chunk's records are uploaded as their
+     * own complete object under this segment, so the bytes a chunk wrote are durable the moment the chunk
+     * commits. {@link #close()} concatenates the parts into the one generation object and removes them.
+     *
+     * <p>The segment sits <b>inside</b> the generation prefix rather than beside it. A sibling staging
+     * segment would sort above every zero-padded numeric generation, so a consumer resolving {@code (0)} as
+     * the greatest segment under the base would resolve the staging area rather than a generation.
+     */
+    private static final String PART_SEGMENT = "parts";
+
+    /** Base name of one durable chunk part, {@value}. */
+    private static final String PART_BASE_NAME = "reject-part-";
 
     /**
      * Format for the zero-padded identifier components of an object key: 19 digits, the width of
@@ -695,35 +737,28 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * {@code AWS.M2.CARDDEMO.DALYREJS(+1)}, and a later relative reference to {@code (0)} resolves that one
      * dataset whole - so a consumer resolving "the current generation" as the greatest key under the prefix saw
      * only the <em>last</em> chunk and silently reported a fraction of the run's rejects as all of them. The
-     * generation is now one object, written as one stream, and this field is that object's key.
+     * generation is now one object, assembled from the durable chunk parts at close, and this field is that
+     * object's key.
      */
     private final String generationObjectKey;
 
     /**
-     * The open write stream for this step's generation, or {@code null} before the first record and after the
-     * generation has been closed.
+     * How many durable parts this generation holds, and therefore the ordinal of the next one.
      *
-     * <p>Obtained from {@code S3Operations.createResource(...).getOutputStream()}, which the library implements
-     * as a buffered stream that switches to a multi-part upload once its bounded buffer fills. That is what
-     * makes one object out of an arbitrary number of chunks <strong>without</strong> holding the run in the
-     * heap: peak memory is the library's part buffer, not the reject volume.
+     * <p><strong>Finding M-06, severity Major, RESOLVED.</strong> This replaced a single long-lived
+     * {@code OutputStream} held open across every chunk of the step. That stream was the defect: the object it
+     * was building did not exist until {@link #close()} completed it, while
+     * {@link #update(ExecutionContext)} was persisting a record count and an attempt key at every chunk
+     * boundary. A step that failed part way therefore left a checkpoint describing records that existed
+     * nowhere - the in-flight upload was aborted - and because a restart resumes the reader at the cursor the
+     * failed attempt reached, those rejects were unreproducible and silently lost from a regulated audit
+     * trail.
      *
-     * <p>An instance field on a step-scoped bean is per-execution state, not static mutable state. It is
-     * mutated only from {@link #open(ExecutionContext)}, {@link #write(Chunk)} and {@link #close()}, which the
-     * framework serialises on the step's own thread; the {@code synchronized} on the append path additionally
-     * makes a multi-threaded step safe.
+     * <p>Each chunk now uploads its own complete part object, so the ordinal is also the count of parts the
+     * store has accepted. Deterministic in the ordinal, so a retried chunk overwrites its own part rather than
+     * adding a duplicate: an object-store PUT replaces.
      */
-    private OutputStream generationStream;
-
-    /**
-     * The previous attempt's object key under this same generation, or {@code null} when this is not a restart.
-     *
-     * <p>Set at {@link #open(ExecutionContext)} from the restored context, consumed when the consolidated
-     * object is first written, and cleared by {@link #deleteSupersededObject()} once the deletion has been
-     * attempted. Not {@code static}, because it is per-instance restart state and this class holds no mutable
-     * static field.
-     */
-    private String supersededObjectKey;
+    private long partOrdinal;
 
     /** Whether {@link #close()} has already committed this step's generation, so a second call is a no-op. */
     private boolean generationCommitted;
@@ -793,31 +828,30 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     }
 
     /**
-     * Validates the configured generation prefix and normalises its trailing separator away.
+     * Validates the configured generation prefix against the one shared grammar.
      *
      * <p>The value is untrusted configuration, so it is checked rather than trusted (Rule 1 clause A). A blank
      * value is refused outright: it would place every reject object at the bucket root, mixed in with the
      * transaction mirror and the report generations, which is indistinguishable from success until someone
-     * looks. Any trailing separator is stripped so that {@code gdg/dalyrejs} and {@code gdg/dalyrejs/} compose
-     * the identical key - the separator is this class's to add, not configuration's to remember.
+     * looks.
+     *
+     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This method used to strip a trailing
+     * separator so that {@code gdg/dalyrejs} and {@code gdg/dalyrejs/} composed the identical key, and it
+     * checked nothing else. Five sibling classes each carried a variant that differed, and none of the five
+     * checked a leading separator, a doubled separator, a traversal segment or the character range.
+     * {@link GenerationPrefixContract#requireRelativePrefix(String, String)} is now the only grammar, and it
+     * <em>refuses</em> a trailing separator rather than accommodating one: the separator is still this class's
+     * to add, but a configured value that carries one is now a startup failure rather than a silent rewrite.
+     * The declared value is {@code gdg/dalyrejs} for {@code app/jcl/DALYREJS.jcl:L25}, which satisfies the
+     * grammar, so no shipped configuration changes behaviour.
      *
      * @param configured the raw configured value
-     * @return the prefix with no trailing separator, never {@code null} and never blank
-     * @throws IllegalArgumentException if the value is blank once trimmed of separators
+     * @return the prefix unchanged, once it satisfies the shared grammar
+     * @throws IllegalArgumentException if the value is absent, blank or malformed
      */
     private static String requireGdgPrefix(final String configured) {
-        Objects.requireNonNull(configured, "rejectGdgPrefix must not be null");
-        String normalised = configured.strip();
-        while (!normalised.isEmpty() && normalised.charAt(normalised.length() - 1) == KEY_SEGMENT_SEPARATOR) {
-            normalised = normalised.substring(0, normalised.length() - 1);
-        }
-        if (normalised.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "carddemo.aws.s3.gdg-prefixes.daly-rejs must not be blank; application.yml declares it as "
-                            + "gdg/dalyrejs for app/jcl/DALYREJS.jcl:L25, and a blank value would write every "
-                            + "reject generation to the bucket root");
-        }
-        return normalised;
+        return GenerationPrefixContract.requireRelativePrefix(
+                configured, "carddemo.aws.s3.gdg-prefixes.daly-rejs");
     }
 
     /**
@@ -914,75 +948,147 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      */
     @Override
     public void open(final ExecutionContext executionContext) throws ItemStreamException {
-        this.generationStream = null;
         this.generationCommitted = false;
         this.recordsWritten.set(0L);
-        this.supersededObjectKey = null;
+        this.partOrdinal = 0L;
         adoptPriorAttempt(executionContext);
         LOGGER.debug("{} generation is open for writing under {}", DALYREJS_DD_NAME, generationPrefix);
     }
 
     /**
-     * Adopts a previous attempt's generation object so a restart consolidates rather than fragments.
+     * Adopts the durable parts an earlier attempt of this same generation left behind.
      *
-     * <p><b>Why a restart needs this at all.</b> The object key carries the job <em>execution</em> identifier
-     * while the generation prefix carries the job <em>instance</em> identifier, so a restart of the same
-     * instance writes a second object under the same generation. That was deliberate, and the reasoning
-     * recorded on {@link #buildGenerationObjectKey} was that the newer key sorts after the older one and so a
-     * consumer resolving the greatest key would "get a whole run rather than a fragment". <b>That does not
-     * hold, and cannot.</b> A restart resumes the reader at the cursor the failed attempt reached, so the
-     * second object can only ever contain the rejects found <em>after</em> that cursor. Measured on the
-     * 300-row fixture with a forced failure at record 46: two objects of 430x4 and 430x34, the completed
-     * execution's manifest naming only the second, and a record count of 34 sitting beside a reject count of
-     * 38 in the same context with nothing to reconcile them.
+     * <p><b>Why a restart needs this at all.</b> The generation prefix carries the job <em>instance</em>
+     * identifier, so every attempt of the same instance shares it. A restart resumes the reader at the cursor
+     * the failed attempt reached, so the rejects that attempt found are unreproducible - they can only come
+     * from what it wrote. Because each chunk's records are now a complete object rather than bytes in an
+     * abandoned upload, they are still there, and {@link #close()} concatenates them with this attempt's into
+     * the one generation object.
      *
-     * <p><b>Why consolidating rather than deleting.</b> The abnormal-termination disposition of
-     * {@code app/jcl/POSTTRAN.jcl:L34} {@code //DALYREJS DD DISP=(NEW,CATLG,DELETE)} says a failed step's
-     * generation is not catalogued, and for a step that regenerates its whole output on restart, deleting the
-     * failed attempt's object discharges that exactly. This step is not one of those. Its input cursor moves,
-     * so the four rejects the first attempt found are unreproducible: deleting that object would satisfy the
-     * one-object rule by destroying part of a reject audit trail, which in a card system is a regulated
-     * artefact. Carrying the bytes forward satisfies the same rule losslessly, and it is what
-     * {@code TransactionWriter} already does with its own indexed manifest, so the two writers stop
-     * disagreeing.
+     * <p><b>The store is the authority, not the restored context.</b> The parts are listed rather than counted
+     * from {@link #REJECT_PART_COUNT_CONTEXT_KEY}, and the record total is derived from their combined length
+     * rather than from {@link #REJECT_RECORD_COUNT_CONTEXT_KEY}. Both context entries are written at chunk
+     * boundaries and can lag the last part the failed attempt actually uploaded; a published record count that
+     * disagrees with the objects it describes is precisely the inconsistency this fix removes. Listing also
+     * makes the recovery correct for a context that was never persisted at all.
      *
-     * <p>The prior object is <b>not</b> deleted here. It is deleted only once the consolidated object has been
-     * committed - see {@link #close()} - so a failure between the two leaves the earlier attempt's records
-     * still readable rather than losing both copies.
+     * <p>Nothing is deleted here. The parts are removed only once the consolidated object has been committed -
+     * see {@link #close()} - so a failure between the two leaves the earlier attempt's records still readable
+     * rather than losing every copy.
      *
      * @param executionContext the restored step execution context, permitted to be {@code null}
      */
     private void adoptPriorAttempt(final ExecutionContext executionContext) {
-        if (executionContext == null) {
+        final List<String> priorParts;
+        try {
+            priorParts = listParts();
+        } catch (final RuntimeException listingFailure) {
+            // A listing that cannot be performed must not be read as "there is nothing to carry": that would
+            // silently drop a prior attempt's audit records. It is the same class of failure as any other
+            // unconfirmed object-store operation and is reported as one.
+            LOGGER.error("{} could not list the durable parts of generation {}, so a restart cannot prove"
+                            + " whether an earlier attempt left records to carry forward",
+                    DALYREJS_DD_NAME, generationPrefix);
+            throw abendProgram(WRITE_IO_ERROR_STATUS, listingFailure);
+        }
+        if (priorParts.isEmpty()) {
             return;
         }
 
-        // The attempt entry is preferred because it is the one that survives a failure: it is written by
-        // update() at chunk commits, whereas the published entry is written by close() after the framework has
-        // already persisted the context. The published entry is still consulted, for a context that came from
-        // an attempt which completed its close.
-        final String priorKey = executionContext.containsKey(REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY)
-                ? executionContext.getString(REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY, "")
-                : executionContext.getString(REJECT_OBJECT_KEY_CONTEXT_KEY, "");
-        if (priorKey.isBlank()
-                || priorKey.equals(this.generationObjectKey)
-                || !priorKey.startsWith(this.generationPrefix)) {
-            // Not a prior attempt of this generation: either this execution's own key echoed back, or a key
-            // from somewhere else entirely. Adopting the latter would import another generation's records.
-            return;
+        long carriedBytes = 0L;
+        for (final String part : priorParts) {
+            carriedBytes += partLength(part);
         }
+        assertUnblockedFraming((int) carriedBytes, (int) carriedBytes);
+        this.partOrdinal = priorParts.size();
+        this.recordsWritten.set(carriedBytes / RejectCode.REJECT_RECORD_LENGTH);
 
-        final long priorCount = executionContext.getLong(REJECT_RECORD_COUNT_CONTEXT_KEY, 0L);
-        this.supersededObjectKey = priorKey;
-        this.recordsWritten.set(priorCount);
-        LOGGER.info("{} is restarting under generation {} and will consolidate the {} record(s) of the"
-                        + " previous attempt's object {} into {}, deleting the superseded object only once"
-                        + " the consolidated one is committed",
+        final long contextCount = executionContext == null
+                ? 0L
+                : executionContext.getLong(REJECT_RECORD_COUNT_CONTEXT_KEY, 0L);
+        LOGGER.info("{} is restarting under generation {} and adopted {} durable part(s) holding {} record(s);"
+                        + " the restored context reported {}, and the objects are the authority",
                 DALYREJS_DD_NAME,
                 generationPrefix,
-                Long.valueOf(priorCount),
-                priorKey,
-                this.generationObjectKey);
+                Integer.valueOf(priorParts.size()),
+                Long.valueOf(this.recordsWritten.get()),
+                Long.valueOf(contextCount));
+    }
+
+    /**
+     * Lists this generation's durable parts, ascending by key and therefore by ordinal.
+     *
+     * <p>The ordinal is zero padded to nineteen digits, so lexicographic key order is the order the parts were
+     * written in - which is the order they must be concatenated in for the generation to hold the run in
+     * production order.
+     *
+     * @return the part keys, never {@code null} and possibly empty
+     */
+    private List<String> listParts() {
+        final List<String> keys = new ArrayList<>();
+        for (final S3Resource part : s3Operations.listObjects(outputBucket, partPrefix())) {
+            final String key = partKeyOf(part);
+            if (key != null) {
+                keys.add(key);
+            }
+        }
+        Collections.sort(keys);
+        return keys;
+    }
+
+    /**
+     * The key of one listed part.
+     *
+     * @param part the listed resource
+     * @return its key, or {@code null} when the store did not report one
+     */
+    private static String partKeyOf(final S3Resource part) {
+        try {
+            final String location = part.getFilename();
+            return location == null || location.isBlank() ? null : location;
+        } catch (final RuntimeException unavailable) {
+            LOGGER.debug("A listed {} part did not report a filename ({}), so it is not adopted",
+                    DALYREJS_DD_NAME, unavailable.getClass().getName());
+            return null;
+        }
+    }
+
+    /**
+     * The byte length of one durable part.
+     *
+     * @param key the part key
+     * @return its length in bytes
+     */
+    private long partLength(final String key) {
+        try {
+            // S3Resource narrows Resource#contentLength() to declare no IOException, so only the store's
+            // unchecked failures can arrive here; catching IOException would be an unreachable catch.
+            return s3Operations.download(outputBucket, key).contentLength();
+        } catch (final RuntimeException unreadable) {
+            LOGGER.error("{} could not measure the durable part {}", DALYREJS_DD_NAME, key);
+            throw abendProgram(WRITE_IO_ERROR_STATUS, unreadable);
+        }
+    }
+
+    /**
+     * The key prefix every durable part of this generation sits under.
+     *
+     * @return the part prefix, never {@code null}
+     */
+    private String partPrefix() {
+        return generationPrefix + PART_SEGMENT + KEY_SEGMENT_SEPARATOR;
+    }
+
+    /**
+     * The key of the part carrying one chunk's records.
+     *
+     * @param ordinal the zero-based part ordinal
+     * @return the part key, never {@code null}
+     */
+    private String partKey(final long ordinal) {
+        return partPrefix() + PART_BASE_NAME
+                + String.format(Locale.ROOT, KEY_IDENTIFIER_FORMAT, Long.valueOf(ordinal))
+                + OBJECT_KEY_SUFFIX;
     }
 
     /**
@@ -1003,9 +1109,11 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
         }
         executionContext.putString(REJECT_GENERATION_PREFIX_CONTEXT_KEY, generationPrefix);
         executionContext.putLong(REJECT_RECORD_COUNT_CONTEXT_KEY, this.recordsWritten.get());
-        if (this.generationStream != null || this.generationCommitted) {
-            // Restart state, persisted at this chunk boundary. Only written once the object actually exists,
-            // so a restart never adopts a key nothing was ever written to.
+        executionContext.putLong(REJECT_PART_COUNT_CONTEXT_KEY, this.partOrdinal);
+        if (this.partOrdinal > 0L || this.generationCommitted) {
+            // Restart state, persisted at this chunk boundary. Both entries now describe bytes the store has
+            // already accepted as complete objects, which is the whole of finding M-06: before, this count was
+            // published while the records existed only inside an upload that a failure would abandon.
             executionContext.putString(REJECT_ATTEMPT_OBJECT_KEY_CONTEXT_KEY, this.generationObjectKey);
         }
     }
@@ -1015,13 +1123,15 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * {@code app/cbl/CBTRN02C.cbl:L654}-{@code :L668}, and publishes the concrete key it created.
      *
      * <p><strong>This is the point at which the {@code (+1)} generation comes into existence as one object.</strong>
-     * Closing the buffered stream is what completes the upload, so a failure here is a failed
-     * {@code CLOSE} and is reported through the same guard the source applies to one.
+     * Concatenating the durable parts is what creates it, so a failure here is a failed {@code CLOSE} and is
+     * reported through the same guard the source applies to one.
      *
      * <p>A step that rejected nothing closes nothing and publishes nothing, which is the {@code OPEN OUTPUT}
      * followed by {@code CLOSE} of an empty dataset: the corpus writes no record and this writer creates no
-     * object. Idempotent - a second call after a successful close does nothing, because the stream reference is
-     * cleared once it has been committed.
+     * object. Idempotent - a second call after a successful close does nothing.
+     *
+     * <p>The parts are deleted only after the generation object has been accepted, so there is no window in
+     * which the run's rejects exist in neither place.
      *
      * <p>Side effects: completes one object in the configured bucket; publishes the key, the generation prefix
      * and the final record count into the step execution context, and the ordered one-entry key list into the
@@ -1033,29 +1143,20 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      */
     @Override
     public void close() throws ItemStreamException {
-        final OutputStream open = this.generationStream;
-        if (open == null) {
-            if (this.supersededObjectKey != null) {
-                // A restart that rejected nothing of its own. The previous attempt's object still holds the
-                // whole run, so it stays and the manifest names it. Publishing this execution's own key would
-                // name an object that was never created, and leaving the manifest unwritten would make the
-                // completed execution look as though the generation did not exist.
-                publishGeneration(this.supersededObjectKey, 0);
-                LOGGER.info("{} wrote no rejects on this attempt, so the carried-forward object {} holding"
-                                + " {} record(s) remains the generation and is republished unchanged",
-                        DALYREJS_DD_NAME,
-                        this.supersededObjectKey,
-                        Long.valueOf(this.recordsWritten.get()));
-                return;
-            }
+        if (this.generationCommitted) {
+            LOGGER.debug("The {} generation is already committed; close is idempotent", DALYREJS_DD_NAME);
+            return;
+        }
+        if (this.partOrdinal == 0L) {
             LOGGER.debug("No rejected transactions were written, so no {} generation was created",
                     DALYREJS_DD_NAME);
             return;
         }
-        this.generationStream = null;
 
         // app/cbl/CBTRN02C.cbl:L659 - MOVE 8 TO APPL-RESULT, then CLOSE and the two-way guard at :L661-:L667.
-        final Throwable failureCause = closeRejsFile(open);
+        // Promotion is this writer's CLOSE: it is the call that brings the (+1) generation into existence as
+        // one object, so a failure here is a failed CLOSE and takes the source's CLOSE path exactly.
+        final Throwable failureCause = promoteParts();
         final String dalyrejsStatus =
                 failureCause == null ? WRITE_SUCCESS_STATUS : WRITE_IO_ERROR_STATUS;
         final int applResult = fileStatusMapper.applResultForGuard(dalyrejsStatus);
@@ -1068,45 +1169,141 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
 
         this.generationCommitted = true;
         publishGeneration(this.generationObjectKey, 0);
-        deleteSupersededObject();
+        discardParts();
         LOGGER.debug("Closed the {} generation holding {} reject record(s)", DALYREJS_DD_NAME,
                 Long.valueOf(this.recordsWritten.get()));
     }
 
     /**
-     * Removes the superseded attempt's object, once and only once the consolidated object is committed.
+     * Concatenates this generation's durable parts into its one object.
      *
-     * <p>The order is deliberate and is the reason this is a separate step rather than part of the copy. Until
-     * the consolidated upload has completed there are two objects and both are readable; after it there are
-     * two objects and the newer one is complete; only then is the older one redundant. Deleting it any earlier
-     * would leave a window in which a failure loses records that exist nowhere else.
+     * <p>Streamed rather than buffered: the parts are opened lazily in key order and read through, so peak
+     * memory is one part's transfer buffer and not the run's reject volume. The combined length is known before
+     * the upload begins, which is what lets the object declare a content length and lets a short or long
+     * concatenation be refused rather than stored.
      *
-     * <p>A failure to delete is reported and does not fail the step. The records are safe either way - they are
-     * in the consolidated object - and what remains is a redundant sibling under the generation, which the
-     * reader now refuses loudly rather than resolving past. Turning a completed posting run into a failure over
-     * a leftover object would be the worse outcome, so it is logged for an operator instead.
+     * <p>Reports rather than raises, so the caller's guard stays the single place a status becomes an outcome.
+     *
+     * @return {@code null} when the generation object was accepted, otherwise the throwable that prevented it
      */
-    private void deleteSupersededObject() {
-        final String superseded = this.supersededObjectKey;
-        if (superseded == null) {
-            return;
-        }
-        this.supersededObjectKey = null;
+    private Throwable promoteParts() {
         try {
-            if (s3Operations.objectExists(outputBucket, superseded)) {
-                s3Operations.deleteObject(outputBucket, superseded);
-                LOGGER.info("{} deleted the superseded object {} now that the consolidated generation {} is"
-                                + " committed, so the generation is one dataset and therefore one object",
-                        DALYREJS_DD_NAME, superseded, this.generationObjectKey);
+            final List<String> parts = listParts();
+            if (parts.isEmpty()) {
+                throw new IllegalStateException(DALYREJS_DD_NAME + " recorded " + this.partOrdinal
+                        + " durable part(s) under " + partPrefix() + " but the store lists none, so the"
+                        + " generation cannot be assembled from them");
             }
-        } catch (RuntimeException deletion) {
-            LOGGER.error("{} committed the consolidated generation {} but could not delete the superseded"
-                            + " object {}; every record is present in the consolidated object, and the"
-                            + " leftover sibling must be removed manually because a consumer resolving this"
-                            + " generation will now refuse it as ambiguous",
-                    DALYREJS_DD_NAME, this.generationObjectKey, superseded, deletion);
+            long totalBytes = 0L;
+            for (final String part : parts) {
+                totalBytes += partLength(part);
+            }
+            assertUnblockedFraming((int) totalBytes, (int) totalBytes);
+
+            final ObjectMetadata metadata = ObjectMetadata.builder()
+                    .contentType(OBJECT_CONTENT_TYPE)
+                    .contentLength(Long.valueOf(totalBytes))
+                    .build();
+            try (InputStream concatenated = new SequenceInputStream(new PartStreams(parts))) {
+                s3Operations.upload(outputBucket, this.generationObjectKey, concatenated, metadata);
+            }
+            this.recordsWritten.set(totalBytes / RejectCode.REJECT_RECORD_LENGTH);
+            LOGGER.info("{} promoted {} durable part(s) into the single generation object {} holding {}"
+                            + " record(s)",
+                    DALYREJS_DD_NAME, Integer.valueOf(parts.size()), this.generationObjectKey,
+                    Long.valueOf(this.recordsWritten.get()));
+            return null;
+        } catch (final IOException | RuntimeException promotionFailure) {
+            return promotionFailure;
         }
     }
+
+    /**
+     * Removes the durable parts, once and only once the generation object is committed.
+     *
+     * <p>The order is deliberate. Until the generation object has been accepted the parts are the only copy of
+     * the run's rejects, so deleting them earlier would leave a window in which a failure loses records that
+     * exist nowhere else. After it there are two copies and the parts are redundant.
+     *
+     * <p>A failure to delete is reported and does not fail the step. The records are safe either way, and
+     * turning a completed posting run into a failure over a leftover staging object would be the worse
+     * outcome; a subsequent attempt would in any case overwrite the same deterministic keys.
+     */
+    private void discardParts() {
+        for (final String part : listPartsQuietly()) {
+            try {
+                s3Operations.deleteObject(outputBucket, part);
+            } catch (final RuntimeException deleteFailure) {
+                LOGGER.warn("{} could not delete the promoted part {} of generation {}; the generation object"
+                                + " is committed and holds every record, so an operator can remove the"
+                                + " leftover part safely",
+                        DALYREJS_DD_NAME, part, generationPrefix);
+            }
+        }
+    }
+
+    /**
+     * Lists the parts for cleanup, treating a listing failure as nothing to clean up.
+     *
+     * <p>Unlike {@link #listParts()} this cannot abend: it runs after the generation is committed, where the
+     * records are already safe and a failure to enumerate leftovers must not fail a completed run.
+     *
+     * @return the part keys, never {@code null} and possibly empty
+     */
+    private List<String> listPartsQuietly() {
+        try {
+            return listParts();
+        } catch (final RuntimeException listingFailure) {
+            LOGGER.warn("{} could not list the parts of generation {} for cleanup; the generation object is"
+                            + " committed and holds every record", DALYREJS_DD_NAME, generationPrefix);
+            return List.of();
+        }
+    }
+
+    /**
+     * Opens each durable part in turn, so the promotion never holds more than one of them.
+     *
+     * <p>{@link SequenceInputStream} pulls lazily, which is what keeps the concatenation streaming.
+     */
+    private final class PartStreams implements Enumeration<InputStream> {
+
+        /** The part keys, in the order they must be concatenated. */
+        private final List<String> keys;
+
+        /** The next key to open. */
+        private int index;
+
+        /**
+         * Creates the enumeration.
+         *
+         * @param keys the part keys in ascending ordinal order
+         */
+        private PartStreams(final List<String> keys) {
+            this.keys = keys;
+        }
+
+        @Override
+        public boolean hasMoreElements() {
+            return index < keys.size();
+        }
+
+        @Override
+        public InputStream nextElement() {
+            if (!hasMoreElements()) {
+                throw new NoSuchElementException("every " + DALYREJS_DD_NAME + " part has been read");
+            }
+            final String key = keys.get(index);
+            index++;
+            try {
+                return s3Operations.download(outputBucket, key).getInputStream();
+            } catch (final IOException | RuntimeException unreadable) {
+                throw new IllegalStateException(
+                        "the " + DALYREJS_DD_NAME + " part " + key + " could not be opened", unreadable);
+            }
+        }
+    }
+
+
 
     /**
      * Writes a single reject record, for a caller that holds one rejected row and no chunk.
@@ -1591,96 +1788,6 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     }
 
     /**
-     * Opens the write stream for this step's generation on first use, and returns the already-open one after
-     * that.
-     *
-     * <p>Lazy on purpose: a step that rejects nothing must leave no object behind, and the only way to
-     * guarantee that against a store which creates an object the moment a stream is closed is not to open one.
-     *
-     * <p>The metadata declares the content type and deliberately declares <strong>no content length</strong>:
-     * the total is not known until the last chunk has been written, and stating a wrong length is worse than
-     * stating none. Framing is proven per append by {@link #assertUnblockedFraming(int, int)} instead, which is
-     * the stronger check because it holds for every record rather than for the total alone.
-     *
-     * @return the open stream, never {@code null}
-     * @throws IOException if the store refuses to open the object
-     * @throws IllegalStateException if a record arrives after the generation has been closed, which would
-     *     otherwise silently create a second object under one generation - the very defect this design removes
-     */
-    private OutputStream openGenerationStream() throws IOException {
-        if (this.generationStream != null) {
-            return this.generationStream;
-        }
-        if (this.generationCommitted) {
-            throw new IllegalStateException(DALYREJS_DD_NAME + " generation " + generationPrefix
-                    + " has already been closed; a reject record arriving after the close would create a "
-                    + "second object under one (+1) generation, which app/jcl/POSTTRAN.jcl:L38 declares as a "
-                    + "single dataset");
-        }
-        final S3Resource resource = s3Operations.createResource(outputBucket, this.generationObjectKey);
-        resource.setObjectMetadata(streamedObjectMetadata());
-        this.generationStream = resource.getOutputStream();
-        seedFromSupersededObject(this.generationStream);
-        return this.generationStream;
-    }
-
-    /**
-     * Copies a superseded attempt's records into this attempt's object before anything new is appended.
-     *
-     * <p>Ordering is the whole point: the carried-forward bytes go in first, so the consolidated object holds
-     * the run in the order it was produced - the failed attempt's rejects, then the resumed attempt's - which
-     * is the order a single uninterrupted run would have written them in.
-     *
-     * <p>The payload is framing-checked before it is trusted. A superseded object whose length is not a whole
-     * multiple of the reject record length is not a shorter run, it is a corrupt one, and copying it would
-     * misalign every record after it; that is refused rather than propagated. An object named by the restored
-     * context but absent from the store is treated as nothing to carry, because the disposition of
-     * {@code app/jcl/POSTTRAN.jcl:L34} permits a failed attempt's object to have been removed already - what
-     * is not permitted is silently continuing when it is present but unreadable.
-     *
-     * @param stream this attempt's freshly opened object stream
-     * @throws IOException if the copy cannot be completed
-     */
-    private void seedFromSupersededObject(final OutputStream stream) throws IOException {
-        if (this.supersededObjectKey == null) {
-            return;
-        }
-
-        if (!s3Operations.objectExists(outputBucket, this.supersededObjectKey)) {
-            LOGGER.warn("{} found no object at the superseded key {}, so there is nothing to carry forward;"
-                            + " the consolidated object will hold only this attempt's records",
-                    DALYREJS_DD_NAME, this.supersededObjectKey);
-            this.supersededObjectKey = null;
-            this.recordsWritten.set(0L);
-            return;
-        }
-
-        final byte[] carried;
-        try (InputStream priorRecords =
-                s3Operations.download(outputBucket, this.supersededObjectKey).getInputStream()) {
-            carried = priorRecords.readAllBytes();
-        }
-        // The same framing rule the write path applies, reused rather than restated so the two cannot drift.
-        // Both arguments are the byte length because there is no composed character form to compare here: what
-        // is being checked is the whole-record multiple, not a charset round trip.
-        assertUnblockedFraming(carried.length, carried.length);
-        stream.write(carried);
-
-        // The object's own length is the authority for how many records were carried, not the count the
-        // restored context happened to hold. The context count is written at chunk boundaries and can lag the
-        // last records the failed attempt actually wrote, and a published record count that disagrees with the
-        // object it describes is precisely the inconsistency this fix exists to remove.
-        final long carriedRecords = carried.length / RejectCode.REJECT_RECORD_LENGTH;
-        this.recordsWritten.set(carriedRecords);
-        LOGGER.info("{} carried {} record(s) ({} bytes) forward from the superseded object {} into {}",
-                DALYREJS_DD_NAME,
-                Long.valueOf(carriedRecords),
-                Integer.valueOf(carried.length),
-                this.supersededObjectKey,
-                this.generationObjectKey);
-    }
-
-    /**
      * Reproduces the single statement {@code WRITE FD-REJS-RECORD FROM REJECT-RECORD} at
      * {@code app/cbl/CBTRN02C.cbl:L451}.
      *
@@ -1694,81 +1801,37 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * the store's client raises unchecked exceptions and the stream contract declares a checked one, and an
      * unconfirmed write is an unconfirmed write either way.
      *
-     * <p>Side effects: opens this step's single object on the first call and appends to it on every call. The
-     * object is completed by {@link #close()}, not here, which is exactly the {@code WRITE} versus
-     * {@code CLOSE} split the source has.
+     * <p>Side effects: uploads this chunk's records as one complete object under the generation's part
+     * segment, and advances the part ordinal only once the store has accepted it. The parts are assembled into
+     * the single generation object by {@link #close()}, not here, which is exactly the {@code WRITE} versus
+     * {@code CLOSE} split the source has - the difference from an earlier revision being that a written record
+     * is now durable at {@code WRITE} time rather than only at {@code CLOSE} time (finding M-06).
      *
      * @param bytes the exact payload, already framing-checked
      * @return {@code null} when the write was accepted, otherwise the throwable that prevented it
      */
     private Throwable writeRejsRecord(final byte[] bytes) {
+        if (this.generationCommitted) {
+            return new IllegalStateException(DALYREJS_DD_NAME + " generation " + generationPrefix
+                    + " has already been closed; a reject record arriving after the close would create a "
+                    + "second object under one (+1) generation, which app/jcl/POSTTRAN.jcl:L38 declares as a "
+                    + "single dataset");
+        }
+        final String key = partKey(this.partOrdinal);
         try {
-            openGenerationStream().write(bytes);
+            final ObjectMetadata metadata = ObjectMetadata.builder()
+                    .contentType(OBJECT_CONTENT_TYPE)
+                    .contentLength(Long.valueOf(bytes.length))
+                    .build();
+            try (InputStream payload = new ByteArrayInputStream(bytes)) {
+                s3Operations.upload(outputBucket, key, payload, metadata);
+            }
+            // Advanced only after the store accepted the part, so the ordinal and the record count never
+            // describe bytes that do not exist.
+            this.partOrdinal++;
             return null;
         } catch (IOException | RuntimeException writeFailure) {
-            abandonGenerationStream();
             return writeFailure;
-        }
-    }
-
-    /**
-     * Reproduces the single statement {@code CLOSE DALYREJS-FILE} at {@code app/cbl/CBTRN02C.cbl:L660}.
-     *
-     * <p>Like the write, it reports rather than raises, so the caller's guard stays the one place a status
-     * becomes an outcome. Closing the buffered stream is what completes the upload, so this is the call that
-     * either brings the generation into existence or fails.
-     *
-     * <p>A failure abandons the partly written object rather than leaving an in-flight multi-part upload
-     * behind: an abandoned upload is storage nobody can see and nobody reclaims.
-     *
-     * @param open the stream to close, never {@code null}
-     * @return {@code null} when the object was accepted, otherwise the throwable that prevented it
-     */
-    private Throwable closeRejsFile(final OutputStream open) {
-        try {
-            open.close();
-            return null;
-        } catch (IOException | RuntimeException closeFailure) {
-            abortQuietly(open);
-            return closeFailure;
-        }
-    }
-
-    /**
-     * Abandons the in-flight generation so no partly written object and no dangling multi-part upload survives
-     * a failed write.
-     *
-     * <p>Called only from a failure path that is already reporting a status, so a secondary failure here must
-     * not replace the primary one - it is recorded at debug level and discarded. That is not a swallow: the
-     * primary throwable is returned to the guard and travels on as the cause of the abend.
-     */
-    private void abandonGenerationStream() {
-        final OutputStream open = this.generationStream;
-        this.generationStream = null;
-        if (open != null) {
-            abortQuietly(open);
-        }
-    }
-
-    /**
-     * Aborts one write stream, preferring the store's own abort where the stream offers it.
-     *
-     * <p>The library's buffered implementation exposes {@code abort()}, which cancels an in-flight multi-part
-     * upload; a stream that does not offer it is simply closed. Either way nothing is left half-created.
-     *
-     * @param open the stream to abandon, never {@code null}
-     */
-    private static void abortQuietly(final OutputStream open) {
-        try {
-            if (open instanceof S3OutputStream abortable) {
-                abortable.abort();
-            } else {
-                open.close();
-            }
-        } catch (final IOException | RuntimeException abortFailure) {
-            LOGGER.debug("Abandoning the {} generation reported a secondary failure of type {}; the primary "
-                            + "failure is the one reported to the guard", DALYREJS_DD_NAME,
-                    abortFailure.getClass().getName());
         }
     }
 
@@ -1906,11 +1969,11 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      * and a published record count of 34 beside a reject count of 38.
      *
      * <p>The distinct key is still correct, but a distinct key alone is not the mechanism that delivers a whole
-     * run. {@link #adoptPriorAttempt(ExecutionContext)} is: the restarted attempt copies the superseded
-     * object's records into this key before appending its own, then {@link #deleteSupersededObject()} removes
-     * the superseded object once this one is committed. The generation therefore ends as one object holding the
-     * whole run, with a record count equal to the reject count, which is what a consumer resolving the greatest
-     * key actually receives.
+     * run. {@link #adoptPriorAttempt(ExecutionContext)} is: the restarted attempt adopts the durable parts the
+     * failed attempt left under the same generation and continues the ordinal, and {@link #close()} then
+     * concatenates every part - both attempts' - into this key before removing them. The generation therefore
+     * ends as one object holding the whole run, with a record count equal to the reject count, which is what a
+     * consumer resolving the greatest key actually receives.
      *
      * <p>No wall clock is consulted. A timestamp would also be monotonic, but it would make the key
      * irreproducible on re-run and would import an environment-specific assumption; identifiers are
@@ -2011,27 +2074,6 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
             throw new IllegalArgumentException("index must not be negative but was " + index);
         }
         return REJECT_OBJECT_KEYS_INDEX_ENTRY_PREFIX + Integer.toString(index);
-    }
-
-    /**
-     * Builds the metadata stated on the streamed generation object.
-     *
-     * <p>The content type is the generic octet stream so that no intermediary treats the payload as text and
-     * translates line endings into a fixed-width record stream that has none.
-     *
-     * <p><strong>No content length is declared.</strong> The total is unknown until the last chunk has been
-     * appended, and a length that disagreed with the body would either fail the upload or, worse, truncate it.
-     * Framing is proven per append instead, by {@link #assertUnblockedFraming(int, int)}, which is the stronger
-     * guarantee: it holds for every record rather than for the total alone.
-     *
-     * <p>This method is a pure function - it takes no argument and reads no field.
-     *
-     * @return the metadata to attach
-     */
-    private static ObjectMetadata streamedObjectMetadata() {
-        return ObjectMetadata.builder()
-                .contentType(OBJECT_CONTENT_TYPE)
-                .build();
     }
 
     /**

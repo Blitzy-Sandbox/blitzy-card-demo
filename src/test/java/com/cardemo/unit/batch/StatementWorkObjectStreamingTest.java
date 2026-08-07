@@ -61,13 +61,16 @@ import io.awspring.cloud.s3.S3Resource;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
@@ -144,9 +147,6 @@ class StatementWorkObjectStreamingTest {
     /** The read window the job is constructed with; small, so several windows are needed. */
     private static final int WINDOW = 2;
 
-    /** The record ceiling the job is constructed with, well above the fixtures used here. */
-    private static final int CAP = 1_000;
-
     /** The bucket the projected object is written to. */
     private static final String BUCKET = "carddemo-batch-output";
 
@@ -186,24 +186,26 @@ class StatementWorkObjectStreamingTest {
     @Mock
     private S3Operations objectStorage;
 
-    /** The job under test, rebuilt for each test with {@link #CAP} as its ceiling. */
+    /** The job under test, rebuilt for each test. */
     private StatementGenerationJob job;
 
     @BeforeEach
     void setUp() {
-        this.job = newJob(CAP);
+        this.job = newJob();
     }
 
     /**
-     * Builds the job with a given record ceiling.
+     * Builds the job.
      *
-     * @param cap the value of {@code carddemo.batch.creastmt.max-work-records}
+     * <p>There is no record ceiling to configure. One used to be supplied here - see finding BAT-002 - and
+     * removing it is why this class no longer parameterises the constructor.
+     *
      * @return a constructed job, never {@code null}
      */
-    private StatementGenerationJob newJob(final int cap) {
+    private StatementGenerationJob newJob() {
         return new StatementGenerationJob(jobRepository, transactionManager, transactionRepository,
                 statementProcessor, statementWriter, objectStorage, new FileStatusMapper(),
-                "CREASTMT", WINDOW, cap, BUCKET, "carddemo-statements", WORK_PREFIX);
+                "CREASTMT", WINDOW, BUCKET, "carddemo-statements", WORK_PREFIX);
     }
 
     /**
@@ -674,73 +676,92 @@ class StatementWorkObjectStreamingTest {
     }
 
     /**
-     * The cap: the bounded refusal that replaces an {@code OutOfMemoryError}.
+     * The absence of a record ceiling, and the streaming that makes its absence safe.
      */
     @Nested
-    @DisplayName("the record ceiling - a reason code instead of an OutOfMemoryError")
-    final class RecordCeiling {
+    @DisplayName("no record ceiling - the run is bounded by its input and by one record of heap")
+    final class NoRecordCeiling {
 
         @Test
-        @DisplayName("a relation above the ceiling is refused before a single window is queried")
-        void aRelationAboveTheCeilingIsRefusedBeforeAnyQuery() throws Exception {
-            job = newJob(10);
-            when(transactionRepository.count()).thenReturn(11L);
-
-            assertThatExceptionOfType(FatalProcessingException.class)
-                    .isThrownBy(() -> invokePrivate("requireWorkRelationWithinCap", new Class<?>[0]))
-                    .withMessageContaining("refuses to project 11")
-                    .withMessageContaining("max-work-records is 10");
-
-            verify(transactionRepository, never())
-                    .findStatementOrderAfter(anyString(), anyString(), any(Pageable.class));
-            verify(objectStorage, never()).upload(anyString(), anyString(), any(InputStream.class),
-                    any(ObjectMetadata.class));
+        @DisplayName("the ceiling and its two guards are gone from the class, not merely unconfigured")
+        void theCeilingAndItsGuardsAreGone() {
+            // Finding BAT-002, severity High. app/jcl/CREASTMT.JCL sizes nothing by record count, so a
+            // refusal above five million work records was an authored business rule with no source - and one
+            // standing in for the app/cbl/CBSTM03A.CBL fixed-table limit AAP 0.7.6.3 had deliberately
+            // removed. Reflection rather than prose, so the removal cannot be quietly reversed.
+            assertThat(Arrays.stream(StatementGenerationJob.class.getDeclaredMethods()).map(Method::getName))
+                    .as("neither the pre-flight count guard nor the per-record guard survives")
+                    .doesNotContain("requireWorkRelationWithinCap", "requireRecordCountWithinCap");
+            assertThat(Arrays.stream(StatementGenerationJob.class.getDeclaredFields()).map(Field::getName))
+                    .as("and no field holds a ceiling a @Value could repopulate")
+                    .doesNotContain("maxWorkRecords", "DEFAULT_MAX_WORK_RECORDS");
         }
 
         @Test
-        @DisplayName("a relation at the ceiling is accepted, so the boundary is inclusive")
-        void aRelationAtTheCeilingIsAccepted() throws Exception {
-            job = newJob(10);
-            when(transactionRepository.count()).thenReturn(10L);
+        @DisplayName("the relation is never counted, so no run is refused before it is read")
+        void theRelationIsNeverCounted() throws Exception {
+            serveWindows(ascendingRows(4));
+            final UploadRecorder recorder = recordUpload();
 
-            assertThat(invokePrivate("requireWorkRelationWithinCap", new Class<?>[0]))
-                    .as("the guard refuses more than the ceiling, not the ceiling itself")
-                    .isNull();
+            assertThat(projectWorkObject()).isEqualTo(4);
+
+            // count() existed for one purpose - to refuse a run before projecting it - so its absence is the
+            // evidence that no pre-flight refusal remains. It also costs a full scan the run does not need.
+            verify(transactionRepository, never()).count();
+            assertThat(recorder.writes())
+                    .as("one write per record, so nothing was collected with anything else")
+                    .isEqualTo(4);
         }
 
         @Test
-        @DisplayName("a relation that grows past the ceiling mid-stream is still refused")
-        void aRelationThatGrowsMidStreamIsStillRefused() throws Exception {
-            job = newJob(2);
-            serveWindows(ascendingRows(6));
-            recordUpload();
+        @DisplayName("a run larger than the smallest ceiling the class used to accept streams in full")
+        void aRunLargerThanTheOldSmallestCeilingStreamsInFull() throws Exception {
+            // The old per-record guard refused the third record of a run configured with a ceiling of two.
+            // The same shape now completes, and the object holds every record.
+            final List<Transaction> rows = ascendingRows(6);
+            serveWindows(rows);
+            final UploadRecorder recorder = recordUpload();
 
-            assertThatExceptionOfType(FatalProcessingException.class)
-                    .isThrownBy(() -> projectWorkObject())
-                    .as("the pre-flight count sampled the relation before the run; the per-record check is "
-                            + "what makes the ceiling hold when the relation changes afterwards")
-                    .withMessageContaining("reached 3 records, above the 2");
+            assertThat(projectWorkObject()).isEqualTo(6);
+            assertThat(recorder.bytes()).isEqualTo(expectedImage(rows));
+            assertThat(recorder.writes())
+                    .as("peak heap stays at one record because each is written as it is produced")
+                    .isEqualTo(6);
         }
 
         @Test
-        @DisplayName("an object above the ceiling is refused on the load path too")
-        void anObjectAboveTheCeilingIsRefusedOnTheLoadPath() throws Exception {
-            job = newJob(2);
+        @DisplayName("the load path reads an object of any size, one record at a time")
+        void theLoadPathReadsAnObjectOfAnySize() throws Exception {
             serveObject(image(List.of(workRecord("A"), workRecord("B"), workRecord("C"))));
 
-            assertThatExceptionOfType(FatalProcessingException.class)
-                    .isThrownBy(() -> loadWorkObject())
-                    .as("an object left by a run configured with a larger ceiling must not be loaded by one "
-                            + "configured with a smaller; the cap bounds the loop as well as the heap")
-                    .withMessageContaining("reached 3 records, above the 2");
+            assertThat(loadWorkObject())
+                    .as("an object left by any run loads: the loop is bounded by the object, and the heap by "
+                            + "the record the verification is holding")
+                    .isEqualTo(3);
         }
 
         @Test
-        @DisplayName("the ceiling must be positive, so a misconfiguration fails at construction")
-        void theCeilingMustBePositive() {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> newJob(0))
-                    .withMessageContaining("carddemo.batch.creastmt.max-work-records");
+        @DisplayName("no property remains that could reintroduce the refusal")
+        void noPropertyRemainsThatCouldReintroduceTheRefusal() throws IOException {
+            assertThat(Files.readString(Path.of("src", "main", "java", "com", "cardemo", "batch", "jobs",
+                            "StatementGenerationJob.java")))
+                    .as("a surviving @Value would mean the ceiling is one deployment away from returning")
+                    .doesNotContain("max-work-records");
+            // The profile must not DECLARE it. Asserted as a YAML mapping at the head of a line rather
+            // than as a bare substring, because this file's own convention is to name a withdrawn key in the
+            // comment that explains why it went - "a key is KEPT when it is the one place the value lives,
+            // and REMOVED when it cannot govern the value" - and a substring check cannot tell the record of
+            // a removal from the removal not having happened.
+            final String profile = Files.readString(
+                    Path.of("src", "main", "resources", "application.yml"));
+            assertThat(profile.lines().filter(line -> line.strip().startsWith("max-work-records:")).toList())
+                    .as("a declared key would put the ceiling one deployment away from returning")
+                    .isEmpty();
+            assertThat(profile)
+                    .as("and the removal is recorded where an operator looking for the key will land, rather "
+                            + "than leaving them to conclude the key was never there")
+                    .contains("max-work-records")
+                    .contains("withdrawn");
         }
     }
 }

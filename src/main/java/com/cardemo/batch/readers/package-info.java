@@ -158,9 +158,18 @@
  * <ul>
  *   <li><strong>Build.</strong> {@code ./mvnw clean verify}. Maven 3.9.11 from the pinned wrapper, Java
  *       {@code [25,)} enforced, {@code release} 25, {@code -Xlint:all -Werror failOnWarning}.</li>
- *   <li><strong>Run.</strong> These are {@code ItemReader} beans; a step drives them and they are never invoked
- *       directly. They need the database up - {@code docker compose up -d} - and the environment loaded with
- *       {@code set -a; . ./.env; set +a}.</li>
+ *   <li><strong>Run.</strong> These are {@code ItemReader} implementations; a step drives them and they are
+ *       never invoked directly. <strong>Six of the seven are beans and one is not.</strong> The six carry
+ *       {@code @Component @StepScope} and each is injected as a {@code @Bean Step} method parameter by the job
+ *       that drives it. The seventh, {@link com.cardemo.batch.readers.TransactionBackupReader}, carries neither
+ *       annotation: {@code com.cardemo.batch.jobs.TransactionReportJob} constructs it inside STEP01R and again
+ *       inside STEP10R and is its sole owner, because those two call sites need different substrates - the
+ *       cluster and a generation - which one scoped definition could not supply. That is finding
+ *       <strong>F-008</strong>, where the class was annotated while the job built it with {@code new}. They
+ *       need the database up - {@code docker compose up -d} - and the environment scoped to the one
+ *       command that needs it: {@code ( set -a; . ./.env; set +a; ./mvnw -B -ntp verify )}. The
+ *       parentheses confine the values to the subshell instead of leaving every later child
+ *       inheriting them.</li>
  *   <li><strong>Test.</strong> Unit tests belong in {@code src/test/java/com/cardemo/unit/batch} and
  *       repository-backed tests in {@code src/test/java/com/cardemo/integration}. {@code ParityLoggerRoutingTest}
  *       asserts that this package's account reader resolves its parity logger by the shared tree name, and

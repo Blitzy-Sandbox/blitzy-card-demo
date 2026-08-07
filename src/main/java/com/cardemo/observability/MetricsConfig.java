@@ -76,7 +76,7 @@ import com.cardemo.model.enums.RejectCode;
  * Severity of what that left in place: <strong>High</strong>. The count is withdrawn in favour of the rule that
  * actually governs: <strong>each retained no-op is justified at its own declaration</strong>, and to be
  * legitimate it must carry, in that one place, its COBOL locator, a proof of reachability, an explicit
- * intentional-no-op marker, and an acknowledgement that it is owed an entry in the planned
+ * intentional-no-op marker, and an acknowledgement that it is owed an entry in the
  * {@code DECISION_LOG.md}. No file enumerates the set, because no build step maintains such an enumeration.
  * What this class asserts is only the local fact: nothing in {@code com.cardemo.observability} carries such a
  * marker, so anything here that looks like dead code is dead code and must be removed rather than explained.
@@ -151,22 +151,6 @@ import com.cardemo.model.enums.RejectCode;
  * <p>Ten series in total, and the ceiling is a property of the types involved rather than of discipline: the
  * reject dimension is an enum with five constants, the outcome dimension is an enum with two, and the sign
  * dimension is the result of a two-way test on a number. No caller can widen any of them.
- *
- * <p><strong>The unit column is as binding as the name column, and most binding on the two untagged
- * series.</strong> A tag lets a query separate contributors after the fact; an untagged counter does not, so
- * a caller that advances {@code carddemo.batch.records.processed} with something that is not one record
- * corrupts the series irreversibly rather than merely adding noise to it. The rule that keeps that series
- * meaningful - one increment per record handled, never one per aggregate over records, and never a second
- * count of rows an earlier run already reported - is stated with its callers at
- * {@link #METRIC_RECORDS_PROCESSED}.
- *
- * <p><strong>The unit column is as binding as the name column, and most binding on the two untagged
- * series.</strong> A tag lets a query separate contributors after the fact; an untagged counter does not, so
- * a caller that advances {@code carddemo.batch.records.processed} with something that is not one record
- * corrupts the series irreversibly rather than merely adding noise to it. The rule that keeps that series
- * meaningful - one increment per record handled, never one per aggregate over records, and never a second
- * count of rows an earlier run already reported - is stated with its callers at
- * {@link #METRIC_RECORDS_PROCESSED}.
  *
  * <p><strong>The unit column is as binding as the name column, and most binding on the two untagged
  * series.</strong> A tag lets a query separate contributors after the fact; an untagged counter does not, so
@@ -303,7 +287,7 @@ import com.cardemo.model.enums.RejectCode;
  * <p>Build with {@code ./mvnw -B -ntp clean compile}; the compiler runs {@code -Xlint:all -Werror} with
  * warnings failing the build, so a raw type or an unchecked cast is fatal. An unused import is not:
  * {@code javac} 25 publishes no {@code unused} lint key, so that prohibition is review-enforced. Verify with
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. Unit tests live under
+ * {@code ./mvnw -B -ntp clean verify}. Unit tests live under
  * {@code src/test/java/com/cardemo/unit/**} and never in this package; every member below is reachable
  * against a plain {@code SimpleMeterRegistry} with no Spring context, because this class holds no static
  * state and reads no clock, locale, charset or time zone.
@@ -376,23 +360,77 @@ public class MetricsConfig {
      *       covers many transactions, and every one of those transactions was already counted here by the
      *       posting run that considered it. Counting the statement as well - or counting a re-projection of
      *       the transaction file, which is those same rows read a second time - adds one run's work to the
-     *       sum under two incompatible meanings and inflates it. The statement generation flow therefore
-     *       contributes nothing at all: {@code com.cardemo.batch.writers.StatementWriter} does not take
-     *       this class, so it cannot increment anything, and
-     *       {@code com.cardemo.batch.jobs.StatementGenerationJob} publishes its projected and emitted
-     *       volumes into its own execution-context entries, which is where a per-run figure belongs and
-     *       where a later step can read it back exactly.</li>
+     *       sum under two incompatible meanings and inflates it. Three batch flows therefore contribute
+     *       nothing at all, and each publishes its volume where a per-run figure belongs - its own
+     *       execution-context entries, plus the Spring Batch job and step metrics, which carry a job
+     *       dimension this series cannot:
+     *       <ul>
+     *         <li>{@code com.cardemo.batch.jobs.StatementGenerationJob}, whose
+     *             {@code com.cardemo.batch.writers.StatementWriter} does not take this class and so cannot
+     *             increment anything.</li>
+     *         <li>{@code com.cardemo.batch.jobs.CombineTransactionsJob}, whose load step re-reads rows an
+     *             earlier posting run already counted, out of a generation object.</li>
+     *         <li>{@code com.cardemo.batch.jobs.TransactionReportJob}, whose unit is a report <em>line</em>
+     *             derived from an already-counted transaction, and whose source program
+     *             {@code app/cbl/CBTRN03C.cbl} keeps no such tally at all.</li>
+     *       </ul>
+     *       The last two were producers and are not any longer: <strong>finding H-01, severity High</strong>.
+     *       An untagged counter is what made that irreversible - a tag lets a query separate contributors
+     *       afterwards, and there is no tag here to separate on.</li>
      *   <li><strong>A rejected record is still a handled record.</strong> {@code ADD 1 TO
      *       WS-TRANSACTION-COUNT} at {@code app/cbl/CBTRN02C.cbl:L206} runs once per accepted {@code READ},
      *       before validation has decided anything, so the closing figure at {@code :L227} counts every
      *       record the run looked at. Reproducing that total takes two call sites in Java, because posted
      *       and rejected records leave the step by different paths: {@code TransactionWriter} counts the
      *       posted ones, {@code DailyTransactionPostingJob} counts the rejected ones, and because both
-     *       increment once per DALYTRAN record the sum is exactly {@code WS-TRANSACTION-COUNT}. A second
-     *       batch flow, {@code com.cardemo.batch.jobs.InterestCalculationJob}, increments once per interest
-     *       record it emits, which is the same unit - one record handled by a step - and is disjoint work
-     *       counted once.</li>
+     *       increment once per DALYTRAN record the sum is exactly {@code WS-TRANSACTION-COUNT}. Those two
+     *       are the <strong>only</strong> producers of this series.
+     *
+     *       <p>An earlier revision of this paragraph also named
+     *       {@code com.cardemo.batch.jobs.InterestCalculationJob} as incrementing once per interest record it
+     *       emits. <strong>That was never true and the claim is withdrawn:</strong> that class does not import
+     *       this one, so it holds no reference through which it could increment anything, and it publishes its
+     *       emitted volume as an execution-context entry like the other non-producers below. The correction is
+     *       recorded rather than quietly made, because a reader auditing this series against the dashboard
+     *       would otherwise go looking for a third contributor that does not exist. Nor could it have
+     *       been true of the source: {@code app/cbl/CBACT04C.cbl} keeps no such tally, and the interest
+     *       transactions that job emits are not daily-transaction records POSTTRAN read - its own
+     *       object-write site says so in as many words. The correction is what lets this constant define
+     *       one population consistently wherever it is described: here, in the panel description of
+     *       {@code observability/grafana/dashboards/carddemo-dashboard.json}, and in each non-producing
+     *       job.</li>
      * </ol>
+     *
+     * <p><strong>Every batch flow's disposition, stated exhaustively, because two of them were wrong.</strong>
+     * Rule 1 above forbids counting the same work twice in the abstract; naming which flows do and do not
+     * increment is what makes it checkable. That is finding <strong>F-010</strong>, severity High:
+     * {@code CombineTransactionsJob} and {@code TransactionReportJob} both incremented this counter, and both
+     * were counting rows the posting run had already counted. COMBTRAN merges the transaction backup with the
+     * interest generation and loads the result - every row in it was counted when it was posted or emitted.
+     * TRANREPT reads the sorted generation to format a report - the same rows, read a third time. Neither
+     * added a new record to the world, and because this series is untagged there was no dimension along which
+     * a query could ever subtract them back out, so the inflation was irrecoverable rather than merely
+     * inaccurate.
+     *
+     * <ul>
+     *   <li><strong>Increments this series - exactly two call sites.</strong> {@code TransactionWriter} once
+     *       per posted DALYTRAN record, and {@code DailyTransactionPostingJob} once per rejected DALYTRAN
+     *       record. Together they are exactly {@code WS-TRANSACTION-COUNT}, and nothing else advances the
+     *       series.</li>
+     *   <li><strong>Holds this class but advances a different instrument.</strong>
+     *       {@code com.cardemo.batch.writers.RejectWriter} advances only
+     *       {@link #METRIC_RECORDS_REJECTED}, and {@code com.cardemo.service.auth.AuthenticationService} only
+     *       {@link #METRIC_AUTHENTICATION_ATTEMPTS}. Holding the facade is not the same as contributing
+     *       here.</li>
+     *   <li><strong>Cannot reach this class at all.</strong> {@code StatementWriter} and
+     *       {@code StatementGenerationJob} for the reason in rule 1; {@code CombineTransactionsJob} and
+     *       {@code TransactionReportJob} for the reason above; and
+     *       {@code com.cardemo.batch.jobs.InterestCalculationJob}, which never could. All of them publish
+     *       their per-run volumes as execution-context entries instead. For the combine and report jobs the
+     *       collaborator was <em>removed</em> under F-010 rather than left injected and unused, so the
+     *       constructor signature is now the enforcement: a class that cannot reach this facade cannot
+     *       regress into incrementing it.</li>
+     * </ul>
      */
     public static final String METRIC_RECORDS_PROCESSED = "carddemo.batch.records.processed";
 

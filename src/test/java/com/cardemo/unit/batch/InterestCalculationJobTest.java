@@ -285,18 +285,45 @@ class InterestCalculationJobTest {
     class ObjectKey {
 
         private String key(final long instance, final long ordinal) throws Exception {
-            return (String) invokePrivate("composeObjectKey",
+            return (String) invokePrivate("composePartKey",
                     new Class<?>[] {long.class, long.class},
                     Long.valueOf(instance), Long.valueOf(ordinal));
         }
 
+        private String generationObject(final long instance) throws Exception {
+            return (String) invokePrivate("composeGenerationObjectKey",
+                    new Class<?>[] {long.class}, Long.valueOf(instance));
+        }
+
         @Test
-        @DisplayName("carries the configured prefix and zero-padded segments")
+        @DisplayName("a staged part carries the configured prefix, the generation and a zero-padded ordinal")
         void shape() throws Exception {
             assertThat(key(42L, 1L))
                     .startsWith("gdg/systran/")
                     .contains("0000000000000000042")
-                    .endsWith("systran-0000000000000000001.dat");
+                    .endsWith("parts/part-0000000000000000001.dat");
+        }
+
+        @Test
+        @DisplayName("the generation's one object carries no ordinal, because there is no second object")
+        void generationObjectCarriesNoOrdinal() throws Exception {
+            // FINDING C-03, severity Critical. app/jcl/INTCALC.jcl:L37-L41 allocates SYSTRAN(+1) as one
+            // sequential dataset, so the catalogued generation is one object and needs nothing to
+            // distinguish it from a sibling. The absent ordinal is that invariant made visible.
+            assertThat(generationObject(42L))
+                    .isEqualTo("gdg/systran/0000000000000000042/systran.dat");
+        }
+
+        @Test
+        @DisplayName("parts live below the generation segment, so a generation listing sees only its object")
+        void partsAreNestedInsideTheGeneration() throws Exception {
+            final String generation = "gdg/systran/0000000000000000042";
+            assertThat(key(42L, 3L))
+                    .as("nested, so the numeric generation namespace stays numeric: a sibling 'staging/' "
+                            + "segment would sort above every zero-padded generation and be resolved as "
+                            + "the newest one")
+                    .startsWith(generation + "/");
+            assertThat(generationObject(42L)).startsWith(generation + "/");
         }
 
         @Test
@@ -592,7 +619,7 @@ class InterestCalculationJobTest {
         }
 
         @Test
-        @DisplayName("payload is an exact multiple of 350, key is published, ordinal advances")
+        @DisplayName("payload is an exact multiple of 350, a part is staged, ordinal advances")
         void writesFixedWidthGenerationAndPublishesKey() throws Exception {
             final JobExecution je = execution(77L);
             final StepExecution se = new StepExecution("interestCalculationStep", je);
@@ -619,23 +646,36 @@ class InterestCalculationJobTest {
                         .isEqualTo(1L);
                 assertThat(je.getExecutionContext().getString("carddemo.systran.generation.prefix"))
                         .isEqualTo("gdg/systran/0000000000000000077");
-                assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.keys.count"))
-                        .isEqualTo(1L);
-                assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys.0"))
-                        .isEqualTo("gdg/systran/0000000000000000077/systran-0000000000000000001.dat");
 
-                // A second chunk advances the ordinal and appends, never overwrites.
+                // FINDING C-03, severity Critical. A chunk stages a PART; it does not create an object of
+                // the generation. The generation is one sequential dataset, catalogued once at close, so
+                // no generation key exists yet - and asserting one here is what made the old contract look
+                // correct while a two-chunk run produced a generation the reader refuses to read.
+                assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.keys.count"))
+                        .as("nothing is catalogued until close")
+                        .isFalse();
+                assertThat(je.getExecutionContext().getLong("carddemo.systran.part.keys.count"))
+                        .isEqualTo(1L);
+                assertThat(je.getExecutionContext().getString("carddemo.systran.part.keys.0"))
+                        .isEqualTo("gdg/systran/0000000000000000077/parts/"
+                                + "part-0000000000000000001.dat");
+                assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.bytes"))
+                        .isEqualTo(2L * RECORD_LENGTH);
+
+                // A second chunk advances the ordinal and stages another part, never overwrites.
                 write.invoke(writer, new org.springframework.batch.item.Chunk<>(
                         List.of(systemSourced('C'))));
                 assertThat(se.getExecutionContext().getLong("carddemo.systran.object.ordinal"))
                         .isEqualTo(2L);
                 // No delimiter to assert on any more: each key has its own entry (finding M-07).
-                assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.keys.count"))
+                assertThat(je.getExecutionContext().getLong("carddemo.systran.part.keys.count"))
                         .isEqualTo(2L);
-                assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys.0"))
-                        .endsWith("systran-0000000000000000001.dat");
-                assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys.1"))
-                        .endsWith("systran-0000000000000000002.dat");
+                assertThat(je.getExecutionContext().getString("carddemo.systran.part.keys.0"))
+                        .endsWith("parts/part-0000000000000000001.dat");
+                assertThat(je.getExecutionContext().getString("carddemo.systran.part.keys.1"))
+                        .endsWith("parts/part-0000000000000000002.dat");
+                assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.bytes"))
+                        .isEqualTo(3L * RECORD_LENGTH);
             } finally {
                 StepSynchronizationManager.close();
             }
@@ -995,16 +1035,30 @@ class InterestCalculationJobTest {
         }
 
         @Test
-        @DisplayName("a trailing separator is trimmed so the object key never doubles it")
-        void trailingSeparatorIsNormalised() throws Exception {
+        @DisplayName("finding m-02: a trailing separator is REFUSED rather than trimmed, so the configured "
+                + "value and the value in force can never differ")
+        void trailingSeparatorIsRefusedRatherThanTrimmed() throws Exception {
+            // This test asserted the opposite until finding m-02 centralized the prefix grammar. The class
+            // used to trim any number of trailing separators, so gdg/systran, gdg/systran/ and gdg/systran///
+            // all composed the same key. That tolerance WAS the defect: five classes each rewrote the
+            // configured value in their own way and nothing reported the rewrite, so what an operator wrote and
+            // what was in force could differ. The shared grammar accepts exactly one spelling and refuses the
+            // others by naming the property, which is what the declared value gdg/systran already is.
             final Method compose = InterestCalculationJob.class
                     .getDeclaredMethod("composeGenerationPrefix", long.class);
             compose.setAccessible(true);
-            for (final String written : List.of("gdg/systran", "gdg/systran/", "gdg/systran///")) {
-                final InterestCalculationJob variant = withConfig("INTCALC", 100, "b", written);
-                assertThat((String) compose.invoke(variant, Long.valueOf(7L)))
-                        .as("%s must normalise to exactly one separator", written)
-                        .isEqualTo("gdg/systran/0000000000000000007");
+
+            final InterestCalculationJob canonical = withConfig("INTCALC", 100, "b", "gdg/systran");
+            assertThat((String) compose.invoke(canonical, Long.valueOf(7L)))
+                    .as("the one accepted spelling composes exactly one separator, as it always did")
+                    .isEqualTo("gdg/systran/0000000000000000007");
+
+            for (final String rewritten : List.of("gdg/systran/", "gdg/systran///", "/gdg/systran",
+                    "gdg//systran", " gdg/systran", "gdg/../systran")) {
+                assertThatThrownBy(() -> withConfig("INTCALC", 100, "b", rewritten))
+                        .as("'%s' must be refused rather than silently rewritten", rewritten)
+                        .isInstanceOf(FatalProcessingException.class)
+                        .hasMessageContaining("carddemo.aws.s3.gdg-prefixes.systran");
             }
         }
 
@@ -1034,8 +1088,12 @@ class InterestCalculationJobTest {
     @DisplayName("Created object keys survive any configured prefix, having no delimiter (M-07)")
     class GenerationKeyList {
 
-        private static final String COUNT_ENTRY = "carddemo.systran.generation.keys.count";
-        private static final String INDEX_PREFIX = "carddemo.systran.generation.keys.";
+        // The indexed protocol these tests pin is now exercised by the staged PART keys: that is where a
+        // run accumulates more than one key, the catalogued generation holding exactly one object by
+        // construction (finding C-03). The M-07 hazard - a configured prefix carrying the old delimiter -
+        // is identical on either set of entries, so the regression protection is unchanged.
+        private static final String COUNT_ENTRY = "carddemo.systran.part.keys.count";
+        private static final String INDEX_PREFIX = "carddemo.systran.part.keys.";
 
         private InterestCalculationJob withPrefix(final String prefix) {
             return new InterestCalculationJob(jobRepository, transactionManager,
@@ -1048,9 +1106,9 @@ class InterestCalculationJobTest {
                 throws Exception {
 
             final Method compose = InterestCalculationJob.class
-                    .getDeclaredMethod("composeObjectKey", long.class, long.class);
+                    .getDeclaredMethod("composePartKey", long.class, long.class);
             final Method publish = InterestCalculationJob.class.getDeclaredMethod(
-                    "publishGeneration", JobExecution.class, long.class, String.class);
+                    "publishPart", JobExecution.class, long.class, String.class, int.class);
             compose.setAccessible(true);
             publish.setAccessible(true);
 
@@ -1059,7 +1117,8 @@ class InterestCalculationJobTest {
                 final String key = (String) compose.invoke(variant,
                         Long.valueOf(je.getJobInstance().getInstanceId()), Long.valueOf(ordinal));
                 expected.add(key);
-                publish.invoke(variant, je, Long.valueOf(je.getJobInstance().getInstanceId()), key);
+                publish.invoke(variant, je, Long.valueOf(je.getJobInstance().getInstanceId()), key,
+                        Integer.valueOf(RECORD_LENGTH));
             }
             return expected;
         }
@@ -1220,26 +1279,100 @@ class InterestCalculationJobTest {
         }
     }
 
-    // --------------------------- 14. the TRANFILE close publishes or it abends
+    // ------------ 14. close reports; settle catalogues or deletes (C-03, C-05)
 
+    /**
+     * Findings C-03 and C-05, both Critical.
+     *
+     * <p>{@code app/jcl/INTCALC.jcl:L37}-{@code :L41} allocates the output
+     * {@code DISP=(NEW,CATLG,DELETE)}, one sequential dataset per run. Two consequences were missing. The
+     * generation held one object per chunk rather than one object, which
+     * {@code CombinedTransactionReader} refuses to read; and an abended run left its uploaded objects
+     * catalogued, so the next pipeline resolved the newest generation to the wreckage of a failed run. The
+     * split tested here is the remedy: {@code closeTransactionFile} reports, and
+     * {@code settleSystranGeneration} applies whichever disposition the execution's outcome calls for.
+     */
     @Nested
-    @DisplayName("The TRANSACT close always leaves a readable generation behind")
-    class CloseTail {
+    @DisplayName("Close reports, and settle either catalogues one object or deletes everything (C-03, C-05)")
+    class CloseAndSettle {
 
         private void close(final JobExecution jobExecution) throws Exception {
             invokePrivate("closeTransactionFile", new Class<?>[] {JobExecution.class}, jobExecution);
+        }
+
+        private void settle(final JobExecution jobExecution) throws Exception {
+            invokePrivate("settleSystranGeneration", new Class<?>[] {JobExecution.class}, jobExecution);
+        }
+
+        /** Stages {@code count} parts against the execution, as the writer would have. */
+        private List<String> stage(final JobExecution je, final int count) throws Exception {
+            final Method publish = InterestCalculationJob.class.getDeclaredMethod("publishPart",
+                    JobExecution.class, long.class, String.class, int.class);
+            final Method compose = InterestCalculationJob.class.getDeclaredMethod("composePartKey",
+                    long.class, long.class);
+            publish.setAccessible(true);
+            compose.setAccessible(true);
+            final long instance = je.getJobInstance().getInstanceId();
+            final List<String> keys = new ArrayList<>();
+            for (long ordinal = 1L; ordinal <= count; ordinal++) {
+                final String key = (String) compose.invoke(job, Long.valueOf(instance),
+                        Long.valueOf(ordinal));
+                keys.add(key);
+                publish.invoke(job, je, Long.valueOf(instance), key, Integer.valueOf(RECORD_LENGTH));
+                stubPart(key, RECORD_LENGTH);
+            }
+            return keys;
+        }
+
+        /**
+         * Records the bytes the upload actually streams.
+         *
+         * <p>Captured through an answer rather than an argument captor: promotion streams the parts inside a
+         * try-with-resources, so by the time a captured argument could be read the stream is closed and
+         * yields nothing. Reading it here is also the more faithful assertion - it is what the object store
+         * would have received.
+         *
+         * @return the holder the streamed bytes are placed into
+         */
+        private java.util.concurrent.atomic.AtomicReference<byte[]> recordUploadedBytes() {
+            final java.util.concurrent.atomic.AtomicReference<byte[]> captured =
+                    new java.util.concurrent.atomic.AtomicReference<>(new byte[0]);
+            when(s3Operations.upload(anyString(), anyString(), any(java.io.InputStream.class),
+                    any(io.awspring.cloud.s3.ObjectMetadata.class)))
+                    .thenAnswer(invocation -> {
+                        captured.set(invocation.getArgument(2, java.io.InputStream.class)
+                                .readAllBytes());
+                        return null;
+                    });
+            return captured;
+        }
+
+        /** Makes a staged part readable, so promotion can measure and concatenate it. */
+        private void stubPart(final String key, final int length) {
+            final io.awspring.cloud.s3.S3Resource resource =
+                    mock(io.awspring.cloud.s3.S3Resource.class);
+            when(resource.contentLength()).thenReturn(Long.valueOf(length));
+            try {
+                when(resource.getInputStream()).thenAnswer(invocation ->
+                        new java.io.ByteArrayInputStream(new byte[length]));
+            } catch (final java.io.IOException impossible) {
+                throw new IllegalStateException(impossible);
+            }
+            when(s3Operations.download("carddemo-batch-output", key)).thenReturn(resource);
         }
 
         @Test
         @DisplayName("a zero-rate run publishes this run's own empty generation, not an earlier one")
         void emptyGenerationIsStillPublished() throws Exception {
             final JobExecution je = execution(9L);
-            close(je);
+            settle(je);
             assertThat(je.getExecutionContext().getString("carddemo.systran.generation.prefix"))
                     .as("app/cbl/CBACT04C.cbl:L214 suppressed every write, but (+1) still exists")
                     .isEqualTo("gdg/systran/0000000000000000009");
             assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.keys.count"))
                     .isZero();
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
         }
 
         @Test
@@ -1251,25 +1384,224 @@ class InterestCalculationJobTest {
         }
 
         @Test
-        @DisplayName("objects written but keys unpublished abends: the generation would be unreadable")
-        void writtenButUnpublishedAbends() {
+        @DisplayName("close reports the staged parts without cataloguing anything")
+        void closeReportsWithoutCataloguing() throws Exception {
             final JobExecution je = execution(11L);
-            je.getExecutionContext().putString("carddemo.systran.generation.prefix",
-                    "gdg/systran/0000000000000000011");
-            je.getExecutionContext().putLong("carddemo.systran.generation.keys.count", 0L);
-            assertThatThrownBy(() -> close(je)).isInstanceOf(FatalProcessingException.class);
+            stage(je, 2);
+
+            assertThatCode(() -> close(je)).doesNotThrowAnyException();
+
+            // The decisive assertion: CLOSE must not catalogue, because at this point the run's outcome is
+            // not yet known and DISP=(NEW,CATLG,DELETE) has two arms.
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.keys.count"))
+                    .isFalse();
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
         }
 
         @Test
-        @DisplayName("a published generation carrying keys closes cleanly")
-        void publishedGenerationClosesCleanly() {
+        @DisplayName("a normal end concatenates every part into exactly ONE generation object")
+        void normalEndCataloguesExactlyOneObject() throws Exception {
             final JobExecution je = execution(12L);
-            je.getExecutionContext().putString("carddemo.systran.generation.prefix",
-                    "gdg/systran/0000000000000000012");
-            je.getExecutionContext().putLong("carddemo.systran.generation.keys.count", 1L);
-            je.getExecutionContext().putString("carddemo.systran.generation.keys.0",
-                    "gdg/systran/0000000000000000012/systran-0000000000000000001.dat");
-            assertThatCode(() -> close(je)).doesNotThrowAnyException();
+            final List<String> parts = stage(je, 3);
+            final java.util.concurrent.atomic.AtomicReference<byte[]> uploaded = recordUploadedBytes();
+
+            settle(je);
+
+            final org.mockito.ArgumentCaptor<String> key =
+                    org.mockito.ArgumentCaptor.forClass(String.class);
+            final org.mockito.ArgumentCaptor<io.awspring.cloud.s3.ObjectMetadata> metadata =
+                    org.mockito.ArgumentCaptor.forClass(io.awspring.cloud.s3.ObjectMetadata.class);
+            verify(s3Operations).upload(anyString(), key.capture(), any(java.io.InputStream.class),
+                    metadata.capture());
+
+            assertThat(key.getValue())
+                    .as("one object, and its key carries no ordinal because it has no sibling")
+                    .isEqualTo("gdg/systran/0000000000000000012/systran.dat");
+            assertThat(uploaded.get())
+                    .as("the three parts concatenated, so the dataset is a whole number of records")
+                    .hasSize(3 * RECORD_LENGTH);
+            assertThat(metadata.getValue().getContentLength())
+                    .as("the length is declared up front, as the upload contract requires")
+                    .isEqualTo(Long.valueOf(3L * RECORD_LENGTH));
+
+            assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.keys.count"))
+                    .as("the generation a downstream step reads holds exactly one key")
+                    .isEqualTo(1L);
+            assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys.0"))
+                    .isEqualTo("gdg/systran/0000000000000000012/systran.dat");
+
+            // And the parts are gone, so a listing of the generation returns the one object.
+            for (final String part : parts) {
+                verify(s3Operations).deleteObject("carddemo-batch-output", part);
+            }
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.part.keys.count"))
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the parts are concatenated in ordinal order, so the dataset is in creation order")
+        void partsAreConcatenatedInOrdinalOrder() throws Exception {
+            final JobExecution je = execution(13L);
+            final List<String> parts = stage(je, 3);
+            // Distinguishable content per part, in a fixed-length record so the geometry still holds.
+            for (int index = 0; index < parts.size(); index++) {
+                final byte fill = (byte) ('A' + index);
+                final io.awspring.cloud.s3.S3Resource resource =
+                        mock(io.awspring.cloud.s3.S3Resource.class);
+                when(resource.contentLength()).thenReturn(Long.valueOf(RECORD_LENGTH));
+                final byte[] content = new byte[RECORD_LENGTH];
+                java.util.Arrays.fill(content, fill);
+                when(resource.getInputStream())
+                        .thenAnswer(invocation -> new java.io.ByteArrayInputStream(content));
+                when(s3Operations.download("carddemo-batch-output", parts.get(index)))
+                        .thenReturn(resource);
+            }
+
+            final java.util.concurrent.atomic.AtomicReference<byte[]> uploaded = recordUploadedBytes();
+
+            settle(je);
+
+            final byte[] all = uploaded.get();
+            assertThat(all).hasSize(3 * RECORD_LENGTH);
+
+            assertThat((char) all[0]).isEqualTo('A');
+            assertThat((char) all[RECORD_LENGTH]).isEqualTo('B');
+            assertThat((char) all[2 * RECORD_LENGTH]).isEqualTo('C');
+        }
+
+        @Test
+        @DisplayName("an abnormal end catalogues nothing and deletes every part it staged")
+        void abnormalEndLeavesNothingCatalogued() throws Exception {
+            final JobExecution je = execution(14L);
+            final List<String> parts = stage(je, 2);
+            je.setStatus(BatchStatus.FAILED);
+
+            settle(je);
+
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
+            for (final String part : parts) {
+                verify(s3Operations).deleteObject("carddemo-batch-output", part);
+            }
+            verify(s3Operations).deleteObject("carddemo-batch-output",
+                    "gdg/systran/0000000000000000014/systran.dat");
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.keys.count"))
+                    .as("no downstream step may be handed a generation this run did not complete")
+                    .isFalse();
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.prefix"))
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("an abend recorded against a COMPLETED status still triggers the DELETE arm")
+        void anAbendAloneTriggersTheDeleteArm() throws Exception {
+            final JobExecution je = execution(15L);
+            final List<String> parts = stage(je, 1);
+            // The status is left alone; only a FatalProcessingException is recorded, which is how a close
+            // paragraph reports an abend that Spring Batch would not otherwise fail the job for.
+            je.addFailureException(new FatalProcessingException("CLOSE abended"));
+
+            settle(je);
+
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
+            verify(s3Operations).deleteObject("carddemo-batch-output", parts.get(0));
+        }
+
+        @Test
+        @DisplayName("a part that shrank between staging and cataloguing discards rather than catalogues")
+        void aShortPartIsNotCatalogued() throws Exception {
+            final JobExecution je = execution(16L);
+            final List<String> parts = stage(je, 2);
+            // One part now measures short: the accumulated expectation and the store disagree, which is
+            // the only signal available that a part was lost or truncated.
+            stubPart(parts.get(1), RECORD_LENGTH - 10);
+
+            settle(je);
+
+            verify(s3Operations, never()).upload(anyString(), anyString(),
+                    any(java.io.InputStream.class), any(io.awspring.cloud.s3.ObjectMetadata.class));
+            assertThat(je.getStatus())
+                    .as("recorded against the execution rather than thrown, because settle runs in a "
+                            + "finally where Spring Batch would swallow it")
+                    .isEqualTo(BatchStatus.FAILED);
+            assertThat(je.getAllFailureExceptions())
+                    .anySatisfy(failure -> assertThat(failure)
+                            .isInstanceOf(com.cardemo.exception.DataIntegrityException.class));
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.keys.count"))
+                    .isFalse();
+            for (final String part : parts) {
+                verify(s3Operations).deleteObject("carddemo-batch-output", part);
+            }
+        }
+
+        @Test
+        @DisplayName("a refused deletion is logged and the remaining objects are still removed")
+        void aRefusedDeletionDoesNotAbandonTheRest() throws Exception {
+            final JobExecution je = execution(17L);
+            final List<String> parts = stage(je, 3);
+            je.setStatus(BatchStatus.FAILED);
+            org.mockito.Mockito.doThrow(new IllegalStateException("refused"))
+                    .when(s3Operations).deleteObject("carddemo-batch-output", parts.get(0));
+
+            assertThatCode(() -> settle(je)).doesNotThrowAnyException();
+
+            verify(s3Operations).deleteObject("carddemo-batch-output", parts.get(1));
+            verify(s3Operations).deleteObject("carddemo-batch-output", parts.get(2));
+        }
+
+        @Test
+        @DisplayName("the catalogued manifest is written back to the repository, or nobody would see it")
+        void theManifestIsPersisted() throws Exception {
+            final JobExecution je = execution(19L);
+            stage(je, 1);
+            recordUploadedBytes();
+
+            settle(je);
+
+            // AbstractJob.execute calls JobRepository.update after afterJob - which persists the status -
+            // but never updateExecutionContext; the job context is stored by the step handler, once per
+            // step. So a context mutation made at end of run exists only in the in-memory execution unless
+            // it is written back explicitly. Cataloguing IS an end-of-run act, so without this an
+            // orchestrator reading the child execution back from the repository sees the staged parts and
+            // no generation. Asserted here because nothing about the code's appearance reveals it.
+            verify(jobRepository).updateExecutionContext(je);
+        }
+
+        @Test
+        @DisplayName("an unstorable manifest is reported rather than turned into a second failure")
+        void anUnstorableManifestDoesNotFailTheRun() throws Exception {
+            final JobExecution je = execution(20L);
+            stage(je, 1);
+            recordUploadedBytes();
+            org.mockito.Mockito.doThrow(new IllegalStateException("repository unavailable"))
+                    .when(jobRepository).updateExecutionContext(je);
+
+            assertThatCode(() -> settle(je)).doesNotThrowAnyException();
+
+            assertThat(je.getStatus())
+                    .as("the objects are correct and the run's status is already settled, so a failed "
+                            + "write-back must not retrospectively fail a completed run")
+                    .isNotEqualTo(BatchStatus.FAILED);
+        }
+
+        @Test
+        @DisplayName("settle never throws, because it runs inside a finally that would lose the exception")
+        void settleNeverThrows() throws Exception {
+            final JobExecution je = execution(18L);
+            stage(je, 1);
+            when(s3Operations.upload(anyString(), anyString(), any(java.io.InputStream.class),
+                    any(io.awspring.cloud.s3.ObjectMetadata.class)))
+                    .thenThrow(new IllegalStateException("the store refused the catalogue write"));
+
+            assertThatCode(() -> settle(je)).doesNotThrowAnyException();
+
+            assertThat(je.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(je.getExecutionContext().containsKey("carddemo.systran.generation.keys.count"))
+                    .as("a generation that could not be catalogued completely must not be left half "
+                            + "catalogued")
+                    .isFalse();
         }
     }
 

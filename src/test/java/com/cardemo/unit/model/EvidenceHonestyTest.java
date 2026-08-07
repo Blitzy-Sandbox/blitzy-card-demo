@@ -82,10 +82,11 @@ import org.junit.jupiter.api.Test;
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><strong>A failure naming {@code DECISION_LOG.md} or {@code TRACEABILITY_MATRIX.md}</strong> means a
- *       comment states that something is already recorded in a register that does not exist at this commit.
- *       Reword it to the obligation - "owed an entry in the planned {@code DECISION_LOG.md}" - rather than
- *       creating the file, which is owned elsewhere.</li>
+ *   <li><strong>A failure naming {@code DECISION_LOG.md} or {@code TRACEABILITY_MATRIX.md}</strong> now means
+ *       the opposite of what it once did. Both registers are authored at the repository root, so the failure
+ *       says a comment still calls one of them planned, absent or unavailable. Withdraw that claim in writing
+ *       and state the obligation without the qualifier - "owed an entry in {@code DECISION_LOG.md}" - which
+ *       stays true whether or not the entry has yet been written into it.</li>
  *   <li><strong>A failure naming a formerly-unauthored class</strong> - {@code BatchConfig},
  *       {@code ObservabilityConfig} or {@code BatchPipelineOrchestrator} - means one of them has been removed
  *       from disk while prose still refers to it as present. All three are authored, so the unauthored-class
@@ -120,39 +121,54 @@ class EvidenceHonestyTest {
             Pattern.CASE_INSENSITIVE);
 
     /**
-     * The two evidence registers, neither of which exists at this commit, claimed by a verb of record.
+     * The two evidence registers, described as planned, absent or unavailable when both are on disk.
      *
-     * <p>The intervening {@code [^.;]{0,60}?} is what makes this rule cover the wording a review actually
-     * found rather than only the adjacent form. "Recorded in DECISION_LOG.md" and "Recorded <em>as a
-     * preserved quirk</em> in DECISION_LOG.md" assert exactly the same untrue thing, and an earlier version
-     * of this pattern required the verb and the {@code in} to be adjacent, so the second slipped past it four
-     * times. The bound is lazy and stops at a sentence break, so the rule cannot reach across a full stop and
-     * pair a verb in one sentence with a register named in the next.
+     * <p><strong>A uniform "planned" spelling was proposed as the alternative and is not adopted.</strong>
+ * That proposal would have kept {@code REGISTER_CLAIM} and {@code REGISTER_POSSESSION} active and required
+ * every mention to read "owed an entry in the planned {@code DECISION_LOG.md}" for consistency across some
+ * eighty sites. It is declined because it trades an honesty property for a uniformity one: the registers
+ * exist, so that spelling under-claims about delivered evidence, and a reader who meets it concludes the
+ * record was never written. The rule below is also self-checking in a way the alternative is not - see
+ * {@link #FORMERLY_ABSENT_REGISTERS}.
+ *
+ * <p><strong>This rule replaces the two it inverts.</strong> {@code REGISTER_CLAIM} and
+     * {@code REGISTER_POSSESSION} forbade a present-tense claim of record in either register, which was the
+     * correct rule for exactly as long as neither file existed. Both are now authored at the repository root,
+     * so those two patterns had stopped guarding a falsehood and started requiring one: every mention had to
+     * be qualified as planned, which describes delivered evidence as pending - the understating direction, and
+     * the damaging one, because a reader concludes the record does not exist. They are retired rather than
+     * loosened, and this pattern guards the reversed direction. The retirement is self-checking:
+     * {@link #FORMERLY_ABSENT_REGISTERS} is asserted present, so deleting either register forces the old rules
+     * to be reinstated deliberately instead of a claim about a missing document passing unnoticed.
+     *
+     * <p>The intervening {@code [^.;]{0,80}?} is lazy and stops at a sentence break, so the rule cannot pair
+     * an unavailability in one sentence with a register named in the next - which matters here, because the
+     * tree legitimately reports {@code Not available} for a container runtime, a legacy output baseline and a
+     * service-level objective in the same paragraphs that cite these two files.
      */
-    private static final Pattern REGISTER_CLAIM = Pattern.compile(
-            "\\b(?:is|are|and|,)?\\s*(?:recorded|tracked|documented|logged|justified|cited|captured|noted"
-                    + "|registered|entered|listed|reflected|labelled|labeled|marked|disclosed|explained"
-                    + "|declared|stated|flagged|acknowledged|attributed)\\b[^.;]{0,60}?\\bin\\s+"
-                    + "(?!(?:the\\s+)?planned\\b)"
-                    + "(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)",
+    private static final Pattern REGISTER_ABSENCE = Pattern.compile(
+            "(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)\\}?[^.;]{0,80}?"
+                    + "(?:does not exist|do not exist|is absent|are absent|not available|has not been authored"
+                    + "|not yet authored|is not present|exists? yet|no file of that name)"
+                    + "|(?:not available|does not exist|is absent)[^.;]{0,80}?"
+                    + "(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)"
+                    + "|(?:planned|scheduled|unauthored)\\s+(?:\\{@code\\s+)?"
+                    + "(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)"
+                    + "|neither\\s+(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)\\}?"
+                    + "\\s+nor\\s+(?:\\{@code\\s+)?"
+                    + "(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)\\}?\\s+exists",
             Pattern.CASE_INSENSITIVE);
 
     /**
-     * The same untrue assertion made attributively rather than with a verb of record.
+     * The two evidence registers whose absence this guard stopped asserting, because they are authored.
      *
-     * <p>"This one <em>carries a</em> {@code DECISION_LOG.md} entry" and "each <em>carrying a</em>
-     * {@code TRACEABILITY_MATRIX.md} row" claim a held entry without using any verb {@link #REGISTER_CLAIM}
-     * looks for, which is how four of them survived a guard that had been running over these very files since
-     * before they were written. The optional closing brace matters and is not cosmetic: the tree writes the
-     * register inside {@code {@code ...}}, so a pattern that expected the noun immediately after the filename
-     * matches nothing at all - a defect that made a scan of this same rule silently report zero.
+     * <p>Paths are repository-relative and are asserted to exist by
+     * {@link AbsentArtefactsAreNotClaimedPresent#theReversalOfTheRegisterGuardStillHolds()}. The list is
+     * the same self-checking device {@link #FORMERLY_UNAUTHORED} uses for the three classes that were
+     * outstanding when this class was written, applied to the two documents that were.
      */
-    private static final Pattern REGISTER_POSSESSION = Pattern.compile(
-            "\\b(?:carr(?:y|ies|ying)|with|has|have|having|bearing|bears)\\b[^.;]{0,40}?"
-                    + "(?!(?:the\\s+)?planned\\b)"
-                    + "(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)\\}?"
-                    + "\\s*(?:entry|entries|row|rows)",
-            Pattern.CASE_INSENSITIVE);
+    private static final List<String> FORMERLY_ABSENT_REGISTERS =
+            List.of("DECISION_LOG.md", "TRACEABILITY_MATRIX.md");
 
     /**
      * Sources exempt from the string-literal scan because they enumerate the forbidden phrasings verbatim.
@@ -162,8 +178,9 @@ class EvidenceHonestyTest {
      * {@code PackageDocumentationInventoryTest} holds a literal list of the four claim phrases it rejects,
      * behind its own {@code everyOccurrenceIsQuoted} check. Exempting them from the literal scan is the same
      * concession {@link #SELF} already makes for the comment scan, extended to the tier that scan did not
-     * reach. {@link #thePhraseListingExemptionIsEarned} keeps it honest by requiring each exempt file to
-     * still be a gate, so the exemption cannot be inherited by a file that merely makes the claim.
+     * reach. {@link AbsentArtefactsAreNotClaimedPresent#thePhraseListingExemptionIsEarned} keeps it honest
+     * by requiring each exempt file to still be a gate, so the exemption cannot be inherited by a file that
+     * merely makes the claim.
      */
     private static final List<String> PHRASE_LISTING_SOURCES =
             List.of(SELF, "PackageDocumentationInventoryTest.java");
@@ -174,9 +191,9 @@ class EvidenceHonestyTest {
      * <p>{@code BatchConfig} and {@code ObservabilityConfig} were outstanding when the guard was written and
      * a bare reference to either implied an artefact that did not exist. Both are now present, so requiring
      * every mention to be qualified as planned would force the documentation to describe delivered classes as
-     * pending. The narrowing is self-checking: {@link #theNarrowingOfThisGuardStillHolds} asserts these files
-     * exist, so if one is ever removed the guard must be revisited deliberately rather than passing by
-     * accident.
+     * pending. The narrowing is self-checking:
+     * {@link AbsentArtefactsAreNotClaimedPresent#theNarrowingOfThisGuardStillHolds} asserts these files exist,
+     * so if one is ever removed the guard must be revisited deliberately rather than passing by accident.
      *
      * <p>{@code BatchPipelineOrchestrator} joined this roster for exactly that reason, and it is the case the
      * roster was built for. It was the last remaining subject of the unauthored-class pattern, so that pattern
@@ -439,23 +456,26 @@ class EvidenceHonestyTest {
         }
 
         @Test
-        @DisplayName("nothing is described as already recorded in DECISION_LOG.md or TRACEABILITY_MATRIX.md")
-        void noRegisterIsDescribedAsAlreadyHoldingAnEntry() {
-            assertThat(offendersIncludingLiterals(REGISTER_CLAIM))
-                    .as("neither register exists at this commit, so an entry can only be owed, never held; "
-                            + "reword as \"owed an entry in the planned DECISION_LOG.md\". This now covers "
-                            + "assertion messages as well as comments, and admits words between the verb and "
-                            + "the register, because both gaps were used")
-                    .isEmpty();
+        @DisplayName("the two registers this guard stopped policing really are authored, so the reversal holds")
+        void theReversalOfTheRegisterGuardStillHolds() {
+            for (final String register : FORMERLY_ABSENT_REGISTERS) {
+                assertThat(Path.of(register))
+                        .as("the two register patterns were retired because %s is on disk, which makes a "
+                                + "present-tense mention of it a true statement. If it is ever deleted, "
+                                + "reinstate REGISTER_CLAIM and REGISTER_POSSESSION deliberately rather than "
+                                + "letting a claim about a missing document pass", register)
+                        .exists();
+            }
         }
 
         @Test
-        @DisplayName("nothing is described as carrying an entry or a row in either absent register")
-        void noRegisterIsDescribedAsAlreadyCarryingAnEntry() {
-            assertThat(offendersIncludingLiterals(REGISTER_POSSESSION))
-                    .as("an attributive claim asserts the same untrue thing as a verb of record: a file that "
-                            + "\"carries a DECISION_LOG.md entry\" is claiming an entry in a document that "
-                            + "does not exist. Reword as \"owed an entry in the planned DECISION_LOG.md\"")
+        @DisplayName("no comment describes either authored register as planned, absent or unavailable")
+        void neitherRegisterIsDescribedAsAbsent() {
+            assertThat(offendersIncludingLiterals(REGISTER_ABSENCE))
+                    .as("both registers are authored at the repository root, so calling either planned, "
+                            + "absent, unavailable or not yet written understates delivered evidence - the "
+                            + "damaging direction, because a reader concludes the record does not exist. "
+                            + "Withdraw the former claim in writing rather than deleting the sentence")
                     .isEmpty();
         }
 
@@ -625,47 +645,32 @@ class EvidenceHonestyTest {
         @Test
         @DisplayName("each forbidden pattern matches a synthetic offender and spares its honest rewording")
         void eachPatternMatchesAnOffenderAndSparesTheRewording() {
-            assertThat(REGISTER_CLAIM.matcher("The quirk is recorded in {@code DECISION_LOG.md}.").find())
-                    .as("the register rule must catch a present-tense claim")
+            assertThat(REGISTER_ABSENCE
+                    .matcher("Owed an entry in {@code DECISION_LOG.md}, which does not exist.").find())
+                    .as("the reversed rule must catch an absence claim about an authored register")
                     .isTrue();
-            assertThat(REGISTER_CLAIM
-                    .matcher("The quirk is owed an entry in the planned {@code DECISION_LOG.md}.").find())
-                    .as("the register rule must allow the owed form")
+            assertThat(REGISTER_ABSENCE
+                    .matcher("Owed an entry in {@code DECISION_LOG.md}, authored at the root.").find())
+                    .as("the honest rewording must survive, or the fix could not be written")
                     .isFalse();
-            assertThat(REGISTER_CLAIM
-                    .matcher("Recorded as a preserved quirk in {@code DECISION_LOG.md}.").find())
-                    .as("words between the verb and the register must not buy an escape: this exact wording "
-                            + "passed the adjacent-only form four times")
+            assertThat(REGISTER_ABSENCE
+                    .matcher("It is recorded in {@code DECISION_LOG.md}.").find())
+                    .as("a present-tense claim of record is now a TRUE statement and must NOT be an "
+                            + "offence; this is the assertion the two retired patterns had inverted")
+                    .isFalse();
+            assertThat(REGISTER_ABSENCE
+                    .matcher("owed an entry in the planned {@code DECISION_LOG.md}").find())
+                    .as("the superseded qualifier must be caught wherever it survived the sweep")
                     .isTrue();
-            assertThat(REGISTER_CLAIM
-                    .matcher("It is recorded here. An entry in {@code DECISION_LOG.md} is owed.").find())
-                    .as("the intervening bound must stop at a sentence break, so a verb in one sentence "
+            assertThat(REGISTER_ABSENCE
+                    .matcher("Neither {@code DECISION_LOG.md} nor {@code TRACEABILITY_MATRIX.md} exists.")
+                    .find())
+                    .as("the paired form both registers were named in must be caught")
+                    .isTrue();
+            assertThat(REGISTER_ABSENCE
+                    .matcher("Gate 1's baseline is not available; {@code DECISION_LOG.md} states why.").find())
+                    .as("the bound must stop at a sentence break, so a genuine unavailability in one clause "
                             + "cannot be paired with a register named in the next")
-                    .isFalse();
-            assertThat(REGISTER_CLAIM
-                    .matcher("it is labelled explicitly as a deviation in {@code DECISION_LOG.md}.").find())
-                    .as("a claim does not need a verb of record to be a claim. This exact sentence used "
-                            + "'labelled', which no earlier version of this rule listed, and it survived a "
-                            + "guard running over its own file")
-                    .isTrue();
-
-            assertThat(REGISTER_POSSESSION
-                    .matcher("This one carries a {@code DECISION_LOG.md} entry.").find())
-                    .as("an attributive claim must be caught; the closing brace sits between the filename "
-                            + "and the noun, and a rule that forgot it matched nothing")
-                    .isTrue();
-            assertThat(REGISTER_POSSESSION
-                    .matcher("each carrying a {@code TRACEABILITY_MATRIX.md} row - but").find())
-                    .as("the participle form and the row noun must be caught too")
-                    .isTrue();
-            assertThat(REGISTER_POSSESSION
-                    .matcher("is owed an entry in the planned {@code DECISION_LOG.md} plus a row").find())
-                    .as("the owed rewording must survive both rules, or the fix could not be written")
-                    .isFalse();
-            assertThat(REGISTER_POSSESSION
-                    .matcher("destined for a {@code DECISION_LOG.md} entry and a row").find())
-                    .as("a future-tense obligation is not a claim of a held entry; 'destined for' says the "
-                            + "entry is owed, which is exactly what is true")
                     .isFalse();
 
             assertThat(STALE_ABSENCE.matcher("{@code V3__seed_data.sql} is not available.").find()).isTrue();
@@ -691,14 +696,14 @@ class EvidenceHonestyTest {
             final Path probe = Files.createTempFile("blitzy_adhoc_test_reflow", ".java");
             try {
                 Files.writeString(probe, String.join(System.lineSeparator(),
-                        "/**", " * The decision is recorded", " * in {@code DECISION_LOG.md}.", " */",
-                        "class Probe { }", ""));
+                        "/**", " * An entry in {@code DECISION_LOG.md} is owed,", " * which does not exist.",
+                        " */", "class Probe { }", ""));
                 final List<Claim> found = claims(probe);
                 assertThat(found).as("the comment must reflow into at least one sentence").isNotEmpty();
                 assertThat(found)
                         .as("a claim wrapped across two lines must still be detected, in %s",
                                 probe.toAbsolutePath().toString().toLowerCase(Locale.ROOT))
-                        .anyMatch(c -> REGISTER_CLAIM.matcher(c.sentence()).find());
+                        .anyMatch(c -> REGISTER_ABSENCE.matcher(c.sentence()).find());
             } finally {
                 Files.deleteIfExists(probe);
             }

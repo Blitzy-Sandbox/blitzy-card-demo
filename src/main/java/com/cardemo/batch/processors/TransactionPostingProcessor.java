@@ -338,10 +338,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <h2>How to build, run and test it</h2>
  * <p>
  * Build with {@code ./mvnw -B -ntp clean compile}, which compiles this file under {@code -Xlint:all -Werror} with
- * {@code failOnWarning} against release 25. Run the unit tier with {@code ./mvnw -B -ntp clean test}. The
+ * {@code failOnWarning} against release 25. Run the unit tier with {@code ./mvnw -B -ntp test}. The
  * integration tier needs a container runtime because it stands up PostgreSQL 16 and LocalStack through
- * Testcontainers. {@code mvn -B clean verify} additionally runs the OWASP dependency check, whose outcome
- * follows from the pinned dependency set and not from anything in this file.
+ * Testcontainers. <strong>{@code ./mvnw -B -ntp clean verify} is the full gate</strong> - the pinned wrapper
+ * rather than a host {@code mvn}, since the wrapper is what fixes Maven at 3.9.11 - and it additionally runs
+ * the JaCoCo 0.80 line floor, the {@code maven-javadoc-plugin} {@code doclint-gate} at {@code doclint=all}
+ * with {@code failOnWarnings} true, and the OWASP dependency check, whose outcome follows from the pinned
+ * dependency set and not from anything in this file. Passing {@code -Ddependency-check.skip=true} makes the
+ * run a local convenience rather than gate evidence.
  * <p>
  * This class is deliberately shaped to be unit-testable without a container: its four repositories, its
  * status mapper and its clock are all constructor-injected, it holds no static mutable state, and every

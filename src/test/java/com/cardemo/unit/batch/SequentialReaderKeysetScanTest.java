@@ -163,7 +163,8 @@ class SequentialReaderKeysetScanTest {
      * @return the card; never {@code null}
      */
     private static Card card(final String cardNumber) {
-        // No card verification argument: the entity declares no such field and the schema no such column.
+        // The third argument IS the card verification value: it is modelled and mandatory, but write-once
+        // and accessor-less, so nothing can read it back out again.
         return new Card(cardNumber, Long.valueOf(1L), "007", "SYNTHETICA Q TESTCASE     ", "2026-12-31", "Y");
     }
 
@@ -637,7 +638,7 @@ class SequentialReaderKeysetScanTest {
      */
     private static DailyTransactionReader stagingReader(final DailyTransactionRepository repository) {
         return new DailyTransactionReader(repository, mock(S3Operations.class), new FileStatusMapper(),
-                "repository", PAGE_SIZE, "", "gdg/dalytran/current.ps");
+                "repository", PAGE_SIZE, "", "gdg/dalytran/current.ps", "");
     }
 
     @Nested
@@ -840,7 +841,7 @@ class SequentialReaderKeysetScanTest {
         /** Bucket the generations live in; any name works, because the listing is stubbed. */
         private static final String BUCKET = "carddemo-batch-output";
 
-        /** The configured prefix, deliberately written WITHOUT a trailing separator to prove normalisation. */
+        /** The configured prefix, in the one canonical spelling the shared grammar accepts. */
         private static final String CONFIGURED_PREFIX = "gdg/transact-bkup";
 
         /**
@@ -944,7 +945,20 @@ class SequentialReaderKeysetScanTest {
             assertThat(requests.getValue().prefix())
                     .isEqualTo(CONFIGURED_PREFIX + "/")
                     .doesNotEndWith("//");
-            assertThat(TransactionBackupReader.DEFAULT_GENERATION_PREFIX).endsWith("/");
+
+            // Finding m-02. This assertion read DEFAULT_GENERATION_PREFIX.endsWith("/") until the prefix
+            // grammar was centralized, and the constant did end with one - while application.yml declares
+            // gdg/transact-bkup without one. The constant and the profile therefore disagreed by a character,
+            // and only a unit test that omits the profile ever saw the difference, which is why it survived.
+            // The constant is now the same relative form the profile declares, and the separator is DERIVED
+            // for the listing. Asserting it on the value actually sent to S3, as the assertion above does, is
+            // the stronger claim anyway: it is the listing filter that has to carry the boundary, not a
+            // constant.
+            assertThat(TransactionBackupReader.DEFAULT_GENERATION_PREFIX)
+                    .as("the fallback must be the one canonical spelling, so a context without the profile "
+                            + "validates the same value a context with it does")
+                    .isEqualTo(CONFIGURED_PREFIX)
+                    .doesNotEndWith("/");
         }
 
         @Test

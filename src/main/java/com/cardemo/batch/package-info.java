@@ -50,12 +50,20 @@
  * Batch layer of the CardDemo application: the Spring Batch replacement for the z/OS JES2 job stream that
  * ran 29 JCL members over DFSORT, IDCAMS and ten COBOL batch programs.
  *
- * <p>This package holds <strong>no type of its own</strong>. It is the layer root, and it exists as a
- * document because four leaves sit beneath it and a handful of facts belong to all four rather than to any
- * one of them: one exit-code vocabulary, one record-geometry contract, one object-storage key scheme, one
- * set of preserved source quirks. Stating those in each leaf would be the duplication Rule 1 Clause C
- * forbids; stating them nowhere would fail Rule 1 Clause E for the layer. So they are stated here once, and
- * each leaf documents what is genuinely its own.
+ * <p>This package holds <strong>exactly one type</strong>, and it is the layer root. It exists as a document
+ * because four leaves sit beneath it and a handful of facts belong to all four rather than to any one of them:
+ * one exit-code vocabulary, one record-geometry contract, one object-storage key scheme, one set of preserved
+ * source quirks. Stating those in each leaf would be the duplication Rule 1 Clause C forbids; stating them
+ * nowhere would fail Rule 1 Clause E for the layer. So they are stated here once, and each leaf documents what
+ * is genuinely its own.
+ *
+ * <p>{@link com.cardemo.batch.GenerationPrefixContract} is the one type, and it lives here for the same reason
+ * this document does. It publishes the single grammar every S3 object-key prefix in the layer must satisfy, and
+ * it refuses at context refresh any configuration in which two of the nine configured roots could resolve to
+ * one another's objects. Its callers are jobs, readers and writers - three of the four leaves - so no leaf can
+ * own it without the other two depending on a sibling, and no class outside this layer needs it at all.
+ * <strong>Finding m-02, severity Minor, RESOLVED:</strong> before it existed, six classes each carried a
+ * private validator and no two agreed, the weakest checking only that the value was not entirely separators.
  *
  * <p>The reader this document is written for is a maintainer who has never seen COBOL. Where a decision
  * looks arbitrary it is almost always a source behaviour being reproduced deliberately, and the citation
@@ -160,7 +168,7 @@
  * only. Measured at this commit: {@code OPEN} 18, {@code READ} 17, {@code CLOSE} 18, {@code DISPLAY} 42,
  * and {@code WRITE}, {@code REWRITE} and {@code DELETE} <strong>zero</strong>. A program that writes
  * nothing cannot be a job that produces something, so a standalone job would have been an invention. It
- * remains a first-class row for paragraph-correspondence purposes and is owed one in the planned
+ * remains a first-class row for paragraph-correspondence purposes and is owed one in the
  * {@code TRACEABILITY_MATRIX.md}.
  *
  * <p>The same reasoning makes four more programs <strong>read-only verification steps</strong> rather than
@@ -176,18 +184,22 @@
  * <p>The toolchain is pinned, and the pins are the build contract rather than a preference: Java
  * <strong>25</strong> with {@code maven.compiler.release} at 25 and <strong>no preview features</strong>,
  * Maven <strong>3.9.11</strong>, {@code spring-boot-starter-parent} 3.5.11, Spring Batch 5.2.4, the Spring
- * Cloud AWS bill of materials 3.3.0, Hibernate 6.6.42.Final and the PostgreSQL driver 42.7.10. Testcontainers
+ * Cloud AWS bill of materials 3.3.0, Hibernate 6.6.42.Final and the PostgreSQL driver
+ * <strong>42.7.13</strong> - a forward override in {@code pom.xml}; an earlier revision published the
+ * parent-managed 42.7.10 and is withdrawn. Testcontainers
  * is pinned to 2.0.3 by property rather than by importing a second bill of materials, and only the four
  * prefixed coordinates resolve at that version. <strong>Add no dependency, and no Lombok.</strong>
  *
  * <ul>
  *   <li>Compile: {@code ./mvnw -B -ntp clean compile}.</li>
  *   <li>Unit tier: {@code ./mvnw -B -ntp test}, under Surefire.</li>
- *   <li>Full gate: {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The integration and
+ *   <li>Full gate: {@code ./mvnw -B -ntp clean verify}. The integration and
  *       end-to-end tiers run under <strong>Failsafe at {@code verify}</strong>. That one flag skips only the
  *       vulnerability scan, which needs network access to the feed; drop it when the scan is wanted.</li>
  *   <li>Local topology: {@code docker compose up} brings up PostgreSQL 16, LocalStack, Jaeger, Prometheus
- *       and Grafana. Load the git-ignored {@code .env} first with {@code set -a; . ./.env; set +a}.</li>
+ *       and Grafana. Load the git-ignored {@code .env} inside a subshell that also carries the command -
+ *       {@code ( set -a; . ./.env; set +a; docker compose up )} - so the exported values die with that subshell
+ *       rather than being inherited by every later child of the interactive shell.</li>
  * </ul>
  *
  * <p>Compilation runs <strong>{@code -Xlint:all -Werror}</strong> with {@code failOnWarning}, so a raw type,
@@ -232,7 +244,12 @@
  *   <li>{@code carddemo.batch.jobs.posttran.name}, {@code .intcalc.name}, {@code .combtran.name},
  *       {@code .creastmt.name} and {@code .tranrept.name} - the five legacy job names {@code POSTTRAN},
  *       {@code INTCALC}, {@code COMBTRAN}, {@code CREASTMT} and {@code TRANREPT}, kept as the Spring Batch
- *       job names so a run is traceable to the JCL member it replaces. {@code creastmt.steps} is 5.</li>
+ *       job names so a run is traceable to the JCL member it replaces - and matched against
+ *       {@code Job.getName()} by the framework's own launcher, which is what makes the name the operator's
+ *       submission handle. Each is bound by its own job class, {@code .tranrept.name} included. Job identity
+ *       lives under {@code carddemo.batch.jobs.<id>.name} and job tuning under
+ *       {@code carddemo.batch.<id>.*}; that split is the one spelling of each, and finding CFG-002 withdrew
+ *       the unbound {@code .enabled} flags and {@code creastmt.steps} from the identity namespace.</li>
  *   <li>{@code carddemo.aws.s3.batch-input-bucket}, {@code .batch-output-bucket} (versioned) and
  *       {@code .statements-bucket} - bound from {@code CARDDEMO_S3_BATCH_INPUT_BUCKET},
  *       {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET} and {@code CARDDEMO_S3_STATEMENTS_BUCKET}, with
@@ -350,8 +367,8 @@
  *       prerequisite plus the words {@code Not available} - never a fabricated pass.</dd>
  *
  *   <dt>A generated timestamp differs from the baseline in its last digits</dt>
- *   <dd><strong>Blocker 5.4.</strong> See the invariants below: format to millisecond precision followed by
- *       four zeros, never to nanosecond precision.</dd>
+ *   <dd><strong>Blocker 5.4.</strong> See the invariants below: format to hundredths-of-a-second precision
+ *       followed by four literal zeros, never to millisecond or nanosecond precision.</dd>
  * </dl>
  *
  * <h2>Byte-exact record geometry</h2>
@@ -476,8 +493,11 @@
  *       {@code app/cbl/CBTRN02C.cbl:L436} where {@code MOVE DALYTRAN-ORIG-TS TO TRAN-ORIG-TS} copies the
  *       input bytes untouched. No single temporal type can round-trip all three. So the representation is
  *       {@code String} over {@code CHAR(26)} - <strong>never {@code LocalDateTime}, {@code Timestamp} or
- *       {@code Instant}</strong> - and formatting goes to millisecond precision followed by four zeros,
- *       never to nanosecond precision.</li>
+ *       {@code Instant}</strong> - and formatting goes to <strong>hundredths-of-a-second</strong> precision
+ *       followed by four literal zeros, never to millisecond or nanosecond precision. An earlier revision of
+ *       this invariant said milliseconds; it is withdrawn, because three fraction digits plus four zeros is
+ *       seven characters where {@code app/cbl/CBTRN02C.cbl:L159-L174} declares six -
+ *       {@code DB2-MIL PIC 9(002)} then {@code DB2-REST PIC X(04)}.</li>
  *   <li><strong>Reject codes are business outcomes driving {@code ExitStatus}, and are never thrown.</strong>
  *       There are exactly five, with these literal descriptions: {@code 100 INVALID CARD NUMBER FOUND},
  *       {@code 101 ACCOUNT RECORD NOT FOUND}, {@code 102 OVERLIMIT TRANSACTION},
@@ -521,8 +541,8 @@
  * <h2>Source behaviour preserved deliberately</h2>
  *
  * <p>Each item below is a source behaviour that a well-meaning implementer would "fix". Parity is the
- * contract of this migration, so none of them is fixed, and each is owed an entry in the planned
- * {@code DECISION_LOG.md} together with a row in the planned {@code TRACEABILITY_MATRIX.md}.
+ * contract of this migration, so none of them is fixed, and each is owed an entry in the
+ * {@code DECISION_LOG.md} together with a row in the {@code TRACEABILITY_MATRIX.md}.
  *
  * <ul>
  *   <li><strong>Reject code 103 overwrites 102.</strong> In {@code 1500-B-LOOKUP-ACCT} at
@@ -603,7 +623,7 @@
  * collapsing the three independent COBOL commits of {@code 2000-POST-TRANSACTION} into one atomic Java
  * transaction closes an orphaned-row hazard as a side effect: the legacy rewrite-failure path leaves an
  * orphaned category-balance row and an orphaned transaction row behind. That is a genuine behavioural
- * improvement, not equivalence, and it is owed an entry in the planned {@code DECISION_LOG.md} saying so.
+ * improvement, not equivalence, and it is owed an entry in the {@code DECISION_LOG.md} saying so.
  *
  * <p>The register of retained parity artefacts is the marker at each declaration, plus the roster held by the
  * root package documentation. This document deliberately does not restate that register as a count, because a
@@ -686,8 +706,8 @@
  *       by matching {@code app/cbl} and {@code app/jcl} case-insensitively and stripping the carriage return;
  *       <strong>Blocker 5.3</strong>, the unreachable final-flush branch, remedied by reproducing the loss and
  *       adding no flush; and <strong>Blocker 5.4</strong>, the 26-byte text timestamps with three incompatible
- *       producers, remedied by {@code String} over {@code CHAR(26)} at millisecond precision plus four
- *       zeros.</dd>
+ *       producers, remedied by {@code String} over {@code CHAR(26)} at hundredths-of-a-second precision plus
+ *       four literal zeros.</dd>
  * </dl>
  *
  * <h3>The one documented conflict, resolved in favour of parity</h3>
@@ -701,7 +721,7 @@
  * <p><strong>Parity governs, and Clause B is satisfied by a different mechanism.</strong> The clause's own
  * wording forbids dead code and "TODOs without owners or tracking reference" - it is untracked residue that
  * it targets. Every artefact retained here is cited to its source line, marked at its declaration with an
- * explicit intentional-no-op comment, and owed an entry in the planned {@code DECISION_LOG.md}. It is a
+ * explicit intentional-no-op comment, and owed an entry in the {@code DECISION_LOG.md}. It is a
  * documented faithful reproduction of behaviour that exists in the system of record, not abandoned code.
  * Deleting these sites would produce a layer that is marginally cleaner and measurably less traceable,
  * failing a stated acceptance criterion to satisfy a stylistic one.

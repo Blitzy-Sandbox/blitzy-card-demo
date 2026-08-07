@@ -426,7 +426,7 @@ import org.springframework.stereotype.Repository;
  *       {@code spring.batch.jdbc.initialize-schema}, never by a fourth Flyway migration and never as
  *       extra tables in {@code V1}.</li>
  *   <li><b>HikariCP connection pool tuning is explicitly out of scope</b> and is recorded as a
- *       residual risk in the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. The defaults
+ *       residual risk in the {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. The defaults
  *       are used as shipped. Stating the gap is the honest discharge of clause A's "justify
  *       tradeoffs only when needed"; inventing pool figures with no measured workload behind them
  *       would be the dishonest one.</li>

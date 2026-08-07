@@ -37,6 +37,7 @@ package com.cardemo.integration.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -50,6 +51,7 @@ import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -114,6 +116,55 @@ class InterestCalculationJobIntegrationTest extends AbstractBatchIntegrationTest
     /** Reads committed state directly, because job writes sit outside the tier's rollback scope. */
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    /** Reads the objects a run actually created, so cardinality is asserted against the store itself. */
+    @Autowired
+    private io.awspring.cloud.s3.S3Operations s3Operations;
+
+    /** The bucket the generations are written to, as configured for this tier. */
+    @Value("${carddemo.aws.s3.batch-output-bucket}")
+    private String batchOutputBucket;
+
+    /** The generation prefix, as configured for this tier. */
+    @Value("${carddemo.aws.s3.gdg-prefixes.systran:gdg/systran}")
+    private String systranPrefix;
+
+    /** Collaborators for assembling a variant of the job with a deliberately small commit interval. */
+    @Autowired
+    private org.springframework.batch.core.repository.JobRepository jobRepository;
+
+    /** The transaction manager the assembled step commits through. */
+    @Autowired
+    @Qualifier("transactionManager")
+    private org.springframework.transaction.PlatformTransactionManager platformTransactionManager;
+
+    /** The driving reader's repository. */
+    @Autowired
+    private com.cardemo.repository.TransactionCategoryBalanceRepository categoryBalanceRepository;
+
+    /** The account repository the processor rewrites through. */
+    @Autowired
+    private com.cardemo.repository.AccountRepository accountRepository;
+
+    /** The cross-reference repository the card number is read from. */
+    @Autowired
+    private com.cardemo.repository.CardCrossReferenceRepository crossReferenceRepository;
+
+    /** The disclosure group repository the rate is looked up in. */
+    @Autowired
+    private com.cardemo.repository.DisclosureGroupRepository disclosureGroupRepository;
+
+    /** The owner of the 350-byte record geometry. */
+    @Autowired
+    private com.cardemo.batch.writers.TransactionWriter transactionWriter;
+
+    /** The shared file-status renderer. */
+    @Autowired
+    private com.cardemo.service.shared.FileStatusMapper fileStatusMapper;
+
+    /** The per-record interest body. */
+    @Autowired
+    private com.cardemo.batch.processors.InterestCalculationProcessor interestCalculationProcessor;
 
     /** The parameter validator's four rejection arms, asserted against the assembled job. */
     @Nested
@@ -327,5 +378,129 @@ class InterestCalculationJobIntegrationTest extends AbstractBatchIntegrationTest
     private long transactionRowCount() {
         Long count = jdbcTemplate.queryForObject("SELECT count(*) FROM \"transaction\"", Long.class);
         return count == null ? 0L : count.longValue();
+    }
+
+    /**
+     * Findings C-03 and C-05, both Critical, asserted against real LocalStack rather than a mock.
+     *
+     * <p>These are the assertions whose absence let the defects ship. Every existing launch in this suite
+     * reads the 50 rows {@code tcatbal.txt} seeds in a single chunk of the default commit interval, so it
+     * staged exactly one part and produced exactly one object <em>by accident</em> - the cardinality was
+     * indistinguishable from correct. A run of several chunks is therefore assembled here explicitly, with a
+     * commit interval small enough to guarantee it, and the object store is then asked what the generation
+     * actually holds.
+     */
+    @Nested
+    @DisplayName("A generation is one object, and a failed run leaves none (C-03, C-05)")
+    class GenerationCardinality {
+
+        /** Small enough that 50 seeded category balances cannot fit one chunk. */
+        private static final int SMALL_CHUNK = 7;
+
+        /** Distinct from INTCALC so these launches cannot collide with another test's job instances. */
+        private static final String VARIANT_JOB_NAME = "INTCALC-CHUNKED";
+
+        /**
+         * Assembles the real job with a small commit interval and every real collaborator.
+         *
+         * @return a launchable job that will take several chunks over the seeded data
+         */
+        private Job chunkedVariant() {
+            final InterestCalculationJob configuration = new InterestCalculationJob(
+                    jobRepository, platformTransactionManager, categoryBalanceRepository,
+                    accountRepository, crossReferenceRepository, disclosureGroupRepository,
+                    transactionWriter, s3Operations, fileStatusMapper,
+                    VARIANT_JOB_NAME, SMALL_CHUNK, batchOutputBucket, systranPrefix);
+            return configuration.interestCalculationJob(configuration.interestCalculationFlow(
+                    configuration.interestCalculationStep(interestCalculationProcessor)));
+        }
+
+        /**
+         * Lists the object keys the store holds under one generation.
+         *
+         * @param generationPrefix the generation to list
+         * @return every key beneath it, parts included
+         */
+        private List<String> objectsUnder(final String generationPrefix) {
+            return s3Operations.listObjects(batchOutputBucket, generationPrefix).stream()
+                    .map(resource -> {
+                        try {
+                            return resource.getLocation().getObject();
+                        } catch (final RuntimeException unavailable) {
+                            return resource.getFilename();
+                        }
+                    })
+                    .filter(java.util.Objects::nonNull)
+                    .sorted()
+                    .toList();
+        }
+
+        @Test
+        @DisplayName("a multi-chunk run leaves exactly ONE object in its generation")
+        @Transactional(propagation = Propagation.NOT_SUPPORTED)
+        void aMultiChunkRunLeavesExactlyOneObject() throws java.io.IOException {
+            final JobExecution execution = launchJob(chunkedVariant(),
+                    runIdParameters(Map.of("parmDate", "2022081200")));
+
+            assertThat(execution.getStatus())
+                    .as("failure details: %s", execution.getAllFailureExceptions())
+                    .isEqualTo(BatchStatus.COMPLETED);
+            assertThat(execution.getStepExecutions())
+                    .as("the point of the small commit interval is that the writer is called repeatedly; "
+                            + "a single-chunk run would not exercise the concatenation at all")
+                    .anySatisfy(step -> assertThat(step.getCommitCount()).isGreaterThan(1));
+
+            final String generationPrefix = execution.getExecutionContext()
+                    .getString("carddemo.systran.generation.prefix", "");
+            assertThat(generationPrefix).isNotBlank();
+
+            final List<String> objects = objectsUnder(generationPrefix);
+            assertThat(objects)
+                    .as("a GDG generation is one sequential dataset, so it is one object. Staged parts "
+                            + "must have been concatenated and removed - and CombinedTransactionReader "
+                            + "refuses to read a generation holding more than one, so anything else here "
+                            + "would fail the pipeline at the next stage")
+                    .hasSize(1);
+            assertThat(objects.get(0)).endsWith("/systran.dat");
+            assertThat(objects)
+                    .as("no staged part may survive its own promotion")
+                    .noneMatch(key -> key.contains("/parts/"));
+
+            // The manifest a downstream step reads names that one object and nothing else.
+            assertThat(execution.getExecutionContext()
+                            .getLong(InterestCalculationJob.SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY))
+                    .isEqualTo(1L);
+            assertThat(execution.getExecutionContext()
+                            .getString(InterestCalculationJob.SYSTRAN_GENERATION_KEYS_INDEX_PREFIX + "0"))
+                    .isEqualTo(objects.get(0));
+
+            // And the one object is a whole number of 350-byte records, per DCB=(RECFM=F,LRECL=350).
+            final long length = s3Operations
+                    .download(batchOutputBucket, objects.get(0)).contentLength();
+            assertThat(length)
+                    .as("app/jcl/INTCALC.jcl:L39 declares LRECL=350, so a partial trailing record is not a "
+                            + "representable dataset")
+                    .isGreaterThan(0L);
+            assertThat(length % com.cardemo.batch.writers.TransactionWriter.RECORD_LENGTH).isZero();
+        }
+
+        @Test
+        @DisplayName("the staged parts are removed, so a re-listing of the whole prefix stays clean")
+        @Transactional(propagation = Propagation.NOT_SUPPORTED)
+        void noPartSurvivesUnderTheWholePrefix() {
+            final JobExecution execution = launchJob(chunkedVariant(),
+                    runIdParameters(Map.of("parmDate", "2022081300")));
+
+            assertThat(execution.getStatus())
+                    .as("failure details: %s", execution.getAllFailureExceptions())
+                    .isEqualTo(BatchStatus.COMPLETED);
+
+            // Listed across every generation this tier has produced, not merely this run's: a part left
+            // behind by any successful run is litter that a later "newest generation" resolution could
+            // stumble into.
+            assertThat(objectsUnder(systranPrefix))
+                    .as("no successful run may leave a staged part anywhere under the generation root")
+                    .noneMatch(key -> key.contains("/parts/"));
+        }
     }
 }

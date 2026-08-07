@@ -38,11 +38,8 @@ import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ItemProcessor;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
-import org.springframework.stereotype.Component;
 
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.CardCrossReference;
@@ -84,12 +81,20 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to build, run and test</h2>
  *
- * <p>Build with {@code mvn -B clean compile}; the compiler runs with {@code -Xlint:all -Werror} and
- * {@code failOnWarning}, so any warning is a build failure. Test with {@code mvn -B clean test}.
+ * <p>Build with {@code ./mvnw -B -ntp clean compile} - always the pinned wrapper, never a host {@code mvn},
+ * because the wrapper is what fixes Maven at 3.9.11 and the enforcer floor rejects anything older. The
+ * compiler runs with {@code -Xlint:all -Werror} and {@code failOnWarning}, so any warning in a category
+ * {@code javac} 25 publishes is a build failure. Run the unit tier with {@code ./mvnw -B -ntp test}.
+ * <strong>{@code ./mvnw -B -ntp clean verify} is the full gate</strong> and the only command whose result is
+ * evidence: it adds Failsafe's container-backed tiers, the JaCoCo 0.80 line floor, the
+ * {@code maven-javadoc-plugin} {@code doclint-gate} bound at {@code verify} with {@code doclint} set to
+ * {@code all} and {@code failOnWarnings} true, and the OWASP dependency check.
+ * {@code -Ddependency-check.skip=true} is a local shortcut for a cold cache or an offline host and produces
+ * no gate evidence.
  * <p>
  * Two test classes assert against this class today:
  * {@code src/test/java/com/cardemo/unit/batch/TransactionReportProcessorScopeIsolationTest.java}, which
- * proves the step-scoped state described below does not leak between overlapping executions, and
+ * proves the per-execution state described below does not leak between overlapping executions, and
  * {@code src/test/java/com/cardemo/unit/batch/ParityLoggerRoutingTest.java}, which proves the parity log
  * routing. Re-derive the current set with
  * {@code grep -rl TransactionReportProcessor src/test/java}.
@@ -100,7 +105,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * the other that the dedicated class was still owed - and both are withdrawn: it exists, which is why this
  * class does not appear in the zero-coverage set of the JaCoCo report.
  *
- * <p>This class is <strong>step scoped</strong>, and that is a required difference from its stateless
+ * <p>This class is <strong>constructed once per step execution by its owning job</strong>, and that is a
+ * required difference from its stateless
  * sibling {@link TransactionCombineProcessor}, which is an ordinary singleton. It carries the seven
  * {@code WS-REPORT-VARS} state items of {@code app/cbl/CBTRN03C.cbl:L127-L137} - the line counter, the
  * page, account and grand totals, the current card number, the first-time flag and the last amount - so a
@@ -108,30 +114,43 @@ import com.cardemo.service.shared.FileStatusMapper;
  * executions would interleave into a single set of counters and produce a report that is wrong in a way
  * no assertion on either run would catch.
  *
- * <p><strong>The scope is declared here, on the class, and is not delegated.</strong> An earlier revision
- * of this documentation left the registration to {@code config/BatchConfig.java} and printed the
- * {@code @Bean @StepScope} method that class was expected to supply. That was a real defect rather than a
- * division of labour: at the time it was written the class was an unregistered, unscoped, stateful
- * component whose isolation depended on a file nobody had written. Severity: <strong>High</strong>.
- * Remediation, applied: {@code @Component} and {@code @StepScope} on this class, with the two reporting
- * dates bound from the job parameters on the constructor, exactly as
- * {@link InterestCalculationProcessor} binds {@code parmDate} and as
- * {@code com.cardemo.batch.writers.RejectWriter} binds {@code #{stepExecution}}. A step-scoped bean is
- * instantiated once per step execution, so each execution owns its own counters by construction.
+ * <p><strong>Registration contract - one owner, no bean definition.</strong> This class carries no
+ * {@code @Component} and no {@code @StepScope}: {@link com.cardemo.batch.jobs.TransactionReportJob}
+ * constructs it with {@code new} inside the STEP10R tasklet, once per step execution, and is its
+ * <em>sole</em> owner - a repository-wide search finds no other reference to this type in
+ * {@code src/main/java}. Per-execution isolation is therefore guaranteed by construction: a fresh instance
+ * means fresh counters, and <strong>this class holds no static mutable state</strong>, which
+ * {@code TransactionReportProcessorScopeIsolationTest} asserts directly.
  *
- * <p>{@code config/BatchConfig.java} does now exist, and it once carried a
- * {@code @Bean @StepScope transactionReportProcessor} factory as well. <strong>That factory has been
- * removed.</strong> Two definitions of this type could not coexist: the {@code @Component} default bean
- * name and the factory method name are both {@code transactionReportProcessor}, and
- * {@code spring.main.allow-bean-definition-overriding} is {@code false} in the base profile, so the pair
- * was a startup failure rather than a redundancy. The component annotation is what survives, because every other
- * reader, processor and writer in this package group is registered the same way and because the scope is a
- * property of this class rather than of whoever wires it.
+ * <p>Two earlier revisions of this documentation are withdrawn, and the second was itself a defect. The
+ * first left registration to {@code config/BatchConfig.java} and printed a {@code @Bean @StepScope} method
+ * that file was expected to supply, while the class was unregistered, unscoped and stateful - its isolation
+ * depended on a file nobody had written. The remediation applied then was {@code @Component} plus
+ * {@code @StepScope} on the class with both dates bound by {@code @Value} from the job parameters. That
+ * introduced a <strong>second</strong> defect: the owning job never resolved the bean, it constructed the
+ * class directly, so the container published a definition no production path used and the annotations
+ * documented a binding that never occurred. Two ownership models for one type. That is finding
+ * <strong>F-008</strong>, severity Medium, and this contract is its resolution - the annotations and the two
+ * {@code @Value} expressions are removed, and the job that already supplied both dates is now the declared
+ * owner. It reads them from the job parameters through {@code startDateSymbol} and {@code endDateSymbol},
+ * which name {@link #START_DATE_JOB_PARAMETER} and {@link #END_DATE_JOB_PARAMETER}, so the values still come
+ * from {@code DATEPARM} by the same route - only the binding site moved from this constructor to its caller.
+ * The stateless {@link TransactionCombineProcessor} keeps {@code @Component} because it is genuinely
+ * injected as a step-bean parameter; {@link InterestCalculationProcessor} keeps its {@code @Value} binding
+ * for the same reason.
  *
- * <p>The annotations change nothing for a test: {@code @Value} is ignored on direct construction, so
- * {@code new TransactionReportProcessor(...)} still works and is still how the unit tier drives this
- * class. Every collaborator and both dates arrive through the constructor; there is no setter, no static
- * mutable field and no environment lookup.
+ * <p>{@code config/BatchConfig.java} once carried a {@code @Bean @StepScope transactionReportProcessor}
+ * factory as well. <strong>That factory was removed</strong> and is not reinstated. Two definitions of this
+ * type could not coexist - the former {@code @Component} default bean name and the factory method name were
+ * both {@code transactionReportProcessor} and {@code spring.main.allow-bean-definition-overriding} is
+ * {@code false} in the base profile - and reinstating it under a unique name would move the constructor's
+ * date validation behind a scoped proxy, where a rejected {@code DATEPARM} pair surfaces as a
+ * {@code BeanCreationException} at first method call instead of as the {@link FatalProcessingException} the
+ * step reports today.
+ *
+ * <p>Nothing about this changes how a test drives the class: {@code new TransactionReportProcessor(...)}
+ * is what production does and is what the unit tier does. Every collaborator and both dates arrive through
+ * the constructor; there is no setter, no static mutable field and no environment lookup.
  *
  * <p><strong>Lifecycle contract.</strong> Call {@link #openDatasets()} once before the first record,
  * {@link #process(Transaction)} once per record in sort order, {@link #finishReport()} exactly once after
@@ -230,7 +249,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>Findings carried by this translation</h2>
  *
- * <p>Classified per clause F2 and destined for the planned {@code DECISION_LOG.md}. Every finding that alters an
+ * <p>Classified per clause F2 and destined for the {@code DECISION_LOG.md}. Every finding that alters an
  * emitted report record is reproduced rather than repaired: parity is the contract, and clause B1 forbids
  * <em>untracked</em> dead or defective code rather than forbidding the faithful reproduction of a tracked
  * defect. <strong>Exactly one finding is deliberately not reproduced</strong> - the unexamined
@@ -321,8 +340,6 @@ import com.cardemo.service.shared.FileStatusMapper;
  * @see FileStatusMapper
  * @see FatalProcessingException
  */
-@Component
-@StepScope
 public class TransactionReportProcessor
         implements ItemProcessor<Transaction, TransactionReportProcessor.ReportLines> {
 
@@ -388,11 +405,12 @@ public class TransactionReportProcessor
      * <p>The source reads both dates from the {@code DATEPARM} control input declared at
      * {@code app/jcl/TRANREPT.jcl}, whose 80-byte record the sort symbols of
      * {@code app/proc/TRANREPT.prc:STEP05R} also key on, and re-applies the range in
-     * {@code 1050-WRITE-TRANSACTION-REPORT}. In Java that control input becomes two job parameters, bound
-     * on the constructor because this bean is step scoped and therefore created once per step execution.
+     * {@code 1050-WRITE-TRANSACTION-REPORT}. In Java that control input becomes two job parameters, read
+     * from the job parameters by the owning step and passed to this constructor, which is created once per
+     * step execution.
      *
      * <p><strong>Public because it is a contract, not an internal detail.</strong> Whatever launches the
-     * report job must supply a parameter under exactly this name or the bean cannot be created, so the name
+     * report job must supply a parameter under exactly this name or the step cannot construct this class, so the name
      * belongs to this class's published surface rather than to its private state. Referencing the constant
      * is what makes a launcher and this processor unable to disagree about the spelling.
      */
@@ -1162,8 +1180,8 @@ public class TransactionReportProcessor
             TransactionTypeRepository transactionTypeRepository,
             TransactionCategoryRepository transactionCategoryRepository,
             FileStatusMapper fileStatusMapper,
-            @Value("#{jobParameters['" + START_DATE_JOB_PARAMETER + "']}") String startDate,
-            @Value("#{jobParameters['" + END_DATE_JOB_PARAMETER + "']}") String endDate) {
+            String startDate,
+            String endDate) {
         this.transactionRepository = requireCollaborator(transactionRepository,
                 "TransactionRepository", "TRANFILE");
         this.cardCrossReferenceRepository = requireCollaborator(cardCrossReferenceRepository,
@@ -1211,7 +1229,7 @@ public class TransactionReportProcessor
      *
      * <ul>
      *   <li><em>The cache lifetime is exactly the source's file-open window.</em> This class is
-     *       {@code @StepScope}, constructed per step execution and discarded with it, so the map lives from
+     *       constructed once per step execution by its owning step and discarded with it, so the map lives from
      *       the first record to the last - precisely the interval between the source's {@code OPEN} at
      *       {@code app/cbl/CBTRN03C.cbl:L157} and its {@code CLOSE} at {@code :L209}. A cache that begins
      *       and ends where the file handle does cannot have a wider window than the file handle.</li>
@@ -1389,7 +1407,7 @@ public class TransactionReportProcessor
      * group never gets an {@code Account Total} line at all</strong>. No flush is added and the addition is not
      * deduplicated. Remediation, for whoever later chooses parity break over parity: move the {@code ADD} inside the
      * record branch and perform a final account total block before the closing page total. Do not apply it while Gate
-     * 1 compares against the legacy baseline. Destined for the planned {@code DECISION_LOG.md}.
+     * 1 compares against the legacy baseline. Destined for the {@code DECISION_LOG.md}.
      *
      * <p><strong>Finding, Medium severity - the uninitialised amount on an empty stream.</strong> If no
      * record was ever read, the source reaches {@code :L198-L201} with {@code TRAN-AMT} never assigned.
@@ -1399,7 +1417,7 @@ public class TransactionReportProcessor
      * reproduced, so it is <em>defined</em> here as a zero contribution: the closing totals are emitted
      * and read zero. Note what still holds - the header block is driven by the first record at
      * {@code :L275-L280}, so an empty stream yields these three closing lines and <strong>no
-     * headers</strong>. Destined for the planned {@code DECISION_LOG.md}.
+     * headers</strong>. Destined for the {@code DECISION_LOG.md}.
      *
      * <p><strong>Side effects.</strong> Advances the page and account totals, the grand total and the line
      * counter by two. Performs no lookup and writes nothing to any file.
@@ -1423,7 +1441,7 @@ public class TransactionReportProcessor
                     + "running it again would add the stale amount to the page and account totals a "
                     + "second time, roll that inflated page total into the grand total a second time, "
                     + "and emit a second closing block. Call finishReport exactly once, after the last "
-                    + "record, and use a fresh step scoped processor for the next run.",
+                    + "record, and construct a fresh processor for the next run.",
                     ERROR_WRITING_REPTFILE_TEXT);
         }
         this.reportFinished = true;
@@ -1588,7 +1606,7 @@ public class TransactionReportProcessor
      * paragraphs", and that silently truncating a report is a worse failure than filtering a record the upstream sort
      * should already have removed. Remediation, if literal fidelity is ever required: signal the step to stop by
      * throwing from the reader rather than filtering here, and accept that the closing totals are then not emitted.
-     * Destined for the planned {@code DECISION_LOG.md}.
+     * Destined for the {@code DECISION_LOG.md}.
      *
      * <p>The length guard is clause A2 and B2 work, not source behaviour: {@code TRAN-PROC-TS} is
      * {@code PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L17} and a fixed width field is always at least ten
@@ -1630,7 +1648,7 @@ public class TransactionReportProcessor
      * because a DEBUG level on the class logger is a configuration choice an operator can flip whereas
      * {@value #PARITY_LOGGER_NAME} is {@code OFF} in every shipped profile. The report <em>body</em> keeps
      * whatever the layout requires - that is the deliverable, not a log - and no card number or amount is
-     * written to the application log by any path in this class. Destined for the planned {@code DECISION_LOG.md}.
+     * written to the application log by any path in this class. Destined for the {@code DECISION_LOG.md}.
      *
      * @param item the transaction being reported, already known to be non-{@code null}.
      */
@@ -1769,7 +1787,7 @@ public class TransactionReportProcessor
      * an account group, and a multi card account produces one "Account Total" line per card. Both halves
      * are preserved: the break stays on the card number and the label still reads {@code Account Total}.
      * Remediation, should the label ever be corrected: change the literal only, never the break key, since
-     * the break key determines which records are grouped. Destined for the planned {@code DECISION_LOG.md}.
+     * the break key determines which records are grouped. Destined for the {@code DECISION_LOG.md}.
      *
      * <p>This is one of the three paragraphs whose label begins {@code 1120-}; the others are
      * {@link #writeHeaders(List)} at {@code :L324} and
@@ -1919,7 +1937,7 @@ public class TransactionReportProcessor
      * <p>Neither is widened and neither is elided with an ellipsis: the column widths are fixed by the 133 byte
      * layout, so any other choice would move every field to its right. Remediation, if the descriptions ever need to
      * be complete: widen the report line, which is a change to the record length and therefore to the DD statement at
-     * {@code app/proc/TRANREPT.prc:L76}. Destined for the planned {@code DECISION_LOG.md}.
+     * {@code app/proc/TRANREPT.prc:L76}. Destined for the {@code DECISION_LOG.md}.
      *
      * <p>Two further moves change representation rather than width. {@code :L364} moves
      * {@code XREF-ACCT-ID PIC 9(11)} into {@code TRAN-REPORT-ACCOUNT-ID PIC X(11)}, which renders eleven
@@ -2042,7 +2060,7 @@ public class TransactionReportProcessor
      * {@link #lookupXref(String)}.
      *
      * <p>Performed for <strong>every</strong> record, not only on a control break - the source repeats the
-     * read at {@code :L190} on each iteration - but the row is resolved from the step-scoped map that
+     * read at {@code :L190} on each iteration - but the row is resolved from the per-execution map that
      * {@link #transactionTypes()} loads once, rather than by a query per record. That method carries the
      * evidence that the cache window is exactly the source's {@code OPEN}/{@code CLOSE} window and that the
      * source's own repeated {@code READ} re-examines a VSAM buffer rather than the volume.
@@ -2057,7 +2075,7 @@ public class TransactionReportProcessor
     private TransactionType lookupTranType(Transaction item) {
         // app/cbl/CBTRN03C.cbl:L189 - MOVE TRAN-TYPE-CD OF TRAN-RECORD TO FD-TRAN-TYPE.
         String typeCode = fixedWidth(item.getTypeCode(), DETAIL_TYPE_CODE_WIDTH);
-        // app/cbl/CBTRN03C.cbl:L190 - the read, served from the step-scoped table. A physical failure is
+        // app/cbl/CBTRN03C.cbl:L190 - the read, served from the per-execution table. A physical failure is
         // raised by transactionTypes() with the same attribution a per-record read would have carried.
         Optional<TransactionType> found = Optional.ofNullable(transactionTypes().get(typeCode));
         if (found.isEmpty()) {
@@ -2087,7 +2105,7 @@ public class TransactionReportProcessor
      * {@link TransactionCategoryId} takes its two components in that same order, so the constructor call
      * reads as the key does.
      *
-     * <p>Performed for every record, and resolved from the step-scoped map that
+     * <p>Performed for every record, and resolved from the per-execution map that
      * {@link #transactionCategories()} loads once, for the reason given on {@link #transactionTypes()}.
      *
      * @param item the transaction supplying both key components.
@@ -2104,7 +2122,7 @@ public class TransactionReportProcessor
         }
         TransactionCategoryId key = new TransactionCategoryId(typeCode, categoryCode);
 
-        // app/cbl/CBTRN03C.cbl:L195 - the read, served from the step-scoped table. A physical failure is
+        // app/cbl/CBTRN03C.cbl:L195 - the read, served from the per-execution table. A physical failure is
         // raised by transactionCategories() with the same attribution a per-record read would have carried.
         Optional<TransactionCategory> found = Optional.ofNullable(transactionCategories().get(key));
         if (found.isEmpty()) {
@@ -2442,7 +2460,7 @@ public class TransactionReportProcessor
      * swallowing an exception outright; AAP transformation rule 12 requires a typed exception on
      * <strong>every</strong> I/O path; and a report silently built from a stale buffer is precisely the class of
      * corruption the parity gates exist to detect rather than to enshrine. Abending is the safe direction, and unlike
-     * the source it cannot produce a plausible-looking wrong report. Destined for the planned {@code DECISION_LOG.md}
+     * the source it cannot produce a plausible-looking wrong report. Destined for the {@code DECISION_LOG.md}
      * as a labelled deviation, not as parity.
      *
      * <p><strong>Why the fatal type and not a file-status translation.</strong> The authoritative status
@@ -2660,7 +2678,7 @@ public class TransactionReportProcessor
      * suppression region, and it is flagged rather than assumed because the two readings differ in exactly
      * one observable character. Remediation, should the Gate 1 baseline show a blank: return
      * {@value #EDITED_AMOUNT_WIDTH} spaces for both masks, a one line change in the zero branch below.
-     * Destined for the planned {@code DECISION_LOG.md}.
+     * Destined for the {@code DECISION_LOG.md}.
      *
      * <p><strong>High order truncation.</strong> The mask holds {@value #AMOUNT_INTEGER_DIGITS} integer
      * digits, which is exactly the domain of {@code PIC S9(09)V99}, so a single transaction amount always
@@ -2926,10 +2944,54 @@ public class TransactionReportProcessor
      */
     private static String fixedWidth(String value, int width) {
         String source = value == null ? "" : value;
+        requirePermittedBytes(source);
         if (source.length() >= width) {
             return source.substring(0, width);
         }
         return source + " ".repeat(width - source.length());
+    }
+
+    /**
+     * Refuses any character a fixed-width record may not carry, before it is padded or truncated.
+     *
+     * <p><strong>Finding M-09, severity Major, RESOLVED.</strong> This method padded and truncated but
+     * validated nothing, so a carriage return, a line feed or any other control byte reaching it from a
+     * database column travelled straight into a {@value #REPORT_LINE_LENGTH}-byte record.
+     * {@code app/proc/TRANREPT.prc} declares {@code DCB=(LRECL=133,RECFM=FB)} - fixed blocks, no delimiter -
+     * so a consumer finds record boundaries by counting bytes. An embedded line feed does not corrupt the
+     * object, which is exactly what makes it dangerous: the object stays 133 bytes per record and still
+     * parses, while any reader that splits on newlines - a shell pipeline, a spreadsheet import, a log
+     * viewer - sees two records where the report has one, and the injected content is attacker-chosen. That
+     * is record-boundary injection, and truncation does not prevent it because a control byte inside the
+     * retained prefix survives.
+     *
+     * <p>The permitted set is the same one {@code TransactionReportJob.alphanumeric} and the other
+     * fixed-width writers apply: printable ASCII, and printable Latin-1 for the single-byte characters above
+     * the ASCII range. Deliberately checked <b>before</b> padding, so the diagnostic names the offending
+     * input rather than the padded result, and before truncation, so a control byte cannot be silently cut
+     * away and leave the same value accepted on one row and rejected on another.
+     *
+     * <p>The offending character is reported by <b>code point and position only</b>. The value itself is
+     * never logged or placed in a message: these are cardholder-bearing fields, and a diagnostic is not a
+     * licence to emit them. The abend carries that description as its reason and
+     * {@code DISPLAY 'ERROR WRITING REPTFILE'} at {@code app/cbl/CBTRN03C.cbl:L354} as its message, which is
+     * the argument order every other abend in this class uses.
+     *
+     * @param source the sending value, never {@code null}
+     */
+    private static void requirePermittedBytes(String source) {
+        for (int index = 0; index < source.length(); index++) {
+            char character = source.charAt(index);
+            boolean printableAscii = character >= 0x20 && character <= 0x7E;
+            boolean printableLatinOne = character >= 0xA0 && character <= 0xFF;
+            if (!printableAscii && !printableLatinOne) {
+                throw abendProgram(String.format(Locale.ROOT,
+                        "a fixed block report record cannot carry the character at position %d of the "
+                                + "sending item (code point %d)",
+                        Integer.valueOf(index + 1), Integer.valueOf(character)),
+                        ERROR_WRITING_REPTFILE_TEXT);
+            }
+        }
     }
 
     /**
@@ -3041,7 +3103,7 @@ public class TransactionReportProcessor
      * log stream that is aggregated and searchable, so the two log sites mask while the report body -
      * which is the legitimate, access controlled output - continues to carry card derived data in full. The
      * divergence is confined to log text and is invisible to the Gate 1 comparison, which reads report
-     * records. Destined for the planned {@code DECISION_LOG.md}.
+     * records. Destined for the {@code DECISION_LOG.md}.
      *
      * <p>The value is passed through {@link #logSafe(String)} first, so a masked value cannot smuggle a
      * control character either, and trailing spaces from the sixteen character fixed width key are stripped

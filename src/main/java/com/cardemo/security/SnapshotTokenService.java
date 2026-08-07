@@ -3,18 +3,13 @@
  * Program     : SnapshotTokenService.java
  * Application : CardDemo
  * Type        : Java 25 / Spring Boot 3.5.11 security component
- * Function    : Seals the as-displayed record snapshot, and the
- *               browse cursors, into an authenticated opaque token so
- *               that the stateless target reproduces the legacy
- *               COMMAREA precondition without trusting the caller and
- *               without disclosing a single protected byte.
- * Source      : app/cbl/COACTUPC.cbl:L669-L756 (ACUP-OLD-DETAILS and
- *               9700-CHECK-CHANGE-IN-REC, the field-by-field snapshot
- *               comparison the COMMAREA carried) @ 7756d89
- * Source      : app/cbl/COCRDUPC.cbl:L291-L313 (CCUP-OLD-DETAILS and
- *               CCUP-NEW-DETAILS), :L1503-L1508 (the six-predicate
- *               guard whose first predicate is CCUP-OLD-CVV-CD, a
- *               value no symbolic map declares) @ 7756d89
+ * Function    : Seals the browse cursors and the card row reference
+ *               into an authenticated opaque token so that the
+ *               stateless target reproduces the legacy COMMAREA
+ *               browse state without trusting the caller and without
+ *               disclosing a card number. It does NOT carry the
+ *               as-displayed snapshot for the change comparison -
+ *               that group travels in the request body.
  * Source      : app/cbl/COCRDLIC.cbl:L237 (WS-CA-SCREEN-NUM),
  *               :L1197-L1205 (the one-record lookahead whose saved
  *               first and last keys are card numbers) @ 7756d89
@@ -67,35 +62,46 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
- * Turns a server-owned record snapshot into an authenticated, encrypted, expiring opaque string, and turns
- * that string back into the snapshot on the next request.
+ * Turns a server-owned browse position or row identity into an authenticated, encrypted, expiring opaque
+ * string, and turns that string back into the original value on the next request.
  *
  * <h2>What it does and why it has to exist</h2>
  *
- * <p>The legacy conversation kept the as-displayed record in its own half of the COMMAREA between the two
- * turns of a pseudo-conversation. {@code 9700-CHECK-CHANGE-IN-REC} at
- * {@code app/cbl/COACTUPC.cbl:L669-L756} then compared the live row against that carried copy field by
- * field, and {@code app/cbl/COCRDUPC.cbl:L1503-L1508} did the same for the card with six predicates. The
- * REST target is stateless by transformation Rule 7, so there is no COMMAREA half to carry - yet the
- * comparison cannot be dropped, because it is the guard the source provides, and it cannot be satisfied by
- * re-reading the row either, because comparing a row against itself is tautologically true.</p>
+ * <p>The legacy conversation kept its browse state in the COMMAREA between the two turns of a
+ * pseudo-conversation: {@code WS-CA-SCREEN-NUM} at {@code app/cbl/COCRDLIC.cbl:L237} held the page number,
+ * and the one-record lookahead at {@code :L1197-L1205} saved the first and last keys of the page on
+ * display so that the next page-up or page-down could reopen the browse on them. The REST target is
+ * stateless by transformation Rule 7, so there is no COMMAREA to hold them - yet they cannot simply be
+ * handed over as plain values either, for two reasons that are properties of the data rather than
+ * preferences.</p>
  *
- * <p>Handing the snapshot to the caller as plain JSON and taking it back solves the carriage problem and
- * creates three worse ones. The snapshot is <strong>protected data</strong> - it holds the social security
- * number, the date of birth, the government-issued identifier, the electronic-funds account identifier and
- * both telephone numbers of {@code app/cbl/COACTUPC.cbl:L669-L756}, and for the card it holds
- * {@code CCUP-OLD-CVV-CD} at {@code :L294}, a card verification value that <em>no</em> symbolic map
- * declares and that therefore may never be rendered. It is also <strong>a precondition</strong>: a caller
- * that can edit it can make the guard pass against values that were never displayed. And it is
- * <strong>replayable</strong>: nothing in a bare JSON echo binds it to a record, to a moment, or to the
- * operation it was issued for.</p>
+ * <p>First, those keys are <strong>card numbers</strong>. Returning them in the clear would disclose a
+ * primary account number that {@code maskedCardNumber} exists precisely to withhold, and it would do so on
+ * every page of a list the operator is merely browsing. Second, a browse position is an
+ * <strong>authorisation-relevant instruction</strong>: a caller able to edit it can reopen the browse on a
+ * key the list never offered, reaching rows outside the filter the operation applied.</p>
  *
- * <p>This component removes all three problems at once. The snapshot is serialised, bound to an operation
- * kind, a record key and an expiry, sealed with AES-256-GCM, and handed to the caller as one base64url
- * string. The caller cannot read it, cannot alter it without detection, cannot present it for a different
- * record or a different operation, and cannot present it indefinitely. The server unseals it and gets back
- * exactly the bytes it wrote - which is what makes the legacy field-by-field comparison both reproducible
- * and trustworthy.</p>
+ * <p>This component removes both problems. The value is serialised, bound to an operation kind, a record
+ * key and an expiry, sealed with AES-256-GCM, and handed to the caller as one base64url string. The caller
+ * cannot read it, cannot alter it without detection, cannot present it for a different record or a
+ * different operation, and cannot present it indefinitely. The server unseals it and recovers exactly the
+ * bytes it wrote.</p>
+ *
+ * <p><strong>What this component is not.</strong> It does <em>not</em> carry the as-displayed record
+ * snapshot for the field-by-field change comparison of {@code 9700-CHECK-CHANGE-IN-REC}
+ * ({@code app/cbl/COACTUPC.cbl:L669-L756}) or its card counterpart at
+ * {@code app/cbl/COCRDUPC.cbl:L1503-L1508}. That snapshot travels in the request body as the
+ * {@code oldDetails} group, which is what the Agent Action Plan requires of it, and the comparison is
+ * representation-sensitive in a way no opaque re-encoding could preserve. Consequently <strong>no endpoint
+ * emits an {@code ETag} and no endpoint reads {@code If-Match}</strong>; the two references below are the
+ * only values this component seals.</p>
+ *
+ * <ul>
+ *   <li><b>Page cursors</b> - the sealed first and last keys of the page on display, reopened on the next
+ *       page-up or page-down.</li>
+ *   <li><b>The card row reference</b> - a sealed account-number and card-number pair that identifies which
+ *       row a detail read or an update applies to, standing in for the two plain filters.</li>
+ * </ul>
  *
  * <h2>Inputs, outputs and side effects</h2>
  *
@@ -132,11 +138,11 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  *   <dt>Startup aborts naming {@code JWT_SIGNING_KEY}</dt>
  *   <dd>The variable is absent. That is intended fail-fast behaviour and no default may be added to
  *       silence it. Export at least {@value #MINIMUM_KEY_BYTES} bytes of entropy.</dd>
- *   <dt>{@code 428 Precondition Required} on a write</dt>
- *   <dd>No token was presented. Read the record first and return the {@code ETag} it carries in
- *       {@code If-Match}.</dd>
- *   <dt>{@code 412 Precondition Failed} on a write</dt>
- *   <dd>The token failed to open. All five causes report identically and deliberately so - a truncated or
+ *   <dt>{@code 428 Precondition Required} on a request that needs a reference</dt>
+ *   <dd>No reference was presented. Read the list first and pass a reference it returned. No endpoint
+ *       emits an entity tag and none reads {@code If-Match} - see the class note above.</dd>
+ *   <dt>{@code 412 Precondition Failed} on a request carrying a reference</dt>
+ *   <dd>The reference failed to open. All five causes report identically and deliberately so - a truncated or
  *       edited token, a token sealed for another operation, a token sealed for another record, an expired
  *       token, and a token sealed under a different key are indistinguishable to the caller, because
  *       telling them apart is an oracle. The server-side log line names which one it was.</dd>
@@ -205,20 +211,20 @@ public class SnapshotTokenService {
     private static final String MEMBER_PAYLOAD = "p";
 
     /**
-     * The message the caller receives when no token was presented. It is the empty-literal outcome of
-     * {@code app/cbl/COACTUPC.cbl:L523}, expressed as an instruction rather than as a blank screen.
+     * The message the caller receives when no reference was presented. It is expressed as an instruction
+     * rather than as the blank screen {@code app/cbl/COCRDLIC.cbl:L1197-L1205} would have redisplayed.
      */
     public static final String MISSING_TOKEN_MESSAGE =
-            "The as-displayed snapshot is required on a write. Read the record first and return the value"
-                    + " of its ETag header in If-Match.";
+            "A row reference is required for this request. Read the list first and use a reference it"
+                    + " returns.";
 
     /**
      * The message the caller receives when a token failed to open, whatever the reason. One message for
      * five causes, on purpose: distinguishing them would let a caller probe the sealing key.
      */
     public static final String INVALID_TOKEN_MESSAGE =
-            "The as-displayed snapshot could not be verified for this record. Read the record again and"
-                    + " retry with the ETag that read returns.";
+            "The row reference could not be verified for this request. Read the list again and use a"
+                    + " reference it returns.";
 
     /** The derived AES-256 key. Never logged, never returned and never quoted in a message. */
     private final SecretKeySpec sealingKey;

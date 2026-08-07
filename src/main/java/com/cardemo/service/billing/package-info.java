@@ -88,7 +88,10 @@
  *       {@code 1.00} - which matters directly here, since "is the balance zero" is a decision this service
  *       makes.</li>
  *   <li>Timestamps are 26 characters whose generated form ends in four zeros, so a generator formats to
- *       millisecond precision followed by four zeros.</li>
+ *       <strong>hundredths-of-a-second</strong> precision followed by those four zeros. An earlier revision
+ *       said millisecond precision and is withdrawn: three fraction digits plus four zeros is seven
+ *       characters, and {@code app/cbl/CBTRN02C.cbl:L159-L174} declares the fraction as two digits plus a
+ *       four-character literal.</li>
  *   <li>A {@code java.time.Clock} is injected, published once as {@code Clock.systemDefaultZone()} -
  *       region-local, because the legacy region rendered local civil time.</li>
  *   <li>{@code spring.jpa.hibernate.ddl-auto: validate} in every profile, so a mapping that disagrees with the
@@ -135,7 +138,9 @@
  *       <strong>build failure</strong>.</li>
  *   <li><strong>Run.</strong> These are Spring beans and are never invoked directly; a controller or a batch
  *       step calls them. A manual exercise needs the compose stack up - {@code docker compose up -d} - and the
- *       environment loaded with {@code set -a; . ./.env; set +a}, because {@code JWT_SIGNING_KEY} has no default and
+ *       environment scoped to that one command rather than exported into the shell:
+ *       {@code ( set -a; . ./.env; set +a; <command> )}. The parentheses confine the values to the subshell
+ *       instead of leaving every later child inheriting them. {@code JWT_SIGNING_KEY} has no default and
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service}.
  *       {@code BillPaymentServiceTest} exists. The assertions that matter, as distinct from mechanical coverage:

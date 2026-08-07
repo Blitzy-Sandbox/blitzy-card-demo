@@ -209,29 +209,32 @@ import com.cardemo.service.shared.FileStatusMapper;
  * </ol>
  *
  * <h2>How to run, build and test</h2>
- * The read-only verification {@code Step} that would own this reader is <strong>planned and not authored at
- * this commit</strong>, and that is now the whole of what is outstanding around it. An earlier revision of
- * this paragraph named {@code com.cardemo.config.BatchConfig} as the home of every {@code Job} and
- * {@code Step} and said {@code com.cardemo.batch.jobs} held one job, {@code InterestCalculationJob}; both
- * statements are withdrawn. {@code com.cardemo.batch.jobs} now holds <strong>three of its six target
- * jobs</strong> - {@code InterestCalculationJob}, {@code DailyTransactionPostingJob} and
- * {@code StatementGenerationJob} - and <strong>each declares its own {@code Step} beans</strong>, while
- * {@code BatchConfig} owns the dataset bindings and the record rendering rather than step topology. Still
- * owed are this reader's verification step and the name-driven launcher above it, the planned
- * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}. What is already true is the property both will
- * rely on -
- * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no
- * job runs at application startup and every job must be launched deliberately. This class carries
- * {@code @Component} and {@code @StepScope}, so the component scan registers a definition for it while no
- * instance is constructed until a step is executing; with no {@code Step} yet referencing it, none is
- * constructed at runtime today.
+ * The read-only verification {@code Step} that owns this reader is <strong>authored</strong>, and nothing
+ * about the batch tier around it is outstanding. Two earlier revisions of this paragraph are withdrawn:
+ * the first named {@code com.cardemo.config.BatchConfig} as the home of every {@code Job} and
+ * {@code Step} and said {@code com.cardemo.batch.jobs} held one job, {@code InterestCalculationJob}; the
+ * second said this reader's verification step and its launcher were still owed. Both exist:
+ * {@link com.cardemo.config.BatchConfig#datasetVerificationReadCustomerStep} is the
+ * Java counterpart of {@code app/jcl/READCUST.jcl}, and
+ * {@link com.cardemo.config.BatchConfig#datasetVerificationJob} composes it with the
+ * three sibling members as one operator submission, selectable by name through the framework's own
+ * {@code spring.batch.job.name} property, which is the launch signal that survives after the
+ * bespoke operator launcher was withdrawn. The step writes nothing: its sink reaches no relation, no object store and no
+ * queue, because {@code app/cbl/CBCUS01C.cbl} performs {@code OPEN}, {@code READ} and {@code CLOSE} only.
+ * {@code com.cardemo.batch.jobs} holds its six target jobs and <strong>each declares its own
+ * {@code Step} beans</strong>, while {@code BatchConfig} owns the dataset bindings and the record
+ * rendering rather than step topology. {@code spring.batch.job.enabled} is {@code false} in
+ * {@code src/main/resources/application.yml}, so no job runs at application startup and every submission
+ * is deliberate. This class carries {@code @Component} and {@code @StepScope}, so the component scan
+ * registers a definition for it and the step scope gives each step execution its own instance.
  * <p>
  * Two build paths are available; both are pinned and either may be used. Each names a required
  * <em>capability</em> rather than a dated reading of one host; dated measurements live in section 0.4.5.3 of
  * {@code docs/technical-specifications.md}.
  * <ul>
  * <li><b>Host toolchain</b> &mdash; JDK 25 with {@code JAVA_HOME} set, then
- *     {@code set -a; . ./.env; set +a} and {@code ./mvnw -B -ntp clean compile}. Maven 3.9.11 comes from the
+ *     {@code ( set -a; . ./.env; set +a; ./mvnw -B -ntp clean compile )} - one subshell, so the exported values
+ *     die with the command instead of being inherited by every later child. Maven 3.9.11 comes from the
  *     pinned wrapper and {@code maven-enforcer-plugin} floors both.</li>
  * <li><b>Pinned container</b> &mdash; given a reachable container daemon, the build can also run
  *     hermetically:

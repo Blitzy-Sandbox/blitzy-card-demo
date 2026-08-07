@@ -1879,9 +1879,9 @@ public class InterestCalculationProcessor
      *
      * <p><em>Remediation if the true values are ever needed:</em> emit them to a separately
      * access-controlled artefact rather than the shared log. Deliberately not invented here, because no
-     * consumer for it exists at {@code 7756d89}. <strong>Owed an entry in the planned
-     * {@code DECISION_LOG.md}</strong>, which does not exist at this commit, so this Javadoc is the register
-     * of record.
+     * consumer for it exists at {@code 7756d89}. <strong>Owed an entry in
+     * {@code DECISION_LOG.md}</strong>, which is authored at the repository root; this Javadoc stays the
+     * primary record because it cannot drift from the code it governs.
      *
      * <p><em>Two controls, not one.</em> Redaction is the value-level control and it is unconditional. The
      * <em>routing</em> control is separate and complementary: the untruncated per-record emissions that a

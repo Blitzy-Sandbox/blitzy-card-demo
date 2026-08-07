@@ -140,7 +140,7 @@ import com.cardemo.model.entity.Transaction;
  * {@link #findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc(String, String, Pageable)} below.
  * Correspondingly the card
  * repository must cite {@code app/jcl/CARDFILE.jcl} and must <em>not</em> cite
- * {@code app/jcl/TRANIDX.jcl}. Recorded as Medium in the planned {@code DECISION_LOG.md}.
+ * {@code app/jcl/TRANIDX.jcl}. Recorded as Medium in the {@code DECISION_LOG.md}.
  *
  * <h3>Medium - discrepancy #9: AXRKP is zero-based, DFSORT offsets are one-based</h3>
  * <strong>Severity Medium.</strong> The folder requirements mix zero-based {@code AXRKP} values with
@@ -156,7 +156,7 @@ import com.cardemo.model.entity.Transaction;
  * The two figures differ by exactly one because they count from different origins, and both are
  * consistent: {@code KEYLEN 26} at {@code :L3674} matches the width of {@code TRAN-PROC-TS} exactly, and
  * the DFSORT symbol {@code TRAN-PROC-DT,305,10,CH} at {@code app/proc/TRANREPT.prc:L40} uses one-based
- * numbering and lands on the same byte. Recorded as Medium in the planned {@code DECISION_LOG.md}.
+ * numbering and lands on the same byte. Recorded as Medium in the {@code DECISION_LOG.md}.
  *
  * <p>The identification is unambiguous. Only two 26-byte fields exist in the record -
  * {@code TRAN-ORIG-TS} at bytes 279-304 and {@code TRAN-PROC-TS} at bytes 305-330, declared at
@@ -437,7 +437,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * and break the field-level comparison against the legacy baseline, which is the acceptance
      * contract; a retry would mask the very collision the source lets fail; a lock would change the
      * concurrency behaviour of a path whose behaviour is being reproduced. Recorded as a deliberate
-     * decision in the planned {@code DECISION_LOG.md}.
+     * decision in the {@code DECISION_LOG.md}.
      *
      * <h4>Interaction with interest generation - source behaviour, not a defect</h4>
      * {@code app/cbl/CBACT04C.cbl} builds its identifiers differently. At {@code :L474} it increments
@@ -624,7 +624,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         :L351  PERFORM UNTIL WS-IDX <= 0 OR ...                       (backward, fill down to 1)
      *     Corroborated on the presentation side by app/cpy-bms/COTRN00.CPY, which generates ten row
      *     groups TRNID01 through TRNID10 across 110 TRNID-matching lines, the first quintuple being
-     *     TRNIDINL / TRNIDINF / TRNIDINA / TRNIDINI at :L61-L66. Recorded as Low in the planned DECISION_LOG.md.
+     *     TRNIDINL / TRNIDINF / TRNIDINA / TRNIDINI at :L61-L66. Recorded as Low in the DECISION_LOG.md.
      *
      *     The three parity page sizes across the application are card list 7
      *     (app/cbl/COCRDLIC.cbl:L177-L178, WS-MAX-SCREEN-LINES ... VALUE 7), transaction list 10 and

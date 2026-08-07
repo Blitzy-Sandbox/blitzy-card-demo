@@ -53,15 +53,13 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.S3Object;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamReader;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Slice;
-import org.springframework.stereotype.Component;
 
+import com.cardemo.batch.GenerationPrefixContract;
 import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
@@ -239,16 +237,45 @@ import com.cardemo.service.shared.FileStatusMapper;
  * defines the <b>{@code TRANSACT}</b> alternate index and not a card index - which is why it is cited here
  * for the transaction repository and nowhere for the card one. Neither index is used by this reader.
  *
- * <h2>How to run, build and test</h2>
- * The bean is {@code @StepScope}, so one instance exists per step execution and nothing runs at application
- * start: every profile sets {@code spring.batch.job.enabled: false}. The {@code Job} and {@code Step} that
- * drive it are declared by {@link com.cardemo.config.BatchConfig} and are launched by
- * {@link com.cardemo.batch.jobs.TransactionReportJob}, which is authored, and is in turn sequenced by
+ * <h2>Registration contract - one owner, no bean definition</h2>
+ * <b>This class is not a Spring bean.</b> It carries no {@code @Component} and no {@code @StepScope}, and
+ * {@link com.cardemo.batch.jobs.TransactionReportJob} constructs it with {@code new} - once inside STEP01R
+ * and once inside STEP10R - which is the single, explicit ownership model for this type.
+ *
+ * <p><b>Finding F-008, severity Medium, remediated here.</b> An earlier revision carried {@code @Component}
+ * and {@code @StepScope} on the class and {@code @Value} on five constructor parameters <em>while</em> the
+ * owning job constructed it with {@code new}. Nothing injected the bean - a repository-wide search finds no
+ * other reference to this type in {@code src/main/java} - so the container published a definition no
+ * production path ever resolved, and the annotations documented a binding that never occurred. Two ownership
+ * models for one type is the defect; this is the resolution, and the alternative was considered and rejected
+ * on two counts:
+ * <ul>
+ *   <li><b>One scoped definition could not serve both call sites.</b> STEP01R needs
+ *       {@code repository} with the {@code TRANSACT.BKUP} prefix and no promoted key; STEP10R needs
+ *       {@code object-storage} with the {@code TRANSACT.DALY} prefix and the concrete key STEP05R promoted.
+ *       A single set of {@code @Value} expressions cannot produce both, which is why the job was passing its
+ *       own arguments in the first place.</li>
+ *   <li><b>A bean factory would coarsen the failure taxonomy.</b> The generation-key validation this
+ *       constructor performs currently surfaces as a typed {@code CardDemoException} thrown by the step,
+ *       which is what lets STEP10R discard the generation it created and abend with the operator-facing
+ *       cause. Behind a step-scoped proxy the same validation would surface as a
+ *       {@code BeanCreationException} at first method call, be caught by the tasklet's
+ *       {@code RuntimeException} arm, and be reported as a generic abend instead.</li>
+ * </ul>
+ *
+ * <p>Because there is no bean, nothing runs at application start; every profile additionally sets
+ * {@code spring.batch.job.enabled: false}. Per-step-execution isolation is guaranteed by construction rather
+ * than by a scope: one instance is created inside each step's tasklet body, and <b>this class holds no
+ * static mutable state</b>, which is the property {@code TransactionReportProcessorScopeIsolationTest}
+ * asserts for both this reader and the report processor. The {@code Job} and its {@code Step}s are declared
+ * by {@link com.cardemo.batch.jobs.TransactionReportJob}, which is authored, and are sequenced by
  * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, which is authored as well; an earlier revision
  * described that orchestrator as planned, and that qualification is withdrawn.
  *
+ * <h2>How to run, build and test</h2>
+ *
  * <p>Build and static gates, from the repository root:
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The compiler runs at
+ * {@code ./mvnw -B -ntp clean verify}. The compiler runs at
  * {@code release 25} with {@code -Xlint:all -Werror} and {@code failOnWarning}, and the documentation gate
  * runs {@code javadoc-no-fork} with {@code doclint=all}, {@code failOnWarnings=true} and
  * {@code show=private}, so every private member of this file is inside that gate. Compile only:
@@ -268,29 +295,36 @@ import com.cardemo.service.shared.FileStatusMapper;
  * this class.
  *
  * <h2>Key configs and defaults</h2>
+ * <b>This class reads no property itself.</b> Every value below is bound by
+ * {@link com.cardemo.batch.jobs.TransactionReportJob}, which is this reader's sole owner, and is handed to
+ * the constructor as an argument - see the registration contract below for why.
  * <ul>
- *   <li>{@value #PROPERTY_SOURCE} - the input selector, one of {@code repository} or
- *       {@code object-storage}, case-insensitive and accepting either a hyphen or an underscore.
- *       <b>Default {@code repository}.</b> See {@link InputSource}; both values are reachable and neither
- *       branch is dead code.</li>
- *   <li>{@value #PROPERTY_PAGE_SIZE} - rows per database round trip on the {@code repository} path,
- *       defaulting to {@value #DEFAULT_PAGE_SIZE}, which is the value the four sibling verification readers
- *       declare at {@code src/main/resources/application.yml}. A fetch size, not a pagination contract: the
- *       parity page sizes of 7, 10 and 10 live under {@code carddemo.pagination} and are unrelated.</li>
+ *   <li>The input selector, one of {@code repository} or {@code object-storage}, case-insensitive and
+ *       accepting either a hyphen or an underscore. <b>Not configurable</b>, because it is fixed by the DD
+ *       the calling step reproduces: STEP01R passes {@code repository} for {@code FILEIN} over the cluster,
+ *       STEP10R passes {@code object-storage} for {@code TRANFILE} over the sorted generation. See
+ *       {@link InputSource}; both values are reachable from production and neither branch is dead code.</li>
+ *   <li>Rows per database round trip on the {@code repository} path, supplied from the owning job's
+ *       {@code carddemo.batch.tranrept.chunk-size}, which falls back to {@code carddemo.batch.chunk-size}
+ *       and then to {@value #DEFAULT_PAGE_SIZE}. One knob sizes every round trip in the job rather than two
+ *       knobs sizing the same behaviour. A fetch size, not a pagination contract: the parity page sizes of
+ *       7, 10 and 10 live under {@code carddemo.pagination} and are unrelated.</li>
  *   <li>{@value #PROPERTY_GENERATION_PREFIX} - the key prefix under which {@code TRANSACT.BKUP} generations
  *       are written, declared at {@code src/main/resources/application.yml} as {@code gdg/transact-bkup}
- *       with a comment citing {@code app/proc/TRANREPT.prc:L21 STEP01R}. Bound here with
- *       {@value #DEFAULT_GENERATION_PREFIX} as its fallback so the class remains constructible in a unit
- *       test that loads no profile.</li>
+ *       with a comment citing {@code app/proc/TRANREPT.prc:L21 STEP01R}. The owning job binds it for the
+ *       backup leg and binds {@code carddemo.aws.s3.gdg-prefixes.transact-daly} for the sorted leg;
+ *       {@value #DEFAULT_GENERATION_PREFIX} is the fallback the job declares, so the pair remains
+ *       constructible in a unit test that loads no profile.</li>
  *   <li>{@value #PROPERTY_OUTPUT_BUCKET} - the versioned generation bucket, declared at
  *       {@code src/main/resources/application.yml} as {@code ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET}} and
- *       provisioned by {@code localstack-init/init-aws.sh}. Bound with an empty default and required
- *       non-blank <b>only</b> when the {@code object-storage} path is selected, so the default path carries
- *       no cloud prerequisite.</li>
- *   <li>The job-execution-context entry named by {@value #CONTEXT_KEY_GENERATION_OBJECT_KEY}, injected
- *       through a <code>#&#123;jobExecutionContext[...]&#125;</code> expression - the concrete generation
- *       key a prior step promoted. Absent on a standalone invocation, which is the only case in which a
- *       lexical-greatest listing is performed.</li>
+ *       provisioned by {@code localstack-init/init-aws.sh}. The owning job binds it with an empty default,
+ *       and it is required non-blank <b>only</b> when the {@code object-storage} path is selected, so the
+ *       repository path carries no cloud prerequisite.</li>
+ *   <li>The job-execution-context entry named by {@value #CONTEXT_KEY_GENERATION_OBJECT_KEY} - the concrete
+ *       generation key a prior step promoted. The owning step resolves it and passes it, so the failure of an
+ *       absent or malformed handoff stays a typed {@code CardDemoException} raised by the step rather than a
+ *       bean-creation failure raised by the container. {@code null} on the {@code repository} path and on a
+ *       standalone invocation, which is the only case in which a lexical-greatest listing is performed.</li>
  *   <li>Record geometry is <b>not</b> configuration. {@value #RECORD_LENGTH} is a compile-time constant: a
  *       settable byte contract would let a deployment break parity by editing a profile.</li>
  *   <li>The charset is fixed in code at {@code ISO-8859-1} and passed explicitly at the one place bytes
@@ -329,6 +363,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@value com.cardemo.exception.FatalProcessingException#BATCH_RETURN_CODE}.</li>
  *   <li><b>A record length other than {@value #RECORD_LENGTH}</b> throws {@link DataIntegrityException}
  *       naming the row number, the observed length and the expected length - never the record content.</li>
+ *   <li><b>A record separator inside the generation object</b> throws {@link DataIntegrityException} naming
+ *       the row number and the separator byte. The {@code object-storage} path is undelimited, so a
+ *       generation whose length is not a whole multiple of {@value #RECORD_LENGTH} - a line-terminated file
+ *       uploaded by mistake, or a transfer truncated part-way - is refused rather than read as though every
+ *       record after the stray byte were still aligned. Remedy: let the backup step write the generation, or
+ *       upload the concatenated {@value #RECORD_LENGTH}-byte images with no delimiter.</li>
  *   <li><b>An unrecognised terminal overpunch character</b> in bytes 133-143 throws
  *       {@link DataIntegrityException} naming the row number and the offending byte position, never the
  *       character and never the record.</li>
@@ -382,17 +422,16 @@ import com.cardemo.service.shared.FileStatusMapper;
  * verbatim error literals - every one a property of the run rather than of anybody's account. The assertion
  * that holds this is {@code src/test/java/com/cardemo/unit/batch/BatchLogHygieneTest.java}.
  *
- * <p><b>Thread safety.</b> Not thread safe, and not required to be: the {@code step} scope gives each step
- * execution its own instance and Spring Batch drives a reader from one thread per step. Every mutable field
- * is an instance field, and <b>there is no static mutable state anywhere in this class</b> - the only static
- * members are the logger, immutable constants, and pure functions.
+ * <p><b>Thread safety.</b> Not thread safe, and not required to be: the owning step constructs its own
+ * instance inside its tasklet body and Spring Batch drives a reader from one thread per step. Every mutable
+ * field is an instance field, and <b>there is no static mutable state anywhere in this class</b> - the only
+ * static members are the logger, immutable constants, and pure functions. That is what makes construction
+ * per step execution a complete isolation guarantee without a container scope.
  *
  * @see DailyTransactionReader
  * @see TransactionRepository
  * @see FileStatusMapper
  */
-@Component
-@StepScope
 public class TransactionBackupReader implements ItemStreamReader<Transaction> {
 
     /**
@@ -405,8 +444,9 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     private static final Logger LOG = LoggerFactory.getLogger(TransactionBackupReader.class);
 
     /**
-     * Rows fetched per database round trip on the {@code repository} path when
-     * {@value #PROPERTY_PAGE_SIZE} is absent.
+     * Rows fetched per database round trip on the {@code repository} path when the owning job's
+     * {@code carddemo.batch.tranrept.chunk-size} and the global {@code carddemo.batch.chunk-size} are both
+     * absent.
      * <p>
      * 100 is the value every sibling reader in this package uses and the value
      * {@code src/main/resources/application.yml} declares for each of them, so this reader introduces no
@@ -425,23 +465,40 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * It matches the value {@code src/main/resources/application.yml} declares, whose own comment cites
      * {@code app/proc/TRANREPT.prc:L21 STEP01R} as its origin, so the fallback and the declared value
      * cannot disagree.
+     * <p>
+     * <strong>Finding m-02, severity Minor, RESOLVED - and this constant was one character wrong.</strong> It
+     * read {@code gdg/transact-bkup/}, with a trailing separator, while the profile declares
+     * {@code gdg/transact-bkup} without one. The two therefore <em>did</em> disagree, and only a unit test
+     * that omits the profile ever saw the difference, which is exactly why it survived. The shared grammar of
+     * {@link GenerationPrefixContract#requireRelativePrefix(String, String)} refuses a trailing separator, so
+     * the constant is now the same relative form the profile declares. The separator this class needs for its
+     * listing is derived rather than configured; see
+     * {@link GenerationPrefixContract#listingPrefixOf(String)} and {@link #requireGenerationPrefix(String)}.
      */
-    public static final String DEFAULT_GENERATION_PREFIX = "gdg/transact-bkup/";
+    public static final String DEFAULT_GENERATION_PREFIX = "gdg/transact-bkup";
 
     /**
-     * The key separator that terminates a generation prefix.
+     * The constructor argument that selects the input path, quoted in diagnostics so the caller can be
+     * identified.
      *
-     * <p>Object storage has no directories; the slash is a naming convention. It matters here because a prefix
-     * match is a plain string match, so the separator is what makes {@value #DEFAULT_GENERATION_PREFIX} name a
-     * segment rather than merely a run of leading characters.
+     * <p>It names an <b>argument</b> and not a property, because there is no property: the substrate is fixed
+     * by the DD the calling step reproduces, so a profile key for it would be a second, contradictory source
+     * of truth for a value the JCL already determines. An earlier revision declared
+     * {@code carddemo.batch.transaction-backup-reader.source} in {@code application.yml} and bound it with
+     * {@code @Value}, but the owning job always overrode it by passing its own literal, so the key was read
+     * by nothing - part of finding F-008. Both key and binding are gone.
      */
-    private static final String KEY_SEPARATOR = "/";
+    private static final String ARGUMENT_SOURCE = "the configuredSource constructor argument";
 
-    /** The property that selects the input path, quoted in diagnostics so an operator can find it. */
-    private static final String PROPERTY_SOURCE = "carddemo.batch.transaction-backup-reader.source";
-
-    /** The property that sets the database round-trip size on the {@code repository} path. */
-    private static final String PROPERTY_PAGE_SIZE = "carddemo.batch.transaction-backup-reader.page-size";
+    /**
+     * The constructor argument that sets the database round-trip size on the {@code repository} path.
+     *
+     * <p>Also an argument rather than a property, and for the same reason: the owning job already publishes
+     * one {@code carddemo.batch.tranrept.chunk-size} knob that sizes every round trip it makes, and a second
+     * reader-specific key sizing the same behaviour is the ambiguity Rule 1-B rules out. The retired key was
+     * {@code carddemo.batch.transaction-backup-reader.page-size}.
+     */
+    private static final String ARGUMENT_PAGE_SIZE = "the pageSize constructor argument";
 
     /**
      * The property that names the generation key prefix, shared with every other holder of a
@@ -664,8 +721,9 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     /**
      * Buffer size for the character stream on the {@code object-storage} path, in characters.
      * <p>
-     * Sized to hold whole records: 32 records of {@value #RECORD_LENGTH} characters plus their optional
-     * terminators. It bounds heap use independently of the generation size, which is what keeps the read
+     * Sized to hold whole records with one character of slack each, which is the look-ahead
+     * {@link #rejectRecordSeparator()} needs to inspect the character after a record without a further
+     * physical read. It bounds heap use independently of the generation size, which is what keeps the read
      * streaming rather than materialising.
      */
     private static final int STREAM_BUFFER_CHARS = 32 * (RECORD_LENGTH + 1);
@@ -717,14 +775,17 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     private static final char DIGIT_ONE = '1';
 
     // ----------------------------------------------------------------------------------------------------
-    // Row terminators. A RECFM=FB generation carries none at all, while a classpath or ASCII fixture
-    // carries one per row, so both shapes are handled rather than one being assumed.
+    // Record separators. Named here in order to be REFUSED, not consumed. app/proc/TRANREPT.prc:L29
+    // allocates this generation DCB=(LRECL=350,RECFM=FB,BLKSIZE=0), which is undelimited, so on the
+    // object-storage path a separator byte is a data defect rather than a row boundary. Line-oriented
+    // ingestion of app/data/ASCII/*.txt belongs to the seed migration and to test fixtures, which read those
+    // files as text by name; it is deliberately not a mode of this reader. See rejectRecordSeparator.
     // ----------------------------------------------------------------------------------------------------
 
-    /** Line feed, the terminator an ASCII fixture carries. */
+    /** Line feed, refused after a complete record image on the {@code object-storage} path. */
     private static final char LINE_FEED = '\n';
 
-    /** Carriage return, stripped defensively so a record produced on another platform still aligns. */
+    /** Carriage return, refused after a complete record image on the {@code object-storage} path. */
     private static final char CARRIAGE_RETURN = '\r';
 
     /** The value {@link java.io.Reader#read()} returns at end of stream. */
@@ -817,8 +878,9 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     /**
      * Where the 350-byte {@code TRANSACT.BKUP} records are read from.
      * <p>
-     * Both constants are reachable through {@value #PROPERTY_SOURCE}, so neither branch is dead code. They
-     * exist because the legacy generation and the Java target hold the same records by two different
+     * Both constants are reached from production - {@code REPOSITORY} by STEP01R and {@code OBJECT_STORAGE}
+     * by STEP10R of {@link com.cardemo.batch.jobs.TransactionReportJob} - so neither branch is dead code.
+     * They exist because the legacy generation and the Java target hold the same records by two different
      * routes: {@code app/ctl/REPROCT.ctl:L15} copies the whole transaction cluster into the generation
      * without selection, so the generation's content and the {@code transaction} relation's content are the
      * same set of records, and either is a faithful source for a read-only report input.
@@ -1013,6 +1075,16 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     /**
      * Creates a reader bound to the transaction-backup generation.
      *
+     * <p><b>Every argument is passed explicitly by the owning job; none is bound by the container.</b> An
+     * earlier revision carried {@code @Value} on the last five parameters while
+     * {@link com.cardemo.batch.jobs.TransactionReportJob} constructed this class with {@code new}, so the
+     * annotations described a binding that never happened on any production path. That was finding F-008,
+     * severity Medium, and the remediation is recorded on this class's registration contract: the
+     * annotations are gone and the job supplies the values. The two arguments that vary per call site -
+     * {@code configuredSource} and {@code generationPrefix} - are precisely the ones a single container
+     * definition could not have supplied, because STEP01R reproduces {@code FILEIN} over the cluster while
+     * STEP10R reproduces {@code TRANFILE} over a generation.
+     *
      * @param transactionRepository the transaction-table access point; must not be {@code null}
      * @param objectStorage the object-store access point supplied by {@code com.cardemo.config.AwsConfig};
      *     must not be {@code null}
@@ -1023,18 +1095,21 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      *     parameter is its remediation: the client offers the paginator the operations interface does not.
      *     Every other access still goes through {@code S3Operations}. Must not be {@code null}
      * @param fileStatusMapper the shared {@code FILE STATUS} translator; must not be {@code null}
-     * @param configuredSource the input selector from {@value #PROPERTY_SOURCE}, one of
-     *     {@code repository} or {@code object-storage}, case-insensitive and accepting either a hyphen or an
-     *     underscore; defaults to {@code repository}
-     * @param pageSize rows per database round trip from {@value #PROPERTY_PAGE_SIZE}, defaulting to
-     *     {@value #DEFAULT_PAGE_SIZE}; must be at least one
-     * @param outputBucket the versioned generation bucket from {@value #PROPERTY_OUTPUT_BUCKET}, defaulting
-     *     to empty and required non-blank only when the {@code object-storage} path is selected
-     * @param generationPrefix the generation key prefix from {@value #PROPERTY_GENERATION_PREFIX},
-     *     defaulting to {@value #DEFAULT_GENERATION_PREFIX}; must not be blank
+     * @param configuredSource the input selector, one of {@code repository} or {@code object-storage},
+     *     case-insensitive and accepting either a hyphen or an underscore. It is fixed by the DD the calling
+     *     step reproduces and is <b>not</b> an operator knob: STEP01R passes {@code repository} and STEP10R
+     *     passes {@code object-storage}
+     * @param pageSize rows per database round trip, supplied from the owning job's single
+     *     {@code carddemo.batch.tranrept.chunk-size} knob; must be at least one
+     * @param outputBucket the versioned generation bucket from {@value #PROPERTY_OUTPUT_BUCKET}, which the
+     *     owning job binds; may be empty and is required non-blank only when the {@code object-storage} path
+     *     is selected
+     * @param generationPrefix the generation key prefix, which the owning job binds - from
+     *     {@value #PROPERTY_GENERATION_PREFIX} for the backup leg and from
+     *     {@code carddemo.aws.s3.gdg-prefixes.transact-daly} for the sorted leg; must not be blank
      * @param promotedGenerationObjectKey the concrete generation key a prior step promoted into the job
-     *     execution context under {@value #CONTEXT_KEY_GENERATION_OBJECT_KEY}, or {@code null} when this
-     *     reader was invoked standalone; blank is treated as absent
+     *     execution context under {@value #CONTEXT_KEY_GENERATION_OBJECT_KEY} and the owning step resolved,
+     *     or {@code null} on the {@code repository} path; blank is treated as absent
      * @throws NullPointerException if any collaborator is {@code null}
      * @throws IllegalArgumentException if the selector names neither path, if {@code pageSize} is less than
      *     one, if {@code generationPrefix} is blank, or if the {@code object-storage} path is selected with
@@ -1045,17 +1120,15 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
             final S3Operations objectStorage,
             final S3Client objectStoreClient,
             final FileStatusMapper fileStatusMapper,
-            @Value("${" + PROPERTY_SOURCE + ":repository}") final String configuredSource,
-            @Value("${" + PROPERTY_PAGE_SIZE + ":" + DEFAULT_PAGE_SIZE + "}") final int pageSize,
-            @Value("${" + PROPERTY_OUTPUT_BUCKET + ":}") final String outputBucket,
-            @Value("${" + PROPERTY_GENERATION_PREFIX + ":" + DEFAULT_GENERATION_PREFIX + "}")
-                    final String generationPrefix,
-            @Value("#{jobExecutionContext['" + CONTEXT_KEY_GENERATION_OBJECT_KEY + "']}")
-                    final String promotedGenerationObjectKey) {
+            final String configuredSource,
+            final int pageSize,
+            final String outputBucket,
+            final String generationPrefix,
+            final String promotedGenerationObjectKey) {
         // Only Objects.requireNonNull and private static validators are called here. Invoking an
         // overridable instance method from the constructor of a non-final class would publish a partially
-        // built reference, which -Xlint:all -Werror reports as this-escape; the step scope forbids a final
-        // class because it proxies by subclassing.
+        // built reference, which -Xlint:all -Werror reports as this-escape. The class stays non-overridable
+        // by convention rather than by the final keyword, because the unit tier doubles it.
         this.transactionRepository =
                 Objects.requireNonNull(transactionRepository, "transactionRepository must not be null");
         this.objectStorage = Objects.requireNonNull(objectStorage, "objectStorage must not be null");
@@ -1868,14 +1941,15 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     }
 
     // ====================================================================================================
-    // Fixed-width stream primitives. RECFM=FB semantics: exactly RECORD_LENGTH characters per record and NO
-    // terminator at all. A terminator is nevertheless tolerated, because an ASCII fixture carries one per
-    // row, and assuming either shape would break on the other. RECORD LENGTH IS PRESERVED BYTE-EXACTLY AT
-    // THE OBJECT-STORAGE BOUNDARY: no re-blocking, no re-encoding, no trimming, no padding.
+    // Fixed-width stream primitives. RECFM=FB semantics and nothing else: exactly RECORD_LENGTH characters
+    // per record and NO terminator at all, so the object length is a whole multiple of RECORD_LENGTH. A
+    // separator byte is REFUSED rather than tolerated - see rejectRecordSeparator. RECORD LENGTH IS
+    // PRESERVED BYTE-EXACTLY AT THE OBJECT-STORAGE BOUNDARY: no re-blocking, no re-encoding, no trimming,
+    // no padding.
     // ====================================================================================================
 
     /**
-     * Reads exactly {@value #RECORD_LENGTH} characters and consumes an optional single terminator.
+     * Reads exactly {@value #RECORD_LENGTH} characters and refuses any separator that follows them.
      * <p>
      * <b>The charset is explicit and applied once, at the stream.</b> The bytes were decoded through
      * {@link #RECORD_CHARSET} by the {@link InputStreamReader} created in {@link #openInputSource()}, so one
@@ -1883,10 +1957,16 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      * built with the {@code char[]} constructor of {@link String}, which takes no charset at all, so the
      * platform-default {@code new String(byte[])} overload is never reached anywhere in this class.
      * <p>
-     * <b>The terminator is optional and is not assumed to be the platform separator.</b> A lone {@code \n},
-     * a {@code \r\n} pair and a lone {@code \r} are each consumed, and anything else is pushed back so the
-     * next record starts exactly where it should. That is what lets one implementation read both an
-     * unterminated {@code RECFM=FB} image and a line-terminated ASCII fixture.
+     * <b>The stream is undelimited and a separator byte is a hard failure.</b>
+     * {@code app/proc/TRANREPT.prc:L29} allocates {@code TRANSACT.BKUP} with
+     * {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)}, so the generation is a whole number of
+     * {@value #RECORD_LENGTH}-byte records and nothing else. See {@link #rejectRecordSeparator()} for why
+     * the optional-terminator tolerance this method used to carry has been withdrawn.
+     * <p>
+     * <b>The exact-multiple rule is enforced by construction rather than by a separate length probe.</b> A
+     * short final read is a geometry failure naming the observed length, and a full read followed by a
+     * separator byte is a delimiter failure naming the byte; between them, a generation whose length is not
+     * a whole multiple of {@value #RECORD_LENGTH} cannot be consumed silently.
      * <p>
      * <b>Bounds are checked before anything is used.</b> Zero characters at a record boundary is a clean end
      * of data. Anything from one to {@value #RECORD_LENGTH} minus one is a truncated record, which is a data
@@ -1896,7 +1976,8 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
      *
      * @return the {@value #RECORD_LENGTH}-character image, or {@code null} at a clean end of data
      * @throws IOException if the underlying stream fails
-     * @throws DataIntegrityException if a partial record is present at the end of the stream
+     * @throws DataIntegrityException if a partial record is present at the end of the stream, or if a record
+     *     separator follows a complete record
      */
     private String readFixedWidthImage() throws IOException {
         int filled = 0;
@@ -1925,38 +2006,51 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
                     LOGICAL_FILE, DATASET_NAME);
         }
 
-        consumeRecordTerminator();
+        rejectRecordSeparator();
         return new String(recordBuffer, 0, RECORD_LENGTH);
     }
 
     /**
-     * Consumes the optional single row terminator that follows a record, leaving the stream positioned at the
+     * Refuses a record separator following a complete record image, leaving the stream positioned at the
      * first character of the next record.
      * <p>
-     * A carriage return is stripped defensively: the generation may have been produced on a platform that
-     * writes {@code \r\n}, and a terminator shape is not something to assume. Stripping it changes no field
-     * geometry, because it happens strictly after {@value #RECORD_LENGTH} characters have been taken.
+     * <b>The tolerance this method replaces was a defect, not a convenience.</b> An earlier revision
+     * consumed a lone {@code \n}, a {@code \r\n} pair or a lone {@code \r} after every record, on the grounds
+     * that an ASCII fixture carries one per row and that a terminator shape should not be assumed. The effect
+     * was that corrupt generation geometry became indistinguishable from valid input: a generation written by
+     * something other than this application, or truncated mid-transfer, would be consumed as though every
+     * record after the first stray byte were correctly aligned, and the report would be produced over
+     * shifted fields under a success status.
+     * <p>
+     * {@code app/proc/TRANREPT.prc:L29} allocates this generation with
+     * {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)}. {@code RECFM=FB} is undelimited by definition, the
+     * mainframe dataset carries no terminator, and the only writer of this generation is this application's
+     * own fixed-width backup step, which emits none - so on this path a separator can only mean the object is
+     * not the generation it claims to be. Line-oriented ingestion of {@code app/data/ASCII/*.txt} belongs to
+     * the seed migration and to test fixtures, which read those files as text by name; it is deliberately not
+     * a mode of this reader.
      *
      * @throws IOException if the underlying stream fails, or if it does not support the mark needed to push a
-     *     non-terminator character back
+     *     non-separator character back
+     * @throws DataIntegrityException if the next character is {@code LF} or {@code CR}
      */
-    private void consumeRecordTerminator() throws IOException {
-        recordStream.mark(2);
-        final int first = recordStream.read();
-        if (first == END_OF_STREAM || first == LINE_FEED) {
+    private void rejectRecordSeparator() throws IOException {
+        recordStream.mark(1);
+        final int next = recordStream.read();
+        if (next == END_OF_STREAM) {
             return;
         }
-        if (first == CARRIAGE_RETURN) {
-            recordStream.mark(1);
-            final int second = recordStream.read();
-            if (second != END_OF_STREAM && second != LINE_FEED) {
-                // A lone CR terminated the row; the character just read belongs to the next record.
-                recordStream.reset();
-            }
-            return;
+        if (next == LINE_FEED || next == CARRIAGE_RETURN) {
+            throw new DataIntegrityException(String.format(Locale.ROOT,
+                    "%s generation '%s' in bucket '%s' carries a 0x%02X record separator after row %d; "
+                            + "app/proc/TRANREPT.prc:L29 DCB=(LRECL=%d,RECFM=FB,BLKSIZE=0) is undelimited, "
+                            + "so a separator means the object was not written by this application or was "
+                            + "corrupted in transfer",
+                    LOGICAL_FILE, resolvedGenerationObjectKey, outputBucket, Integer.valueOf(next),
+                    Long.valueOf(recordsRead + 1L), Integer.valueOf(RECORD_LENGTH)),
+                    LOGICAL_FILE, DATASET_NAME);
         }
-        // No terminator at all - the RECFM=FB case - so the character just read is the first of the next
-        // record and is pushed back.
+        // No separator: the character just read is the first of the next record and is pushed back.
         recordStream.reset();
     }
 
@@ -2566,9 +2660,9 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
     private static InputSource requireInputSource(final String configured) {
         if (configured == null || configured.isBlank()) {
             throw new IllegalArgumentException(String.format(Locale.ROOT,
-                    "%s must be either 'repository' or 'object-storage' but was blank; the default is "
-                            + "'repository', so remove the key rather than emptying it",
-                    PROPERTY_SOURCE));
+                    "%s must be either 'repository' or 'object-storage' but was blank; it is not a "
+                            + "configurable property, so the caller passed a blank literal",
+                    ARGUMENT_SOURCE));
         }
         final String normalised = configured.strip().toUpperCase(Locale.ROOT).replace('-', '_');
         try {
@@ -2578,7 +2672,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
                     "%s must be either 'repository' or 'object-storage'; '%s' names neither. 'repository' "
                             + "browses the transaction relation in ascending TRAN-ID order and "
                             + "'object-storage' decodes the 350-byte images from the resolved %s generation",
-                    PROPERTY_SOURCE, configured, DATASET_NAME), unknown);
+                    ARGUMENT_SOURCE, configured, DATASET_NAME), unknown);
         }
     }
 
@@ -2594,40 +2688,40 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
         if (pageSize < 1) {
             throw new IllegalArgumentException(String.format(Locale.ROOT,
                     "%s must be at least 1 but was %d; a non-positive page cannot advance the sequential "
-                            + "browse of %s",
-                    PROPERTY_PAGE_SIZE, Integer.valueOf(pageSize), DATASET_NAME));
+                            + "browse of %s. The owning job supplies it from "
+                            + "carddemo.batch.tranrept.chunk-size",
+                    ARGUMENT_PAGE_SIZE, Integer.valueOf(pageSize), DATASET_NAME));
         }
         return pageSize;
     }
 
     /**
-     * Validates and normalises the configured generation key prefix.
+     * Validates the configured generation key prefix and derives the listing form this reader matches with.
      * <p>
-     * Surrounding whitespace is stripped, because a YAML value can pick it up and a prefix with a trailing
-     * space addresses a different key space. A blank value is refused outright: it would list the whole bucket
-     * and could select a generation of an entirely different base, which is a silent parity break rather than
-     * a visible failure.
+     * A blank value is refused outright: it would list the whole bucket and could select a generation of an
+     * entirely different base, which is a silent parity break rather than a visible failure. Surrounding
+     * whitespace is refused rather than stripped, because a YAML value can pick it up and a prefix with a
+     * trailing space addresses a different key space - so the two spellings must not be conflated.
      *
      * @param configured the raw configured value
-     * @return the prefix with surrounding whitespace removed, never blank
-     * @throws IllegalArgumentException if the value is {@code null} or blank
+     * @return the validated prefix with exactly one trailing separator, never blank
+     * @throws IllegalArgumentException if the value is absent, blank or malformed
      */
     private static String requireGenerationPrefix(final String configured) {
-        if (configured == null || configured.isBlank()) {
-            throw new IllegalArgumentException(String.format(Locale.ROOT,
-                    "%s must name the key prefix under which %s generations are written and must not be "
-                            + "blank, because a blank prefix would list the whole bucket and could select a "
-                            + "generation of a different base; the default is '%s'",
-                    PROPERTY_GENERATION_PREFIX, DATASET_NAME, DEFAULT_GENERATION_PREFIX));
-        }
-        final String stripped = configured.strip();
+        // FINDING m-02, severity Minor, RESOLVED. This method used to accept any value, strip its whitespace
+        // and append a separator if one was missing - so a value with a leading separator, a doubled
+        // separator, a traversal segment or a control character passed, and a value that already ended in a
+        // separator was silently accepted in a second spelling. The grammar is now shared with the five other
+        // object-key consumers and it refuses rather than repairs.
+        final String relative =
+                GenerationPrefixContract.requireRelativePrefix(configured, PROPERTY_GENERATION_PREFIX);
 
         // L-04: object storage has no directories, so a prefix match is a plain string match. Without a
         // trailing separator 'gdg/transact-bkup' also matches 'gdg/transact-bkup-shadow', and a generation of
         // that unrelated base could be selected as the greatest key - silently reporting on the wrong data.
-        // Exactly one separator is appended, so a value that already ends in one is not doubled into a key
-        // segment with an empty name.
-        return stripped.endsWith(KEY_SEPARATOR) ? stripped : stripped + KEY_SEPARATOR;
+        // The separator is DERIVED from the validated relative form rather than tolerated in configuration,
+        // so exactly one is present and there is only one spelling an operator can write.
+        return GenerationPrefixContract.listingPrefixOf(relative);
     }
 
     /**
@@ -2658,7 +2752,7 @@ public class TransactionBackupReader implements ItemStreamReader<Transaction> {
                     "%s must be configured with a non-blank value when %s is 'object-storage'; set %s. The "
                             + "bucket is versioned and is provisioned idempotently by "
                             + "localstack-init/init-aws.sh",
-                    PROPERTY_OUTPUT_BUCKET, PROPERTY_SOURCE, ENV_OUTPUT_BUCKET));
+                    PROPERTY_OUTPUT_BUCKET, ARGUMENT_SOURCE, ENV_OUTPUT_BUCKET));
         }
         return normalised;
     }

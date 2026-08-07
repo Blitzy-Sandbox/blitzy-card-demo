@@ -67,6 +67,16 @@ import org.springframework.beans.factory.ObjectProvider;
  */
 @DisplayName("ReportSubmissionService: the FIFO message group is validated at construction")
 final class ReportSubmissionServiceMessageGroupTest {
+    /**
+     * The key the queue envelope code is derived from.
+     *
+     * <p>Local to this test and long enough to be a plausible signing key, so nothing here is a credential of
+     * any deployment. Finding M-11: the producer signs every submission with a key derived from the
+     * application signing key, and there is no unsigned mode, so a subject cannot be built without one.
+     */
+    private static final String ENVELOPE_SIGNING_KEY =
+            "message-group-test-envelope-key-0123456789";
+
 
     private static final String QUEUE = "carddemo-report-jobs.fifo";
     private static final String LOGICAL = "carddemo-report-jobs";
@@ -88,7 +98,7 @@ final class ReportSubmissionServiceMessageGroupTest {
                 QUEUE,
                 LOGICAL,
                 messageGroupId,
-                "carddemo-notifications");
+                "carddemo-notifications", ENVELOPE_SIGNING_KEY);
     }
 
     /**

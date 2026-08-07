@@ -45,13 +45,25 @@
 package com.cardemo.integration.aws;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
+import com.cardemo.batch.readers.DailyTransactionReader;
+import com.cardemo.exception.FatalProcessingException;
+import com.cardemo.model.entity.DailyTransaction;
+import com.cardemo.repository.DailyTransactionRepository;
+import com.cardemo.service.shared.FileStatusMapper;
+import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -340,6 +352,171 @@ class ObjectStoreAuthorizationBoundaryIntegrationTest extends AbstractAwsIntegra
                             .isNull();
                 }
             }
+        }
+    }
+
+    /**
+     * Finding M-11, severity Major: what the emulator does not refuse, the application refuses.
+     *
+     * <p>The group above measures the gap - a principal with an arbitrary key can write into the batch input
+     * bucket, which is where {@code app/jcl/POSTTRAN.jcl} reads {@code DALYTRAN} from. This group is the
+     * closure: the same planted object, reached through the same emulator, is <b>refused by the reader</b>
+     * before a record is parsed, and only an object vouched for with the application's own key is read.
+     *
+     * <p>These tests are the live counterpart of the unit-tier authenticity group. The unit tier proves the
+     * rules with a stubbed store; this proves the same rules over real object metadata written by a real
+     * client, which is the only place a mistake about how the store reports user metadata would show up.
+     */
+    @Nested
+    @DisplayName("M-11: a planted input object is refused by the application, whatever the emulator allows")
+    class PlantedInputIsRefusedByTheApplication {
+
+        /** The writer identity a legitimate feed claims. Attribution, inside the authenticated manifest. */
+        private static final String WRITER = "carddemo-fixture-feed";
+
+        /**
+         * Plants one object in the batch input bucket as the foreign principal, with the metadata given.
+         *
+         * @param key the object key
+         * @param body the object content
+         * @param metadata the user metadata to attach, possibly empty
+         */
+        private void plantInputObject(final String key, final String body,
+                final Map<String, String> metadata) {
+
+            try (S3Client foreign = foreignPrincipalClient()) {
+                foreign.putObject(
+                        request -> request.bucket(batchInputBucket()).key(key).metadata(metadata),
+                        RequestBody.fromBytes(body.getBytes(StandardCharsets.ISO_8859_1)));
+            }
+        }
+
+        /**
+         * Builds a reader bound to the real emulator and to one planted object.
+         *
+         * <p>The repository collaborator is a mock because the {@code fixed-width} path never touches it -
+         * asserted in the unit tier - so a database is not a prerequisite of this proof.
+         *
+         * @param key the object key to read
+         * @return the reader, never {@code null}
+         */
+        private DailyTransactionReader readerFor(final String key) {
+            return new DailyTransactionReader(Mockito.mock(DailyTransactionRepository.class), s3Template(),
+                    new FileStatusMapper(), "fixed-width", 100, batchInputBucket(), key, applicationKey());
+        }
+
+        /**
+         * Recovers the signing key the context is running with.
+         *
+         * @return the key, never blank
+         */
+        private String applicationKey() {
+            final String key = environment.getProperty("carddemo.security.jwt.signing-key");
+            assertThat(key)
+                    .as("the authenticity key is derived from the application signing key, so a context "
+                            + "without one could not prove anything here")
+                    .isNotBlank();
+            return key;
+        }
+
+        /**
+         * A single valid 350-character {@code DALYTRAN} image, taken from the shipped fixture.
+         *
+         * <p>Returned with <b>no record separator</b>, which is the geometry the reader under test accepts
+         * and the geometry this application's fixed-width writers emit.
+         * {@code app/cbl/CBTRN02C.cbl:L66-L69} gives {@code DALYTRAN} one fixed 350-character record group
+         * with no delimiter, so {@code DailyTransactionReader} refuses a trailing {@code LF} or {@code CR} as
+         * proof that an object was not written by this application. An earlier form of this helper appended
+         * {@code '\n'} because the frozen ASCII fixture carries one per line, and that made the positive
+         * control below fail on record geometry before it could reach the authenticity assertion it exists to
+         * make. The fixture's own line terminators belong to the line-oriented readers - the seed migration
+         * and the test fixture loader - and not to an object planted on the store.
+         *
+         * @return exactly 350 characters, with no terminator
+         * @throws IOException if the frozen fixture cannot be read
+         */
+        private String oneFixtureRecord() throws IOException {
+            final String fixture = Files.readString(Path.of("app/data/ASCII/dailytran.txt"),
+                    StandardCharsets.ISO_8859_1);
+            return fixture.substring(0, 350);
+        }
+
+        /**
+         * The complete, valid envelope for a body at a key.
+         *
+         * @param key the object key the envelope is bound to
+         * @param body the content the envelope vouches for
+         * @return the metadata to attach
+         */
+        private Map<String, String> validEnvelope(final String key, final String body) {
+            final byte[] content = body.getBytes(StandardCharsets.ISO_8859_1);
+            final String digest = DailyTransactionReader.InputObjectEnvelope.hexadecimal(
+                    DailyTransactionReader.InputObjectEnvelope.newDigest().digest(content));
+            return Map.of(
+                    DailyTransactionReader.InputObjectEnvelope.METADATA_WRITER, WRITER,
+                    DailyTransactionReader.InputObjectEnvelope.METADATA_CONTENT_SHA256, digest,
+                    DailyTransactionReader.InputObjectEnvelope.METADATA_SIGNATURE,
+                    DailyTransactionReader.InputObjectEnvelope.sign(batchInputBucket(), key, content.length,
+                            WRITER, digest, applicationKey()));
+        }
+
+        @Test
+        @DisplayName("an object the foreign principal planted with no envelope is refused, and no record is "
+                + "parsed")
+        void aPlantedUnsignedObjectIsRefused() throws IOException {
+            final String key = scopedResourceName("m11-unsigned") + "/dailytran.txt";
+            plantInputObject(key, oneFixtureRecord(), Map.of());
+            final DailyTransactionReader reader = readerFor(key);
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .as("the emulator admitted the write - the group above measures that - so the "
+                            + "application is the control that has to refuse the read")
+                    .isThrownBy(() -> reader.open(new ExecutionContext()))
+                    .satisfies(refusal -> assertThat(refusal.getAbendReason())
+                            .isEqualTo("DALYTRAN INPUT NOT AUTHENTIC"));
+
+            s3Client().deleteObject(request -> request.bucket(batchInputBucket()).key(key));
+        }
+
+        @Test
+        @DisplayName("the same object, vouched for with the application's own key, is read")
+        void aVouchedForObjectIsRead() throws IOException {
+            final String key = scopedResourceName("m11-signed") + "/dailytran.txt";
+            final String body = oneFixtureRecord();
+            plantInputObject(key, body, validEnvelope(key, body));
+            final DailyTransactionReader reader = readerFor(key);
+
+            reader.open(new ExecutionContext());
+            final DailyTransaction first = reader.read();
+            reader.close();
+
+            assertThat(first)
+                    .as("the refusal above must be the envelope's absence and not some other failure of this "
+                            + "harness, so the positive control reads the same bytes through the same path")
+                    .isNotNull();
+            assertThat(first.getTransactionId()).isNotBlank();
+
+            s3Client().deleteObject(request -> request.bucket(batchInputBucket()).key(key));
+        }
+
+        @Test
+        @DisplayName("a body swapped under a valid envelope is refused, which a signature check alone would "
+                + "have accepted")
+        void aBodySwapUnderAValidEnvelopeIsRefused() throws IOException {
+            final String key = scopedResourceName("m11-swapped") + "/dailytran.txt";
+            final String vouchedFor = oneFixtureRecord();
+            // Same length, different content: the manifest is genuinely signed and still describes 351 bytes,
+            // so only the re-measured digest can tell the difference.
+            final String swapped = "9".repeat(vouchedFor.length() - 1) + '\n';
+            plantInputObject(key, swapped, validEnvelope(key, vouchedFor));
+            final DailyTransactionReader reader = readerFor(key);
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> reader.open(new ExecutionContext()))
+                    .satisfies(refusal -> assertThat(refusal.getAbendReason())
+                            .isEqualTo("DALYTRAN INPUT NOT AUTHENTIC"));
+
+            s3Client().deleteObject(request -> request.bucket(batchInputBucket()).key(key));
         }
     }
 }

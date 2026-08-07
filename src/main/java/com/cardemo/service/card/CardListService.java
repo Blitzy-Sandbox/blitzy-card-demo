@@ -76,12 +76,13 @@ import com.cardemo.repository.CardRepository;
  * {@code jacoco-maven-plugin:0.8.12} enforcing an 80 percent LINE gate at {@code verify}, and
  * {@code org.owasp:dependency-check-maven:12.1.0}.</p>
  * <p>The provisioned toolchain exposes {@code java}, {@code javac} and {@code mvn} directly, so the
- * canonical commands are, from the repository root, with the local environment exported first
- * ({@code set -a; . ./.env; set +a}):</p>
+ * canonical commands are, from the repository root, with the local environment loaded in a subshell around
+ * whichever command needs it - {@code ( set -a; . ./.env; set +a; <command> )} rather than an export into the
+ * shell, so the values are not inherited by every later child:</p>
  * <ul>
  *   <li>{@code ./mvnw -B -ntp clean compile} - compiles this file under the zero-warning gate.</li>
  *   <li>{@code ./mvnw -B -ntp test} - runs the unit tier.</li>
- *   <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} - fast local verification, which
+ *   <li>{@code ./mvnw -B -ntp clean verify} - fast local verification, which
  *       runs the compiler, doclint, test and coverage checks but <strong>does not</strong> satisfy the
  *       zero-warning build gate, because the skip suppresses the vulnerability scan and a skipped scan is
  *       never evidence that the scan passes. Note the skip property is hyphenated.</li>
@@ -3048,9 +3049,11 @@ public class CardListService {
      *
      * <p>Required by Rule 1 Clause D. Nothing in this class writes a card number, an account
      * identifier or any other sensitive value to a log without passing it through here, and no page of
-     * rows is ever logged. The card verification value cannot be read, projected or logged at all: the
-     * entity declares no such property and the schema no such column - see the deviation on
-     * {@link com.cardemo.model.entity.Card} - and this program would not have referenced one anyway, its
+     * rows is ever logged. The card verification value cannot be read, projected or logged at all, though
+     * not because it is unmodelled: {@code card_cvv_cd} is declared and seeded, and
+     * {@link com.cardemo.model.entity.Card} maps it. It is <em>write-once and accessor-less</em> - no getter
+     * of any visibility exists - so no read path to it exists in this class or anywhere else.
+     * This program would not have referenced one anyway, its
      * output edit fields {@code CARD-CVV-CD-X} and {@code CARD-CVV-CD-N} at
      * {@code app/cbl/COCRDLIC.cbl:102-104} being declared and never used.</p>
      *

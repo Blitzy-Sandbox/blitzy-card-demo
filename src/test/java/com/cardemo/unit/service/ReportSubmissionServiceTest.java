@@ -49,7 +49,9 @@ package com.cardemo.unit.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -92,6 +94,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -258,6 +262,16 @@ import org.springframework.messaging.support.GenericMessage;
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)
 class ReportSubmissionServiceTest {
+    /**
+     * The key the queue envelope code is derived from.
+     *
+     * <p>Local to this test and long enough to be a plausible signing key, so nothing here is a credential of
+     * any deployment. Finding M-11: the producer signs every submission with a key derived from the
+     * application signing key, and there is no unsigned mode, so a subject cannot be built without one.
+     */
+    private static final String ENVELOPE_SIGNING_KEY =
+            "report-submission-test-envelope-key-0123456789";
+
 
     // -----------------------------------------------------------------------------------------------------
     // Screen and program identity. app/cbl/CORPT00C.cbl:37-38 and app/cpy/COTTL01Y.cpy.
@@ -527,7 +541,7 @@ class ReportSubmissionServiceTest {
      */
     private ReportSubmissionService serviceWithClock(final Clock clock) {
         return new ReportSubmissionService(this.sqsTemplate, this.snsTemplate, this.dateValidationService,
-                clock, new NoTracerProvider(), QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC);
+                clock, new NoTracerProvider(), QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC, ENVELOPE_SIGNING_KEY);
     }
 
     /**
@@ -718,7 +732,7 @@ class ReportSubmissionServiceTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> new ReportSubmissionService(null, snsTemplate, dateValidationService,
                             FixedClockProvider.canonicalClock(), new NoTracerProvider(),
-                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC, ENVELOPE_SIGNING_KEY))
                     .withMessageContaining("sqsTemplate");
         }
 
@@ -728,7 +742,7 @@ class ReportSubmissionServiceTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, null, dateValidationService,
                             FixedClockProvider.canonicalClock(), new NoTracerProvider(),
-                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC, ENVELOPE_SIGNING_KEY))
                     .withMessageContaining("snsTemplate");
         }
 
@@ -738,7 +752,7 @@ class ReportSubmissionServiceTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate, null,
                             FixedClockProvider.canonicalClock(), new NoTracerProvider(),
-                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC, ENVELOPE_SIGNING_KEY))
                     .withMessageContaining("dateValidationService");
         }
 
@@ -748,7 +762,7 @@ class ReportSubmissionServiceTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
                             dateValidationService, null, new NoTracerProvider(),
-                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC, ENVELOPE_SIGNING_KEY))
                     .withMessageContaining("clock");
         }
 
@@ -758,7 +772,7 @@ class ReportSubmissionServiceTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
                             dateValidationService, FixedClockProvider.canonicalClock(), null,
-                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC, ENVELOPE_SIGNING_KEY))
                     .withMessageContaining("tracerProvider");
         }
 
@@ -782,7 +796,7 @@ class ReportSubmissionServiceTest {
                     .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
                             dateValidationService, FixedClockProvider.canonicalClock(),
                             new NoTracerProvider(),
-                            null, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                            null, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC, ENVELOPE_SIGNING_KEY))
                     .withMessageContaining("reportQueueName");
         }
 
@@ -793,7 +807,7 @@ class ReportSubmissionServiceTest {
                     .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
                             dateValidationService, FixedClockProvider.canonicalClock(),
                             new NoTracerProvider(),
-                            QUEUE_NAME, null, MESSAGE_GROUP_ID, TOPIC))
+                            QUEUE_NAME, null, MESSAGE_GROUP_ID, TOPIC, ENVELOPE_SIGNING_KEY))
                     .withMessageContaining("reportQueueLogicalName");
         }
 
@@ -804,7 +818,7 @@ class ReportSubmissionServiceTest {
                     .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
                             dateValidationService, FixedClockProvider.canonicalClock(),
                             new NoTracerProvider(),
-                            QUEUE_NAME, QUEUE_LOGICAL_NAME, null, TOPIC))
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, null, TOPIC, ENVELOPE_SIGNING_KEY))
                     .withMessageContaining("reportMessageGroupId");
         }
 
@@ -815,7 +829,7 @@ class ReportSubmissionServiceTest {
                     .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
                             dateValidationService, FixedClockProvider.canonicalClock(),
                             new NoTracerProvider(),
-                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, null))
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, null, ENVELOPE_SIGNING_KEY))
                     .withMessageContaining("notificationTopic");
         }
 
@@ -963,6 +977,117 @@ class ReportSubmissionServiceTest {
                             .toList())
                     .as("the report name of :58 plus the two dates of :60-71, and nothing else")
                     .containsExactly("reportName", "startDate", "endDate");
+        }
+
+        @Test
+        @DisplayName("the report name is a closed set of exactly the three source literals")
+        void theReportNameIsAClosedSet() {
+            // FINDING M-12, severity Major. Null-checking was the only validation, so an arbitrary and
+            // unbounded name travelled to the queue and then into an IDENTIFYING job parameter that the batch
+            // repository persists and keys a job instance on. WS-REPORT-NAME is PIC X(10) at
+            // app/cbl/CORPT00C.cbl:58, so no longer value could exist on the mainframe at all, and the only
+            // three values moved into it are the literals at :214, :240 and :433.
+            assertThat(ReportSubmissionService.PERMITTED_REPORT_NAMES)
+                    .containsExactlyInAnyOrder("Monthly", "Yearly", "Custom");
+        }
+
+        @ParameterizedTest(name = "a report name of [{0}] is refused")
+        @ValueSource(strings = {"monthly", "MONTHLY", "Weekly", "Monthly ", "Monthly\r\nlevel=ERROR",
+            "Monthly'; DROP TABLE transaction; --", ""})
+        @DisplayName("a report name outside the closed set never reaches the queue")
+        void aReportNameOutsideTheClosedSetIsRefused(final String hostile) {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new JobSubmissionMessage(hostile, "2022-07-01", "2022-07-31"))
+                    .withMessageContaining("reportName")
+                    .withMessageNotContaining(hostile.isEmpty() ? "no-such-fragment" : hostile);
+        }
+
+        @ParameterizedTest(name = "a start date of [{0}] is refused")
+        @ValueSource(strings = {"2022-7-01", "20220701", "2022-07-01 ", "2022-07-01\n", "not-a-date",
+            "2022-07-011"})
+        @DisplayName("a parameter date the fixed-width card could not have carried never reaches the queue")
+        void aMisshapenParameterDateIsRefused(final String hostile) {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new JobSubmissionMessage("Monthly", hostile, "2022-07-31"))
+                    .withMessageContaining("startDate");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new JobSubmissionMessage("Monthly", "2022-07-01", hostile))
+                    .withMessageContaining("endDate");
+        }
+
+        @Test
+        @DisplayName("the envelope code verifies for the message it was made for, and for no other")
+        void theEnvelopeCodeVerifiesForItsOwnMessageOnly() {
+            // FINDING M-11, severity Major. The emulator queue enforces no authorisation of its own, so the
+            // code is what distinguishes a submission this application published from one any process able to
+            // reach the emulator port could publish.
+            final JobSubmissionMessage message =
+                    new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
+            final JobSubmissionMessage otherPeriod =
+                    new JobSubmissionMessage("Monthly", "2022-08-01", "2022-08-31");
+            final String code = ReportSubmissionService.JobSubmissionEnvelope
+                    .sign(message, ENVELOPE_SIGNING_KEY);
+
+            assertThat(ReportSubmissionService.JobSubmissionEnvelope
+                    .verify(message, ENVELOPE_SIGNING_KEY, code)).isTrue();
+            assertThat(ReportSubmissionService.JobSubmissionEnvelope
+                    .verify(otherPeriod, ENVELOPE_SIGNING_KEY, code))
+                    .as("a code covers the period it was made for, so a replay onto another period fails")
+                    .isFalse();
+            assertThat(ReportSubmissionService.JobSubmissionEnvelope
+                    .verify(message, ENVELOPE_SIGNING_KEY + "-other", code))
+                    .as("and it is keyed, so a publisher without the key cannot produce one")
+                    .isFalse();
+        }
+
+        @ParameterizedTest(name = "a presented code of [{0}] does not verify")
+        @ValueSource(strings = {"", "v1=", "v1=zz", "v1=abc", "v2=0011", "0011",
+            "v1=00000000000000000000000000000000000000000000000000000000000000ff"})
+        @DisplayName("a malformed or wrong envelope code is refused rather than tolerated")
+        void aMalformedEnvelopeCodeIsRefused(final String presented) {
+            final JobSubmissionMessage message =
+                    new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
+
+            assertThat(ReportSubmissionService.JobSubmissionEnvelope
+                    .verify(message, ENVELOPE_SIGNING_KEY, presented)).isFalse();
+        }
+
+        @Test
+        @DisplayName("an absent envelope code does not verify, there being no unsigned mode")
+        void anAbsentEnvelopeCodeDoesNotVerify() {
+            final JobSubmissionMessage message =
+                    new JobSubmissionMessage("Monthly", "2022-07-01", "2022-07-31");
+
+            assertThat(ReportSubmissionService.JobSubmissionEnvelope
+                    .verify(message, ENVELOPE_SIGNING_KEY, null)).isFalse();
+        }
+
+        @Test
+        @DisplayName("the envelope key is required at construction, so no submission can be unsigned")
+        void theEnvelopeKeyIsRequiredAtConstruction() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
+                            dateValidationService, FixedClockProvider.canonicalClock(),
+                            new NoTracerProvider(), QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC,
+                            "   "))
+                    .withMessageContaining("carddemo.security.jwt.signing-key");
+        }
+
+        @Test
+        @DisplayName("every published submission carries an envelope code the consumer can verify")
+        void everyPublishedSubmissionCarriesAnEnvelopeCode() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            final Object presented = sendOptions.headers()
+                    .get(ReportSubmissionService.JobSubmissionEnvelope.SIGNATURE_HEADER);
+            assertThat(presented).as("the header the consumer verifies before it launches anything")
+                    .isNotNull();
+            assertThat(ReportSubmissionService.JobSubmissionEnvelope
+                    .verify(sendOptions.payload(), ENVELOPE_SIGNING_KEY, presented))
+                    .as("the code the producer sent must be the code the consumer computes")
+                    .isTrue();
         }
     }
 
@@ -2416,6 +2541,82 @@ class ReportSubmissionServiceTest {
                     .withMessageContaining("endDate");
         }
 
+        /**
+         * The report name is drawn from a closed vocabulary, not merely from a non-null string.
+         *
+         * <p><strong>Finding C-02, severity Critical.</strong> This record is the type a queue payload binds
+         * to, so until its constructor screened the values a publisher could put anything at all in any of the
+         * three fields - and those values flowed into job parameters and, before the remediation, into log
+         * records. {@code app/cbl/CORPT00C.cbl} assigns {@code WS-REPORT-NAME} from one of three literals on
+         * every reachable arm, so three is the whole vocabulary and anything else did not come from this
+         * application's submission surface.
+         *
+         * <p>The rejected values are chosen to be the realistic hostile shapes rather than arbitrary noise: a
+         * card number, a nine-digit government identifier, and a value that merely <em>starts</em> with a
+         * permitted literal, which a prefix test would have wrongly admitted.
+         */
+        @Test
+        @DisplayName("the message refuses a report name outside the three periods the screen offers")
+        void theMessageRefusesAReportNameOutsideTheClosedVocabulary() {
+            for (final String rejected : List.of("", " ", "monthly", "MONTHLY", "Monthly ", "Monthly\r\nX",
+                    "Weekly", "4111111111111111", "123456789")) {
+                assertThatIllegalArgumentException()
+                        .as("report name %s is not one of the three literals the source can produce", rejected)
+                        .isThrownBy(() -> new JobSubmissionMessage(rejected, "2022-06-01", "2022-06-30"));
+            }
+
+            // And all three permitted literals are still admitted, so the screen cannot break a real submission.
+            for (final String admitted : List.of(REPORT_NAME_MONTHLY, REPORT_NAME_YEARLY, REPORT_NAME_CUSTOM)) {
+                assertThat(new JobSubmissionMessage(admitted, "2022-06-01", "2022-06-30").reportName())
+                        .isEqualTo(admitted);
+            }
+        }
+
+        /**
+         * Each date must be the ten-character dashed form the source's parameter cards carry.
+         *
+         * <p>{@code app/cbl/CORPT00C.cbl:L60-L71} assembles both parameter dates as ten-character fixed-width
+         * areas with dash separators, so ten characters of {@code yyyy-MM-dd} is the width and the shape, and a
+         * value of any other shape did not come from the submission surface. The grammar is anchored at both
+         * ends, which is why a value carrying a line terminator is refused rather than satisfying the check on
+         * its first line - the property that keeps a multi-line value out of a text log format.
+         *
+         * <p>It is a contract check and deliberately not a calendar check: whether a well-formed date exists is
+         * the date validation service's judgement, made on submission against the language-environment
+         * semantics, and re-litigating it here would put the same rule in two places.
+         */
+        @Test
+        @DisplayName("the message refuses either date outside the ten-character dashed parameter form")
+        void theMessageRefusesADateOutsideTheParameterGrammar() {
+            for (final String rejected : List.of("", "2022-6-01", "20220601", "2022-06-01 ", "2022-06-01\n",
+                    "2022-06-01\r\n2022-06-02", "1974-03-19T00:00", "abcd-ef-gh", "123456789")) {
+                assertThatIllegalArgumentException()
+                        .as("start date %s is not the ten-character dashed parameter form", rejected)
+                        .isThrownBy(() -> new JobSubmissionMessage(REPORT_NAME_MONTHLY, rejected, "2022-06-30"));
+                assertThatIllegalArgumentException()
+                        .as("end date %s is not the ten-character dashed parameter form", rejected)
+                        .isThrownBy(() -> new JobSubmissionMessage(REPORT_NAME_MONTHLY, "2022-06-01", rejected));
+            }
+        }
+
+        @Test
+        @DisplayName("a refusal names the offending field and never quotes the offending value")
+        void aRefusalNamesTheFieldAndNotTheValue() {
+            final String hostile = "4111111111111111";
+
+            for (final Throwable refusal : List.of(
+                    catchThrowable(() -> new JobSubmissionMessage(hostile, "2022-06-01", "2022-06-30")),
+                    catchThrowable(() -> new JobSubmissionMessage(REPORT_NAME_MONTHLY, hostile, "2022-06-30")),
+                    catchThrowable(() -> new JobSubmissionMessage(REPORT_NAME_MONTHLY, "2022-06-01", hostile)))) {
+
+                assertThat(refusal).isInstanceOf(IllegalArgumentException.class);
+                assertThat(refusal.getMessage())
+                        .as("a constructor message that quoted the value would disclose, through the very "
+                                + "exception raised to withhold it, exactly what a caller sent")
+                        .doesNotContain(hostile);
+            }
+        }
+
         @Test
         @DisplayName("the deck is SEVENTEEN cards, and the count includes the terminator that WAS written")
         void theDeckIsSeventeenCardsIncludingTheWrittenTerminator() throws ReflectiveOperationException {
@@ -2659,6 +2860,47 @@ class ReportSubmissionServiceTest {
 
             verifyNoInteractions(snsTemplate);
         }
+
+        @Test
+        @DisplayName("an expired deadline yields the source literal, so a stalled queue fails at a known bound")
+        void anExpiredDeadlineYieldsTheSourceLiteral() {
+            // Finding F-009. The publish is issued with sendAsync and awaited with an explicit deadline, and
+            // that is the only bounded synchronous send available: SqsTemplate.send compiles to
+            // unwrapCompletionException(sendAsync(...)) over a bare CompletableFuture.join(), so the
+            // synchronous form would wait with no caller-visible bound at all. This asserts the bound holds,
+            // and :525-:527 distinguishes only NORMAL from OTHER, so a deadline reports the same literal as
+            // any other queue failure.
+            final AbandonedPublish stalled = new AbandonedPublish();
+            doAnswer(invocation -> stalled).when(sqsTemplate).sendAsync(any());
+
+            assertThatExceptionOfType(FileAccessException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")))
+                    .withMessage(MSG_UNABLE_TO_WRITE_TDQ)
+                    .satisfies(failure -> assertThat(failure.getCause())
+                            .as("the deadline itself must be preserved as the cause rather than absorbed")
+                            .isSameAs(stalled.reported()));
+        }
+
+        @Test
+        @DisplayName("an expired deadline abandons the publish with interruption, leaking no SDK thread")
+        void anExpiredDeadlineAbandonsThePublishWithInterruption() {
+            // Finding F-009. Cancellation is the second thing the asynchronous form buys and the synchronous
+            // form cannot: join() offers no handle, so a stalled publish would be left running on an SDK
+            // thread holding a connection, accumulating one orphan per submission.
+            final AbandonedPublish stalled = new AbandonedPublish();
+            doAnswer(invocation -> stalled).when(sqsTemplate).sendAsync(any());
+
+            assertThatExceptionOfType(FileAccessException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")));
+
+            assertThat(stalled.cancelled())
+                    .as("the abandoned publish must be cancelled, not left in flight")
+                    .isTrue();
+            assertThat(stalled.cancelledWithInterruption())
+                    .as("cancel(true): an already-started request must be interrupted, not merely marked")
+                    .isTrue();
+        }
+
     }
 
     // =====================================================================================================
@@ -3054,6 +3296,9 @@ class ReportSubmissionServiceTest {
         /** The deduplication identifier, which the production lambda deliberately never sets. */
         private String messageDeduplicationId;
 
+        /** Every header the lambda set, so the envelope code the consumer verifies is observable. */
+        private final Map<String, Object> headers = new java.util.LinkedHashMap<>();
+
         @Override
         public SqsSendOptions<JobSubmissionMessage> queue(final String queueName) {
             this.invoked.add("queue");
@@ -3071,12 +3316,14 @@ class ReportSubmissionServiceTest {
         @Override
         public SqsSendOptions<JobSubmissionMessage> header(final String name, final Object value) {
             this.invoked.add("header");
+            this.headers.put(name, value);
             return this;
         }
 
         @Override
         public SqsSendOptions<JobSubmissionMessage> headers(final Map<String, Object> headersToAdd) {
             this.invoked.add("headers");
+            this.headers.putAll(headersToAdd);
             return this;
         }
 
@@ -3116,6 +3363,15 @@ class ReportSubmissionServiceTest {
          */
         JobSubmissionMessage payload() {
             return this.payload;
+        }
+
+        /**
+         * Returns every header the lambda set, including the envelope code of finding M-11.
+         *
+         * @return the headers, never {@code null}
+         */
+        Map<String, Object> headers() {
+            return this.headers;
         }
 
         /**
@@ -3210,4 +3466,67 @@ class ReportSubmissionServiceTest {
         }
     }
 
+
+    /**
+     * A publish that never completes and records how it was abandoned.
+     *
+     * <p>Stands in for a queue that has accepted the connection and then stopped responding, which is the
+     * only condition the caller deadline exists for. {@code get(long, TimeUnit)} reports the deadline
+     * immediately rather than after {@code SEND_DEADLINE_SECONDS} real seconds, so the behaviour under test
+     * is asserted without the test itself waiting for it.
+     *
+     * <p>A hand-written double rather than a mock: {@code CompletableFuture} is a JDK type, and stubbing one
+     * would make the assertion depend on the configured mock maker rather than on the production path.
+     */
+    private static final class AbandonedPublish extends CompletableFuture<SendResult<JobSubmissionMessage>> {
+
+        /** The deadline this double reports, retained so the assertion can identify it. */
+        private final TimeoutException reported = new TimeoutException("the queue stopped responding");
+
+        /** Whether {@link #cancel(boolean)} was called, and with interruption requested. */
+        private boolean cancelledWithInterruption;
+
+        /** Whether {@link #cancel(boolean)} was called at all, with or without interruption. */
+        private boolean cancelled;
+
+        @Override
+        public SendResult<JobSubmissionMessage> get(final long timeout, final TimeUnit unit)
+                throws TimeoutException {
+            throw this.reported;
+        }
+
+        @Override
+        public boolean cancel(final boolean mayInterruptIfRunning) {
+            this.cancelled = true;
+            this.cancelledWithInterruption = mayInterruptIfRunning;
+            return true;
+        }
+
+        /**
+         * Returns the deadline this double reported.
+         *
+         * @return the reported timeout, never {@code null}
+         */
+        TimeoutException reported() {
+            return this.reported;
+        }
+
+        /**
+         * Returns whether the publish was abandoned with interruption requested.
+         *
+         * @return true when cancelled with interruption
+         */
+        boolean cancelledWithInterruption() {
+            return this.cancelledWithInterruption;
+        }
+
+        /**
+         * Returns whether the publish was abandoned at all.
+         *
+         * @return true when cancelled
+         */
+        boolean cancelled() {
+            return this.cancelled;
+        }
+    }
 }

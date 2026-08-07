@@ -6,10 +6,8 @@
  * Function    : Verifies SnapshotTokenService: the sealed round trip, refusal of
  *               a tampered, foreign, misdirected or expired token, opacity of the
  *               wire value, and fail-fast configuration validation.
- * Source      : app/cbl/COACTUPC.cbl:L669-L756 (ACUP-OLD-DETAILS carried in the
- *                 COMMAREA and compared field by field)
- *               + app/cbl/COCRDUPC.cbl:L291-L313 (CCUP-OLD-DETAILS including
- *                 CCUP-OLD-CVV-CD, which no symbolic map declares)
+ * Source      : app/cbl/COCRDLIC.cbl:L237 (WS-CA-SCREEN-NUM, the page
+ *                 number the COMMAREA carried)
  *               + app/cbl/COCRDLIC.cbl:L1197-L1205 (saved first and last card
  *                 number of the displayed page)
  *               @ 7756d89
@@ -54,14 +52,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 /**
  * Unit tests for {@code com.cardemo.security.SnapshotTokenService}.
  *
- * <p>The component exists because the legacy conversation carried the as-displayed record in its own half
- * of the COMMAREA and compared the live row against it field by field, and a stateless REST target has no
- * such half. Handing that snapshot to the caller in the clear would disclose protected data, would put the
- * write precondition under the caller's control, and would be replayable. These tests assert that none of
+ * <p>The component exists because the legacy conversation carried its browse state in the COMMAREA - the
+ * page number and the saved first and last keys of the page on display - and a stateless REST target has no
+ * such carrier. Handing those keys over in the clear would disclose a card number and would put the browse
+ * position under the caller's control, and a bare echo would be replayable. These tests assert that none of
  * those three is possible: the payload is recoverable only by the server, only for the operation and the
- * record it was issued for, and only inside its lifetime.</p>
+ * record it was issued for, and only inside its lifetime. The as-displayed snapshot for the change
+ * comparison is <em>not</em> carried here - it travels in the request body as {@code oldDetails}.</p>
  */
-@DisplayName("SnapshotTokenService: the COMMAREA snapshot as an authenticated opaque token")
+@DisplayName("SnapshotTokenService: browse cursors and row references as authenticated opaque tokens")
 class SnapshotTokenServiceTest {
 
     /** A key of at least the 32 bytes the component requires, generated per run so nothing is committed. */

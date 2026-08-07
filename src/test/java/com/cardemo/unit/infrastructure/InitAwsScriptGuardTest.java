@@ -911,6 +911,126 @@ class InitAwsScriptGuardTest {
         }
     }
 
+    // ==================================================================
+    // 5 - The delivery boundary: an invisibility window that outlasts the work,
+    //     and a topic that has somewhere to deliver to.
+    // ==================================================================
+
+    @Nested
+    @DisplayName("5. The queue window and the notification subscription are provisioned, not assumed")
+    class DeliveryBoundary {
+
+        @Test
+        @DisplayName("the FIFO queue is created with an explicit visibility timeout, not the service default")
+        void theQueueCarriesAnExplicitVisibilityTimeout() {
+            // FINDING M-02, severity Major. The queue was created with only FifoQueue and
+            // ContentBasedDeduplication set, so its invisibility window was the service default of 30
+            // seconds while the job the message triggers runs for minutes. The message therefore became
+            // visible again mid-run and was redelivered against its own still-running job.
+            final String source = source();
+
+            assertThat(source)
+                    .as("the window must be declared as a named constant so the listener can be checked "
+                            + "against the same number")
+                    .containsPattern("readonly QUEUE_VISIBILITY_TIMEOUT_SECONDS='\\d+'");
+            assertThat(extract("readonly QUEUE_ATTRIBUTES=", "\n"))
+                    .as("and it must actually be passed on create-queue; a constant nothing reads would "
+                            + "leave the default in place exactly as before")
+                    .contains("VisibilityTimeout=${QUEUE_VISIBILITY_TIMEOUT_SECONDS}");
+
+            final int declared = Integer.parseInt(source
+                    .replaceAll("(?s).*readonly QUEUE_VISIBILITY_TIMEOUT_SECONDS='(\\d+)'.*", "$1"));
+            assertThat(declared)
+                    .as("a report run backs up the cluster, sorts a generation and writes a report, so the "
+                            + "window has to be minutes; and SQS caps it at 12 hours")
+                    .isGreaterThan(60)
+                    .isLessThanOrEqualTo(43_200);
+        }
+
+        @Test
+        @DisplayName("the window is read back and converged, so a pre-existing queue is corrected not trusted")
+        void theWindowIsReadBackAndConverged() {
+            final String body = extract("verify_queue() {", "\n}\n");
+
+            assertThat(body)
+                    .as("create-queue is a no-op against an existing queue, so a queue created by an "
+                            + "earlier revision would keep the 30-second window that caused the finding. "
+                            + "Reading it back is the only way that state is ever corrected")
+                    .contains("VisibilityTimeout")
+                    .contains("set-queue-attributes");
+            assertThat(body)
+                    .as("and a divergence that cannot be converged has to be fatal, not logged")
+                    .contains("fail ");
+        }
+
+        @Test
+        @DisplayName("the topic requires at least one subscription: zero is fatal, not verified")
+        void theTopicRequiresASubscriber() {
+            // FINDING M-04, severity Major. The hook used to assert a count of ZERO subscriptions, which
+            // is the one state in which SNS accepts every publish and discards it. Operator notification
+            // was therefore inert while every publish reported success.
+            final String source = source();
+
+            assertThat(source)
+                    .as("the function that asserted emptiness must be gone, not merely bypassed")
+                    .doesNotContain("verify_no_subscriptions");
+            assertThat(source)
+                    .as("and the hook must provision the subscriber itself, so a fresh stack is correct "
+                            + "without a manual step")
+                    .contains("ensure_notification_subscription")
+                    .contains("verify_notification_subscription");
+
+            final String verification = extract("verify_notification_subscription() {", "\n}\n");
+            assertThat(verification)
+                    .as("zero has to be the failing case now")
+                    .contains("fail ");
+        }
+
+        @Test
+        @DisplayName("the subscription is read before it is written, so repeated runs do not accumulate copies")
+        void theSubscriptionIsIdempotent() {
+            // Regression guard for a defect introduced by the M-04 fix itself and caught by running the
+            // hook three times against a live edge. AWS documents Subscribe as returning the existing
+            // subscription for a repeated topic/protocol/endpoint triple, but the LocalStack edge this
+            // script targets creates a second one - so a second compose cycle produced two subscriptions
+            // and two copies of every notification, a third produced three, and so on.
+            final String body = extract("ensure_notification_subscription() {", "\n}\n");
+
+            assertThat(body)
+                    .as("the existing set must be consulted first")
+                    .contains("list-subscriptions-by-topic");
+            assertThat(body.indexOf("list-subscriptions-by-topic"))
+                    .as("and consulted BEFORE subscribing, which is the whole property: the ordering is "
+                            + "what makes a repeat run a no-op instead of another copy")
+                    .isLessThan(body.indexOf("sns subscribe"));
+            assertThat(body)
+                    .as("an already-subscribed inbox must short-circuit rather than fall through")
+                    .contains("return 0");
+        }
+
+        @Test
+        @DisplayName("the captured inbox ARN is validated as an ARN, because log output goes to stdout")
+        void theInboxArnIsValidatedAsAnArn() {
+            // Regression guard for the sharper defect the same investigation exposed. log() writes to
+            // STDOUT, so a value captured with $(...) from a function that logs contains the progress
+            // lines too. SNS accepted that concatenation as an endpoint, so the hook reported a verified
+            // subscription pointing at something that was not a queue - finding M-04 reintroduced by its
+            // own fix, and invisible to a non-empty check.
+            final String resolver = extract("notification_inbox_arn() {", "\n}\n");
+
+            assertThat(resolver)
+                    .as("the value-returning resolver must not log; creation and logging belong to the "
+                            + "separate ensure_notification_inbox, exactly as the pre-existing topic_arn "
+                            + "helper is log-free")
+                    .doesNotContain("\n  log ");
+            assertThat(source())
+                    .as("and the captured value must be proven to be a bare sqs ARN before it is used as "
+                            + "an endpoint")
+                    .contains("!= arn:aws:sqs:*")
+                    .contains("ensure_notification_inbox() {");
+        }
+    }
+
     /** Returns the text between {@code opening} and the first {@code closing} that follows it. */
     private static String extract(final String opening, final String closing) {
         final String source = source();

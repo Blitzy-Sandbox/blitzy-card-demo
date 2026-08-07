@@ -80,7 +80,11 @@ import org.junit.jupiter.api.Test;
  * and so falls outside the bijection's purpose - it cannot be emptied and its document cannot go stale that way -
  * yet it can legitimately own facts that belong to a whole layer rather than to any leaf. Those packages are
  * named in {@link #DOCUMENTED_CONTAINERS} and are exempted from the "no type-less package is documented" rule
- * only. The exemption is bounded by two further assertions of its own: every entry must genuinely hold no type,
+ * only - a list deliberately kept as short as the tree allows. {@code com.cardemo.batch} was on it until the
+ * batch layer's shared object-key namespace contract was published there; the package then earned its document
+ * by holding a type, and the exemption became a claim the tree contradicts, so it was withdrawn rather than
+ * left in place. A stale exemption is precisely what would let a genuinely undocumented package hide behind
+ * it. The exemption is bounded by two further assertions of its own: every entry must genuinely hold no type,
  * and every entry must genuinely be documented. A type-less package that is not on the list still fails, and a
  * listed package that stops being either type-less or documented also fails, so nothing can drift in behind it.
  *
@@ -132,7 +136,7 @@ class PackageDocumentationInventoryTest {
      * genuinely type-less and genuinely documented.
      */
     private static final List<Path> DOCUMENTED_CONTAINERS =
-            List.of(SOURCE_ROOT.resolve("service"), SOURCE_ROOT.resolve("batch"));
+            List.of(SOURCE_ROOT.resolve("service"));
 
     /**
      * The four topics Rule 1 Clause E names, as the heading text each document must carry. Matched on the
@@ -416,18 +420,21 @@ class PackageDocumentationInventoryTest {
         }
 
         @Test
-        @DisplayName("no document claims the decision log or traceability matrix already exists")
-        void noDocumentClaimsAnAbsentRegisterIsCurrent() {
-            // Both files are planned and absent at this commit. A document may say an entry is OWED; it may not
-            // say one has already been recorded.
+        @DisplayName("no document describes the decision log or traceability matrix as planned or absent")
+        void noDocumentClaimsAnAuthoredRegisterIsAbsent() {
+            // This guard has been inverted with its premise. It once forbade "recorded in DECISION_LOG.md",
+            // which was correct while neither register existed on disk. Both are now authored at the
+            // repository root, so that rule had turned into a requirement to describe delivered evidence as
+            // pending. What is a defect now is the opposite claim: calling either register planned, absent or
+            // unavailable understates the record and sends a reader away from a document that is there.
             List<String> offenders = new ArrayList<>();
             for (Path document : documents()) {
                 String body = read(document);
                 for (String claim : List.of(
-                        "tracked in {@code DECISION_LOG.md}",
-                        "recorded in {@code DECISION_LOG.md}",
-                        "justified in {@code DECISION_LOG.md}",
-                        "cited in {@code TRACEABILITY_MATRIX.md}")) {
+                        "planned {@code DECISION_LOG.md}",
+                        "planned {@code TRACEABILITY_MATRIX.md}",
+                        "{@code DECISION_LOG.md} does not exist",
+                        "{@code TRACEABILITY_MATRIX.md} does not exist")) {
                     // A quoted occurrence is the phrase being NAMED - by a retraction that records a
                     // superseded claim, or by a gate that has to spell out what it forbids - not asserted.
                     if (body.lines().anyMatch(line -> line.contains(claim)
@@ -438,9 +445,17 @@ class PackageDocumentationInventoryTest {
             }
 
             assertThat(offenders)
-                    .as("neither DECISION_LOG.md nor TRACEABILITY_MATRIX.md exists at this commit, so a claim "
-                            + "that something is already recorded in one is false; say it is owed instead")
+                    .as("both registers are authored at the repository root, so calling either planned or "
+                            + "non-existent is false in the understating direction; state the obligation "
+                            + "without the qualifier instead")
                     .isEmpty();
+            for (String register : List.of("DECISION_LOG.md", "TRACEABILITY_MATRIX.md")) {
+                assertThat(Path.of(register))
+                        .as("%s being on disk is the premise of this inversion. If it is deleted, restore the "
+                                + "former rule deliberately rather than leaving a guard whose premise has "
+                                + "silently reversed a second time", register)
+                        .exists();
+            }
         }
     }
 }

@@ -28,6 +28,8 @@
  */
 package com.cardemo.batch.jobs;
 
+import com.cardemo.batch.readers.CombinedTransactionReader;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -63,21 +65,20 @@ import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.repeat.RepeatStatus;
-import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.ApplicationRunner;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.web.servlet.server.ServletWebServerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.interceptor.DefaultTransactionAttribute;
 
+import com.cardemo.batch.readers.CombinedTransactionReader;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.ValidationException;
+import com.cardemo.observability.CorrelationIdFilter;
 
 /**
  * The composition root of the batch stream: the Java replacement for the JES2 job stream itself, rather than
@@ -122,7 +123,7 @@ import com.cardemo.exception.ValidationException;
  *
  * <h2>How to run, build and test</h2>
  *
- * <p>Build and gate the module with {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}, which
+ * <p>Build and gate the module with {@code ./mvnw -B -ntp clean verify}, which
  * compiles at release 25 under {@code -Xlint:all -Werror} and runs the doclint gate. Run the unit tier alone
  * with {@code ./mvnw -B -ntp test}; the integration tier that exercises this class end to end lives under
  * {@code src/test/java/com/cardemo/integration/batch} and runs in the {@code verify} phase.
@@ -133,12 +134,17 @@ import com.cardemo.exception.ValidationException;
  * launch paths:
  *
  * <ul>
- *   <li><b>This class</b>, invoked explicitly through
- *       {@link #launchPipeline(Job, String, String, String)} by a test or a caller that already holds the
- *       {@value #JOB_BEAN_NAME} bean, and from a command line through
- *       {@link #batchOperatorLauncher(ListableBeanFactory, String, String, String, String)} - the
- *       property-gated runner that stands in for an operator submitting the deck through TSO SUBMIT or SDSF,
- *       and the path by which any of the six jobs can be started in a deployed application.</li>
+ *   <li><b>An explicit call to {@link #launchPipeline(Job, String, String, String)}</b>, by a test or by any
+ *       caller that already holds the {@value #JOB_BEAN_NAME} bean. This class declares <b>no runner of its
+ *       own</b>: an operator submission - the modern equivalent of submitting the deck through TSO SUBMIT or
+ *       SDSF - goes through the framework's own {@code JobLauncherApplicationRunner}, switched on for that
+ *       one process with {@code --spring.batch.job.enabled=true --spring.batch.job.name=<jobBeanName>}. The
+ *       command, and why an authored runner was removed rather than kept, are set out in full above
+ *       {@link #launchPipeline(Job, String, String, String)}. Seven job beans are namable that way: the whole
+ *       stream, any one of its five stages, and the read-only dataset verification job, which
+ *       {@code com.cardemo.config.BatchConfig} composes from the four steps that translate
+ *       {@code app/jcl/READACCT.jcl}, {@code READCARD.jcl}, {@code READXREF.jcl} and
+ *       {@code READCUST.jcl}.</li>
  *   <li><b>The queue listener that replaces the JES2 internal reader.</b> The legacy path is
  *       {@code app/cbl/CORPT00C.cbl:L88-L100}, an eighteen-card job deck held as {@code PIC X(80)} literals
  *       whose {@code :L94} card is {@code "//STEP10 EXEC PROC=TRANREPT"} - the sole
@@ -159,7 +165,7 @@ import com.cardemo.exception.ValidationException;
  *
  * <h2>Key configuration and defaults</h2>
  *
- * <p>One property, and one only. {@code carddemo.batch.pipeline.name} sets the registered job name and
+ * <p>One property, and one only. {@code carddemo.batch.jobs.pipeline.name} sets the registered job name and
  * defaults to {@value #DEFAULT_JOB_NAME}. It is absent from every profile in
  * {@code src/main/resources/application.yml}, which deliberately deletes keys that nothing binds, so the
  * documented default governs unless a deployment supplies the key.
@@ -252,14 +258,23 @@ import com.cardemo.exception.ValidationException;
  * {@code TRANSACT.DALY(+1)} - so neither may this pipeline.
  *
  * <p>The handoff this orchestrator owns is the one that crosses a job boundary: stage 2 writes
- * {@code SYSTRAN(+1)} and stage 3 reads {@code SYSTRAN(0)}. {@link InterestCalculationJob} publishes every
- * key it created into its own job execution context, and this class copies them into the pipeline's context
- * under {@value #SYSTRAN_KEY_COUNT_CONTEXT_ENTRY} and {@value #SYSTRAN_KEY_INDEX_CONTEXT_PREFIX}, pins the
- * greatest of them under {@value #SYSTRAN_GENERATION_CONTEXT_ENTRY}, and then <b>verifies</b> that the key
- * stage 3 actually resolved is that exact key. A mismatch is an abend naming both keys, not a silent
- * substitution. Publishing zero keys is a legitimate empty-generation outcome, recorded as
- * {@value #HANDOFF_ABSENT} and allowed to proceed, because the reader carries an absent generation forward
- * rather than failing on it.
+ * {@code SYSTRAN(+1)} and stage 3 reads {@code SYSTRAN(0)}. {@link InterestCalculationJob} publishes the
+ * generation prefix it allocated and every key it created into its own job execution context; this class
+ * copies the keys into the pipeline's context under {@value #SYSTRAN_KEY_COUNT_CONTEXT_ENTRY} and
+ * {@value #SYSTRAN_KEY_INDEX_CONTEXT_PREFIX}, pins the <b>generation</b> under
+ * {@value #SYSTRAN_GENERATION_CONTEXT_ENTRY}, and <b>hands that generation to stage 3 as an identifying job
+ * parameter before stage 3 launches</b> - see {@link #stageParameters}. Only then does it verify, as defence
+ * in depth, that the key stage 3 opened lies within the pinned generation; a divergence is an abend naming
+ * both, not a silent substitution.
+ *
+ * <p>The pinned value is the generation prefix and not one key of it, because stage 2 emits one object per
+ * chunk: pinning a key would hand stage 3 a fraction of {@code SYSTRAN(0)} and report success. A generation
+ * that holds no key at all is still pinned and still read - as zero records - which is the object-store
+ * counterpart of {@code DISP=(NEW,CATLG,DELETE)} at {@code app/jcl/INTCALC.jcl:L37-L41} cataloguing an empty
+ * dataset when {@code app/cbl/CBACT04C.cbl:L214} suppressed every write. Only a stage 2 that recorded no
+ * generation prefix at all is {@value #HANDOFF_ABSENT}, and in that case no parameter is handed over and
+ * stage 3 resolves {@code SYSTRAN(0)} for itself - failing allocation if nothing is catalogued, exactly as
+ * {@code DISP=SHR} does.
  *
  * <p>The seven generation bases are {@code DALYREJS}, {@code SYSTRAN}, {@code TCATBALF.BKUP},
  * {@code TRANREPT}, {@code TRANSACT.BKUP}, {@code TRANSACT.COMBINED} and {@code TRANSACT.DALY}. Six are
@@ -292,12 +307,17 @@ import com.cardemo.exception.ValidationException;
  *
  * <h2>Observability</h2>
  *
- * <p>Every pipeline log event carries {@value #MDC_KEY_JOB_INSTANCE_ID},
- * {@value #MDC_KEY_CORRELATION_ID}, {@value #MDC_KEY_TRACE_ID} and {@value #MDC_KEY_SPAN_ID} in the
- * diagnostic context, the four key names {@code src/main/resources/logback-spring.xml} consumes. The HTTP
- * correlation filter is request-scoped and does not reach batch, and the observability package is not
- * permitted a job listener, so {@link BatchPipelineJobListener} establishes them here and releases them in a
- * {@code finally}. A <b>single stable pipeline correlation identifier</b> spans all five stages: it is
+ * <p>Every pipeline log event carries {@link CorrelationIdFilter#MDC_KEY_JOB_INSTANCE_ID} and
+ * {@link CorrelationIdFilter#MDC_KEY_CORRELATION_ID} in the diagnostic context, alongside the
+ * {@link CorrelationIdFilter#MDC_KEY_TRACE_ID} and {@link CorrelationIdFilter#MDC_KEY_SPAN_ID} entries the
+ * tracing bridge publishes from real span identity - which this class never writes by hand, because a
+ * fabricated trace identifier names a trace no backend holds. Those four key names are the ones
+ * {@code src/main/resources/logback-spring.xml} consumes, and they are read from
+ * {@link CorrelationIdFilter} rather than re-spelled here. The HTTP correlation filter is request-scoped and
+ * does not reach batch, and the observability package is not permitted a job listener, so
+ * {@link BatchPipelineJobListener} establishes the context here through
+ * {@link CorrelationIdFilter#enterBatchScope(long, String)} and restores it in a {@code finally} through
+ * {@link CorrelationIdFilter#exitBatchScope()}. A <b>single stable pipeline correlation identifier</b> spans all five stages: it is
  * {@value #CORRELATION_ID_PREFIX} followed by the pipeline execution identifier, minted only when no outer
  * scope already owns one, and every child job inherits it because each sibling listener mints its own only
  * when the entry is empty.
@@ -331,10 +351,13 @@ import com.cardemo.exception.ValidationException;
  *       pipeline-level consequence is real and belongs here: stage 2 leaves one account's cycle counters
  *       unreset, which changes stage 1's over-limit arithmetic on the following run. Nothing is repaired -
  *       {@link InterestCalculationJob} reproduces the source - and the finding is owed an entry in the
- *       planned {@code DECISION_LOG.md} and a row in the planned {@code TRACEABILITY_MATRIX.md}.</li>
+ *       {@code DECISION_LOG.md} and a row in the {@code TRACEABILITY_MATRIX.md}.</li>
  *   <li><b>Blocker</b> - a transaction's originating and processing timestamps are 26-character images, not
- *       temporal objects, and the batch producer formats them to millisecond precision followed by four
- *       literal zeros. This class passes them through untouched and parses none.</li>
+ *       temporal objects, and the batch producer formats them to <b>hundredths-of-a-second</b> precision
+ *       followed by four literal zeros - an earlier revision said millisecond precision, which is withdrawn
+ *       because {@code app/cbl/CBTRN02C.cbl:L159-L174} declares the fraction as {@code DB2-MIL PIC 9(002)}
+ *       plus {@code DB2-REST PIC X(04)}, six characters and not seven. This class passes them through
+ *       untouched and parses none.</li>
  *   <li><b>High</b> - {@code app/jcl/TRANREPT.jcl} carries the step name {@code STEP05R} <b>twice</b>, at
  *       {@code :L23} and {@code :L37}. The clean three-step authority is {@code app/proc/TRANREPT.prc}
  *       ({@code STEP01R} at {@code :L21}, {@code STEP05R} at {@code :L35}, {@code STEP10R} at {@code :L57},
@@ -352,7 +375,7 @@ import com.cardemo.exception.ValidationException;
  *       {@code CARDDEMO_S3_BATCH_INPUT_BUCKET}, {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET} and
  *       {@code CARDDEMO_S3_STATEMENTS_BUCKET}. A brief citing {@code carddemo.s3.*}, or the shorter
  *       environment variable names, is wrong on both counts. This class binds none of them, so the
- *       divergence is a note for whoever does; it is owed an entry in the planned {@code DECISION_LOG.md}.</li>
+ *       divergence is a note for whoever does; it is owed an entry in the {@code DECISION_LOG.md}.</li>
  *   <li><b>Low</b> - the guard in {@code src/test/java/com/cardemo/unit/model/EvidenceHonestyTest.java} that
  *       requires every reference to this class to be qualified as planned becomes conservative once the class
  *       exists. The remedy is the one that guard already documents for two configuration classes: move the
@@ -486,42 +509,6 @@ public class BatchPipelineOrchestrator {
     private static final String TRANREPT_JOB_BEAN_NAME = "transactionReportJob";
 
     // =================================================================================================
-    // The operator submission path. One property decides whether this application is a server or a batch
-    // submission; three more carry the values the JCL parameter cards carried.
-    // =================================================================================================
-
-    /**
-     * The job an operator asked to run, {@value}, whose presence creates the launch runner and nothing else.
-     *
-     * <p>No default, deliberately. An absent value must mean "this is a server", not "run something".
-     */
-    private static final String KEY_LAUNCH_JOB = "carddemo.batch.launch";
-
-    /** The interest date for an operator submission, {@value}; {@code app/jcl/INTCALC.jcl:L22}. */
-    private static final String KEY_LAUNCH_PARM_DATE = "carddemo.batch.launch.parm-date";
-
-    /** The report start date for an operator submission, {@value}; {@code app/proc/TRANREPT.prc:L41}. */
-    private static final String KEY_LAUNCH_START_DATE = "carddemo.batch.launch.start-date";
-
-    /** The report end date for an operator submission, {@value}; {@code app/proc/TRANREPT.prc:L42}. */
-    private static final String KEY_LAUNCH_END_DATE = "carddemo.batch.launch.end-date";
-
-    /**
-     * The six job bean names an operator submission may name: the whole stream, or any one stage.
-     *
-     * <p>Every JCL member that runs a COBOL program in the frozen corpus has an entry here, and nothing else
-     * does. Ordered as the stream runs so that the message produced by an unrecognised name reads as a
-     * running order rather than an alphabetical list.
-     */
-    private static final List<String> LAUNCHABLE_JOB_BEAN_NAMES = List.of(
-            JOB_BEAN_NAME,
-            POSTTRAN_JOB_BEAN_NAME,
-            INTCALC_JOB_BEAN_NAME,
-            COMBTRAN_JOB_BEAN_NAME,
-            CREASTMT_JOB_BEAN_NAME,
-            TRANREPT_JOB_BEAN_NAME);
-
-    // =================================================================================================
     // Job parameters. Three, and every stage receives all three unchanged. Two of the names are owned
     // elsewhere and are mirrored here because this package may not import the processor package.
     // =================================================================================================
@@ -641,6 +628,41 @@ public class BatchPipelineOrchestrator {
     private static final int RETURN_CODE_FAILED = 8;
 
     /**
+     * Attempts allowed for one stage launch, {@value}, counting the first.
+     *
+     * <p>This bounds the retry described on {@link #launchStage(Job, String, JobParameters)} and exists only
+     * because {@code spring.batch.jdbc.isolation-level-for-create} is {@code SERIALIZABLE}. Under that
+     * isolation level PostgreSQL is entitled to abort one of two concurrently-created job executions with a
+     * serialization failure, and the two branches of the {@code CREASTMT || TRANREPT} split create theirs at
+     * the same instant by design. Five attempts is not a guess: with two contending writers a serialization
+     * failure retried under a fresh snapshot succeeds on the next attempt in the overwhelming majority of
+     * cases, and four spare attempts leave headroom without letting a genuinely stuck launch spin.
+     *
+     * <p>It is deliberately small. A large bound would turn a real, persistent contention problem into a slow
+     * one instead of surfacing it.
+     */
+    private static final int MAX_STAGE_LAUNCH_ATTEMPTS = 5;
+
+    /**
+     * Base backoff between stage-launch attempts in milliseconds, {@value}.
+     *
+     * <p>Multiplied by the number of attempts already made, so the waits are 50 ms, 100 ms, 150 ms and
+     * 200 ms - 500 ms in total across the four retries. Any backoff at all is what matters: retrying
+     * immediately would very likely re-collide with the same concurrent transaction, because the competing
+     * branch is created within microseconds of this one.
+     */
+    private static final long LAUNCH_RETRY_BASE_BACKOFF_MILLIS = 50L;
+
+    /** SQLSTATE {@value} - {@code serialization_failure}, the {@code SERIALIZABLE} conflict abort. */
+    private static final String SQL_STATE_SERIALIZATION_FAILURE = "40001";
+
+    /** SQLSTATE {@value} - {@code deadlock_detected}, the other transient class-40 abort. */
+    private static final String SQL_STATE_DEADLOCK_DETECTED = "40P01";
+
+    /** Cause-chain walk bound, {@value}, so a self-referential cause cannot loop forever. */
+    private static final int CAUSE_CHAIN_LIMIT = 32;
+
+    /**
      * Return code 12.
      *
      * <p>Taken from {@link FatalProcessingException#BATCH_RETURN_CODE} rather than written as a literal,
@@ -670,22 +692,14 @@ public class BatchPipelineOrchestrator {
     private static final String ABEND_CULPRIT = "PIPELINE";
 
     // =================================================================================================
-    // Diagnostic context. The four key names logback-spring.xml consumes, mirrored here from the public
-    // constants of com.cardemo.observability.CorrelationIdFilter, which this package may not import.
-    // TransactionReportJob mirrors the same four for the same reason, so this is the established form.
+    // Diagnostic context. FINDING M-02, severity Medium: four private literals stood here, re-spelling the
+    // key names that com.cardemo.observability.CorrelationIdFilter already publishes as public constants,
+    // under a comment asserting that "this package may not import" that class. The assertion was false -
+    // four sibling job classes in this very package import it - and the duplication had already cost what
+    // duplication costs: the two classes carrying their own literals also carried their own lifecycle, and
+    // both lifecycles diverged from the other four (findings H-02 and H-03). The constants and the
+    // park-and-restore contract now have exactly one definition, in the class that owns the key names.
     // =================================================================================================
-
-    /** Diagnostic key carrying the job instance identifier, {@value}. */
-    private static final String MDC_KEY_JOB_INSTANCE_ID = "jobInstanceId";
-
-    /** Diagnostic key carrying the correlation identifier, {@value}. */
-    private static final String MDC_KEY_CORRELATION_ID = "correlationId";
-
-    /** Diagnostic key carrying the trace identifier, {@value}. Propagated, never minted. */
-    private static final String MDC_KEY_TRACE_ID = "traceId";
-
-    /** Diagnostic key carrying the span identifier, {@value}. Propagated, never minted. */
-    private static final String MDC_KEY_SPAN_ID = "spanId";
 
     /**
      * Prefix of the pipeline correlation identifier, {@value}.
@@ -742,11 +756,18 @@ public class BatchPipelineOrchestrator {
     static final String SYSTRAN_KEY_INDEX_CONTEXT_PREFIX = CONTEXT_PREFIX + "systran.generation.keys.";
 
     /**
-     * The one {@code SYSTRAN} key stage 3 must read, {@value}.
+     * The exact {@code SYSTRAN} generation stage 3 must read, {@value}.
      *
-     * <p>The lexicographically greatest of the keys stage 2 published, which is the object-store equivalent
-     * of {@code SYSTRAN(0)} at {@code app/jcl/COMBTRAN.jcl:L25-L26}, or
-     * {@value #HANDOFF_ABSENT} when stage 2 published none.
+     * <p>The generation prefix stage 2 published for the generation <em>it</em> created, which is the
+     * object-store equivalent of the catalogue entry {@code app/jcl/INTCALC.jcl:L37-L41} writes at close and
+     * {@code app/jcl/COMBTRAN.jcl:L25-L26} then resolves as {@code SYSTRAN(0)}. It is a generation and not a
+     * single object key, because stage 2 emits one object per chunk under one generation, so pinning one key
+     * would drop the rest.
+     *
+     * <p>This value is handed to stage 3 <strong>before it launches</strong>, as the job parameter
+     * {@value com.cardemo.batch.readers.CombinedTransactionReader#SYSTRAN_GENERATION_JOB_PARAMETER}, which is
+     * what makes the handoff a pre-launch contract rather than an after-the-fact check. It carries
+     * {@value #HANDOFF_ABSENT} only when stage 2 published no generation at all.
      */
     static final String SYSTRAN_GENERATION_CONTEXT_ENTRY = CONTEXT_PREFIX + "systran.generation";
 
@@ -755,17 +776,6 @@ public class BatchPipelineOrchestrator {
 
     /** The key stage 3 actually resolved, {@value}, recorded whether or not it matched. */
     static final String SYSTRAN_RESOLVED_CONTEXT_ENTRY = CONTEXT_PREFIX + "systran.resolved";
-
-    /** Parked diagnostic value of {@value #MDC_KEY_JOB_INSTANCE_ID}, restored when the pipeline ends. */
-    private static final String INHERITED_JOB_INSTANCE_ID_CONTEXT_ENTRY =
-            CONTEXT_PREFIX + "mdc.inheritedJobInstanceId";
-
-    /** Parked diagnostic value of {@value #MDC_KEY_CORRELATION_ID}, restored when the pipeline ends. */
-    private static final String INHERITED_CORRELATION_ID_CONTEXT_ENTRY =
-            CONTEXT_PREFIX + "mdc.inheritedCorrelationId";
-
-    /** Suffix marking a parked diagnostic value as having been present rather than merely empty. */
-    private static final String PARKED_PRESENT_SUFFIX = ".present";
 
     /** Handoff outcome when stage 3 read exactly the key stage 2 created, {@value}. */
     static final String HANDOFF_VERIFIED = "VERIFIED";
@@ -795,6 +805,19 @@ public class BatchPipelineOrchestrator {
 
     /** The marker the reader records when it carried an absent generation forward, {@value}. */
     private static final String READER_ABSENT_GENERATION_MARKER = "<absent>";
+
+    /**
+     * The property selecting stage 3's reader's input substrate, {@value}.
+     *
+     * <p>{@code com.cardemo.batch.readers.CombinedTransactionReader} declares this name privately, so the
+     * literal is mirrored here, and {@link #requireObjectStorageSubstrate()} states what this pipeline
+     * requires of it.
+     */
+    private static final String READER_SOURCE_PROPERTY =
+            "carddemo.batch.combined-transaction-reader.source";
+
+    /** The only substrate value stage 3 may run on inside this pipeline, {@value}. */
+    private static final String READER_SOURCE_OBJECT_STORAGE = "object-storage";
 
     // =================================================================================================
     // Stage identity. One constant per JCL artefact of the stream, each citing the line it replaces, so
@@ -878,7 +901,7 @@ public class BatchPipelineOrchestrator {
      */
     private static final String TDQ_DEFINITION = "app/csd/CARDDEMO.CSD:L499-L505";
 
-    /** Default registered job name when {@code carddemo.batch.pipeline.name} is not configured, {@value}. */
+    /** Default registered job name when {@code carddemo.batch.jobs.pipeline.name} is not configured, {@value}. */
     private static final String DEFAULT_JOB_NAME = "CARDDEMO-PIPELINE";
 
 
@@ -927,8 +950,14 @@ public class BatchPipelineOrchestrator {
      */
     private final PlatformTransactionManager transactionManager;
 
-    /** The registered job name, from {@code carddemo.batch.pipeline.name}. */
+    /** The registered job name, from {@code carddemo.batch.jobs.pipeline.name}. */
     private final String jobName;
+
+    /**
+     * The configured input substrate of stage 3's reader, as bound from
+     * {@value #READER_SOURCE_PROPERTY}. See {@link #requireObjectStorageSubstrate()}.
+     */
+    private final String readerSource;
 
     /**
      * Creates the orchestrator.
@@ -941,8 +970,11 @@ public class BatchPipelineOrchestrator {
      * @param jobRepository the container's job repository
      * @param jobLauncher the container's job launcher
      * @param transactionManager the container's transaction manager
-     * @param configuredJobName the registered job name, from {@code carddemo.batch.pipeline.name},
+     * @param configuredJobName the registered job name, from {@code carddemo.batch.jobs.pipeline.name},
      *     defaulting to {@value #DEFAULT_JOB_NAME}
+     * @param readerSource the configured input substrate of stage 3's reader, from
+     *     {@value #READER_SOURCE_PROPERTY}; stage 3 is refused on any value other than
+     *     {@value #READER_SOURCE_OBJECT_STORAGE}, per {@link #requireObjectStorageSubstrate()}
      * @throws IllegalArgumentException if any collaborator is {@code null} or the job name is blank
      */
     public BatchPipelineOrchestrator(
@@ -954,7 +986,9 @@ public class BatchPipelineOrchestrator {
             final JobRepository jobRepository,
             final JobLauncher jobLauncher,
             @Qualifier("transactionManager") final PlatformTransactionManager transactionManager,
-            @Value("${carddemo.batch.pipeline.name:" + DEFAULT_JOB_NAME + "}") final String configuredJobName) {
+            @Value("${carddemo.batch.jobs.pipeline.name:" + DEFAULT_JOB_NAME + "}")
+                    final String configuredJobName,
+            @Value("${" + READER_SOURCE_PROPERTY + ":repository}") final String readerSource) {
 
         this.dailyTransactionPostingJob = requireCollaborator(dailyTransactionPostingJob, STAGE_POSTTRAN);
         this.interestCalculationJob = requireCollaborator(interestCalculationJob, STAGE_INTCALC);
@@ -964,7 +998,11 @@ public class BatchPipelineOrchestrator {
         this.jobRepository = requireCollaborator(jobRepository, "jobRepository");
         this.jobLauncher = requireCollaborator(jobLauncher, "jobLauncher");
         this.transactionManager = requireCollaborator(transactionManager, "transactionManager");
-        this.jobName = requireConfiguredText(configuredJobName, "carddemo.batch.pipeline.name");
+        this.jobName = requireConfiguredText(configuredJobName, "carddemo.batch.jobs.pipeline.name");
+        // Not validated into an enum here: the reader owns the property's grammar, and this class only needs
+        // to know whether the value is the one its stage 3 requires. An unrecognised value is the reader's
+        // rejection to make, and it makes it at construction.
+        this.readerSource = readerSource == null ? "" : readerSource.strip();
     }
 
     // =================================================================================================
@@ -1009,45 +1047,55 @@ public class BatchPipelineOrchestrator {
      * {@code SYSTRAN(0)} at {@code :L25-L26}; the load step runs <b>ungated</b>, which is the clearest
      * evidence in the corpus that no inter-step gating may be invented.
      *
-     * <p><b>{@code TRANSACT.BKUP} is NOT a prerequisite of this stage, and this pipeline never produces one
-     * before it.</b> Stating it plainly here because the two facts above sit adjacent to the report branch's
-     * {@code STEP01R} documentation below, and reading them together invites the conclusion that stage 3
-     * depends on stage 4's output. It does not. Both legs of the concatenated {@code SORTIN} are optional:
-     * {@code app/jcl/COMBTRAN.jcl} carries no {@code COND=} on either {@code :L22} or {@code :L41}, so the
-     * member asserts no precondition on either DD, and {@code CombinedTransactionReader} treats an absent
-     * generation on either leg as a successful empty read. The member that produces {@code TRANSACT.BKUP}
-     * generations on the mainframe, {@code app/jcl/TRANBKP.jcl}, has <b>no Java analogue by recorded
-     * decision</b> - {@link CombineTransactionsJob} carries the reasoning, the citations and the residual
-     * limitation. A run in which neither leg contributes a record still completes with an empty combined
-     * generation and a published count of zero, because {@code :L33-L37} allocates {@code SORTOUT}
-     * unconditionally and {@code :L48} copies it.
+     * <p><b>Stage 3 archives and empties the master itself, and does not depend on stage 4's backup.</b>
+     * Stating it plainly here because these facts sit adjacent to the report branch's {@code STEP01R}
+     * documentation below, and reading them together invites the conclusion that stage 3 depends on stage 4's
+     * output. It does not. {@code app/jcl/TRANBKP.jcl} is the mainframe's producer for the combine's first
+     * leg, and it runs <b>inside</b> this stage's job as its archive-and-reset step, instructed by
+     * {@link CombineTransactionsJob#JOB_PARAMETER_ARCHIVE_MASTER} which {@link #stageParameters} sets. That
+     * step copies the master to {@code TRANSACT.BKUP(+1)} and then empties it, so the sort's first leg is this
+     * run's own archive and {@code :L48} loads into an empty target - which is what makes the pipeline
+     * repeatable (finding C-06).
      *
-     * <p>Consequently the only genuine cross-stage data dependency in this pipeline remains the one already
-     * documented on the class: stage 2 writes {@code SYSTRAN(+1)} ({@code app/jcl/INTCALC.jcl:L37-L41}) and
-     * this stage reads {@code SYSTRAN(0)} ({@code app/jcl/COMBTRAN.jcl:L25-L26}).
+     * <p><b>An absent required current generation is still a failure, not an empty read.</b>
+     * {@code app/jcl/COMBTRAN.jcl:L23-L26} carries {@code DISP=SHR} on <em>both</em> legs, and an uncatalogued
+     * {@code DISP=SHR} dataset fails <b>allocation</b>, before {@code SORT} is given control; the absence of a
+     * {@code COND=} parameter on {@code :L22} or {@code :L41} says nothing about that, because {@code COND=}
+     * gates step <em>execution</em> and never allocation. {@code CombinedTransactionReader} therefore refuses
+     * an absent required current generation rather than reporting a successful empty leg (finding F-005).
+     * Inside this pipeline the archive step above is what guarantees the first leg exists, so the two
+     * guarantees are complementary: one creates the generation, the other refuses to invent one.
      *
-     * <p><b>This stage requires the object-storage input substrate, and that IS a prerequisite of the
-     * pipeline.</b> {@code CombinedTransactionReader} can take its first leg either from an object-storage
-     * generation or from the ordered transaction relation, selected by
-     * {@code carddemo.batch.combined-transaction-reader.source}, whose default is {@code repository}. Only
-     * {@code object-storage} is correct inside this pipeline, and the reason is arithmetic rather than
-     * preference. On the repository substrate the first leg <em>is</em> the live relation, so the combined
-     * generation this stage writes is a snapshot of the very table {@code :L48} then loads it into - a
-     * measured 262 relation rows plus 50 interest records, every one of the 262 already present - and the
-     * load correctly refuses the first repeated identifier with {@code DuplicateRecordException} and return
-     * code 8. On the mainframe that collision cannot arise because {@code app/jcl/TRANBKP.jcl} deletes and
-     * redefines the cluster between the backup and the combine, leaving {@code REPRO} an empty target; with
-     * no Java analogue for that member there is no step that empties the relation, and none is invented here
-     * because emptying it whenever the first leg is absent would discard the posted transactions rather than
-     * archive them.
+     * <p>A generation that exists and holds nothing is a different case and is legitimately empty: it is the
+     * object-store counterpart of {@code DISP=(NEW,CATLG,DELETE)} cataloguing a dataset to which nothing was
+     * written. That is read as zero records rather than refused.
      *
-     * <p>So an operator driving this pipeline sets
-     * {@code carddemo.batch.combined-transaction-reader.source=object-storage}. Verified end to end on a
-     * reset database and an empty output bucket: all five stages completed, the aggregate was return code 4
-     * from the posting stage's rejects, and the relation ended with 312 rows of which 50 were the interest
-     * transactions. The default is left as it is rather than changed here, because the property belongs to
-     * the reader and a standalone combine against a relation is a legitimate use of it; the divergence is
-     * recorded rather than resolved unilaterally.
+     * <p><b>This stage requires the object-storage input substrate, and it now enforces that rather than
+     * documenting it.</b> {@code CombinedTransactionReader} can take its first leg either from an
+     * object-storage generation or from the ordered transaction relation, selected by
+     * {@value #READER_SOURCE_PROPERTY}. Only {@code object-storage} is correct inside this pipeline, and the
+     * reason is arithmetic rather than preference. On the repository substrate the first leg <em>is</em> the
+     * live relation, so the combined generation this stage writes is a snapshot of the very table
+     * {@code :L48} then loads it into - a measured 262 relation rows plus 50 interest records, every one of
+     * the 262 already present - and the load correctly refuses the first repeated identifier with
+     * {@code DuplicateRecordException} and return code 8.
+     *
+     * <p>{@link #requireObjectStorageSubstrate()} refuses the stage on any other value, and
+     * {@code src/main/resources/application.yml} declares the property explicitly. Previously this
+     * documentation asked an operator to set it and left the default alone - which meant the pipeline's
+     * normal path was the wrong one, since a prerequisite nothing checks is not a prerequisite. That was
+     * finding M-01.
+     *
+     * <p>Verified end to end on a reset database and an empty output bucket: all five stages completed, the
+     * aggregate was return code 4 from the posting stage's rejects, and the relation ended with 312 rows of
+     * which 50 were the interest transactions.
+     *
+     * <p>On the mainframe the collision described above cannot arise at all, because
+     * {@code app/jcl/TRANBKP.jcl} deletes and redefines the cluster between the backup and the combine,
+     * leaving {@code REPRO} an empty target. <b>That member is now reproduced</b> as this stage's job's
+     * archive-and-reset step, so the target is emptied here too; requiring the object-storage substrate
+     * remains necessary and is a separate guarantee, since it is what makes the first leg a generation rather
+     * than the load target itself.
      *
      * @return the launcher step, never {@code null}
      */
@@ -1079,14 +1127,14 @@ public class BatchPipelineOrchestrator {
      * {@code :L45-L46}, and {@code STEP10R} at {@code :L57} runs the report. The procedure, not
      * {@code app/jcl/TRANREPT.jcl}, is the authority: the standalone member carries {@code STEP05R} twice.
      *
-     * <p><b>{@code STEP01R} is the only producer of a {@code TRANSACT.BKUP} generation in this application,
-     * and it runs here in stage 4 - downstream of the stage 3 combine that reads that base.</b> This ordering
-     * is the source's, not an inversion to repair: the mainframe's producer for the combine's first leg is
-     * {@code app/jcl/TRANBKP.jcl}, a separate operator member that has no Java analogue by recorded decision.
-     * Stage 3 therefore does not and must not depend on this backup; see
-     * {@link #batchPipelineCombTranStep()} and {@link CombineTransactionsJob} for the full reasoning. Do not
-     * "fix" the pipeline by moving this branch ahead of stage 3 - that would reorder the stream the source
-     * defines, and it would make the combine read back rows the master already holds.
+     * <p><b>{@code STEP01R} produces a {@code TRANSACT.BKUP} generation here in stage 4 - downstream of the
+     * stage 3 combine that reads that base.</b> This ordering is the source's, not an inversion to repair:
+     * the mainframe's producer for the combine's first leg is {@code app/jcl/TRANBKP.jcl}, which runs inside
+     * stage 3's own job as its archive-and-reset step. Stage 3 therefore does not and must not depend on
+     * <em>this</em> backup; see {@link #batchPipelineCombTranStep()} and {@link CombineTransactionsJob} for
+     * the full reasoning. Do not "fix" the pipeline by moving this branch ahead of stage 3 - that would
+     * reorder the stream the source defines. Both producers write the same key convention so that the later
+     * generation is always the one {@code (0)} resolves to.
      *
      * @return the launcher step, never {@code null}
      */
@@ -1217,7 +1265,7 @@ public class BatchPipelineOrchestrator {
      * context it owns spans all five stages. It is a plain nested object for the same reason the deciders are.
      *
      * @param batchPipelineFlow the composed flow, injected by bean name
-     * @return the job, registered under {@code carddemo.batch.pipeline.name}, never {@code null}
+     * @return the job, registered under {@code carddemo.batch.jobs.pipeline.name}, never {@code null}
      */
     @Bean(JOB_BEAN_NAME)
     public Job batchPipelineJob(@Qualifier(FLOW_BEAN_NAME) final Flow batchPipelineFlow) {
@@ -1228,7 +1276,6 @@ public class BatchPipelineOrchestrator {
                 .end()
                 .build();
     }
-
 
     // =================================================================================================
     // The launch surface. Two public methods: one that turns three untrusted strings into the exact
@@ -1280,9 +1327,10 @@ public class BatchPipelineOrchestrator {
      * constructor that injected {@value #JOB_BEAN_NAME} would be a self-reference. A caller already holds the
      * bean, so passing it is both honest and free of a lazy proxy.
      *
-     * <p>The callers this exists for are a test invoking it directly and
-     * {@link #batchOperatorLauncher(ListableBeanFactory, String, String, String, String)}, the operator
-     * submission path. The queue listener that replaces the JES2 internal reader is <em>not</em> one of them,
+     * <p>The callers this exists for are a test invoking it directly and any caller that already holds the
+     * pipeline bean. It is deliberately <em>not</em> wired to a runner: an operator submission goes through
+     * the framework's own launcher, for the reasons set out in the block comment below. The queue listener
+     * that replaces the JES2 internal reader is <em>not</em> one of its callers either,
      * and the distinction is worth keeping straight: a report submission names one report period, so
      * {@code com.cardemo.config.BatchConfig} launches {@code transactionReportJob} from it, not the whole
      * five-stage stream. <b>This method never terminates the process</b>: it reports an outcome through the
@@ -1337,240 +1385,54 @@ public class BatchPipelineOrchestrator {
     }
 
     // =================================================================================================
-    // THE OPERATOR SUBMISSION PATH: WHAT REPLACED "SUBMIT THE JOB FROM SDSF".
+    // HOW A JOB IS STARTED, AND WHY NO RUNNER IS DECLARED HERE.
     //
-    // Finding, severity Major, RESOLVED here. launchPipeline above had no caller anywhere in src/main. The
-    // deployed application declared six jobs, seventeen HTTP endpoints and spring.batch.job.enabled=false,
-    // and had no path by which any of the six could be started: no runner, no schedule, no endpoint that
-    // launches. The batch tier was reachable only from a test classpath, which is not a batch tier.
+    // Finding CFG-001, severity High, RESOLVED here. This class used to declare a property-gated
+    // ApplicationRunner, carddemo.batch.launch, which launched a named job from inside application startup.
+    // That is a boot-time launch however narrowly it is gated: the runner executes during
+    // SpringApplication.run, before the application is serving anything, and the AAP's contract for this
+    // class is that nothing here runs on startup. The gate made the bean conditional, not the launch
+    // deliberate.
     //
-    // On the mainframe there were exactly two ways in, and both now exist. One is an operator submitting the
-    // deck - TSO SUBMIT, or SDSF, against app/jcl/POSTTRAN.jcl and its siblings - and that is this runner.
-    // The other is the online tier writing to the JOBS data queue for the JES2 internal reader to read, and
-    // that is the listener in com.cardemo.config.BatchConfig.
+    // The two sanctioned paths both remain, and neither is declared by this class:
     //
-    // WHY IT IS PROPERTY-GATED. An ApplicationRunner with no condition would run on every boot of every
-    // context, including the web deployment whose job it is to serve HTTP and the slice tests that assert
-    // this class's bean inventory. Gating on carddemo.batch.launch means the bean does not exist unless a
-    // launch was asked for, so `java -jar carddemo.jar --carddemo.batch.launch=batchPipelineJob` is a batch
-    // submission and `java -jar carddemo.jar` is a server - one artefact, two roles, which is what a single
-    // deployable modular monolith needs and what the JCL/CICS split gave for free.
+    //   * THE OPERATOR SUBMISSION - what replaced "submit the deck from TSO or SDSF" - is the framework's
+    //     own JobLauncherApplicationRunner, which the base profile keeps switched off with
+    //     spring.batch.job.enabled=false and which an operator turns on for one process:
     //
-    // WHAT IT DELIBERATELY DOES NOT DO. It never calls System.exit and installs no shutdown hook: the
-    // outcome travels out as a thrown exception, which Spring Boot turns into a non-zero JVM exit status by
-    // itself. Calling System.exit here would skip context close, and a batch run that abandons its
-    // connection pool and its final metric flush is worse than one that reports failure and unwinds.
+    //       java -jar carddemo-1.0.0.jar --spring.main.web-application-type=none \
+    //            --spring.batch.job.enabled=true --spring.batch.job.name=CARDDEMO-PIPELINE \
+    //            parm-date=2022071800 start-date=2022-01-01 end-date=2022-07-06
+    //
+    //     The value is the JOB NAME and not the bean name, which matters because they differ here by design:
+    //     JobLauncherApplicationRunner compares spring.batch.job.name with Job.getName() - verified against
+    //     the compiled 3.5.11 class, not inferred - and every job in this stream is named after the JCL
+    //     member it replaces. So substitute POSTTRAN, INTCALC, COMBTRAN, CREASTMT or TRANREPT to run one
+    //     stage, exactly as submitting one member ran one program, and note that OMITTING the property runs
+    //     every job rather than none. The names are settable through carddemo.batch.pipeline.name and
+    //     carddemo.batch.jobs.<member>.name; the defaults above are what an unconfigured deployment answers
+    //     to. Non-option arguments of the form name=value become job parameters, which is how the JCL
+    //     parameter cards arrive. --spring.main.web-application-type=none is part of the command rather than
+    //     an extra: it is what makes the process end when the job ends, the way a submitted job freed its
+    //     initiator, and without it the embedded servlet container holds the JVM open afterwards.
+    //
+    //     Nothing is lost by using the framework's runner instead of an authored one. Every parameter this
+    //     stream takes is validated by the job it belongs to - validateJobParameters below is attached to
+    //     this pipeline through JobBuilder.validator, and each stage job declares its own validator - so the
+    //     refusals are identical whichever launcher calls JobLauncher.run. The framework maps a COMPLETED
+    //     execution to exit status 0 and an unsuccessful one to non-zero, so return code 4 with rejects
+    //     still exits 0, which is what app/cbl/CBTRN02C.cbl:L202-L234 means by it.
+    //
+    //   * THE QUEUE-TRIGGERED PATH - what replaced the online tier writing to the JOBS transient data queue
+    //     for the JES2 internal reader - is the listener in com.cardemo.config.BatchConfig, which launches
+    //     the report job when a submission message arrives. It withdraws itself from a process that is
+    //     serving an operator submission, so the submitting and reading roles stay separate exactly as two
+    //     address spaces did.
+    //
+    // launchPipeline above is the explicit entry point for a caller that already holds the pipeline bean -
+    // the integration tier launches every scenario through it - and it stays public for that reason. It is
+    // called, never scheduled.
     // =================================================================================================
-
-    /**
-     * The operator submission path: launches one named job, once, from the command line.
-     *
-     * <p><b>What it does.</b> Resolves the job named by {@value #KEY_LAUNCH_JOB} among the six this
-     * application declares, launches it with the three parameters the stream uses, and reports the outcome.
-     * The pipeline job goes through {@link #launchPipeline(Job, String, String, String)} so that a command
-     * line submission and a programmatic one are the same code path; the five stage jobs go through the
-     * launcher directly, which is what running a single JCL member rather than the whole stream corresponds
-     * to.
-     *
-     * <p><b>How to run it.</b> {@code java -jar carddemo.jar --spring.main.web-application-type=none
-     * --carddemo.batch.launch=batchPipelineJob --carddemo.batch.launch.parm-date=2022071800
-     * --carddemo.batch.launch.start-date=2022-01-01 --carddemo.batch.launch.end-date=2022-07-06}. Substitute
-     * {@code dailyTransactionPostingJob}, {@code interestCalculationJob}, {@code combineTransactionsJob},
-     * {@code statementGenerationJob} or {@code transactionReportJob} to run one stage.
-     *
-     * <p>{@code --spring.main.web-application-type=none} is part of the command, not an optional extra. It is
-     * what makes the process end when the job ends, the way a submitted job freed its initiator; without it
-     * the embedded servlet container holds the JVM open after the run and the submission appears to hang.
-     * {@link #warnIfTheProcessWillNotEnd(ListableBeanFactory, String)} says so at the moment it happens.
-     *
-     * <p><b>Key configuration and defaults.</b> {@value #KEY_LAUNCH_JOB} has no default and its presence is
-     * what creates this bean. The three date properties have no defaults either, because every one of them is
-     * a value the source took from a JCL parameter card and none has a safe assumed value - a guessed
-     * interest date would post interest transactions under identifiers of the wrong shape.
-     *
-     * <p><b>Failure modes and troubleshooting.</b> An unknown job name fails naming all six accepted values.
-     * A malformed or absent date fails with the shape it expected and the JCL locator it came from. A run
-     * that ends {@code FAILED} or {@code ABANDONED} throws, so the process exits non-zero and a shell or
-     * scheduler sees the failure; a run that ends {@code COMPLETED} with the exit code
-     * {@value #GATE_PROCEED_WITH_REJECTS} does <b>not</b> throw, because return code 4 is a successful
-     * completion carrying rejects and {@code app/cbl/CBTRN02C.cbl:L202-L234} sets it precisely when the
-     * reject count exceeds zero.
-     *
-     * @param beanFactory the container, used to resolve the requested job by name <em>after</em> refresh has
-     *     finished; injected as the factory rather than as a map of jobs because this class declares one of
-     *     the jobs itself and a map parameter would be a self-reference
-     * @param requestedJob the bean name of the job to launch, from {@value #KEY_LAUNCH_JOB}
-     * @param parmDate the interest date, from {@value #KEY_LAUNCH_PARM_DATE}
-     * @param startDate the report start date, from {@value #KEY_LAUNCH_START_DATE}
-     * @param endDate the report end date, from {@value #KEY_LAUNCH_END_DATE}
-     * @return the runner, never {@code null}
-     */
-    @Bean
-    @ConditionalOnProperty(name = KEY_LAUNCH_JOB)
-    public ApplicationRunner batchOperatorLauncher(
-            final ListableBeanFactory beanFactory,
-            @Value("${" + KEY_LAUNCH_JOB + "}") final String requestedJob,
-            @Value("${" + KEY_LAUNCH_PARM_DATE + ":}") final String parmDate,
-            @Value("${" + KEY_LAUNCH_START_DATE + ":}") final String startDate,
-            @Value("${" + KEY_LAUNCH_END_DATE + ":}") final String endDate) {
-
-        return arguments -> runRequestedJob(beanFactory, requestedJob, parmDate, startDate, endDate);
-    }
-
-    /**
-     * Resolves, launches and reports one operator-requested job.
-     *
-     * <p>Separated from the bean method so the launch happens when the runner is <em>run</em> rather than
-     * when it is built. That ordering is what lets the requested job be resolved from the container without a
-     * circular dependency on the pipeline job this class declares.
-     *
-     * @param beanFactory the container
-     * @param requestedJob the requested bean name
-     * @param parmDate the interest date
-     * @param startDate the report start date
-     * @param endDate the report end date
-     * @throws ValidationException if the job name is not one of the six, or a parameter is unusable
-     * @throws FatalProcessingException if the launch fails, or if the run ends unsuccessfully
-     */
-    private void runRequestedJob(final ListableBeanFactory beanFactory, final String requestedJob,
-            final String parmDate, final String startDate, final String endDate) {
-
-        final String jobBeanName = requireLaunchableJobName(requestedJob);
-        final Job job = beanFactory.getBean(jobBeanName, Job.class);
-        LOG.info("Operator submission of {} accepted; this is the path that replaces submitting"
-                + " app/jcl/POSTTRAN.jcl and its siblings through TSO SUBMIT or SDSF", jobBeanName);
-
-        final JobExecution execution;
-        if (JOB_BEAN_NAME.equals(jobBeanName)) {
-            execution = launchPipeline(job, parmDate, startDate, endDate);
-        } else {
-            execution = launchRequestedStage(job, jobBeanName, parmDate, startDate, endDate);
-        }
-
-        // The aggregate return code, not the framework's own vocabulary, because that is what an operator
-        // reading a job log on the mainframe saw and what a scheduler downstream keys on.
-        LOG.info("Operator submission of {} finished as execution {} with status {} and exit code {}",
-                jobBeanName, execution.getId(), execution.getStatus(),
-                execution.getExitStatus().getExitCode());
-
-        warnIfTheProcessWillNotEnd(beanFactory, jobBeanName);
-
-        if (execution.getStatus().isUnsuccessful()) {
-            // Thrown rather than exited: Spring Boot turns an exception out of a runner into a non-zero JVM
-            // exit status while still closing the context, so the pool is drained and the final metrics are
-            // flushed. RC 4 does not reach here - COMPLETED is not unsuccessful, however the exit code reads.
-            throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "OPERATOR SUBMISSION FAILED",
-                    "The operator submission of " + jobBeanName + " ended with status "
-                            + execution.getStatus() + " and exit code "
-                            + execution.getExitStatus().getExitCode() + ". The step that failed and its"
-                            + " return code are in the execution context of execution "
-                            + execution.getId() + ".");
-        }
-    }
-
-    /**
-     * Warns when a finished submission will leave the process running, and names the property that stops it.
-     *
-     * <p>A submitted mainframe job ends; the initiator is freed and the operator gets a completion message.
-     * A Spring Boot <em>web</em> application does not, because the embedded servlet container holds
-     * non-daemon threads long after the runner has returned, so a submission made without
-     * {@code --spring.main.web-application-type=none} completes its work and then appears to hang.
-     *
-     * <p>Warned about rather than corrected in code, deliberately. The three mechanisms that would end the
-     * process from here are all worse than the warning: {@code System.exit} skips context close, abandoning
-     * the connection pool and the final metrics flush; a shutdown hook is the same thing on a delay; and
-     * closing the context from inside a runner tears down the container while the framework is still walking
-     * its list of runners. The application type has to be decided before the context is built, which means it
-     * belongs on the command line, and the one thing this method can usefully do is say so at the moment it
-     * becomes relevant.
-     *
-     * @param beanFactory the container, inspected for a servlet container rather than asked about it
-     * @param jobBeanName the job that has just finished, so the warning names the run it belongs to
-     */
-    private static void warnIfTheProcessWillNotEnd(final ListableBeanFactory beanFactory,
-            final String jobBeanName) {
-
-        if (beanFactory.getBeanNamesForType(ServletWebServerFactory.class).length == 0) {
-            return;
-        }
-        LOG.warn("The operator submission of {} has finished, but this application was started as a web"
-                        + " application, so the embedded servlet container is still holding the process open"
-                        + " and the run will not end on its own. A submitted job on the mainframe ended and"
-                        + " freed its initiator. Add --spring.main.web-application-type=none to the"
-                        + " submission so the process ends when the job does; the same artefact then serves"
-                        + " as both the online tier and a batch submission, which is what a single"
-                        + " deployable requires.", jobBeanName);
-    }
-
-    /**
-     * Launches one stage job directly, the equivalent of running a single JCL member.
-     *
-     * <p>All three parameters are supplied to every stage even though no stage reads all three, because each
-     * stage's own validator takes what it needs and ignores the rest, and because a single parameter set
-     * keyed identically across the stream is what makes a stage's instance identity match the pipeline's for
-     * the same business date. None of the five validators is a
-     * {@code DefaultJobParametersValidator} with a closed key set, so no stage refuses a parameter it has no
-     * use for.
-     *
-     * @param job the resolved stage job
-     * @param jobBeanName its bean name, for messages
-     * @param parmDate the interest date
-     * @param startDate the report start date
-     * @param endDate the report end date
-     * @return the finished execution, never {@code null}
-     * @throws ValidationException if the parameters are unusable or the instance has already completed
-     * @throws FatalProcessingException if the stage is already running, a restart is refused, or the launcher
-     *     fails
-     */
-    private JobExecution launchRequestedStage(final Job job, final String jobBeanName, final String parmDate,
-            final String startDate, final String endDate) {
-
-        final JobParameters parameters = pipelineParameters(parmDate, startDate, endDate);
-        try {
-            return jobLauncher.run(job, parameters);
-        } catch (final JobParametersInvalidException refused) {
-            throw new ValidationException(
-                    "The stage " + jobBeanName + " refused its parameters: " + refused.getMessage(), refused);
-        } catch (final JobInstanceAlreadyCompleteException refused) {
-            throw new ValidationException("The stage " + jobBeanName + " has already completed with these"
-                    + " parameters. No incrementer is declared, deliberately, so a repeat of an unchanged"
-                    + " run is refused rather than allowed to post the same input twice.", refused);
-        } catch (final JobExecutionAlreadyRunningException refused) {
-            throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE ALREADY RUNNING",
-                    "The stage " + jobBeanName + " is already running.", refused);
-        } catch (final JobRestartException refused) {
-            throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE RESTART REFUSED",
-                    "The stage " + jobBeanName + " cannot be restarted.", refused);
-        } catch (final RuntimeException unexpected) {
-            throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE LAUNCH FAILED",
-                    "The stage " + jobBeanName + " could not be launched.", unexpected);
-        }
-    }
-
-    /**
-     * Refuses a job name that is not one of the six this application declares.
-     *
-     * <p>Checked against a known set rather than handed straight to the container, so that a typo produces a
-     * message listing what an operator may actually ask for instead of a bean-resolution failure. It also
-     * means this path cannot be used to instantiate an arbitrary bean by name from a command line argument.
-     *
-     * @param requestedJob the requested name; may be {@code null} or blank
-     * @return the accepted bean name, never {@code null}
-     * @throws ValidationException if the name is absent or is not one of the six
-     */
-    private static String requireLaunchableJobName(final String requestedJob) {
-        if (requestedJob == null || requestedJob.isBlank()) {
-            throw ValidationException.missingField(KEY_LAUNCH_JOB,
-                    KEY_LAUNCH_JOB + " must name one of " + LAUNCHABLE_JOB_BEAN_NAMES);
-        }
-        final String candidate = requestedJob.trim();
-        if (!LAUNCHABLE_JOB_BEAN_NAMES.contains(candidate)) {
-            throw ValidationException.invalidField(KEY_LAUNCH_JOB,
-                    KEY_LAUNCH_JOB + " must name one of " + LAUNCHABLE_JOB_BEAN_NAMES + " but was '"
-                            + candidate + "'");
-        }
-        return candidate;
-    }
 
     /**
      * The job's own parameter validator, so the same rules apply however the pipeline is launched.
@@ -1799,8 +1661,12 @@ public class BatchPipelineOrchestrator {
      * behind.
      *
      * <p>The context is thread-local, so without this the two branches would emit every event with empty
-     * {@value #MDC_KEY_JOB_INSTANCE_ID}, {@value #MDC_KEY_CORRELATION_ID}, {@value #MDC_KEY_TRACE_ID} and
-     * {@value #MDC_KEY_SPAN_ID} entries - a whole third of the run untraceable. The copy is taken here,
+     * {@link CorrelationIdFilter#MDC_KEY_JOB_INSTANCE_ID},
+     * {@link CorrelationIdFilter#MDC_KEY_CORRELATION_ID}, {@link CorrelationIdFilter#MDC_KEY_TRACE_ID} and
+     * {@link CorrelationIdFilter#MDC_KEY_SPAN_ID} entries - a whole third of the run untraceable. The whole
+     * map is copied rather than four named keys, because the branch must also inherit anything the tracing
+     * bridge published, and the branch clears the whole map rather than restoring it because a branch thread
+     * belongs to the pipeline's own executor and had no context of its own to preserve. The copy is taken here,
      * on the submitting thread, because that is where the decorator is invoked; it is applied and then
      * cleared inside the branch, in a {@code finally}, so a thread that is somehow reused cannot inherit
      * another run's identity.
@@ -1885,8 +1751,47 @@ public class BatchPipelineOrchestrator {
     private RepeatStatus runCombTranStage(final StepContribution contribution,
             final ChunkContext chunkContext) {
 
+        requireObjectStorageSubstrate();
         return runStage(combineTransactionsJob, STAGE_COMBTRAN, LOCATOR_COMBTRAN, INFIX_COMBTRAN,
                 contribution, chunkContext);
+    }
+
+    /**
+     * Refuses to run stage 3 on the relational substrate.
+     *
+     * <p><b>Finding M-01, severity Major, RESOLVED.</b> Stage 3's reader takes its first leg either from a
+     * {@code TRANSACT.BKUP} generation or from the live transaction relation, selected by
+     * {@value #READER_SOURCE_PROPERTY}, whose default is {@code repository}. Only
+     * {@value #READER_SOURCE_OBJECT_STORAGE} is correct here, and the reason is arithmetic rather than
+     * preference: on the relational substrate the first leg <em>is</em> the table that
+     * {@code app/jcl/COMBTRAN.jcl:L41-L48} then loads into, so the stage reads the rows it is about to
+     * re-insert.
+     *
+     * <p>This was previously documented as an operator prerequisite - the property was left at its default
+     * and a note said an operator driving the pipeline should override it. A prerequisite that nothing checks
+     * is not a prerequisite: the default was never overridden, so the pipeline's normal path was the wrong
+     * one, and the only thing standing between it and a corrupt load was the duplicate-identifier refusal
+     * happening to fire. Refusing here converts that into a stated, enforced precondition, which is the
+     * conservative half of the fix; {@code src/main/resources/application.yml} now also declares the
+     * property explicitly rather than leaving the value implicit.
+     *
+     * <p>It refuses rather than overriding the substrate per run. The substrate is a property of how this
+     * deployment stores the datasets, not a per-run choice, and a pipeline that silently switched it would
+     * make a misconfigured deployment undetectable - the failure mode being fixed.
+     *
+     * @throws ValidationException if the configured substrate is anything other than object storage
+     */
+    private void requireObjectStorageSubstrate() {
+        if (READER_SOURCE_OBJECT_STORAGE.equals(readerSource)) {
+            return;
+        }
+        throw new ValidationException("Pipeline stage " + STAGE_COMBTRAN + " requires "
+                + READER_SOURCE_PROPERTY + "=" + READER_SOURCE_OBJECT_STORAGE + " but it is '"
+                + readerSource + "'. On the relational substrate the concatenated SORTIN of"
+                + " app/jcl/COMBTRAN.jcl:L23-L26 would take its first leg from the very transaction"
+                + " relation that :L41-L48 then loads into, so the stage would read the rows it is about"
+                + " to re-insert. Set " + READER_SOURCE_PROPERTY + "="
+                + READER_SOURCE_OBJECT_STORAGE + " for any run of this pipeline.");
     }
 
     /**
@@ -1953,7 +1858,8 @@ public class BatchPipelineOrchestrator {
         final JobExecution pipeline = chunkContext.getStepContext().getStepExecution().getJobExecution();
         LOG.info("START OF PIPELINE STAGE {} - {}", stageName, locator);
 
-        final JobExecution child = launchStage(stage, stageName, pipeline.getJobParameters());
+        final JobExecution child =
+                launchStage(stage, stageName, stageParameters(pipeline, infix, stageName));
         int returnCode = stageReturnCode(child);
         promoteFailures(pipeline, child, stageName);
 
@@ -1972,12 +1878,244 @@ public class BatchPipelineOrchestrator {
     }
 
     /**
-     * Launches one sibling job with the pipeline's own parameter set.
+     * Builds the parameter set one stage is launched with.
      *
-     * <p>Every stage receives all three parameters unchanged. Two of them are only meaningful to one stage
-     * each, and passing them everywhere is deliberate: it keeps every child instance keyed on the same values
-     * as the pipeline instance, so one pipeline run means one run of each stage, and a repeat of the pipeline
-     * is refused by the same mechanism that refuses a repeat of a stage.
+     * <p>Every stage receives all three pipeline parameters unchanged, and stage 3 additionally receives the
+     * <strong>exact {@code SYSTRAN} generation stage 2 created</strong> under
+     * {@value com.cardemo.batch.readers.CombinedTransactionReader#SYSTRAN_GENERATION_JOB_PARAMETER}.
+     *
+     * <p><strong>Why a job parameter and why before the launch.</strong> {@code app/jcl/COMBTRAN.jcl:L25-L26}
+     * reads {@code SYSTRAN(0)}, and on the mainframe that resolves through a catalogue the preceding step
+     * updated atomically at close, so it can only ever mean "the generation this stream just produced". Two
+     * separate Spring Batch jobs share no catalogue, so the identity has to be handed over explicitly, and
+     * the handover has to happen <em>before</em> the child starts or the child has nothing to obey. An earlier
+     * revision pinned the generation in the pipeline's own execution context and compared it with what stage 3
+     * had resolved <em>afterwards</em>, on the reasoning that seeding a child's execution context is not a
+     * supported framework operation. That reasoning is sound about execution contexts and led to the wrong
+     * conclusion: a job parameter is supported, is read by a step-scoped bean through
+     * {@code #{jobParameters[...]}}, and is fixed before the first step runs. The check remains, but it is now
+     * defence in depth behind a contract rather than the only guard - the difference matters because a check
+     * that runs after the load has committed cannot prevent the wrong generation being loaded.
+     *
+     * <p>The added parameter is identifying, like the three it joins. That is correct rather than incidental:
+     * the generation is part of stage 3's input identity, so two pipeline runs over the same dates but
+     * different interest generations are two distinct stage-3 instances. The pipeline's own instance is keyed
+     * on the three original parameters alone, so a repeat of an unchanged pipeline is still refused, and it is
+     * refused before any stage launches.
+     *
+     * @param pipeline the running pipeline execution, carrying its own parameters and the pinned generation
+     * @param infix the execution-context infix identifying the stage
+     * <p><b>Two stages also carry a per-stage instruction</b>, each reproducing a JCL member that sits
+     * beside the one the stage replaces: stage 3 is told to run the {@code app/jcl/TRANBKP.jcl} archive
+     * and reset, and the report branch is told to run the {@code app/jcl/PRTCATBL.jcl} unload and print.
+     * Both are instructed rather than defaulted on, so that a standalone run of either job is exactly the
+     * member it replaces and nothing more, and both are non-identifying for the same reason the pinned
+     * key above is identifying only where instance identity genuinely depends on it.
+     *
+     * @param stageName the stage's display name, for the diagnostic
+     * @return the parameter set to launch this stage with, never {@code null}
+     */
+    private static JobParameters stageParameters(final JobExecution pipeline, final String infix,
+            final String stageName) {
+
+        final JobParameters inherited = pipeline.getJobParameters();
+
+        // The report branch is instructed to run the app/jcl/PRTCATBL.jcl unload and print. PRTCATBL and
+        // TRANREPT are both REPROC-plus-SORT report members over clusters the posting stage has just
+        // updated, and neither writes anything the other reads, so the report branch is where it belongs.
+        // Non-identifying, so a stage's instance identity stays keyed on the pipeline's own parameters.
+        if (INFIX_TRANREPT.equals(infix)) {
+            LOG.info("Pipeline instructed stage {} to run the app/jcl/PRTCATBL.jcl unload and print as a"
+                    + " non-identifying parameter", stageName);
+            return new JobParametersBuilder(inherited)
+                    .addString(TransactionReportJob.JOB_PARAMETER_PRINT_CATEGORY_BALANCES,
+                            Boolean.TRUE.toString(), false)
+                    .toJobParameters();
+        }
+
+        if (!INFIX_COMBTRAN.equals(infix)) {
+            return inherited;
+        }
+
+        // app/jcl/TRANBKP.jcl precedes app/jcl/COMBTRAN.jcl in the operator's stream, so inside the pipeline
+        // the archive-and-reset runs: :L23-L33 copies the master to TRANSACT.BKUP(+1) and :L37-L67 deletes
+        // and redefines the cluster, which is what leaves :L41-L48 an empty target and makes the stream
+        // repeatable. It is instructed here rather than defaulted on in the job, because a standalone
+        // combine is not the operator's stream and must not empty anybody's master.
+        final JobParametersBuilder builder = new JobParametersBuilder(inherited)
+                .addString(CombineTransactionsJob.JOB_PARAMETER_ARCHIVE_MASTER,
+                        Boolean.TRUE.toString(), false);
+
+        final String pinned = pipeline.getExecutionContext()
+                .getString(SYSTRAN_GENERATION_CONTEXT_ENTRY, "");
+        if (pinned.isEmpty() || HANDOFF_ABSENT.equals(pinned)) {
+            LOG.warn("Pipeline stage {} launches without a pinned SYSTRAN generation because stage {}"
+                            + " published none; app/jcl/COMBTRAN.jcl:L25-L26 will resolve SYSTRAN(0) by"
+                            + " listing, which cannot exclude a concurrent run's generation. The"
+                            + " app/jcl/TRANBKP.jcl archive-and-reset is still instructed.",
+                    stageName, STAGE_INTCALC);
+            return builder.toJobParameters();
+        }
+
+        LOG.info("Pipeline hands stage {} the exact generation {} under job parameter {} before launch, and"
+                        + " instructs the app/jcl/TRANBKP.jcl archive-and-reset",
+                stageName, pinned, CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER);
+        return builder
+                .addString(CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER, pinned, true)
+                .toJobParameters();
+    }
+
+    /**
+     * Launches one sibling job with the parameter set {@link #stageParameters} built for it.
+     *
+     * <h4>Why the launch is retried, and only the launch</h4>
+     *
+     * <p>{@code spring.batch.jdbc.isolation-level-for-create} is {@code SERIALIZABLE}, which is what stops two
+     * launches of the same job instance from both believing they created it. The price is that PostgreSQL may
+     * abort one of two <em>genuinely distinct</em> concurrent creations with SQLSTATE
+     * {@value #SQL_STATE_SERIALIZATION_FAILURE}, and the {@code CREASTMT || TRANREPT} split creates two
+     * distinct child executions at the same instant by design. Left unhandled, that abort fails a branch for a
+     * reason that has nothing to do with the batch data - a flake, and one that only ever appears in the
+     * parallel half of the stream.
+     *
+     * <p>The retry is bounded to {@value #MAX_STAGE_LAUNCH_ATTEMPTS} attempts with a growing backoff, and it
+     * is confined to the <b>creation phase</b> by construction rather than by inspection of a message.
+     * {@link JobLauncher#run(Job, JobParameters)} creates the execution row and only then hands control to the
+     * job; once the job is running, a step failure is recorded <em>on the returned execution</em> and does not
+     * propagate out of {@code run}. A transient data-access failure escaping {@code run} therefore cannot have
+     * come from a step - it can only have come from
+     * {@code JobRepository.createJobExecution}, before any business work happened. Retrying it repeats nothing
+     * and re-posts nothing.
+     *
+     * <p><b>Two things this deliberately does not do.</b> It does not weaken
+     * {@code isolation-level-for-create}, because that setting is the only thing preventing a double launch of
+     * one instance. And it does not serialise the two branches, because the parallelism is the behaviour under
+     * test: {@code app/jcl/CREASTMT.JCL} and {@code app/proc/TRANREPT.prc} have no ordering dependency, and
+     * collapsing them would stop the split being exercised at all.
+     *
+     * <p>Every other failure is still fatal on the first occurrence. A parameter refusal, an
+     * already-complete instance, an already-running instance and a restart refusal are all deterministic:
+     * retrying them would produce the identical outcome more slowly.
+     *
+     * @param stage the sibling job
+     * @param stageName the stage's display name, for the diagnostics
+     * @param parameters the parameter set for this stage
+     * @return the finished child execution, never {@code null}
+     * @throws ValidationException if a child validator refused the parameters, or if the child instance has
+     *     already completed with them
+     * @throws FatalProcessingException if the child was already running, a restart was refused, the launch
+     *     kept failing to serialize after {@value #MAX_STAGE_LAUNCH_ATTEMPTS} attempts, or the launcher failed
+     *     for any other reason
+     */
+    private JobExecution launchStage(final Job stage, final String stageName,
+            final JobParameters parameters) {
+
+        RuntimeException lastSerializationFailure = null;
+        for (int attempt = 1; attempt <= MAX_STAGE_LAUNCH_ATTEMPTS; attempt++) {
+            try {
+                return launchStageOnce(stage, stageName, parameters);
+            } catch (final TransientDataAccessException contended) {
+                final String sqlState = transientConflictState(contended);
+                if (sqlState == null) {
+                    throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE LAUNCH FAILED",
+                            "Pipeline stage " + stageName + " could not be launched.", contended);
+                }
+                lastSerializationFailure = contended;
+                LOG.warn("PIPELINE STAGE {} LAUNCH DID NOT SERIALIZE - SQLSTATE {}, attempt {} of {}."
+                                + " The job execution row was never created, so nothing is repeated by"
+                                + " retrying; this is the SERIALIZABLE creation isolation contending with"
+                                + " the concurrent {} || {} branch.",
+                        stageName, sqlState, Integer.valueOf(attempt),
+                        Integer.valueOf(MAX_STAGE_LAUNCH_ATTEMPTS), STAGE_CREASTMT, STAGE_TRANREPT);
+                if (attempt < MAX_STAGE_LAUNCH_ATTEMPTS) {
+                    backOffBeforeRelaunch(stageName, attempt);
+                }
+            }
+        }
+
+        throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE LAUNCH DID NOT SERIALIZE",
+                "Pipeline stage " + stageName + " could not create its job execution in "
+                        + MAX_STAGE_LAUNCH_ATTEMPTS + " attempts; every attempt was aborted by the database"
+                        + " as a serialization or deadlock failure. This is persistent contention rather than"
+                        + " a transient collision, so it is reported rather than retried further.",
+                lastSerializationFailure);
+    }
+
+    /**
+     * Sleeps between two stage-launch attempts, preserving interruption.
+     *
+     * <p>Inputs: the stage name for the diagnostic and the one-based count of attempts already made. Output:
+     * none. Side effects: parks the calling thread for {@code attemptsMade} multiples of
+     * {@value #LAUNCH_RETRY_BASE_BACKOFF_MILLIS} milliseconds.
+     *
+     * <p>The interrupt flag is restored before throwing, because the caller is a branch thread of
+     * {@link #branchExecutor()} and swallowing an interrupt there would leave a shutdown request unanswered.
+     *
+     * @param stageName the stage being launched, for the message
+     * @param attemptsMade one-based count of attempts already made
+     * @throws FatalProcessingException if the wait is interrupted; the interrupt flag is set first
+     */
+    private static void backOffBeforeRelaunch(final String stageName, final int attemptsMade) {
+        try {
+            Thread.sleep(LAUNCH_RETRY_BASE_BACKOFF_MILLIS * attemptsMade);
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE LAUNCH INTERRUPTED",
+                    "Pipeline stage " + stageName + " was interrupted while waiting to retry its launch.",
+                    interrupted);
+        }
+    }
+
+    /**
+     * Returns the SQLSTATE of a transient class-40 conflict in this throwable's cause chain.
+     *
+     * <p><b>Why the SQLSTATE decides, and not the exception class.</b> The Spring exception class is too
+     * coarse in the one direction that matters. Every candidate supertype that is not itself deprecated -
+     * {@code PessimisticLockingFailureException}, {@code ConcurrencyFailureException} - also covers conditions
+     * that must <em>not</em> be retried here, {@code OptimisticLockingFailureException} among them. The
+     * SQLSTATE is the opposite: {@value #SQL_STATE_SERIALIZATION_FAILURE} and
+     * {@value #SQL_STATE_DEADLOCK_DETECTED} name exactly the two class-40 aborts that a fresh snapshot can
+     * clear, and nothing else. Both translator chains Spring ships pass the originating {@link SQLException}
+     * through as the cause, so walking the chain finds it whether the top-level type was recognised or
+     * uncategorised.
+     *
+     * <p><b>Fail closed.</b> When no SQLSTATE is found the answer is {@code null} and the caller aborts. A
+     * transient failure this method cannot positively identify is treated as fatal rather than retried on
+     * suspicion, because a wrong retry decision here would re-enter a launch whose real problem is elsewhere.
+     *
+     * <p>Inputs: the throwable to inspect, which may be {@code null}. Output: the matched SQLSTATE, or
+     * {@code null}. Side effects: none.
+     *
+     * @param thrown the throwable to inspect
+     * @return {@value #SQL_STATE_SERIALIZATION_FAILURE}, {@value #SQL_STATE_DEADLOCK_DETECTED}, or
+     *     {@code null} when neither appears in the chain
+     */
+    private static String transientConflictState(final Throwable thrown) {
+        Throwable current = thrown;
+        for (int depth = 0; current != null && depth < CAUSE_CHAIN_LIMIT; depth++) {
+            if (current instanceof final SQLException sqlFailure) {
+                final String state = sqlFailure.getSQLState();
+                if (SQL_STATE_SERIALIZATION_FAILURE.equals(state)
+                        || SQL_STATE_DEADLOCK_DETECTED.equals(state)) {
+                    return state;
+                }
+            }
+            final Throwable cause = current.getCause();
+            current = cause == current ? null : cause;
+        }
+        return null;
+    }
+
+    /**
+     * Performs exactly one launch attempt, mapping the launcher's checked failures onto the typed hierarchy.
+     *
+     * <p>Inputs: the sibling job, its display name and the pipeline's parameters. Output: the finished child
+     * execution. Side effects: creates one job execution and runs the child job to completion.
+     *
+     * <p>A {@link TransientDataAccessException} is deliberately <b>not</b> caught here. It is the one failure
+     * the caller can act on, so it is allowed to propagate to
+     * {@link #launchStage(Job, String, JobParameters)} unwrapped; wrapping it would destroy the SQLSTATE the
+     * retry decision reads.
      *
      * @param stage the sibling job
      * @param stageName the stage's display name, for the diagnostics
@@ -1985,10 +2123,11 @@ public class BatchPipelineOrchestrator {
      * @return the finished child execution, never {@code null}
      * @throws ValidationException if a child validator refused the parameters, or if the child instance has
      *     already completed with them
-     * @throws FatalProcessingException if the child was already running, a restart was refused, or the
-     *     launcher failed for any other reason
+     * @throws FatalProcessingException if the child was already running, or a restart was refused
+     * @throws TransientDataAccessException if the execution row could not be created because the creating
+     *     transaction did not serialize; propagated for the caller to retry
      */
-    private JobExecution launchStage(final Job stage, final String stageName,
+    private JobExecution launchStageOnce(final Job stage, final String stageName,
             final JobParameters parameters) {
 
         try {
@@ -2006,6 +2145,11 @@ public class BatchPipelineOrchestrator {
         } catch (final JobRestartException refused) {
             throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE RESTART REFUSED",
                     "Pipeline stage " + stageName + " cannot be restarted.", refused);
+        } catch (final TransientDataAccessException contended) {
+            // Rethrown untouched so launchStage can read its SQLSTATE and decide. Listed before the general
+            // RuntimeException arm because it IS a RuntimeException: without this arm the general one would
+            // wrap it as a fatal abend and the bounded retry above would be unreachable.
+            throw contended;
         } catch (final RuntimeException unexpected) {
             throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "STAGE LAUNCH FAILED",
                     "Pipeline stage " + stageName + " could not be launched.", unexpected);
@@ -2131,17 +2275,77 @@ public class BatchPipelineOrchestrator {
             context.putLong(CONTEXT_PREFIX + infix + EXECUTION_ID_SUFFIX,
                     child.getId() == null ? 0L : child.getId().longValue());
 
-            final int aggregate = Math.max(
-                    context.getInt(PIPELINE_RETURN_CODE_CONTEXT_ENTRY, RETURN_CODE_COMPLETED), returnCode);
+            final int aggregate = Math.max(readAggregateReturnCode(context), returnCode);
             context.putInt(PIPELINE_RETURN_CODE_CONTEXT_ENTRY, aggregate);
             context.putString(PIPELINE_OUTCOME_CONTEXT_ENTRY, outcomeFor(aggregate));
         }
     }
 
     /**
+     * Reads the aggregate return code out of a pipeline execution context under a defined policy.
+     *
+     * <p>Every read of {@value #PIPELINE_RETURN_CODE_CONTEXT_ENTRY} goes through here, so the three cases the
+     * entry can be in have one answer each rather than one answer per call site.
+     *
+     * <ul>
+     *   <li><b>Absent</b> - {@value #RETURN_CODE_COMPLETED}. The entry is written by
+     *       {@link #recordStage(JobExecution, String, int, JobExecution)} as each stage finishes, so its
+     *       absence means no stage has finished yet, which is a clean run so far and not an unknown one.</li>
+     *   <li><b>Present and an integer</b> - returned unchanged, <em>including</em> a value that is not one of
+     *       the four canonical codes. Interpreting it is {@link #gateFor(int)}'s job and not this method's;
+     *       coercing it to a canonical code here would discard the very information the banding needs.</li>
+     *   <li><b>Present and not an integer</b> - an abend. A context entry of the wrong type cannot be banded,
+     *       and the two alternatives are both wrong: {@code getInt} raises a bare
+     *       {@link ClassCastException} from inside a listener, where it surfaces without naming the key or the
+     *       pipeline, and defaulting to {@value #RETURN_CODE_COMPLETED} would report a clean run over a
+     *       context that has been corrupted or written by something that is not this class. Only this class
+     *       writes the entry, so reaching this arm means the execution context is not the one this pipeline
+     *       built - a manipulated restart, or a second writer - and that is exactly an unexpected state, which
+     *       the corpus answers with the {@link #ABEND_CODE} abend and return code 12.</li>
+     * </ul>
+     *
+     * @param context the pipeline execution context; must not be {@code null}
+     * @return the aggregate return code, 0 when no stage has recorded one yet
+     * @throws FatalProcessingException if the entry is present but is not an integer
+     */
+    private static int readAggregateReturnCode(final ExecutionContext context) {
+        final Object recorded = context.get(PIPELINE_RETURN_CODE_CONTEXT_ENTRY);
+        if (recorded == null) {
+            return RETURN_CODE_COMPLETED;
+        }
+        if (recorded instanceof Integer aggregate) {
+            return aggregate.intValue();
+        }
+        throw new FatalProcessingException(ABEND_CODE, ABEND_CULPRIT, "CORRUPT PIPELINE RETURN CODE",
+                "The pipeline execution context holds a non-integer under "
+                        + PIPELINE_RETURN_CODE_CONTEXT_ENTRY + ": " + recorded.getClass().getName()
+                        + ". Only this class writes that entry, so the context is not the one this run built.");
+    }
+
+    /**
      * Maps a return code onto the gate outcome the flow transitions on.
      *
-     * @param returnCode 0, 4, 8 or 12
+     * <p><b>The mapping is a monotone severity band, not a lookup of four values, and that is deliberate.</b>
+     * The four codes the stages produce are 0, 4, 8 and 12, but the aggregate is a {@link Math#max} over
+     * whatever every stage recorded, and a restarted or externally seeded execution context can carry a value
+     * between them. Each test is therefore {@code >=} against the floor of a band, which gives every integer
+     * a defined outcome:
+     *
+     * <ul>
+     *   <li>12 and above - abend. A code worse than the worst named one is not better than it.</li>
+     *   <li>8 to 11 - halt. This is the band a value of 9, 10 or 11 lands in.</li>
+     *   <li>4 to 7 - proceed with rejects. This is the band a value of 5, 6 or 7 lands in.</li>
+     *   <li>Below 4, negatives included - proceed.</li>
+     * </ul>
+     *
+     * <p>This is the same shape as the job control it replaces: {@code COND=(0,NE)} tests a <em>threshold</em>
+     * against a step's completion code rather than enumerating the codes a program is known to set, so an
+     * unforeseen code is gated by where it falls rather than by whether it was anticipated. Banding upward -
+     * treating 5 as an 8, say - would be the unsafe direction in the other sense: it would halt a stream the
+     * source would have continued. Banding downward within a severity level, which is what this does, keeps
+     * the meaning of the named code that the value has reached and no more.
+     *
+     * @param returnCode any integer; the four canonical values are 0, 4, 8 and 12
      * @return one of {@value #GATE_PROCEED}, {@value #GATE_PROCEED_WITH_REJECTS}, {@value #GATE_HALT} or
      *     {@value #GATE_ABEND}
      */
@@ -2161,7 +2365,11 @@ public class BatchPipelineOrchestrator {
     /**
      * Maps a return code onto the exit code the pipeline publishes for it.
      *
-     * @param returnCode 0, 4, 8 or 12
+     * <p>Banded on the same thresholds and for the same reasons as {@link #gateFor(int)}, so the gate the flow
+     * transitions on and the exit status the run publishes can never disagree about a value between two
+     * canonical codes.
+     *
+     * @param returnCode any integer; the four canonical values are 0, 4, 8 and 12
      * @return one of {@code COMPLETED}, {@value #EXIT_CODE_COMPLETED_WITH_REJECTS}, {@code FAILED} or
      *     {@value #EXIT_CODE_ABEND}
      */
@@ -2181,25 +2389,28 @@ public class BatchPipelineOrchestrator {
 
     // =================================================================================================
     // The generation handoff between stages 2 and 3. app/jcl/INTCALC.jcl:L37-L41 writes SYSTRAN(+1) and
-    // app/jcl/COMBTRAN.jcl:L25-L26 reads SYSTRAN(0); because those are two separate jobs here, the key
-    // is published explicitly and then checked, never re-resolved as "whatever is newest".
+    // app/jcl/COMBTRAN.jcl:L25-L26 reads SYSTRAN(0); because those are two separate jobs here, the
+    // generation is pinned explicitly, handed over as a job parameter before stage 3 launches, and only
+    // then checked - never re-resolved by stage 3 as "whatever is newest".
     // =================================================================================================
 
     /**
      * Copies the {@code SYSTRAN} generation keys stage 2 created into the pipeline execution context and pins
-     * the one stage 3 must read.
+     * the generation stage 3 must read.
      *
-     * <p>{@link InterestCalculationJob} publishes a count and one indexed entry per key. The key stage 3 must
-     * read is the equivalent of {@code SYSTRAN(0)}, which the object-store convention defines as the
-     * lexicographically greatest existing key under the prefix - so the greatest is selected by comparison
-     * rather than by assuming the last one published is the highest. The comparison is
-     * {@link String#compareTo(String)}, which is code-point ordered and therefore identical on every host,
-     * with no collator and no locale involved.
+     * <p>{@link InterestCalculationJob} publishes the generation prefix it allocated, a count, and one indexed
+     * entry per key it wrote beneath that prefix. What stage 3 must read is the equivalent of
+     * {@code SYSTRAN(0)} - the current <em>generation</em>, which the object-store convention defines as the
+     * greatest existing generation prefix. The prefix stage 2 recorded is taken verbatim, so no comparison,
+     * collator or locale is involved at all and no fraction of the dataset can be pinned by mistake: stage 2
+     * emits one object per chunk, and a single key is one chunk of the generation rather than the generation.
      *
-     * <p>Publishing zero keys is a legitimate outcome: a run in which every applicable rate was zero
-     * generates no interest transaction and therefore no object. It is pinned as
-     * {@value #HANDOFF_ABSENT} and reported, never treated as a failure, because the reader carries an absent
-     * generation forward rather than failing on it.
+     * <p>Publishing zero keys is a legitimate outcome: a run in which every applicable rate was zero generates
+     * no interest transaction and therefore no object. The generation prefix is still recorded and still
+     * pinned, and stage 3 reads it as zero records - the object-store counterpart of
+     * {@code DISP=(NEW,CATLG,DELETE)} cataloguing an empty dataset. Only a stage 2 that recorded no prefix at
+     * all is {@value #HANDOFF_ABSENT}, in which case nothing is handed over and stage 3 resolves
+     * {@code SYSTRAN(0)} for itself, failing allocation when nothing is catalogued.
      *
      * @param pipeline the pipeline execution
      * @param child stage 2's finished execution
@@ -2224,31 +2435,37 @@ public class BatchPipelineOrchestrator {
             context.putString(SYSTRAN_KEY_INDEX_CONTEXT_PREFIX + index, keys.get(index));
         }
 
-        String greatest = null;
-        for (final String key : keys) {
-            if (greatest == null || key.compareTo(greatest) > 0) {
-                greatest = key;
-            }
-        }
-        if (greatest == null) {
+        // The generation, not the greatest key. Stage 2 emits one object per chunk under one generation
+        // prefix, so the prefix is the whole dataset and a single key is one chunk of it: pinning a key would
+        // hand stage 3 a fraction of SYSTRAN(0) and report success. Stage 2 publishes the prefix it owns even
+        // when it emitted nothing, which is the counterpart of DISP=(NEW,CATLG,DELETE) cataloguing an empty
+        // dataset, so an empty generation is still pinned and still read - as zero records.
+        final String generation = childContext.getString(
+                InterestCalculationJob.SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY, "");
+        if (generation.isEmpty()) {
             context.putString(SYSTRAN_GENERATION_CONTEXT_ENTRY, HANDOFF_ABSENT);
-            LOG.warn("Pipeline stage {} published no SYSTRAN generation; app/jcl/COMBTRAN.jcl:L25-L26 will"
-                    + " read an absent second half of its concatenated SORTIN", STAGE_INTCALC);
+            LOG.warn("Pipeline stage {} published no SYSTRAN generation prefix; app/jcl/COMBTRAN.jcl:L25-L26"
+                    + " will have to resolve SYSTRAN(0) by listing", STAGE_INTCALC);
             return;
         }
-        context.putString(SYSTRAN_GENERATION_CONTEXT_ENTRY, greatest);
-        LOG.info("Pipeline pinned the SYSTRAN generation {} of {} created by stage {} for stage {} to read",
-                greatest, Integer.valueOf(keys.size()), STAGE_INTCALC, STAGE_COMBTRAN);
+        context.putString(SYSTRAN_GENERATION_CONTEXT_ENTRY, generation);
+        LOG.info("Pipeline pinned the SYSTRAN generation {} holding {} object(s) created by stage {} for"
+                        + " stage {} to read",
+                generation, Integer.valueOf(keys.size()), STAGE_INTCALC, STAGE_COMBTRAN);
     }
 
     /**
-     * Verifies that stage 3 read the exact generation stage 2 created.
+     * Verifies, as defence in depth, that stage 3 read the exact generation stage 2 created.
      *
-     * <p>Seeding a child job's step execution context from an outer job is not a supported framework
-     * operation, so the guarantee available here is a check rather than an injection: the pinned key is
-     * compared with the key stage 3 recorded that it resolved, and a difference is an abend that names both.
-     * That converts a silent latest-wins - which would break under any concurrent run - into a reported
-     * divergence. The remediation that would make it an injection is named in the class documentation.
+     * <p><strong>This is no longer the only guard, and that is the point.</strong> The generation is handed to
+     * stage 3 as a job parameter before it launches - see {@link #stageParameters} - so stage 3 cannot resolve
+     * a different one. This check confirms that the contract was obeyed and turns any divergence into a named
+     * abend rather than a silent latest-wins, but a check that runs after the load has committed could never
+     * have prevented the wrong generation being loaded, which is why the pre-launch parameter exists.
+     *
+     * <p>The comparison is generation against generation. Stage 3 records the concrete object key it opened
+     * first, and its generation segment is that key's leading component beneath the base prefix, so the pinned
+     * generation is a prefix of the resolved key exactly when the contract held.
      *
      * <p>Three outcomes are not failures and are recorded as such. {@value #HANDOFF_ABSENT} means stage 2
      * created no generation. {@value #HANDOFF_NOT_APPLICABLE} means stage 3 recorded no resolved key, which
@@ -2267,8 +2484,29 @@ public class BatchPipelineOrchestrator {
         context.putString(SYSTRAN_RESOLVED_CONTEXT_ENTRY, resolved == null ? "" : resolved);
 
         if (pinned.isEmpty() || HANDOFF_ABSENT.equals(pinned)) {
+            // An instructed absence is CHECKED, not merely accepted. Stage 3 was handed the reader's absent
+            // marker, so the outcome it must record is that same absence; anything else means it read a
+            // generation - necessarily one this pipeline did not produce - and that is the latest-wins
+            // substitution the pinning exists to prevent. Accepting this arm unconditionally, as the previous
+            // implementation did, made the one case where a stale generation could be read the one case that
+            // was never verified.
+            if (resolved != null && !resolved.isEmpty()
+                    && !READER_ABSENT_GENERATION_MARKER.equals(resolved)) {
+                context.putString(SYSTRAN_HANDOFF_CONTEXT_ENTRY, HANDOFF_MISMATCH);
+                final FatalProcessingException substituted = new FatalProcessingException(
+                        ABEND_CODE, ABEND_CULPRIT, "SYSTRAN GENERATION HANDOFF MISMATCH",
+                        "Stage " + STAGE_INTCALC + " catalogued no SYSTRAN generation, so stage "
+                                + STAGE_COMBTRAN + " was instructed to read none, but it read " + resolved
+                                + "; app/jcl/COMBTRAN.jcl:L25-L26 must read the generation the preceding"
+                                + " stage wrote, and reading an earlier one would load transactions this"
+                                + " pipeline did not generate.");
+                LOG.error("Pipeline generation handoff {}", HANDOFF_MISMATCH, substituted);
+                pipeline.addFailureException(substituted);
+                return RETURN_CODE_ABEND;
+            }
             context.putString(SYSTRAN_HANDOFF_CONTEXT_ENTRY, HANDOFF_ABSENT);
-            LOG.info("Pipeline generation handoff {}: stage {} created no SYSTRAN generation for stage {}",
+            LOG.info("Pipeline generation handoff {}: stage {} created no SYSTRAN generation, and stage {}"
+                            + " read none - the absence was instructed and observed",
                     HANDOFF_ABSENT, STAGE_INTCALC, STAGE_COMBTRAN);
             return RETURN_CODE_COMPLETED;
         }
@@ -2278,7 +2516,7 @@ public class BatchPipelineOrchestrator {
                     + " pinned key {} could not be compared", HANDOFF_NOT_APPLICABLE, STAGE_COMBTRAN, pinned);
             return RETURN_CODE_COMPLETED;
         }
-        if (!pinned.equals(resolved)) {
+        if (!resolved.startsWith(pinned)) {
             context.putString(SYSTRAN_HANDOFF_CONTEXT_ENTRY, HANDOFF_MISMATCH);
             final FatalProcessingException mismatch = new FatalProcessingException(
                     ABEND_CODE, ABEND_CULPRIT, "SYSTRAN GENERATION HANDOFF MISMATCH",
@@ -2415,7 +2653,7 @@ public class BatchPipelineOrchestrator {
             final ExecutionContext context = jobExecution.getExecutionContext();
             final int aggregate;
             synchronized (context) {
-                final int recorded = context.getInt(PIPELINE_RETURN_CODE_CONTEXT_ENTRY, RETURN_CODE_COMPLETED);
+                final int recorded = readAggregateReturnCode(context);
                 final int implied = failedStepReturnCode(jobExecution);
                 aggregate = Math.max(recorded, implied);
                 if (aggregate > recorded) {
@@ -2481,7 +2719,10 @@ public class BatchPipelineOrchestrator {
      * <p>An inner class rather than a static one because it logs {@link BatchPipelineOrchestrator#jobName},
      * and a plain object rather than a bean for the same reasons as {@link StageGateDecider}. It holds no
      * state of its own: every value it needs comes from the execution, and the two diagnostic values it
-     * displaces are parked in the execution context rather than in a field, so nothing survives a run.
+     * displaces are remembered by {@link CorrelationIdFilter#enterBatchScope(long, String)} on the thread
+     * that displaced them - the only scope that can correctly own them - rather than in a field of this
+     * listener or an entry of the execution context, so nothing survives a run and nothing about a caller's
+     * identity is persisted into the batch metastore.
      */
     private final class BatchPipelineJobListener implements JobExecutionListener {
 
@@ -2493,26 +2734,23 @@ public class BatchPipelineOrchestrator {
         /**
          * {@inheritDoc}
          *
-         * <p>Parks whatever diagnostic values an outer scope had established, puts the pipeline's own, and
-         * seeds the aggregate return code so the first gate reads a value rather than a default.
+         * <p>Opens a batch scope, which parks whatever diagnostic values an outer scope had established and
+         * puts the pipeline's own in their place, then seeds the aggregate return code so the first gate reads
+         * a value rather than a default.
          *
          * <p>The correlation identifier is minted <b>only</b> when no outer scope owns one, which is what
          * makes a queue-driven run share one identifier with the message that triggered it. Every stage
-         * inherits it for the same reason: each sibling listener mints its own only when the entry is empty.
+         * inherits it for the same reason: each sibling listener opens a scope of its own, and a scope mints
+         * only into an empty entry.
          *
          * @param jobExecution the starting pipeline execution
          */
         @Override
         public void beforeJob(final JobExecution jobExecution) {
+            CorrelationIdFilter.enterBatchScope(
+                    instanceIdOf(jobExecution), pipelineCorrelationId(jobExecution));
+
             final ExecutionContext context = jobExecution.getExecutionContext();
-            park(context, INHERITED_JOB_INSTANCE_ID_CONTEXT_ENTRY, MDC_KEY_JOB_INSTANCE_ID);
-            park(context, INHERITED_CORRELATION_ID_CONTEXT_ENTRY, MDC_KEY_CORRELATION_ID);
-
-            MDC.put(MDC_KEY_JOB_INSTANCE_ID, Long.toString(instanceIdOf(jobExecution)));
-            if (MDC.get(MDC_KEY_CORRELATION_ID) == null) {
-                MDC.put(MDC_KEY_CORRELATION_ID, pipelineCorrelationId(jobExecution));
-            }
-
             context.putInt(PIPELINE_RETURN_CODE_CONTEXT_ENTRY, RETURN_CODE_COMPLETED);
             context.putString(PIPELINE_OUTCOME_CONTEXT_ENTRY, EXIT_CODE_COMPLETED);
             LOG.info("START OF EXECUTION OF THE CARDDEMO BATCH PIPELINE {} - five stages replacing"
@@ -2526,8 +2764,8 @@ public class BatchPipelineOrchestrator {
          *
          * <p>Relabels the exit status when the run abended, so the four outcomes are all visible on the
          * execution: an abend keeps its unsuccessful batch status and gains the exit code
-         * {@value #EXIT_CODE_ABEND}, which a plain failure does not. Then releases the diagnostic context in
-         * a {@code finally}, so it is released even if the relabelling or the logging throws.
+         * {@value #EXIT_CODE_ABEND}, which a plain failure does not. Then closes the batch scope in a
+         * {@code finally}, so the displaced values are put back even if the relabelling or the logging throws.
          *
          * <p>Nothing here terminates the process. The exit status and the execution context are the report.
          *
@@ -2537,8 +2775,7 @@ public class BatchPipelineOrchestrator {
         public void afterJob(final JobExecution jobExecution) {
             try {
                 final ExecutionContext context = jobExecution.getExecutionContext();
-                final int aggregate =
-                        context.getInt(PIPELINE_RETURN_CODE_CONTEXT_ENTRY, RETURN_CODE_COMPLETED);
+                final int aggregate = readAggregateReturnCode(context);
                 if (aggregate >= RETURN_CODE_ABEND) {
                     jobExecution.setExitStatus(new ExitStatus(EXIT_CODE_ABEND,
                             "Abend code " + ABEND_CODE + " raised by " + ABEND_CULPRIT));
@@ -2550,9 +2787,7 @@ public class BatchPipelineOrchestrator {
                         context.getString(PIPELINE_OUTCOME_CONTEXT_ENTRY, EXIT_CODE_COMPLETED),
                         jobExecution.getExitStatus().getExitCode());
             } finally {
-                final ExecutionContext context = jobExecution.getExecutionContext();
-                unwind(context, INHERITED_CORRELATION_ID_CONTEXT_ENTRY, MDC_KEY_CORRELATION_ID);
-                unwind(context, INHERITED_JOB_INSTANCE_ID_CONTEXT_ENTRY, MDC_KEY_JOB_INSTANCE_ID);
+                CorrelationIdFilter.exitBatchScope();
             }
         }
 
@@ -2583,45 +2818,6 @@ public class BatchPipelineOrchestrator {
         }
     }
 
-    /**
-     * Parks the diagnostic value an outer scope had established, so it can be restored rather than deleted.
-     *
-     * <p>A marker entry records whether there was a value at all, because an absent entry and an empty one
-     * must be told apart: restoring an empty string where there had been nothing would leave a misleading
-     * blank field on every subsequent event on that thread.
-     *
-     * @param context the pipeline execution context, which outlives the thread-local value
-     * @param parkedEntry the execution-context entry to park the value under
-     * @param mdcKey the diagnostic key being displaced
-     */
-    private static void park(final ExecutionContext context, final String parkedEntry,
-            final String mdcKey) {
 
-        final String existing = MDC.get(mdcKey);
-        context.putString(parkedEntry + PARKED_PRESENT_SUFFIX, Boolean.toString(existing != null));
-        context.putString(parkedEntry, existing == null ? "" : existing);
-    }
-
-    /**
-     * Restores a parked diagnostic value, or removes the key when there had been none, and clears the
-     * parking entries so they do not outlive the run.
-     *
-     * @param context the pipeline execution context
-     * @param parkedEntry the execution-context entry the value was parked under
-     * @param mdcKey the diagnostic key being restored
-     */
-    private static void unwind(final ExecutionContext context, final String parkedEntry,
-            final String mdcKey) {
-
-        final boolean wasPresent =
-                Boolean.parseBoolean(context.getString(parkedEntry + PARKED_PRESENT_SUFFIX, "false"));
-        if (wasPresent) {
-            MDC.put(mdcKey, context.getString(parkedEntry, ""));
-        } else {
-            MDC.remove(mdcKey);
-        }
-        context.remove(parkedEntry);
-        context.remove(parkedEntry + PARKED_PRESENT_SUFFIX);
-    }
 
 }

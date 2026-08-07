@@ -232,9 +232,13 @@
  *
  * <p>There is <strong>no generated API surface</strong>, because OpenAPI generation is out of scope, and
  * <strong>no URI-based API versioning</strong>, which is deferred hardening carried as residual risk. The
- * planned manual substitute is {@code docs/api-contracts.md}, which is not present in the repository as
- * authored; until it exists, this document and the per-operation documentation on the eight controllers are the
- * contract.
+ * manual substitute is {@code docs/api-contracts.md}, and it <strong>is authored and published</strong> - it
+ * carries the request and response field tables, the error-code vocabulary and the per-outcome status mapping,
+ * and it is registered in the {@code mkdocs.yml} nav so it reaches readers. An earlier revision said it was
+ * "not present in the repository as authored; until it exists, this document ... are the contract", and that
+ * is withdrawn: it is the contract of record now, and this document plus the per-operation documentation on
+ * the eight controllers are the in-code statement of the same contract rather than a stand-in for a missing
+ * one. A controller change is a change to both.
  *
  * <p>There is <strong>no CRUD surface for the four batch-only datasets</strong> {@code TCATBALF},
  * {@code DISCGRP}, {@code TRANCATG} and {@code TRANTYPE}. The evidence is an absence: the CSD declares exactly
@@ -302,18 +306,28 @@
  *
  * <p><strong>Build.</strong> {@code ./mvnw -B -ntp clean verify} is the full gate. While iterating,
  * {@code ./mvnw -B -ntp clean compile} is enough to prove this package compiles, and
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} runs everything except the OWASP
+ * {@code ./mvnw -B -ntp clean verify} runs everything except the OWASP
  * vulnerability scan, which needs network access to the vulnerability feed and takes roughly half an hour
  * without an API key. Drop that flag whenever the scan is actually wanted. Load the git-ignored {@code .env}
- * with {@code set -a; . ./.env; set +a} first, because the JWT signing key has no committed default and the
- * context refuses to start without it.
+ * inside a subshell that also carries the command - {@code ( set -a; . ./.env; set +a; ./mvnw -B -ntp verify )} -
+ * because the JWT signing key has no committed default and the context refuses to start without it. The
+ * parentheses matter: exporting into the interactive shell instead leaves the key inherited by every later child
+ * and readable in {@code /proc/<pid>/environ} until it is unset.
  *
- * <p><strong>Toolchain.</strong> Java 25 with {@code maven.compiler.release} set to 25 and no preview features,
- * Maven 3.9.11, parent {@code spring-boot-starter-parent} 3.5.11, Spring Framework 6.2.16, Spring Security
- * 6.5.8, embedded Tomcat 10.1.52 on the {@code jakarta.servlet} namespace, Jackson BOM 2.19.4 and
- * {@code jakarta.validation-api} 3.0.2. Verified in this environment: {@code java} and {@code javac} report
- * Temurin 25.0.3+9, {@code mvn} reports 3.9.11, and a container runtime is available. A baseline
- * {@code clean compile} of the tree succeeds and reports 150 source files at release 25.
+ * <p><strong>Toolchain, as resolved rather than as managed.</strong> Java 25 with
+ * {@code maven.compiler.release} set to 25 and no preview features; Maven 3.9.11; parent
+ * {@code spring-boot-starter-parent} 3.5.11. Four coordinates carry <strong>deliberate forward overrides</strong>
+ * above what that parent manages, each declared as a version property in {@code pom.xml} and each closing a
+ * published advisory: Spring Framework <strong>6.2.19</strong>, Spring Security <strong>6.5.11</strong>,
+ * embedded Tomcat <strong>10.1.57</strong> on the {@code jakarta.servlet} namespace, and Jackson BOM
+ * <strong>2.22.1</strong>; {@code jakarta.validation-api} stays at 3.0.2 as managed. An earlier revision
+ * published the managed values - 6.2.16, 6.5.8, 10.1.52 and 2.19.4 - as though they were what resolves, and
+ * that is withdrawn: read the versions from the effective POM
+ * ({@code ./mvnw help:effective-pom}) or from the property block in {@code pom.xml}, never from prose.
+ * Measured on 6 August 2026 in this environment: {@code java} reports Temurin 25.0.3+9, {@code ./mvnw} reports
+ * Maven 3.9.11, a container runtime is available, and a full {@code clean verify} compiles
+ * <strong>158</strong> main sources at release 25 with zero warnings. The earlier figure of 150 is withdrawn;
+ * re-measure with {@code find src/main/java -name '*.java' | wc -l} rather than quoting it.
  *
  * <p><strong>Two gates make this file's formatting load-bearing.</strong>
  * {@code maven-compiler-plugin} 3.14.1 runs {@code -Xlint:all} with {@code failOnWarning}, so a warning is a
@@ -746,9 +760,12 @@
  *   <li>A service-level objective for any operation in this package is <strong>Not available</strong>. The
  *       corpus publishes none, so the performance gate records a measured baseline rather than asserting a
  *       target. What would be needed is a stated latency or throughput requirement from the business owner.</li>
- *   <li>{@code docs/api-contracts.md}, the intended manual substitute for a generated specification, is
- *       <strong>Not available</strong> in the repository as authored. Until it exists this document and the
- *       per-operation documentation on the eight controllers are the contract.</li>
+ *   <li>A machine-readable OpenAPI document is <strong>Not available</strong>, and deliberately so: generated
+ *       specification tooling is out of scope for this migration. {@code docs/api-contracts.md} is the manual
+ *       substitute and it <strong>is authored and published</strong> - an earlier revision of this entry
+ *       recorded it as not available and that record is withdrawn. It, this document and the per-operation
+ *       documentation on the eight controllers are together the contract; what remains genuinely unavailable
+ *       is only the generated artefact, which would need the specification plugin the plan excludes. The page is registered in the documentation navigation and is therefore published.</li>
  *   </ul>
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>

@@ -578,7 +578,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       {@code 'Wrong Password. Try again ...'} at {@code :L241-L246}. The REST surface does not differentiate
  *       externally; the distinction survives as a typed exception and a structured log without the
  *       credential. This is a labelled deviation from parity, severity Medium, owned by
- *       {@code com.cardemo.service.auth.AuthenticationService} and owed an entry in the planned
+ *       {@code com.cardemo.service.auth.AuthenticationService} and owed an entry in the
  *       {@code DECISION_LOG.md}.</li>
  *   </ul>
  *
@@ -1318,22 +1318,42 @@ public class SecurityConfig {
      *       configuration rather than commentary. The advisory's condition is that when an application sets
      *       HTTP response headers itself and Spring Security writes its own headers <em>lazily</em> - the
      *       default - the security headers may never be written at all. Versions 6.5.0 through 6.5.8 are
-     *       affected; 6.5.9 carries the fix; eager header writing is the documented mitigation for anyone who
-     *       cannot move version. This application cannot move version: AAP section 0.6.1.1 pins
-     *       {@code spring-boot-starter-parent} at 3.5.11, which resolves Spring Security 6.5.8, and section
-     *       0.8.4 forbids advancing a pinned coordinate unilaterally. So the mitigation is applied instead:
-     *       the {@code HeaderWriterFilter} the headers configurer builds is post-processed with
-     *       {@code setShouldWriteHeadersEagerly(true)}, which writes the headers on the way in rather than on
-     *       the way out, before any handler can commit the response. The post-processor is an anonymous class
-     *       and not a lambda on purpose - the composite post-processor selects by resolved generic type, and a
-     *       lambda erases it, so a lambda would silently never run. It is verified rather than asserted:
+     *       affected and 6.5.9 carries the fix; eager header writing is the documented mitigation for anyone
+     *       who cannot move version.
+     *       <p><strong>This application is no longer on an affected version, and an earlier revision of this
+     *       clause said the opposite.</strong> It read "this application cannot move version", on the grounds
+     *       that {@code spring-boot-starter-parent} 3.5.11 resolves Spring Security 6.5.8 and that AAP section
+     *       0.8.4 forbids advancing a pinned coordinate unilaterally. That was measurably wrong at the time it
+     *       was read: {@code pom.xml} declares {@code <spring-security.version>6.5.11</spring-security.version>}
+     *       as a deliberate forward override of the 6.5.8 the parent manages - three releases past the fix,
+     *       and recorded as a remediation in {@code owasp-suppressions.xml} ("CVE-2026-22732 9.1
+     *       spring-security 6.5.8 -&gt; 6.5.11"). Section 0.8.4 governs the <em>pinned</em> coordinate, which
+     *       is the parent;
+     *       overriding a version the parent merely manages, in order to close a published advisory, is the
+     *       remedy that section asks for rather than a violation of it. The claim is withdrawn here rather
+     *       than quietly deleted, because a security clause that misstates the version it protects is worse
+     *       out of date than absent.
+     *       <p><strong>The configuration is kept, and its justification changes from mitigation to
+     *       defence in depth.</strong> The {@code HeaderWriterFilter} the headers configurer builds is
+     *       post-processed with {@code setShouldWriteHeadersEagerly(true)}, which writes the headers on the way
+     *       in rather than on the way out, before any handler can commit the response. On 6.5.11 that is no
+     *       longer load-bearing for this advisory; it is retained because it makes the property the advisory
+     *       was about - security headers are on the response before any handler can commit it - hold
+     *       independently of which version is resolved, so a future downgrade or a transitive resolution back
+     *       onto an affected version cannot silently reopen the exposure. It is also the behaviour this
+     *       application wants on its own merits, since {@link #writeProblemDetail} commits refusals directly.
+     *       <p>The post-processor is an anonymous class and not a lambda on purpose - the composite
+     *       post-processor selects by resolved generic type, and a lambda erases it, so a lambda would
+     *       silently never run. It is verified rather than asserted:
      *       {@code src/test/java/com/cardemo/unit/config/SecurityConfigTest.java} drives a request through the
      *       assembled chain and fails if any of the header writers has not run by the time the chain is
-     *       entered. <em>Residual risk, disclosed:</em> the mitigation removes the exposure, it does not
-     *       upgrade the dependency, so the advisory still matches the artefact by version. Remediation, owned
-     *       by the plan owner rather than by an implementing agent because it is an AAP amendment: raise the
-     *       pinned parent to a release whose managed Spring Security version is 6.5.9 or later, then delete
-     *       both this clause and the corresponding entry in {@code owasp-suppressions.xml}.</dd>
+     *       entered.
+     *       <p><em>Residual risk, disclosed:</em> none for this advisory. The corresponding
+     *       {@code owasp-suppressions.xml} entry has been removed, which is what makes the version pin
+     *       load-bearing: anyone who reverts {@code spring-security.version} gets a scan finding rather than a
+     *       suppression that absorbs it. The remaining obligation is a monitoring one - Spring Boot 3.5 reaches
+     *       end of open-source support in mid-2026, so the forward override has to be re-derived against a
+     *       later parent when that upgrade happens, and that is an AAP amendment owned by the plan owner.</dd>
      * </dl>
      *
      * <h4>Why the rules are in this order</h4>
@@ -1382,11 +1402,15 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable)
 
-                // CVE-2026-22732 mitigation. Spring Security 6.5.8 writes its response headers lazily, and
-                // the advisory's condition is that an application which sets headers of its own can then
-                // leave the security headers unwritten. Eager writing is the published workaround, and the
-                // pinned parent forbids the version bump that would carry the fix. An anonymous class rather
-                // than a lambda: the composite post-processor selects by resolved generic type, which a lambda
+                // CVE-2026-22732 defence in depth, no longer a mitigation. Spring Security 6.5.0 through
+                // 6.5.8 write response headers lazily, and the advisory's condition is that an application
+                // which sets headers of its own can then leave the security headers unwritten. This build
+                // resolves 6.5.11 - pom.xml overrides the 6.5.8 the parent manages - so it is not on an
+                // affected version and eager writing is not what closes the advisory; the version is. It is
+                // kept because it makes the property hold whichever version resolves, so a downgrade or a
+                // transitive resolution back onto an affected version cannot silently reopen the exposure, and
+                // because writeProblemDetail commits refusals directly. An anonymous class rather than a
+                // lambda: the composite post-processor selects by resolved generic type, which a lambda
                 // erases, so a lambda would compile, register and never run. See the class documentation.
                 .headers(headers -> headers.addObjectPostProcessor(
                         new ObjectPostProcessor<HeaderWriterFilter>() {
@@ -1850,8 +1874,16 @@ public class SecurityConfig {
 
             this.challenge.commence(request, response, authenticationException);
 
-            LOG.warn("Refused an unauthenticated request to {} with {}. The reason is not disclosed to the"
-                    + " caller", request.getRequestURI(), response.getStatus());
+            // FINDING C-01, severity CRITICAL. The request URI used to be logged here. This entry point is
+            // reached by definition BEFORE authentication, so the path and query string are text an anonymous
+            // caller chooses, and the masking in src/main/resources/logback-spring.xml redacts labelled values
+            // only - a bare card number or government identifier in a path segment survived verbatim. The
+            // request line belongs in the container access log, under its own retention, not in the
+            // application log; the correlation identifier is the join key between the two, and the caller
+            // received the same value in the refusal envelope written just below.
+            LOG.warn("Refused an unauthenticated request with {}: errorCode {}, correlationId {}. The reason"
+                    + " is not disclosed to the caller", response.getStatus(),
+                    ERROR_CODE_AUTHENTICATION_REQUIRED, CorrelationIdFilter.currentCorrelationId());
 
             writeProblemDetail(response, statusOf(response, HttpStatus.UNAUTHORIZED),
                     AUTHENTICATION_PROBLEM_TITLE, AUTHENTICATION_PROBLEM_DETAIL,
@@ -1929,14 +1961,19 @@ public class SecurityConfig {
             response.setStatus(HttpStatus.UNAUTHORIZED.value());
             response.setHeader(HttpHeaders.WWW_AUTHENTICATE, CHALLENGE_HEADER_VALUE);
 
+            // FINDING C-01, severity CRITICAL. request.getRequestURI() used to supply the first placeholder.
+            // It is caller-chosen text on a pre-authentication boundary, so it could carry a protected value
+            // past a masking layer that redacts labelled values only. The constant below names the one route
+            // this chain governs, which is strictly more informative than the raw URI and cannot be shaped by
+            // a caller: the chain's securityMatcher admits nothing else.
             if (this.principalConfigured) {
                 LOG.warn("Refused a metrics scrape of {} with {}. A scrape principal IS configured, so the"
-                        + " presented credentials did not match it", request.getRequestURI(),
+                        + " presented credentials did not match it", PATH_PROMETHEUS,
                         response.getStatus());
             } else {
                 LOG.warn("Refused a metrics scrape of {} with {}. NO scrape principal is configured, so this"
-                        + " endpoint refuses every caller until both {} and {} are set", request
-                        .getRequestURI(), response.getStatus(), KEY_SCRAPE_USERNAME, KEY_SCRAPE_PASSWORD);
+                        + " endpoint refuses every caller until both {} and {} are set", PATH_PROMETHEUS,
+                        response.getStatus(), KEY_SCRAPE_USERNAME, KEY_SCRAPE_PASSWORD);
             }
 
             writeProblemDetail(response, statusOf(response, HttpStatus.UNAUTHORIZED),
@@ -1976,9 +2013,12 @@ public class SecurityConfig {
 
             response.setStatus(HttpStatus.FORBIDDEN.value());
 
-            LOG.warn("Refused an authenticated metrics scrape of {} {} with {}. Neither the required"
+            // FINDING C-01, severity CRITICAL. The method and the raw URI used to supply the first two
+            // placeholders. Both are caller-chosen; the constant below names the one route this chain governs
+            // and cannot be shaped by a caller. See the entry point above for the full reasoning.
+            LOG.warn("Refused an authenticated metrics scrape of {} with {}. Neither the required"
                     + " authority nor the served method set is disclosed to the caller",
-                    request.getMethod(), request.getRequestURI(), response.getStatus());
+                    PATH_PROMETHEUS, response.getStatus());
 
             writeProblemDetail(response, statusOf(response, HttpStatus.FORBIDDEN),
                     AUTHORIZATION_PROBLEM_TITLE, SCRAPE_AUTHORIZATION_PROBLEM_DETAIL,
@@ -2015,8 +2055,15 @@ public class SecurityConfig {
 
             this.challenge.handle(request, response, accessDeniedException);
 
-            LOG.warn("Refused an authenticated but unentitled request to {} with {}. The required authority"
-                    + " is not disclosed to the caller", request.getRequestURI(), response.getStatus());
+            // FINDING C-01, severity CRITICAL. The request URI used to be logged here. Authentication has
+            // succeeded by this point, but the path and query string are still caller-chosen text, and an
+            // authenticated standard user probing an administrator route is exactly the caller most likely to
+            // put a protected value into one. Same substitution as the entry point above: the correlation
+            // identifier is the join key, and the request line stays in the container access log.
+            LOG.warn("Refused an authenticated but unentitled request with {}: errorCode {},"
+                    + " correlationId {}. The required authority is not disclosed to the caller",
+                    response.getStatus(), ERROR_CODE_AUTHORIZATION_DENIED,
+                    CorrelationIdFilter.currentCorrelationId());
 
             writeProblemDetail(response, statusOf(response, HttpStatus.FORBIDDEN),
                     AUTHORIZATION_PROBLEM_TITLE, AUTHORIZATION_PROBLEM_DETAIL,
@@ -2345,11 +2392,27 @@ public class SecurityConfig {
             final boolean absent = declared == null || declared.isBlank();
 
             if (mayCarryBody(request) && (absent ? carriesBodyContent(request) : !isReadable(declared))) {
-                // The header is logged and never relayed. It is caller-supplied text, so it belongs on a
-                // stream that the masking configuration governs rather than in a response body.
+                // FINDING C-01, severity CRITICAL. The raw header value used to be logged here, on the
+                // reasoning that caller-supplied text belongs on a masked stream rather than in a response
+                // body. That reasoning is wrong in one decisive respect: this filter runs BEFORE the bearer
+                // filter, so an entirely unauthenticated caller chooses the bytes, and Content-Type is a
+                // free-text header. A caller can therefore place a card number, a password, a customer name
+                // or a government identifier in it, and the masking in
+                // src/main/resources/logback-spring.xml only redacts LABELLED values - a bare protected value
+                // carries no label and survives verbatim. JSON encoding stops a forged record; it does not
+                // stop disclosure.
+                //
+                // What is logged instead is a closed set of values, every one of them a constant of this
+                // class: the status, the error code the caller also receives, and the bounded classification
+                // that isReadable(String) already computes. The correlation identifier is logged too, because
+                // it is the join key between this record and the envelope the caller received - and it is
+                // validated to [A-Za-z0-9_-] by CorrelationIdFilter, so it cannot itself carry a payload.
+                // The header is neither logged nor relayed: an operator who needs the exact bytes captures
+                // them at the edge, where a capture is an explicit, auditable act.
                 LOG.warn("Refused a request with {}: the declared media type is not one this application "
-                                + "reads. Declared [{}]",
-                        HttpStatus.UNSUPPORTED_MEDIA_TYPE.value(), declared);
+                                + "reads. Classification {}, errorCode {}, correlationId {}",
+                        HttpStatus.UNSUPPORTED_MEDIA_TYPE.value(), mediaTypeRefusal(declared, absent),
+                        ERROR_CODE_UNSUPPORTED_MEDIA_TYPE, CorrelationIdFilter.currentCorrelationId());
 
                 writeProblemDetail(response, HttpStatus.UNSUPPORTED_MEDIA_TYPE, MEDIA_TYPE_PROBLEM_TITLE,
                         MEDIA_TYPE_PROBLEM_DETAIL, ERROR_CODE_UNSUPPORTED_MEDIA_TYPE);
@@ -2413,22 +2476,89 @@ public class SecurityConfig {
          * @return {@code true} when a body of that media type can be read by one of the operations
          */
         private static boolean isReadable(final String declared) {
+            return classify(declared) == MediaTypeVerdict.READABLE;
+        }
+
+        /**
+         * Reduces a declared media type to one of a closed set of verdicts.
+         *
+         * <p><strong>Finding C-01, severity Critical.</strong> This method exists so that the refusal record
+         * can name <em>why</em> a request was refused without naming <em>what</em> the request declared. The
+         * three refusals of {@link #isReadable(String)} were already distinct decisions; making them a
+         * returned value rather than three early {@code false} returns means the log line and the screen share
+         * one decision instead of the log re-deriving it - the duplication Rule 1 Clause C forbids - and means
+         * the logged value is drawn from an enum with four constants that no caller can widen.
+         *
+         * <p>Pure: it reads its argument and touches nothing else.
+         *
+         * @param declared the raw header value, never {@code null} and never blank
+         * @return the verdict for that value, never {@code null} and never
+         *     {@link MediaTypeVerdict#NO_MEDIA_TYPE_DECLARED}, which describes a request that sent no header
+         *     at all and therefore has no value to classify
+         */
+        private static MediaTypeVerdict classify(final String declared) {
             final MediaType parsed;
             try {
                 parsed = MediaType.parseMediaType(declared);
             } catch (final InvalidMediaTypeException unparsable) {
-                return false;
+                return MediaTypeVerdict.UNPARSABLE;
             }
             if (parsed.isWildcardType() || parsed.isWildcardSubtype()) {
-                return false;
+                return MediaTypeVerdict.WILDCARD;
             }
             if (!MediaType.APPLICATION_JSON.getType().equalsIgnoreCase(parsed.getType())) {
-                return false;
+                return MediaTypeVerdict.NO_JSON_READER;
             }
             final String subtype = parsed.getSubtype().toLowerCase(Locale.ROOT);
-            return subtype.equals(MediaType.APPLICATION_JSON.getSubtype())
+            final boolean readable = subtype.equals(MediaType.APPLICATION_JSON.getSubtype())
                     || subtype.endsWith("+" + MediaType.APPLICATION_JSON.getSubtype());
+            return readable ? MediaTypeVerdict.READABLE : MediaTypeVerdict.NO_JSON_READER;
         }
+
+        /**
+         * The bounded reason a media-type refusal happened, as it appears in the refusal record.
+         *
+         * <p>A request that declared nothing has nothing to classify, so it is answered by its own constant
+         * rather than by parsing the empty string.
+         *
+         * @param declared the raw header value, which may be {@code null} or blank
+         * @param absent   whether the request declared no media type at all
+         * @return the classification to log, never {@code null}
+         */
+        private static MediaTypeVerdict mediaTypeRefusal(final String declared, final boolean absent) {
+            return absent ? MediaTypeVerdict.NO_MEDIA_TYPE_DECLARED : classify(declared);
+        }
+    }
+
+    /**
+     * The closed set of outcomes {@link RequestMediaTypeFilter} reaches for one declared media type.
+     *
+     * <p><strong>Finding C-01, severity Critical.</strong> An enum rather than a set of string constants,
+     * because the point of the remediation is that the logged value cannot be attacker-shaped: the refusal
+     * record carries one of exactly five names, all of them fixed at compile time, in place of a free-text
+     * header a wholly unauthenticated caller chooses. Cardinality is bounded by the type, not by discipline.
+     *
+     * <p>Declared at configuration level rather than inside the filter because a nested type may not be
+     * declared inside a nested class that is itself {@code static final} in this file's established shape, and
+     * because the verdict is part of this configuration's refusal contract rather than private detail of one
+     * method.
+     */
+    private enum MediaTypeVerdict {
+
+        /** A media type one of the eight body operations can read: {@code application/json} or {@code +json}. */
+        READABLE,
+
+        /** The request sent body bytes while declaring no media type at all. */
+        NO_MEDIA_TYPE_DECLARED,
+
+        /** The header cannot be parsed by the media-type grammar - {@code application/} is the shortest case. */
+        UNPARSABLE,
+
+        /** The header carries a wildcard in its type or its subtype, which states no concrete body type. */
+        WILDCARD,
+
+        /** A well-formed media type for which no registered reader would claim the body. */
+        NO_JSON_READER
     }
 
     /**

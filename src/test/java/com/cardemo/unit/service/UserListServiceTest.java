@@ -222,7 +222,7 @@ import org.springframework.transaction.annotation.Transactional;
  * and {@code credentialsUsedHereAreWellFormedPlaceholders} proves the only credential shaped strings in this
  * file are synthetic. The seeded plaintext appears nowhere in this file in any form.
  *
- * <p>Four artefacts are retained rather than repaired, each carrying an entry in the planned {@code DECISION_LOG.md}
+ * <p>Four artefacts are retained rather than repaired, each carrying an entry in the {@code DECISION_LOG.md}
  * and a {@code TRACEABILITY_MATRIX.md} row, which is what satisfies clause B: the prohibition is on dead code
  * <em>without</em> an owner or tracking reference. The four hundred and eighty byte {@code WS-USER-DATA} table at
  * {@code :56-:64} has zero procedural references (Low). {@code WS-PAGE-NUM} at {@code :54} is
@@ -908,7 +908,7 @@ class UserListServiceTest {
      *
      * <p>Slot geometry is {@code 1 + 2 + 8 + 2 + 25 + 2 + 8}, so forty eight bytes, times ten, so four
      * hundred and eighty bytes never populated, never read and never cleared. The structure is retained as a
-     * documented dead artefact with an entry in the planned {@code DECISION_LOG.md} and a
+     * documented dead artefact with an entry in the {@code DECISION_LOG.md} and a
      * {@code TRACEABILITY_MATRIX.md} row. It is neither deleted nor resurrected as the response shape, and the tests
      * here prove the second half of that: had it shaped the response, name data would be lossy and the type field
      * eight times too wide.
@@ -1023,7 +1023,7 @@ class UserListServiceTest {
      * {@code POPULATE-USER-DATA} at {@code app/cbl/COUSR00C.cbl:384-:437} moves four fields per row -
      * identifier, first name, last name and type - as four separate screen fields, fully unrolled across ten
      * {@code WHEN} branches for forty {@code MOVE} statements. The Java collapses that into one loop, a
-     * mechanism substitution owed an entry in the planned {@code DECISION_LOG.md}, with both asymmetries kept explicit.
+     * mechanism substitution owed an entry in the {@code DECISION_LOG.md}, with both asymmetries kept explicit.
      *
      * <p><strong>Correction to the written plan.</strong> The plan states that {@code WHEN 1} alone captures
      * a boundary key and that no other branch captures anything. Inspection of {@code :433-:435} shows
@@ -1680,7 +1680,7 @@ class UserListServiceTest {
      * <ol>
      *   <li><strong>High if reversed.</strong> {@code GTEQ} is commented out at {@code :592}, so the browse positions
      *       on an <em>exact</em> key. A supplied identifier that does not exist takes the not found arm instead of
-     *       positioning on the next higher key. It is preserved as written, with an entry in the planned
+     *       positioning on the next higher key. It is preserved as written, with an entry in the
      *       {@code DECISION_LOG.md}; restoring the option would change first page behaviour.</li>
      *   <li><strong>Medium.</strong> The {@code CONTINUE} at {@code :601} does <em>not</em> terminate its branch: the
      *       four statements at {@code :602-:606} all execute. A reader who assumes otherwise drops the end of data

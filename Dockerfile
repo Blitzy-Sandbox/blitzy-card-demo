@@ -83,10 +83,20 @@
 # the `verify` phase in pom.xml and therefore do not run here, by
 # design: the integration tier needs Testcontainers and a Docker socket
 # and the scan needs the NVD feed, neither of which a container build
-# should assume. The full gate is owned by .github/workflows/build.yml:
+# should assume. The full gate is owned by .github/workflows/build.yml,
+# and it is ONE command with nothing skipped:
 #
-#   ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
-#   ./mvnw -B -ntp org.owasp:dependency-check-maven:12.1.0:check
+#   ./mvnw --batch-mode --no-transfer-progress clean verify
+#
+# An earlier revision of this comment described a two-command model - a
+# `verify` carrying -Ddependency-check.skip=true plus a separate
+# dependency-check invocation in its own CI job - and that model is
+# withdrawn: no separate scan job exists in the workflow, and the single
+# `verify` above runs the scan itself. `-Ddependency-check.skip=true`
+# remains useful only as a LOCAL shortcut on a cold cache or an offline
+# host, and a run carrying it is not gate evidence.
+# A reader who believed the withdrawn text would treat a green verify as not
+# having scanned, and would go looking for evidence in a job that does not exist.
 #
 # A successful image build must never be reported as a pass of that
 # gate.
@@ -113,24 +123,66 @@
 # docker-compose.yml applies, so adjust both if CLONE_INDEX is set:
 #
 #   docker compose up -d
-#   docker run -d --name carddemo-app --network carddemo_default \
+#   docker run -d --name carddemo-app --network carddemo_carddemo \
 #     -p 8080:8080 \
 #     -e SPRING_PROFILES_ACTIVE=local \
 #     -e SERVER_PORT=8080 \
 #     -e JWT_SIGNING_KEY="$JWT_SIGNING_KEY" \
-#     -e POSTGRES_HOST=postgres \
-#     -e POSTGRES_DB=carddemo -e POSTGRES_USER=carddemo \
-#     -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+#     -e POSTGRES_HOST=postgres -e POSTGRES_DB=carddemo \
+#     -e CARDDEMO_DB_APP_USER=carddemo_app \
+#     -e CARDDEMO_DB_APP_PASSWORD="$CARDDEMO_DB_APP_PASSWORD" \
+#     -e CARDDEMO_DB_MIGRATION_USER=carddemo_migrator \
+#     -e CARDDEMO_DB_MIGRATION_PASSWORD="$CARDDEMO_DB_MIGRATION_PASSWORD" \
 #     -e AWS_ENDPOINT_URL=http://localstack:4566 \
 #     -e AWS_REGION=us-east-1 -e AWS_DEFAULT_REGION=us-east-1 \
-#     -e OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318 \
+#     -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test \
+#     -e OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces \
 #     --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64m \
 #     carddemo:local
 #
-# The container name carddemo-app is not cosmetic: it is one of the two
-# scrape targets in observability/prometheus.yml, the other being
-# host.docker.internal:8080 for a JVM started on the host with
-# `SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run`.
+# Three of those lines were missing or wrong in an earlier revision of this
+# note, and each broke the command as written:
+#   * The network is carddemo_carddemo, NOT carddemo_default. Compose only
+#     creates a `default` network for services that declare no `networks:`
+#     key; every service here attaches explicitly to the one named network
+#     `carddemo`, declared under the top-level `networks:` key of
+#     docker-compose.yml, so `default` is never
+#     created and `--network carddemo_default` fails with "network not
+#     found". The name Docker composes is <project>_<network key>, and the
+#     project is `carddemo` - hence carddemo_carddemo. With CLONE_INDEX=1
+#     the project becomes carddemo-1 and the network carddemo-1_carddemo,
+#     which is the suffix adjustment this note asks for above.
+#   * AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are REQUIRED even though
+#     every call goes to the emulator, and omitting them aborts STARTUP
+#     rather than failing later at first use. AwsConfig#requireStaticCredential
+#     reads both properties from a BeanFactoryPostProcessor, so with either
+#     one absent the context refresh fails with a PlaceholderResolutionException
+#     on ${AWS_ACCESS_KEY_ID} and the container exits. That is deliberate:
+#     an absent static credential would let the SDK fall back to its default
+#     provider chain and sign with a real principal, which AAP 0.3.2 forbids.
+#     The emulator accepts any value; docker-compose.yml guards both with `:?`
+#     for the same reason, and `test` is the placeholder .env.example
+#     documents. They are not secrets and nothing rotates them.
+#   * The OTLP endpoint carries the PATH. management.otlp.tracing.endpoint
+#     binds this value verbatim and the OTLP/HTTP exporter posts to it as
+#     given, so http://jaeger:4318 without /v1/traces yields a 404 per
+#     export and silently loses every span. The app service's
+#     OTEL_EXPORTER_OTLP_ENDPOINT entry in docker-compose.yml and the
+#     OTEL_EXPORTER_OTLP_ENDPOINT name in .env.example both spell the full
+#     path.
+#
+# The container name carddemo-app is not cosmetic: observability/prometheus.yml
+# scrapes ONE job, carddemo-app, with ONE target - app:8080, the compose
+# service name resolved on the project network. An earlier revision of this
+# note claimed two targets, the second being host.docker.internal:8080; that
+# is a documented OPTION in that file's commentary for scraping a JVM started
+# on the host with `SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run`, and
+# it requires an extra_hosts entry. It is not configured, so a reader who
+# expected two targets would look for a scrape that does not exist. Note the
+# consequence for this run command: a container named carddemo-app is NOT
+# scraped by the committed configuration unless it also answers to app on
+# that network - which is what `docker compose up` gives you and what a bare
+# `docker run` does not.
 #
 # KEY CONFIGURATION AND DEFAULTS
 #
@@ -313,46 +365,79 @@ RUN ./mvnw -B -ntp test-compile
 #                  a missing consumer file is an unchecked IO exception,
 #                  not a skipped check
 #
-# Those three additions and the withdrawal of the app/data/EBCDIC
-# exclusion in .dockerignore were established by evidence, not by
-# inspection: the first image build of this stage failed with
-# EnvironmentTemplateContractTest erroring in its initialiser and
-# SourceCitationResolutionTest reporting seven app/data/EBCDIC citations
-# as unresolved, while the identical suite passed on the host. Every
-# failure was an artefact of the context rather than of the tree, which
-# is precisely the class of defect this comment exists to prevent
-# recurring.
+#   owasp-suppressions.xml, DECISION_LOG.md and TRACEABILITY_MATRIX.md
+#                  BuildProvenanceTest.SuppressionPremises parses the
+#                  suppression register - it holds the CVSS threshold, the
+#                  absent skip and the premises two entries rest on - and
+#                  DocumentationConsistencyTest asserts against the two
+#                  evidence registers now that both exist. All three are
+#                  repository deliverables in the same single phase as the
+#                  code, so a context that omits them fails the tier on an
+#                  artefact of the context. The suppression file is also a
+#                  declared build input: pom.xml names it at
+#                  ${project.basedir}/owasp-suppressions.xml.
 #
-# The whole of app/ is copied rather than those four directories
-# because app/ is frozen by contract - .github/workflows/build.yml has
-# a dedicated "Frozen corpus guard (app/ must be unmodified)" job - so
-# this is an immutable, permanently cached 2.7 MB layer, whereas a hand
-# maintained list of subdirectories would silently break the image build
-# the first time a new test reads a corpus member outside it. That
-# reasoning is why app/data/EBCDIC now travels with it: 204 KB of
-# codepage reference that no code parses, and that seven committed
-# citations name, so the citation gate needs the paths to resolve.
+# Every addition here was established by evidence, not by inspection: each
+# time, the identical suite passed on the host and failed in this stage, so
+# the defect was in the context rather than in the tree. The first build
+# failed with EnvironmentTemplateContractTest erroring in its initialiser;
+# a later one failed with four SuppressionPremises assertions unable to read
+# owasp-suppressions.xml and two DocumentationConsistencyTest assertions
+# unable to read DECISION_LOG.md.
+#
+# THE ONE PLACE THAT REASONING WAS APPLIED WRONGLY, recorded because the
+# wrong fix looked like the right one. app/data/EBCDIC - 204 KB of codepage
+# reference that no code parses and the AAP puts out of scope - is named by
+# thirteen committed citations, and the citation gate reported all thirteen
+# as unresolved once .dockerignore pruned the subtree. The fix taken then
+# was to WITHDRAW the exclusion, which made the build green by admitting
+# out-of-scope data into the context: a build-context artefact repaired by
+# widening what the daemon receives. The exclusion is restored, and the gate
+# was narrowed instead - its exemption is keyed on the DIRECTORY being
+# absent, so with the subtree present every one of those citations is still
+# resolved strictly and a mistyped dataset name still fails. See
+# SourceCitationResolutionTest.PRUNABLE_TREE.
+#
+# The whole of app/ is copied rather than the four directories the tier
+# reads because app/ is frozen by contract - .github/workflows/build.yml has
+# a dedicated job asserting it byte-for-byte against the traceability
+# anchor - so this is an immutable, permanently cached layer, whereas a hand
+# maintained list of subdirectories would silently break the image build the
+# first time a new test read a corpus member outside it. The EBCDIC subtree
+# is the one exception, and it is excluded in .dockerignore rather than by
+# naming subdirectories here, which keeps that single decision in one place.
 # Nothing from app/ crosses into the runtime stage: only
 # /image/carddemo.jar does.
 COPY app/ app/
 COPY localstack-init/ localstack-init/
 
-# The three repository files the unit tier reads that are neither source
-# nor corpus. Placed immediately before src/ so they sit above the
+# The repository files the unit tier reads that are neither source nor
+# corpus. Placed immediately before src/ so they sit above the
 # longest layer and below the dependency layer: editing one re-runs the
 # build and the tests, which is correct, and never re-resolves the
 # dependency graph. .env.example is a template, and the distinction its
-# entries draw matters more than a blanket claim: the two that MUST stay
-# empty are empty and carry no default anywhere - JWT_SIGNING_KEY, which
-# fails fast when unset, and NVD_API_KEY - while the local-only demo
-# values needed to bring the compose topology up are present and are
-# meant to be, namely POSTGRES_PASSWORD, the two LocalStack AWS keys and
-# GRAFANA_ADMIN_PASSWORD. None of them reaches a live account: the AWS
-# pair addresses the emulator only. An earlier revision of this comment
-# said every credential-bearing entry was empty, which was not true of
-# those four and is corrected here. The file is confined to this stage,
+# entries draw is now machine-checked rather than described:
+# EnvironmentTemplateContractTest asserts that EVERY name carrying
+# credential material ships empty - JWT_SIGNING_KEY, POSTGRES_PASSWORD,
+# both least-privilege role passwords, GRAFANA_ADMIN_PASSWORD,
+# METRICS_SCRAPE_PASSWORD and NVD_API_KEY - with exactly two documented
+# exemptions, the LocalStack AWS pair, which the emulator does not
+# validate and which AwsConfig refuses to point at a real account. Two
+# earlier revisions of this comment were wrong in opposite directions:
+# one claimed every credential-bearing entry was empty when four were
+# not, and its correction then listed POSTGRES_PASSWORD and
+# GRAFANA_ADMIN_PASSWORD as populated demo values when both ship empty.
+# The assertion is the authority now. The file is confined to this stage,
 # so no template and no compose file reaches the runtime image.
-COPY .env.example docker-compose.yml ./
+#
+# owasp-suppressions.xml is copied here rather than beside pom.xml one
+# layer up on purpose: it is a build input, but editing it must not
+# re-resolve the dependency graph, and the tests that read it live at this
+# level with the rest of the contract material. The two evidence registers
+# join it for the same reason - the tier asserts on them, and neither is
+# source or corpus. None of the five reaches the runtime image.
+COPY .env.example docker-compose.yml owasp-suppressions.xml ./
+COPY DECISION_LOG.md TRACEABILITY_MATRIX.md ./
 COPY .github/ .github/
 
 # The two published artefacts the unit tier reconciles the code against.
@@ -379,6 +464,34 @@ COPY .github/ .github/
 # Both are confined to this stage; neither reaches the runtime image.
 COPY docs/ docs/
 COPY observability/ observability/
+
+# The two root evidence registers the unit tier reconciles the code
+# against, plus this Dockerfile itself. Established by evidence in the
+# same way as the additions above: with them absent, `docker compose up
+# --build` failed while the identical suite passed on the host, with
+# exactly 2 failures and 8 errors and on these reads and no others -
+#   TRACEABILITY_MATRIX.md  DocumentationConsistencyTest.lines threw
+#                           UncheckedIOException "Cannot read
+#                           /workspace/TRACEABILITY_MATRIX.md" from the
+#                           five TraceabilityTestCitations reads and from
+#                           the two JavaCensusIsMeasured census reads,
+#                           which re-measure this repository's own Java
+#                           file counts against that page
+#   DECISION_LOG.md         DocumentationConsistencyTest failed
+#                           theAuthoredRegisterIsPresent and
+#                           noPresentTenseEvidenceClaim, and
+#                           InventoryCountGateTest.lines errored, because
+#                           the sanctioned-inventory gate reads the
+#                           register that sanctions each addition
+# The Dockerfile travels with them for a different reason: it is already
+# named in the SCANNED_FILES list of both DocumentationConsistencyTest
+# and SourceCitationResolutionTest, but those scans skip a file that is
+# not a regular file, so its absence made the image build scan strictly
+# LESS than the host run without failing. Copying it makes the two runs
+# equivalent and removes a silent vacuity, which is the same reasoning
+# that copies the whole of app/ rather than four subdirectories.
+# All three are confined to this stage; none reaches the runtime image.
+COPY DECISION_LOG.md TRACEABILITY_MATRIX.md Dockerfile ./
 
 COPY src/ src/
 

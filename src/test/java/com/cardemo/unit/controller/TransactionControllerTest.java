@@ -97,7 +97,7 @@ import org.springframework.security.core.Authentication;
  *
  * <pre>
  * ./mvnw -B -ntp test -Dtest=TransactionControllerTest
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ./mvnw -B -ntp clean verify
  * </pre>
  *
  * <p><strong>3. Key configuration and defaults.</strong> The three services are mocked and no Spring context

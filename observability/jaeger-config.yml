@@ -165,8 +165,23 @@ extensions:
 receivers:
   otlp:
     protocols:
-      grpc:
-        endpoint: "${env:JAEGER_LISTEN_HOST:-localhost}:4317"
+      # ONE PROTOCOL, HTTP ONLY. The OTLP/gRPC receiver on 4317 was removed and
+      # must not be restored without a named consumer, because nothing in this
+      # project speaks gRPC: management.otlp.tracing.endpoint in application.yml
+      # and OTEL_EXPORTER_OTLP_ENDPOINT in docker-compose.yml both name the
+      # /v1/traces HTTP path on 4318, and application-local.yml records the same
+      # choice twice.
+      #
+      # Why removing the receiver matters even though 4317 was never published to
+      # the host: an unpublished port is still reachable from every other
+      # container on the compose bridge network. Declining to forward a listener
+      # narrows the HOST surface; declining to open it narrows the NETWORK
+      # surface too, and an unauthenticated span ingest that no client uses is
+      # exactly the kind of listener least privilege exists to close.
+      #
+      # Should a gRPC exporter ever be configured, three edits go together: this
+      # receiver, the compose port mapping, and the assertion in
+      # EnvironmentTemplateContractTest that records the omission.
       http:
         endpoint: "${env:JAEGER_LISTEN_HOST:-localhost}:4318"
 

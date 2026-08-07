@@ -45,7 +45,6 @@ import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -174,6 +173,25 @@ class StagingKeyParityTest {
     }
 
     /**
+     * Builds a resource view of one object the fake store holds.
+     *
+     * @param key the object key, never {@code null}
+     * @param bytes its content, never {@code null}
+     * @return a resource reporting that key, length and content, never {@code null}
+     */
+    private static S3Resource storedResource(final String key, final byte[] bytes) {
+        final S3Resource resource = mock(S3Resource.class);
+        when(resource.getFilename()).thenReturn(key);
+        when(resource.contentLength()).thenReturn(Long.valueOf(bytes.length));
+        try {
+            when(resource.getInputStream()).thenReturn(new java.io.ByteArrayInputStream(bytes));
+        } catch (final IOException impossible) {
+            throw new IllegalStateException("stubbing cannot fail", impossible);
+        }
+        return resource;
+    }
+
+    /**
      * Drives the reject writer and returns the exact bytes it handed to object storage.
      *
      * @param transaction the staged record to re-serialise, never {@code null}
@@ -182,12 +200,46 @@ class StagingKeyParityTest {
      */
     private static byte[] emit(final DailyTransaction transaction) throws IOException {
         final S3Operations objectStorage = mock(S3Operations.class);
-        // The writer opens ONE stream per (+1) generation and closes it at the end of the step, so the bytes are
-        // observed in the buffer that stream writes to rather than in an upload argument - finding H-04.
+        // The writer uploads each chunk as a complete part object and assembles the ONE (+1) generation from
+        // the parts at close - findings H-04 and M-06 - so the bytes are observed by keeping a small fake
+        // store rather than by capturing a stream.
         final ByteArrayOutputStream sink = new ByteArrayOutputStream();
-        final S3Resource resource = mock(S3Resource.class);
-        when(resource.getOutputStream()).thenReturn((OutputStream) sink);
-        when(objectStorage.createResource(anyString(), anyString())).thenReturn(resource);
+        final java.util.Map<String, byte[]> objects = new java.util.LinkedHashMap<>();
+        when(objectStorage.upload(anyString(), anyString(), org.mockito.Mockito.any(java.io.InputStream.class),
+                org.mockito.Mockito.any(io.awspring.cloud.s3.ObjectMetadata.class))).thenAnswer(invocation -> {
+                    final String key = invocation.getArgument(1, String.class);
+                    final byte[] bytes;
+                    try (java.io.InputStream body = invocation.getArgument(2, java.io.InputStream.class)) {
+                        bytes = body.readAllBytes();
+                    }
+                    objects.put(key, bytes);
+                    if (!key.contains("/parts/")) {
+                        sink.reset();
+                        sink.write(bytes);
+                    }
+                    return storedResource(key, bytes);
+                });
+        when(objectStorage.listObjects(anyString(), anyString())).thenAnswer(invocation -> {
+            final String prefix = invocation.getArgument(1, String.class);
+            final java.util.List<S3Resource> found = new java.util.ArrayList<>();
+            for (final java.util.Map.Entry<String, byte[]> entry
+                    : new java.util.LinkedHashMap<>(objects).entrySet()) {
+                if (entry.getKey().startsWith(prefix)) {
+                    found.add(storedResource(entry.getKey(), entry.getValue()));
+                }
+            }
+            return found;
+        });
+        when(objectStorage.download(anyString(), anyString())).thenAnswer(invocation -> {
+            final String key = invocation.getArgument(1, String.class);
+            return storedResource(key, objects.getOrDefault(key, new byte[0]));
+        });
+        when(objectStorage.objectExists(anyString(), anyString())).thenAnswer(invocation ->
+                Boolean.valueOf(objects.containsKey(invocation.getArgument(1, String.class))));
+        org.mockito.Mockito.doAnswer(invocation -> {
+            objects.remove(invocation.getArgument(1, String.class));
+            return null;
+        }).when(objectStorage).deleteObject(anyString(), anyString());
 
         final RejectWriter writer = new RejectWriter(objectStorage,
                 new MetricsConfig(new SimpleMeterRegistry()), new FileStatusMapper(),

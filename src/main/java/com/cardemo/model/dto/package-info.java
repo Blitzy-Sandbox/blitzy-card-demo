@@ -404,8 +404,10 @@
  *       <strong>ASM</strong> rather than from JaCoCo, so only the plugin's transitive reader is advanced -
  *       {@code org.ow2.asm:asm}, {@code asm-commons} and {@code asm-tree} to <strong>9.9</strong>, with the
  *       runtime agent at the matching <strong>0.8.14</strong> build. Both halves are required. The
- *       measurement is recorded in {@code pom.xml}; the divergence is <strong>owed an entry in the planned
- *       {@code DECISION_LOG.md}</strong>, which does not exist at this commit.</li>
+ *       measurement is recorded in {@code pom.xml}, and the divergence <strong>has its entry in
+ *       {@code DECISION_LOG.md}</strong> at the repository root. An earlier revision described that entry as
+ *       owed in a "planned" register that "does not exist at this commit"; the register has since been
+ *       authored, so that qualification is withdrawn.</li>
  *   <li><strong>Assertions that actually matter</strong> for this package, as distinct from mechanical
  *       accessor coverage. Read the list that follows as the <strong>required</strong> set. Every one of the
  *       seventeen payloads has a test class, so no entry below is blocked on a missing class; what an entry
@@ -718,7 +720,7 @@
  *       files: the 17 payloads named above and this file. No nineteenth file may be added, and in
  *       particular <strong>no {@code README} and no Markdown file of any kind</strong>, here or anywhere
  *       under {@code src/main/java}, because this docstring is the module documentation. Cross cutting
- *       findings belongs in the planned {@code DECISION_LOG.md} and
+ *       findings belongs in the {@code DECISION_LOG.md} and
  *       {@code TRACEABILITY_MATRIX.md}.</li>
  *   <li><strong>No shared helper, mapper, base class or validator.</strong> For the field divergence
  *       reasons evidenced above. A reviewer seeing repeated header fields across payloads is seeing a

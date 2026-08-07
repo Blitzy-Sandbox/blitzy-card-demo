@@ -87,9 +87,12 @@
  * inventory across the six {@code SELECT} statements at {@code app/cbl/CBTRN01C.cbl:L29}-{@code :L60} is
  * {@code OPEN} 18, {@code READ} 17, {@code CLOSE} 18 and {@code DISPLAY} 42, with {@code WRITE},
  * {@code REWRITE} and {@code DELETE} all <strong>zero</strong> - it cannot mutate anything. And no member of
- * {@code app/jcl/} executes it, so a standalone job would be an invention rather than a translation. It is
- * still owed its own row in the planned {@code TRACEABILITY_MATRIX.md} regardless: folding a program into a
- * step is not the same as dropping it.
+ * {@code app/jcl/} executes it, so a standalone job would be an invention rather than a translation. Folding a
+ * program into a step is not the same as dropping it, so it still gets its own rows in
+ * {@code TRACEABILITY_MATRIX.md}, and it has them: <strong>36 {@code TM-CBTRN01C-*} rows</strong> are mapped
+ * there. An earlier revision said the row was "still owed in the planned" matrix; the matrix has since been
+ * authored at the repository root and the obligation is discharged, so that claim is withdrawn. Reproduce with
+ * {@code grep -c 'TM-CBTRN01C' TRACEABILITY_MATRIX.md}.
  *
  * <h3>CombineTransactionsJob has no COBOL program at all</h3>
  *
@@ -101,7 +104,16 @@
  * <h3>Utility programs become library calls, not processes</h3>
  *
  * <ul>
- *   <li>DFSORT sort specifications become {@code java.util.Comparator} instances, applied in process.</li>
+ *   <li>DFSORT sort specifications become in-process ordering, never an external utility. AAP section 0.4.3
+ *       nominates "Comparator plus repository ordering" as the replacement, and both halves are used, chosen by
+ *       whether the records being ordered are already relational. {@code CombineTransactionsJob} orders object
+ *       images with a {@code java.util.Comparator}, because its {@code SORTIN} is two concatenated generations
+ *       that no relation holds. {@code TransactionReportJob} orders through the repository, because its
+ *       {@code SORTIN} is a verbatim copy of the transaction relation - {@code app/ctl/REPROCT.ctl:L15} is
+ *       {@code REPRO} with no selection - so an indexed {@code ORDER BY} produces the same permutation without
+ *       holding the population in heap. That second choice is finding <strong>F-012</strong>, where the report
+ *       sort materialised the whole generation into a {@code List<byte[]>} and sorted it in memory with no
+ *       bound; the ordering is identical and the memory is one page.</li>
  *   <li>IDCAMS {@code REPRO} becomes {@code JdbcTemplate.batchUpdate}.</li>
  *   <li>JCL {@code COND=(0,NE)} step gating becomes a {@code JobExecutionDecider}.</li>
  * </ul>
@@ -126,7 +138,7 @@
  * <h2>How to run, build and test</h2>
  *
  * <p>The full gate is {@code ./mvnw -q verify}. In practice this tier is built with
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}, where the flag skips only the OWASP scan,
+ * {@code ./mvnw -B -ntp clean verify}, where the flag skips only the OWASP scan,
  * which needs the vulnerability feed; drop it when the scan is wanted. Compile alone with
  * {@code ./mvnw -B -ntp -DskipTests compile}. Compilation runs {@code -Xlint:all -Werror} with
  * {@code failOnWarning} at release 25, and {@code verify} additionally runs the {@code doclint-gate}
@@ -208,8 +220,27 @@
  * {@code carddemo.batch.daily-transaction-reader.page-size} and
  * {@code carddemo.batch.transaction-backup-reader.page-size}, all {@code 100}; and the job identities
  * {@code carddemo.batch.jobs.posttran.name} through {@code carddemo.batch.jobs.tranrept.name}, defaulting to
- * {@code POSTTRAN}, {@code INTCALC}, {@code COMBTRAN}, {@code CREASTMT} and {@code TRANREPT}, each with a
- * matching {@code .enabled} flag and with {@code carddemo.batch.jobs.creastmt.steps} at {@code 5}.
+ * {@code POSTTRAN}, {@code INTCALC}, {@code COMBTRAN}, {@code CREASTMT} and {@code TRANREPT} - all five
+ * bound, each by its own job class - together with {@code carddemo.batch.jobs.pipeline.name} at
+ * {@code CARDDEMO-PIPELINE} for the orchestrator, which is not one of the five JCL members. That namespace
+ * is the one authoritative spelling for every job name, and it carries nothing besides them: a per-job
+ * {@code .enabled} flag and a {@code carddemo.batch.jobs.creastmt.steps} count were declared and bound by
+ * nothing, so they are withdrawn rather than given a binder. The statement job has five steps because
+ * {@code app/jcl/CREASTMT.JCL} has five, and the five stages are constructor dependencies of
+ * {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator}, so neither value could have been settable.
+ * The step count is asserted against {@code StatementGenerationJob.STEP_COUNT}, and finding CFG-002 is
+ * the record of the withdrawal.
+ *
+ * <p>Job <em>tuning</em> lives one level up, under {@code carddemo.batch.<id>.*} rather than under
+ * {@code jobs}: the per-job keys {@code carddemo.batch.posttran.chunk-size}, {@code .intcalc.chunk-size},
+ * {@code .tranrept.chunk-size}, {@code .combtran.chunk-size} and {@code .creastmt.chunk-size}, each
+ * {@code 100} and each resolving through {@code carddemo.batch.chunk-size} before its own literal. Two run
+ * bounds, {@code carddemo.batch.combtran.max-records-per-run} and
+ * {@code carddemo.batch.creastmt.max-work-records}, were declared alongside them and are withdrawn: each was
+ * read by a constant that no longer exists, because the combine sort streams to a staging file instead of
+ * accumulating the generation and the statement work file's size is reported into the job execution context
+ * instead of being capped. Whether a job runs is governed by {@code spring.batch.job.enabled} plus an
+ * explicit launch, never by a key in either namespace.
  *
  * <h3>Object storage and queue</h3>
  *
@@ -263,11 +294,17 @@
  *
  * <p>A {@code (+1)} write becomes a new object under a monotonically increasing timestamp or job-instance
  * prefix over a <strong>versioned</strong> bucket; a {@code (0)} read becomes the lexicographically greatest
- * existing prefix. The seven legacy bases map to the seven prefixes under
+ * existing prefix. Six of the seven legacy bases map to prefixes under
  * {@code carddemo.aws.s3.gdg-prefixes.*}: {@code transact-bkup}, {@code transact-daly}, {@code tranrept},
- * {@code tcatbalf-bkup}, {@code systran} and {@code transact-combined} from
- * {@code app/jcl/DEFGDGB.jcl:L24}-{@code :L59}, and {@code daly-rejs} from
- * {@code app/jcl/DALYREJS.jcl:L24}-{@code :L28}.
+ * {@code systran} and {@code transact-combined} from {@code app/jcl/DEFGDGB.jcl:L24}-{@code :L59}, and
+ * {@code daly-rejs} from {@code app/jcl/DALYREJS.jcl:L24}-{@code :L28}. <strong>The seventh,
+ * {@code AWS.M2.CARDDEMO.TCATBALF.BKUP} of {@code app/jcl/DEFGDGB.jcl:L43}, has no profile key, because no
+ * class in this package writes it.</strong> Its producer is {@code app/jcl/PRTCATBL.jcl} - three steps and no
+ * COBOL program, REPROing the category-balance cluster into {@code TCATBALF.BKUP(+1)} at {@code :L29}-{@code
+ * :L39} and sorting that generation into {@code TCATBALF.REPT} at {@code :L43}-{@code :L63} - and neither
+ * output is produced here. The base is still provisioned in the object store by
+ * {@code localstack-init/init-aws.sh} under the {@code gdg/tcatbalf-bkup} prefix, so the seven-base layout is
+ * complete; what is absent is a key for a prefix no application code addresses.
  *
  * <p><strong>Within a single job, a {@code (+1)} written by an earlier step is re-read as {@code (+1)} by a
  * later step.</strong> {@code DSN=AWS.M2.CARDDEMO.TRANSACT.COMBINED(+1)} appears at
@@ -296,6 +333,19 @@
  * {@code carddemo.batch.records.rejected} tagged by reject code under the tag key {@code reject.code},
  * {@code carddemo.auth.attempts} and {@code carddemo.transaction.amount.total}. The tag key is spelled with
  * a dot - {@code reject-code} is not registered, and a dashboard querying that spelling returns nothing.
+ *
+ * <p><strong>Which jobs in this package advance the processed counter, and which must not.</strong>
+ * {@code carddemo.batch.records.processed} is defined as the {@code DALYTRAN} population that
+ * {@code app/cbl/CBTRN02C.cbl:L236} displays as {@code TRANSACTIONS PROCESSED}, so only
+ * {@code DailyTransactionPostingJob} contributes here - once per rejected record, with
+ * {@code com.cardemo.batch.writers.TransactionWriter} supplying the posted ones, the two together being
+ * exactly {@code WS-TRANSACTION-COUNT}. {@code CombineTransactionsJob} and {@code TransactionReportJob} both
+ * used to increment it as well, which is finding <strong>F-010</strong>: they read rows that population had
+ * already counted, and because the counter is untagged there was no dimension along which a query could
+ * subtract the duplicates back out. Both now publish their per-run volumes as execution-context entries and
+ * neither takes {@code MetricsConfig} at all, so the constructor signature is the guard rather than a
+ * convention. {@code StatementGenerationJob} and {@code InterestCalculationJob} likewise hold no reference to
+ * it.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -351,7 +401,7 @@
  * <h3>Artefacts that look like defects and are not</h3>
  *
  * <p>Four constructs are reproduced deliberately. Each is cited here at its own locator, marked intentional
- * at its site, and tracked for the planned {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}. Only
+ * at its site, and tracked for the {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}. Only
  * the first belongs to the bounded retained-for-parity register enumerated in {@code com.cardemo}; the other
  * three are documented source behaviour at their own locators rather than register entries:
  *
@@ -377,7 +427,7 @@
  * requires preserving these no-ops - two of them unreachable - so the paragraph map stays mechanically
  * provable and Gate 7 can verify it. <strong>Parity governs.</strong> The clause forbids <em>untracked</em>
  * dead code and deferred work without an owner or tracking reference, and every artefact above is cited at
- * its locator, marked intentional where it appears, and tracked for the planned {@code DECISION_LOG.md} and
+ * its locator, marked intentional where it appears, and tracked for the {@code DECISION_LOG.md} and
  * {@code TRACEABILITY_MATRIX.md}. Deleting a call site to satisfy a stylistic rule would fail a stated
  * acceptance criterion, which is the worse trade.
  *
@@ -401,7 +451,7 @@
  * <h3>Two labelled deviations</h3>
  *
  * <p>These are behavioural improvements rather than parity, and are labelled as such here rather than
- * presented as equivalence. Each is owed an entry in the planned {@code DECISION_LOG.md} saying so:
+ * presented as equivalence. Each is owed an entry in the {@code DECISION_LOG.md} saying so:
  *
  * <ul>
  *   <li><strong>Atomicity.</strong> {@code app/cbl/CBTRN02C.cbl} commits the transaction-category-balance
@@ -412,9 +462,10 @@
  *       card entries by 10 transactions each - a hard ceiling of 510 transactions per run, with both indices
  *       incremented under no bounds check at all. {@code StatementGenerationJob} streams instead, removing a
  *       silent overrun. The legacy ceiling is stated here as the historical capacity limit and owed a row in
- *       the planned {@code TRACEABILITY_MATRIX.md}, and
- *       {@code carddemo.batch.statement-processor.max-transactions-per-run} bounds the replacement
- *       explicitly.</li>
+ *       the {@code TRACEABILITY_MATRIX.md}. <strong>No authored ceiling replaces it.</strong> Two did - a
+ *       configured run bound and a per-card-group bound - and finding BAT-002 removed both, because a refusal
+ *       at an invented threshold is a business rule the corpus does not contain. Run size is bounded by the
+ *       input: every stage streams one record at a time.</li>
  * </ul>
  *
  * <h2>Package-level constraints</h2>

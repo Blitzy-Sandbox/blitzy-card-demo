@@ -55,6 +55,7 @@ import com.cardemo.model.dto.BillPaymentResponse;
 import com.cardemo.model.dto.CardDto;
 import com.cardemo.model.dto.CardListResponse;
 import com.cardemo.model.dto.CardResponse;
+import com.cardemo.model.dto.CardUpdateRequest;
 import com.cardemo.model.dto.MenuResponse;
 import com.cardemo.model.dto.PageResponse;
 import com.cardemo.model.dto.ReportSubmissionResponse;
@@ -181,7 +182,7 @@ class ApiResponseContractTest {
         }
 
         @Test
-        @DisplayName("The account response withholds all nine protected components of the legacy projection")
+        @DisplayName("The account response withholds all nine protected components as display fields")
         void accountResponseWithholdsProtectedComponents() {
             final List<String> names = componentNames(AccountViewResponse.class);
 
@@ -195,6 +196,29 @@ class ApiResponseContractTest {
                                 withheld)
                         .contains(withheld.toLowerCase(Locale.ROOT));
             }
+        }
+
+        @Test
+        @DisplayName("The account response carries the as-displayed group, which is the only route to the nine")
+        void accountResponseCarriesTheAsDisplayedGroup() {
+            // Transformation Rule 7 puts ACUP-OLD-DETAILS in the body of the matching PUT, and
+            // app/cbl/COACTUPC.cbl:4109-4193 compares all twenty-nine of its values, the nine protected
+            // ones included. The read therefore has to supply the group, and it does so as the group
+            // itself: a client reassembling it from display fields would get the date of birth wrong on
+            // every request, since the live value is dash-separated at offsets 1/6/9 and the snapshot is
+            // unseparated at 1/5/7.
+            assertThat(componentNames(AccountViewResponse.class)).contains("olddetails");
+
+            final java.lang.reflect.RecordComponent[] components =
+                    AccountViewResponse.class.getRecordComponents();
+            final java.lang.reflect.RecordComponent group =
+                    java.util.Arrays.stream(components)
+                            .filter(component -> "oldDetails".equals(component.getName()))
+                            .findFirst()
+                            .orElseThrow();
+            assertThat(group.getType())
+                    .as("the component must be the very type the PUT binds, so it can be echoed unaltered")
+                    .isEqualTo(com.cardemo.model.dto.AccountUpdateRequest.OldDetails.class);
         }
 
         /** Holder so the legacy projection is named once and the vacuity check above stays readable. */
@@ -212,26 +236,37 @@ class ApiResponseContractTest {
     class Serialisation {
 
         @Test
-        @DisplayName("A card read response emits the masked number, the sealed token and no full number")
+        @DisplayName("A card read response emits the masked number, the as-displayed group and no full number")
         void cardReadResponseEmitsNothingSensitive() throws Exception {
             final CardDto detail = CardDto.detail("CCDL", "T1", "01/15/26", "COCRDSLC", "T2", "10:30:00",
                     "00000000011", CARD_NUMBER, "ANNA LEE", "Y", "12", "2099", null, null, null);
+            // The group the matching PUT echoes back, per transformation Rule 7. The expiry DAY is in it
+            // and is on no read map, which is why the group travels rather than flat fields.
+            final CardUpdateRequest.CardDetails oldDetails = new CardUpdateRequest.CardDetails(
+                    "00000000011", CARD_NUMBER,
+                    new CardUpdateRequest.CardData("ANNA LEE",
+                            new CardUpdateRequest.ExpiraionDate("2099", "12", "31"), "Y"));
 
-            final String json = MAPPER.writeValueAsString(CardResponse.readOf(detail, "sealed-token", "sealed-reference"));
+            final String json =
+                    MAPPER.writeValueAsString(CardResponse.readOf(detail, oldDetails, "sealed-reference"));
 
+            // The group carries no card number: :1347 sources that member from the RECEIVED map field, so
+            // it is redundant with the request's own identity and emitting it would defeat the masking.
             assertThat(json).doesNotContain(CARD_NUMBER);
             assertThat(json).contains(MASKED_CARD_NUMBER);
-            assertThat(json).contains("sealed-token");
+            // Every value the comparison consumes IS present, including the day the detail map never
+            // declared, which is the whole reason the group travels rather than flat fields.
+            assertThat(json).contains("oldDetails").contains("expiryDay").contains("31");
             assertThat(json).doesNotContain("TRNNAME").doesNotContain("COCRDSLC");
         }
 
         @Test
-        @DisplayName("A card write response carries no snapshot token, because a client re-reads to edit again")
+        @DisplayName("A card write response carries no as-displayed group, because a client re-reads to edit again")
         void cardWriteResponseIssuesNoToken() {
             final CardDto detail = CardDto.detail("CCUP", "T1", "01/15/26", "COCRDUPC", "T2", "10:30:00",
                     "00000000011", CARD_NUMBER, "ANNA LEE", "Y", "12", "2099", null, null, null);
 
-            assertThat(CardResponse.writeOf(detail).snapshotToken()).isNull();
+            assertThat(CardResponse.writeOf(detail).oldDetails()).isNull();
             assertThat(CardResponse.writeOf(detail).maskedCardNumber()).isEqualTo(MASKED_CARD_NUMBER);
         }
 

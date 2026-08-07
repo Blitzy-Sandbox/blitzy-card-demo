@@ -117,7 +117,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <pre>{@code
  * ./mvnw -B -ntp -Ddependency-check.skip=true test -Dtest=CustomerTest
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ./mvnw -B -ntp clean verify
  * }</pre>
  *
  * <p>This class is collected by <strong>Surefire 3.5.4</strong>, which includes

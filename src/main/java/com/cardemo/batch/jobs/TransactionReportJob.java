@@ -24,15 +24,21 @@
  */
 package com.cardemo.batch.jobs;
 
+import com.cardemo.batch.GenerationPrefixContract;
 import com.cardemo.batch.processors.TransactionReportProcessor;
 import com.cardemo.batch.processors.TransactionReportProcessor.ReportLines;
 import com.cardemo.batch.readers.TransactionBackupReader;
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.ValidationException;
+import com.cardemo.model.entity.Transaction;
+import com.cardemo.model.entity.TransactionCategoryBalance;
 import com.cardemo.model.enums.FileStatus;
-import com.cardemo.observability.MetricsConfig;
+import com.cardemo.model.key.TransactionCategoryBalanceId;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.repository.CardCrossReferenceRepository;
+import com.cardemo.repository.TransactionCategoryBalanceRepository;
 import com.cardemo.repository.TransactionCategoryRepository;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.repository.TransactionTypeRepository;
@@ -52,14 +58,12 @@ import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.UUID;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
@@ -81,10 +85,14 @@ import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamWriter;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Slice;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Slice;
 import org.springframework.transaction.PlatformTransactionManager;
 import software.amazon.awssdk.services.s3.S3Client;
 
@@ -101,6 +109,45 @@ import software.amazon.awssdk.services.s3.S3Client;
  * {@code TRANSACT.DALY(+1)} object. STEP10R at {@code :L57-L78} reads that exact daily key, delegates
  * report state and formatting to {@link TransactionReportProcessor}, and writes one undelimited stream of
  * 133-byte {@code TRANREPT(+1)} records.
+ *
+ * <h2>Collaborator ownership - this class is the single owner</h2>
+ * <b>This class constructs {@link TransactionBackupReader} and {@link TransactionReportProcessor} directly,
+ * and is the only class in the tree that references either type.</b> Neither carries {@code @Component} or
+ * {@code @StepScope}, so the container publishes no definition of either and there is exactly one ownership
+ * model per type.
+ *
+ * <p><b>Finding F-008, severity Medium, remediated here.</b> An earlier revision annotated both classes as
+ * {@code @Component @StepScope} with {@code @Value} bindings on their constructors <em>while</em> this class
+ * built them with {@code new}. The bean definitions were never resolved by any production path, so the
+ * annotations described a container lifecycle that never ran and a property binding that never took effect -
+ * two ownership models for one type, with the unused one the more prominent in the source. The annotations
+ * and the {@code @Value} expressions are removed and this class is the declared owner, for three reasons
+ * that are properties of this job rather than preferences:
+ * <ul>
+ *   <li><b>One scoped definition could not have served both reader call sites.</b> STEP01R needs the
+ *       {@code repository} substrate over the {@code TRANSACT.BKUP} prefix with no promoted key, and STEP10R
+ *       needs {@code object-storage} over the {@code TRANSACT.DALY} prefix with the concrete key STEP05R
+ *       promoted. That is why this class was passing its own arguments to begin with.</li>
+ *   <li><b>Construction validates, and the validation must stay inside the step.</b>
+ *       {@link #requireConcreteKey} and the reader's own generation-key checks raise typed
+ *       {@code CardDemoException}s that let the failing step discard the generation it created through
+ *       {@link #discardOwnGenerationOnFailure} and abend with the operator-facing cause. Behind a scoped
+ *       proxy the same failures would arrive as {@code BeanCreationException} at first method call and be
+ *       reported as a generic abend.</li>
+ *   <li><b>The steps are tasklets, not chunk-oriented steps.</b> {@link #mainlineProcedureDivision} drives
+ *       {@code open}, {@code read}, {@code update} and {@code close} by hand to reproduce the six-paragraph
+ *       lifecycle of {@code app/cbl/CBTRN03C.cbl:L163-L212} in order, so there is no chunk-oriented
+ *       {@code reader}/{@code processor} slot for the framework to fill.</li>
+ * </ul>
+ *
+ * <p>Per-step-execution isolation is preserved without a scope: a fresh instance of each collaborator is
+ * created inside each tasklet body, and neither class holds static mutable state.
+ * {@code TransactionReportProcessorScopeIsolationTest} asserts both facts - no component or scope annotation,
+ * no static mutable field - so the guarantee is enforced rather than asserted in prose. The sibling
+ * collaborators that <em>are</em> container-owned keep their annotations and are injected as step-bean
+ * parameters, which is the other half of the same rule: {@code TransactionCombineProcessor} and
+ * {@code CombinedTransactionReader} in {@link CombineTransactionsJob}, and the four verification readers in
+ * {@link BatchPipelineOrchestrator}.
  *
      * <p>The required job parameters are {@code startDate} and {@code endDate}. They replace the 80-byte
      * {@code DATEPARM} DD at {@code app/proc/TRANREPT.prc:L71-L72} and originate from the fixed 80-byte JOBS
@@ -190,9 +237,18 @@ import software.amazon.awssdk.services.s3.S3Client;
  * <h2>Configuration and defaults</h2>
  *
  * <ul>
- *   <li>{@code carddemo.batch.tranrept.name}: {@code TRANREPT}.</li>
+ *   <li>{@code carddemo.batch.jobs.tranrept.name}: {@code TRANREPT}. The {@code jobs.} segment is the
+ *       one spelling and is deliberate: {@code DailyTransactionPostingJob},
+ *       {@code InterestCalculationJob}, {@code CombineTransactionsJob} and
+ *       {@code StatementGenerationJob} all bind {@code carddemo.batch.jobs.<id>.name}, and the profile
+ *       declares the registry under that namespace. An earlier revision of this class bound
+ *       {@code carddemo.batch.tranrept.name} instead, so the declared profile key was read by nothing
+ *       while the key this class actually read appeared in no profile - both halves of one drift, recorded as finding CFG-002.</li>
  *   <li>{@code carddemo.batch.tranrept.chunk-size}: falls back to
- *       {@code carddemo.batch.chunk-size}, then 100. It bounds report-writer batches.</li>
+ *       {@code carddemo.batch.chunk-size}, then 100. It bounds report-writer batches. The chunk-size
+ *       namespace is deliberately {@code carddemo.batch.<id>.chunk-size} and not
+ *       {@code carddemo.batch.jobs.<id>.chunk-size}, because that is the spelling all five jobs already
+ *       share; only the job name was inconsistent.</li>
  *   <li>{@code carddemo.aws.s3.batch-output-bucket}: blank default, which fails construction. A bucket is
  *       never silently invented.</li>
  *   <li>{@code carddemo.aws.s3.gdg-prefixes.transact-bkup}: {@code gdg/transact-bkup}.</li>
@@ -210,14 +266,29 @@ import software.amazon.awssdk.services.s3.S3Client;
  * Every I/O failure passes through {@link FileStatusMapper}; FILE STATUS {@code '10'} ends a read loop and is
  * never thrown. Causes are preserved.
  *
- * <p>The inline job listener supplies {@code jobInstanceId}, {@code correlationId}, {@code traceId} and
- * {@code spanId} to MDC for batch log events, snapshots inherited values in the job execution context, and
- * restores or clears every value in a finally block. Metrics use only the counters owned by
- * {@link MetricsConfig}; no card number becomes a metric tag.
+ * <p>The inline job listener establishes the batch diagnostic context through
+ * {@link CorrelationIdFilter#enterBatchScope(long, String)} and releases it through
+ * {@link CorrelationIdFilter#exitBatchScope()} in a finally block, so the two entries it displaces are put
+ * back exactly rather than removed. It publishes {@code jobInstanceId} and, only when the thread carries
+ * none, {@code correlationId}. <b>It publishes no {@code traceId} and no {@code spanId}</b>: this job creates
+ * no span, and an identifier minted here would name a trace no backend holds - see finding H-02 on
+ * {@link TransactionReportJobListener}. <b>This job advances no application metric at all</b>:
+ * the four counters {@code com.cardemo.observability.MetricsConfig} owns are the POSTTRAN tallies of
+ * {@code app/cbl/CBTRN02C.cbl:L227-L228} and its authentication and amount counters, and a report line belongs
+ * to none of those populations. Volumes are published to the job execution context and to the Spring Batch step
+ * metrics, which carry a job dimension. No card number becomes a metric tag, because no tag is added here at
+ * all. See finding H-01.
+ * <p>The {@code MetricsConfig} collaborator was removed along with the increment rather than left
+ * injected and unused - finding F-010. AAP section 0.5.1.9 ties
+ * {@code carddemo.batch.records.processed} to exactly the {@code DALYTRAN} population and AAP section
+ * 0.7.7 fixes the instrument set at four, none of which is this job's to publish. The per-run quantities
+ * this job does produce are execution-context entries - {@code recordCount}, {@code lineCount} and the
+ * two upstream generation counts - which is where a per-run figure belongs.
+ *
  *
  * <h2>Build, test and troubleshooting</h2>
  *
- * <p>Build with {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The compiler targets
+ * <p>Build with {@code ./mvnw -B -ntp clean verify}. The compiler targets
  * Java 25 with {@code -Xlint:all -Werror}. Jobs do not auto-run because
  * {@code spring.batch.job.enabled} is false. A missing date raises {@link ValidationException}; a missing
  * concrete handoff key raises {@link FatalProcessingException}; a record-width mismatch fails before the
@@ -226,9 +297,10 @@ import software.amazon.awssdk.services.s3.S3Client;
  * <p><strong>Not available:</strong> the source does not state whether an external object consumer expects
  * newline-delimited records, so this implementation preserves fixed blocks with no delimiter; no service-level
  * latency or throughput objective exists, so none is invented; and integration Gates 1, 4 and 8 require a
- * container runtime. {@code DECISION_LOG.md} is absent in this clone and cannot be created by this single-file
- * assignment; the retention decision is therefore recorded here and in the existing
- * {@code application.yml} block that cites both declarations.
+ * container runtime. {@code DECISION_LOG.md} is authored at the repository root and owed an entry for the
+ * retention decision; that decision is recorded here and in the {@code application.yml} block that cites both
+ * declarations, which is where it cannot drift from the value it explains. An earlier revision said the
+ * register was absent from this clone and could not be created here; the first half is withdrawn.
  */
 @Configuration("transactionReportJobConfiguration")
 public class TransactionReportJob {
@@ -242,8 +314,90 @@ public class TransactionReportJob {
     /** Unique bean name for STEP05R, {@code app/proc/TRANREPT.prc:L35}. */
     private static final String SORT_STEP_BEAN_NAME = "transactionReportSortStep";
 
-    /** Unique bean name for STEP10R, {@code app/proc/TRANREPT.prc:L57}. */
+    /** Unique bean name for STEP10R, {@code app/proc/TRANREPT.prc:L52}. */
     private static final String GENERATE_STEP_BEAN_NAME = "transactionReportGenerateStep";
+
+    /**
+     * Unique bean name for the {@code app/jcl/PRTCATBL.jcl} step, {@value}.
+     *
+     * <p>One step for all three of that member's, because they are one indivisible unit of work: the
+     * {@code DELDEF} pre-delete at {@code :L21-L25}, the {@code STEP05R} unload to {@code TCATBALF.BKUP(+1)}
+     * at {@code :L29-L39} and the {@code STEP10R} sort-and-print at {@code :L43-L63} that reads back the very
+     * generation the unload wrote.
+     */
+    private static final String CATEGORY_BALANCE_STEP_BEAN_NAME = "transactionReportCategoryBalanceStep";
+
+    /**
+     * Job parameter instructing the {@code app/jcl/PRTCATBL.jcl} print, {@value}.
+     *
+     * <p>{@code PRTCATBL} is a separate member from {@code TRANREPT}, so its work is gated rather than
+     * unconditional: a standalone transaction report must not also unload and print a different cluster.
+     * {@link BatchPipelineOrchestrator} sets it non-identifying on the report branch, which is where the
+     * stream's reporting work belongs, and that is what gives the {@code TCATBALF.BKUP} generation base a
+     * real producer and a real consumer (finding M-05).
+     */
+    public static final String JOB_PARAMETER_PRINT_CATEGORY_BALANCES = "printCategoryBalances";
+
+    /** Logical name of the {@code STEP05R} input, {@code app/jcl/PRTCATBL.jcl:L32-L33}. */
+    private static final String DD_CATEGORY_BALANCE_INPUT = "TCATBALF.VSAM.KSDS";
+
+    /** Logical name of the {@code STEP05R} output, {@code app/jcl/PRTCATBL.jcl:L35-L39}. */
+    private static final String DD_CATEGORY_BALANCE_BACKUP = "TCATBALF.BKUP";
+
+    /** Logical name of the {@code STEP10R} output, {@code app/jcl/PRTCATBL.jcl:L59-L63}. */
+    private static final String DD_CATEGORY_BALANCE_REPORT = "TCATBALF.REPT";
+
+    /** Terminal object name of the unloaded generation. */
+    private static final String CATEGORY_BALANCE_BACKUP_OBJECT_NAME = "TCATBALF.BKUP";
+
+    /**
+     * Key suffix of the report object, which is deliberately <b>not</b> a generation base.
+     *
+     * <p>{@code app/jcl/PRTCATBL.jcl:L21-L25} allocates {@code TCATBALF.REPT} with {@code DISP=(MOD,DELETE)}
+     * under {@code IEFBR14} and {@code STEP10R} re-creates it, so the member keeps exactly one report and
+     * replaces it on every run. A single fixed key reproduces that; a generation would invent retention the
+     * member does not ask for.
+     */
+    private static final String CATEGORY_BALANCE_REPORT_OBJECT_NAME = "reports/TCATBALF.REPT";
+
+    /**
+     * Record length of the unloaded cluster, {@code app/jcl/PRTCATBL.jcl:L37} {@code LRECL=50}.
+     *
+     * <p>Corroborated independently by {@code app/cpy/CVTRA01Y.cpy} and by the cluster's catalogued record
+     * size, and consistent with the {@code SYMNAMES} offsets at {@code :L47-L50}.
+     */
+    private static final int CATEGORY_BALANCE_RECORD_LENGTH = 50;
+
+    /**
+     * Line length of the printed report, {@code app/jcl/PRTCATBL.jcl:L53} {@code LRECL=40}.
+     *
+     * <p><b>A legacy arithmetic defect lives here, and it is resolved in favour of the declared length.</b>
+     * The {@code OUTREC} at {@code :L53-L56} lists {@code TRANCAT-ACCT-ID,X, TRANCAT-TYPE-CD,X,
+     * TRANCAT-CD,X, TRAN-CAT-BAL,EDIT=(TTTTTTTTT.TT),9X} - that is 11+1+2+1+4+1+12+9 = <b>41</b> bytes into a
+     * {@code SORTOUT} declared {@code LRECL=40}. The two cannot both hold. The declared record length is the
+     * contract every consumer of the report reads, so 40 is emitted and the trailing filler is 8 blanks
+     * rather than 9. The divergence is logged once per run rather than silently absorbed.
+     */
+    private static final int CATEGORY_BALANCE_REPORT_LINE_LENGTH = 40;
+
+    /** Trailing filler on the printed line: 8 blanks, one fewer than {@code :L56} asks for. */
+    private static final int CATEGORY_BALANCE_REPORT_FILLER_WIDTH = 8;
+
+    /** Context entry carrying the concrete {@code TCATBALF.BKUP} key this run created. */
+    public static final String CATEGORY_BALANCE_BACKUP_KEY_CONTEXT =
+            "carddemo.prtcatbl.tcatbalf-bkup.objectKey";
+
+    /** Context entry carrying how many records that generation holds. */
+    public static final String CATEGORY_BALANCE_BACKUP_COUNT_CONTEXT =
+            "carddemo.prtcatbl.tcatbalf-bkup.recordCount";
+
+    /** Context entry carrying the concrete {@code TCATBALF.REPT} key this run wrote. */
+    public static final String CATEGORY_BALANCE_REPORT_KEY_CONTEXT =
+            "carddemo.prtcatbl.tcatbalf-rept.objectKey";
+
+    /** Context entry carrying how many lines that report holds. */
+    public static final String CATEGORY_BALANCE_REPORT_LINE_COUNT_CONTEXT =
+            "carddemo.prtcatbl.tcatbalf-rept.lineCount";
 
     /** Unique flow bean name, kept distinct from any future shared batch configuration. */
     private static final String FLOW_BEAN_NAME = "transactionReportFlow";
@@ -283,6 +437,9 @@ public class TransactionReportJob {
 
     /** Resolved documentary retention value. */
     private static final int RESOLVED_REPORT_RETENTION = 10;
+
+    /** The ten-character dashed date the {@code DATEPARM} cards of {@code app/proc/TRANREPT.prc} carry. */
+    private static final Pattern PARAMETER_DATE_SHAPE = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
 
     /** Explicit one-byte character mapping at every fixed-width object boundary. */
     private static final Charset FIXED_WIDTH_CHARSET = StandardCharsets.ISO_8859_1;
@@ -328,6 +485,49 @@ public class TransactionReportJob {
     /** Report-line count published by STEP10R. */
     private static final String REPORT_LINE_COUNT_CONTEXT =
             "carddemo.tranrept.report.lineCount";
+
+    /**
+     * Count of detail records STEP10R processed, published per run rather than added to a shared meter.
+     *
+     * <p><b>Finding F-010, severity High, remediated by this entry.</b> This loop used to call
+     * {@code MetricsConfig.countRecordProcessed()} once per report row.
+     * {@code carddemo.batch.records.processed} is defined as the {@code DALYTRAN} population that
+     * {@code app/cbl/CBTRN02C.cbl:L236} displays as {@code TRANSACTIONS PROCESSED}, and AAP section 0.5.1.9
+     * ties the metric to exactly that. The rows this job reads are rows that population <em>already</em>
+     * counted when they were posted, so re-counting them here added a second, unrelated quantity to an
+     * <b>untagged</b> counter - one with no dimension to subtract along, which is what made the inflation
+     * irrecoverable rather than merely wrong.
+     *
+     * <p>An execution-context entry is the right home for it because the quantity is per run and the
+     * consumers are per run: {@code JobExplorer}, the step summary in the log, and an assertion in a test. It
+     * is deliberately <b>not</b> a fifth Micrometer instrument, because AAP section 0.7.7 fixes the instrument
+     * set at four and this job publishes nothing an operator needs to aggregate across runs.
+     *
+     * <p>It is distinct from {@value #DAILY_RECORD_COUNT_CONTEXT}, which is what STEP05R wrote and therefore
+     * what STEP10R had available to read, and from {@value #REPORT_LINE_COUNT_CONTEXT}, which counts every
+     * emitted 133-byte line including headers and totals. The three differ whenever the loop stops early at
+     * {@code app/cbl/CBTRN03C.cbl:L177}, and that divergence is the reason all three are published.
+     */
+    private static final String REPORT_RECORD_COUNT_CONTEXT =
+            "carddemo.tranrept.report.recordCount";
+
+    /**
+     * {@code LF}, {@code 0x0A}. Named to be <b>refused</b> inside a fixed-block record, never consumed.
+     *
+     * <p>{@code app/proc/TRANREPT.prc:L29} declares {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)}, so the
+     * generation is undelimited: this byte can only appear because something wrote the records as text lines,
+     * and every record after the first is then shifted. The same constant, for the same reason, appears in
+     * {@code com.cardemo.batch.readers.DailyTransactionReader} and
+     * {@code com.cardemo.batch.readers.TransactionBackupReader}; the three are the complete set of fixed-block
+     * object read paths in the tree, and none of them tolerates a separator.
+     */
+    private static final byte LINE_FEED = (byte) '\n';
+
+    /** {@code CR}, {@code 0x0D}. Refused on the same terms as {@link #LINE_FEED}, and covers {@code CRLF}. */
+    private static final byte CARRIAGE_RETURN = (byte) '\r';
+
+    /** Sentinel for {@link #publishedCount} when the producing step published nothing. */
+    private static final long COUNT_NOT_PUBLISHED = -1L;
 
     /** JCL DD identity for the STEP01R input override, {@code TRANREPT.prc:L24-L25}. */
     private static final String DD_BACKUP_INPUT = "PRC001.FILEIN";
@@ -386,36 +586,14 @@ public class TransactionReportJob {
     /** Numeric legacy return code for abend. */
     private static final int RETURN_CODE_ABEND = FatalProcessingException.BATCH_RETURN_CODE;
 
-    /** MDC key consumed by {@code logback-spring.xml}. */
-    private static final String MDC_JOB_INSTANCE_ID = "jobInstanceId";
-
-    /** MDC key consumed by {@code logback-spring.xml}. */
-    private static final String MDC_CORRELATION_ID = "correlationId";
-
-    /** MDC key consumed by {@code logback-spring.xml}. */
-    private static final String MDC_TRACE_ID = "traceId";
-
-    /** MDC key consumed by {@code logback-spring.xml}. */
-    private static final String MDC_SPAN_ID = "spanId";
-
-    /** Execution-context slot used to restore inherited job-instance context. */
-    private static final String SAVED_MDC_JOB_INSTANCE_ID =
-            "carddemo.tranrept.mdc.saved.jobInstanceId";
-
-    /** Execution-context slot used to restore inherited correlation context. */
-    private static final String SAVED_MDC_CORRELATION_ID =
-            "carddemo.tranrept.mdc.saved.correlationId";
-
-    /** Execution-context slot used to restore inherited trace context. */
-    private static final String SAVED_MDC_TRACE_ID =
-            "carddemo.tranrept.mdc.saved.traceId";
-
-    /** Execution-context slot used to restore inherited span context. */
-    private static final String SAVED_MDC_SPAN_ID =
-            "carddemo.tranrept.mdc.saved.spanId";
-
-    /** Suffix marking whether a saved MDC value existed. */
-    private static final String SAVED_MDC_PRESENT_SUFFIX = ".present";
+    /**
+     * Prefix of this job's correlation identifier, {@value}, followed by the job execution identifier.
+     *
+     * <p>Derived rather than random, so a run's identifier can be recomputed from its execution record when
+     * the logs are read back. Composed only of ASCII letters, digits and {@code -}, which is the grammar
+     * {@link CorrelationIdFilter#enterBatchScope(long, String)} enforces.
+     */
+    private static final String CORRELATION_ID_PREFIX = "tranrept-";
 
     /** Legacy display literal at {@code app/cbl/CBTRN03C.cbl:L198}. */
     private static final String DISPLAY_TRAN_AMOUNT = "TRAN-AMT ";
@@ -483,8 +661,6 @@ public class TransactionReportJob {
     /** Shared FILE STATUS translator and renderer. */
     private final FileStatusMapper fileStatusMapper;
 
-    /** Sole owner facade for the repository’s four metrics. */
-    private final MetricsConfig metricsConfig;
 
     /** Injected object-storage abstraction; this class never constructs an AWS client. */
     private final S3Operations objectStorage;
@@ -510,6 +686,17 @@ public class TransactionReportJob {
     /** Configured report-generation prefix. */
     private final String reportPrefix;
 
+    /**
+     * Configured {@code TCATBALF.BKUP} generation prefix, {@code app/jcl/PRTCATBL.jcl:L37}.
+     *
+     * <p>Before finding M-05 this base was declared in configuration with no producer and no consumer. The
+     * {@code app/jcl/PRTCATBL.jcl} step now writes it and reads it back.
+     */
+    private final String categoryBalanceBackupPrefix;
+
+    /** Repository behind the {@code STEP05R} unload, {@code app/jcl/PRTCATBL.jcl:L32-L33}. */
+    private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
+
     /** Documentary retention value, logged but not acted upon. */
     private final int reportRetentionGenerations;
 
@@ -524,15 +711,17 @@ public class TransactionReportJob {
      * @param transactionCategoryRepository transaction-category reference repository
      * @param dateValidationService shared date validator
      * @param fileStatusMapper shared file-status translator
-     * @param metricsConfig owner facade for the four application metrics
      * @param objectStorage injected S3 operations abstraction
      * @param objectStoreClient injected paged S3 client
-     * @param configuredJobName {@code carddemo.batch.tranrept.name}, default {@code TRANREPT}
+     * @param configuredJobName {@code carddemo.batch.jobs.tranrept.name}, default {@code TRANREPT}
      * @param configuredChunkSize {@code carddemo.batch.tranrept.chunk-size}, global fallback, then 100
      * @param configuredOutputBucket {@code carddemo.aws.s3.batch-output-bucket}, blank fail-fast default
      * @param configuredBackupPrefix backup generation prefix, default {@code gdg/transact-bkup}
      * @param configuredDailyPrefix daily generation prefix, default {@code gdg/transact-daly}
      * @param configuredReportPrefix report generation prefix, default {@code gdg/tranrept}
+     * @param transactionCategoryBalanceRepository source of the {@code app/jcl/PRTCATBL.jcl} unload
+     * @param configuredCategoryBalanceBackupPrefix {@code TCATBALF.BKUP} generation prefix, default
+     *     {@code gdg/tcatbalf-bkup}
      * @param configuredRetention documentary retention, default 10
      */
     public TransactionReportJob(
@@ -544,10 +733,9 @@ public class TransactionReportJob {
             final TransactionCategoryRepository transactionCategoryRepository,
             final DateValidationService dateValidationService,
             final FileStatusMapper fileStatusMapper,
-            final MetricsConfig metricsConfig,
             final S3Operations objectStorage,
             final S3Client objectStoreClient,
-            @Value("${carddemo.batch.tranrept.name:TRANREPT}") final String configuredJobName,
+            @Value("${carddemo.batch.jobs.tranrept.name:TRANREPT}") final String configuredJobName,
             @Value("${carddemo.batch.tranrept.chunk-size:${carddemo.batch.chunk-size:100}}")
                     final int configuredChunkSize,
             @Value("${carddemo.aws.s3.batch-output-bucket:}") final String configuredOutputBucket,
@@ -557,6 +745,9 @@ public class TransactionReportJob {
                     final String configuredDailyPrefix,
             @Value("${carddemo.aws.s3.gdg-prefixes.tranrept:gdg/tranrept}")
                     final String configuredReportPrefix,
+            final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
+            @Value("${carddemo.aws.s3.gdg-prefixes.tcatbalf-bkup:gdg/tcatbalf-bkup}")
+                    final String configuredCategoryBalanceBackupPrefix,
             @Value("${carddemo.aws.s3.gdg-retention-generations:10}")
                     final int configuredRetention) {
 
@@ -575,11 +766,10 @@ public class TransactionReportJob {
                 Objects.requireNonNull(dateValidationService, "dateValidationService must not be null");
         this.fileStatusMapper =
                 Objects.requireNonNull(fileStatusMapper, "fileStatusMapper must not be null");
-        this.metricsConfig = Objects.requireNonNull(metricsConfig, "metricsConfig must not be null");
         this.objectStorage = Objects.requireNonNull(objectStorage, "objectStorage must not be null");
         this.objectStoreClient =
                 Objects.requireNonNull(objectStoreClient, "objectStoreClient must not be null");
-        this.jobName = requireConfiguredText(configuredJobName, "carddemo.batch.tranrept.name");
+        this.jobName = requireConfiguredText(configuredJobName, "carddemo.batch.jobs.tranrept.name");
         this.chunkSize = requirePositive(configuredChunkSize, "carddemo.batch.tranrept.chunk-size");
         this.outputBucket =
                 requireConfiguredText(configuredOutputBucket, "carddemo.aws.s3.batch-output-bucket");
@@ -590,6 +780,11 @@ public class TransactionReportJob {
         this.reportPrefix = requireGenerationPrefix(
                 configuredReportPrefix, "carddemo.aws.s3.gdg-prefixes.tranrept");
         this.reportRetentionGenerations = requireRetention(configuredRetention);
+        this.transactionCategoryBalanceRepository = Objects.requireNonNull(
+                transactionCategoryBalanceRepository,
+                "transactionCategoryBalanceRepository must not be null");
+        this.categoryBalanceBackupPrefix = requireGenerationPrefix(
+                configuredCategoryBalanceBackupPrefix, "carddemo.aws.s3.gdg-prefixes.tcatbalf-bkup");
     }
 
     /**
@@ -629,18 +824,36 @@ public class TransactionReportJob {
     }
 
     /**
-     * Three-step flow in the clean procedure order, with every outcome routed through the 0/4/8/12 decider.
+     * The whole of {@code app/jcl/PRTCATBL.jcl}: pre-delete, unload {@code TCATBALF.BKUP(+1)}, print it.
+     *
+     * <p>Gated by {@value #JOB_PARAMETER_PRINT_CATEGORY_BALANCES}; without it the step is a logged
+     * no-operation, because {@code PRTCATBL} is a different member from {@code TRANREPT} and a standalone
+     * transaction report must not unload and print another cluster.
+     *
+     * @return the category-balance print step, registered as {@value #CATEGORY_BALANCE_STEP_BEAN_NAME}
+     */
+    @Bean(CATEGORY_BALANCE_STEP_BEAN_NAME)
+    public Step transactionReportCategoryBalanceStep() {
+        return new StepBuilder(CATEGORY_BALANCE_STEP_BEAN_NAME, jobRepository)
+                .tasklet(transactionReportCategoryBalanceTasklet(), transactionManager)
+                .build();
+    }
+
+    /**
+     * Four-step flow in the clean procedure order, with every outcome routed through the 0/4/8/12 decider.
      *
      * @param backupStep STEP01R
      * @param sortStep STEP05R
      * @param generateStep STEP10R
+     * @param categoryBalanceStep the {@code app/jcl/PRTCATBL.jcl} unload-and-print step
      * @return the complete transaction-report flow
      */
     @Bean(FLOW_BEAN_NAME)
     public Flow transactionReportFlow(
             @Qualifier(BACKUP_STEP_BEAN_NAME) final Step backupStep,
             @Qualifier(SORT_STEP_BEAN_NAME) final Step sortStep,
-            @Qualifier(GENERATE_STEP_BEAN_NAME) final Step generateStep) {
+            @Qualifier(GENERATE_STEP_BEAN_NAME) final Step generateStep,
+            @Qualifier(CATEGORY_BALANCE_STEP_BEAN_NAME) final Step categoryBalanceStep) {
 
         final JobExecutionDecider returnCodeDecider = new TransactionReportReturnCodeDecider();
         return new FlowBuilder<SimpleFlow>(FLOW_BEAN_NAME)
@@ -648,7 +861,12 @@ public class TransactionReportJob {
                 .from(backupStep).on(EXIT_CODE_ANY).to(returnCodeDecider)
                 .from(sortStep).on(EXIT_CODE_COMPLETED).to(generateStep)
                 .from(sortStep).on(EXIT_CODE_ANY).to(returnCodeDecider)
+                // app/jcl/PRTCATBL.jcl is its own member and prints a different cluster, so it follows the
+                // report rather than gating it: only a completed report goes on to it, and any other outcome
+                // of the report goes straight to the decider.
+                .from(generateStep).on(EXIT_CODE_COMPLETED).to(categoryBalanceStep)
                 .from(generateStep).on(EXIT_CODE_ANY).to(returnCodeDecider)
+                .from(categoryBalanceStep).on(EXIT_CODE_ANY).to(returnCodeDecider)
                 .from(returnCodeDecider).on(EXIT_CODE_COMPLETED).end(EXIT_CODE_COMPLETED)
                 .from(returnCodeDecider).on(EXIT_CODE_COMPLETED_WITH_REJECTS)
                 .end(EXIT_CODE_COMPLETED_WITH_REJECTS)
@@ -659,7 +877,8 @@ public class TransactionReportJob {
     }
 
     /**
-     * Complete transaction-report job with pre-run parameter validation and an inline MDC listener.
+     * Complete transaction-report job with pre-run parameter validation and an inline diagnostic-context
+     * listener.
      *
      * @param transactionReportFlow the uniquely named report flow
      * @return the registered job
@@ -713,6 +932,336 @@ public class TransactionReportJob {
     }
 
     /**
+     * Creates the {@code app/jcl/PRTCATBL.jcl} tasklet without registering an additional bean.
+     *
+     * @return the category-balance print tasklet
+     */
+    private Tasklet transactionReportCategoryBalanceTasklet() {
+        return (contribution, chunkContext) -> {
+            executePrtcatbl(chunkContext.getStepContext().getStepExecution());
+            return RepeatStatus.FINISHED;
+        };
+    }
+
+    /**
+     * The whole of {@code app/jcl/PRTCATBL.jcl}, in its three source steps and in source order.
+     *
+     * <p>{@code DELDEF} at {@code :L21-L25} allocates {@code TCATBALF.REPT} {@code DISP=(MOD,DELETE)} under
+     * {@code IEFBR14}, whose only effect is to delete it - the member keeps one report and replaces it.
+     * {@code STEP05R} at {@code :L29-L39} unloads {@code TCATBALF.VSAM.KSDS} to a {@code TCATBALF.BKUP(+1)}
+     * generation at {@code LRECL=50} through the shared {@code REPROC} procedure. {@code STEP10R} at
+     * {@code :L43-L63} sorts that generation by the composite key and emits the edited 40-byte line.
+     *
+     * <p><b>The print reads the generation the unload just wrote, not the relation.</b> That is what
+     * {@code SORTIN DSN=...TCATBALF.BKUP(+1)} at {@code :L44-L45} says, and reproducing it is the point: it
+     * makes the unload a real producer with a real consumer, which is what finding M-05 recorded as missing.
+     *
+     * <p>{@code :L52} states the sort explicitly, and the unload emits that order already because it reads
+     * the cluster through its composite-key ordering. Neither step is allowed to hold the cluster in the
+     * heap, so the print verifies the declared order record by record instead of re-sorting a resident list;
+     * see {@link #printCategoryBalances(String)}.
+     *
+     * @param stepExecution the running step, whose context receives both concrete keys
+     */
+    private void executePrtcatbl(final StepExecution stepExecution) {
+        final JobExecution jobExecution = stepExecution.getJobExecution();
+        if (!printCategoryBalancesInstructed(jobExecution)) {
+            LOG.info("{} not instructed for this run; app/jcl/PRTCATBL.jcl is a separate member from"
+                            + " app/jcl/TRANREPT.jcl and a standalone report does not include it",
+                    DD_CATEGORY_BALANCE_REPORT);
+            return;
+        }
+
+        final long jobInstanceId = requireJobInstanceId(stepExecution);
+        final String backupKey = generationObjectKey(
+                categoryBalanceBackupPrefix, jobInstanceId, CATEGORY_BALANCE_BACKUP_OBJECT_NAME);
+
+        deldef();
+        final int recordCount = unloadCategoryBalances(backupKey);
+        final int lineCount = printCategoryBalances(backupKey);
+
+        publishConcreteKey(stepExecution, CATEGORY_BALANCE_BACKUP_KEY_CONTEXT, backupKey);
+        publishCount(stepExecution, CATEGORY_BALANCE_BACKUP_COUNT_CONTEXT, recordCount);
+        publishConcreteKey(
+                stepExecution, CATEGORY_BALANCE_REPORT_KEY_CONTEXT, CATEGORY_BALANCE_REPORT_OBJECT_NAME);
+        publishCount(stepExecution, CATEGORY_BALANCE_REPORT_LINE_COUNT_CONTEXT, lineCount);
+        LOG.info("{} completed: {} records unloaded as {}-byte blocks to {}, then {} lines printed as"
+                        + " {}-byte blocks to {}",
+                CATEGORY_BALANCE_STEP_BEAN_NAME, Integer.valueOf(recordCount),
+                Integer.valueOf(CATEGORY_BALANCE_RECORD_LENGTH), backupKey, Integer.valueOf(lineCount),
+                Integer.valueOf(CATEGORY_BALANCE_REPORT_LINE_LENGTH), CATEGORY_BALANCE_REPORT_OBJECT_NAME);
+    }
+
+    /**
+     * Reads the per-run print instruction.
+     *
+     * @param jobExecution the running execution
+     * @return {@code true} when the stream asked for the category-balance print
+     */
+    private static boolean printCategoryBalancesInstructed(final JobExecution jobExecution) {
+        return Boolean.parseBoolean(jobExecution.getJobParameters()
+                .getString(JOB_PARAMETER_PRINT_CATEGORY_BALANCES, "false"));
+    }
+
+    /**
+     * {@code DELDEF}, {@code app/jcl/PRTCATBL.jcl:L21-L25}: remove the previous report if there is one.
+     *
+     * <p>{@code IEFBR14} with {@code DISP=(MOD,DELETE)} creates the dataset if absent and deletes it either
+     * way, so an absent object is the expected case on a first run and is not an error.
+     */
+    private void deldef() {
+        try {
+            if (objectStorage.objectExists(outputBucket, CATEGORY_BALANCE_REPORT_OBJECT_NAME)) {
+                objectStorage.deleteObject(outputBucket, CATEGORY_BALANCE_REPORT_OBJECT_NAME);
+                LOG.debug("DELDEF removed the previous {}", CATEGORY_BALANCE_REPORT_OBJECT_NAME);
+            }
+        } catch (final RuntimeException cause) {
+            throw ioAbend(DD_CATEGORY_BALANCE_REPORT, "DELETE",
+                    "ERROR DELETING PREVIOUS CATEGORY BALANCE REPORT", cause);
+        }
+    }
+
+    /**
+     * {@code STEP05R}, {@code app/jcl/PRTCATBL.jcl:L29-L39}: unload the cluster at {@code LRECL=50}.
+     *
+     * <p>Read in bounded slices so the whole cluster is never resident, in the composite-key order the
+     * cluster itself is keyed in.
+     *
+     * @param backupKey the concrete {@code TCATBALF.BKUP(+1)} key this run creates
+     * @return how many 50-byte records were written
+     */
+    private int unloadCategoryBalances(final String backupKey) {
+        int recordCount = 0;
+        try {
+            final S3Resource resource = outputResource(backupKey);
+            try (OutputStream output = new BufferedOutputStream(resource.getOutputStream())) {
+                int page = 0;
+                boolean more = true;
+                while (more) {
+                    final Slice<TransactionCategoryBalance> slice =
+                            transactionCategoryBalanceRepository
+                                    .findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(
+                                            PageRequest.of(page, chunkSize));
+                    for (final TransactionCategoryBalance balance : slice.getContent()) {
+                        final byte[] encoded =
+                                categoryBalanceRecord(balance).getBytes(FIXED_WIDTH_CHARSET);
+                        requireEncodedLength(
+                                encoded, CATEGORY_BALANCE_RECORD_LENGTH, DD_CATEGORY_BALANCE_BACKUP);
+                        output.write(encoded);
+                        recordCount++;
+                    }
+                    more = slice.hasNext();
+                    page++;
+                }
+                output.flush();
+            }
+            fileStatusMapper.requireSuccess(STATUS_SUCCESS, DD_CATEGORY_BALANCE_BACKUP, "WRITE");
+            return recordCount;
+        } catch (final CardDemoException typed) {
+            discardOwnGenerationOnFailure(backupKey, CATEGORY_BALANCE_STEP_BEAN_NAME);
+            throw typed;
+        } catch (final IOException | RuntimeException cause) {
+            discardOwnGenerationOnFailure(backupKey, CATEGORY_BALANCE_STEP_BEAN_NAME);
+            throw ioAbend(DD_CATEGORY_BALANCE_BACKUP, "WRITE",
+                    "ERROR WRITING CATEGORY BALANCE BACKUP", cause);
+        }
+    }
+
+    /**
+     * {@code STEP10R}, {@code app/jcl/PRTCATBL.jcl:L43-L63}: read the generation back and print the edited
+     * line, one record at a time.
+     *
+     * <p><strong>Finding M-08, severity Major, RESOLVED here as well as in the sort step.</strong> This
+     * method used to read the whole {@code TCATBALF.BKUP(+1)} generation into a {@code List<byte[]>}, sort
+     * that list and build the entire report in one {@code StringBuilder}. The category-balance cluster has
+     * one row per account, type and category triple and is unbounded, so peak memory was the whole unload
+     * twice over. It now streams: one 50-byte record is read, rendered as its 40-byte line, written and
+     * discarded, so peak memory is one record regardless of cluster size.
+     *
+     * <p><b>The sort becomes an assertion, which is stronger than sorting.</b> {@code :L52} declares
+     * {@code SORT FIELDS=(TRANCAT-ACCT-ID,A,TRANCAT-TYPE-CD,A,TRANCAT-CD,A)} over the {@code SYMNAMES}
+     * offsets at {@code :L47-L49}, and {@code STEP05R} produced this generation in exactly that order
+     * because {@link #unloadCategoryBalances(String)} reads the cluster through
+     * {@code findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc}. Re-sorting a stream is impossible without
+     * making it resident again, so the order the producer guarantees is verified instead: each key is
+     * compared against its predecessor and a descending pair abends the step. A silent re-sort would have
+     * masked a producer regression; refusing an out-of-order source surfaces it. The comparison is on
+     * characters, which for these zero-padded zoned-decimal keys is the same order as numeric and is what
+     * DFSORT's {@code CH} format does.
+     *
+     * @param backupKey the generation to read back, which {@code :L44-L45} names as {@code SORTIN}
+     * @return how many 40-byte lines were written
+     */
+    private int printCategoryBalances(final String backupKey) {
+        int lineCount = 0;
+        try {
+            final S3Resource source = objectStorage.download(outputBucket, backupKey);
+            final S3Resource resource = outputResource(CATEGORY_BALANCE_REPORT_OBJECT_NAME);
+            try (InputStream input = new BufferedInputStream(source.getInputStream());
+                    OutputStream output = new BufferedOutputStream(resource.getOutputStream())) {
+                String previousKey = null;
+                while (true) {
+                    final byte[] record = input.readNBytes(CATEGORY_BALANCE_RECORD_LENGTH);
+                    if (record.length == 0) {
+                        break;
+                    }
+                    requireRecordLength(
+                            record, CATEGORY_BALANCE_RECORD_LENGTH, DD_CATEGORY_BALANCE_BACKUP);
+                    final String key = categoryBalanceSortKey(record);
+                    if (previousKey != null && key.compareTo(previousKey) < 0) {
+                        throw abend("SORT ORDER VIOLATION",
+                                "TCATBALF.BKUP RECORD " + (lineCount + 1)
+                                        + " BREAKS THE COMPOSITE KEY ORDER SORT FIELDS DECLARES", null);
+                    }
+                    previousKey = key;
+                    final byte[] encoded = categoryBalanceReportLine(
+                            new String(record, FIXED_WIDTH_CHARSET)).getBytes(FIXED_WIDTH_CHARSET);
+                    requireEncodedLength(
+                            encoded, CATEGORY_BALANCE_REPORT_LINE_LENGTH, DD_CATEGORY_BALANCE_REPORT);
+                    output.write(encoded);
+                    lineCount++;
+                }
+                output.flush();
+            }
+            fileStatusMapper.requireSuccess(STATUS_SUCCESS, DD_CATEGORY_BALANCE_BACKUP, "READ");
+            fileStatusMapper.requireSuccess(STATUS_SUCCESS, DD_CATEGORY_BALANCE_REPORT, "WRITE");
+            return lineCount;
+        } catch (final CardDemoException typed) {
+            throw typed;
+        } catch (final IOException | RuntimeException cause) {
+            throw ioAbend(DD_CATEGORY_BALANCE_REPORT, "WRITE",
+                    "ERROR WRITING CATEGORY BALANCE REPORT", cause);
+        }
+    }
+
+    /**
+     * The three key fields of one unloaded record, concatenated, per the {@code SYMNAMES} at
+     * {@code app/jcl/PRTCATBL.jcl:L47-L49}.
+     *
+     * <p>Used by {@link #printCategoryBalances(String)} to verify that the generation arrives in the order
+     * {@code :L52} declares, rather than to sort a resident list.
+     *
+     * @param record one 50-byte unloaded record
+     * @return the sort key, never {@code null}
+     */
+    private static String categoryBalanceSortKey(final byte[] record) {
+        return new String(record, 0, 17, FIXED_WIDTH_CHARSET);
+    }
+
+    /**
+     * Renders one 50-byte {@code TCATBALF} record, {@code app/cpy/CVTRA01Y.cpy}.
+     *
+     * <p>Offsets are the ones {@code app/jcl/PRTCATBL.jcl:L47-L50} states independently of the copybook:
+     * the account identifier at 1 for 11, the type code at 12 for 2, the category code at 14 for 4 and the
+     * balance at 18 for 11. That accounts for 28 of the 50 bytes; the remaining 22 are the copybook's
+     * trailing filler.
+     *
+     * @param balance the entity to render
+     * @return the 50-character image, never {@code null}
+     */
+    private String categoryBalanceRecord(final TransactionCategoryBalance balance) {
+        final TransactionCategoryBalanceId id = balance.getId();
+        final StringBuilder record = new StringBuilder(CATEGORY_BALANCE_RECORD_LENGTH);
+        record.append(zonedDigits(id.getAccountId(), 11, "TRANCAT-ACCT-ID"));
+        record.append(alphanumeric(id.getTypeCd(), 2, "TRANCAT-TYPE-CD"));
+        record.append(zonedDigits(id.getCatCd(), 4, "TRANCAT-CD"));
+        record.append(signedZonedAmount(balance.getBalance()));
+        record.append(" ".repeat(CATEGORY_BALANCE_RECORD_LENGTH - record.length()));
+        return record.toString();
+    }
+
+    /**
+     * Renders an unsigned zoned-decimal key field, zero padded to its declared width.
+     *
+     * @param value the numeric value, which must be present and non-negative
+     * @param width the declared width
+     * @param fieldName the field name used in typed failures
+     * @return the fixed-width image, never {@code null}
+     */
+    private String zonedDigits(final Number value, final int width, final String fieldName) {
+        if (value == null) {
+            throw abend("KEY FIELD MISSING", fieldName + " IS REQUIRED", null);
+        }
+        final long numeric = value.longValue();
+        if (numeric < 0L) {
+            throw abend("KEY FIELD INVALID", fieldName + " MUST NOT BE NEGATIVE", null);
+        }
+        final String digits = Long.toString(numeric);
+        if (digits.length() > width) {
+            throw abend("KEY FIELD OVERFLOW", fieldName + " EXCEEDS ITS DECLARED WIDTH", null);
+        }
+        return "0".repeat(width - digits.length()) + digits;
+    }
+
+    /**
+     * Renders one printed line, {@code app/jcl/PRTCATBL.jcl:L53-L56}.
+     *
+     * <p>{@code OUTREC FIELDS=(TRANCAT-ACCT-ID,X, TRANCAT-TYPE-CD,X, TRANCAT-CD,X,
+     * TRAN-CAT-BAL,EDIT=(TTTTTTTTT.TT),9X)}: each {@code X} is one blank, and {@code EDIT} with {@code T}
+     * digit selectors prints every digit position without zero suppression.
+     *
+     * <p><b>Two source behaviours are preserved deliberately.</b> First, {@code EDIT} carries no
+     * {@code SIGN} operand, so the printed magnitude is unsigned - a negative balance prints without its
+     * sign, and that is the member's behaviour rather than a defect to repair here. Second, the declared
+     * {@code LRECL=40} wins over the field list's 41 bytes; see
+     * {@link #CATEGORY_BALANCE_REPORT_LINE_LENGTH}.
+     *
+     * @param record one 50-character unloaded record
+     * @return the 40-character printed line, never {@code null}
+     */
+    private String categoryBalanceReportLine(final String record) {
+        final String accountId = record.substring(0, 11);
+        final String typeCode = record.substring(11, 13);
+        final String categoryCode = record.substring(13, 17);
+        final String balanceImage = record.substring(17, 28);
+
+        final BigDecimal balance = decodeSignedZoned(balanceImage);
+        final String magnitude = balance.abs().setScale(MONEY_SCALE, RoundingMode.HALF_EVEN)
+                .movePointRight(MONEY_SCALE).toBigIntegerExact().toString();
+        final String padded = "0".repeat(Math.max(0, AMOUNT_DIGITS - magnitude.length())) + magnitude;
+        final String edited = padded.substring(0, padded.length() - MONEY_SCALE)
+                + "." + padded.substring(padded.length() - MONEY_SCALE);
+
+        final StringBuilder line = new StringBuilder(CATEGORY_BALANCE_REPORT_LINE_LENGTH);
+        line.append(accountId).append(' ')
+                .append(typeCode).append(' ')
+                .append(categoryCode).append(' ')
+                .append(edited)
+                .append(" ".repeat(CATEGORY_BALANCE_REPORT_FILLER_WIDTH));
+        if (line.length() != CATEGORY_BALANCE_REPORT_LINE_LENGTH) {
+            throw abend("REPORT LINE LENGTH VIOLATION",
+                    "TCATBALF.REPT LINE IS NOT 40 CHARACTERS", null);
+        }
+        return line.toString();
+    }
+
+    /**
+     * Decodes an eleven-character zoned-decimal image with a trailing overpunch sign.
+     *
+     * @param image the eleven-character field
+     * @return the signed value at scale 2, never {@code null}
+     */
+    private BigDecimal decodeSignedZoned(final String image) {
+        final String leading = image.substring(0, image.length() - 1);
+        final char overpunch = image.charAt(image.length() - 1);
+        final int positive = "{ABCDEFGHI".indexOf(overpunch);
+        final int negative = "}JKLMNOPQR".indexOf(overpunch);
+        if (positive < 0 && negative < 0) {
+            throw abend("BALANCE INVALID",
+                    "TRAN-CAT-BAL CARRIES NO VALID ZONED-DECIMAL SIGN OVERPUNCH", null);
+        }
+        for (int index = 0; index < leading.length(); index++) {
+            if (leading.charAt(index) < '0' || leading.charAt(index) > '9') {
+                throw abend("BALANCE INVALID", "TRAN-CAT-BAL IS NOT ZONED DECIMAL", null);
+            }
+        }
+        final int finalDigit = positive >= 0 ? positive : negative;
+        final BigDecimal unscaled = new BigDecimal(leading + finalDigit);
+        final BigDecimal signed = negative >= 0 ? unscaled.negate() : unscaled;
+        return signed.movePointLeft(MONEY_SCALE);
+    }
+
+    /**
      * STEP01R, {@code app/proc/TRANREPT.prc:L21-L31}: FILEIN is the posted transaction cluster and FILEOUT
      * is the 350-byte backup generation. {@code app/proc/REPROC.prc:L21-L28} and
      * {@code app/ctl/REPROCT.ctl:L15} reduce to a record-for-record in-process copy.
@@ -724,6 +1273,12 @@ public class TransactionReportJob {
         final long jobInstanceId = requireJobInstanceId(stepExecution);
         final String backupKey = generationObjectKey(backupPrefix, jobInstanceId, BACKUP_OBJECT_NAME);
         final ExecutionContext stepContext = stepExecution.getExecutionContext();
+
+        // F-008: this class owns the reader outright - TransactionBackupReader carries no @Component and no
+        // @StepScope, so this is the only way an instance comes into being on the FILEIN leg. The substrate
+        // is a literal rather than a property because app/proc/TRANREPT.prc:L23 declares FILEIN over the
+        // transaction cluster, and the promoted key is null because this step is the one that creates the
+        // TRANSACT.BKUP generation the later steps consume.
         final TransactionBackupReader reader = new TransactionBackupReader(
                 transactionRepository,
                 objectStorage,
@@ -834,24 +1389,34 @@ public class TransactionReportJob {
      * {@code :L43-L46} orders the first field ascending and includes both date bounds; SORTOUT publishes the
      * concrete daily key.
      *
+     * <p><b>Bounded, and it was not.</b> Under finding <b>F-012</b> this step materialised the entire SORTIN
+     * generation into a {@code List<byte[]>}, filtered it with {@code removeIf} and sorted it in heap, so peak
+     * live memory grew linearly with the transaction population and was reached before any output byte was
+     * written. It now verifies SORTIN without retaining it - see
+     * {@link #requireIntactSortInput(StepExecution, String)} - and streams the ordered, filtered population one
+     * page at a time into SORTOUT, in {@link #writeSortedGeneration(String, String, String)}. No external sort
+     * process is spawned, which AAP transformation rule 9 forbids, and the emitted byte sequence is unchanged.
+     *
      * @param stepExecution current step execution
      */
     private void executeStep05r(final StepExecution stepExecution) {
         final String startDate = startDateSymbol(stepExecution.getJobExecution().getJobParameters());
         final String endDate = endDateSymbol(stepExecution.getJobExecution().getJobParameters());
+        // SORTIN at app/proc/TRANREPT.prc:L36-L37 names TRANSACT.BKUP(0), so the step still requires that
+        // generation to exist - STEP01R must have run and published it, and the combine's first leg reads it.
         final String backupKey =
                 requireConcreteKey(stepExecution, BACKUP_OBJECT_KEY_CONTEXT, backupPrefix);
-        final List<byte[]> records =
-                readFixedWidthGeneration(backupKey, DD_SORT_INPUT, TRANSACTION_RECORD_LENGTH);
 
-        records.removeIf(record -> !includeCondition(record, startDate, endDate));
-        final Comparator<byte[]> cardNumberAscending = this::sortFieldsCardNumberAscending;
-        records.sort(cardNumberAscending);
+        // SORTIN is still read, and it is read for what a sort step actually needs from it: that the
+        // generation STEP01R catalogued exists, has intact 350-byte geometry, and holds the same population
+        // the ordered scan below will read. Nothing is retained - see requireIntactSortInput.
+        requireIntactSortInput(stepExecution, backupKey);
 
         final long jobInstanceId = requireJobInstanceId(stepExecution);
         final String dailyKey = generationObjectKey(dailyPrefix, jobInstanceId, DAILY_OBJECT_NAME);
+        final long recordCount;
         try {
-            writeFixedWidthGeneration(dailyKey, DD_SORT_OUTPUT, TRANSACTION_RECORD_LENGTH, records);
+            recordCount = writeSortedGeneration(dailyKey, startDate, endDate);
         } catch (final RuntimeException failure) {
             // CardDemoException is itself a RuntimeException, so this one alternative covers both the typed
             // failures this write raises and any unexpected one. The failure is rethrown unchanged.
@@ -859,9 +1424,72 @@ public class TransactionReportJob {
             throw failure;
         }
         publishConcreteKey(stepExecution, DAILY_OBJECT_KEY_CONTEXT, dailyKey);
-        publishCount(stepExecution, DAILY_RECORD_COUNT_CONTEXT, records.size());
+        publishCount(stepExecution, DAILY_RECORD_COUNT_CONTEXT, recordCount);
         LOG.info("{} completed: {} records passed the inclusive character predicate and card ordering",
-                SORT_STEP_BEAN_NAME, Integer.valueOf(records.size()));
+                SORT_STEP_BEAN_NAME, Long.valueOf(recordCount));
+    }
+
+    /**
+     * Verifies {@code SORTIN} without retaining it, and proves it holds the population the ordered scan reads.
+     *
+     * <p><b>Finding F-012, severity High, remediated by this method and by
+     * {@link #writeSortedGeneration(String, String, String)}.</b> This step used to read the whole generation
+     * into a {@code List<byte[]>}, drop the non-matching entries with {@code removeIf} and sort the remainder
+     * in heap. At 350 bytes per element plus per-object overhead that is roughly 370 bytes of live heap per
+     * transaction with no bound of any kind, and the peak arrives before the first byte of output is written.
+     * The replacement retains one page of rows.
+     *
+     * <p><b>Why reading the generation for its bytes was replaceable at all.</b> STEP01R writes the generation
+     * by copying the transaction relation record for record: {@code app/ctl/REPROCT.ctl:L15} is
+     * {@code REPRO INFILE(FILEIN) OUTFILE(FILEOUT)} with <b>no selection and no reformatting</b>, so the
+     * generation's population and the relation's population are the same set of records. That equivalence is
+     * not assumed here - it is <b>asserted at run time</b>, twice, and a disagreement fails the step rather
+     * than producing a report that looks complete:
+     * <ul>
+     *   <li>against the count STEP01R published under {@value #BACKUP_RECORD_COUNT_CONTEXT}, which catches a
+     *       generation truncated or overwritten between the two steps; and</li>
+     *   <li>against {@code count()} on the relation, which catches the case the frozen-snapshot semantics of
+     *       {@code DISP=SHR} would otherwise hide - a write that landed on the relation after STEP01R ran.</li>
+     * </ul>
+     *
+     * <p><b>Separator bytes are refused, and the length must be an exact multiple.</b> This is the last of the
+     * three fixed-block object readers to be hardened - the two in {@code batch/readers} were done under
+     * finding F-013 - and it was the one that failed least usefully. {@code readNBytes} over an object carrying
+     * a one-byte terminator per record returns 350 bytes every time, so the old loop's length check passed
+     * while every record after the first was <b>misaligned by one byte and read as valid</b>; the run failed,
+     * if at all, only on the short final remainder, reporting a length error about the last record when the
+     * defect was in the second. {@code app/proc/TRANREPT.prc:L29} declares
+     * {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)} - fixed blocked, undelimited - so a separator byte is corrupt
+     * geometry and is named as such, at the row and byte where it appears.
+     *
+     * @param stepExecution current step execution, carrying STEP01R's published count
+     * @param backupKey the concrete generation key STEP01R promoted
+     * @throws DataIntegrityException if the object carries a separator byte, if its length is not an exact
+     *     multiple of {@value #TRANSACTION_RECORD_LENGTH}, or if its record count disagrees with either the
+     *     count STEP01R published or the count the relation holds
+     */
+    private void requireIntactSortInput(final StepExecution stepExecution, final String backupKey) {
+        final long objectRecords =
+                countFixedWidthGeneration(backupKey, DD_SORT_INPUT, TRANSACTION_RECORD_LENGTH);
+        final long publishedRecords = publishedCount(stepExecution, BACKUP_RECORD_COUNT_CONTEXT);
+        if (publishedRecords != COUNT_NOT_PUBLISHED && objectRecords != publishedRecords) {
+            throw new DataIntegrityException(String.format(Locale.ROOT,
+                    "%s holds %d records of %d bytes but %s published %d when it created it; the generation "
+                            + "was truncated or overwritten between the two steps, so %s cannot be sorted "
+                            + "into %s",
+                    backupKey, Long.valueOf(objectRecords), Integer.valueOf(TRANSACTION_RECORD_LENGTH),
+                    BACKUP_STEP_BEAN_NAME, Long.valueOf(publishedRecords), DD_SORT_INPUT, DD_SORT_OUTPUT));
+        }
+        final long relationRecords = transactionRepository.count();
+        if (objectRecords != relationRecords) {
+            throw new DataIntegrityException(String.format(Locale.ROOT,
+                    "%s holds %d records but the transaction relation holds %d. app/ctl/REPROCT.ctl:L15 "
+                            + "copies the relation into the generation without selection, so the two must "
+                            + "agree; a disagreement means the relation changed after %s ran, and ordering "
+                            + "the relation would report on a population %s does not contain",
+                    backupKey, Long.valueOf(objectRecords), Long.valueOf(relationRecords),
+                    BACKUP_STEP_BEAN_NAME, DD_SORT_INPUT));
+        }
     }
 
     /**
@@ -905,23 +1533,27 @@ public class TransactionReportJob {
                 && processingDate.compareTo(endDate) <= 0;
     }
 
-    /**
-     * SORT FIELDS=(TRAN-CARD-NUM,A), {@code app/proc/TRANREPT.prc:L44}. The declared ZD field is compared
-     * on the character representation, as required by the migration contract.
-     *
-     * @param left left record
-     * @param right right record
-     * @return ascending comparison result
-     */
-    private int sortFieldsCardNumberAscending(final byte[] left, final byte[] right) {
-        requireRecordLength(left, TRANSACTION_RECORD_LENGTH, DD_SORT_INPUT);
-        requireRecordLength(right, TRANSACTION_RECORD_LENGTH, DD_SORT_INPUT);
-        final String leftCard =
-                new String(left, CARD_NUMBER_OFFSET, CARD_NUMBER_LENGTH, FIXED_WIDTH_CHARSET);
-        final String rightCard =
-                new String(right, CARD_NUMBER_OFFSET, CARD_NUMBER_LENGTH, FIXED_WIDTH_CHARSET);
-        return leftCard.compareTo(rightCard);
-    }
+    // SORT FIELDS=(TRAN-CARD-NUM,A), app/proc/TRANREPT.prc:L44, IS NOT IMPLEMENTED AS A COMPARATOR HERE.
+    //
+    // A private sortFieldsCardNumberAscending(byte[], byte[]) comparator stood here and has been REMOVED
+    // under finding F-012. It was reachable only from the heap sort that finding removed, so once the
+    // ordering moved into the indexed query it had zero callers and zero test references, and Rule 1 Clause B
+    // forbids dead code. It is NOT one of the three retained no-ops that AAP section 0.8.2 protects -
+    // 1400-COMPUTE-FEES, the redundant index assignment in CBSTM03A and the never-consumed reject code 109 -
+    // so the parity exception recorded there does not extend to it and deleting it is required rather than
+    // permitted.
+    //
+    // The ordering itself is NOT lost, and this is the important part: it is declared as
+    // "order by t.cardNumber asc, t.transactionId asc" on
+    // TransactionRepository.findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc, which
+    // writeSortedGeneration pages through. The character-image comparison the migration contract requires is
+    // preserved because the column is CHAR and the database is initialised with --locale=C, so SQL ORDER BY
+    // is byte ordering - the same relation String.compareTo implemented. The card number is a zoned-decimal
+    // field compared on its character representation either way.
+    //
+    // The traceability anchor for TRANREPT.prc:L44 therefore moves from this method to
+    // writeSortedGeneration, whose documentation carries the citation and the proof that the emitted
+    // permutation is unchanged.
 
     /**
      * STEP10R, {@code app/proc/TRANREPT.prc:L57-L79}. TRANFILE reads the concrete daily key; CARDXREF,
@@ -939,6 +1571,11 @@ public class TransactionReportJob {
         final long jobInstanceId = requireJobInstanceId(stepExecution);
         final String reportKey = generationObjectKey(reportPrefix, jobInstanceId, REPORT_OBJECT_NAME);
 
+        // F-008: both collaborators are owned by this class and by nothing else. The daily key was resolved
+        // above by requireConcreteKey, so an absent or malformed STEP05R handoff has already abended this
+        // step with a typed cause; constructing here keeps that failure inside the step rather than inside a
+        // container callback. The substrate is object-storage because app/proc/TRANREPT.prc:L59 declares
+        // TRANFILE over the sorted TRANSACT.DALY generation, not over the cluster.
         final TransactionBackupReader reader = new TransactionBackupReader(
                 transactionRepository,
                 objectStorage,
@@ -1046,6 +1683,7 @@ public class TransactionReportJob {
 
             final List<ReportLines> buffered = new ArrayList<>(chunkSize);
             boolean terminatedByNextSentence = false;
+            long detailRecords = 0L;
             while (true) {
                 final var transaction = reader.read();
                 if (transaction == null) {
@@ -1058,7 +1696,24 @@ public class TransactionReportJob {
                     break;
                 }
                 buffered.add(reportLines);
-                metricsConfig.countRecordProcessed();
+                // F-010: this loop counts REPORT rows, and it deliberately increments no shared meter.
+                // carddemo.batch.records.processed is defined as the DALYTRAN population CBTRN02C displays at
+                // app/cbl/CBTRN02C.cbl:L236, so incrementing it here added this job's already-posted rows to
+                // that population and left the untagged counter irrecoverably inflated. The count is published
+                // as a job-local execution-context entry instead - see publishCount below.
+                // FINDING H-01, severity HIGH. metricsConfig.countRecordProcessed() stood here and has been
+                // removed. carddemo.batch.records.processed mirrors ADD 1 TO WS-TRANSACTION-COUNT at
+                // app/cbl/CBTRN02C.cbl:L206, so its population is the daily-transaction records the POSTTRAN
+                // job read - and nothing else. A report LINE is not one of those records: it is one line of
+                // output derived from a transaction an earlier run already counted, and CBTRN03C assigns no
+                // such tally at all. Advancing an UNTAGGED counter from here made the series the sum of two
+                // unrelated populations, with no job dimension to group either one back out.
+                //
+                // This step's volume is not lost: it is published to the execution context as
+                // REPORT_LINE_COUNT_CONTEXT and is available continuously as the Spring Batch step metrics
+                // spring_batch_step_seconds_count and spring_batch_item_write_seconds_count, both tagged by
+                // name.
+                detailRecords++;
                 if (buffered.size() == chunkSize) {
                     writeReportRecord1111(writer, buffered);
                 }
@@ -1067,6 +1722,7 @@ public class TransactionReportJob {
                 buffered.add(processor.finishReport());
             }
             writeReportRecord1111(writer, buffered);
+            publishCount(stepExecution, REPORT_RECORD_COUNT_CONTEXT, detailRecords);
         } catch (final CardDemoException typed) {
             failure = typed;
         } catch (final RuntimeException unexpected) {
@@ -1262,19 +1918,25 @@ public class TransactionReportJob {
     }
 
     /**
-     * Reads one fixed-width object as undelimited records.
+     * Counts the undelimited fixed-width records in one object, <b>retaining none of them</b>.
+     *
+     * <p>One record-sized buffer is reused for the whole scan, so the live heap this method adds is
+     * {@value #TRANSACTION_RECORD_LENGTH} bytes regardless of how large the object is. The buffer is read into
+     * only so its bytes can be rejected: no field is decoded, nothing is returned but the count, and no record
+     * content reaches a log or an exception message.
      *
      * @param objectKey concrete object key
-     * @param logicalName logical DD name
-     * @param recordLength record length
-     * @return mutable record list in object order
+     * @param logicalName logical DD name, for the {@code FILE STATUS} diagnostics
+     * @param recordLength the exact record length the DD declares
+     * @return the number of whole records the object holds, zero for an empty object
+     * @throws DataIntegrityException if a separator byte appears or the length is not an exact multiple
      */
-    private List<byte[]> readFixedWidthGeneration(
+    private long countFixedWidthGeneration(
             final String objectKey,
             final String logicalName,
             final int recordLength) {
 
-        final List<byte[]> records = new ArrayList<>();
+        long records = 0L;
         try {
             final S3Resource resource = objectStorage.download(outputBucket, objectKey);
             try (InputStream input = new BufferedInputStream(resource.getInputStream())) {
@@ -1283,8 +1945,18 @@ public class TransactionReportJob {
                     if (record.length == 0) {
                         break;
                     }
-                    requireRecordLength(record, recordLength, logicalName);
-                    records.add(record);
+                    if (record.length != recordLength) {
+                        throw new DataIntegrityException(String.format(Locale.ROOT,
+                                "%s object %s in bucket %s ends with a partial record: row %d carries %d "
+                                        + "bytes where app/proc/TRANREPT.prc:L29 declares "
+                                        + "DCB=(LRECL=%d,RECFM=FB,BLKSIZE=0), so the object length must be an "
+                                        + "exact multiple of %d",
+                                logicalName, objectKey, outputBucket, Long.valueOf(records + 1L),
+                                Integer.valueOf(record.length), Integer.valueOf(recordLength),
+                                Integer.valueOf(recordLength)));
+                    }
+                    rejectRecordSeparator(record, objectKey, logicalName, records + 1L);
+                    records++;
                 }
             }
             fileStatusMapper.requireSuccess(STATUS_SUCCESS, logicalName, "READ");
@@ -1297,33 +1969,228 @@ public class TransactionReportJob {
     }
 
     /**
-     * Writes unchanged fixed-width records to one concrete object.
+     * Refuses a record separator anywhere in a fixed-block record.
      *
-     * @param objectKey concrete output key
-     * @param logicalName logical DD name
-     * @param recordLength required record length
-     * @param records records in final order
+     * <p>{@code RECFM=FB} carries no delimiter, so an {@code LF}, {@code CR} or {@code CRLF} inside a record
+     * image is not a terminator to be consumed - it is evidence that the object was written by something that
+     * treated the records as text lines, and every record after the first is therefore shifted. Refusing it
+     * names the defect where it starts. The scan covers the whole record rather than only its final byte,
+     * because a shifted record carries the stray byte in the interior, not at the end.
+     *
+     * @param record one record image, exactly {@code recordLength} bytes
+     * @param objectKey the object being read, for the diagnostic
+     * @param logicalName the logical DD name
+     * @param row the one-based row number, for the diagnostic
+     * @throws DataIntegrityException if any separator byte is present
      */
-    private void writeFixedWidthGeneration(
+    private void rejectRecordSeparator(
+            final byte[] record,
             final String objectKey,
             final String logicalName,
-            final int recordLength,
-            final List<byte[]> records) {
+            final long row) {
 
+        for (int offset = 0; offset < record.length; offset++) {
+            final byte candidate = record[offset];
+            if (candidate == LINE_FEED || candidate == CARRIAGE_RETURN) {
+                throw new DataIntegrityException(String.format(Locale.ROOT,
+                        "%s object %s in bucket %s carries a record separator 0x%02X at byte %d of row %d. "
+                                + "app/proc/TRANREPT.prc:L29 declares DCB=(LRECL=%d,RECFM=FB,BLKSIZE=0), "
+                                + "which is undelimited, so the object geometry is corrupt and every record "
+                                + "after the first is shifted",
+                        logicalName, objectKey, outputBucket, Byte.valueOf(candidate),
+                        Integer.valueOf(offset + 1), Long.valueOf(row),
+                        Integer.valueOf(TRANSACTION_RECORD_LENGTH)));
+            }
+        }
+    }
+
+    /**
+     * Streams the ordered, filtered transaction population into the concrete {@code SORTOUT} object.
+     *
+     * <p><b>This is the {@code SORT} of {@code app/proc/TRANREPT.prc:L43-L46}, and it spawns no external
+     * process.</b> AAP section 0.4.3 nominates "Comparator plus repository ordering" as the DFSORT
+     * replacement, and that is what this is: {@code ORDER BY tran_card_num, tran_id} served by
+     * {@code idx_transaction_proc_ts} over the range predicate, paged so that one chunk is live at a time.
+     *
+     * <p><b>The emitted order is byte-identical to the order the heap sort produced.</b> The old code sorted a
+     * generation written in ascending {@code TRAN-ID} order - that is the order
+     * {@code TransactionBackupReader} browses the relation in - with {@code List.sort}, which is <b>stable</b>,
+     * so equal card numbers stayed in {@code TRAN-ID} order. The query's total order
+     * {@code cardNumber asc, transactionId asc} is the same permutation, and it is deterministic where a
+     * stable sort over an incidentally-ordered input merely happened to be. {@code app/proc/TRANREPT.prc:L44}
+     * declares {@code SORT FIELDS=(TRAN-CARD-NUM,A)} alone, so DFSORT itself leaves ties unordered; naming the
+     * tiebreak is therefore a tightening of an unspecified case and not a divergence.
+     *
+     * <p><b>Ordering and comparison are byte-ordered on both sides.</b> {@code docker-compose.yml} initialises
+     * the database with {@code --locale=C} and every Testcontainers definition does the same, so
+     * {@code ORDER BY} and {@code >=} in SQL mean exactly what {@code String.compareTo} means in Java. That is
+     * what makes it sound to move the predicate and the ordering across the boundary at all; under a
+     * locale-dependent collation punctuation is reordered and the two would disagree.
+     *
+     * <p><b>The inclusive predicate is nevertheless re-applied on the rendered image.</b> The SQL range is
+     * derived, and {@link #includeCondition} is the definition; re-checking the 350-byte image against it
+     * costs one comparison per surviving row, retains nothing, and means the object this step publishes is
+     * governed by the byte-level predicate the source declares rather than by the derivation. A row that
+     * reached here without matching is a defect in the derivation, so it fails the step rather than being
+     * silently dropped.
+     *
+     * @param dailyKey the concrete {@code SORTOUT} key this step creates
+     * @param startDate the inclusive ten-character lower bound, {@code app/proc/TRANREPT.prc:L45}
+     * @param endDate the inclusive ten-character upper bound, {@code app/proc/TRANREPT.prc:L46}
+     * @return the number of 350-byte records written
+     */
+    private long writeSortedGeneration(
+            final String dailyKey,
+            final String startDate,
+            final String endDate) {
+
+        final String endBoundExclusive = exclusiveEndBound(startDate, endDate);
+        long recordCount = 0L;
         try {
-            final S3Resource resource = outputResource(objectKey);
+            final S3Resource resource = outputResource(dailyKey);
             try (OutputStream output = new BufferedOutputStream(resource.getOutputStream())) {
-                for (final byte[] record : records) {
-                    requireRecordLength(record, recordLength, logicalName);
-                    output.write(record);
+                int pageNumber = 0;
+                boolean morePages = true;
+                while (morePages) {
+                    final Slice<Transaction> page =
+                            transactionRepository.findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc(
+                                    startDate, endBoundExclusive, PageRequest.of(pageNumber, chunkSize));
+                    for (final Transaction transaction : page.getContent()) {
+                        final byte[] encoded = encodeTransactionRecord(transaction, DD_SORT_OUTPUT);
+                        requireDerivedRangeMatched(encoded, startDate, endDate, endBoundExclusive);
+                        output.write(encoded);
+                        recordCount++;
+                    }
+                    morePages = page.hasNext();
+                    pageNumber++;
                 }
                 output.flush();
             }
-            fileStatusMapper.requireSuccess(STATUS_SUCCESS, logicalName, "WRITE");
+            fileStatusMapper.requireSuccess(STATUS_SUCCESS, DD_SORT_OUTPUT, "WRITE");
+            return recordCount;
         } catch (final CardDemoException typed) {
             throw typed;
         } catch (final IOException | RuntimeException cause) {
-            throw ioAbend(logicalName, "WRITE", "ERROR WRITING FIXED-WIDTH GENERATION", cause);
+            throw ioAbend(DD_SORT_OUTPUT, "WRITE", "ERROR WRITING FIXED-WIDTH GENERATION", cause);
+        }
+    }
+
+    /**
+     * Renders one entity as its 350-byte fixed-width image.
+     *
+     * @param transaction the row to render
+     * @param logicalName the logical DD name the length is checked against
+     * @return exactly {@value #TRANSACTION_RECORD_LENGTH} bytes
+     */
+    private byte[] encodeTransactionRecord(final Transaction transaction, final String logicalName) {
+        final String record = transactionRecord(
+                transaction.getTransactionId(),
+                transaction.getTypeCode(),
+                transaction.getCategoryCode(),
+                transaction.getTransactionSource(),
+                transaction.getDescription(),
+                transaction.getAmount(),
+                transaction.getMerchantId(),
+                transaction.getMerchantName(),
+                transaction.getMerchantCity(),
+                transaction.getMerchantZip(),
+                transaction.getCardNumber(),
+                transaction.getOrigTs(),
+                transaction.getProcTs());
+        final byte[] encoded = record.getBytes(FIXED_WIDTH_CHARSET);
+        requireEncodedLength(encoded, TRANSACTION_RECORD_LENGTH, logicalName);
+        return encoded;
+    }
+
+    /**
+     * Confirms a row the derived SQL range admitted also satisfies the source's byte-level predicate.
+     *
+     * @param encoded the rendered 350-byte image
+     * @param startDate the inclusive lower bound
+     * @param endDate the inclusive upper bound
+     * @param endBoundExclusive the derived exclusive bound, named in the diagnostic
+     * @throws DataIntegrityException if the derivation and the declared predicate disagree
+     */
+    private void requireDerivedRangeMatched(
+            final byte[] encoded,
+            final String startDate,
+            final String endDate,
+            final String endBoundExclusive) {
+
+        if (!includeCondition(encoded, startDate, endDate)) {
+            throw new DataIntegrityException(String.format(Locale.ROOT,
+                    "a row admitted by the derived half-open range [%s, %s) fails the INCLUDE COND of "
+                            + "app/proc/TRANREPT.prc:L45-L46, which is inclusive on both bounds [%s, %s]. "
+                            + "The derivation and the declared predicate must agree exactly; they do not, so "
+                            + "%s is not written rather than being written with a population the source would "
+                            + "not have selected",
+                    startDate, endBoundExclusive, startDate, endDate, DD_SORT_OUTPUT));
+        }
+    }
+
+    /**
+     * Derives the exclusive upper bound that is equivalent to the source's inclusive ten-character one.
+     *
+     * <p>{@code app/proc/TRANREPT.prc:L46} includes a record when the ten characters at byte 305 are less than
+     * or equal to the end date. {@code TRAN-PROC-TS} is {@code PIC X(26)}, so the SQL predicate compares the
+     * whole 26 characters and {@code procTs <= endDate} would be wrong: any real timestamp on the end date is
+     * longer than the ten-character bound and therefore compares <b>greater</b> than it. An exclusive bound is
+     * required, and {@code TransactionRepository} states that deriving it belongs to the caller.
+     *
+     * <p><b>The derivation increments the final character of the ten-character date, and nothing else.</b> For
+     * {@code 2026-01-31} the bound is {@code 2026-01-32}. Any timestamp whose first ten characters are at most
+     * the end date compares less than that bound, because the decision falls at character ten; any timestamp
+     * whose first ten characters name a later date compares greater, because the decision falls earlier. It is
+     * therefore exactly equivalent, and it is preferred over the two alternatives for specific reasons:
+     * <ul>
+     *   <li><b>It assumes nothing about character eleven.</b> Appending a separator would: three mutually
+     *       incompatible producers write these 26 bytes, the batch generator emitting
+     *       {@code yyyy-MM-dd-HH.mm.ss.SS0000} with a hyphen at character eleven and the online path emitting
+     *       {@code yyyy-MM-dd HH:mm:ss.000000} with a <b>space</b> there, and a third path passing input
+     *       through unchanged. A bound that depended on which producer wrote the row would admit one and
+     *       exclude the other.</li>
+     *   <li><b>It performs no date arithmetic.</b> Adding one day would reintroduce calendar handling - month
+     *       ends, leap years - into a comparison the source performs on characters and never parses, and AAP
+     *       section 0.8.3 requires the lexical comparison to stay lexical.</li>
+     * </ul>
+     * The bound is a comparison operand only. It is never rendered, stored or reported as a date, so the fact
+     * that {@code 2026-01-32} is not a calendar date is immaterial - and incrementing {@code 9} yields
+     * {@code :}, which orders immediately after {@code 9} and is equally serviceable.
+     *
+     * <p><b>The parameter's shape is checked here rather than assumed.</b> This method is the first statement
+     * of the step, so it is the last point before a query is issued or an object is created; an end date that
+     * is not exactly {@code yyyy-MM-dd} would otherwise be incremented anyway - {@code 2022-06-3X} becoming
+     * {@code 2022-06-3Y} - and turn a malformed parameter into a silently wrong scan. It abends instead, with
+     * reason {@code END DATE INVALID}, before the repository or the object store is touched. The start date is
+     * checked on the same terms, because it reaches the predicate as an operand in exactly the same way.
+     *
+     * @param startDate the inclusive ten-character lower bound, checked for shape and otherwise passed through
+     * @param endDate the inclusive ten-character end date whose exclusive equivalent is derived
+     * @return the exclusive bound, ten characters, strictly greater than every timestamp on {@code endDate}
+     * @throws FatalProcessingException with reason {@code START DATE INVALID} or {@code END DATE INVALID} when
+     *     either parameter is not the ten-character dashed form
+     */
+    private String exclusiveEndBound(final String startDate, final String endDate) {
+        requireParameterDate(startDate, "START DATE INVALID", "startDate");
+        requireParameterDate(endDate, "END DATE INVALID", "endDate");
+        final int lastIndex = endDate.length() - 1;
+        final char incremented = (char) (endDate.charAt(lastIndex) + 1);
+        return endDate.substring(0, lastIndex) + incremented;
+    }
+
+    /**
+     * Refuses a period parameter that is not the ten-character dashed date the parameter cards carry.
+     *
+     * @param value the parameter as supplied, which may be {@code null}
+     * @param reason the abend reason to report
+     * @param parameterName the parameter's own name, for the diagnostic
+     * @throws FatalProcessingException when the value is absent or not {@code yyyy-MM-dd}
+     */
+    private void requireParameterDate(final String value, final String reason, final String parameterName) {
+        if (value == null || !PARAMETER_DATE_SHAPE.matcher(value).matches()) {
+            throw abend(reason, String.format(Locale.ROOT,
+                    "JOB PARAMETER %s MUST BE THE TEN-CHARACTER DATE app/proc/TRANREPT.prc:L45-L46 SUPPLIES",
+                    parameterName), null);
         }
     }
 
@@ -1602,6 +2469,25 @@ public class TransactionReportJob {
     }
 
     /**
+     * Reads a count a prior step published into the job execution context.
+     *
+     * <p>Absence is reported as {@value #COUNT_NOT_PUBLISHED} rather than as zero, because the two mean
+     * different things: zero is a step that ran and found nothing, and absence is a step that did not publish.
+     * A caller that conflated them would compare against zero and pass whenever the producer had been skipped.
+     *
+     * @param stepExecution the consuming step execution
+     * @param contextKey the key the producing step published under
+     * @return the published count, or {@value #COUNT_NOT_PUBLISHED} when the key is absent
+     */
+    private long publishedCount(final StepExecution stepExecution, final String contextKey) {
+        final ExecutionContext jobContext = stepExecution.getJobExecution().getExecutionContext();
+        if (!jobContext.containsKey(contextKey)) {
+            return COUNT_NOT_PUBLISHED;
+        }
+        return jobContext.getLong(contextKey, COUNT_NOT_PUBLISHED);
+    }
+
+    /**
      * Reads and validates an exact prior-step key; no bucket listing fallback exists.
      *
      * @param stepExecution current consuming step
@@ -1734,19 +2620,20 @@ public class TransactionReportJob {
     /**
      * Validates an object-key prefix without silently normalising it.
      *
+     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This validator was the strict one the review
+     * named as the benchmark, and five sibling classes each carried a weaker variant. The grammar it applied is
+     * now published once as {@link GenerationPrefixContract#requireRelativePrefix(String, String)} and all six
+     * delegate to it, so the rule is defined in one place and cannot diverge again. The shared form adds three
+     * rules this one lacked - a backslash, a lone {@code .} segment and an interior space are refused as well -
+     * and reports the offending position for a character failure; every prefix this method accepted before is
+     * still accepted.
+     *
      * @param value configured prefix
      * @param property property name used in validation failures
      * @return unchanged safe relative prefix
      */
     private String requireGenerationPrefix(final String value, final String property) {
-        final String prefix = requireConfiguredText(value, property);
-        if (prefix.startsWith("/")
-                || prefix.endsWith("/")
-                || prefix.contains("//")
-                || prefix.contains("..")) {
-            throw new IllegalArgumentException(property + " is not a safe relative object prefix");
-        }
-        return prefix;
+        return GenerationPrefixContract.requireRelativePrefix(value, property);
     }
 
     /**
@@ -1938,48 +2825,6 @@ public class TransactionReportJob {
     }
 
     /**
-     * Parks one inherited MDC value in the job execution context.
-     *
-     * @param context job execution context holding the snapshot
-     * @param savedKey execution-context key for the inherited value
-     * @param mdcKey MDC key to snapshot
-     */
-    private void parkMdc(
-            final ExecutionContext context,
-            final String savedKey,
-            final String mdcKey) {
-
-        final String inherited = MDC.get(mdcKey);
-        context.put(savedKey + SAVED_MDC_PRESENT_SUFFIX, Boolean.valueOf(inherited != null));
-        if (inherited != null) {
-            context.putString(savedKey, inherited);
-        }
-    }
-
-    /**
-     * Restores or clears one MDC value and removes its snapshot.
-     *
-     * @param context job execution context holding the snapshot
-     * @param savedKey execution-context key for the inherited value
-     * @param mdcKey MDC key to restore or clear
-     */
-    private void restoreMdc(
-            final ExecutionContext context,
-            final String savedKey,
-            final String mdcKey) {
-
-        final boolean present = context.get(
-                savedKey + SAVED_MDC_PRESENT_SUFFIX, Boolean.class, Boolean.FALSE).booleanValue();
-        if (present) {
-            MDC.put(mdcKey, context.getString(savedKey, ""));
-        } else {
-            MDC.remove(mdcKey);
-        }
-        context.remove(savedKey);
-        context.remove(savedKey + SAVED_MDC_PRESENT_SUFFIX);
-    }
-
-    /**
      * Job-parameter validator that rejects malformed input before STEP01R creates an object.
      */
     private final class TransactionReportParametersValidator implements JobParametersValidator {
@@ -1997,37 +2842,41 @@ public class TransactionReportJob {
     }
 
     /**
-     * Inline batch MDC lifecycle and source-finding logger.
+     * Inline batch diagnostic-context lifecycle and source-finding logger.
+     *
+     * <p><strong>Findings H-02 and M-02, severities High and Medium.</strong> This listener used to park four
+     * diagnostic entries in the job execution context under four string literals of its own, and then fill
+     * {@code traceId} and {@code spanId} with random UUIDs whenever the thread carried none. Both halves were
+     * wrong. The literals were a second spelling of a contract
+     * {@link CorrelationIdFilter} already owns, and the two spellings had already drifted in lifecycle
+     * behaviour from the other batch listeners. The fabricated identifiers were worse: this job creates no
+     * span, so the values named traces that no tracing backend held, and a
+     * {@value CorrelationIdFilter#TRACE_PARENT_HEADER} composed from them would have invited the next hop to
+     * parent itself onto a trace that does not exist. An untraced run now emits no trace identifier, which is
+     * the honest rendering, and {@link CorrelationIdFilter#enterBatchScope(long, String)} is the one
+     * implementation of the snapshot-and-restore this listener shares with every other job.
      */
     private final class TransactionReportJobListener implements JobExecutionListener {
 
-        /** Stateless constructor; inherited values live in the execution context. */
+        /** Stateless constructor; the displaced context lives on the thread that established it. */
         private TransactionReportJobListener() {
             // No mutable listener state.
         }
 
-        /** Establishes all four MDC keys before the first job event emitted by this class. */
+        /**
+         * Establishes the job instance and correlation entries before the first event this class emits.
+         *
+         * <p>The instance identifier falls back to zero for an execution carrying no instance, which a
+         * partially constructed execution can: a diagnostic aid must label the run rather than fail it.
+         *
+         * @param jobExecution the starting execution
+         */
         @Override
         public void beforeJob(final JobExecution jobExecution) {
-            final ExecutionContext context = jobExecution.getExecutionContext();
-            parkMdc(context, SAVED_MDC_JOB_INSTANCE_ID, MDC_JOB_INSTANCE_ID);
-            parkMdc(context, SAVED_MDC_CORRELATION_ID, MDC_CORRELATION_ID);
-            parkMdc(context, SAVED_MDC_TRACE_ID, MDC_TRACE_ID);
-            parkMdc(context, SAVED_MDC_SPAN_ID, MDC_SPAN_ID);
-
             final long instanceId = jobExecution.getJobInstance() == null
                     ? 0L
                     : jobExecution.getJobInstance().getInstanceId();
-            MDC.put(MDC_JOB_INSTANCE_ID, Long.toString(instanceId));
-            if (MDC.get(MDC_CORRELATION_ID) == null) {
-                MDC.put(MDC_CORRELATION_ID, UUID.randomUUID().toString());
-            }
-            if (MDC.get(MDC_TRACE_ID) == null) {
-                MDC.put(MDC_TRACE_ID, UUID.randomUUID().toString().replace("-", ""));
-            }
-            if (MDC.get(MDC_SPAN_ID) == null) {
-                MDC.put(MDC_SPAN_ID, UUID.randomUUID().toString().replace("-", "").substring(0, 16));
-            }
+            CorrelationIdFilter.enterBatchScope(instanceId, mintedCorrelationId(jobExecution));
 
             LOG.info("START OF EXECUTION OF JOB {}: {} ordered steps; retention={} documented only",
                     jobName, Integer.valueOf(3), Integer.valueOf(reportRetentionGenerations));
@@ -2041,7 +2890,11 @@ public class TransactionReportJob {
                     DISPLAY_TRAN_AMOUNT, DISPLAY_PAGE_TOTAL);
         }
 
-        /** Logs the final outcome and restores every inherited MDC value in a finally block. */
+        /**
+         * Logs the final outcome and restores the displaced diagnostic context in a {@code finally} block.
+         *
+         * @param jobExecution the finishing execution
+         */
         @Override
         public void afterJob(final JobExecution jobExecution) {
             try {
@@ -2054,12 +2907,18 @@ public class TransactionReportJob {
                         Long.valueOf(context.getLong(DAILY_RECORD_COUNT_CONTEXT, 0L)),
                         Long.valueOf(context.getLong(REPORT_LINE_COUNT_CONTEXT, 0L)));
             } finally {
-                final ExecutionContext context = jobExecution.getExecutionContext();
-                restoreMdc(context, SAVED_MDC_SPAN_ID, MDC_SPAN_ID);
-                restoreMdc(context, SAVED_MDC_TRACE_ID, MDC_TRACE_ID);
-                restoreMdc(context, SAVED_MDC_CORRELATION_ID, MDC_CORRELATION_ID);
-                restoreMdc(context, SAVED_MDC_JOB_INSTANCE_ID, MDC_JOB_INSTANCE_ID);
+                CorrelationIdFilter.exitBatchScope();
             }
+        }
+
+        /**
+         * The correlation identifier this listener mints when the thread carries none.
+         *
+         * @param jobExecution the execution being labelled
+         * @return {@value #CORRELATION_ID_PREFIX} followed by the execution identifier, never {@code null}
+         */
+        private String mintedCorrelationId(final JobExecution jobExecution) {
+            return CORRELATION_ID_PREFIX + jobExecution.getId();
         }
     }
 
@@ -2318,13 +3177,26 @@ public class TransactionReportJob {
             if (line.length() > REPORT_RECORD_LENGTH) {
                 throw fatal("REPORT LINE TOO LONG", "TRANREPT LINE EXCEEDS 133 CHARACTERS", null);
             }
-            final String padded = line + " ".repeat(REPORT_RECORD_LENGTH - line.length());
-            for (int index = 0; index < padded.length(); index++) {
-                if (padded.charAt(index) > 0xFF) {
-                    throw fatal("REPORT CHARACTER INVALID",
-                            "TRANREPT LINE CANNOT BE ENCODED AS ONE BYTE PER CHARACTER", null);
+            // FINDING M-09, severity Major, RESOLVED. This loop used to admit every code point through 0xFF,
+            // which let a carriage return, a line feed or any other control byte into a 133-byte record.
+            // app/proc/TRANREPT.prc declares DCB=(LRECL=133,RECFM=FB) - fixed blocks with no delimiter - so
+            // the object stays well formed and still parses by byte count, which is precisely what makes the
+            // injection dangerous: any reader that splits on newlines sees a record boundary the report does
+            // not have, with attacker-chosen content after it. The permitted set is now the same strict one
+            // alphanumeric() and every other fixed-width writer applies.
+            for (int index = 0; index < line.length(); index++) {
+                final char character = line.charAt(index);
+                final boolean printableAscii = character >= 0x20 && character <= 0x7E;
+                final boolean printableLatinOne = character >= 0xA0 && character <= 0xFF;
+                if (!printableAscii && !printableLatinOne) {
+                    // Position and code point only. The line carries cardholder-bearing fields, so the
+                    // diagnostic names where the offending character is and never what the line says.
+                    throw fatal("REPORT CHARACTER INVALID", String.format(Locale.ROOT,
+                            "TRANREPT LINE CANNOT CARRY THE CHARACTER AT POSITION %d (CODE POINT %d)",
+                            Integer.valueOf(index + 1), Integer.valueOf(character)), null);
                 }
             }
+            final String padded = line + " ".repeat(REPORT_RECORD_LENGTH - line.length());
             final byte[] encoded = padded.getBytes(FIXED_WIDTH_CHARSET);
             if (encoded.length != REPORT_RECORD_LENGTH) {
                 throw fatal("REPORT LENGTH INVALID",

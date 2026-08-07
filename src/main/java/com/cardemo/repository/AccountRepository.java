@@ -366,7 +366,7 @@ import jakarta.persistence.LockModeType;
  *   <dd>HikariCP is used at its defaults. Sizing it honestly requires a measured concurrency profile that the
  *       legacy system does not publish &mdash; the corpus asserts no service-level objective anywhere, so any
  *       pool figure invented here would be fabricated rather than derived. The item is disclosed as residual
- *       risk in the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md} rather than silently absorbed.
+ *       risk in the {@code DECISION_LOG.md} and {@code docs/validation-gates.md} rather than silently absorbed.
  *       Remediation: revisit once the performance-baseline gate has produced measured throughput and latency
  *       figures.</dd>
  *   </dl>

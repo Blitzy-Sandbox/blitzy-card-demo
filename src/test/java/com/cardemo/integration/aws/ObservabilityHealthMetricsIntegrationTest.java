@@ -225,8 +225,9 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  * separate {@code group.liveness.include} and {@code group.readiness.include};
  * {@code management.endpoint.health.validate-group-membership} is left at its secure default, so naming a
  * contributor that does not exist aborts startup rather than silently yielding an empty group. The
- * readiness group path is the one the container image health-checks, at {@code Dockerfile:564}, which
- * issues {@code GET /actuator/health/readiness} and greps the body for an {@code UP} status.
+ * readiness group path is the one the container image health-checks, in the Dockerfile's
+ * {@code HEALTHCHECK}, which issues {@code GET /actuator/health/readiness} and greps the body for an
+ * {@code UP} status.
  * <strong>The {@code test} profile deliberately neutralises trace export</strong> by excluding the OTLP
  * tracing auto-configuration, so no assertion here claims a span reached a collector; in-process tracing
  * survives, which is why the MDC trio is still rendered.
@@ -304,7 +305,8 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *       signed-total behaviour. The series is a <strong>telemetry mirror, not the authoritative financial
  *       total</strong>; where it disagrees with the database, the database is right.</dd>
  *   <dt>The readiness health-check lives in the image, not the compose file</dt>
- *   <dd>The probed path is the one at {@code Dockerfile:564}; the compose file health-checks only its own
+ *   <dd>The probed path is the one in the Dockerfile's {@code HEALTHCHECK}; the compose file
+ *       health-checks only its own
  *       database and emulator services. The path asserted here is the one actually probed.</dd>
  *   <dt>This leaf holds three files, not the six a sibling roster names</dt>
  *   <dd>An earlier change consolidated the bucket, generation-key, queue and correlation classes the roster
@@ -320,12 +322,22 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  *       report, statement and markup output families - returns only dataset <em>definition</em> job control
  *       and <strong>zero</strong> captured data. What is needed: a captured 430-byte reject dataset plus the
  *       resulting transaction, account and category-balance images from a real posting run at a known input
- *       state. <strong>No baseline file is created here and no expected bytes are ever fabricated</strong>;
- *       a baseline produced by running the Java implementation would be circular and is forbidden. Note
- *       specifically that the reject <em>count</em> is model-sensitive and therefore not an oracle - a
+ *       state, which would corroborate the source-derived expectation rather than replace it.
+ *       <strong>No baseline file is created here and no expected bytes are ever fabricated</strong>; a
+ *       baseline produced by running the Java implementation would be circular and is forbidden. An earlier
+ *       revision added that the reject <em>count</em> was "model-sensitive and therefore not an oracle - a
  *       stateless single pass over the fixture yields 13 rejects while a faithful stateful model yields 38
- *       rejects against 262 posted - so the posting program must never be hand-simulated to derive an
- *       expected counter value, and this class does not.</li>
+ *       rejects against 262 posted". <strong>That inference is withdrawn, and note what the sentence itself
+ *       concedes:</strong> it names one of the two readings <em>faithful</em>. It is the only faithful one.
+ *       {@code 2800-UPDATE-ACCOUNT-REC} ends in {@code REWRITE FD-ACCTFILE-REC} at
+ *       {@code app/cbl/CBTRN02C.cbl:561} and {@code 2700-B-UPDATE-TCATBAL-REC} in
+ *       {@code REWRITE FD-TRAN-CAT-BAL-RECORD} at {@code :527}; a VSAM {@code REWRITE} replaces the record
+ *       in the cluster, so the next {@code READ} of that key returns the mutated values and the 13-reject
+ *       figure is simply wrong rather than differently modelled. The 38-against-262 figure is the expectation
+ *       {@code com.cardemo.e2e.PostingParityOracle} derives and commits under
+ *       {@code src/test/resources/expected/posttran}, and it is what the real run is diffed against. This
+ *       class still asserts no counter total, for a scope reason: it owns the observability surface, and the
+ *       posting outcome belongs to the suites that run the posting job.</li>
  *   <li><strong>A file-unavailable legacy status is {@code Not available}.</strong> A census across
  *       {@code app/cbl} finds the literal {@code '35'} zero times and the not-open response condition zero
  *       times; for contrast the duplicate-record condition appears seven times and the duplicate-key
@@ -427,7 +439,8 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
      * How many times a substrate probe may be read before its verdict is taken as final.
      *
      * <p>Four, because that is the retry budget the container image health-check itself allows at
-     * {@code Dockerfile:563} - {@code --retries=4} with {@code --interval=15s}. <strong>The contract is
+     * the Dockerfile's {@code HEALTHCHECK} - {@code --retries=4} with {@code --interval=15s}. <strong>The
+     * contract is
      * therefore "readiness reports up within four attempts", not "on the first sample", and asserting a
      * single reading would be STRICTER THAN THE CONTRACT.</strong> That matters in practice rather than in
      * theory: each contributor runs inside a deliberately small total budget with an even smaller
@@ -2275,6 +2288,102 @@ class ObservabilityHealthMetricsIntegrationTest extends AbstractAwsIntegrationTe
                     .doesNotContain("123456789");
             assertThat(dashed).contains("REDACTED");
             assertThat(bare).contains("REDACTED");
+        }
+
+        /**
+         * A driver-rendered bound value is withheld <strong>by the configured encoder</strong>.
+         *
+         * <p><strong>Why this test exists at this tier.</strong> The two rules that cover driver text are
+         * asserted at the unit tier by
+         * {@code src/test/java/com/cardemo/unit/infrastructure/LogbackMaskingGuardTest.java}, which parses
+         * the rules out of the configuration and applies them with {@code Matcher.replaceAll}. That proves
+         * each pattern compiles and redacts what it must. It cannot prove the rules are <em>reached</em>:
+         * a rule attached to the wrong decorator, listed under a value-mask element the encoder does not
+         * consult, or shadowed by an earlier rule that consumes the same text would pass there and leak
+         * here. Only the configured encoder settles that, and this is the tier that has one.
+         *
+         * <p>The shape is the one PostgreSQL builds for a failed batch: the statement re-rendered with its
+         * parameters inlined as {@code column=('value')}, which Hibernate logs at ERROR on any failed
+         * write. It is the shape that published a social security number and a primary account number in
+         * clear, because every label-keyed rule expects {@code label=value} and the driver writes
+         * {@code label=('value')}. Every digit below is synthetic.
+         *
+         * <p>Both directions are asserted, because a mask that swallowed the statement would be its own
+         * defect: the relation name, the constraint name and the column names are the whole diagnostic
+         * value of the line and they must survive.
+         */
+        @Test
+        @DisplayName("a driver-inlined bound value is withheld by the configured encoder, diagnosis intact")
+        void aDriverInlinedBoundValueIsWithheldByTheConfiguredEncoder() {
+            final String syntheticIdentityNumber = "020973888";
+            final String syntheticCardNumber = "9680294154603697";
+            final String batchFailure = encode("Batch entry 0 update customer set "
+                    + "cust_addr_line_1=('618 Deshaun Route'),cust_ssn=('" + syntheticIdentityNumber
+                    + "'),cust_fico_credit_score=('274'),version=('1'::int8) where cust_id=('1'::int8) "
+                    + "was aborted: ERROR: check constraint ck_customer_pri_card_holder_ind");
+            final String insertFailure = encode("Batch entry 0 insert into transaction (tran_amt,"
+                    + "tran_card_num,tran_cat_cd) values (('1.00'::numeric),('" + syntheticCardNumber
+                    + "'),('1'::numeric)) was aborted");
+
+            assertThat(batchFailure)
+                    .as("the identity number and the address reach the encoder inside driver-rendered "
+                            + "parentheses, where no label-keyed rule can see them. They must not survive "
+                            + "the encoder, whatever the unit tier says about the pattern in isolation")
+                    .doesNotContain(syntheticIdentityNumber)
+                    .doesNotContain("618 Deshaun Route");
+            assertThat(insertFailure)
+                    .as("and the same shape carries a primary account number on a referential failure")
+                    .doesNotContain(syntheticCardNumber);
+            assertThat(batchFailure)
+                    .as("what a diagnosis is acted on survives: the statement, the column names and the "
+                            + "constraint. A rule that took these too would trade one defect for another")
+                    .contains("update customer set")
+                    .contains("cust_ssn=(")
+                    .contains("ck_customer_pri_card_holder_ind");
+            assertThat(insertFailure).contains("insert into transaction").contains("tran_card_num");
+        }
+
+        /**
+         * The failing-row image is withheld by the configured encoder, and the constraint survives.
+         *
+         * <p>The counterpart shape to the one above, and the harder of the two: PostgreSQL's
+         * {@code Detail: Failing row contains (...)} is a positional, unlabelled tuple, so no rule keyed on
+         * shape can tell an identity number from the identifier beside it. The whole image is therefore
+         * withheld, which is why this test asserts that the text <em>before</em> the marker survives - that
+         * is where the relation and the constraint name sit, and they are what a reader needs.
+         *
+         * <p>Also asserted here: the rules do not over-reach. A referential detail carries no quoted
+         * literal and is the most useful half of a foreign-key diagnosis, so it must pass through the real
+         * encoder untouched. Over-redaction is a real failure mode of shape-keyed rules and it is the one
+         * that gets discovered late, because nothing about a redacted log line announces that it did not
+         * need redacting.
+         */
+        @Test
+        @DisplayName("the failing-row image is withheld by the configured encoder, and a bare detail is not")
+        void theFailingRowImageIsWithheldByTheConfiguredEncoder() {
+            final String syntheticIdentityNumber = "020973888";
+            final String withImage = encode("ERROR: new row for relation customer violates check "
+                    + "constraint ck_customer_ssn_numeric  Detail: Failing row contains "
+                    + "(1, Immanuel, Madeline, Kessler, 618 Deshaun Route, " + syntheticIdentityNumber
+                    + ", 274, 1).");
+            final String withoutLiteral =
+                    encode("Detail: Key (tran_type_cd)=(99) is not present in table transaction_type.");
+
+            assertThat(withImage)
+                    .as("the tuple is positional and unlabelled, so the whole image goes rather than a "
+                            + "guessed subset of its columns")
+                    .doesNotContain(syntheticIdentityNumber)
+                    .doesNotContain("Immanuel");
+            assertThat(withImage)
+                    .as("the relation and the constraint sit before the marker and must survive it")
+                    .contains("ck_customer_ssn_numeric")
+                    .contains("Failing row contains");
+            assertThat(withoutLiteral)
+                    .as("and a referential detail carries no inlined literal, so nothing about it may be "
+                            + "touched: over-redaction costs a diagnosis and announces nothing")
+                    .contains("tran_type_cd")
+                    .contains("99")
+                    .contains("transaction_type");
         }
 
         @Test

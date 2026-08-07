@@ -740,7 +740,7 @@ final class MainMenuServiceTest {
      * cannot be reproduced. The implementation therefore refuses {@code option &gt; count} <em>before</em>
      * any table access. The observable outcome is unchanged, because in the source both paths perform
      * {@code SEND-MENU-SCREEN} - both redisplay the menu carrying a message - and the operator sees a
-     * refusal either way. This deviation is owed an entry in the planned {@code DECISION_LOG.md} under
+     * refusal either way. This deviation is owed an entry in the {@code DECISION_LOG.md} under
      * <em>bounds short-circuit</em>, and the tests below make it <strong>observable rather than
      * silent</strong>: they prove the refusal is the bounds refusal and not the gate's, that no
      * {@code IndexOutOfBoundsException} escapes, and - by the control case - that the gate is still
@@ -1015,7 +1015,7 @@ final class MainMenuServiceTest {
      * <p><strong>Intentional no-op marker, and the one conflict this file carries.</strong> Rule 1
      * Clause B forbids dead code; the parity mandate forbids deleting a reachable branch. Parity governs,
      * and Clause B is satisfied on its own terms because its prohibition is on artefacts <em>without an
-     * owner or tracking reference</em>. Both retained branches have one: an entry in the planned
+     * owner or tracking reference</em>. Both retained branches have one: an entry in the
      * {@code DECISION_LOG.md}, a {@code TRACEABILITY_MATRIX.md} row, Javadoc citing the source locator, and this
      * marker.</p>
      *

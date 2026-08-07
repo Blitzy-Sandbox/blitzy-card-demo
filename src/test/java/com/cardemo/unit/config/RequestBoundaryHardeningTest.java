@@ -39,6 +39,9 @@ package com.cardemo.unit.config;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.cardemo.config.WebConfig;
 import com.fasterxml.jackson.core.JacksonException;
 import com.fasterxml.jackson.core.StreamReadConstraints;
@@ -52,11 +55,19 @@ import java.lang.reflect.Constructor;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.web.ServerProperties;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -68,6 +79,7 @@ import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.web.firewall.RequestRejectedException;
+import org.springframework.util.unit.DataSize;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -134,6 +146,16 @@ class RequestBoundaryHardeningTest {
     private static final String FILTER_CLASS_NAME =
             "com.cardemo.config.SecurityConfig$RequestBodyLimitFilter";
 
+    /**
+     * The binary name of the media-type screen, the other private nested filter of the same configuration.
+     *
+     * <p>Reached reflectively for the reason given on {@link #FILTER_CLASS_NAME}: it is an implementation
+     * detail of one filter chain, and widening its visibility so a test could name it would enlarge the
+     * documented public surface to suit the test.
+     */
+    private static final String MEDIA_TYPE_FILTER_CLASS_NAME =
+            "com.cardemo.config.SecurityConfig$RequestMediaTypeFilter";
+
     /** The anonymous route the bound exists to protect. */
     private static final String SIGN_ON_URI = "/api/auth/signon";
 
@@ -145,7 +167,29 @@ class RequestBoundaryHardeningTest {
      *     filter was renamed or removed and this test must be revisited rather than silently skipped
      */
     private static Filter bodyLimitFilter() throws ReflectiveOperationException {
-        final Class<?> type = Class.forName(FILTER_CLASS_NAME);
+        return instantiate(FILTER_CLASS_NAME);
+    }
+
+    /**
+     * Instantiates the media-type screen reflectively.
+     *
+     * @return the real filter, not a reimplementation of it
+     * @throws ReflectiveOperationException if the class or its constructor cannot be reached, which means the
+     *     filter was renamed or removed and this test must be revisited rather than silently skipped
+     */
+    private static Filter mediaTypeFilter() throws ReflectiveOperationException {
+        return instantiate(MEDIA_TYPE_FILTER_CLASS_NAME);
+    }
+
+    /**
+     * Instantiates one of the configuration's private nested filters by binary name.
+     *
+     * @param binaryName the binary name of the filter class
+     * @return the constructed filter
+     * @throws ReflectiveOperationException if the class or its no-argument constructor cannot be reached
+     */
+    private static Filter instantiate(final String binaryName) throws ReflectiveOperationException {
+        final Class<?> type = Class.forName(binaryName);
         final Constructor<?> constructor = type.getDeclaredConstructor();
         constructor.setAccessible(true);
         return (Filter) constructor.newInstance();
@@ -494,6 +538,90 @@ class RequestBoundaryHardeningTest {
                             + "own default of 1000")
                     .isGreaterThan(3)
                     .isLessThan(1000);
+        }
+    }
+
+    /**
+     * The header bound, which is read before the body and before authentication.
+     *
+     * <p><strong>Finding CFG-004, severity Medium - these tests pin both halves.</strong> The shipped profile
+     * declared {@code server.tomcat.max-http-request-header-size}, and nothing binds that key. Spring Boot
+     * 3.5.11's own configuration metadata declares {@code server.max-http-request-header-size} as a
+     * {@code DataSize} defaulting to 8 KB; under the {@code server.tomcat} prefix it declares only
+     * {@code max-http-response-header-size} and {@code max-part-header-size}. {@code ServerProperties} ignores
+     * unknown fields, so the misplaced key was accepted in silence and bound nothing.
+     *
+     * <p>It happened to carry the container's own default, so nothing observable changed - which is precisely
+     * what makes an inert key worth a finding rather than a shrug: an operator who <em>lowered</em> it to
+     * narrow the pre-authentication surface would have been protected by nothing at all, and no warning
+     * anywhere would have said so. The second test is therefore the substantive one: it proves the old
+     * spelling really is inert, so the move was necessary rather than cosmetic.
+     */
+    @Nested
+    @DisplayName("the header bound, and the property spelling that actually binds it")
+    class TheHeaderBound {
+
+        /** The bound the profile declares, and Tomcat's own default. */
+        private static final DataSize EXPECTED_HEADER_BOUND = DataSize.ofKilobytes(8);
+
+        /** A value distinguishable from the default, so a binding either happened or did not. */
+        private static final String DISTINGUISHABLE = "17KB";
+
+        /** Binds the framework's own properties class, which is the only authority on what binds. */
+        private final ApplicationContextRunner runner = new ApplicationContextRunner()
+                .withUserConfiguration(ServerPropertiesHolder.class);
+
+        @Test
+        @DisplayName("server.max-http-request-header-size binds, and the shipped profile declares it there")
+        void theBoundSpellingBindsAndIsWhatTheProfileDeclares() {
+            runner.withPropertyValues("server.max-http-request-header-size=" + DISTINGUISHABLE)
+                    .run(context -> assertThat(context.getBean(ServerProperties.class)
+                            .getMaxHttpRequestHeaderSize())
+                            .as("the framework binds this spelling, so a deployment that narrows the "
+                                    + "pre-authentication header surface actually narrows it")
+                            .isEqualTo(DataSize.parse(DISTINGUISHABLE)));
+
+            final String profile = readProfile();
+            assertThat(profile)
+                    .as("declared under server:, at the two-space indentation of a server child")
+                    .contains("\n  max-http-request-header-size: 8KB");
+            assertThat(profile)
+                    .as("and not at the four-space indentation of a server.tomcat child, which binds nothing")
+                    .doesNotContain("\n    max-http-request-header-size:");
+        }
+
+        @Test
+        @DisplayName("server.tomcat.max-http-request-header-size binds nothing, which is why the key moved")
+        void theOldSpellingBindsNothing() {
+            runner.withPropertyValues("server.tomcat.max-http-request-header-size=" + DISTINGUISHABLE)
+                    .run(context -> {
+                        assertThat(context)
+                                .as("an unknown field under a prefix that ignores them is not a startup "
+                                        + "failure - it is silence, which is the whole hazard")
+                                .hasNotFailed();
+                        assertThat(context.getBean(ServerProperties.class).getMaxHttpRequestHeaderSize())
+                                .as("the value set under the tomcat prefix reaches nothing: the bound stays "
+                                        + "at the framework default of 8 KB")
+                                .isEqualTo(EXPECTED_HEADER_BOUND);
+                    });
+        }
+
+        /**
+         * Reads the shipped profile, so the assertion is against the file a deployment actually loads.
+         *
+         * @return the profile text, never {@code null}
+         */
+        private String readProfile() {
+            try {
+                return Files.readString(Path.of("src", "main", "resources", "application.yml"));
+            } catch (final IOException unreadable) {
+                throw new UncheckedIOException(unreadable);
+            }
+        }
+
+        /** Enables the framework's own {@code server.*} binding, and contributes nothing else. */
+        @EnableConfigurationProperties(ServerProperties.class)
+        static class ServerPropertiesHolder {
         }
     }
 
@@ -932,6 +1060,245 @@ class RequestBoundaryHardeningTest {
                             + "nothing is written, because nothing can be")
                     .isNotNull();
             assertThat(response.getContentAsByteArray()).isEmpty();
+        }
+    }
+
+    /**
+     * The refusal <em>record</em>, as distinct from the refusal <em>response</em>.
+     *
+     * <p><strong>Finding C-01, severity Critical - these tests pin the remediation.</strong> The response body
+     * was already proven to echo nothing back; the log record was not, and it was the one carrying the caller's
+     * bytes. Four boundary sites logged raw request metadata: the media-type screen logged the declared
+     * {@code Content-Type}, the framework-boundary resolver logged the method and the URI, the firewall handler
+     * logged the method, the URI and the firewall's own message, and the authentication and authorisation
+     * handlers logged the URI.
+     *
+     * <p>Why that is a disclosure rather than a diagnostic. Every one of those sites is reachable
+     * <em>before</em> authentication, so an anonymous caller chooses the bytes. The masking layer in
+     * {@code src/main/resources/logback-spring.xml} redacts <em>labelled</em> values - a credential assignment,
+     * a hash shape, a nine-digit social-security shape - and a bare card number, password, customer name or
+     * government identifier sitting in a header value or a path segment carries no label, so it passed through
+     * intact. JSON encoding of the field prevents a <em>forged</em> record; it does nothing about disclosure.
+     *
+     * <p>Each test below drives one real boundary component with a protected value planted in exactly the
+     * field that component used to log, then asserts the value appears in neither the formatted message nor
+     * any argument of the emitted event. Both are inspected because a value passed as a placeholder argument
+     * would be absent from the pattern and present in the rendered line.
+     *
+     * <p>The planted values are synthetic and are chosen to look exactly like the things this application
+     * actually holds: a sixteen-digit card number, a customer surname, a nine-digit government identifier and
+     * a password-shaped token. None is a real credential and none is used to authenticate anything.
+     */
+    @Nested
+    @DisplayName("the refusal record carries no caller-supplied value")
+    class RefusalRecordConfidentiality {
+
+        /** A card-number-shaped value, sixteen digits as {@code CARD-NUM PIC X(16)} of CVACT02Y declares. */
+        private static final String PAN_SHAPED = "4111111111111111";
+
+        /** A customer-surname-shaped value, of the kind {@code CUST-LAST-NAME} of CVCUS01Y holds. */
+        private static final String SURNAME_SHAPED = "Whitmore";
+
+        /** A government-identifier-shaped value, nine digits as {@code CUST-SSN PIC 9(09)} declares. */
+        private static final String GOVERNMENT_ID_SHAPED = "123456789";
+
+        /** A password-shaped token. Synthetic, and deliberately not the legacy seed literal. */
+        private static final String PASSWORD_SHAPED = "notARealSecret1";
+
+        /** Every planted value, so one assertion covers the whole set at every site. */
+        private static final List<String> PLANTED =
+                List.of(PAN_SHAPED, SURNAME_SHAPED, GOVERNMENT_ID_SHAPED, PASSWORD_SHAPED);
+
+        /** The logger both configurations publish under, and therefore the one to capture. */
+        private static final String APPLICATION_LOGGER_NAME = "com.cardemo";
+
+        /**
+         * Runs one boundary interaction with an appender attached, and returns everything it logged.
+         *
+         * <p>Each event contributes its formatted message and the {@code String} rendering of every argument,
+         * so a value smuggled through a placeholder is caught as surely as one embedded in the pattern.
+         *
+         * @param interaction the boundary interaction to drive
+         * @return one entry per event per inspected part; never null
+         */
+        private List<String> capture(final ThrowingInteraction interaction) {
+            final Logger logger = (Logger) LoggerFactory.getLogger(APPLICATION_LOGGER_NAME);
+            final ListAppender<ILoggingEvent> appender = new ListAppender<>();
+            appender.setContext(logger.getLoggerContext());
+            appender.start();
+            logger.addAppender(appender);
+            try {
+                interaction.run();
+            } catch (final Exception unexpected) {
+                throw new AssertionError("the boundary interaction must not fail", unexpected);
+            } finally {
+                logger.detachAppender(appender);
+                appender.stop();
+            }
+
+            assertThat(appender.list)
+                    .as("the interaction must have produced at least one record; nothing captured would make "
+                            + "every assertion below vacuously true")
+                    .isNotEmpty();
+
+            final List<String> parts = new ArrayList<>();
+            for (final ILoggingEvent event : appender.list) {
+                parts.add(event.getFormattedMessage());
+                parts.add(String.valueOf(event.getMessage()));
+                if (event.getArgumentArray() != null) {
+                    for (final Object argument : event.getArgumentArray()) {
+                        parts.add(String.valueOf(argument));
+                    }
+                }
+            }
+            return parts;
+        }
+
+        /**
+         * Asserts that no planted value reached any part of any captured record.
+         *
+         * @param parts the captured message and argument renderings
+         * @param site  the boundary being described, for the failure message
+         */
+        private void assertNothingPlantedWasLogged(final List<String> parts, final String site) {
+            for (final String part : parts) {
+                assertThat(part)
+                        .as("%s must log fixed codes and a validated correlation identifier only; a protected "
+                                + "value reaching this record is a disclosure that no masking rule catches, "
+                                + "because a bare value carries no label", site)
+                        .doesNotContain(PLANTED);
+            }
+        }
+
+        @Test
+        @DisplayName("the media-type screen logs a bounded classification, never the declared header")
+        void theMediaTypeScreenLogsNoHeaderValue() throws Exception {
+            // A caller-chosen Content-Type carrying every protected shape at once. The grammar accepts it as
+            // parameters, so it reaches the refusal rather than being rejected as unparsable first.
+            final String hostile = "text/plain;pan=" + PAN_SHAPED + ";name=" + SURNAME_SHAPED
+                    + ";ssn=" + GOVERNMENT_ID_SHAPED + ";pw=" + PASSWORD_SHAPED;
+            final MockHttpServletRequest request = new MockHttpServletRequest("POST", SIGN_ON_URI);
+            request.setContentType(hostile);
+            request.setContent("{}".getBytes(StandardCharsets.UTF_8));
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+
+            final List<String> logged =
+                    capture(() -> mediaTypeFilter().doFilter(request, response, new MockFilterChain()));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE.value());
+            assertNothingPlantedWasLogged(logged, "the media-type screen");
+            assertThat(String.join(" ", logged))
+                    .as("what replaces the header is the bounded verdict the screen already computed, so the "
+                            + "record still says WHY the request was refused without saying WHAT it declared")
+                    .contains("NO_JSON_READER")
+                    .contains("CARDDEMO-UNSUPPORTED-MEDIA-TYPE");
+        }
+
+        @Test
+        @DisplayName("every media-type verdict is one of a closed set of five names")
+        void everyMediaTypeVerdictIsBounded() throws Exception {
+            final Map<String, String> expected = Map.of(
+                    "application/", "UNPARSABLE",
+                    "application/*", "WILDCARD",
+                    "text/plain", "NO_JSON_READER");
+
+            for (final Map.Entry<String, String> shape : expected.entrySet()) {
+                final MockHttpServletRequest request = new MockHttpServletRequest("POST", SIGN_ON_URI);
+                request.setContentType(shape.getKey());
+                request.setContent("{}".getBytes(StandardCharsets.UTF_8));
+
+                final List<String> logged = capture(() -> mediaTypeFilter()
+                        .doFilter(request, new MockHttpServletResponse(), new MockFilterChain()));
+
+                assertThat(String.join(" ", logged))
+                        .as("the classification for %s must be a compile-time constant, so the logged "
+                                + "cardinality is bounded by the enum rather than by discipline", shape.getKey())
+                        .contains(shape.getValue());
+            }
+
+            // A request that sent bytes while declaring nothing has no value to classify, and says so.
+            final MockHttpServletRequest undeclared = new MockHttpServletRequest("POST", SIGN_ON_URI) {
+                @Override
+                public long getContentLengthLong() {
+                    return 2L;
+                }
+            };
+            undeclared.setContent("{}".getBytes(StandardCharsets.UTF_8));
+            assertThat(String.join(" ", capture(() -> mediaTypeFilter()
+                    .doFilter(undeclared, new MockHttpServletResponse(), new MockFilterChain()))))
+                    .contains("NO_MEDIA_TYPE_DECLARED");
+        }
+
+        @Test
+        @DisplayName("the framework-boundary resolver logs neither the method nor the URI")
+        void theFrameworkBoundaryResolverLogsNoRequestLine() {
+            final MockHttpServletRequest request = new MockHttpServletRequest(
+                    PASSWORD_SHAPED, "/api/accounts/" + PAN_SHAPED + "/" + SURNAME_SHAPED);
+            request.setQueryString("ssn=" + GOVERNMENT_ID_SHAPED);
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+
+            final List<String> logged = capture(() -> new WebConfig.FrameworkBoundaryExceptionResolver()
+                    .resolveException(request, response, null,
+                            new HttpRequestMethodNotSupportedException(PASSWORD_SHAPED)));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED.value());
+            assertNothingPlantedWasLogged(logged, "the framework-boundary resolver");
+            assertThat(String.join(" ", logged))
+                    .as("the condition is named by the framework exception's own type, which is a closed set, "
+                            + "and the error code is a constant of the configuration")
+                    .contains("HttpRequestMethodNotSupportedException")
+                    .contains("CARDDEMO-METHOD-NOT-ALLOWED");
+        }
+
+        @Test
+        @DisplayName("the firewall handler logs neither the request line nor the firewall's own message")
+        void theFirewallHandlerLogsNoRejectionText() {
+            final MockHttpServletRequest request = new MockHttpServletRequest(
+                    "GET", "/api/cards/" + PAN_SHAPED);
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+            // The firewall quotes the offending request back in its message, which is exactly why the message
+            // may not be logged: it is the one string guaranteed to contain the caller's bytes.
+            final RequestRejectedException rejection = new RequestRejectedException(
+                    "The request was rejected because the URL contained " + PAN_SHAPED + " and "
+                            + GOVERNMENT_ID_SHAPED);
+
+            final List<String> logged = capture(() -> new WebConfig.ProblemJsonRequestRejectedHandler()
+                    .handle(request, response, rejection));
+
+            assertThat(response.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST.value());
+            assertNothingPlantedWasLogged(logged, "the firewall handler");
+            assertThat(String.join(" ", logged))
+                    .as("the rejection's TYPE replaces its message: one firewall raises it, so the type "
+                            + "identifies the class of rejection while carrying no part of the request")
+                    .contains("RequestRejectedException")
+                    .contains("CARDDEMO-REQUEST-REJECTED");
+        }
+
+        @Test
+        @DisplayName("the refusal body still discloses nothing either, so both channels stay closed")
+        void theRefusalBodyStillDisclosesNothing() throws Exception {
+            final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/cards/" + PAN_SHAPED);
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+
+            new WebConfig.ProblemJsonRequestRejectedHandler().handle(request, response,
+                    new RequestRejectedException("rejected: " + PAN_SHAPED));
+
+            assertThat(response.getContentAsString())
+                    .as("the response was already free of the request and must stay so: closing the log "
+                            + "channel must not have opened the body channel")
+                    .doesNotContain(PLANTED);
+        }
+
+        /** One boundary interaction, allowed to throw whatever the real component declares. */
+        @FunctionalInterface
+        private interface ThrowingInteraction {
+
+            /**
+             * Drives the interaction.
+             *
+             * @throws Exception whatever the boundary component declares
+             */
+            void run() throws Exception;
         }
     }
 }

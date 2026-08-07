@@ -121,7 +121,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>Run this class with {@code ./mvnw -B -ntp -Ddependency-check.skip=true test}, or on its own with
  * {@code ./mvnw -B -ntp -Ddependency-check.skip=true -Dtest=CardCrossReferenceTest test}. Compile only with
  * {@code ./mvnw -B -ntp test-compile}; the full gate is
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}, which additionally enforces the JaCoCo
+ * {@code ./mvnw -B -ntp clean verify}, which additionally enforces the JaCoCo
  * line-coverage floor and the Javadoc doclint gate.
  *
  * <p><strong>Surefire, not Failsafe, collects this class, and that is a function of both its name and its

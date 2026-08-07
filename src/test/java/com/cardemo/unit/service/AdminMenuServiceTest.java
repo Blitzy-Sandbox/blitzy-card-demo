@@ -187,9 +187,10 @@ import org.slf4j.LoggerFactory;
  *       an {@code EXEC CICS SEND MAP} with no {@code EXEC CICS RETURN}, so after a bounds-check failure
  *       control falls through into the guard and dispatch region. Remediation, and a
  *       <strong>labelled deviation</strong>: Java refuses an out-of-range selection before any option-record
- *       lookup, because an uninitialised-storage read has no defined Java semantics. Tracked in
- *       {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}, both authored elsewhere in this
- *       migration and <em>Not available</em> at this commit.</li>
+ *       lookup, because an uninitialised-storage read has no defined Java semantics. Owed an entry in
+ *       {@code DECISION_LOG.md} and a row in {@code TRACEABILITY_MATRIX.md}, both of which are authored at
+ *       the repository root; an earlier revision recorded them as <em>Not available</em> and that record is
+ *       withdrawn.</li>
  *   <li><strong>High</strong> - the coming-soon block at {@code app/cbl/COADM01C.cbl:L147-L154} sits outside
  *       the placeholder {@code IF} but inside {@code IF NOT ERR-FLG-ON}, so a transliteration that lets the
  *       {@code XCTL} return announces "coming soon" on every successful dispatch. Remediation: the transfer
@@ -667,7 +668,7 @@ class AdminMenuServiceTest {
             // EXEC CICS SEND MAP with no EXEC CICS RETURN, so the source falls through a bounds-check
             // failure into the guard at :L138, which subscripts the over-redefined region. Java refuses
             // before any element access, because reading uninitialised storage has no defined semantics
-            // here. Owed an entry in the planned DECISION_LOG.md.
+            // here. Owed an entry in the DECISION_LOG.md.
             final AdminMenuService service = new AdminMenuService();
 
             final Throwable refusal = catchThrowable(() -> service.selectOption("9"));

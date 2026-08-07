@@ -52,11 +52,15 @@
 package com.cardemo.integration.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -79,8 +83,9 @@ import org.springframework.batch.core.job.flow.JobExecutionDecider;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
+import org.springframework.data.domain.Pageable;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -95,8 +100,10 @@ import ch.qos.logback.core.encoder.Encoder;
 
 import com.cardemo.batch.jobs.DailyTransactionPostingJob;
 import com.cardemo.exception.FatalProcessingException;
+import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.model.enums.RejectCode;
+import com.cardemo.repository.TransactionRepository;
 
 /**
  * The decider layer that replaces JCL {@code COND=(0,NE)} step gating, pinned across return codes 0, 4, 8
@@ -212,15 +219,17 @@ import com.cardemo.model.enums.RejectCode;
  *       counts are 300 daily transactions, 50 accounts, 50 cross-references and - deliberately -
  *       <strong>zero</strong> rows in the double-quoted lowercase {@code "transaction"} relation, which the
  *       posting job is what fills.</li>
- *   <li><strong>The one property this class overrides, and why.</strong>
- *       {@code carddemo.batch.creastmt.max-work-records} is lowered to 1. It is a documented, deliberately
- *       configurable processing ceiling whose own diagnostic says to raise it deliberately or reduce the
- *       input, and exceeding it is a genuine processing failure. Lowering it is the only lever in this
- *       codebase that makes a step <em>before</em> a condition-code gate end unsuccessfully on demand,
- *       deterministically and without touching production code, mocking a collaborator, editing a fixture
- *       or deleting a seeded row - and a gate that never sees a non-zero predecessor cannot be shown to
- *       suppress anything. The seeded starting point holds zero transaction rows, so the ceiling is inert
- *       until a posting run has committed some.</li>
+ *   <li><strong>No property is overridden, and one collaborator is spied.</strong> A gate that never sees a
+ *       non-zero predecessor cannot be shown to suppress anything, so one test needs an ungated step to end
+ *       unsuccessfully on demand. It gets that from a {@code @MockitoSpyBean} {@code TransactionRepository}
+ *       whose statement-order read returns a <em>descending</em> window for that one test, which
+ *       {@code STEP010} refuses on the ordering precondition of {@code app/cbl/CBSTM03A.CBL:L419}. Every
+ *       other test in this class drives the real repository, because the Spring Framework override is a spy
+ *       rather than a replacement and its stub is reset after the method.
+ *       <p>This class used to lower {@code carddemo.batch.creastmt.max-work-records} to 1 instead. That
+ *       ceiling was removed by finding BAT-002 - it was an authored business refusal on record count, which
+ *       {@code app/jcl/CREASTMT.JCL} does not have - so the lever had to change with it. A refusal the
+ *       corpus does not contain is not a lever a test may keep alive.</li>
  *   </ul>
  *
  * <h2>Determinism</h2>
@@ -337,8 +346,12 @@ import com.cardemo.model.enums.RejectCode;
  * emitted reject record's own geometry and code census belong to the posting job's own integration class.
  * What this class owns is the decider and exit-status contract that sits above all of them.
  */
-@TestPropertySource(properties = "carddemo.batch.creastmt.max-work-records=1")
 public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
+
+    /** JUnit instantiates this class per test method; declared explicitly so doclint has a comment to read. */
+    public BatchJobExecutionDeciderTest() {
+        super();
+    }
 
     /** The bean factory, used only to <em>enumerate</em> decider definitions and to resolve jobs and steps. */
     @Autowired
@@ -347,6 +360,18 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
     /** Reads the seeded relational state that fixes which reject codes are reachable. */
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    /**
+     * Supplies the one controlled projection failure that makes a pre-gate step end unsuccessfully.
+     *
+     * <p>A spy rather than a replacement, so every other test here drives the real Spring Data repository;
+     * the framework's own after-method reset removes the stub without replacing the application context. The
+     * stub returns a descending statement-order window, and {@code STEP010} refuses a descending sequence on
+     * the ordering precondition of {@code app/cbl/CBSTM03A.CBL:L419} - a documented failure mode of the step
+     * rather than a contrivance.
+     */
+    @MockitoSpyBean
+    private TransactionRepository transactionRepository;
 
     /**
      * The registered name of the posting job, taken from the production constant rather than retyped.
@@ -876,16 +901,16 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
             + "exactly as JES2 bypasses a step - and the suppressing gate still fails the flow")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void aNonZeroPredecessorSuppressesEveryGatedStepAndTheFlowStillFails() {
-        final JobExecution postingRun = launchPostingRun();
-        assertThat(postingRun.getStatus())
-                .as("the posting run has to commit rows for the ceiling to be exceeded, so it must itself "
-                        + "have completed")
-                .isEqualTo(BatchStatus.COMPLETED);
-        final long committedTransactions = countRows("SELECT count(*) FROM \"transaction\"");
-        assertThat(committedTransactions)
-                .as("and it committed more rows than the work ceiling this class configures, which is what "
-                        + "makes the projection step refuse")
-                .isGreaterThan(1L);
+        // The projection step's ordering precondition, broken deliberately: the repository's own query orders
+        // by card then identifier ascending, so the only way a descending window reaches STEP010 is a changed
+        // query - which is exactly the defect the step's assertion exists to catch, and refusing it is a
+        // documented failure mode rather than a contrivance. Stubbed with doReturn because the override is a
+        // spy: when(spy.method(...)) would run the real query first.
+        doReturn(List.of(
+                        statementOrderRow("4111111111111111", "0000000000000002"),
+                        statementOrderRow("4111111111111111", "0000000000000001")))
+                .when(transactionRepository)
+                .findStatementOrderAfter(anyString(), anyString(), any(Pageable.class));
 
         final JobExecution statementRun = launchJob(
                 applicationContext.getBean(statementJobBeanName, Job.class),
@@ -1006,13 +1031,19 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
      * which is checked against the committed rows rather than against another counter, so it is a real
      * accounting statement and not an identity.
      *
-     * <p><strong>No exact reject count is asserted, here or anywhere in this class.</strong> Two defensible
-     * models of the validation cascade over these exact fixtures disagree - a stateless single pass and a
-     * faithful stateful one, the latter re-reading the account per transaction and mutating the cycle
-     * accumulators on each successful post - and that disagreement is itself the proof that an exact count is
-     * model-sensitive and therefore not an oracle. What is asserted instead is what the source actually
-     * states: the count is positive, the two counters account for every record, and the exit code keys on the
-     * count.
+     * <p><strong>No exact reject count is asserted here, because this class is about the DECIDER rather than
+     * about the count.</strong> An earlier revision gave a different reason - that "two defensible models of
+     * the validation cascade over these exact fixtures disagree", so an exact count was "model-sensitive and
+     * therefore not an oracle". That reason was withdrawn: {@code 2800-UPDATE-ACCOUNT-REC} ends in
+     * {@code REWRITE FD-ACCTFILE-REC} at {@code app/cbl/CBTRN02C.cbl:561}, and a VSAM {@code REWRITE} replaces
+     * the record in the cluster, so the stateless reading is a misreading rather than a second model. The exact
+     * count is derivable, is derived by {@code com.cardemo.e2e.PostingParityOracle}, and IS asserted - in
+     * {@code src/test/java/com/cardemo/integration/batch/DailyTransactionPostingJobTest.java},
+     * {@code src/test/java/com/cardemo/integration/batch/BatchPipelineOrchestratorTest.java} and
+     * {@code src/test/java/com/cardemo/e2e/BatchPipelineE2ETest.java}. What this class asserts is the decider's
+     * own contract: that the count is positive, that the two counters account for every record, and that the
+     * exit code keys on the count and on nothing else. Restating the total here would duplicate an assertion
+     * that three other suites already own, and duplication is how two places come to disagree.
      *
      * <p>Nothing is thrown for a reject. Reject codes are business outcomes that drive the exit status, and
      * the run's own failure list being empty is what shows they were not raised as exceptions.
@@ -1395,6 +1426,24 @@ public class BatchJobExecutionDeciderTest extends AbstractBatchIntegrationTest {
     private JobExecution launchStatementGeneration() {
         return launchJob(applicationContext.getBean(statementJobBeanName, Job.class),
                 runIdParameters(Map.of()));
+    }
+
+    /**
+     * Builds one well-formed row for the stubbed statement-order read.
+     *
+     * <p>Every field is at its declared {@code app/cpy/CVTRA05Y.cpy} width, so the projection reaches its
+     * ordering assertion rather than failing earlier on a geometry check - the assertion under test has to be
+     * the one that fires.
+     *
+     * @param cardNumber the sixteen-character card number, the first sort key
+     * @param transactionId the sixteen-character identifier, the second sort key
+     * @return the row, never {@code null}
+     */
+    private Transaction statementOrderRow(final String cardNumber, final String transactionId) {
+        return new Transaction(transactionId, "01", Integer.valueOf(1), "POS       ",
+                "D".repeat(100), new BigDecimal("1.00"), Long.valueOf(7L),
+                "M".repeat(50), "C".repeat(50), "12345     ",
+                cardNumber, "2022-06-10-19.27.53.120000", "2022-06-10-19.27.53.780000");
     }
 
     /**

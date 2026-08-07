@@ -349,7 +349,7 @@ class ErrorSurfaceHygieneTest {
             return new ReportSubmissionService(sqsTemplate, mock(SnsTemplate.class), dateValidationService,
                     Clock.fixed(Instant.parse("2024-03-15T09:41:07Z"), ZoneOffset.UTC), noTracer(),
                     "carddemo-report-jobs.fifo", QUEUE_LOGICAL_NAME, "carddemo-report-jobs",
-                    "carddemo-notifications");
+                    "carddemo-notifications", "error-surface-test-envelope-key-0123456789");
         }
 
         /**

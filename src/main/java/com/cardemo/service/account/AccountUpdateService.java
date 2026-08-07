@@ -57,7 +57,6 @@ import com.cardemo.model.entity.Customer;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.CustomerRepository;
-import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.shared.DateValidationService;
 import com.cardemo.service.shared.FileStatusMapper;
 import com.cardemo.service.shared.ValidationLookupService;
@@ -103,8 +102,10 @@ import com.cardemo.service.shared.ValidationLookupService;
  *
  * <p>Build and test the whole module with {@code ./mvnw -B -ntp clean verify} from the repository
  * root, on JDK 25 with Maven 3.9.11. The compiler runs with {@code -Xlint:all -Werror} and
- * {@code failOnWarning}, so any warning fails the build. Before a run that needs the environment,
- * source the local file with {@code set -a; . ./.env; set +a}. Unit tests for this bean live in
+ * {@code failOnWarning}, so any warning fails the build. A run that needs the environment sources the local
+ * file inside a subshell that also carries the command,
+ * {@code ( set -a; . ./.env; set +a; ./mvnw -B -ntp verify )}, rather than exporting it into the shell where
+ * every later child would inherit it. Unit tests for this bean live in
  * {@code src/test/java/com/cardemo/unit/service/}; they need no container, because every collaborator
  * is constructor-injected and the clock is injected too. Integration coverage that touches PostgreSQL
  * lives in {@code src/test/java/com/cardemo/integration/}, which does need a container runtime.
@@ -269,8 +270,8 @@ import com.cardemo.service.shared.ValidationLookupService;
  * <h2>6. Preserved-defect register</h2>
  *
  * <p>These are faults of the system of record. Behavioural parity is the contract of this migration, so each is
- * <strong>reproduced, not repaired</strong>. Each is tracked here, and is owed an entry in the planned
- * {@code DECISION_LOG.md} and a row in the planned {@code TRACEABILITY_MATRIX.md}, which is what distinguishes
+ * <strong>reproduced, not repaired</strong>. Each is tracked here, and is owed an entry in the
+ * {@code DECISION_LOG.md} and a row in the {@code TRACEABILITY_MATRIX.md}, which is what distinguishes
  * it from the untracked dead code Rule 1 Clause B forbids.
  *
  * <ul>
@@ -320,7 +321,7 @@ import com.cardemo.service.shared.ValidationLookupService;
  *       {@code COPY 'CSSTRPFY'} at {@code :4199}, is the final Area A construct of the
  *       program.</strong> Verified by reading {@code :4227-4236}: after {@code :4232} only the
  *       terminating period at {@code :4233} and a version comment remain. The widely repeated claim
- *       that {@code :4199} is last is wrong and is owed a correction in the planned {@code DECISION_LOG.md}.</li>
+ *       that {@code :4199} is last is wrong and is owed a correction in the {@code DECISION_LOG.md}.</li>
  *   <li><strong>D7 - LOW, hygiene. Three declared condition names are never referenced.</strong>
  *       {@code DID-NOT-FIND-ACCTCARD-COMBO} ({@code :515}), {@code XREF-READ-ERROR} ({@code :525})
  *       and {@code CODING-TO-BE-DONE} ({@code :527}) each occur exactly once, at their declaration.
@@ -348,7 +349,7 @@ import com.cardemo.service.shared.ValidationLookupService;
  * <h2>7. Mechanism substitutions</h2>
  *
  * <p>Each of these replaces a legacy construct with a framework mechanism. None changes behaviour, and
- * each is owed an entry in the planned {@code DECISION_LOG.md} so that a reviewer comparing the two sources does not
+ * each is owed an entry in the {@code DECISION_LOG.md} so that a reviewer comparing the two sources does not
  * conclude something was lost.
  *
  * <ul>
@@ -1568,19 +1569,6 @@ public class AccountUpdateService {
     private final Clock clock;
 
     /**
-     * Seals and opens the {@code ACUP-OLD-DETAILS} snapshot.
-     *
-     * <p>The eighth collaborator, and the one with no COBOL counterpart, because what it replaces is a
-     * <em>storage lifetime</em>: {@code WS-THIS-PROGCOMMAREA} at {@code :652} held the snapshot between the
-     * two turns of the pseudo-conversation, and a stateless server has nowhere to put it. Returning it in
-     * the clear and accepting it back would be the obvious substitution and is wrong twice over - the group
-     * carries the date of birth, the social security number, the government-issued identifier, both
-     * telephone numbers and the electronic funds account identifier, and a snapshot the caller supplies
-     * makes the comparison at {@code :4109-4193} answerable to the caller rather than to the record.</p>
-     */
-    private final SnapshotTokenService snapshotTokenService;
-
-    /**
      * Constructs the bean. Constructor injection is the only injection form used: there is no field
      * {@code @Autowired}, no setter injection, no service-locator lookup and no {@code ApplicationContext}
      * access anywhere in this class, which is what Rule 1 Clause B requires when it asks that global mutable
@@ -1633,15 +1621,6 @@ public class AccountUpdateService {
      *                                     clock is what makes the header projection deterministic and
      *                                     testable; {@code LocalDate.now()} and
      *                                     {@code LocalDateTime.now()} with no argument are never called
-     * @param snapshotTokenService         the sealer of {@code ACUP-OLD-DETAILS}. Required because the
-     *                                     group the comparison at {@code :4109-4193} needs is the group
-     *                                     {@code 9500-STORE-FETCHED-DATA} stored at {@code :3805-3813},
-     *                                     and a stateless server keeps no half-COMMAREA to hold it. Sealed
-     *                                     rather than returned in the clear because it carries the date of
-     *                                     birth, the social security number, the government-issued
-     *                                     identifier, both telephone numbers and the electronic funds
-     *                                     account identifier - and because a snapshot a caller can compose
-     *                                     is not a precondition at all; must not be {@code null}
      */
     public AccountUpdateService(final CardCrossReferenceRepository cardCrossReferenceRepository,
                                 final AccountRepository accountRepository,
@@ -1649,8 +1628,7 @@ public class AccountUpdateService {
                                 final FileStatusMapper fileStatusMapper,
                                 final DateValidationService dateValidationService,
                                 final ValidationLookupService validationLookupService,
-                                final Clock clock,
-                                final SnapshotTokenService snapshotTokenService) {
+                                final Clock clock) {
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.accountRepository = accountRepository;
         this.customerRepository = customerRepository;
@@ -1658,7 +1636,6 @@ public class AccountUpdateService {
         this.dateValidationService = dateValidationService;
         this.validationLookupService = validationLookupService;
         this.clock = clock;
-        this.snapshotTokenService = snapshotTokenService;
     }
 
     /**
@@ -1670,7 +1647,7 @@ public class AccountUpdateService {
      * The legacy program treats each as a control path that sets a field-error state and renders a
      * diagnostic into {@code WS-RETURN-MSG}, and that is reproduced exactly. Every typed exception the
      * situation warrants is nonetheless constructed and retained on the request context, so nothing is
-     * swallowed; {@link #updateAccount(AccountUpdateRequest, String)} rethrows it.</p>
+     * swallowed; {@link #updateAccount(AccountUpdateRequest)} rethrows it.</p>
      * <p>The transaction boundary is declared here rather than deeper, and it is unconditional. It spans
      * the account rewrite of {@code :4065-4071} and the customer rewrite of {@code :4085-4091} as one unit
      * of work, which is what reproduces the source's asymmetric rollback without a single conditional: on
@@ -1747,7 +1724,7 @@ public class AccountUpdateService {
      * performs turn two only when the source would have offered PF05. The guard is untouched; what changed
      * is that both turns now happen, which is what collapsing a two-turn conversation onto one call
      * means.</p>
-     * <p>Turn one is a pure computation over the submitted map and the sealed snapshot - it performs no
+     * <p>Turn one is a pure computation over the submitted map and its {@code oldDetails} group - it performs no
      * read for update and no write - so running it costs one comparison pass and cannot affect the store.
      * Both turns share the single {@code @Transactional} boundary, so the seven-step write sequence and its
      * asymmetric rollback behave exactly as documented on {@link #writeProcessing9600}.</p>
@@ -1763,16 +1740,13 @@ public class AccountUpdateService {
      * through {@code WHEN OTHER} and is reported as {@code ACUP-CHANGES-OKAYED-AND-DONE} - a top-level
      * success. This method reproduces that, because parity is the contract. The internal outcome stays
      * distinguishable on the result and in the structured log; the reported outcome does not.</p>
-     * @param request the submitted map - the fifty-four screen fields and the {@code newDetails} group; must
-     *                not be {@code null}. Its {@code oldDetails} group is <b>not</b> read on this path and
-     *                the operation refuses a body that carries one
-     * @param snapshotToken the sealed {@code ACUP-OLD-DETAILS} snapshot a preceding
-     *                {@link #issueUpdateSnapshot(String)} issued, which the client returns in
-     *                {@code If-Match}. Without it the change detection of
-     *                {@code 9700-CHECK-CHANGE-IN-REC} has nothing to compare against, and silently skipping
-     *                the comparison would forfeit the guarantee the source provides, so an absent token is
-     *                reported as {@code CHANGES_NOT_CONFIRMED} and a token that does not verify as
-     *                {@code DATA_CHANGED_BEFORE_UPDATE}
+     * @param request the submitted map - the fifty-four screen fields and <b>both</b> snapshot groups; must
+     *                not be {@code null}. Its {@code oldDetails} group carries {@code ACUP-OLD-DETAILS} as
+     *                the preceding read projected it and is what {@code 9700-CHECK-CHANGE-IN-REC} compares
+     *                the live record against, field by field. Without it the change detection has nothing
+     *                to compare against, and silently skipping the comparison would forfeit the guarantee
+     *                the source provides, so an absent group is reported as a {@code ValidationException}
+     *                naming {@code oldDetails} rather than treated as "nothing changed"
      * @return the projected outcome, whose {@link AccountUpdateResult#changeAction()} carries the
      *         {@code ACUP} marker the next turn must echo; never {@code null}
      * @throws ValidationException        when the payload or its snapshot group is missing, or when any of
@@ -1795,21 +1769,18 @@ public class AccountUpdateService {
      *                                    {@code FileStatusMapper}
      */
     @Transactional(rollbackFor = Exception.class)
-    public AccountUpdateResult updateAccount(final AccountUpdateRequest request,
-                                             final String snapshotToken) {
+    public AccountUpdateResult updateAccount(final AccountUpdateRequest request) {
         if (request == null) {
             throw ValidationException.missingField(REQUEST_FIELD,
                     "The symbolic-map area of app/cpy-bms/COACTUP.CPY is required.");
         }
-        // The snapshot comes from the token and from nowhere else. An absent token reports
-        // CHANGES_NOT_CONFIRMED and one that fails to verify reports DATA_CHANGED_BEFORE_UPDATE, which are
-        // the two outcomes the source itself distinguishes: nothing to compare against, versus a comparison
-        // that failed. Opening also binds the snapshot to this account, so a token issued for one record
-        // cannot be presented for another.
-        final AccountUpdateRequest.OldDetails authenticOldDetails =
-                this.snapshotTokenService.open(snapshotToken, SNAPSHOT_KIND,
-                        snapshotRecordKey(request.getAccountId()),
-                        AccountUpdateRequest.OldDetails.class);
+        // The snapshot is the request body's own ACUP-OLD-DETAILS group and comes from nowhere else.
+        // Transformation Rule 7 moves the storage lifetime WS-THIS-PROGCOMMAREA held at :652 onto the
+        // request, so the caller returns the group the preceding read projected. Nothing is normalised on
+        // the way in: compareOldNew1205 and checkChangeInRecord9700 each report an absent group as a
+        // ValidationException on oldDetails rather than skipping the comparison, which is what keeps the
+        // guarantee the source provides from being silently forfeited.
+        final AccountUpdateRequest.OldDetails authenticOldDetails = request.getOldDetails();
 
         // TURN ONE - the ENTER turn on a displayed screen. ACUP-SHOW-DETAILS is the marker the source
         // carries into it, which is precisely the marker :1463-1468 does NOT skip, so 1205-COMPARE-OLD-NEW
@@ -1910,74 +1881,50 @@ public class AccountUpdateService {
     }
 
     /**
-     * The operation kind every account-update snapshot token is sealed for.
-     *
-     * <p>Published so that the operation issuing the token and this service verifying it name the same kind
-     * once. A token sealed for any other kind cannot open here, which is what stops a card snapshot or a
-     * browse cursor from being presented as an account snapshot.</p>
-     */
-    public static final String SNAPSHOT_KIND = "account-update";
-
-    /**
-     * Reads one account and seals the {@code ACUP-OLD-DETAILS} snapshot its update will require.
+     * Reads one account and returns the {@code ACUP-OLD-DETAILS} group its update will require.
      *
      * <p><b>What it does.</b> It drives exactly the conversation {@link #fetchForUpdate(String)} drives -
      * Enter, re-entered, {@code ACUP-DETAILS-NOT-FETCHED}, so that the {@code :2568} arm of the decider
-     * performs {@code 9000-READ-ACCT} - and then seals what {@code 9500-STORE-FETCHED-DATA} stored at
-     * {@code :3805-3813}. It exists because {@code fetchForUpdate} alone left no way for a client to obtain
-     * a snapshot at all: the values are in the projected screen, but a client that composed a snapshot from
-     * them would be composing its own precondition.</p>
+     * performs {@code 9000-READ-ACCT} - and then returns what {@code 9500-STORE-FETCHED-DATA} stored at
+     * {@code :3805-3813}. It exists because {@code fetchForUpdate} projects the whole screen, of which the
+     * snapshot group is one part, and the read operation needs that part on its own to hand to the client.</p>
      *
-     * <p><b>Nothing it seals is disclosed.</b> The return value is one opaque string. The date of birth, the
-     * social security number, the government-issued identifier, both telephone numbers and the electronic
-     * funds account identifier are inside it and cannot be read out by the caller, which is what lets the
-     * comparison at {@code :4109-4193} run over all twenty-nine values while the response carries none of
-     * them.</p>
+     * <p><b>Why the group and not a derived form.</b> Transformation Rule 7 carries the group in the request
+     * body of the matching write, because {@code WS-THIS-PROGCOMMAREA} at {@code :652} held it between the two
+     * turns of the pseudo-conversation and a stateless server has nowhere to put it. The caller echoes this
+     * value back unaltered, and returning the very type the write binds is what makes that possible without
+     * the caller reconstructing anything. Reconstruction would not be safe: the comparison at
+     * {@code :4109-4193} reads the date of birth from the live record at offsets {@code 1}, {@code 6} and
+     * {@code 9} and from the snapshot at offsets {@code 1}, {@code 5} and {@code 7}, because the live value is
+     * dash-separated and the snapshot value is not, so a group assembled from displayed text would differ on
+     * every request.</p>
      *
      * <p><b>Side effects.</b> None. This is a read.</p>
      *
      * @param accountFilter the account identifier as typed into screen field {@code ACCTSIDI}; relayed
      *                      verbatim, so {@code null}, empty, all blanks and {@code *} all mean "not
      *                      supplied" and the source's own edits decide
-     * @return the sealed snapshot, never {@code null}
+     * @return the as-displayed group, never {@code null}
      * @throws ValidationException      when the account filter is blank or is non-numeric, short or
-     *                                  all-zeroes, exactly as {@link #fetchForUpdate(String)} reports it
+     *                                  all-zeroes, exactly as {@link #fetchForUpdate(String)} reports it, and
+     *                                  when the read reached no populated group to return
      * @throws RecordNotFoundException  when any link of the three-dataset chain has no matching record
      * @throws FileAccessException      for a physical or logical input-output failure
-     * @throws FatalProcessingException if sealing fails, which is a broken deployment rather than a request
-     *                                  outcome
      */
     @Transactional(readOnly = true)
-    public String issueUpdateSnapshot(final String accountFilter) {
+    public AccountUpdateRequest.OldDetails fetchSnapshotForUpdate(final String accountFilter) {
         final AccountUpdateResult fetched = fetchForUpdate(accountFilter);
         final AccountUpdateRequest screen = fetched.screen();
         final AccountUpdateRequest.OldDetails snapshot =
                 screen == null ? null : screen.getOldDetails();
         if (snapshot == null) {
             // The fetch reached neither an exception nor a populated snapshot, which is the state
-            // INITIALIZE ACUP-OLD-DETAILS leaves at :981-983 when nothing was stored back. There is
-            // nothing to seal and no write could be confirmed against it, so this is reported rather than
-            // sealed as an empty group that would fail every later comparison for an unexplained reason.
+            // INITIALIZE ACUP-OLD-DETAILS leaves at :981-983 when nothing was stored back. There is nothing
+            // to return and no write could be confirmed against it, so this is reported rather than answered
+            // with an empty group that would fail every later comparison for an unexplained reason.
             throw ValidationException.missingField(OLD_DETAILS_FIELD, OLD_DETAILS_REQUIRED_MESSAGE);
         }
-        return this.snapshotTokenService.seal(SNAPSHOT_KIND, snapshotRecordKey(screen.getAccountId()),
-                snapshot);
-    }
-
-    /**
-     * Renders the record key an account-update token is bound to.
-     *
-     * <p>The submitted account identifier is used exactly as received, with no padding, trimming or case
-     * folding, because the binding is an exact string comparison and normalising either side would let a
-     * token issued for one spelling open for another. A null or blank identifier yields a fixed non-empty
-     * placeholder rather than an empty string, so the authenticated additional data stays well formed and a
-     * token sealed for an unspecified account can never open for a specified one.</p>
-     *
-     * @param accountFilter the account identifier as submitted; may be {@code null} or blank
-     * @return the record key, never {@code null} and never blank
-     */
-    private static String snapshotRecordKey(final String accountFilter) {
-        return accountFilter == null || accountFilter.isBlank() ? "-" : accountFilter;
+        return snapshot;
     }
 
 
@@ -2146,7 +2093,7 @@ public class AccountUpdateService {
      * {@code :4099-4101}, and the two must never be conflated. On this path no unit of work is pending: no write has
      * been issued anywhere in the dispatch arm, so committing nothing is a no-op, and the declarative transaction of
      * the entry point commits on normal return regardless. The substitution is therefore a documented no-op and is
-     * owed an entry in the planned {@code DECISION_LOG.md}.</p>
+     * owed an entry in the {@code DECISION_LOG.md}.</p>
      * @param context the per-invocation state carrier
      * @return a {@link ResponseKind#TRANSFER} outcome carrying the navigation metadata; never {@code null}
      */
@@ -3047,7 +2994,7 @@ public class AccountUpdateService {
      * required field that may contain only letters, digits and spaces. <p><strong>Defect D12, severity LOW: this
      * paragraph is never performed.</strong> A repository-wide census of {@code PERFORM 1230} returns zero call
      * sites, so the routine is declared and complete but unreachable. It is nonetheless mapped, because deleting it
-     * would break the paragraph correspondence that the planned {@code TRACEABILITY_MATRIX.md} will be proved
+     * would break the paragraph correspondence that {@code TRACEABILITY_MATRIX.md} is proved
      * against, and Rule 1 Clause B forbids <em>untracked</em> dead code rather than tracked-and-cited dead code. The
      * tracking reference is this Javadoc plus the register entry in the class documentation.</p> <p>Its
      * character-class test at {@code :1982-2005} uses {@code LIT-ALL-ALPHANUM-FROM}, the sixty-two-character
@@ -5569,21 +5516,43 @@ public class AccountUpdateService {
      * {@link #abendRoutine(UpdateContext, Throwable)} and the caller received abend {@code 9999} for
      * having omitted one member of the payload.
      *
-     * <p>Neither answer is parity, because the legacy answer is unavailable: the value the source stored
-     * cannot exist in the target's schema. Between the two available answers a field-level refusal is the
-     * one the program's own vocabulary already gives - {@code 1215-EDIT-MANDATORY} at {@code :1824-1852}
-     * and {@code 1225-EDIT-ALPHA-REQD} at {@code :1898-1951} answer an unsupplied required field with
-     * {@code BLANK} and {@code ' must be supplied.'} - so this method reuses that exact literal and that
-     * exact per-field tri-state rather than inventing a diagnostic. It is recorded as a deviation forced
-     * by the substrate, not presented as equivalence.
+     * <p><strong>The five amount values fail differently, and worse.</strong> For them
+     * {@code 1100-RECEIVE-MAP} writes {@code LOW-VALUES} only into the working-storage edit field
+     * {@code ACUP-NEW-CURR-BAL-X PIC X(15)} at {@code :414} and performs the {@code COMPUTE} into the image
+     * only when {@code TEST-NUMVAL-C} passes - {@code :1101-1112} - so the image field
+     * {@code ACUP-NEW-CURR-BAL PIC X(12)} keeps the spaces {@code INITIALIZE ACUP-NEW-DETAILS} at
+     * {@code :1047} left it, and {@code :3964} moves twelve spaces read through the {@code S9(10)V99}
+     * redefinition at {@code :763-765} into a packed-decimal field. That is a move of invalid digits, whose
+     * result the language does not define, so for these five there is no legacy value to reproduce at all.
+     *
+     * <p>No answer is parity, because the legacy answer is unavailable in both of its forms: the value the
+     * source stored cannot exist in the target's schema, and an undefined result cannot be reproduced.
+     * <strong>Three answers were available and the third is the one worth naming.</strong> Letting the write
+     * proceed answers abend {@code 9999} to a well-formed request. Substituting the closest storable
+     * analogue - blanks for the character columns, zero for the amount columns - is not parity either, since
+     * blanks are a different byte value from {@code NUL}, and for the amounts it would silently overwrite a
+     * balance, a credit limit or a cycle total with zero, which is the worst outcome on offer. A field-level
+     * refusal is the remaining answer, and it is the one the program's own vocabulary already gives -
+     * {@code 1215-EDIT-MANDATORY} at {@code :1824-1852} and {@code 1225-EDIT-ALPHA-REQD} at
+     * {@code :1898-1951} answer an unsupplied required field with {@code BLANK} and
+     * {@code ' must be supplied.'} - so this method reuses that exact literal and that exact per-field
+     * tri-state rather than inventing a diagnostic. It is recorded as a deviation forced by the substrate,
+     * under the identifier {@code DL-DV-06}, and not presented as equivalence; the entry carries all four
+     * rejected alternatives, and
+     * {@code AccountUpdateServiceTest.anAbsentCreditScoreIsADeviationBecauseTheSourceStoresLowValues}
+     * fails if it ceases to exist.
      *
      * <h4>What is deliberately NOT changed</h4>
      * <p>The screen runs <strong>only here</strong>, inside the confirm turn's write, and adds no edit to
-     * {@code 1200-EDIT-MAP-INPUTS}. That matters: {@code :1433-1449} short-circuits the whole cascade when
-     * {@code ACUP-CHANGES-OK-NOT-CONFIRMED} is set, because the 3270 still held values the previous turn
-     * had already validated. Digits in a name and an all-blank group identifier are therefore accepted on
-     * the confirm turn, and they remain accepted - that is preserved parity and is not what this method
-     * addresses. Only the abend changes.
+     * {@code 1200-EDIT-MAP-INPUTS}. That matters: {@code :1463-1468} abandons the whole cascade
+     * <em>before its first field edit</em> when {@code ACUP-CHANGES-OK-NOT-CONFIRMED} is set, because the
+     * 3270 still held values the previous turn had already validated. The locator is worth stating exactly,
+     * because the neighbouring {@code :1433-1449} exit is a different one - it fires when the details have
+     * not been fetched - and citing it here would send a reader to the wrong branch. Digits in a name, an
+     * all-blank group identifier, a non-numeric credit score and a state code the lookup refuses are
+     * therefore accepted on the confirm turn, and they remain accepted: that is preserved parity, it is not
+     * what this method addresses, and {@code AccountUpdateServiceTest.theConfirmTurnAbandonsTheWholeEditCascade}
+     * asserts it directly rather than leaving it to inference. Only the abend changes.
      *
      * <p>The three assembled values cannot reach here {@code null} and are not screened:
      * {@code assembleDate}, {@code assemblePhoneNumber} and {@code assembledSsn} all run their components
@@ -7512,7 +7481,7 @@ public class AccountUpdateService {
          * <p><strong>BLOCKER:</strong> a customer read-for-update failure also lands here, because
          * {@code COULD-NOT-LOCK-CUST-FOR-UPDATE} is never tested by the post-write {@code EVALUATE} at
          * {@code :2606-2615} and therefore falls through {@code WHEN OTHER}. The preserved legacy defect is
-         * documented in full on {@link AccountUpdateService} and in the planned {@code DECISION_LOG.md}.</p>
+         * documented in full on {@link AccountUpdateService} and in the {@code DECISION_LOG.md}.</p>
          */
         CHANGES_OKAYED_AND_DONE('C'),
 
@@ -8289,7 +8258,7 @@ public class AccountUpdateService {
      * <p><strong>Deliberate design choices.</strong> Members are package-private and mutable, with no getters and no
      * setters, so that each of the eighty-seven mapped methods can assign exactly the item its source paragraph
      * assigns, at exactly the point the source assigns it. Adding accessors would obscure the correspondence that the
-     * planned {@code TRACEABILITY_MATRIX.md} will have to be provable against, and would add three hundred methods to
+     * {@code TRACEABILITY_MATRIX.md} has to be provable against, and would add three hundred methods to
      * a class that already carries eighty-seven mandated ones.</p>
      *
      * <p><strong>Privacy.</strong> This object carries the most personally identifiable information in

@@ -51,12 +51,12 @@
 #   3 S3 buckets ......... input, output, statements
 #                          VERSIONING ON THE OUTPUT BUCKET ONLY
 #   1 SQS FIFO queue ..... FifoQueue=true, ContentBasedDeduplication=false
-#   2 SNS topics ......... alerts, notifications
+#   1 SNS topic .......... notifications
 #   0 SNS subscriptions .. deliberately none; see the SNS section below
 #
 # Nothing else is provisioned - no IAM role, policy, KMS key, DynamoDB table,
 # Lambda or EventBridge rule: only s3, sqs and sns are enabled on the container
-# (docker-compose.yml:L84 `SERVICES: s3,sqs,sns`), and least privilege forbids
+# (docker-compose.yml `SERVICES: s3,sqs,sns`), and least privilege forbids
 # provisioning anything the application does not consume.
 #
 # The script creates CONTAINERS, never OBJECTS - no S3 key is written, no
@@ -72,7 +72,7 @@
 #
 # HOW TO RUN AND TEST
 #
-# Normal operation is automatic: docker-compose.yml:L98 mounts this directory
+# Normal operation is automatic: docker-compose.yml mounts this directory
 # READ-ONLY at /etc/localstack/init/ready.d and LocalStack runs this file once
 # the edge service reports ready.
 #
@@ -182,18 +182,28 @@
 # bucket/queue variables; the topic variable is not injected, so for it the
 # documented default is the normal path.
 #
-#   CARDDEMO_BATCH_INPUT_BUCKET   default carddemo-batch-input
-#                                 DALYTRAN staging input, LRECL 350
-#   CARDDEMO_BATCH_OUTPUT_BUCKET  default carddemo-batch-output
-#                                 the ONLY versioned bucket
-#   CARDDEMO_STATEMENTS_BUCKET    default carddemo-statements
-#                                 STMTFILE 80, HTMLFILE 100
-#   CARDDEMO_REPORT_QUEUE         default carddemo-report-jobs.fifo
-#                                 logical name carddemo-report-jobs; a `.fifo`
-#                                 suffix is appended when absent and never
-#                                 doubled
-#   CARDDEMO_ALERT_TOPIC          default carddemo-alerts
-#   CARDDEMO_NOTIFICATION_TOPIC   default carddemo-notifications
+# EVERY NAME BELOW IS THE NAME THIS SCRIPT ACTUALLY READS. An earlier revision
+# of this table listed CARDDEMO_BATCH_INPUT_BUCKET, CARDDEMO_BATCH_OUTPUT_BUCKET,
+# CARDDEMO_STATEMENTS_BUCKET, CARDDEMO_REPORT_QUEUE and
+# CARDDEMO_NOTIFICATION_TOPIC - none of which this script reads - plus
+# CARDDEMO_ALERT_TOPIC, for a topic this script does not create. Every one of
+# those six is withdrawn. The live spellings carry the service they address, so
+# one spelling serves this file, .env.example and docker-compose.yml alike, and
+# the read sites are at the `readonly` block further down this file.
+#
+#   CARDDEMO_S3_BATCH_INPUT_BUCKET   default carddemo-batch-input
+#                                    DALYTRAN staging input, LRECL 350
+#   CARDDEMO_S3_BATCH_OUTPUT_BUCKET  default carddemo-batch-output
+#                                    the ONLY versioned bucket
+#   CARDDEMO_S3_STATEMENTS_BUCKET    default carddemo-statements
+#                                    STMTFILE 80, HTMLFILE 100
+#   CARDDEMO_SQS_REPORT_QUEUE        default carddemo-report-jobs.fifo
+#                                    logical name carddemo-report-jobs; a `.fifo`
+#                                    suffix is appended when absent and never
+#                                    doubled
+#   CARDDEMO_SNS_NOTIFICATION_TOPIC  default carddemo-notifications
+#                                    the ONLY topic created; there is no alert
+#                                    topic and no variable for one
 #   AWS_REGION                    no default; preferred when set
 #   AWS_DEFAULT_REGION            default us-east-1; used when AWS_REGION is
 #                                 unset, matching AWS CLI precedence
@@ -297,7 +307,7 @@
 # COMMON FAILURE MODES AND TROUBLESHOOTING
 #
 # Exit 3. Inspect `docker compose logs localstack`; confirm
-# docker-compose.yml:L84 still lists all three services; on a slow host raise
+# docker-compose.yml still lists all three services; on a slow host raise
 # INIT_MAX_ATTEMPTS or INIT_SLEEP_SECONDS.
 #
 # Exit 2 on a variable. The message names it. Unset is fine and takes the
@@ -336,7 +346,7 @@
 # credential material.
 #
 # bash is not assumed: it was verified present in the pinned image
-# (docker-compose.yml:L81 localstack/localstack:4.14.0), as were awslocal, aws
+# (docker-compose.yml pins localstack/localstack:4.14.0), as were awslocal, aws
 # and curl.
 set -Eeuo pipefail
 
@@ -432,13 +442,22 @@ set -Eeuo pipefail
 # SNS carries operator notification, replacing the mainframe operator-notify
 # path - historically the JOB card NOTIFY=&SYSUID convention at
 # app/jcl/DEFGDGB.jcl:L1. EXACTLY ONE topic is created, the notification topic
-# declared by the committed contract, and ZERO subscriptions.
+# declared by the committed contract, together with EXACTLY ONE subscriber: a
+# standard queue that holds each notice until an operator reads it.
+#
+# FINDING M-04, SEVERITY MAJOR. This section previously created the topic with ZERO
+# subscriptions and asserted that count, which made the capability inert - a topic
+# with no subscriber accepts every publish and discards it, and the publisher cannot
+# tell the difference because acceptance is not delivery. The inbox queue is what
+# turns an accepted publish into a delivered notice, and it is the faithful
+# analogue: NOTIFY delivered to a user's message queue, to be read later.
 #
 # A second `alerts` topic existed in an earlier revision of this file and has
 # been removed. It appeared in no requirement and was published to by no code
 # path, so it was pure surface: an unconsumed topic still accepts publishes, and
 # a resource nothing audits is a resource nothing notices. Least privilege means
-# the provisioned set matches the consumed set exactly.
+# the provisioned set matches the consumed set exactly - which is why there is one
+# topic, one subscriber, and nothing else.
 #
 # One further legacy defect is logged and repaired nowhere:
 # app/jcl/CREASTMT.JCL:L90 is a corrupted DD continuation,
@@ -534,7 +553,7 @@ readonly REPORT_QUEUE="${CARDDEMO_SQS_REPORT_QUEUE-carddemo-report-jobs.fifo}"
 readonly NOTIFICATION_TOPIC="${CARDDEMO_SNS_NOTIFICATION_TOPIC-carddemo-notifications}"
 
 # AWS_REGION wins over AWS_DEFAULT_REGION, matching AWS CLI precedence, while
-# AWS_DEFAULT_REGION is what docker-compose.yml:L87 actually injects.
+# AWS_DEFAULT_REGION is what docker-compose.yml actually injects.
 readonly REGION="${AWS_REGION:-${AWS_DEFAULT_REGION-us-east-1}}"
 readonly ENDPOINT_URL="${AWS_ENDPOINT_URL-http://localhost:4566}"
 
@@ -699,7 +718,7 @@ require_bounded_integer 'INIT_HEALTH_TIMEOUT_SECONDS' "${HEALTH_TIMEOUT_SECONDS}
 # Every entry below is an endpoint this project genuinely uses. Adding to this
 # list is a security decision and must be justified in the same terms.
 readonly ALLOWED_ENDPOINT_HOSTS=(
-  'localhost'                  # from the developer host, and docker-compose.yml:L101
+  'localhost'                  # from the developer host, and the compose
   '127.0.0.1'                  # the same, spelled numerically
   '::1'                        # the same, over IPv6
   'localstack'                 # the compose service name, from a sibling container
@@ -707,7 +726,7 @@ readonly ALLOWED_ENDPOINT_HOSTS=(
 )
 
 # The compose container name carries an optional `-${CLONE_INDEX}` suffix
-# (docker-compose.yml:L82), so it is matched by a bounded pattern rather than
+# (its compose container_name), so it is matched by a bounded pattern rather
 # enumerated. The suffix is digits only, which is what CLONE_INDEX ever is.
 #
 # Subdomains of localhost.localstack.cloud are deliberately NOT matched, even
@@ -1090,7 +1109,7 @@ fi
 # THIS IS THE ONLY RETRY LOOP IN THE SCRIPT. A provisioning or verification call
 # that fails is a failure, not a transient, and is never retried.
 #
-# Only s3, sqs and sns are probed - the three services docker-compose.yml:L84
+# Only s3, sqs and sns are probed - the three services docker-compose.yml
 # enables. sts and every other service report `disabled` on this edge, so probing
 # them would guarantee a false negative.
 
@@ -1284,10 +1303,20 @@ ensure_bucket() {
 # rather than asserted. Not readonly: it is written once per bucket.
 OBSERVED_VERSIONING=''
 
-# Set by verify_no_subscriptions to the subscription count the edge reported for
-# the notification topic. Read by main() for the same reason: the summary states
-# what was measured, never what was intended.
+# Set by verify_notification_subscription to the subscription count the edge
+# reported for the notification topic. Read by main() for the same reason: the
+# summary states what was measured, never what was intended.
 OBSERVED_SUBSCRIPTIONS=''
+
+# Set by verify_queue to the visibility timeout the edge reported for the report
+# queue, so the Gate 8 summary states the window that is actually in force rather
+# than the one this script asked for. Finding M-02.
+OBSERVED_QUEUE_VISIBILITY=''
+
+# Set by verify_notification_subscription to the protocol of the subscription that
+# actually exists on the notification topic. Finding M-04: the summary must show a
+# notification has somewhere to be delivered, not merely that a topic exists.
+OBSERVED_SUBSCRIPTION_PROTOCOL=''
 
 # Versioning is applied to the OUTPUT bucket alone: it is the only one carrying
 # generation semantics, because only it receives the (+1)/(0) generation streams
@@ -1422,7 +1451,28 @@ verify_no_lifecycle_rules() {
 #
 # Nothing further is set: DeduplicationScope and FifoThroughputLimit are
 # high-throughput-mode knobs the application does not use.
-readonly QUEUE_ATTRIBUTES='FifoQueue=true,ContentBasedDeduplication=false'
+# VisibilityTimeout: FINDING M-02, SEVERITY MAJOR, RESOLVED. The queue was
+# provisioned with no visibility timeout at all, so it took the service default of
+# 30 seconds. The consumer that replaces the JES2 internal reader does not merely
+# read a message - it LAUNCHES THE REPORT JOB and waits for it, and that job
+# backs up the transaction cluster, sorts a whole generation and writes a 133-byte
+# report. Thirty seconds is far shorter than that, so the message became visible
+# again while its own job was still running: a second consumer, or the same one on
+# its next poll, received the identical submission and either started a competing
+# execution or discarded it as a duplicate - and with the acknowledgement defect
+# of finding C-02 also present, a failed run could be acknowledged while a
+# duplicate of it was already in flight.
+#
+# 900 seconds is chosen as the processing interval, not as a guess: it is the
+# window com.cardemo.config.BatchConfig declares on its listener through
+# messageVisibilitySeconds, so the queue and the consumer state the same number
+# and neither can drift from the other. The value is well inside the service
+# maximum of 12 hours and well above the measured runtime of the report job on the
+# 300-record fixture. A run that legitimately needs longer extends its own
+# visibility from the listener rather than having this value raised, which is why
+# the consumer takes the Visibility handle.
+readonly QUEUE_VISIBILITY_TIMEOUT_SECONDS='900'
+readonly QUEUE_ATTRIBUTES="FifoQueue=true,ContentBasedDeduplication=false,VisibilityTimeout=${QUEUE_VISIBILITY_TIMEOUT_SECONDS}"
 
 create_queue() {
   local physical="$1"
@@ -1542,7 +1592,50 @@ verify_queue() {
         'Delete the queue and re-run so it is recreated with the required attributes (mind the 60s window).'
     fi
   fi
-  log "sqs:${physical}" "verified FifoQueue=${fifo_flag} ContentBasedDeduplication=${dedup_flag} (URL withheld)"
+  # VisibilityTimeout is read back and CONVERGED, for the same reason
+  # ContentBasedDeduplication is: it is mutable, and every volume provisioned
+  # before finding M-02 carries the service default of 30 seconds. Converging
+  # keeps this script's contract - after a successful run the queue matches
+  # QUEUE_ATTRIBUTES - true on a long-lived volume as well as on a clean one,
+  # without making an attribute change an outage.
+  local visibility=''
+  if ! visibility="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+    --attribute-names VisibilityTimeout \
+    --query 'Attributes.VisibilityTimeout' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${physical}" \
+      "get-queue-attributes failed for VisibilityTimeout: ${visibility//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  if [[ "${visibility}" != "${QUEUE_VISIBILITY_TIMEOUT_SECONDS}" ]]; then
+    log "sqs:${physical}" \
+      "VisibilityTimeout read back as '${visibility}'; converging to ${QUEUE_VISIBILITY_TIMEOUT_SECONDS} (finding M-02)"
+    local converge_visibility=''
+    if ! converge_visibility="$("${AWS_CLI[@]}" sqs set-queue-attributes --queue-url "${url}" \
+      --attributes "VisibilityTimeout=${QUEUE_VISIBILITY_TIMEOUT_SECONDS}" 2>&1)"; then
+      local visibility_detail="VisibilityTimeout is '${visibility}' and could not be converged"
+      visibility_detail="${visibility_detail} to '${QUEUE_VISIBILITY_TIMEOUT_SECONDS}'"
+      visibility_detail="${visibility_detail}: ${converge_visibility//$'\n'/ }"
+      fail "${EXIT_QUEUE}" "sqs:${physical}" "${visibility_detail}" \
+        'Set VisibilityTimeout with sqs set-queue-attributes, or delete the queue and re-run.'
+    fi
+    if ! visibility="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+      --attribute-names VisibilityTimeout \
+      --query 'Attributes.VisibilityTimeout' --output text 2>&1)"; then
+      fail "${EXIT_QUEUE}" "sqs:${physical}" \
+        "get-queue-attributes failed after visibility convergence: ${visibility//$'\n'/ }" \
+        'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+    fi
+    if [[ "${visibility}" != "${QUEUE_VISIBILITY_TIMEOUT_SECONDS}" ]]; then
+      local unconverged_visibility="VisibilityTimeout still reads back as '${visibility}' after convergence"
+      unconverged_visibility="${unconverged_visibility} - it must be ${QUEUE_VISIBILITY_TIMEOUT_SECONDS}"
+      unconverged_visibility="${unconverged_visibility} so a report job cannot outlive its own message"
+      fail "${EXIT_QUEUE}" "sqs:${physical}" "${unconverged_visibility}" \
+        'Delete the queue and re-run so it is recreated with the required attributes (mind the 60s window).'
+    fi
+  fi
+  OBSERVED_QUEUE_VISIBILITY="${visibility}"
+  log "sqs:${physical}" \
+    "verified FifoQueue=${fifo_flag} ContentBasedDeduplication=${dedup_flag} VisibilityTimeout=${visibility}s (URL withheld)"
 }
 
 ensure_queue() {
@@ -1661,21 +1754,168 @@ topic_arn() {
     'Re-run the hook so the topic exists before its subscriptions are read.'
 }
 
-# Fatal drift check on the zero-subscription guarantee.
+# The notification INBOX, and the subscription that makes a notification arrive
+# somewhere.
 #
-# The contract creates no subscription of any kind, and the summary asserts that
-# count, so the count is READ BACK rather than assumed. This drift is fatal
-# where versioning drift on the input and statements buckets is not, and the
-# distinction is the one drawn in EVIDENCE AND DRIFT: a subscription can be
-# removed through the API by the operator, so its presence is a repairable
-# divergence, whereas S3 exposes no call that removes a versioning
-# configuration.
+# FINDING M-04, SEVERITY MAJOR, RESOLVED. This script used to create the topic and
+# then FAIL if any subscription existed, ending by asserting a count of zero. The
+# consequence was that operator notification - the capability that stands in for
+# the job card's NOTIFY operand - was structurally present and functionally inert:
+# every publish was accepted by the service and discarded, because a topic with no
+# subscriber has nowhere to deliver to. The publisher could not detect it either,
+# since publish acceptance is not delivery.
 #
-# This function never unsubscribes anything. A subscription found here may
-# belong to a sibling clone sharing this edge, and destroying a resource this
-# script did not create is outside its authority - hence a remediation hint
-# naming the command instead of a silent teardown.
-verify_no_subscriptions() {
+# A durable queue is the right subscriber, and it is the faithful one. The
+# mainframe's NOTIFY delivered to a user's message queue - an inbox that holds the
+# notice until someone reads it - so a queue reproduces both the durability and the
+# read-when-you-like semantics, where an electronic-mail or web endpoint would
+# introduce an external dependency this topology forbids. RawMessageDelivery is
+# enabled so the body a subscriber reads is exactly the JSON the publisher sent,
+# with no envelope wrapped around it.
+#
+# The queue is a STANDARD queue on purpose: notification is not ordered with
+# respect to anything, and the report submission queue's first-in-first-out
+# guarantee exists for a different reason entirely.
+readonly NOTIFICATION_INBOX_QUEUE="${NOTIFICATION_TOPIC}-inbox"
+
+# Creates the notification inbox queue if it is absent, and prints its ARN.
+#
+# The ARN is needed as the subscription endpoint and is never logged, for the same
+# reason a topic ARN is not: it embeds the account identifier.
+# Creates the inbox queue if it is absent. Logs, and returns nothing on stdout.
+#
+# The split between this function and notification_inbox_arn below is deliberate and
+# load-bearing. log() writes to STDOUT, so any function whose value is captured with
+# `$(...)` must not log - its log lines would be captured as part of the value. That
+# is not a hypothetical: an earlier revision of this hook created the queue and
+# resolved its ARN in one logging function, and the captured "ARN" was the progress
+# line followed by the ARN. SNS accepted that as the endpoint, so the topic ended up
+# with a subscription pointing at a value that was not a queue - the hook reported
+# success and notifications went nowhere, which is the exact failure finding M-04 is
+# about, reintroduced by the fix for it. The pre-existing topic_arn helper is
+# log-free for the same reason; this pair follows it.
+ensure_notification_inbox() {
+  local queue="$1"
+  local probe=''
+  if ! probe="$("${AWS_CLI[@]}" sqs get-queue-url --queue-name "${queue}" 2>&1 >/dev/null)"; then
+    case "${probe}" in
+      *NonExistentQueue* | *QueueDoesNotExist*)
+        local created=''
+        if ! created="$("${AWS_CLI[@]}" sqs create-queue --queue-name "${queue}" 2>&1 >/dev/null)"; then
+          fail "${EXIT_QUEUE}" "sqs:${queue}" \
+            "create-queue failed for the notification inbox: ${created//$'\n'/ }" \
+            'Confirm the sqs service is running on the health endpoint, then re-run the hook.'
+        fi
+        log "sqs:${queue}" 'created standard queue as the notification inbox'
+        ;;
+      *)
+        fail "${EXIT_QUEUE}" "sqs:${queue}" \
+          "get-queue-url failed for a reason other than absence: ${probe//$'\n'/ }" \
+          'Resolve the reported error, then re-run the hook.'
+        ;;
+    esac
+  else
+    log "sqs:${queue}" 'already exists - idempotent success'
+  fi
+}
+
+# Resolves the inbox ARN and prints ONLY that. Never logs; see ensure_notification_inbox.
+notification_inbox_arn() {
+  local queue="$1"
+  local url=''
+  if ! url="$("${AWS_CLI[@]}" sqs get-queue-url --queue-name "${queue}" \
+    --query 'QueueUrl' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${queue}" \
+      "the notification inbox URL did not resolve: ${url//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  local arn=''
+  if ! arn="$("${AWS_CLI[@]}" sqs get-queue-attributes --queue-url "${url}" \
+    --attribute-names QueueArn --query 'Attributes.QueueArn' --output text 2>&1)"; then
+    fail "${EXIT_QUEUE}" "sqs:${queue}" \
+      "the notification inbox ARN did not resolve: ${arn//$'\n'/ }" \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  if [[ -z "${arn}" || "${arn}" == 'None' ]]; then
+    fail "${EXIT_QUEUE}" "sqs:${queue}" \
+      'the notification inbox ARN resolved to an empty value' \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+  printf '%s' "${arn}"
+}
+
+# Subscribes the inbox to the topic, but only when it is not subscribed already.
+#
+# The existing subscription set is READ FIRST and the subscribe call is made only when
+# this inbox is absent from it. That ordering is the whole substance of the function,
+# and it is not a defensive flourish: AWS documents Subscribe as returning the
+# EXISTING subscription ARN when the same topic, protocol and endpoint are presented
+# again, but the LocalStack edge this script provisions against does NOT reproduce
+# that behaviour - a repeat call there creates a second subscription with the same
+# endpoint. Trusting the documented idempotency turned a second run of this hook into
+# two subscriptions and a third into three, and because every subscription receives a
+# copy, that is duplicate delivery of every operator notification, growing by one copy
+# per compose cycle. Reading before writing makes the hook idempotent against both
+# behaviours instead of against only one of them.
+#
+# Duplicates that already exist are deliberately left alone; see the note on
+# verify_notification_subscription for why this script does not unsubscribe.
+ensure_notification_subscription() {
+  local name="$1"
+  local topic=''
+  topic="$(topic_arn "${name}")"
+  ensure_notification_inbox "${NOTIFICATION_INBOX_QUEUE}"
+  local endpoint=''
+  endpoint="$(notification_inbox_arn "${NOTIFICATION_INBOX_QUEUE}")"
+  # The value is used as an SNS endpoint, so prove it is an ARN and nothing else. A
+  # captured log line would have satisfied a mere non-empty check.
+  if [[ "${endpoint}" != arn:aws:sqs:* || "${endpoint}" == *[[:space:]]* ]]; then
+    fail "${EXIT_QUEUE}" "sqs:${NOTIFICATION_INBOX_QUEUE}" \
+      'the notification inbox ARN did not resolve to a bare sqs ARN' \
+      'Re-run the hook; if it persists, inspect the sqs service state in the container logs.'
+  fi
+
+  # A count rather than an ARN: the identity that matters is the topic/protocol/endpoint
+  # triple, not which subscription ARN happens to carry it.
+  local existing=''
+  if ! existing="$("${AWS_CLI[@]}" sns list-subscriptions-by-topic --topic-arn "${topic}" \
+    --query "length(Subscriptions[?Protocol=='sqs' && Endpoint=='${endpoint}'])" \
+    --output text 2>&1)"; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      "list-subscriptions-by-topic failed while checking for the inbox subscription: ${existing//$'\n'/ }" \
+      'Confirm the sns service is running on the health endpoint, then re-run the hook.'
+  fi
+  # The same integer shape the retry parameters are held to, for the same reason: it
+  # refuses a leading zero, so nothing that reaches the base-10 comparison below can
+  # be read as octal.
+  if [[ "${existing}" =~ ^(0|[1-9][0-9]*)$ ]] && ((10#${existing} > 0)); then
+    log "sns:${name}" \
+      "the ${NOTIFICATION_INBOX_QUEUE} inbox is already subscribed - idempotent success"
+    return 0
+  fi
+
+  local subscribed=''
+  if ! subscribed="$("${AWS_CLI[@]}" sns subscribe --topic-arn "${topic}" --protocol sqs \
+    --notification-endpoint "${endpoint}" --attributes 'RawMessageDelivery=true' \
+    --return-subscription-arn 2>&1 >/dev/null)"; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      "subscribe failed for the notification inbox: ${subscribed//$'\n'/ }" \
+      'Confirm the sns and sqs services are running on the health endpoint, then re-run the hook.'
+  fi
+  log "sns:${name}" "subscribed the ${NOTIFICATION_INBOX_QUEUE} inbox (raw delivery, ARNs withheld)"
+}
+
+# Fatal check that a notification has somewhere to be delivered.
+#
+# The count is READ BACK rather than assumed, exactly as the versioning status is,
+# and the requirement is now at least one subscription rather than none. Zero is
+# fatal: it is precisely the state in which every publish is accepted and silently
+# discarded, which is the defect finding M-04 reported.
+#
+# This function never unsubscribes anything. A subscription found here may belong
+# to a sibling clone sharing this edge, and destroying a resource this script did
+# not create is outside its authority.
+verify_notification_subscription() {
   local name="$1"
   local arn=''
   arn="$(topic_arn "${name}")"
@@ -1686,13 +1926,22 @@ verify_no_subscriptions() {
       "list-subscriptions-by-topic failed: ${count//$'\n'/ }" \
       'Confirm the sns service is running on the health endpoint, then re-run the hook.'
   fi
-  if [[ "${count}" != '0' ]]; then
+  if [[ -z "${count}" || "${count}" == 'None' || "${count}" == '0' ]]; then
     fail "${EXIT_TOPIC}" "sns:${name}" \
-      "expected 0 subscriptions but the topic reports '${count//$'\n'/ }'" \
-      'Remove it with "aws sns unsubscribe --subscription-arn <arn>", then re-run the hook.'
+      'the topic reports no subscription, so every notification would be accepted and discarded' \
+      'Re-run the hook: ensure_notification_subscription creates the inbox subscription idempotently.'
+  fi
+  local protocol=''
+  if ! protocol="$("${AWS_CLI[@]}" sns list-subscriptions-by-topic --topic-arn "${arn}" \
+    --query 'Subscriptions[0].Protocol' --output text 2>&1)"; then
+    fail "${EXIT_TOPIC}" "sns:${name}" \
+      "the subscription protocol could not be read: ${protocol//$'\n'/ }" \
+      'Confirm the sns service is running on the health endpoint, then re-run the hook.'
   fi
   OBSERVED_SUBSCRIPTIONS="${count}"
-  log "sns:${name}" 'subscription count verified 0 by list-subscriptions-by-topic'
+  OBSERVED_SUBSCRIPTION_PROTOCOL="${protocol}"
+  log "sns:${name}" \
+    "subscription count verified ${count} (protocol ${protocol}) by list-subscriptions-by-topic"
 }
 
 # Renders an observed versioning status for the summary. The rendering presents
@@ -1750,7 +1999,8 @@ main() {
   ensure_queue "${QUEUE_PHYSICAL}"
 
   ensure_topic "${NOTIFICATION_TOPIC}"
-  verify_no_subscriptions "${NOTIFICATION_TOPIC}"
+  ensure_notification_subscription "${NOTIFICATION_TOPIC}"
+  verify_notification_subscription "${NOTIFICATION_TOPIC}"
 
   # Gate 8 evidence. EVERY line below is composed from a value this run read back
   # off the edge, never from the contract this script set out to apply, so a
@@ -1762,9 +2012,12 @@ main() {
   log 'summary' "s3 output bucket ........ ${OUTPUT_BUCKET} ($(render_versioning "${output_versioning}" 'Enabled'))"
   log 'summary' \
     "s3 statements bucket .... ${STATEMENTS_BUCKET} ($(render_versioning "${statements_versioning}" 'None'))"
-  log 'summary' "sqs queue ............... ${QUEUE_LOGICAL} -> ${QUEUE_PHYSICAL} (FIFO verified)"
+  log 'summary' \
+    "sqs queue ............... ${QUEUE_LOGICAL} -> ${QUEUE_PHYSICAL} (FIFO, ${OBSERVED_QUEUE_VISIBILITY}s visibility)"
+  log 'summary' "sqs notification inbox .. ${NOTIFICATION_INBOX_QUEUE} (standard queue)"
   log 'summary' "sns topic ............... ${NOTIFICATION_TOPIC} (presence verified)"
-  log 'summary' "sns subscriptions ....... ${OBSERVED_SUBSCRIPTIONS} (verified by read-back)"
+  log 'summary' \
+    "sns subscriptions ....... ${OBSERVED_SUBSCRIPTIONS} via ${OBSERVED_SUBSCRIPTION_PROTOCOL} (read-back)"
   log 'summary' 's3 lifecycle rules ...... 0 on all three buckets (verified by read-back)'
   log 'summary' '--------------------------------------------------------------'
   log 'done' 'all resources provisioned and verified'

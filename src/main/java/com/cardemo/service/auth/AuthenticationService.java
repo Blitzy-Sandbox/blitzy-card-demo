@@ -196,14 +196,20 @@ import org.springframework.transaction.annotation.Transactional;
  * <h2>How to run, build and test</h2>
  *
  * <p>The build is a single-module Maven project driven through the pinned wrapper. Configuration is
- * supplied by environment variables, so the local environment file must be exported first:
+ * supplied by environment variables, so each command that starts a context loads the local environment file
+ * in its own subshell rather than having it exported into the shell:
  *
  * <pre>{@code
- * set -a; . ./.env; set +a
  * ./mvnw -B -ntp clean compile
- * ./mvnw -B -ntp test
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ( set -a; . ./.env; set +a; ./mvnw -B -ntp test )
+ * ( set -a; . ./.env; set +a; ./mvnw -B -ntp clean verify )
  * }</pre>
+ *
+ * <p>Compilation reads no environment value, which is why the first line carries none. The parentheses on the
+ * other two are the point: an exported value is inherited by every later child of the shell and is readable in
+ * {@code /proc/<pid>/environ} until it is unset, whereas a subshell's copy dies when the command finishes. The
+ * file must already be at mode {@code 0600} - verify with {@code stat -c '%a %n' .env} - because it holds the
+ * signing key, which has no committed default.
  *
  * <p>The compiler runs {@code -Xlint:all -Werror} with {@code failOnWarning}, so a raw type, an unchecked cast or a
  * dangling documentation comment fails the build rather than warning. An unused import does not: {@code javac} 25

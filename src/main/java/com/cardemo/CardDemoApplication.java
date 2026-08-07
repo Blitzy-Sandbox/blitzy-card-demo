@@ -66,26 +66,37 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *
  * <p>Component scanning is rooted at {@code com.cardemo} - the default of {@code @SpringBootApplication},
  * which is why no {@code scanBasePackages} attribute appears below - so it reaches whatever is authored,
- * without enumeration. The subpackage counts are stated as <strong>present / target</strong> wherever the two
- * differ, so that a planned type is never read as a delivered one: {@code config} 6, {@code security} 4,
- * {@code model} (entity 11, key 3, enums 4, dto 26), {@code repository} 11, {@code service} 21 across nine
- * leaves, {@code controller} <strong>8</strong> exposing <strong>17 operations</strong>, {@code batch}
- * (jobs <strong>3 / 6</strong>, processors 5, readers <strong>6 / 7</strong>, writers 3), {@code exception} 9
- * and {@code observability} 3.
+ * without enumeration. <strong>Every count below is a delivered count</strong>, re-measured 7 August 2026;
+ * the {@code present / target} notation an earlier revision used is gone because no package differs from its
+ * target any longer: {@code config} 6, {@code security} 4, {@code model} (entity 11, key 3, enums 4,
+ * <strong>dto 29</strong>), {@code repository} 11, {@code service} 21 across nine leaves,
+ * {@code controller} <strong>8</strong> exposing <strong>17 operations</strong>, {@code batch}
+ * (jobs <strong>6</strong>, processors 5, readers <strong>7</strong>, writers 3), {@code exception} 9 and
+ * {@code observability} <strong>4</strong>. Three of those figures are corrections: the dto leaf was published
+ * as 26, the jobs leaf as 3 of 6 and the readers leaf as 6 of 7, and the observability leaf as 3. Reproduce
+ * any of them with {@code find src/main/java/com/cardemo/<leaf> -maxdepth 1 -name '*.java' \
+ * ! -name 'package-info.java' | wc -l}.
+ * {@code com.cardemo.unit.infrastructure.InventoryCountGateTest} fails the build if a figure here
+ * drifts from the directory, which is what keeps this paragraph honest rather than merely current.
  *
- * <p><strong>What is still to be authored</strong>, and nothing else: two batch jobs -
- * {@code CombineTransactionsJob} and {@code BatchPipelineOrchestrator}. Each is named individually in the leaf
- * document for its package. The <strong>controller layer is complete</strong>: all eight controllers are
- * authored and all seventeen operations of {@code app/csd/CARDDEMO.CSD} are exposed. The <strong>reader layer
- * is likewise complete</strong>: all seven batch readers are authored.
+ * <p><strong>Nothing in this tree is still to be authored.</strong> An earlier revision of this paragraph
+ * named two outstanding batch jobs, {@code CombineTransactionsJob} and {@code BatchPipelineOrchestrator}, and
+ * both are now present - so the {@code batch/jobs} leaf is complete at 6, and every layer above is complete
+ * with it: 8 controllers exposing all 17 operations of {@code app/csd/CARDDEMO.CSD}, 7 batch readers, 21
+ * services across 9 leaves, 11 entities and 11 repositories. That earlier revision also stated the jobs leaf
+ * as 3 of 6 and the readers leaf as 6 of 7 <em>in the same paragraph</em> that called the reader layer
+ * complete, which is the shape this class of defect takes: two figures for one fact, disagreeing, both
+ * written by hand.
  *
- * <p><strong>Finding M-09, severity Medium, RESOLVED.</strong> This paragraph previously reported six of eight
- * controllers, twelve of seventeen operations, one of six batch jobs, five of seven readers, and whole-tree
- * totals of 143 files and 119 types plus 24 package documents. Every one of those had been overtaken by the
- * work, so the census understated what was delivered - which is the more damaging direction for an evidence
- * artefact to be wrong in, because a reader concludes that authored, tested code does not exist. The values
- * above are the measured ones, and the coupled sentence naming what remains was corrected in the same edit so
- * that no two statements here can disagree.
+ * <p><strong>Two revisions of this paragraph are withdrawn, and both erred in the same direction.</strong> The
+ * first reported six of eight controllers, twelve of seventeen operations, one of six batch jobs and five of
+ * seven readers, with whole-tree totals of 143 files and 119 types plus 24 package documents. The second
+ * corrected those but still reported {@code dto} 26, {@code observability} 3, {@code batch.jobs} 3 of 6 and
+ * {@code batch.readers} 6 of 7, and still named {@code CombineTransactionsJob} and
+ * {@code BatchPipelineOrchestrator} as "still to be authored" after both had landed. Each understated what was
+ * delivered, which is the more damaging direction for an evidence artefact to be wrong in: a reader concludes
+ * that authored, tested code does not exist. The figures above are the measured ones and the sentence naming
+ * what remains was corrected in the same edit, so no two statements here can disagree.
  *
  * <p>The whole-tree file totals are <strong>deliberately no longer restated</strong>. They change with every
  * file added anywhere in the tree, they were the first figures to go stale, and a reader who needs them is
@@ -99,14 +110,18 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *
  * <p><strong>Batch jobs do not run at startup.</strong> {@code spring.batch.job.enabled} is {@code false},
  * because the framework default of {@code true} would run every job on every boot. Launching is explicit.
- * The two intended launch paths are {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} and the SQS
+ * The two launch paths are {@link com.cardemo.batch.jobs.BatchPipelineOrchestrator} and the SQS
  * listener that replaces the JES2 internal reader behind {@code DEFINE TDQUEUE(JOBS) TYPE(EXTRA)
  * DDNAME(INREADER) TYPEFILE(OUTPUT) RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD)} at
- * {@code app/csd/CARDDEMO.CSD:L499-L505}. <strong>The orchestrator is authored; the listener is not.</strong>
- * An earlier revision of this paragraph said both were planned rather than authored, and that is withdrawn
- * for the orchestrator: it composes the five stages and is launched deliberately. Until the listener exists
- * a queued request is drained by nothing, so a job is driven from a test, from the orchestrator, or by
- * launching its {@code Job} bean directly.
+ * {@code app/csd/CARDDEMO.CSD:L499-L505}. <strong>Both are authored.</strong> Two earlier revisions of this
+ * paragraph are withdrawn: the first said both were planned, the second said the orchestrator was authored and
+ * the listener was not, so that a queued request was drained by nothing. The listener is the single {@code @SqsListener} declaration in this tree,
+ * {@code BatchConfig.ReportJobQueueListener}, and it withdraws itself under exactly three conditions rather
+ * than being absent - when no queue is configured, when {@code spring.batch.job.name} names a job, because a
+ * submitted batch process must not become a second reader of the queue that fed it, and when
+ * {@code carddemo.batch.report-queue-listener.enabled} is {@code false}, which is what the test profile sets
+ * so its harness can be the only reader. A job can additionally be driven from a test or by launching its
+ * {@code Job} bean directly. What it launches is the <strong>transaction report job</strong>, with the submitted start and end dates as job parameters.
  *
  * <p><strong>How to build, run and test.</strong> Build with the pinned wrapper: {@code ./mvnw clean verify}.
  * {@code maven-enforcer-plugin:3.5.0} floors the toolchain at Java {@code [25,)} and Maven

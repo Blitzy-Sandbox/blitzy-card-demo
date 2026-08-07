@@ -49,6 +49,7 @@ package com.cardemo.integration.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
@@ -56,6 +57,7 @@ import java.time.YearMonth;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -961,6 +963,12 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
      * removal unasserted would be worse. The input here exceeds <em>both</em> legacy limits: the run total,
      * and the per-card limit, because {@value #aboveCeilingTransactionCount} spread over
      * {@value #seededCrossReferenceCount} cards puts more than ten on some of them.
+     *
+     * <p><strong>And no authored ceiling replaces the legacy one.</strong> This test used to close by asserting
+     * that {@code StatementProcessor} carried "a diagnosed bound of its own"; finding BAT-002 removed that
+     * bound and its per-run twin, because a refusal at an invented threshold is a business rule the corpus
+     * does not contain. The closing assertion is now the absence of both, which is what the review asked for:
+     * bounded-memory streaming, and no record-count refusal.
      */
     @Test
     @DisplayName("8. more than the legacy 51x10 = 510-transaction ceiling of CBSTM03A.CBL:225-230 is "
@@ -995,12 +1003,13 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
                         + "capacity, not the statement census")
                 .isEqualTo(seededCrossReferenceCount);
 
-        assertThat(StatementProcessor.MAX_TRANSACTIONS_PER_CARD_GROUP)
-                .as("the streaming replacement carries a diagnosed bound of its own that is orders of "
-                        + "magnitude above the legacy %d, so the deviation trades a silent overrun for a "
-                        + "reported limit rather than for no limit at all",
-                        Integer.valueOf(StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_CARD))
-                .isGreaterThan(StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_RUN);
+        assertThat(Arrays.stream(StatementProcessor.class.getDeclaredFields()).map(Field::getName))
+                .as("finding BAT-002: the streaming replacement carries NO record ceiling of its own, so the "
+                        + "legacy %d is a recorded historical capacity and not a threshold this system "
+                        + "enforces under another name",
+                        Integer.valueOf(StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_RUN))
+                .doesNotContain("MAX_TRANSACTIONS_PER_RUN", "MAX_TRANSACTIONS_PER_CARD_GROUP",
+                        "maxTransactionsPerRun");
     }
 
     // =================================================================================================
@@ -2005,4 +2014,3 @@ class StatementGenerationJobTest extends AbstractBatchIntegrationTest {
         return census;
     }
 }
-

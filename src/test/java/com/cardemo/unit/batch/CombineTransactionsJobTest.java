@@ -57,9 +57,12 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.BatchUpdateException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
@@ -111,8 +114,15 @@ class CombineTransactionsJobTest {
     private static final int RECORD_LENGTH = 350;
     private static final String BUCKET = "carddemo-batch-output";
     private static final String PREFIX = "gdg/transact-combined";
+    /** The TRANSACT.BKUP generation base of app/jcl/TRANBKP.jcl:L33, written by the archive step. */
+    private static final String BACKUP_PREFIX = "gdg/transact-bkup";
+
+    /** Every upload observed in one test, with its body read while the stream was still open. */
+    private final List<ArgumentCapture> uploads = new ArrayList<>();
 
     private final JobRepository jobRepository = mock(JobRepository.class);
+    private final com.cardemo.repository.TransactionRepository transactionRepository =
+            mock(com.cardemo.repository.TransactionRepository.class);
     private final PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
     private final JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
     private final S3Operations objectStorage = mock(S3Operations.class);
@@ -124,8 +134,8 @@ class CombineTransactionsJobTest {
 
     private CombineTransactionsJob newJob() {
         return new CombineTransactionsJob(jobRepository, transactionManager, transactionWriter,
-                jdbcTemplate, objectStorage, fileStatusMapper, metricsConfig,
-                "COMBTRAN", 100, 1_000_000, BUCKET, PREFIX);
+                jdbcTemplate, objectStorage, fileStatusMapper,
+                "COMBTRAN", 100, BUCKET, PREFIX, transactionRepository, BACKUP_PREFIX);
     }
 
     private static Transaction transaction(final String id, final String amount) {
@@ -145,8 +155,14 @@ class CombineTransactionsJobTest {
 
     // ---------------------------------------------------------------- structure
 
+    /**
+     * <p>Five beans since finding C-06: the archive-and-reset step of {@code app/jcl/TRANBKP.jcl} joined the
+     * two {@code app/jcl/COMBTRAN.jcl} steps. The count is asserted rather than the presence of the ones this
+     * class knows about, because the point of the case is that this file contributes <b>no infrastructure
+     * bean</b> - a repository, a template or a converter declared here would be a layering breach.
+     */
     @Test
-    @DisplayName("Declares exactly four beans - two Steps, one Flow, one Job - and no infrastructure bean")
+    @DisplayName("Declares exactly five beans - three Steps, one Flow, one Job - and no infrastructure bean")
     void declaresOnlyJobStepFlowBeans() {
         final List<Method> beans = new ArrayList<>();
         for (final Method method : CombineTransactionsJob.class.getDeclaredMethods()) {
@@ -154,7 +170,7 @@ class CombineTransactionsJobTest {
                 beans.add(method);
             }
         }
-        assertThat(beans).hasSize(4);
+        assertThat(beans).hasSize(5);
         for (final Method bean : beans) {
             assertThat(bean.getReturnType()).isIn(Step.class, org.springframework.batch.core.job.flow.Flow.class,
                     Job.class);
@@ -207,13 +223,13 @@ class CombineTransactionsJobTest {
     void rejectsInvalidConstruction() {
         assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
                 new CombineTransactionsJob(null, transactionManager, transactionWriter, jdbcTemplate,
-                        objectStorage, fileStatusMapper, metricsConfig, "COMBTRAN", 100, 10, BUCKET, PREFIX));
+                        objectStorage, fileStatusMapper, "COMBTRAN", 100, BUCKET, PREFIX, transactionRepository, BACKUP_PREFIX));
         assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
                 new CombineTransactionsJob(jobRepository, transactionManager, transactionWriter, jdbcTemplate,
-                        objectStorage, fileStatusMapper, metricsConfig, "COMBTRAN", 0, 10, BUCKET, PREFIX));
+                        objectStorage, fileStatusMapper, "COMBTRAN", 0, BUCKET, PREFIX, transactionRepository, BACKUP_PREFIX));
         assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
                 new CombineTransactionsJob(jobRepository, transactionManager, transactionWriter, jdbcTemplate,
-                        objectStorage, fileStatusMapper, metricsConfig, "COMBTRAN", 100, 10, "  ", PREFIX));
+                        objectStorage, fileStatusMapper, "COMBTRAN", 100, "  ", PREFIX, transactionRepository, BACKUP_PREFIX));
     }
 
     // ---------------------------------------------------------------- SORT semantics
@@ -254,6 +270,15 @@ class CombineTransactionsJobTest {
         final ArgumentCapture capture = uploadCapture();
         assertThat(capture.payload().length).isEqualTo(2 * RECORD_LENGTH);
         assertThat(capture.payload().length % RECORD_LENGTH).isZero();
+        // The streamed write declares BOTH a content type and a content length, and the length is a measured
+        // quantity rather than a guessed one: SORTOUT is staged to a temporary file first, so its exact size
+        // is known before the upload begins. Declaring it is what lets the client send the file without
+        // buffering it, which is the property that removed the need for a record-count ceiling.
+        assertThat(capture.metadata()).isNotNull();
+        assertThat(capture.metadata().getContentType()).isEqualTo("application/octet-stream");
+        assertThat(capture.metadata().getContentLength())
+                .as("the staged file's size is known before the upload, so the length is declared, not guessed")
+                .isEqualTo(Long.valueOf((long) 2 * RECORD_LENGTH));
 
         final ExecutionContext jobContext = stepExecution.getJobExecution().getExecutionContext();
         final String publishedKey = jobContext.getString("carddemo.transact.combined.object.key");
@@ -406,31 +431,39 @@ class CombineTransactionsJobTest {
     @Test
     @DisplayName("STEP10 is NOT gated on STEP05R: the flow carries a wildcard transition to the load")
     void loadIsNotGatedOnTheSort() throws Exception {
+        final Step archive = mock(Step.class);
         final Step sort = mock(Step.class);
         final Step load = mock(Step.class);
+        when(archive.getName()).thenReturn("combineTransactionsArchiveStep");
         when(sort.getName()).thenReturn("combineTransactionsSortStep");
         when(load.getName()).thenReturn("combineTransactionsLoadStep");
 
         final org.springframework.batch.core.job.flow.Flow flow =
-                newJob().combineTransactionsFlow(sort, load);
+                newJob().combineTransactionsFlow(archive, sort, load);
         assertThat(flow.getName()).isEqualTo("combineTransactionsFlow");
 
-        // FlowBuilder names states step0/step1/decision0 in declaration order: step0 is the sort
-        // (STEP05R), step1 is the load (STEP10) and decision0 is the return-code decider.
+        // FlowBuilder names states in declaration order: step0 is the app/jcl/TRANBKP.jcl archive, step1 is
+        // the sort (STEP05R), step2 is the load (STEP10) and decision0 is the return-code decider.
         final List<String> transitions = describeTransitions(flow);
-        final List<String> fromSort = transitions.stream().filter(t -> t.startsWith("step0|")).toList();
+        final List<String> fromArchive = transitions.stream().filter(t -> t.startsWith("step0|")).toList();
+        final List<String> fromSort = transitions.stream().filter(t -> t.startsWith("step1|")).toList();
+
+        // The archive precedes the sort unconditionally, and only a failure or an abend diverts it: a load
+        // must not follow an archive whose emptying of the master is in doubt.
+        assertThat(fromArchive).containsExactlyInAnyOrder(
+                "step0|*->step1", "step0|FAILED->decision0", "step0|ABEND->decision0");
 
         // THE no-gating assertion: the wildcard arm out of STEP05R targets the LOAD STEP itself, never a
         // decision state. Only FAILED and ABEND divert - the abend suppression the platform applies. That
         // is exactly the absence of COND at app/jcl/COMBTRAN.jcl:L41.
         assertThat(fromSort).containsExactlyInAnyOrder(
-                "step0|*->step1", "step0|FAILED->decision0", "step0|ABEND->decision0");
-        assertThat(fromSort).noneMatch(t -> t.equals("step0|COMPLETED->decision0"));
+                "step1|*->step2", "step1|FAILED->decision0", "step1|ABEND->decision0");
+        assertThat(fromSort).noneMatch(t -> t.equals("step1|COMPLETED->decision0"));
 
         // The decider is reached only AFTER the load, and all four return codes plus the catch-all are wired:
         // 0 and 4 end the flow carrying their own code, 8 and 12 fail it, and an unrecognised code fails too.
         assertThat(transitions).contains(
-                "step1|*->decision0",
+                "step2|*->decision0",
                 "decision0|COMPLETED->end0",
                 "decision0|COMPLETED WITH REJECTS->end1",
                 "decision0|FAILED->FAILED",
@@ -511,6 +544,66 @@ class CombineTransactionsJobTest {
         }
     }
 
+    /**
+     * Finding H-03, severity High: the enclosing pipeline's job instance identifier must survive this job.
+     *
+     * <p>This job runs inside {@code BatchPipelineOrchestrator}'s stream on a pooled thread. The listener used
+     * to end the run with an unconditional clear of the job instance entry, so every pipeline event emitted
+     * after the nested job finished carried no {@code jobInstanceId} - and that key is exactly what joins a
+     * run's logs to the object-storage prefixes its writers produced. The correlation identifier was already
+     * restored correctly; restoring one entry while removing the other is the worst of both, because the logs
+     * then look correlated and are not.
+     *
+     * @throws Exception if the nested listener cannot be reflected
+     */
+    @Test
+    @DisplayName("An enclosing pipeline's jobInstanceId is restored, not cleared (finding H-03)")
+    void restoresAnInheritedJobInstanceIdRatherThanClearingIt() throws Exception {
+        CorrelationIdFilter.propagateJobInstanceId("500");
+        try {
+            final JobExecutionListener listener = newListener();
+            final JobExecution execution =
+                    new JobExecution(new JobInstance(77L, "COMBTRAN"), 88L, new JobParameters());
+            execution.setExitStatus(ExitStatus.COMPLETED);
+
+            listener.beforeJob(execution);
+            assertThat(org.slf4j.MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("the nested job labels the thread with its own instance while it runs")
+                    .isEqualTo("77");
+
+            listener.afterJob(execution);
+            assertThat(org.slf4j.MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("and hands the thread back labelled as the pipeline left it")
+                    .isEqualTo("500");
+        } finally {
+            CorrelationIdFilter.propagateJobInstanceId(null);
+        }
+    }
+
+    /**
+     * The listener publishes the two entries it owns and fabricates neither of the two the tracer owns.
+     *
+     * @throws Exception if the nested listener cannot be reflected
+     */
+    @Test
+    @DisplayName("No traceId or spanId is minted, because this job creates no span (finding H-02)")
+    void mintsNoTraceIdentity() throws Exception {
+        final JobExecutionListener listener = newListener();
+        final JobExecution execution =
+                new JobExecution(new JobInstance(77L, "COMBTRAN"), 88L, new JobParameters());
+        execution.setExitStatus(ExitStatus.COMPLETED);
+        try {
+            listener.beforeJob(execution);
+
+            assertThat(org.slf4j.MDC.get(CorrelationIdFilter.MDC_KEY_TRACE_ID))
+                    .as("a fabricated trace identifier names a trace no backend holds")
+                    .isNull();
+            assertThat(org.slf4j.MDC.get(CorrelationIdFilter.MDC_KEY_SPAN_ID)).isNull();
+        } finally {
+            listener.afterJob(execution);
+        }
+    }
+
     // ---------------------------------------------------------------- boundary conditions
 
     @Test
@@ -542,23 +635,41 @@ class CombineTransactionsJobTest {
     }
 
     @Test
-    @DisplayName("Exceeding the per-run record bound fails - it never truncates like CBSTM03A did")
-    void recordBoundFailsRatherThanTruncating() {
+    @DisplayName("No invented per-run record cap exists, and the sort streams every record it is given")
+    void noInventedRecordCapAndTheSortStreamsEveryRecord() throws Exception {
+        // app/jcl/COMBTRAN.jcl declares no ceiling on the records SORTOUT may hold: :L33-L37 allocates it on
+        // UNIT=SYSDA with SPACE=(CYL,(1,1),RLSE) and RLSE releases what is unused, which is a space
+        // allocation and not a record limit. An earlier revision accumulated the whole generation in storage
+        // and needed carddemo.batch.combtran.max-records-per-run to keep that from exhausting the heap, and
+        // both the property and the constructor parameter behind it are gone: the sort now writes each
+        // 350-byte image straight through to a staging file, so the resident set does not grow with the
+        // record count.
+        assertThat(java.util.Arrays.stream(CombineTransactionsJob.class.getDeclaredFields())
+                        .map(Field::getName))
+                .as("no field may hold an invented per-run record bound")
+                .doesNotContain("maxRecordsPerRun");
+
+        final int records = 250;
+        final Transaction[] tail = new Transaction[records];
+        for (int index = 1; index < records; index++) {
+            tail[index - 1] = transaction(String.format("%016d", Integer.valueOf(index + 1)), "1.00");
+        }
+        tail[records - 1] = null;
         final CombinedTransactionReader reader = mock(CombinedTransactionReader.class);
-        when(reader.read()).thenReturn(
-                transaction("0000000000000001", "1.00"),
-                transaction("0000000000000002", "2.00"),
-                transaction("0000000000000003", "3.00"),
-                null);
+        when(reader.read()).thenReturn(transaction("0000000000000001", "1.00"), tail);
 
-        final CombineTransactionsJob bounded = new CombineTransactionsJob(jobRepository, transactionManager,
-                transactionWriter, jdbcTemplate, objectStorage, fileStatusMapper, metricsConfig,
-                "COMBTRAN", 100, 2, BUCKET, PREFIX);
+        invokeTasklet(newJob().combineTransactionsSortStep(reader, new TransactionCombineProcessor()),
+                stepExecution());
 
-        assertThatExceptionOfType(FatalProcessingException.class).isThrownBy(() ->
-                invokeTasklet(bounded.combineTransactionsSortStep(reader, new TransactionCombineProcessor()),
-                        stepExecution()));
-        verify(objectStorage, never()).upload(anyString(), anyString(), any(), any(ObjectMetadata.class));
+        final ArgumentCapture written = uploadCapture();
+        assertThat(written.body().length)
+                .as("every record given to the sort reaches SORTOUT at the %d-byte geometry of :L35",
+                        Integer.valueOf(RECORD_LENGTH))
+                .isEqualTo(records * RECORD_LENGTH);
+        assertThat(written.metadata().getContentLength())
+                .as("the length is declared up front so the client streams the staged file rather than "
+                        + "buffering it")
+                .isEqualTo(Long.valueOf((long) records * RECORD_LENGTH));
     }
 
     @Test
@@ -629,44 +740,60 @@ class CombineTransactionsJobTest {
     }
 
     @Test
-    @DisplayName("A generation prefix given with a trailing separator is normalised, not doubled")
-    void generationPrefixIsNormalised() throws Exception {
+    @DisplayName("finding m-02: a generation prefix given with a trailing separator is REFUSED, and the one "
+            + "canonical spelling composes exactly one separator")
+    void generationPrefixWithATrailingSeparatorIsRefused() throws Exception {
+        // Until finding m-02 centralized the grammar this asserted that PREFIX + "///" was normalised. The
+        // shared validator refuses it instead: two spellings folded into one meant the configured value and the
+        // value in force could differ with nothing reporting it. The canonical spelling is asserted alongside
+        // the refusal so the tolerance is withdrawn without weakening the key-composition guarantee.
+        assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
+                new CombineTransactionsJob(jobRepository, transactionManager, transactionWriter, jdbcTemplate,
+                        objectStorage, fileStatusMapper, "COMBTRAN", 100, BUCKET,
+                        PREFIX + "///", transactionRepository, BACKUP_PREFIX));
+
         final CombinedTransactionReader reader = mock(CombinedTransactionReader.class);
         when(reader.read()).thenReturn(transaction("0000000000000001", "1.00"), (Transaction) null);
 
-        final CombineTransactionsJob trailing = new CombineTransactionsJob(jobRepository, transactionManager,
-                transactionWriter, jdbcTemplate, objectStorage, fileStatusMapper, metricsConfig,
-                "COMBTRAN", 100, 10, BUCKET, PREFIX + "///");
-        invokeTasklet(trailing.combineTransactionsSortStep(reader, new TransactionCombineProcessor()),
+        // The canonical spelling, asserted alongside the refusal: withdrawing the tolerance must not weaken
+        // the key-composition guarantee, so the same composition is proven from the prefix the profile
+        // declares. Passing the refused spelling here again would only re-assert the refusal.
+        final CombineTransactionsJob canonical = new CombineTransactionsJob(jobRepository, transactionManager,
+                transactionWriter, jdbcTemplate, objectStorage, fileStatusMapper,
+                "COMBTRAN", 100, BUCKET, PREFIX, transactionRepository,
+                BACKUP_PREFIX);
+        invokeTasklet(canonical.combineTransactionsSortStep(reader, new TransactionCombineProcessor()),
                 stepExecution());
 
         assertThat(uploadCapture().key()).startsWith(PREFIX + "/").doesNotContain("//");
     }
 
     @Test
-    @DisplayName("A prefix of separators only, a non-positive bound and a blank name are all rejected")
-    void invalidPrefixAndBoundAreRejected() {
+    @DisplayName("A prefix of separators only, a non-positive chunk size and a blank name are all rejected")
+    void invalidPrefixChunkSizeAndNameAreRejected() {
         assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
                 new CombineTransactionsJob(jobRepository, transactionManager, transactionWriter, jdbcTemplate,
-                        objectStorage, fileStatusMapper, metricsConfig, "COMBTRAN", 100, 10, BUCKET, "///"));
+                        objectStorage, fileStatusMapper, "COMBTRAN", 100, BUCKET, "///", transactionRepository, BACKUP_PREFIX));
         assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
                 new CombineTransactionsJob(jobRepository, transactionManager, transactionWriter, jdbcTemplate,
-                        objectStorage, fileStatusMapper, metricsConfig, "COMBTRAN", 100, 0, BUCKET, PREFIX));
+                        objectStorage, fileStatusMapper, "COMBTRAN", 0, BUCKET, PREFIX, transactionRepository, BACKUP_PREFIX));
         assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
                 new CombineTransactionsJob(jobRepository, transactionManager, transactionWriter, jdbcTemplate,
-                        objectStorage, fileStatusMapper, metricsConfig, " ", 100, 10, BUCKET, PREFIX));
+                        objectStorage, fileStatusMapper, " ", 100, BUCKET, PREFIX, transactionRepository, BACKUP_PREFIX));
     }
 
     @Test
     @DisplayName("The job bean carries the configured name")
     void jobBeanIsNamed() {
+        final Step archive = mock(Step.class);
         final Step sort = mock(Step.class);
         final Step load = mock(Step.class);
+        when(archive.getName()).thenReturn("combineTransactionsArchiveStep");
         when(sort.getName()).thenReturn("combineTransactionsSortStep");
         when(load.getName()).thenReturn("combineTransactionsLoadStep");
         final CombineTransactionsJob configuration = newJob();
         final Job job = configuration.combineTransactionsJob(
-                configuration.combineTransactionsFlow(sort, load));
+                configuration.combineTransactionsFlow(archive, sort, load));
         assertThat(job.getName()).isEqualTo("COMBTRAN");
     }
 
@@ -685,16 +812,49 @@ class CombineTransactionsJobTest {
         return org.mockito.ArgumentMatchers.anyList();
     }
 
-    private record ArgumentCapture(String key, byte[] payload) { }
+    private record ArgumentCapture(String key, byte[] payload, ObjectMetadata metadata) {
 
+        /** Alias used where the assertion reads better as the body of the object. */
+        byte[] body() {
+            return payload;
+        }
+    }
+
+    /**
+     * Records every upload as it happens, because the body can only be read while the stream is open.
+     *
+     * <p>The sort step stages {@code SORTOUT} to a temporary file and streams it, closing the stream in a
+     * {@code try}-with-resources as soon as the upload returns - so an {@code ArgumentCaptor} would hand the
+     * assertion a closed stream. Reading the body inside the stub is the only point at which it is readable.
+     * Capturing the narrower {@code ByteArrayInputStream} used to work only because the whole generation was
+     * held in storage, which is exactly the shape that was removed.
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void recordUploads() {
+        when(objectStorage.upload(anyString(), anyString(), any(), any(ObjectMetadata.class)))
+                .thenAnswer(invocation -> {
+                    final java.io.InputStream body = invocation.getArgument(2);
+                    uploads.add(new ArgumentCapture(invocation.getArgument(1), body.readAllBytes(),
+                            invocation.getArgument(3)));
+                    return null;
+                });
+    }
+
+    /**
+     * Captures the single SORTOUT generation from the streamed write.
+     *
+     * <p>{@code STEP05R} stages {@code SORTOUT} to a temporary file and streams that file to the object store
+     * in one {@code upload(...)}, rather than accumulating the generation in storage first. That is the
+     * property finding BAT-002 asked for and the reason there is no longer a record-count ceiling: what is
+     * captured here is the key, the exact bytes and the declared metadata of that single write, and the step
+     * never holds more than a stream buffer whatever the generation's size.
+     *
+     * @return the key created and the bytes written to it
+     */
     private ArgumentCapture uploadCapture() {
-        final org.mockito.ArgumentCaptor<String> keyCaptor =
-                org.mockito.ArgumentCaptor.forClass(String.class);
-        final org.mockito.ArgumentCaptor<ByteArrayInputStream> bodyCaptor =
-                org.mockito.ArgumentCaptor.forClass(ByteArrayInputStream.class);
-        verify(objectStorage).upload(eq(BUCKET), keyCaptor.capture(), bodyCaptor.capture(),
-                any(ObjectMetadata.class));
-        return new ArgumentCapture(keyCaptor.getValue(), bodyCaptor.getValue().readAllBytes());
+        verify(objectStorage).upload(eq(BUCKET), anyString(), any(), any(ObjectMetadata.class));
+        assertThat(uploads).as("exactly one SORTOUT generation is written per run").hasSize(1);
+        return uploads.get(0);
     }
 
     private void stubDownload(final String key, final String image) {

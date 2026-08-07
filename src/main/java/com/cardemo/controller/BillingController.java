@@ -102,8 +102,13 @@ import jakarta.validation.Valid;
  * <h2>2. How to build, run and test</h2>
  *
  * <p>Java 25 ({@code maven.compiler.release} 25, no preview features), Maven 3.9.11, parent
- * {@code spring-boot-starter-parent:3.5.11}, Spring Framework 6.2.16, Spring Security 6.5.8, Tomcat 10.1.52
- * (so {@code jakarta.servlet}, never the pre-Jakarta package). The compiler runs
+ * {@code spring-boot-starter-parent:3.5.11}, and the versions the build actually <em>resolves</em>: Spring
+ * Framework <strong>6.2.19</strong>, Spring Security <strong>6.5.11</strong>, Tomcat
+ * <strong>10.1.57</strong> (so {@code jakarta.servlet}, never the pre-Jakarta package), Jackson
+ * <strong>2.22.1</strong>. Each is a deliberate forward override declared in {@code pom.xml}; an earlier
+ * revision of this paragraph published the parent-managed 6.2.16, 6.5.8 and 10.1.52 as though those were what
+ * resolves, and that is withdrawn. Re-derive rather than quote, with
+ * {@code ./mvnw -B -ntp dependency:list}. The compiler runs
  * {@code -Xlint:all -Werror} with {@code failOnWarning}, so any warning fails the build; build with
  * {@code ./mvnw -B -ntp clean compile} and verify with {@code ./mvnw -B -ntp clean verify}, where
  * {@code jacoco-maven-plugin:0.8.12} enforces an 80 percent line-coverage floor.

@@ -13,9 +13,9 @@
  *               inside the migration and Flyway checksums the RAW script text
  *               before substitution, one file with one checksum applies in every
  *               environment and validate-on-migrate stays meaningful.
- *               TWO - the card verification value is absent from the operational
- *               target outright: no column, no seeded value, no entity field, no
- *               request or response component.
+ *               TWO - the card verification value is persisted and seeded but
+ *               is unreadable: write-once, no accessor of any visibility, and
+ *               no request or response component.
  * Source      : app/jcl/DUSRSECJ.jcl      (SYSUT1 DD * - the ten CSUSR01Y rows,
  *                                          every one carrying the literal
  *                                          plaintext password PASSWORD)

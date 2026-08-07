@@ -36,6 +36,10 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.cardemo.batch.jobs.CombineTransactionsJob;
+import com.cardemo.batch.jobs.DailyTransactionPostingJob;
+import com.cardemo.batch.jobs.InterestCalculationJob;
+import com.cardemo.batch.jobs.TransactionReportJob;
 import com.cardemo.batch.processors.StatementProcessor;
 import com.cardemo.batch.writers.RejectWriter;
 import com.cardemo.batch.writers.StatementWriter;
@@ -58,6 +62,7 @@ import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.math.BigDecimal;
@@ -199,6 +204,48 @@ class MetricInstrumentOwnershipTest {
                             .doesNotContain(MetricsConfig.class)
                             .doesNotContain(MeterRegistry.class)
                             .doesNotContain(Counter.class));
+        }
+
+        @Test
+        @DisplayName("The combine and report jobs hold no meter owner, so neither can recount posted rows")
+        void theCombineAndReportJobsHoldNoMeterOwner() {
+            // Finding F-010, severity High, RESOLVED, asserted at the type level for the same reason
+            // StatementWriter is above: withholding the facade is permanent where declining to call it is a
+            // convention. carddemo.batch.records.processed reproduces DISPLAY 'TRANSACTIONS PROCESSED :' at
+            // app/cbl/CBTRN02C.cbl:L236, which is the DALYTRAN population POSTTRAN read. COMBTRAN merges the
+            // transaction backup with the interest generation, and TRANREPT reads the sorted generation to
+            // format a report; every row either of them touches was counted when it was posted or emitted, so
+            // incrementing here added one run's work to the sum twice. The series carries NO tag, so there was
+            // no dimension along which a query could separate the duplicate contributions afterwards - which
+            // is what made the inflation irrecoverable rather than merely wrong, and why the type-level guard
+            // is warranted.
+            //
+            // InterestCalculationJob is asserted alongside them because MetricsConfig's own documentation
+            // claimed for a while that it increments once per interest record. It never did, and this is where
+            // that claim is checked rather than trusted.
+            Stream.of(CombineTransactionsJob.class, TransactionReportJob.class,
+                            InterestCalculationJob.class)
+                    .forEach(job -> assertThat(job.getDeclaredConstructors())
+                            .as("%s reads rows an earlier run already counted, so it must hold no meter owner "
+                                    + "and no registry", job.getSimpleName())
+                            .allSatisfy(constructor -> assertThat(parameterTypes(constructor))
+                                    .doesNotContain(MetricsConfig.class)
+                                    .doesNotContain(MeterRegistry.class)
+                                    .doesNotContain(Counter.class)));
+        }
+
+        @Test
+        @DisplayName("The posting job is the one job that does take the facade, and it counts rejects")
+        void thePostingJobTakesTheFacade() {
+            // The discriminator for the assertion above: if withholding the facade were the rule everywhere,
+            // that test would pass on a tree with no metrics at all. DailyTransactionPostingJob is the single
+            // job that legitimately holds it, because the rejected records leave its step by a path
+            // TransactionWriter never sees and app/cbl/CBTRN02C.cbl:L206 counts them before validation
+            // decides anything.
+            assertThat(DailyTransactionPostingJob.class.getDeclaredConstructors())
+                    .as("DailyTransactionPostingJob constructors")
+                    .anySatisfy(constructor -> assertThat(parameterTypes(constructor))
+                            .contains(MetricsConfig.class));
         }
 
         /**
@@ -584,6 +631,133 @@ class MetricInstrumentOwnershipTest {
                             + "query naming a series that does not exist produces an EMPTY PANEL WITH NO "
                             + "ERROR anywhere - the failure mode this test exists to make loud", name)
                     .contains(name));
+        }
+    }
+
+    /**
+     * Who may advance the untagged processed counter, asserted over the tree rather than promised in prose.
+     *
+     * <p><strong>Finding H-01, severity High - these tests pin the remediation.</strong> Two jobs had become
+     * producers of {@code carddemo.batch.records.processed}: the transaction-combination job counted rows it
+     * re-read out of a generation object, which an earlier posting run had already counted, and the report job
+     * counted report <em>lines</em>. Neither unit is a daily-transaction record read by POSTTRAN, which is
+     * exactly and only what {@code ADD 1 TO WS-TRANSACTION-COUNT} at {@code app/cbl/CBTRN02C.cbl:L206} tallies.
+     *
+     * <p>Why an untagged series makes this severe rather than untidy: a tag lets a query separate contributors
+     * after the fact, and this counter has none, so the exported number belonged to no job and could be
+     * decomposed by no expression. The dashboard panel that reads it says "SCOPE: POSTTRAN ONLY" in as many
+     * words, so the panel and the counter had come to disagree with no error anywhere.
+     *
+     * <p>The producer set is asserted two ways, because one alone is not enough. A source scan catches a call
+     * added anywhere in the tree, including in a class this test does not import. A constructor-shape assertion
+     * makes the two former producers <em>unable</em> to advance anything, whatever they are edited to do later -
+     * the same permanence {@code theStatementWriterHoldsNoMeterOwner} establishes for the statement writer.
+     */
+    @Nested
+    @DisplayName("the processed counter has exactly two producers, and the tree proves it")
+    class ProcessedCounterProducerSet {
+
+        /**
+         * The two facade invocations that advance the untagged processed series.
+         *
+         * <p>The leading dot is deliberate and load-bearing: it matches an invocation on a receiver and not the
+         * declarations in {@code MetricsConfig} itself, which owns the two methods and is therefore not a caller
+         * of them. Matching the bare name would count the owner and make this assertion unsatisfiable.
+         */
+        private static final List<String> FACADE_CALLS =
+                List.of(".countRecordProcessed(", ".countRecordsProcessed(");
+
+        /** The only two production files permitted to call either of them. */
+        private static final List<String> PERMITTED_CALLERS =
+                List.of("DailyTransactionPostingJob.java", "TransactionWriter.java");
+
+        @Test
+        @DisplayName("no production file outside the posting flow advances the processed counter")
+        void onlyThePostingFlowAdvancesTheProcessedCounter() throws IOException {
+            try (Stream<Path> paths = Files.walk(Path.of("src", "main", "java"))) {
+                final List<String> callers = paths
+                        .filter(path -> path.toString().endsWith(".java"))
+                        .filter(ProcessedCounterProducerSet::callsTheProcessedFacade)
+                        .map(path -> path.getFileName().toString())
+                        .sorted()
+                        .toList();
+
+                assertThat(callers)
+                        .as("""
+                            The population of carddemo.batch.records.processed is the daily-transaction \
+                            records POSTTRAN read, and nothing else. A third caller anywhere in the tree \
+                            contaminates an untagged series that no query can decompose afterwards - which is \
+                            why this is asserted over the whole tree and not over an import list.""")
+                        .containsExactlyElementsOf(PERMITTED_CALLERS);
+            }
+        }
+
+        /**
+         * Whether one source file calls either processed-counter facade method.
+         *
+         * <p>The call is matched rather than the method name alone, so that a class discussing the counter in
+         * prose - and several do, including each non-producing job explaining why it does not advance it - is
+         * not counted as a caller. A commented-out call is excluded for the same reason: a line whose first
+         * non-blank characters open a comment is not code.
+         *
+         * @param path the source file to inspect
+         * @return {@code true} when the file contains a live call to either facade method
+         */
+        private static boolean callsTheProcessedFacade(final Path path) {
+            try {
+                return Files.readAllLines(path, StandardCharsets.UTF_8).stream()
+                        .map(String::trim)
+                        .filter(line -> !line.startsWith("//") && !line.startsWith("*")
+                                && !line.startsWith("/*"))
+                        .anyMatch(line -> FACADE_CALLS.stream().anyMatch(line::contains));
+            } catch (final IOException unreadable) {
+                throw new UncheckedIOException(unreadable);
+            }
+        }
+
+        @Test
+        @DisplayName("neither former producer can reach a counter, a registry or the facade any more")
+        void neitherFormerProducerHoldsAMeterOwner() {
+            Stream.of(CombineTransactionsJob.class, TransactionReportJob.class)
+                    .forEach(job -> assertThat(job.getDeclaredConstructors())
+                            .as("%s constructors", job.getSimpleName())
+                            .allSatisfy(constructor -> assertThat(parameterTypes(constructor))
+                                    .as("""
+                                        Withholding the facade - not merely declining to call it - is what \
+                                        makes the fix permanent: a class that holds no meter owner and no \
+                                        registry cannot contaminate a series however it is edited later. Its \
+                                        volume belongs in its own execution-context entries and in the Spring \
+                                        Batch step metrics, which carry a job dimension.""")
+                                    .doesNotContain(MetricsConfig.class)
+                                    .doesNotContain(MeterRegistry.class)
+                                    .doesNotContain(Counter.class)));
+        }
+
+        /**
+         * Reads a constructor's parameter types.
+         *
+         * @param constructor the constructor to inspect, never {@code null}
+         * @return its parameter types in declaration order, never {@code null}
+         */
+        private List<Class<?>> parameterTypes(final Constructor<?> constructor) {
+            return List.of(constructor.getParameterTypes());
+        }
+
+        @Test
+        @DisplayName("the posting flow still advances it, so the remediation removed noise and not the signal")
+        void thePostingFlowStillAdvancesIt() {
+            final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+            final MetricsConfig owner = new MetricsConfig(registry);
+
+            owner.countRecordProcessed();
+            owner.countRecordsProcessed(4);
+
+            assertThat(registry.find(MetricsConfig.METRIC_RECORDS_PROCESSED).counter())
+                    .isNotNull()
+                    .extracting(Counter::count)
+                    .as("one plus four: the two facade methods are numerically interchangeable, which is what "
+                            + "lets a chunk writer advance once for a chunk of records without looping")
+                    .isEqualTo(5.0D);
         }
     }
 }

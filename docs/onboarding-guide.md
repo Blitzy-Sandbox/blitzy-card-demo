@@ -7,6 +7,7 @@
   Derived from: CONTRIBUTING.md, README.md, app/csd/CARDDEMO.CSD, app/catlg/LISTCAT.txt,
                 app/cbl/**, app/cpy/**, app/cpy-bms/**, app/jcl/**, app/proc/**,
                 app/data/ASCII/**
+  Anchor      : 7756d895ffeb65f7ea72aaa609e356d9899afcec (7756d89)
 
   Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
@@ -1250,7 +1251,28 @@ configuration, not in tests, not in logs. `.env` is git-ignored and stays that w
 All cloud interaction targets LocalStack. **There are zero live AWS credentials in this
 repository and no code path may reach a real endpoint** ([§5.6](#56-all-cloud-interaction-targets-localstack)).
 
-### 11.5 Never replace the legacy identifier generation with a database sequence
+### 11.5 The Docker socket is a root-equivalent grant
+
+Some workflows suggest mounting `/var/run/docker.sock` into a container so that the
+container can run Testcontainers. Understand what that grants before you do it:
+
+**Access to the Docker API is effectively root on the host.** A process that can reach the
+socket can start a privileged container, bind-mount `/` and read or write anything on the
+host, whatever user it runs as inside its own container. This is a property of the API, not
+of the mount options: mounting the socket read-only (`:ro`) prevents nothing, because the
+authority is exercised through API calls over that socket rather than through writes to the
+file.
+
+Consequently:
+
+* Prefer a **rootless** Docker daemon, or an isolated throwaway daemon dedicated to the
+  build, over the host daemon.
+* If you do mount the host socket, treat that container as fully trusted, and do not also
+  bind-mount a source tree read-write into it unless you accept that anything in the
+  container can rewrite your working copy.
+* In CI, prefer a job-scoped daemon over a shared one.
+
+### 11.6 Never replace the legacy identifier generation with a database sequence
 
 Identifier generation is a **descending browse for the maximum key, plus one**. It is
 inherently racy &mdash; exactly as the CICS browse was &mdash; and a collision surfaces as a
@@ -1258,14 +1280,14 @@ duplicate-record conflict from the primary-key constraint. **That is the parity-
 choice.** A database sequence would change the generated values and break baseline comparison,
 so the raciness is retained deliberately and logged.
 
-### 11.6 Never add a guard the source does not have
+### 11.7 Never add a guard the source does not have
 
 **No self-delete guard in user deletion**, because none exists. **No bounds check where the
 source has none**, unless removing the resulting hazard is **explicitly labelled a deviation
 and logged**. Adding a "sensible" guard changes which requests succeed, which is a behaviour
 change however reasonable it looks in isolation.
 
-### 11.7 Never perform an untracked parity cleanup
+### 11.8 Never perform an untracked parity cleanup
 
 Removing an apparently-dead paragraph, "fixing" a fall-through, correcting a control-break
 label, normalising a case function, repairing a legacy job-control defect &mdash; **all of
@@ -1273,7 +1295,7 @@ these are behaviour changes**, not tidying. If a change is genuinely warranted i
 **labelled, justified deviation with an entry in `../DECISION_LOG.md`**.
 Never a silent tidy-up.
 
-### 11.8 Do not build a user interface
+### 11.9 Do not build a user interface
 
 The target surface is **REST and JSON plus Actuator**. There is **no single-page application,
 no web or mobile front end, no 3270 emulation, no component library and no design system.** The
@@ -1282,7 +1304,7 @@ and are not reimplemented as a user interface. `docs/executive-presentation.html
 ([executive-presentation.html](executive-presentation.html)) is a **static stakeholder
 document**, not an application interface.
 
-### 11.9 Do not change the deployment shape
+### 11.10 Do not change the deployment shape
 
 **No microservices, no event sourcing, no CQRS, no Kubernetes, no Helm, no service mesh.**
 Orchestration stops at Docker Compose. The reason is transactional, not stylistic: the
@@ -1292,12 +1314,12 @@ would change failure semantics &mdash; which is a behaviour change and therefore
 **single deployable modular monolith** is mandatory. The evidence is set out in
 [architecture-before-after.md §4](architecture-before-after.md#4-why-a-modular-monolith-is-mandatory).
 
-### 11.10 Do not port anything from `samples/`
+### 11.11 Do not port anything from `samples/`
 
 Its three z/OS compile templates, three build procedures and two binary emulator runtime
 bundles are **out of scope** and are superseded conceptually by `pom.xml`.
 
-### 11.11 Do not unpin or unilaterally advance a dependency
+### 11.12 Do not unpin or unilaterally advance a dependency
 
 Every plugin and every non-managed dependency is pinned to an **exact version** &mdash; no
 ranges, no `LATEST`, no `RELEASE`. Where an external source suggests a different version, **the
@@ -1306,7 +1328,7 @@ unilaterally. Two live examples: the coverage plugin is pinned at 0.8.12 while a
 cites 0.8.14 (finding `M-3`), and the framework's open-source support horizon is recorded as a
 residual risk rather than absorbed by advancing the version.
 
-### 11.12 Do not modify existing repository files beyond the three permitted
+### 11.13 Do not modify existing repository files beyond the three permitted
 
 Exactly **three** pre-existing files are modified by this migration: root
 `../README.md`, root `mkdocs.yml` and
@@ -1318,7 +1340,7 @@ Exactly **three** pre-existing files are modified by this migration: root
 service-catalogue metadata noted in [§13](#13-findings-severity-classified) is **reported but
 not corrected** here.
 
-### 11.13 Process
+### 11.14 Process
 
 * **Pay attention to automated CI failures** on your pull request and stay involved in the
   conversation [`CONTRIBUTING.md:L37`].
@@ -1495,15 +1517,15 @@ register &mdash; **it is referenced here, not duplicated.**
 | `M-3` | The coverage plugin is pinned **below** the version cited elsewhere | `pom.xml` coverage-plugin version property &mdash; 0.8.12 pinned, 0.8.14 cited | **The pinned 0.8.12 governs.** Record the divergence rather than advancing the pin unilaterally |
 | `M-4` | The screen-field census circulating in earlier prose is wrong and internally inconsistent | `app/cpy-bms/**`, in particular the account-view map | Cite the derived census of **441** input fields, with the account-view map at **37** rather than 36 |
 | `M-5` | The procedural-label total circulating in earlier prose matches neither defensible expansion total | `app/cbl/**`, `app/cpy/CSUTLDPY.cpy`, `app/cpy/CSSTRPFY.cpy` | Cite the derived base and state the expansion convention beside it, rather than reconciling the figures by force |
-| `M-6` | **User deletion has no self-delete guard**, so a signed-on administrator can delete their own record | `app/cbl/COUSR03C.cbl` &mdash; no comparison of target against signed-on identifier | **Preserved deliberately**, not corrected ([§11.6](#116-never-add-a-guard-the-source-does-not-have)). Adding a guard is a behaviour change requiring a labelled deviation |
-| `M-7` | **Identifier generation is inherently racy** &mdash; a descending browse for the maximum key plus one | The browse idiom in the transaction-add and bill-payment paths | **Retained for parity.** A collision surfaces as a duplicate-record conflict. A database sequence would change generated values and break baseline comparison ([§11.5](#115-never-replace-the-legacy-identifier-generation-with-a-database-sequence)) |
+| `M-6` | **User deletion has no self-delete guard**, so a signed-on administrator can delete their own record | `app/cbl/COUSR03C.cbl` &mdash; no comparison of target against signed-on identifier | **Preserved deliberately**, not corrected ([§11.7](#117-never-add-a-guard-the-source-does-not-have)). Adding a guard is a behaviour change requiring a labelled deviation |
+| `M-7` | **Identifier generation is inherently racy** &mdash; a descending browse for the maximum key plus one | The browse idiom in the transaction-add and bill-payment paths | **Retained for parity.** A collision surfaces as a duplicate-record conflict. A database sequence would change generated values and break baseline comparison ([§11.6](#116-never-replace-the-legacy-identifier-generation-with-a-database-sequence)) |
 
 ### Low
 
 | ID | Finding | Locator | Remediation |
 |---|---|---|---|
 | `L-1` | A batch job misspells its own job name | [`app/jcl/OPENFIL.jcl:L1`] | Report it. **Preserved, not corrected** &mdash; the corpus is frozen |
-| `L-2` | The service-catalogue entry carries four inaccurate metadata declarations: the component type at [`catalog-info.yaml:L35`], the owning system at [`:L38`], the tag set at [`:L7-L18`] and a documentation link at [`:L31`] | `catalog-info.yaml` | Correct them in **separate work**. **Explicitly out of scope here**, because that file must remain unchanged by this migration ([§11.12](#1112-do-not-modify-existing-repository-files-beyond-the-three-permitted)) |
+| `L-2` | The service-catalogue entry carries four inaccurate metadata declarations: the component type at [`catalog-info.yaml:L35`], the owning system at [`:L38`], the tag set at [`:L7-L18`] and a documentation link at [`:L31`] | `catalog-info.yaml` | Correct them in **separate work**. **Explicitly out of scope here**, because that file must remain unchanged by this migration ([§11.13](#1113-do-not-modify-existing-repository-files-beyond-the-three-permitted)) |
 | `L-3` | A remark in `../README.md` states that no queue listener exists in `src/main/java`. **Verified stale**: exactly one is present | `drainReportJobQueue` at [`src/main/java/com/cardemo/config/BatchConfig.java:L1231`]; confirm with `grep -rn "@SqsListener" src/main/java`, which finds one declaration plus comment references | Refresh the remark when `README.md` is next revised. Cosmetic &mdash; it understates what is implemented rather than overstating it, so it cannot cause a wrong change |
 
 ---

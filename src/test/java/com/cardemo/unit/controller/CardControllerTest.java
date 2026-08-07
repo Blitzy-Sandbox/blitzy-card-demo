@@ -35,7 +35,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -88,9 +87,10 @@ import org.springframework.http.ResponseEntity;
  *       the two page cursors - which in this browse <em>are</em> card numbers,
  *       {@code WS-CA-FIRST-CARD-NUM} at {@code app/cbl/COCRDLIC.cbl:L234} and
  *       {@code WS-CA-LAST-CARD-NUM} at {@code :L231} - travel sealed.</li>
- *   <li><em>The as-displayed snapshot is server-issued.</em> It is produced by the update service, sealed,
- *       published as an {@code ETag}, required back in {@code If-Match}, and refused if a caller tries to
- *       supply one in the body.</li>
+ *   <li><em>The as-displayed snapshot travels in the request body.</em> It is projected by the update
+ *       service on the read and echoed back unaltered as the body's {@code oldDetails} group on the write,
+ *       per transformation Rule 7. It travels as the group rather than as flat fields because the expiry
+ *       day it carries appears on no read map.</li>
  *   <li><em>Control tokens are matched, not coerced.</em> The framework's default converters trim an enum
  *       token, accept a signed integer and treat six spellings as a boolean; none of that reaches this
  *       operation.</li>
@@ -103,7 +103,7 @@ import org.springframework.http.ResponseEntity;
  *
  * <pre>
  * ./mvnw -B -ntp test -Dtest=CardControllerTest
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ./mvnw -B -ntp clean verify
  * </pre>
  *
  * <p><strong>3. Key configuration and defaults.</strong> The three services are mocked; the snapshot sealer
@@ -241,6 +241,21 @@ class CardControllerTest {
     }
 
     /**
+     * Builds the {@code CCUP-OLD-DETAILS} group a read projects and a write echoes back.
+     *
+     * <p>Three components, not four: the group declares no card verification value. The stored value exists
+     * - {@code card_cvv_cd CHAR(3) NOT NULL} - but has no read path, and no symbolic map declares a field
+     * for it, so no client could supply one.</p>
+     *
+     * @return a populated group whose expiry day is set, since the day is on no read map
+     */
+    private static CardUpdateRequest.CardDetails asDisplayedGroup() {
+        return new CardUpdateRequest.CardDetails(ACCOUNT_ID, CARD_NUMBER,
+                new CardUpdateRequest.CardData("JOHN SMITH",
+                        new CardUpdateRequest.ExpiraionDate("2099", "12", "28"), "Y"));
+    }
+
+    /**
      * Nothing that identifies a card may leave in a readable form - not in a row, not in a cursor.
      */
     @Nested
@@ -337,12 +352,13 @@ class CardControllerTest {
         void theDetailAndUpdateResponsesBothMask() {
             when(cardDetailService.viewCardDetail(ACCOUNT_ID, CARD_NUMBER))
                     .thenReturn(detailProjection());
-            when(cardUpdateService.issueUpdateSnapshot(ACCOUNT_ID, CARD_NUMBER)).thenReturn("sealed");
-            when(cardUpdateService.updateCard(any(), any())).thenReturn(detailProjection());
+            when(cardUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER))
+                    .thenReturn(asDisplayedGroup());
+            when(cardUpdateService.updateCard(any())).thenReturn(detailProjection());
 
             final CardResponse read = controller.getCardDetail(ACCOUNT_ID, CARD_NUMBER, null).getBody();
             final CardResponse written =
-                    controller.updateCard(updateRequest(null), "\"sealed\"", null).getBody();
+                    controller.updateCard(updateRequest(null), null).getBody();
 
             assertThat(read).isNotNull();
             assertThat(written).isNotNull();
@@ -406,95 +422,100 @@ class CardControllerTest {
      * from a caller.
      */
     @Nested
-    @DisplayName("the update precondition is server-issued and header-borne")
+    @DisplayName("the update precondition travels in the request body")
     class SnapshotContract {
 
         /**
-         * The read publishes the sealed snapshot twice - in the body and as the entity tag - so a client may
-         * use either the JSON member or the standard conditional-request idiom.
+         * The read publishes the group the matching write must echo. The expiry <em>day</em> is a member of
+         * it and appears on no read map, so this is the only route by which a client obtains it - without it
+         * the comparison at {@code app/cbl/COCRDUPC.cbl:1507} has no operand and every write is refused.
          */
         @Test
-        @DisplayName("the detail read publishes the sealed snapshot in the body and as the ETag")
-        void theDetailReadPublishesTheSnapshotTwice() {
+        @DisplayName("the detail read publishes the as-displayed group, as the very type the PUT binds")
+        void theDetailReadPublishesTheAsDisplayedGroup() {
             when(cardDetailService.viewCardDetail(ACCOUNT_ID, CARD_NUMBER))
                     .thenReturn(detailProjection());
-            when(cardUpdateService.issueUpdateSnapshot(ACCOUNT_ID, CARD_NUMBER))
-                    .thenReturn("sealed-snapshot-value");
+            when(cardUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER))
+                    .thenReturn(asDisplayedGroup());
 
             final ResponseEntity<CardResponse> response =
                     controller.getCardDetail(ACCOUNT_ID, CARD_NUMBER, null);
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
             assertThat(response.getBody()).isNotNull();
-            assertThat(response.getBody().snapshotToken()).isEqualTo("sealed-snapshot-value");
-            assertThat(response.getHeaders().getETag()).isEqualTo("\"sealed-snapshot-value\"");
+            assertThat(response.getBody().oldDetails()).isNotNull();
+            assertThat(response.getBody().oldDetails().cardData().expiraionDate().expiryDay())
+                    .as("the expiry day is on no read map, so the group is the only carrier for it")
+                    .isEqualTo("28");
         }
 
         /**
-         * The write response issues no snapshot: a further edit reads again, which removes any question of a
-         * token outliving the state it describes.
+         * The write response issues no group: a further edit reads again, which removes any question of a
+         * stale group outliving the state it describes.
          */
         @Test
-        @DisplayName("the update response issues no snapshot of its own")
+        @DisplayName("the update response issues no as-displayed group of its own")
         void theUpdateResponseIssuesNoSnapshot() {
-            when(cardUpdateService.updateCard(any(), any())).thenReturn(detailProjection());
+            when(cardUpdateService.updateCard(any())).thenReturn(detailProjection());
 
-            final CardResponse body = controller.updateCard(updateRequest(null), "\"token\"", null).getBody();
+            final CardResponse body = controller.updateCard(updateRequest(null), null).getBody();
 
             assertThat(body).isNotNull();
-            assertThat(body.snapshotToken()).isNull();
+            assertThat(body.oldDetails()).isNull();
         }
 
         /**
-         * A body that carries a snapshot group is refused rather than ignored. Ignoring it would leave a
-         * caller believing it controlled the write precondition when it did not.
+         * A body that carries the snapshot group is <em>accepted</em>, which is the frozen contract of
+         * transformation Rule 7: the program's own half of the COMMAREA held {@code CCUP-OLD-DETAILS}
+         * between the two turns of the pseudo-conversation, and a stateless server has nowhere to put it.
          */
         @Test
-        @DisplayName("a body-carried snapshot is refused and the service is never entered")
-        void aBodyCarriedSnapshotIsRefused() {
-            // Three components, not four: the group declares no card verification value, because none is
-            // persisted anywhere in this system.
-            final CardUpdateRequest.CardDetails supplied = new CardUpdateRequest.CardDetails(ACCOUNT_ID,
-                    CARD_NUMBER, new CardUpdateRequest.CardData("JOHN SMITH",
-                    new CardUpdateRequest.ExpiraionDate("2099", "12", "28"), "Y"));
+        @DisplayName("a body-carried snapshot is accepted and reaches the service")
+        void aBodyCarriedSnapshotIsAccepted() {
+            when(cardUpdateService.updateCard(any())).thenReturn(detailProjection());
 
-            final ValidationException failure = catchThrowableOfType(ValidationException.class,
-                    () -> controller.updateCard(updateRequest(supplied), "\"token\"", null));
+            final ResponseEntity<CardResponse> response =
+                    controller.updateCard(updateRequest(asDisplayedGroup()), null);
 
-            assertThat(failure.getFieldName()).isEqualTo("oldDetails");
-            assertThat(failure.getMessage()).contains("If-Match");
-            verifyNoInteractions(cardUpdateService);
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+            verify(cardUpdateService).updateCard(any());
         }
 
         /**
-         * The entity-tag quoting is stripped before the token reaches the service, and a weak-validator
-         * prefix with it, so a client may return the header value verbatim or the bare token.
+         * The group reaches the service exactly as bound, by reference. Nothing is trimmed, case folded or
+         * re-formatted on the way through, because {@code :1498-1521} is a byte comparison after a one-sided
+         * fold and any normalisation here would change its verdict.
          */
         @Test
-        @DisplayName("quoted, weak-quoted and bare If-Match values all relay the same token")
-        void everyIfMatchSpellingRelaysTheSameToken() {
-            when(cardUpdateService.updateCard(any(), eq("abc"))).thenReturn(detailProjection());
+        @DisplayName("the submitted group reaches the service byte for byte, by reference")
+        void theSubmittedGroupReachesTheServiceUnaltered() {
+            when(cardUpdateService.updateCard(any())).thenReturn(detailProjection());
+            final CardUpdateRequest.CardDetails submitted = asDisplayedGroup();
 
-            controller.updateCard(updateRequest(null), "\"abc\"", null);
-            controller.updateCard(updateRequest(null), "W/\"abc\"", null);
-            controller.updateCard(updateRequest(null), "abc", null);
+            controller.updateCard(updateRequest(submitted), null);
 
-            verify(cardUpdateService, org.mockito.Mockito.times(3)).updateCard(any(), eq("abc"));
+            final ArgumentCaptor<CardUpdateRequest> captured =
+                    ArgumentCaptor.forClass(CardUpdateRequest.class);
+            verify(cardUpdateService).updateCard(captured.capture());
+            assertThat(captured.getValue().oldDetails()).isSameAs(submitted);
         }
 
         /**
-         * An absent header relays null, which the service reports as an unmet precondition. The controller
-         * does not invent a token and does not refuse the request itself: the service owns that outcome and
-         * reports it as {@code CHANGES_NOT_CONFIRMED}.
+         * An absent group relays null, which the service reports as an unmet precondition. The controller
+         * does not invent one and does not pre-empt the service's own outcome, which it reports as
+         * {@code CHANGES_NOT_CONFIRMED}.
          */
         @Test
-        @DisplayName("an absent If-Match relays null rather than a fabricated value")
-        void anAbsentIfMatchRelaysNull() {
-            when(cardUpdateService.updateCard(any(), eq(null))).thenReturn(detailProjection());
+        @DisplayName("an absent group relays null rather than a fabricated value")
+        void anAbsentGroupRelaysNull() {
+            when(cardUpdateService.updateCard(any())).thenReturn(detailProjection());
 
-            controller.updateCard(updateRequest(null), null, null);
+            controller.updateCard(updateRequest(null), null);
 
-            verify(cardUpdateService).updateCard(any(), eq(null));
+            final ArgumentCaptor<CardUpdateRequest> captured =
+                    ArgumentCaptor.forClass(CardUpdateRequest.class);
+            verify(cardUpdateService).updateCard(captured.capture());
+            assertThat(captured.getValue().oldDetails()).isNull();
         }
     }
 
@@ -859,7 +880,8 @@ class CardControllerTest {
             when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
             when(cardDetailService.viewCardDetail(ACCOUNT_ID, CARD_NUMBER))
                     .thenReturn(detailProjection());
-            when(cardUpdateService.issueUpdateSnapshot(ACCOUNT_ID, CARD_NUMBER)).thenReturn("sealed");
+            when(cardUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER))
+                    .thenReturn(asDisplayedGroup());
             final String reference = controller.listCards(null, null, null, null, null, null, null, null)
                     .getBody().rows().getFirst().cardKey();
 
@@ -877,7 +899,8 @@ class CardControllerTest {
         void theDetailReadIssuesItsOwnReference() {
             when(cardDetailService.viewCardDetail(ACCOUNT_ID, CARD_NUMBER))
                     .thenReturn(detailProjection());
-            when(cardUpdateService.issueUpdateSnapshot(ACCOUNT_ID, CARD_NUMBER)).thenReturn("sealed");
+            when(cardUpdateService.fetchSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER))
+                    .thenReturn(asDisplayedGroup());
 
             final CardResponse read = controller.getCardDetail(ACCOUNT_ID, CARD_NUMBER, null).getBody();
 
@@ -894,14 +917,14 @@ class CardControllerTest {
         @Test
         @DisplayName("the update response issues no reference and no snapshot")
         void theUpdateResponseIssuesNeither() {
-            when(cardUpdateService.updateCard(any(), any())).thenReturn(detailProjection());
+            when(cardUpdateService.updateCard(any())).thenReturn(detailProjection());
 
             final CardResponse written =
-                    controller.updateCard(updateRequest(null), "\"sealed\"", null).getBody();
+                    controller.updateCard(updateRequest(null), null).getBody();
 
             assertThat(written).isNotNull();
             assertThat(written.cardKey()).isNull();
-            assertThat(written.snapshotToken()).isNull();
+            assertThat(written.oldDetails()).isNull();
         }
 
         /**
@@ -913,18 +936,18 @@ class CardControllerTest {
         @DisplayName("on an update the reference replaces only the two identifiers")
         void onUpdateTheReferenceReplacesOnlyTheIdentifiers() {
             when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
-            when(cardUpdateService.updateCard(any(), any())).thenReturn(detailProjection());
+            when(cardUpdateService.updateCard(any())).thenReturn(detailProjection());
             final String reference = controller.listCards(null, null, null, null, null, null, null, null)
                     .getBody().rows().getFirst().cardKey();
             final CardUpdateRequest submitted = new CardUpdateRequest(null, null, null, null, null, null,
                     null, null, "MARY JONES", "N", "06", "2031", "15",
                     null, null, null, null, null, null);
 
-            controller.updateCard(submitted, "\"sealed\"", reference);
+            controller.updateCard(submitted, reference);
 
             final ArgumentCaptor<CardUpdateRequest> captured =
                     ArgumentCaptor.forClass(CardUpdateRequest.class);
-            verify(cardUpdateService).updateCard(captured.capture(), eq("sealed"));
+            verify(cardUpdateService).updateCard(captured.capture());
             final CardUpdateRequest relayed = captured.getValue();
             assertThat(relayed.accountId()).isEqualTo(ACCOUNT_ID);
             assertThat(relayed.cardNumber()).isEqualTo(CARD_NUMBER);
@@ -986,26 +1009,27 @@ class CardControllerTest {
         }
 
         /**
-         * The reference is not a precondition. Supplying one on an update does not excuse the missing
-         * {@code If-Match}: the reference says which card, the snapshot says what the caller was shown, and
-         * the comparison the source performs needs both.
+         * The reference is not a precondition. Supplying one on an update does not excuse an absent
+         * {@code oldDetails} group: the reference says <em>which</em> card, the group says <em>what was
+         * shown</em>, and the comparison the source performs needs both. The reference is relayed as the
+         * identifiers only, and the absent group reaches the service as null for it to report on.
          */
         @Test
         @DisplayName("a reference does not substitute for the write precondition")
         void aReferenceIsNotAPrecondition() {
             when(cardListService.listCards(any())).thenReturn(listResult(null, null, false));
-            when(cardUpdateService.updateCard(any(), any())).thenReturn(detailProjection());
+            when(cardUpdateService.updateCard(any())).thenReturn(detailProjection());
             final String reference = controller.listCards(null, null, null, null, null, null, null, null)
                     .getBody().rows().getFirst().cardKey();
             final CardUpdateRequest submitted = new CardUpdateRequest(null, null, null, null, null, null,
                     null, null, "MARY JONES", "N", "06", "2031", "15",
                     null, null, null, null, null, null);
 
-            controller.updateCard(submitted, null, reference);
+            controller.updateCard(submitted, reference);
 
             final ArgumentCaptor<CardUpdateRequest> captured =
                     ArgumentCaptor.forClass(CardUpdateRequest.class);
-            verify(cardUpdateService).updateCard(captured.capture(), eq(null));
+            verify(cardUpdateService).updateCard(captured.capture());
             assertThat(captured.getValue().cardNumber()).isEqualTo(CARD_NUMBER);
         }
     }

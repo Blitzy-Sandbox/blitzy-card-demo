@@ -110,7 +110,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>How to build, run and test</h2>
  *
  * <p>{@code ./mvnw -B -ntp -Ddependency-check.skip=true test} runs this class;
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} runs it inside the full gate.
+ * {@code ./mvnw -B -ntp clean verify} runs it inside the full gate.
  * <strong>Surefire 3.5.4 binds this tier</strong>: the plugin includes {@code **}{@code /*Test.java}
  * and {@code **}{@code /*Tests.java} and excludes {@code **}{@code /integration/**} and
  * {@code **}{@code /e2e/**}, so a class moved out of {@code src/test/java/com/cardemo/unit} is

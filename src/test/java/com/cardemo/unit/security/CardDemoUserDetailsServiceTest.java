@@ -40,13 +40,17 @@ import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.repository.UserSecurityRepository;
 import com.cardemo.security.CardDemoUserDetailsService;
+import java.security.SecureRandom;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
@@ -120,8 +124,38 @@ class CardDemoUserDetailsServiceTest {
     /** The BCrypt strength {@code SecurityConfig} requires; any other value is refused by the entity. */
     private static final int BCRYPT_STRENGTH = 10;
 
-    /** The plaintext every one of the ten seeded users carries in {@code app/jcl/DUSRSECJ.jcl}. */
-    private static final String SEEDED_PLAINTEXT = "PASSWORD";
+    /** {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy}: eight bytes, so eight characters. */
+    private static final int CREDENTIAL_WIDTH = 8;
+
+    /** Letters drawn from when generating a credential, so every character survives upper-casing. */
+    private static final int ALPHABET_SIZE = 26;
+
+    /**
+     * A synthetic credential, generated per run, standing in for the seeded plaintext.
+     *
+     * <p><strong>Why generated rather than written down.</strong> All ten principals of
+     * {@code app/jcl/DUSRSECJ.jcl} carry one shared plaintext, and an earlier revision of this class named
+     * that value as a constant. Nothing about this class needs the real value: what is under test is the
+     * upper-casing of both fields and the BCrypt verification, and a generated credential exercises both
+     * identically. Naming it, by contrast, put a working credential for the shipped demo seed into a tracked
+     * file - and it defeated the security gate's own "no plaintext anywhere" claim, which is the finding this
+     * closes. Rule 1 clause D admits no sample exception.
+     *
+     * <p>Eight upper-case characters, because {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy}
+     * is eight bytes and the source upper-cases what it receives; the width and the case are the properties
+     * the subject actually depends on. The value differs on every run, so no assertion can come to depend on
+     * a particular one.
+     */
+    private static final String SYNTHETIC_PLAINTEXT = syntheticCredential();
+
+    /**
+     * A credential the seeded digest does not verify against, derived so it cannot collide.
+     *
+     * <p>Built by rotating each character of {@link #SYNTHETIC_PLAINTEXT} one position along the alphabet,
+     * which changes every byte while keeping the width and the case class. A literal here would be a second
+     * credential-shaped constant, and a randomly generated one could in principle collide.
+     */
+    private static final String WRONG_PLAINTEXT = rotated(SYNTHETIC_PLAINTEXT);
 
     /** The eight-character {@code SEC-USR-ID} of the first seeded standard user. */
     private static final String USER_ID = "USER0001";
@@ -142,7 +176,7 @@ class CardDemoUserDetailsServiceTest {
     private static final BCryptPasswordEncoder ENCODER = new BCryptPasswordEncoder(BCRYPT_STRENGTH);
 
     /** Computed once: BCrypt at strength 10 is intentionally expensive. */
-    private static final String SEEDED_HASH = ENCODER.encode(SEEDED_PLAINTEXT);
+    private static final String SEEDED_HASH = ENCODER.encode(SYNTHETIC_PLAINTEXT);
 
     @Mock private UserSecurityRepository userSecurityRepository;
 
@@ -155,6 +189,65 @@ class CardDemoUserDetailsServiceTest {
 
     private static UserSecurity seededUser(final String id, final UserType type) {
         return new UserSecurity(id, "LAWRENCE", "THOMAS", SEEDED_HASH, type);
+    }
+
+    /**
+     * Generates one eight-character upper-case credential for this run.
+     *
+     * <p>{@link SecureRandom} rather than {@link java.util.Random}: this value is BCrypt-hashed and compared,
+     * so it behaves as a credential inside the test and is generated as one. Only the twenty-six upper-case
+     * letters are drawn, which keeps the value inside the {@code PIC X(08)} character set the source's own
+     * {@code FUNCTION UPPER-CASE} normalisation produces.
+     *
+     * @return the generated credential, never {@code null} and always eight upper-case letters
+     */
+    private static String syntheticCredential() {
+        final SecureRandom random = new SecureRandom();
+        final StringBuilder generated = new StringBuilder(CREDENTIAL_WIDTH);
+        for (int position = 0; position < CREDENTIAL_WIDTH; position++) {
+            generated.append((char) ('A' + random.nextInt(ALPHABET_SIZE)));
+        }
+        return generated.toString();
+    }
+
+    /**
+     * Rotates every upper-case letter one position along the alphabet, wrapping {@code Z} to {@code A}.
+     *
+     * <p>Used to derive a credential that is guaranteed not to verify against {@link #SEEDED_HASH} while
+     * keeping the width and the case class of the real one, so the rejection paths are exercised with an
+     * input shaped like a genuine attempt rather than with an obviously malformed one.
+     *
+     * @param value the credential to rotate; must not be {@code null}
+     * @return the rotated credential, never equal to {@code value}
+     */
+    private static String rotated(final String value) {
+        final StringBuilder derived = new StringBuilder(value.length());
+        for (final char letter : value.toCharArray()) {
+            derived.append(letter == 'Z' ? 'A' : (char) (letter + 1));
+        }
+        return derived.toString();
+    }
+
+    /**
+     * The case variants of the generated credential, as parameterised-test arguments.
+     *
+     * <p>Derived from {@link #SYNTHETIC_PLAINTEXT} rather than written out, so the arguments follow the
+     * generated value instead of pinning a particular one: all lower case, initial capital only, and
+     * alternating case. Each must be accepted, because {@code app/cbl/COSGN00C.cbl:L219-L220} upper-cases the
+     * password as well as the identifier before comparing.
+     *
+     * @return three case variants of the run's credential
+     */
+    private static Stream<String> caseVariantsOfTheCredential() {
+        final String lower = SYNTHETIC_PLAINTEXT.toLowerCase(Locale.ROOT);
+        final StringBuilder alternating = new StringBuilder(lower);
+        for (int position = 0; position < alternating.length(); position += 2) {
+            alternating.setCharAt(position, Character.toUpperCase(alternating.charAt(position)));
+        }
+        return Stream.of(
+                lower,
+                Character.toUpperCase(lower.charAt(0)) + lower.substring(1),
+                alternating.toString());
     }
 
     private void storeHolds(final String id, final UserType type) {
@@ -227,9 +320,9 @@ class CardDemoUserDetailsServiceTest {
             final UserDetails details = service.loadUserByUsername(USER_ID);
 
             assertThat(details.getPassword())
-                    .as("app/jcl/DUSRSECJ.jcl seeds the literal PASSWORD; only its digest may be stored")
+                    .as("app/jcl/DUSRSECJ.jcl seeds a shared plaintext; only its digest may ever be stored")
                     .isEqualTo(SEEDED_HASH)
-                    .isNotEqualTo(SEEDED_PLAINTEXT)
+                    .isNotEqualTo(SYNTHETIC_PLAINTEXT)
                     .startsWith("$2a$10$");
         }
 
@@ -257,7 +350,7 @@ class CardDemoUserDetailsServiceTest {
         @DisplayName("an absent identifier is refused with the identifier prompt")
         void anAbsentIdentifierIsRefused(final String blank) {
             assertThatExceptionOfType(BadCredentialsException.class)
-                    .isThrownBy(() -> service.authenticate(blank, SEEDED_PLAINTEXT))
+                    .isThrownBy(() -> service.authenticate(blank, SYNTHETIC_PLAINTEXT))
                     .withMessage("Please enter a user identifier.");
         }
 
@@ -276,13 +369,14 @@ class CardDemoUserDetailsServiceTest {
         void theSeededCredentialIsAccepted() {
             storeHolds(USER_ID, UserType.USER);
 
-            final UserDetails principal = service.authenticate(USER_ID, SEEDED_PLAINTEXT);
+            final UserDetails principal = service.authenticate(USER_ID, SYNTHETIC_PLAINTEXT);
 
             assertThat(principal.getUsername()).isEqualTo(USER_ID);
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"password", "Password", "pAsSwOrD"})
+        @MethodSource(
+                "com.cardemo.unit.security.CardDemoUserDetailsServiceTest#caseVariantsOfTheCredential")
         @DisplayName("a lower- or mixed-case password is accepted, because BOTH fields are upper-cased")
         void aLowerCasePasswordIsAccepted(final String presented) {
             storeHolds(USER_ID, UserType.USER);
@@ -302,7 +396,7 @@ class CardDemoUserDetailsServiceTest {
             storeHolds(USER_ID, UserType.USER);
 
             assertThatExceptionOfType(BadCredentialsException.class)
-                    .isThrownBy(() -> service.authenticate(USER_ID, "NOTTHEPASSWORD"))
+                    .isThrownBy(() -> service.authenticate(USER_ID, WRONG_PLAINTEXT))
                     .withMessage(REJECTION_TEXT);
         }
 
@@ -312,9 +406,9 @@ class CardDemoUserDetailsServiceTest {
             storeHolds(USER_ID, UserType.USER);
             when(userSecurityRepository.findById("NOSUCHID")).thenReturn(Optional.empty());
 
-            final String wrongPasswordMessage = catchMessage(() -> service.authenticate(USER_ID, "WRONG"));
+            final String wrongPasswordMessage = catchMessage(() -> service.authenticate(USER_ID, WRONG_PLAINTEXT));
             final String unknownUserMessage =
-                    catchMessage(() -> service.authenticate("NOSUCHID", SEEDED_PLAINTEXT));
+                    catchMessage(() -> service.authenticate("NOSUCHID", SYNTHETIC_PLAINTEXT));
 
             assertThat(unknownUserMessage)
                     .as("a caller must not be able to tell an absent row from a wrong password, or the "
@@ -327,7 +421,7 @@ class CardDemoUserDetailsServiceTest {
         void theReturnedPrincipalHasItsCredentialsErased() {
             storeHolds(USER_ID, UserType.USER);
 
-            final UserDetails principal = service.authenticate(USER_ID, SEEDED_PLAINTEXT);
+            final UserDetails principal = service.authenticate(USER_ID, SYNTHETIC_PLAINTEXT);
 
             assertThat(principal.getPassword())
                     .as("the digest has served its purpose by this point and must not travel further")
@@ -343,7 +437,7 @@ class CardDemoUserDetailsServiceTest {
             assertThatExceptionOfType(InternalAuthenticationServiceException.class)
                     .as("telling a caller their password is wrong when the store is down is both untrue "
                             + "and unactionable")
-                    .isThrownBy(() -> service.authenticate(USER_ID, SEEDED_PLAINTEXT))
+                    .isThrownBy(() -> service.authenticate(USER_ID, SYNTHETIC_PLAINTEXT))
                     .withMessageContaining("could not be read");
         }
 
@@ -352,7 +446,7 @@ class CardDemoUserDetailsServiceTest {
         void anAdministratorAuthenticates() {
             storeHolds(ADMIN_ID, UserType.ADMIN);
 
-            final UserDetails principal = service.authenticate("admin001", SEEDED_PLAINTEXT);
+            final UserDetails principal = service.authenticate("admin001", SYNTHETIC_PLAINTEXT);
 
             assertThat(principal.getAuthorities()).extracting(GrantedAuthority::getAuthority)
                     .containsExactly("ROLE_ADMIN");

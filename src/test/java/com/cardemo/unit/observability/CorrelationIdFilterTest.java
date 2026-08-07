@@ -3,15 +3,15 @@
  * Program     : CorrelationIdFilterTest
  * Application : CardDemo
  * Type        : Java unit test (JUnit 5, Surefire tier)
- * Function    : Asserts the request-scoped thread of identity that replaces
- *               EIBTRNID: that a correlation identifier is always published,
+ * Function    : Asserts the request-scoped thread of identity the corpus never
+ *               had: that a correlation identifier is always published,
  *               that a malformed supplied one is never trusted, that the
  *               diagnostic context is restored on every exit path including the
  *               exceptional one, and that the MDC key spellings logback binds
  *               do not drift.
  * Source      : app/cbl/CBTRN02C.cbl:714-731 @ 7756d89 - the only per-run
  *               instrumentation the corpus has, which this replaces
- * Source      : app/csd/CARDDEMO.CSD @ 7756d89 - EIBTRNID, the nearest legacy
+ * Note        : EIBTRNID has ZERO occurrences in the frozen corpus - the nearest legacy
  *               analogue of a per-request identity, absent from the corpus
  ******************************************************************************
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
@@ -38,6 +38,7 @@ import com.cardemo.observability.CorrelationIdFilter;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.TraceContext;
 import io.micrometer.tracing.Tracer;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import java.io.IOException;
@@ -101,7 +102,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
  * <p>Not thread safe. Each method mutates the calling thread's diagnostic context deliberately and clears it
  * in an {@code @AfterEach}, so no entry escapes into another test.
  */
-@DisplayName("CorrelationIdFilter: the request-scoped thread of identity that replaces EIBTRNID")
+@DisplayName("CorrelationIdFilter: the request-scoped thread of identity the corpus never had")
 class CorrelationIdFilterTest {
 
     /** A supplied identifier that satisfies the accepted character set and length. */
@@ -149,6 +150,9 @@ class CorrelationIdFilterTest {
         /** Span identifier seen inside the chain, or {@code null} if none was set. */
         private String spanId;
 
+        /** Trace-flags octet seen inside the chain, or {@code null} if none was set. */
+        private String traceFlags;
+
         /** How many times the chain was invoked, which must be exactly one per request. */
         private int invocations;
 
@@ -159,6 +163,7 @@ class CorrelationIdFilterTest {
             this.correlationId = MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID);
             this.traceId = MDC.get(CorrelationIdFilter.MDC_KEY_TRACE_ID);
             this.spanId = MDC.get(CorrelationIdFilter.MDC_KEY_SPAN_ID);
+            this.traceFlags = MDC.get(CorrelationIdFilter.MDC_KEY_TRACE_FLAGS);
         }
     }
 
@@ -421,6 +426,221 @@ class CorrelationIdFilterTest {
 
             assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_TRACE_ID)).isNull();
             assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_SPAN_ID)).isNull();
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_TRACE_FLAGS))
+                    .as("finding M-03: the sampling decision shares the identifiers' lifetime, so a leaked "
+                            + "flag could describe the next request's span")
+                    .isNull();
+        }
+    }
+
+    /**
+     * The sampling decision, and the header composed from it.
+     *
+     * <p><strong>Finding M-03, severity Medium.</strong> The trace-flags octet was a hard-coded {@code 01}.
+     * Under the base profile, which samples every trace, that assertion was accidentally true - so the defect
+     * was invisible to every test and to all local running. Under {@code application-prod.yml}, which samples
+     * one in ten, it was wrong nine times in ten, and each wrong header told the next hop to record a child of
+     * a trace this process had already dropped. These tests exercise both decisions and the deferred third
+     * state, so the flag can no longer be right by coincidence.
+     */
+    @Nested
+    @DisplayName("Sampling decision: the traceparent flags octet states it rather than asserting it (M-03)")
+    class SamplingDecisionPropagation {
+
+        /** The specification's own example trace identifier. */
+        private static final String TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+
+        /** The specification's own example span identifier. */
+        private static final String SPAN_ID = "00f067aa0ba902b7";
+
+        /**
+         * Makes a span whose context reports the given sampling decision the current one.
+         *
+         * @param sampled the decision the tracing bridge should report; {@code null} means deferred
+         */
+        private void currentSpanSampled(final Boolean sampled) {
+            TraceContext context = Mockito.mock(TraceContext.class);
+            Mockito.when(context.traceId()).thenReturn(TRACE_ID);
+            Mockito.when(context.spanId()).thenReturn(SPAN_ID);
+            Mockito.when(context.sampled()).thenReturn(sampled);
+            Span span = Mockito.mock(Span.class);
+            Mockito.when(span.context()).thenReturn(context);
+            Mockito.when(tracer.currentSpan()).thenReturn(span);
+        }
+
+        @Test
+        @DisplayName("a sampled span yields flags 01 and a traceparent ending -01")
+        void aSampledSpanIsAdvertisedAsSampled() throws ServletException, IOException {
+            currentSpanSampled(Boolean.TRUE);
+            ContextCapturingChain chain = new ContextCapturingChain();
+
+            filter.doFilter(request, response, chain);
+
+            assertThat(chain.traceFlags).isEqualTo("01");
+        }
+
+        @Test
+        @DisplayName("an UNSAMPLED span yields flags 00 - the defect this finding names")
+        void anUnsampledSpanIsNoLongerAdvertisedAsSampled() throws ServletException, IOException {
+            currentSpanSampled(Boolean.FALSE);
+            ContextCapturingChain chain = new ContextCapturingChain();
+
+            filter.doFilter(request, response, chain);
+
+            assertThat(chain.traceFlags)
+                    .as("this process decided not to record the trace; telling the next hop otherwise leaves "
+                            + "an orphaned child at the collector")
+                    .isEqualTo("00");
+        }
+
+        @Test
+        @DisplayName("a deferred decision yields flags 01, which is documented rather than incidental")
+        void aDeferredDecisionDefaultsToSampled() throws ServletException, IOException {
+            currentSpanSampled(null);
+            ContextCapturingChain chain = new ContextCapturingChain();
+
+            filter.doFilter(request, response, chain);
+
+            assertThat(chain.traceFlags)
+                    .as("null means no sampler has run yet, not decided-against: this process may still "
+                            + "export the span, and a broken trace is harder to diagnose than an eager one")
+                    .isEqualTo("01");
+        }
+
+        @Test
+        @DisplayName("the composed traceparent carries the unsampled flag through to the wire form")
+        void theComposedHeaderCarriesTheUnsampledFlag() throws ServletException, IOException {
+            currentSpanSampled(Boolean.FALSE);
+            final String[] observed = new String[1];
+
+            filter.doFilter(request, response, (servletRequest, servletResponse) ->
+                    observed[0] = CorrelationIdFilter.currentTraceParent());
+
+            assertThat(observed[0])
+                    .as("currentTraceParent composes from the ambient context, so the decision has to travel "
+                            + "in that context to reach it")
+                    .isEqualTo("00-" + TRACE_ID + '-' + SPAN_ID + "-00");
+        }
+
+        @Test
+        @DisplayName("the explicit form states the decision it is given, both ways and when deferred")
+        void theExplicitFormStatesTheDecisionItIsGiven() {
+            assertThat(CorrelationIdFilter.traceParent(TRACE_ID, SPAN_ID, Boolean.TRUE))
+                    .isEqualTo("00-" + TRACE_ID + '-' + SPAN_ID + "-01");
+            assertThat(CorrelationIdFilter.traceParent(TRACE_ID, SPAN_ID, Boolean.FALSE))
+                    .isEqualTo("00-" + TRACE_ID + '-' + SPAN_ID + "-00");
+            assertThat(CorrelationIdFilter.traceParent(TRACE_ID, SPAN_ID, null))
+                    .as("a caller holding a TraceContext passes sampled() straight through and does not have "
+                            + "to decide for itself what a null means")
+                    .isEqualTo("00-" + TRACE_ID + '-' + SPAN_ID + "-01");
+        }
+
+        @Test
+        @DisplayName("an unusable identifier still yields no header, whatever the decision says")
+        void anUnusableIdentifierStillYieldsNoHeader() {
+            assertThat(CorrelationIdFilter.traceParent("00000000000000000000000000000000", SPAN_ID,
+                    Boolean.FALSE))
+                    .as("the sampling decision is orthogonal to validity; a malformed header is worse than an "
+                            + "absent one either way")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("with no active span there is no decision to publish, and none is invented")
+        void noActiveSpanPublishesNoDecision() throws ServletException, IOException {
+            ContextCapturingChain chain = new ContextCapturingChain();
+
+            filter.doFilter(request, response, chain);
+
+            assertThat(chain.traceFlags)
+                    .as("a flag without identifiers describes nothing, and currentTraceParent already yields "
+                            + "no header in this state")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("an all-zero trace identifier is refused, because it means no trace was recorded")
+        void anAllZeroTraceIdentifierIsRefused() throws ServletException, IOException {
+            TraceContext context = Mockito.mock(TraceContext.class);
+            Mockito.when(context.traceId()).thenReturn("00000000000000000000000000000000");
+            Mockito.when(context.spanId()).thenReturn("0000000000000000");
+            Span span = Mockito.mock(Span.class);
+            Mockito.when(span.context()).thenReturn(context);
+            Mockito.when(tracer.currentSpan()).thenReturn(span);
+
+            ContextCapturingChain chain = new ContextCapturingChain();
+            filter.doFilter(request, response, chain);
+
+            assertThat(chain.traceId)
+                    .as("an all-zero identifier is the not-recorded sentinel, so publishing it would put "
+                            + "a value that means 'no trace' into every log line as though it were one")
+                    .isNull();
+            assertThat(chain.spanId).isNull();
+        }
+
+        @Test
+        @DisplayName("a blank or absent trace identifier is refused")
+        void aBlankTraceIdentifierIsRefused() throws ServletException, IOException {
+            TraceContext context = Mockito.mock(TraceContext.class);
+            Mockito.when(context.traceId()).thenReturn("  ");
+            Mockito.when(context.spanId()).thenReturn(null);
+            Span span = Mockito.mock(Span.class);
+            Mockito.when(span.context()).thenReturn(context);
+            Mockito.when(tracer.currentSpan()).thenReturn(span);
+
+            ContextCapturingChain chain = new ContextCapturingChain();
+            filter.doFilter(request, response, chain);
+
+            assertThat(chain.traceId)
+                    .as("whitespace is not an identifier, and neither is null; both are refused rather "
+                            + "than published as an empty field a query would still match")
+                    .isNull();
+            assertThat(chain.spanId).isNull();
+        }
+    }
+
+    /**
+     * Two dispatch and nesting properties that the publication group's happy paths cannot show.
+     *
+     * <p>Consolidated here from a second unit test of this same class that covered the filter twice over.
+     * Everything the other rendition asserted is now in this file: these two cases were the only ones it
+     * held that this one did not, so the merge removed a duplicated suite without losing an assertion.
+     */
+    @Nested
+    @DisplayName("Dispatch and nesting: the cases a single straight-through request cannot show")
+    class DispatchAndNesting {
+
+        @Test
+        @DisplayName("the filter also runs on an error dispatch, so a 500 is still correlated")
+        void theFilterAlsoRunsOnAnErrorDispatch() throws ServletException, IOException {
+            request.setDispatcherType(DispatcherType.ERROR);
+
+            filter.doFilter(request, response, new ContextCapturingChain());
+
+            assertThat(response.getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER))
+                    .as("an error dispatch is exactly when a correlation identifier matters most - it is "
+                            + "the request someone will come looking for - so the filter must not be "
+                            + "restricted to the initial dispatch")
+                    .isNotBlank();
+        }
+
+        @Test
+        @DisplayName("a pre-existing context does not suppress the fresh identifier during the chain")
+        void aPreExistingContextDoesNotSuppressTheFreshIdentifier() throws ServletException, IOException {
+            MDC.put(CorrelationIdFilter.MDC_KEY_CORRELATION_ID, "outer-context");
+            request.addHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, "inner-context");
+
+            ContextCapturingChain chain = new ContextCapturingChain();
+            filter.doFilter(request, response, chain);
+
+            assertThat(chain.correlationId)
+                    .as("the inner request's own identifier wins WHILE the chain runs - an outer value must "
+                            + "not leak into the nested request's log lines")
+                    .isEqualTo("inner-context");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID))
+                    .as("and the outer value is put back afterwards, so restoration is a swap rather than "
+                            + "a clear. A clear would silently de-correlate everything after the nested call")
+                    .isEqualTo("outer-context");
         }
     }
 
@@ -436,6 +656,10 @@ class CorrelationIdFilterTest {
             assertThat(CorrelationIdFilter.MDC_KEY_TRACE_ID).isEqualTo("traceId");
             assertThat(CorrelationIdFilter.MDC_KEY_SPAN_ID).isEqualTo("spanId");
             assertThat(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID).isEqualTo("jobInstanceId");
+            assertThat(CorrelationIdFilter.MDC_KEY_TRACE_FLAGS)
+                    .as("finding M-03 added this one; logback-spring.xml does not render it, so nothing but "
+                            + "this assertion would notice a change of spelling")
+                    .isEqualTo("traceFlags");
         }
 
         @Test

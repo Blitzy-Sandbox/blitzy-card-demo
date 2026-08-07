@@ -396,10 +396,11 @@ import jakarta.validation.constraints.Size;
  *     unaffected and is verified directly, so no field contract in this file depends on the aggregate.
  *     The remediation has been applied to {@code docs/technical-specifications.md}, which cites 441 and 37
  *     and records both supersessions in its section 0.2.2.1 corrections table, verified on 1 August 2026.
- *     {@code TRACEABILITY_MATRIX.md} is <strong>not available</strong> - it is a planned artefact that has
- *     not been authored - so it asserts neither figure. No test asserts either figure either: the e2e
- *     {@code GateVerificationTest} named by the plan is <strong>not available</strong>. No code change is
- *     required.</li>
+ *     {@code TRACEABILITY_MATRIX.md} is <strong>authored at the repository root</strong>; an earlier
+ *     revision recorded it, and the e2e {@code GateVerificationTest} named by the plan, as not available,
+ *     and both records are withdrawn. That test derives the census mechanically and publishes it as
+ *     {@code gate7.screenInputFields}, so 441 is measured on every run rather than transcribed. No code
+ *     change is required.</li>
  * <li><strong>Low - mask and field width disagree by one digit.</strong> {@code WS-TRAN-AMT-N} admits
  *     nine integer digits and {@code WS-TRAN-AMT-E} renders eight
  *     ({@code app/cbl/COTRN02C.cbl:58-59}), so the echo of an amount of a hundred million or more

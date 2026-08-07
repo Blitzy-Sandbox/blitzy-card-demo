@@ -63,10 +63,40 @@
                                           runs. Note the hyphen: the property is
                                           dependency-check.skip, NOT
                                           dependency.check.skip, which the plugin
-                                          silently ignores. The container image
-                                          build and the main CI job pass
-                                          -Ddependency-check.skip=true because
-                                          a dedicated CI job owns the scan
+                                          silently ignores.
+                                          WHERE THE SCAN ACTUALLY RUNS, corrected
+                                          6 August 2026 by reading the workflow and
+                                          the Dockerfile rather than describing
+                                          them. CI runs it UNSKIPPED: the verify
+                                          job of .github/workflows/build.yml runs
+                                          ./mvnw clean verify in its step named
+                                          "Verify - compile warning-free, run
+                                          every tier, enforce every gate" -
+                                          spelled there with the long forms of -B
+                                          and -ntp, which an XML comment cannot
+                                          quote - and passes no skip property, so
+                                          the scan runs in the same job as compile,
+                                          tests and coverage. No job skips it and
+                                          no separate job repeats it; the
+                                          workflow's image-scan job is
+                                          Trivy over the built container image,
+                                          which is a different scanner over a
+                                          different artefact and proves nothing
+                                          about the Maven graph. The Dockerfile
+                                          builder stage does not skip the scan
+                                          either - it never reaches the phase the
+                                          scan is bound to, running test-compile
+                                          and then clean package, so verify-bound
+                                          goals simply do not execute there.
+                                          An earlier revision of this line said the
+                                          main CI job passed
+                                          -Ddependency-check.skip=true and that a
+                                          dedicated CI job owned the scan. Both
+                                          halves were false and are withdrawn
+                                          rather than reworded, because a reader who
+                                          believed them would look for evidence in a
+                                          job that does not exist and would read a
+                                          green verify run as not having scanned.
 
   Vulnerability scan prerequisites, and what a skipped scan does NOT mean
     The scan needs local NVD data under
@@ -386,7 +416,11 @@
         check goal runs at commit 2e087c47fdee747a591b768d4f4ca82d1be144c8 on
         JDK 25.0.3+9 with Maven 3.9.11. Command
         ./mvnw -B -ntp -Ddependency-check.skip=true clean verify; artifact
-        target/site/jacoco/jacoco.xml. That the reader works at all on major
+        target/site/jacoco/jacoco.xml. The scan-skip flag in that command is
+        incidental - this measurement is about the bytecode reader, and the flag
+        kept an unrelated network-dependent goal out of a coverage experiment. It
+        describes THIS measurement only and describes neither CI, which runs the
+        scan unskipped, nor a recommended local default. That the reader works on major
         version 69 is what this half evidences, and it is the half that matters:
         without the override the goal aborts with "Unsupported class file major
         version 69" and produces no report.
@@ -534,6 +568,13 @@
           CVSS 7.5 request smuggling via an invalid chunk extension and
           CVE-2026-41284 CVSS 7.5 unthrottled resource allocation, all reaching
           the HTTP/1.1 connector this application serves on. Fixed in 10.1.56.
+          10.1.57 IS THE END OF THIS LINE TODAY, and one record is open against it:
+          CVE-2026-66299, CVSS 7.5, disposition 4 in the residual register below.
+          Its fix is 10.1.58, which is not published - measured 6 August 2026 from
+          Central's maven-metadata.xml, where the 10.1 line ends at 10.1.57 - so
+          this pin cannot yet be advanced. Raise it to 10.1.58 or later as soon as
+          that release exists and delete the matching suppression entry; a forward
+          pin and a suppression for one record must never both be in place.
 
         postgresql.version        42.7.10 -> 42.7.13
           CVE-2026-42198, CVSS 7.5, a client side denial of service during
@@ -543,7 +584,12 @@
 
       FOUR FURTHER OVERRIDES, on the same mechanism, closing the remainder of
       the scan's applicable findings. Together with the four above these took the
-      unsuppressed count from 37 unique CVEs across 11 dependencies to two:
+      unsuppressed count from 37 unique CVEs across 11 dependencies to two, and
+      today to ONE - re-measured 6 August 2026 as one active row out of 166
+      dependencies scanned, the count having gone briefly back up to two when the
+      NVD feed newly attributed CVE-2026-66299 to Tomcat and back down when that
+      record was shown not to apply. The register below records both movements,
+      because a count that only ever improves is a count nobody re-measured:
 
         hibernate-validator 8.0.3.Final -> 8.0.5.Final
         commons-lang3       3.17.0      -> 3.20.0
@@ -610,21 +656,33 @@
     <micrometer-tracing.version>1.5.12</micrometer-tracing.version>
 
     <!--
-      RESIDUAL VULNERABILITIES - three CVEs are reported against this pinned
-      stack and none is remediated here. They are recorded rather than suppressed
+      RESIDUAL VULNERABILITIES - four CVEs are reported against this pinned stack
+      and none is remediated here. They are recorded rather than suppressed
       silently. Their dispositions are NOT the same, and the difference matters:
       the first is a CPE false positive, the second and third are genuinely
-      applicable advisories whose fix is blocked by the pinned parent.
+      applicable advisories whose fix is blocked by the pinned parent, and the
+      fourth is an advisory whose vulnerable component is provably absent from the
+      artefacts it is attributed to.
 
       HOW EACH ONE LEAVES THE GATE GREEN, measured rather than asserted - the
       reproduce command and the reading are recorded in owasp-suppressions.xml:
       the first is withdrawn from the active set by a Tier 1 IDENTIFIER
       suppression, because a wrong CPE is not a risk acceptance; the second is a
-      time boxed Tier 4 acceptance carrying compensating controls; the third is
-      the single remaining ACTIVE finding, and it scores CVSS 6.7 MEDIUM, below
-      the failBuildOnCVSS 7 threshold. So the gate passes on one deliberate,
-      dated acceptance and on scores that genuinely fall under the line - which is
-      the threshold's design and not a relaxation of it.
+      time boxed Tier 4 acceptance carrying compensating controls; the fourth is
+      withdrawn by a Tier 2 jar listing, because a vulnerability in code that is
+      not in the artefact is not exposure; and the third is what remains in the
+      ACTIVE set, scoring CVSS 6.7 MEDIUM, below the failBuildOnCVSS 7 threshold.
+      So the gate passes on one deliberate, dated acceptance, on one evidenced
+      absence, and on scores that genuinely fall under the line - which is the
+      threshold's design and not a relaxation of it. What it does NOT pass on:
+      failBuildOnCVSS is still 7 and no skip is configured or passed anywhere.
+      RE-MEASURED 7 AUGUST 2026 by the invocation that proves the gate rather
+      than the goal alone - ./mvnw -B -ntp clean verify with NO
+      -Ddependency-check.skip - with owasp.failBuildOnCVSS unchanged at 7: report
+      timestamp 2026-08-07T03:42:57Z, 166 dependencies scanned, ONE active
+      finding, highest active CVSS 6.7, zero findings at or above the gate,
+      BUILD SUCCESS. The 6 August reading reproduced exactly, so it is
+      corroborated by a second run rather than merely asserted.
 
       1. CVE-2025-15104 - reported against
          org.hibernate.validator:hibernate-validator
@@ -665,7 +723,9 @@
          compensating controls stated there.
 
       3. CVE-2026-40977, CVSS 6.7 MEDIUM - org.springframework.boot:spring-boot
-         APPLICABLE, AND THE ONLY ACTIVE FINDING THE SCAN NOW REPORTS. A PID file
+         APPLICABLE, AND THE ONLY FINDING LEFT IN THE ACTIVE SET once 4 below is
+         withdrawn on its jar-listing evidence - one active row out of 166
+         dependencies scanned, measured 6 August 2026. A PID file
          write that follows symlinks at a predictable default path, FIXED IN
          SPRING BOOT 3.5.14. It carries NO suppression entry, by choice: at 6.7 it
          is under the gate on its own score, so nothing has to be waived for the
@@ -679,6 +739,36 @@
          3.5.14 or later - the earliest single release carrying both fixes, since
          3.5.12 carries only the first - taken by whoever owns that pin, followed
          by a full re-run of this scan and the test suite.
+
+      4. CVE-2026-66299, CVSS 7.5 HIGH - org.apache.tomcat.embed:tomcat-embed-core
+         at the tomcat.version pinned above, ADDED TO THIS REGISTER 6 AUGUST 2026
+         AND THE ONLY RECORD THIS STACK HAS EVER CARRIED AT OR ABOVE THE GATE.
+         VULNERABLE COMPONENT ABSENT, not accepted. The advisory is uncontrolled
+         resource consumption in Apache Tomcat's WebSocket CHAT EXAMPLE, and its
+         own text says users who removed the examples web application are not
+         affected. That application ships only in the apache-tomcat binary
+         distribution under webapps/examples; it is in no tomcat-embed module and
+         is not published to Central. Measured from the resolved jars: 1681 entries
+         in tomcat-embed-core-10.1.57.jar, 191 in tomcat-embed-websocket and 164 in
+         tomcat-embed-el, and ZERO entries in any of the three whose name matches
+         example or chat, zero .jsp/.html/.xhtml/.war entries, and no
+         spring-boot-starter-websocket, ServerEndpoint or broker configuration in
+         src/. The full listing, its sha256 digests and the reproduce command are
+         in owasp-suppressions.xml, together with the measured fact that scoping the
+         entry to tomcat-embed-core alone simply re-attributed the identical record
+         to tomcat-embed-websocket, which is why the pattern covers the three embed
+         modules of that one group and no other Tomcat artefact.
+         WHY THIS IS NOT PINNED FORWARD LIKE THE FOUR SECURITY PINS ABOVE, which is
+         the rule for a coordinate whose version is an overridable property and
+         tomcat.version is one: the fix version does not exist. The advisory names
+         10.1.58 "(when released)"; Central's maven-metadata.xml for the coordinate
+         ends the 10.1 line at 10.1.57, measured the same day. The suppression
+         therefore carries until="2026-10-01Z" and its remediation step is the pin,
+         not a renewal - raise tomcat.version the moment 10.1.58 publishes, name
+         this CVE here beside the other four, and delete the entry.
+         WHAT WAS NOT DONE, because a review of this file should be able to confirm
+         it: the threshold was not lowered from 7, no skip was added, and no
+         existing entry was widened. One narrow, dated, evidenced entry was added.
     -->
 
     <!--
@@ -1508,11 +1598,15 @@
         with a hyphen in "dependency-check", matching the plugin's artifactId
         prefix. It is NOT -Ddependency.check.skip=true; that spelling is silently
         ignored, so a run believed to be skipping the scan would in fact execute
-        it. No skip element is set here, so the default is always to run. The
-        container image build and the main CI job pass the override above because
-        a dedicated CI job owns this scan and caches the vulnerability data
-        separately; a local developer wanting a fast verify may do the same, and
-        must then treat the scan as not-yet-run rather than as passed.
+        it. No skip element is set here, so the default is always to run, and
+        NOTHING in this repository passes that override: not the workflow, whose
+        single verify job runs the wrapper's clean verify unskipped in its step
+        named "Verify - compile warning-free, run every tier, enforce every
+        gate", and not the Dockerfile, whose builder stage stops at
+        test-compile and so never reaches the verify phase this goal is bound to,
+        and no separate scan job exists anywhere in it. The override exists for a
+        local developer who wants a fast verify, and whoever
+        uses it must then treat the scan as not-yet-run rather than as passed.
 
         OSS INDEX IS EXPLICITLY DISABLED, not left to its default. Enabled, the
         Sonatype OSS Index analyzer requires an authenticated account for any
@@ -1533,13 +1627,23 @@
         analyzer that IS enabled cannot complete, the build fails instead of
         producing a partial report.
 
-        The container image build and the main CI job pass
-        -Ddependency-check.skip=true because a dedicated CI job owns this scan
-        and caches the vulnerability data separately. That override is the
-        plugin's own user property. Two things therefore suppress this goal
-        without any skip element being present: that property, and offline
-        mode. An offline build never reaches this goal at all, so a green
-        offline build is not evidence that the scan passed.
+        WHAT CAN STOP THIS GOAL WITHOUT A skip ELEMENT BEING PRESENT, corrected
+        6 August 2026 - and the correction is reassuring rather than alarming. An
+        earlier revision of this paragraph named two things: the user property, and
+        offline mode, asserting that "an offline build never reaches this goal at
+        all, so a green offline build is not evidence that the scan passed". The
+        second half is false, and measurably so. The goal declares
+        requiresOnline=true in the plugin's own descriptor - read from
+        META-INF/maven/plugin.xml inside dependency-check-maven-12.1.0.jar, where
+        both check and aggregate carry it with defaultPhase verify - so Maven
+        refuses the goal offline instead of passing over it:
+        ./mvnw -B -ntp -o dependency-check:check fails in 0.4 s with "Goal requires
+        online mode for execution but Maven is currently offline." An offline build
+        therefore CANNOT be green with this goal bound; it fails loudly, which is
+        the behaviour a gate should have. That leaves exactly ONE way to reach a
+        green build without the scan having run: passing the user property named
+        above. So the honest warning is narrower than the old one and points
+        somewhere real - check the command line, not the network state.
 
         The .NET assembly analyzer is disabled because CardDemo is a Java only
         project: without a dotnet runtime that analyzer only emits an

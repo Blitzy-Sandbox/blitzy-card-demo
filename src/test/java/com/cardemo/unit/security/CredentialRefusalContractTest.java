@@ -95,11 +95,27 @@ class CredentialRefusalContractTest {
     /** An identifier no row bears, deliberately the same width as a real one. */
     private static final String UNKNOWN_USER_ID = "NOSUCH01";
 
-    /** The credential the seeded row verifies against. */
-    private static final String CORRECT_PASSWORD = "PASSWORD";
+    /**
+     * The credential the stub row verifies against, generated per run rather than written down.
+     *
+     * <p>This class stubs its own store, so the value only has to be a credential this run's digest accepts -
+     * it never has to be the one {@code app/jcl/DUSRSECJ.jcl} seeds. An earlier revision named that shared
+     * plaintext anyway, which put a working credential for the shipped demo seed into a tracked file and
+     * falsified the security gate's own "no plaintext anywhere" claim. Rule 1 clause D admits no sample
+     * exception, so the value is generated: eight upper-case letters, matching
+     * {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy} and the character set the source's
+     * {@code FUNCTION UPPER-CASE} normalisation yields.
+     */
+    private static final String CORRECT_PASSWORD = syntheticCredential();
 
-    /** A credential the seeded row does not verify against. */
-    private static final String WRONG_PASSWORD = "WRONGPWD";
+    /**
+     * A credential the seeded row does not verify against, derived so it cannot collide.
+     *
+     * <p>Every character of {@link #CORRECT_PASSWORD} rotated one position along the alphabet: the same width
+     * and case class, so the refusal paths see an input shaped like a real attempt, and guaranteed different,
+     * which a second generated value would not be.
+     */
+    private static final String WRONG_PASSWORD = rotated(CORRECT_PASSWORD);
 
     /** {@code SEC-USR-FNAME PIC X(20)}, space-padded to its declared width. */
     private static final String FIRST_NAME = "LAWRENCE            ";
@@ -109,6 +125,12 @@ class CredentialRefusalContractTest {
 
     /** BCrypt cost pinned by transformation rule 15 and by {@code V3__seed_data.sql}. */
     private static final int BCRYPT_STRENGTH = 10;
+
+    /** {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy}: eight bytes, so eight characters. */
+    private static final int CREDENTIAL_WIDTH = 8;
+
+    /** Letters drawn from when generating a credential, so every character survives upper-casing. */
+    private static final int ALPHABET_SIZE = 26;
 
     /** Fixed instant so nothing in the assertions depends on the wall clock. */
     private static final Clock FIXED_CLOCK =
@@ -164,6 +186,39 @@ class CredentialRefusalContractTest {
      */
     private static SignOnRequest request(final String userId, final String password) {
         return new SignOnRequest(null, null, null, null, null, null, null, null, userId, password, null);
+    }
+
+    /**
+     * Generates one eight-character upper-case credential for this run.
+     *
+     * <p>{@link SecureRandom} because the value is BCrypt-hashed and compared inside this class, so it is a
+     * credential in every respect that matters and is produced like one. Only upper-case letters are drawn, so
+     * the value survives the source's {@code FUNCTION UPPER-CASE} normalisation unchanged and the
+     * lower-casing assertion below has something to lower-case.
+     *
+     * @return the generated credential, never {@code null} and always eight upper-case letters
+     */
+    private static String syntheticCredential() {
+        final SecureRandom random = new SecureRandom();
+        final StringBuilder generated = new StringBuilder(CREDENTIAL_WIDTH);
+        for (int position = 0; position < CREDENTIAL_WIDTH; position++) {
+            generated.append((char) ('A' + random.nextInt(ALPHABET_SIZE)));
+        }
+        return generated.toString();
+    }
+
+    /**
+     * Rotates every upper-case letter one position along the alphabet, wrapping {@code Z} to {@code A}.
+     *
+     * @param value the credential to rotate; must not be {@code null}
+     * @return the rotated credential, never equal to {@code value}
+     */
+    private static String rotated(final String value) {
+        final StringBuilder derived = new StringBuilder(value.length());
+        for (final char letter : value.toCharArray()) {
+            derived.append(letter == 'Z' ? 'A' : (char) (letter + 1));
+        }
+        return derived.toString();
     }
 
     @BeforeEach

@@ -729,7 +729,8 @@ public class HealthIndicators {
     // issued it or is abandoned; no call is unbounded, and no call can borrow time from another
     // contributor. The three figures below are derived from container evidence, not chosen.
     //
-    // Dockerfile:495 declares `--timeout=5s` on the readiness HEALTHCHECK. That 5 second budget must
+    // The Dockerfile's single HEALTHCHECK instruction declares `--timeout=5s` on the readiness probe.
+    // Cited by instruction rather than by line number, because the line moves. That 5 second budget must
     // cover, in one HTTP round trip: the `db` contributor, this class's two contributors, Actuator's
     // own aggregation and the round trip itself. Allotting 1.5 s to each of the two AWS contributors
     // caps their combined worst case at 3 s and leaves 2 s for the database probe and transport,

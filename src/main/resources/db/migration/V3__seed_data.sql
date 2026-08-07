@@ -3,12 +3,16 @@
 -- * Application : CardDemo
 -- * Type        : Flyway migration - reference and fixture seed data
 -- * Function    : Seeds the eleven-table schema created by V1 with
--- *               the 636 rows the legacy corpus actually contains:
--- *               50 accounts, 50 customers, 50 cards, 50 cross
+-- *               the rows the legacy corpus actually contains:
+-- *               626 UNCONDITIONAL reference and fixture rows - 50
+-- *               accounts, 50 customers, 50 cards, 50 cross
 -- *               references, 7 transaction types, 18 transaction
 -- *               categories, 51 disclosure-group rates, 50 category
--- *               balances, 300 staged daily transactions and 10
--- *               users. Signed numerics are decoded from zoned
+-- *               balances and 300 staged daily transactions - plus 10
+-- *               GATED demonstration principals. So the applied total
+-- *               is 636 where the gate is open and 626 where it is
+-- *               closed; see THE SEED ROW CONTRACT below, which states
+-- *               that once. Signed numerics are decoded from zoned
 -- *               decimal position by position, driven by the PIC
 -- *               clauses; the ten credentials are stored only as
 -- *               BCrypt strength-10 digests. The posted-transaction
@@ -68,9 +72,31 @@
 -- only as in-stream IEBGENER data inside app/jcl/DUSRSECJ.jcl, between
 -- the //SYSUT1 DD * card at :L34 and the /* terminator at :L45.
 --
--- 50 + 50 + 50 + 50 + 300 + 51 + 50 + 18 + 7 + 10 = 636 rows, and the
--- OBJECT CENSUS at the foot of this file states the same arithmetic
--- per table so the two can be reconciled by inspection.
+-- THE SEED ROW CONTRACT, stated once and stated here.
+--
+--   50 + 50 + 50 + 50 + 300 + 51 + 50 + 18 + 7 = 626 rows are
+--   UNCONDITIONAL. They are reference and fixture data, they carry no
+--   credential, and they are identical in every environment.
+--
+--   + 10 demonstration principals, GATED by the Flyway placeholder
+--   the seeddemousers placeholder in the single WHERE clause of BLOCK 11.
+--
+--   = 636 applied rows where the gate is OPEN, which is the local and
+--     test profiles, and 626 where it is CLOSED, which is the base
+--     profile default and the production profile.
+--
+-- Both totals are correct; neither supersedes the other. What would be
+-- wrong is to state one of them as unconditional, and an earlier
+-- revision of this header did exactly that - it asserted 636 rows "in
+-- every environment" and, a few lines further down, that this file has
+-- "no placeholder, no profile switch and no conditional". The gate has
+-- existed since the credentials were first seeded; only the description
+-- was wrong, and it is corrected rather than the gate removed. The
+-- reasoning for the gate is at BLOCK 11 and is not repeated here.
+--
+-- The OBJECT CENSUS at the foot of this file states the same arithmetic
+-- per table, with the gated row separated from the unconditional ones,
+-- so the two can be reconciled by inspection.
 --
 -- Two transformations are applied to the bytes on the way in, and no
 -- others. Signed numerics are decoded from zoned-decimal trailing
@@ -102,6 +128,9 @@
 --   SELECT 'account' t, count(*) FROM account
 --   UNION ALL SELECT 'daily_transaction', count(*) FROM daily_transaction
 --   UNION ALL SELECT 'user_security', count(*) FROM user_security;
+--   -- user_security is 10 under local or test and 0 under the base
+--   -- default or production. Zero there is the correct result, not a
+--   -- failed apply: see THE SEED ROW CONTRACT above and BLOCK 11.
 --   SELECT dalytran_type_cd, sign(dalytran_amt), count(*)
 --     FROM daily_transaction GROUP BY 1, 2 ORDER BY 1, 2;
 --
@@ -129,9 +158,19 @@
 -- name, no key and no token. The only credential-derived values are
 -- one-way salted digests.
 --
--- Nothing here is configurable. There is no placeholder, no profile
--- switch and no conditional: the seed is the same 636 rows in every
--- environment, which is what makes the parity comparison meaningful.
+-- EXACTLY ONE THING HERE IS CONDITIONAL, and it is the credentials.
+-- The 626 reference and fixture rows are the same in every environment,
+-- which is what makes the parity comparison meaningful: no placeholder,
+-- no profile switch and no conditional touches any of them. The ten
+-- demonstration principals of BLOCK 11 are the single exception, gated
+-- by seeddemousers - false by default and in production, true in
+-- local and test. Nothing else in this file is settable.
+--
+-- The placeholder is substituted by Flyway at apply time, and Flyway
+-- checksums the RAW script text BEFORE substitution, so one file with
+-- one checksum applies everywhere and validate-on-migrate stays
+-- meaningful. That is why the gate is inside the script rather than in a
+-- second migration or a per-environment variant of this file.
 --
 -- COMMON FAILURE MODES AND TROUBLESHOOTING
 --
@@ -361,7 +400,7 @@
 -- be narrowed either: a CHAR(100) description is 102 characters before
 -- any separator. One row per line keeps every record greppable by its
 -- key and every change a one-line diff, which is the property that
--- matters for 636 rows of reference data. Column order in every
+-- matters for the 636 seed rows this file carries as text. Column order in every
 -- INSERT matches V1's CREATE TABLE order exactly, and the column list
 -- is always written out rather than relying on positional order.
 
@@ -1221,8 +1260,10 @@ INSERT INTO transaction_category_balance (
 --   digits in bytes [279-304]
 --
 --   the posting job generates a 26-character value whose final four
---   digits are ALWAYS zeros - millisecond precision followed by four
---   zeros, never nanoseconds. app/cbl/CBTRN02C.cbl:149 documents the
+--   digits are ALWAYS zeros - HUNDREDTHS-of-a-second precision followed
+--   by four zeros, never milliseconds and never nanoseconds; three
+--   fraction digits would need a seventh character that the layout does
+--   not have. app/cbl/CBTRN02C.cbl:149 documents the
 --   layout, :159 declares DB2-FORMAT-TS PIC X(26), :173 DB2-MIL
 --   PIC 9(002) and :174 DB2-REST PIC X(04), and :700-701 assembles it
 --
@@ -1727,9 +1768,16 @@ WHERE ${seeddemousers} = TRUE;
 --   transaction_category_balance   50   tcatbal.txt, 50 x 50
 --   "transaction"                   0   no fixture exists
 --   daily_transaction             300   dailytran.txt, 300 x 350
---   user_security                  10   DUSRSECJ.jcl:L35-L44
 --                                ----
---   total                         636
+--   unconditional subtotal        626
+--
+--   user_security                  10   DUSRSECJ.jcl:L35-L44, GATED by
+--                                      seeddemousers - installed
+--                                      under local and test, not under
+--                                      the base default or production
+--                                ----
+--   applied total, gate open      636
+--   applied total, gate closed    626
 --
 -- Statement census: 10 INSERT statements over 11 tables - BLOCK 9 has
 -- none. Zero CREATE, zero ALTER, zero DROP, zero GRANT, zero sequence,

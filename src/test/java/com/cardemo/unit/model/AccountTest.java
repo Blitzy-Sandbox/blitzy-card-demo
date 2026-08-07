@@ -129,7 +129,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <pre>{@code
  * ./mvnw -B -ntp -Ddependency-check.skip=true test -Dtest=AccountTest
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ./mvnw -B -ntp clean verify
  * }</pre>
  *
  * <p>Confirm collection by checking that {@code target/surefire-reports} contains

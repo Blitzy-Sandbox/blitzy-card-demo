@@ -42,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 import com.cardemo.batch.readers.TransactionBackupReader;
+import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.repository.TransactionRepository;
@@ -97,7 +98,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  *
  * <pre>
  * ./mvnw -B -ntp -Ddependency-check.skip=true -Dit.test=TransactionBackupGenerationIntegrationTest verify
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ./mvnw -B -ntp clean verify
  * </pre>
  *
  * <h2>3. Key configuration and defaults</h2>
@@ -171,21 +172,43 @@ class TransactionBackupGenerationIntegrationTest extends AbstractAwsIntegrationT
     }
 
     /**
-     * Writes one generation object holding the supplied 350-character images, newline separated.
+     * Writes one generation object holding the supplied 350-character images concatenated, undelimited.
+     *
+     * <p>Undelimited deliberately, and this helper used to append a newline after every image. That shape was
+     * never what production writes: {@code TransactionReportJob.writeRepositoryBackup} encodes each record
+     * and calls {@code write(byte[])} with no separator at all, which is what
+     * {@code app/proc/TRANREPT.prc:L29} {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)} declares. Fabricating a
+     * 351-byte stride here meant the harness exercised a reader tolerance that the dataset does not justify
+     * and that production now refuses, while never exercising the geometry the reader actually receives.
      *
      * @param bucket the bucket to write into
      * @param key the generation object key
      * @param images the record images
      */
     private void writeGeneration(final String bucket, final String key, final List<String> images) {
-        final StringBuilder body = new StringBuilder(images.size() * (TRANSACTION_RECORD_LENGTH + 1));
+        writeGenerationBody(bucket, key, images, "");
+    }
+
+    /**
+     * Writes one generation object with an explicit separator after every image, so a refusal can be proved.
+     *
+     * @param bucket the bucket to write into
+     * @param key the generation object key
+     * @param images the record images
+     * @param separator the byte sequence to place after each image, possibly empty
+     */
+    private void writeGenerationBody(final String bucket, final String key, final List<String> images,
+            final String separator) {
+
+        final StringBuilder body =
+                new StringBuilder(images.size() * (TRANSACTION_RECORD_LENGTH + separator.length()));
         images.forEach(image -> {
             if (image.length() != TRANSACTION_RECORD_LENGTH) {
                 throw new IllegalStateException(String.format(Locale.ROOT,
                         "image is %d characters; app/cpy/CVTRA05Y.cpy declares %d",
                         Integer.valueOf(image.length()), Integer.valueOf(TRANSACTION_RECORD_LENGTH)));
             }
-            body.append(image).append('\n');
+            body.append(image).append(separator);
         });
         s3Client().putObject(PutObjectRequest.builder().bucket(bucket).key(key).build(),
                 RequestBody.fromBytes(body.toString().getBytes(StandardCharsets.ISO_8859_1)));
@@ -462,7 +485,7 @@ class TransactionBackupGenerationIntegrationTest extends AbstractAwsIntegrationT
         }
 
         @Test
-        @DisplayName("the object written is exactly 351 bytes per record: 350 plus one terminator")
+        @DisplayName("the object written is exactly 350 bytes per record, undelimited")
         void theObjectGeometryIsBytePredictable() {
             final String bucket = createVersionedBucket(scopedResourceName("geometry"));
             final List<String> originals = List.of(
@@ -478,11 +501,47 @@ class TransactionBackupGenerationIntegrationTest extends AbstractAwsIntegrationT
                     .bucket(bucket).key(WRITTEN_GENERATION_KEY).build()).asByteArray();
 
             // Stated as bytes rather than characters: the reader decodes ISO-8859-1, which is why a byte
-            // count and a character count coincide here and would not under a multi-byte charset.
-            assertThat(stored).hasSize(originals.size() * (TRANSACTION_RECORD_LENGTH + 1));
+            // count and a character count coincide here and would not under a multi-byte charset. The length
+            // is an exact multiple of 350 because app/proc/TRANREPT.prc:L29 declares RECFM=FB, which is
+            // undelimited - a 351-byte stride would put every field of the second record one byte out.
+            assertThat(stored).hasSize(originals.size() * TRANSACTION_RECORD_LENGTH);
+            assertThat(stored.length % TRANSACTION_RECORD_LENGTH)
+                    .as("the object length is a whole number of %d-byte records",
+                            Integer.valueOf(TRANSACTION_RECORD_LENGTH))
+                    .isZero();
             assertThat(new String(stored, StandardCharsets.ISO_8859_1))
                     .startsWith(originals.get(0))
                     .contains(originals.get(1));
+        }
+
+        @Test
+        @DisplayName("a generation carrying record separators is refused rather than read misaligned")
+        void aSeparatedGenerationIsRefused() {
+            final String bucket = createVersionedBucket(scopedResourceName("separated"));
+            final List<String> originals = List.of(
+                    image("0000000000000001", "01", "0001", "POS TERM", "ONE", "0000005047G", "800000000",
+                            "MERCHANT", "CITY", "12345", "4859452612877065", ORIGINATING_TIMESTAMP,
+                            BLANK_TIMESTAMP),
+                    image("0000000000000002", "01", "0001", "POS TERM", "TWO", "0000005047G", "800000000",
+                            "MERCHANT", "CITY", "12345", "4859452612877065", ORIGINATING_TIMESTAMP,
+                            BLANK_TIMESTAMP));
+            writeGenerationBody(bucket, WRITTEN_GENERATION_KEY, originals, "\n");
+
+            final TransactionBackupReader reader = readerOver(bucket, WRITTEN_GENERATION_KEY);
+            reader.open(new ExecutionContext());
+            final DataIntegrityException refusal =
+                    catchThrowableOfType(DataIntegrityException.class, reader::read);
+            reader.close();
+
+            assertThat(refusal)
+                    .as("a 351-byte stride is not the RECFM=FB geometry of app/proc/TRANREPT.prc:L29, and "
+                            + "consuming the separator would decode every later record one byte out under a "
+                            + "success status")
+                    .isNotNull();
+            assertThat(refusal.getMessage())
+                    .contains("separator")
+                    .contains("0x0A")
+                    .contains("TRANREPT.prc:L29");
         }
     }
 }

@@ -180,9 +180,10 @@ import org.springframework.core.io.ResourceLoader;
  * <p>{@code 02 LAST-3-OF-ZIP PIC X(3)} at {@code app/cpy/CSLKPCDY.cpy:L1314} is declared and never
  * validated. Rule 1 Clause B forbids <em>untracked</em> dead code; this artefact is tracked, cited and
  * justified, so parity governs and the field is retained rather than invented away. Its non-consultation is
- * asserted as behaviour in section 4 and it is owed an entry in the planned {@code DECISION_LOG.md}. Severity
- * <strong>Low</strong>. As measured, {@code DECISION_LOG.md} is <em>Not available</em> in this tree; what
- * is needed is that file, and this Javadoc together with the service's own is the record until it exists.
+ * asserted as behaviour in section 4 and it is owed an entry in {@code DECISION_LOG.md}. Severity
+ * <strong>Low</strong>. That register is authored at the repository root; an earlier reading recording it as
+ * <em>Not available</em> in this tree is withdrawn. This Javadoc together with the service's own remains the
+ * record that cannot drift from the field it describes.
  *
  * <h2>6. Scope boundary - the complementary class</h2>
  *
@@ -681,7 +682,7 @@ class ValidationLookupServiceTest {
         void theLastThreeOfZipIsNeverConsulted() {
             // app/cpy/CSLKPCDY.cpy:L1314 declares 02 LAST-3-OF-ZIP PIC X(3) and no 88 level exists for it
             // anywhere in the corpus. INTENTIONAL NO-OP, RETAINED FOR PARITY: the field is kept as the
-            // service's own width constant and is deliberately never read. Owed an entry in the planned
+            // service's own width constant and is deliberately never read. Owed an entry in
             // DECISION_LOG.md; severity Low. Inventing a rule for it would add a validation the legacy system never
             // performs.
             assertThat(SERVICE.isValidStateAndZipCode("WY", "83001")).isTrue();

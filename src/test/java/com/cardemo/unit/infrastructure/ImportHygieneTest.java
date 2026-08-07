@@ -95,8 +95,14 @@ import org.junit.jupiter.api.Test;
  * <p>{@link #theRuleItselfIsExercised()} runs the rule over synthetic sources whose answers are known. Two of
  * this session's false readings came from a scanner whose regex was quietly wrong rather than from the tree
  * it scanned, and a gate whose own rule is untested is a gate that can start passing for the wrong reason.
+ *
+ * <p>The same scan carries the file-shape rules of {@code .editorconfig}, added for finding STYLE-001:
+ * {@code TransactionReportJob.java} shipped with no terminating newline, which the review found by reading the
+ * file because nothing in the build looked. {@link #everySourceHasTheShapeEditorconfigDeclares()} looks now.
+ * Both rules belong to one scan because they are one question asked of every source, and a second walk of 414
+ * files to ask half of it would be duplication rather than separation.
  */
-@DisplayName("Import hygiene - no Java source declares an import it does not use")
+@DisplayName("Source hygiene - no unused import, and every file the shape .editorconfig declares")
 final class ImportHygieneTest {
 
     /**
@@ -388,5 +394,66 @@ final class ImportHygieneTest {
         assertThat(unusedImports(List.of("package com.cardemo.sample;", "", "final class Sample {", "}")))
                 .as("a source with no import at all yields no violation and no exception")
                 .isEmpty();
+    }
+
+    @Test
+    @DisplayName("every source ends in exactly one LF, with no CRLF, no tab and no trailing whitespace")
+    void everySourceHasTheShapeEditorconfigDeclares() {
+        // Finding STYLE-001, severity Low. .editorconfig:49-51 declares end_of_line = lf,
+        // insert_final_newline = true and trim_trailing_whitespace = true for [*], and no [*.java] section
+        // relaxes any of the three - but a declaration an editor honours is not a rule the build enforces, and
+        // one file had already lost its terminating newline. A missing final LF is not cosmetic: it makes the
+        // next appended line join the last one, and it is why diff tools report "\ No newline at end of file"
+        // on a hunk nobody touched.
+        final List<String> violations = new ArrayList<>();
+        for (final Path source : javaSources()) {
+            final byte[] bytes = bytesOf(source);
+            final String relative = ROOT.relativize(source).toString();
+            if (bytes.length == 0) {
+                violations.add(relative + ": empty file");
+                continue;
+            }
+            if (bytes[bytes.length - 1] != '\n') {
+                violations.add(relative + ": no terminating newline");
+            } else if (bytes.length > 1 && bytes[bytes.length - 2] == '\n') {
+                violations.add(relative + ": more than one terminating newline");
+            }
+            final String text = new String(bytes, StandardCharsets.UTF_8);
+            if (text.indexOf('\r') >= 0) {
+                violations.add(relative + ": carriage return present");
+            }
+            if (text.indexOf('\t') >= 0) {
+                violations.add(relative + ": tab present");
+            }
+            final String[] lines = text.split("\n", -1);
+            for (int index = 0; index < lines.length; index++) {
+                final String line = lines[index];
+                if (!line.isEmpty() && (line.endsWith(" ") || line.endsWith("\t"))) {
+                    violations.add(relative + ":" + (index + 1) + ": trailing whitespace");
+                    break;
+                }
+            }
+        }
+
+        assertThat(violations)
+                .as("""
+                    .editorconfig:49-51 declares these three for every file in the repository, and no \
+                    [*.java] section relaxes them. A violation is fixed in the file, never by widening \
+                    this assertion.""")
+                .isEmpty();
+    }
+
+    /**
+     * Reads one source as bytes, because the terminating-newline question cannot be asked of decoded lines.
+     *
+     * @param source the file to read
+     * @return its exact bytes
+     */
+    private static byte[] bytesOf(final Path source) {
+        try {
+            return Files.readAllBytes(source);
+        } catch (final IOException cause) {
+            throw new UncheckedIOException("Cannot read " + source, cause);
+        }
     }
 }

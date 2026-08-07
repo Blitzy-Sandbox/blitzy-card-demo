@@ -23,7 +23,7 @@
  *               app/cbl/COCRDUPC.cbl:1464-1465 (the two MOVEs, absent here)
  *               app/cbl/COCRDUPC.cbl:1478      (the REWRITE)
  *               app/cbl/COCRDUPC.cbl:1503      (9300 clause 1, inert)
- *               V1__create_schema.sql          (no card_cvv_cd column)
+ *               V1__create_schema.sql          (card_cvv_cd - declared, unreadable)
  *               AAP 0.3.2 / 0.8.4              (least privilege) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
@@ -53,9 +53,7 @@ import static org.mockito.Mockito.when;
 import com.cardemo.model.dto.CardUpdateRequest;
 import com.cardemo.model.entity.Card;
 import com.cardemo.repository.CardRepository;
-import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.card.CardUpdateService;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.LockModeType;
 import java.io.IOException;
 import java.io.InputStream;
@@ -82,7 +80,7 @@ import org.springframework.data.jpa.repository.Lock;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)
-@DisplayName("CardUpdateService: 9200-WRITE-PROCESSING - no retained CVV, and an account-scoped lock")
+@DisplayName("CardUpdateService: 9200-WRITE-PROCESSING - the stored CVV is left untouched, and an account-scoped lock")
 final class CardUpdateWriteContractTest {
 
     /** Frozen instant; no decision under test reads the clock. */
@@ -137,18 +135,13 @@ final class CardUpdateWriteContractTest {
     @Mock
     private CardRepository cardRepository;
 
-    /** The sealer of the as-displayed snapshot, real because the write opens what the read sealed. */
-    private SnapshotTokenService snapshotTokenService;
-
     /** The system under test. */
     private CardUpdateService service;
 
     @BeforeEach
     void createServiceUnderTest() {
         final Clock clock = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
-        this.snapshotTokenService = new SnapshotTokenService(
-                "0123456789abcdef0123456789abcdef0123456789abcdef", 900L, clock, new ObjectMapper());
-        this.service = new CardUpdateService(this.cardRepository, clock, this.snapshotTokenService);
+        this.service = new CardUpdateService(this.cardRepository, clock);
     }
 
     /**
@@ -286,10 +279,15 @@ final class CardUpdateWriteContractTest {
         }
 
         @Test
-        @DisplayName("the sealed snapshot declares no verification component, so none can be sealed")
-        void theSealedSnapshotDeclaresNoVerificationComponent() {
-            assertThat(CardUpdateService.CardSnapshot.class.getRecordComponents())
+        @DisplayName("the read response declares no verification component, so none can be returned")
+        void theReadResponseDeclaresNoVerificationComponent() {
+            // The as-displayed group travels in the response body and back in the request body, so the two
+            // wire shapes are where a verification value would escape. Neither declares one, which is what
+            // keeps the stored value confined to the entity - where it has no read path at all.
+            assertThat(com.cardemo.model.dto.CardResponse.class.getRecordComponents())
                     .noneMatch(component -> namesVerificationValue(component.getName()));
+            assertThat(com.cardemo.model.dto.CardDto.class.getDeclaredMethods())
+                    .noneMatch(method -> namesVerificationValue(method.getName()));
         }
 
         @Test

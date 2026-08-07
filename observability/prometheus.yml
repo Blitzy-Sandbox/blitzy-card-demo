@@ -119,8 +119,16 @@
 #   * metrics_path /actuator/prometheus. Exposure is never `*`, so there is no
 #     /actuator/metrics and no /metrics to scrape, and the
 #     configuration-bearing endpoints are absent by construction.
-#   * scheme http. The scrape stays on the Compose bridge network; this file
-#     carries no transport override and no authentication material.
+#   * scheme http. The scrape stays on the Compose bridge network, so this file
+#     carries no transport override.
+#   * basic_auth IS configured, and what is committed is a credential PATH, never
+#     a credential VALUE. The username carddemo-metrics-scraper is not a secret;
+#     the password is read by Prometheus from password_file at
+#     /etc/prometheus/secrets/scrape-password, a file docker-compose.yml
+#     materialises at container start from METRICS_SCRAPE_PASSWORD. No password
+#     value appears in this file, in .env.example, or anywhere else in the
+#     repository - which is what Rule 1 Clause D requires, and is a different
+#     statement from carrying no authentication material at all.
 #   * Measurement names live in MetricsConfig.java, actuator settings in
 #     application.yml, Grafana settings under observability/grafana/**.
 #

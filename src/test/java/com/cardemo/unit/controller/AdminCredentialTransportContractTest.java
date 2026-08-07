@@ -65,7 +65,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.http.HttpHeaders;
 import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -94,10 +93,11 @@ import org.springframework.web.bind.annotation.RequestParam;
  *
  * <p>The remedy is structural rather than procedural: the header, its constant and its binding are gone, and
  * the body member has exactly one non-serializing, non-bean read path,
- * {@link UserCreateRequest#presentedPassword()}, which the controller reads in the delegation expression
- * itself. This class asserts the remedy in three independent ways - by reflection over the handler
- * signatures, by scanning the controller sources for header literals, and behaviourally, by proving the
- * service receives precisely what was bound.
+ * {@link UserCreateRequest#mapPassword(java.util.function.Function)}, which the controller reads in the
+ * delegation expression itself - it hands the value to a reader the caller supplies rather than returning it,
+ * so there is no accessor to serialize or to log. This class asserts the remedy in three independent ways -
+ * by reflection over the handler signatures, by scanning the controller sources for header literals, and
+ * behaviourally, by proving the service receives precisely what was bound.
  *
  * <h2>What is asserted, and why each assertion is not redundant</h2>
  *
@@ -129,9 +129,9 @@ import org.springframework.web.bind.annotation.RequestParam;
  *       literal naming a credential was added. Remediation: carry the credential in the request body member
  *       the BMS map already declares.</li>
  *   <li><strong>{@code theServiceReceivesExactlyTheBoundBodyCredential} fails.</strong> The relay stopped
- *       reading {@code request.presentedPassword()}, or normalised it. Remediation: pass the body value
- *       through unchanged; {@code app/cbl/COSGN00C.cbl} performs the case fold at authentication time and
- *       doing it twice changes outcomes.</li>
+ *       reading the credential through {@code request.mapPassword(...)}, or normalised it. Remediation: pass
+ *       the body value through unchanged; {@code app/cbl/COSGN00C.cbl} performs the case fold at
+ *       authentication time and doing it twice changes outcomes.</li>
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -207,7 +207,7 @@ final class AdminCredentialTransportContractTest {
     final class HandlerSignatures {
 
         @Test
-        @DisplayName("no handler binds a cookie, and the only header any handler may bind is If-Match")
+        @DisplayName("no handler binds a header or a cookie at all")
         void noHandlerBindsAHeaderOrCookie() {
             final List<String> offenders = new ArrayList<>();
             for (final Class<?> controller : CREDENTIAL_BEARING_CONTROLLERS) {
@@ -219,7 +219,7 @@ final class AdminCredentialTransportContractTest {
                             continue;
                         }
                         final RequestHeader bound = parameter.getAnnotation(RequestHeader.class);
-                        if (bound != null && !isConditionalRequestValidator(bound)) {
+                        if (bound != null) {
                             offenders.add(controller.getSimpleName() + '.' + handler.getName()
                                     + " binds " + describe(parameter) + " named '"
                                     + boundHeaderName(bound) + '\'');
@@ -232,10 +232,11 @@ final class AdminCredentialTransportContractTest {
                     .as("a bespoke header or cookie is the channel generic ingress, proxy, access-log and "
                             + "APM redaction does NOT recognise. The credential of "
                             + "app/cpy-bms/COUSR01.CPY:78 is a member of the map's own input group, so the "
-                            + "request body is both the faithful channel and the recognised one. The single "
-                            + "admitted exception is the standard conditional-request validator If-Match, "
-                            + "which carries an opaque entity tag rather than any value of the record - the "
-                            + "same header the account and card update surfaces already bind. Offenders: %s",
+                            + "request body is both the faithful channel and the recognised one. The "
+                            + "allowlist is now empty rather than a list of one: the account and card update "
+                            + "surfaces carry their as-displayed snapshot as the body's oldDetails group "
+                            + "under transformation Rule 7, so no handler on any of these controllers binds "
+                            + "a header for any purpose. Offenders: %s",
                             offenders)
                     .isEmpty();
         }
@@ -450,23 +451,6 @@ final class AdminCredentialTransportContractTest {
             annotations.add('@' + annotation.annotationType().getSimpleName());
         }
         return String.join(" ", annotations) + ' ' + parameter.getType().getSimpleName();
-    }
-
-    /**
-     * Reports whether a bound header is the one standard conditional-request validator this surface admits.
-     *
-     * <p>{@code If-Match} carries an opaque entity tag, never a value of the record and never a credential, and
-     * it is the mechanism {@code AccountController} and {@code CardController} already use to carry the sealed
-     * as-displayed snapshot their update operations require. Admitting it by exact name - rather than admitting
-     * "any header that does not look like a credential" - keeps the allowlist a list of one, so a new header can
-     * only be introduced by editing this guard deliberately.
-     *
-     * @param bound the binding to test, never {@code null}
-     * @return {@code true} when the bound name is exactly {@code If-Match}, case-insensitively as HTTP defines
-     * header names
-     */
-    private static boolean isConditionalRequestValidator(final RequestHeader bound) {
-        return HttpHeaders.IF_MATCH.equalsIgnoreCase(boundHeaderName(bound));
     }
 
     /**

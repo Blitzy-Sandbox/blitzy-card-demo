@@ -83,6 +83,16 @@ import org.springframework.messaging.MessagingException;
  */
 @DisplayName("Report submission: the operator notification that NOTIFY=&SYSUID asked for")
 class ReportNotificationPublishTest {
+    /**
+     * The key the queue envelope code is derived from.
+     *
+     * <p>Local to this test and long enough to be a plausible signing key, so nothing here is a credential of
+     * any deployment. Finding M-11: the producer signs every submission with a key derived from the
+     * application signing key, and there is no unsigned mode, so a subject cannot be built without one.
+     */
+    private static final String ENVELOPE_SIGNING_KEY =
+            "notification-publish-test-envelope-key-0123456789";
+
 
     /** The topic every assertion here expects to be addressed by name. */
     private static final String TOPIC = "carddemo-notifications";
@@ -110,7 +120,7 @@ class ReportNotificationPublishTest {
         // resolves to none: a publish must happen whether or not a tracing stack is registered.
         service = new ReportSubmissionService(sqsTemplate, snsTemplate, new DateValidationService(clock),
                 clock, noTracer(), "carddemo-report-jobs.fifo", "carddemo-report-jobs",
-                "carddemo-report-jobs-group", TOPIC);
+                "carddemo-report-jobs-group", TOPIC, ENVELOPE_SIGNING_KEY);
     }
 
     /**

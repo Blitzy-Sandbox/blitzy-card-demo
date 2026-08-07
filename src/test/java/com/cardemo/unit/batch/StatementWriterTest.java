@@ -62,6 +62,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -1099,6 +1101,157 @@ class StatementWriterTest {
 
             assertThat(loggedMessages())
                     .anyMatch(message -> message.startsWith("Object storage rejected the HTMLFILE WRITE"));
+        }
+    }
+
+    @Nested
+    @DisplayName("10. m-03: a statement key cannot travel inside a preserved cause")
+    class KeyBearingCauseSanitisation {
+
+        /**
+         * Creates the sanitisation group.
+         *
+         * <p>Declared explicitly because the enclosing class declares its own constructors.
+         */
+        KeyBearingCauseSanitisation() {
+            // Intentionally empty; each test builds the throwable it needs.
+        }
+
+        @Test
+        @DisplayName("a key-bearing upload failure is raised with a cause that names no account digits")
+        void aKeyBearingUploadFailureIsSanitised() {
+            // The shape an object store really produces: the key inside the SDK's own message. This is the
+            // path the finding is about, because this throwable used to be preserved verbatim and both the
+            // framework's step-failure logging and the EXIT_MESSAGE column render whatever cause it carries.
+            Mockito.when(s3Template.upload(Mockito.anyString(), Mockito.anyString(),
+                            Mockito.any(InputStream.class), Mockito.any(ObjectMetadata.class)))
+                    .thenThrow(new IllegalStateException("Access Denied (Bucket: " + BUCKET + ", Key: "
+                            + "statements/account=" + ACCOUNT_ID + "/month=" + MONTH
+                            + "/generation=0000000000000000000/statement=0000000000000000001/STATEMNT.PS)"));
+            open();
+            writer.writeStatementLine("x");
+
+            assertThatExceptionOfType(FileAccessException.class)
+                    .isThrownBy(() -> writer.flushStatementOutputs())
+                    .satisfies(failure -> {
+                        assertThat(renderChainOf(failure))
+                                .as("no rendering of the raised failure may carry the account digits")
+                                .doesNotContain(ACCOUNT_ID);
+                        assertThat(failure.getCause())
+                                .as("Rule 1 clause B still holds: a cause is present, so nothing is swallowed")
+                                .isInstanceOf(StatementWriter.SanitizedCause.class);
+                        assertThat(failure.getCause().getMessage())
+                                .as("the classification survives as the original type name, and the text "
+                                        + "survives with only the account digits replaced")
+                                .startsWith(IllegalStateException.class.getName() + ": ")
+                                .contains("Access Denied")
+                                .contains("Bucket: " + BUCKET)
+                                .contains("statements/account="
+                                        + StatementWriter.ACCOUNT_SEGMENT_REDACTION
+                                        + "/month=" + MONTH)
+                                .contains("/statement=0000000000000000001/STATEMNT.PS");
+                    });
+        }
+
+        @Test
+        @DisplayName("the sanitised cause keeps the original stack trace, so the fault location survives")
+        void theSanitisedCauseKeepsTheStackTrace() {
+            IllegalStateException original = new IllegalStateException(
+                    "denied for statements/account=" + ACCOUNT_ID + "/month=" + MONTH + "/STATEMNT.PS");
+
+            Throwable sanitised = StatementWriter.sanitizedCause(original);
+
+            assertThat(sanitised).isNotSameAs(original);
+            assertThat(sanitised.getStackTrace())
+                    .as("a stack frame is a class, a method and a line, so it cannot hold a key - and it is "
+                            + "the one part of a cause that says WHERE the failure happened")
+                    .isEqualTo(original.getStackTrace());
+        }
+
+        @Test
+        @DisplayName("a cause that names no key is returned unchanged, so its type is not given up needlessly")
+        void aCauseWithoutAKeyIsReturnedUnchanged() {
+            // Preserving the instance preserves the type, which is what lets a handler test instanceof or
+            // read a status code from an SDK exception. The substitution happens only where keeping the
+            // instance would mean keeping the disclosure.
+            IllegalStateException original = new IllegalStateException("the bucket is unreachable");
+
+            assertThat(StatementWriter.sanitizedCause(original)).isSameAs(original);
+            assertThat(StatementWriter.sanitizedCause(null)).isNull();
+        }
+
+        @Test
+        @DisplayName("a key three causes down is removed too, and every type name in the chain survives")
+        void aKeyDeepInTheChainIsRemoved() {
+            IllegalStateException root = new IllegalStateException(
+                    "PUT statements/account=" + ACCOUNT_ID + "/month=" + MONTH + "/STATEMNT.PS refused");
+            IllegalArgumentException middle = new IllegalArgumentException("request failed", root);
+            RuntimeException top = new RuntimeException("unable to execute HTTP request", middle);
+
+            Throwable sanitised = StatementWriter.sanitizedCause(top);
+
+            assertThat(renderChainOf(sanitised)).doesNotContain(ACCOUNT_ID);
+            assertThat(sanitised.getMessage())
+                    .startsWith(RuntimeException.class.getName() + ": unable to execute HTTP request");
+            assertThat(sanitised.getCause().getMessage())
+                    .startsWith(IllegalArgumentException.class.getName() + ": request failed");
+            assertThat(sanitised.getCause().getCause().getMessage())
+                    .startsWith(IllegalStateException.class.getName() + ": PUT statements/account="
+                            + StatementWriter.ACCOUNT_SEGMENT_REDACTION)
+                    .endsWith("refused");
+            assertThat(sanitised.getCause().getCause().getCause())
+                    .as("the chain ends where the original ended; no element is invented")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("the sanitiser is checked against a key this writer really emitted, not a retyped one")
+        void theSanitiserMatchesAKeyTheWriterActuallyEmitted() {
+            // The anchor of both the sanitiser and the appender rule is the literal 'statements/account='.
+            // Asserting it against a key captured from the upload boundary is what keeps the pattern
+            // non-vacuous: if the key shape is ever renamed, this fails and names the sanitiser, whereas a
+            // retyped literal would keep passing while both defences quietly stopped matching anything.
+            writer.openStatementOutputs(ACCOUNT_ID, MONTH, 7L);
+            writer.writeStatementLine("x");
+            writer.flushStatementOutputs();
+
+            assertThat(uploadedKeys()).isNotEmpty();
+            for (String key : uploadedKeys()) {
+                assertThat(StatementWriter.withoutStatementKeyAccount(key))
+                        .as("emitted key [%s]", key)
+                        .doesNotContain(ACCOUNT_ID)
+                        .contains("statements/account=" + StatementWriter.ACCOUNT_SEGMENT_REDACTION + "/")
+                        .endsWith(key.substring(key.indexOf("/month=")));
+            }
+        }
+
+        @Test
+        @DisplayName("a labelled account identifier in a cause is left alone, because that is diagnosis")
+        void aLabelledAccountIdentifierIsNotTouched() {
+            // The mirror of the masking configuration's own decision: ACCT-ID is published as a labelled
+            // field on purpose and Gate 1 compares those lines byte for byte. Only the KEY form is removed.
+            String diagnostic = "posting failed for accountId=" + ACCOUNT_ID;
+
+            assertThat(StatementWriter.withoutStatementKeyAccount(diagnostic)).isEqualTo(diagnostic);
+            assertThat(StatementWriter.withoutStatementKeyAccount(null)).isNull();
+        }
+
+        /**
+         * Renders a throwable and every cause beneath it into one string, the way a log appender or the batch
+         * metadata would.
+         *
+         * <p>Messages and stack traces both, because an assertion that read only the top message would pass
+         * while the key sat one cause down - which is exactly the defect this group exists to prevent.
+         *
+         * @param failure the throwable to render, never {@code null}
+         * @return the concatenated rendering, never {@code null}
+         */
+        private String renderChainOf(final Throwable failure) {
+            StringWriter rendered = new StringWriter();
+            try (PrintWriter writer = new PrintWriter(rendered)) {
+                failure.printStackTrace(writer);
+            }
+            return rendered.toString();
         }
     }
 }

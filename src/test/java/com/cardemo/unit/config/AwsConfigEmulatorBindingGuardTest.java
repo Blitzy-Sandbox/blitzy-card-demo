@@ -40,6 +40,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.cardemo.config.AwsConfig;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.Collections;
+import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -48,6 +50,7 @@ import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.mock.env.MockEnvironment;
 
 /**
@@ -88,6 +91,21 @@ class AwsConfigEmulatorBindingGuardTest {
                 .postProcessBeanFactory(new DefaultListableBeanFactory());
     }
 
+    /**
+     * The seven generation-base prefix keys and the values {@code application.yml} declares for them, in the
+     * order the guard reads them. Present in every fixture because the guard proves the whole object-store
+     * layout, not only the endpoints: a fixture that omitted them would make every endpoint assertion below
+     * fail for an unrelated reason.
+     */
+    private static final Map<String, String> GENERATION_PREFIXES = Map.of(
+            "carddemo.aws.s3.gdg-prefixes.daly-rejs", "gdg/dalyrejs",
+            "carddemo.aws.s3.gdg-prefixes.systran", "gdg/systran",
+            "carddemo.aws.s3.gdg-prefixes.tcatbalf-bkup", "gdg/tcatbalf-bkup",
+            "carddemo.aws.s3.gdg-prefixes.tranrept", "gdg/tranrept",
+            "carddemo.aws.s3.gdg-prefixes.transact-bkup", "gdg/transact-bkup",
+            "carddemo.aws.s3.gdg-prefixes.transact-combined", "gdg/transact-combined",
+            "carddemo.aws.s3.gdg-prefixes.transact-daly", "gdg/transact-daly");
+
     private static MockEnvironment environmentWith(final String endpoint) {
         final MockEnvironment environment = new MockEnvironment();
         if (endpoint != null) {
@@ -97,6 +115,7 @@ class AwsConfigEmulatorBindingGuardTest {
         }
         environment.setProperty("spring.cloud.aws.credentials.access-key", PLACEHOLDER_CREDENTIAL);
         environment.setProperty("spring.cloud.aws.credentials.secret-key", PLACEHOLDER_CREDENTIAL);
+        GENERATION_PREFIXES.forEach(environment::setProperty);
         return environment;
     }
 
@@ -168,7 +187,7 @@ class AwsConfigEmulatorBindingGuardTest {
         // container-to-host topology is served by the Compose service name inside the bridge network, so
         // nothing needs it. Refusing it is what makes the two allowlists genuinely identical.
         "http://host.docker.internal:4566",
-        // The fully-qualified spelling of an allowlisted name. localstack-init/init-aws.sh:L269-L272 refuses it
+        // The fully-qualified spelling of an allowlisted name. localstack-init/init-aws.sh refuses it
         // in as many words - "Nothing else, in any case, with or without a trailing dot" - so accepting it here
         // would be drift pointing the other way: a value that starts the application and then fails
         // provisioning. No profile, compose file or setup instruction spells a host this way.
@@ -221,6 +240,7 @@ class AwsConfigEmulatorBindingGuardTest {
         accepted.setProperty("spring.cloud.aws.endpoint", LOCAL_ENDPOINT);
         accepted.setProperty("spring.cloud.aws.credentials.access-key", PLACEHOLDER_CREDENTIAL);
         accepted.setProperty("spring.cloud.aws.credentials.secret-key", PLACEHOLDER_CREDENTIAL);
+        GENERATION_PREFIXES.forEach(accepted::setProperty);
         assertThatCode(() -> runGuard(accepted)).doesNotThrowAnyException();
 
         final MockEnvironment refused = new MockEnvironment();
@@ -321,5 +341,70 @@ class AwsConfigEmulatorBindingGuardTest {
                 AwsConfig.cloudEmulatorBindingGuard(environmentWith(null));
         assertThatThrownBy(() -> guard.postProcessBeanFactory(new DefaultListableBeanFactory()))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The generation-prefix layout. A base without a prefix has no namespace of its own, and two
+    // bases whose prefixes match or nest share one, so neither can be listed independently. The
+    // guard therefore proves all SEVEN bases of app/jcl/DEFGDGB.jcl and app/jcl/DALYREJS.jcl -
+    // including AWS.M2.CARDDEMO.TCATBALF.BKUP at DEFGDGB.jcl:L43, the one base no Java job writes,
+    // whose producer app/jcl/PRTCATBL.jcl has no COBOL program. Excluding it because nothing writes
+    // it would be backwards: it is provisioned in the object store, so its prefix must be reserved
+    // or a base that IS written could be given one that collides with it.
+    // ---------------------------------------------------------------------------------------------
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "carddemo.aws.s3.gdg-prefixes.daly-rejs",
+        "carddemo.aws.s3.gdg-prefixes.systran",
+        "carddemo.aws.s3.gdg-prefixes.tcatbalf-bkup",
+        "carddemo.aws.s3.gdg-prefixes.tranrept",
+        "carddemo.aws.s3.gdg-prefixes.transact-bkup",
+        "carddemo.aws.s3.gdg-prefixes.transact-combined",
+        "carddemo.aws.s3.gdg-prefixes.transact-daly",
+    })
+    @DisplayName("an absent generation prefix aborts startup, for every one of the seven bases")
+    void anAbsentGenerationPrefixIsRefused(final String key) {
+        final MockEnvironment environment = environmentWith(LOCAL_ENDPOINT);
+        environment.getPropertySources().addFirst(
+                new MapPropertySource("override", Collections.singletonMap(key, "")));
+
+        assertThatThrownBy(() -> runGuard(environment))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(key)
+                .hasMessageContaining("no namespace of its own");
+    }
+
+    /**
+     * Equality is the obvious collision; nesting is the one that is easy to miss. Object keys are matched by
+     * prefix, so {@code gdg/transact} and {@code gdg/transact-bkup} are distinct strings that do not give
+     * distinct namespaces - a listing of the first returns the second's objects. Both forms are refused.
+     */
+    @Test
+    @DisplayName("two generation prefixes that match, or one that nests inside another, abort startup")
+    void collidingOrNestingGenerationPrefixesAreRefused() {
+        final MockEnvironment equalPrefixes = environmentWith(LOCAL_ENDPOINT);
+        equalPrefixes.setProperty("carddemo.aws.s3.gdg-prefixes.tcatbalf-bkup", "gdg/tranrept");
+        assertThatThrownBy(() -> runGuard(equalPrefixes))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("neither match nor nest");
+
+        final MockEnvironment nestedPrefixes = environmentWith(LOCAL_ENDPOINT);
+        nestedPrefixes.setProperty("carddemo.aws.s3.gdg-prefixes.transact-bkup", "gdg/transact");
+        assertThatThrownBy(() -> runGuard(nestedPrefixes))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("matched by prefix");
+    }
+
+    /**
+     * The values {@code application.yml} actually declares must pass, or the guard would be unstartable
+     * against the shipped profile. This is the positive half of the two negative cases above.
+     */
+    @Test
+    @DisplayName("the seven prefixes application.yml declares are accepted")
+    void theShippedGenerationPrefixesAreAccepted() {
+        assertThat(GENERATION_PREFIXES).hasSize(7);
+        assertThat(GENERATION_PREFIXES.values()).doesNotHaveDuplicates();
+        assertThatCode(() -> runGuard(environmentWith(LOCAL_ENDPOINT))).doesNotThrowAnyException();
     }
 }

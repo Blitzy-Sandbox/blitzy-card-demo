@@ -34,7 +34,6 @@
 package com.cardemo.unit.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -42,18 +41,15 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
 import com.cardemo.config.AwsConfig;
 import com.cardemo.observability.CorrelationIdFilter;
 import io.awspring.cloud.sns.core.TopicArnResolver;
 import io.awspring.cloud.sqs.listener.QueueNotFoundStrategy;
+import io.awspring.cloud.sqs.support.converter.MessagingMessageConverter;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.messaging.support.MessageBuilder;
 import java.net.URI;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -61,9 +57,10 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import java.lang.reflect.Method;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.CommandLineRunner;
 import software.amazon.awssdk.arns.Arn;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
@@ -78,11 +75,8 @@ import software.amazon.awssdk.services.sns.model.ListTopicsRequest;
 import software.amazon.awssdk.services.sns.model.ListTopicsResponse;
 import software.amazon.awssdk.services.sns.model.Topic;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
-import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
-import software.amazon.awssdk.services.sqs.model.GetQueueAttributesResponse;
-import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
-import software.amazon.awssdk.services.sqs.model.GetQueueUrlResponse;
-import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
+import software.amazon.awssdk.services.sqs.model.Message;
+import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
 
 /**
  * Unit tests for {@code com.cardemo.config.AwsConfig}.
@@ -311,6 +305,89 @@ class AwsConfigTest {
         }
     }
 
+    /**
+     * The one payload contract both ends of the queue share.
+     *
+     * <p>Finding C-01, severity Critical. The library's default converter writes a payload type header on
+     * send and resolves it with {@code Class.forName} on receive, which broke this application's own contract
+     * - a typed publish against a listener that binds text - and handed a caller control over which class was
+     * loaded. The converter declared by {@code AwsConfig} neither writes nor reads that header, and because
+     * the same instance is injected into the publisher and into the listener container the two cannot drift.
+     */
+    @Nested
+    @DisplayName("raw-JSON queue payload contract")
+    class RawJsonPayloadContract {
+
+        /** The converter under test, built exactly as the container builds it. */
+        private final MessagingMessageConverter<Message> converter =
+                newConfig(LOCAL_ENDPOINT, LOCAL_ENDPOINT, LOCAL_ENDPOINT, "test", "test", PHYSICAL_QUEUE)
+                        .sqsMessagingMessageConverter(new NoObjectMapperProvider());
+
+        @Test
+        @DisplayName("an outbound message carries no payload type header for a caller to choose")
+        void anOutboundMessageCarriesNoPayloadTypeHeader() {
+            final Message converted = converter.fromMessagingMessage(
+                    MessageBuilder.withPayload(new SubmissionShape("Monthly", "2022-07-01")).build());
+
+            assertThat(converted.messageAttributes())
+                    .as("the type header is what made the producer's message unreadable by a listener that "
+                            + "binds text, and what let a publisher name the class this application loads")
+                    .doesNotContainKey("JavaType");
+            assertThat(converted.body())
+                    .as("the body is still the typed JSON the batch tier consumes")
+                    .contains("Monthly");
+        }
+
+        @Test
+        @DisplayName("an inbound payload type header is ignored, so no caller-selected class is resolved")
+        void anInboundPayloadTypeHeaderIsIgnored() {
+            final Message hostile = Message.builder()
+                    .messageId("11111111-2222-3333-4444-555555555555")
+                    .receiptHandle("receipt")
+                    .body("{\"reportName\":\"Monthly\",\"startDate\":\"2022-07-01\"}")
+                    .messageAttributes(java.util.Map.of("JavaType", MessageAttributeValue.builder()
+                            .dataType("String")
+                            .stringValue("java.net.URLClassLoader")
+                            .build()))
+                    .build();
+
+            final org.springframework.messaging.Message<?> bound = converter.toMessagingMessage(hostile);
+
+            assertThat(bound.getPayload())
+                    .as("the body reaches the listener as text; the class a publisher named is never loaded")
+                    .isInstanceOf(String.class);
+        }
+
+        /** A payload shape standing in for the published record, so this test needs no production type. */
+        private record SubmissionShape(String reportName, String startDate) {
+        }
+
+        /** An {@link ObjectProvider} that supplies no object mapper, which the bean must tolerate. */
+        private static final class NoObjectMapperProvider
+                implements ObjectProvider<com.fasterxml.jackson.databind.ObjectMapper> {
+
+            @Override
+            public com.fasterxml.jackson.databind.ObjectMapper getObject() {
+                throw new UnsupportedOperationException("no object mapper is contributed by this test");
+            }
+
+            @Override
+            public com.fasterxml.jackson.databind.ObjectMapper getObject(final Object... args) {
+                throw new UnsupportedOperationException("no object mapper is contributed by this test");
+            }
+
+            @Override
+            public com.fasterxml.jackson.databind.ObjectMapper getIfAvailable() {
+                return null;
+            }
+
+            @Override
+            public com.fasterxml.jackson.databind.ObjectMapper getIfUnique() {
+                return null;
+            }
+        }
+    }
+
     /** The queue contract: a message group is honoured only by a first-in-first-out queue. */
     @Nested
     @DisplayName("FIFO queue contract")
@@ -336,129 +413,27 @@ class AwsConfigTest {
         }
 
         @Test
-        @DisplayName("the startup verifier accepts a FIFO queue with content-based deduplication off")
-        void verifierAcceptsCompliantQueue() throws Exception {
-            SqsAsyncClient client = stubbedQueue(Map.of(
-                    QueueAttributeName.FIFO_QUEUE.toString(), "true",
-                    QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "false"));
-
-            ApplicationRunner verifier = compliantConfig().cardDemoFifoQueueContractVerifier(client);
-
-            verifier.run(null);
-
-            verify(client).getQueueAttributes(any(GetQueueAttributesRequest.class));
-        }
-
-        @Test
-        @DisplayName("the startup verifier accepts a FIFO queue that omits the deduplication attribute")
-        void verifierAcceptsOmittedDeduplicationAttribute() throws Exception {
-            // Omission is how the service says false, so it must satisfy the requirement rather than fail it.
-            SqsAsyncClient client = stubbedQueue(Map.of(
-                    QueueAttributeName.FIFO_QUEUE.toString(), "true"));
-
-            ApplicationRunner verifier = compliantConfig().cardDemoFifoQueueContractVerifier(client);
-
-            verifier.run(null);
-
-            verify(client).getQueueAttributes(any(GetQueueAttributesRequest.class));
-        }
-
-        @Test
-        @DisplayName("the startup verifier refuses a standard queue created under a .fifo name")
-        void verifierRefusesStandardQueue() {
-            SqsAsyncClient client = stubbedQueue(Map.of(
-                    QueueAttributeName.FIFO_QUEUE.toString(), "false",
-                    QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "false"));
-
-            ApplicationRunner verifier = compliantConfig().cardDemoFifoQueueContractVerifier(client);
-
-            assertThatThrownBy(() -> verifier.run(null))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("FifoQueue")
-                    .hasMessageContaining(PHYSICAL_QUEUE)
-                    .hasMessageContaining("localstack-init/init-aws.sh");
-        }
-
-        @Test
-        @DisplayName("the startup verifier warns about content-based deduplication but still starts")
-        void verifierWarnsAboutContentBasedDeduplicationWithoutRefusingToStart() throws Exception {
-            // Finding H-08, severity High. The original defect was the reverse of this: the verifier REQUIRED
-            // the attribute to be true and refused a queue that omitted it, while content-based deduplication
-            // hashes the message body - and a report body is just the report name plus two dates, so two
-            // legitimate submissions of the same period collapsed inside the five-minute window where
-            // DISPOSITION(MOD) at app/csd/CARDDEMO.CSD:503 appended both.
+        @DisplayName("no ApplicationRunner is declared here, so nothing in this class touches the network at startup")
+        void noApplicationRunnerIsDeclared() {
+            // Finding CFG-001, severity High. This class used to declare cardDemoFifoQueueContractVerifier, an
+            // ApplicationRunner that resolved the queue and read its attributes straight after context refresh.
+            // Five tests exercised it and they were removed with it. What replaced them is this one assertion,
+            // stated as the property that actually matters: the configuration class performs NO startup network
+            // traffic at all, so a bean here can never be broken by an emulator being down and no eager call
+            // can precede the endpoint allow-list. The FIFO attributes are provisioned by
+            // localstack-init/init-aws.sh, which converges an existing queue, and re-read on every readiness
+            // probe by HealthIndicators, which is asserted in HealthIndicatorsTest - two mechanisms that can
+            // act on a divergence rather than merely report one, and that keep reporting it after startup.
             //
-            // The fix is on the send path, not here: ReportSubmissionService mints an explicit
-            // MessageDeduplicationId per submission, and an explicit identifier takes precedence over the body
-            // hash, so both submissions arrive even while this attribute is enabled. Startup therefore must NOT
-            // refuse - an intermediate revision made it refuse, and that took every ApplicationContext down over
-            // a mutable attribute this process does not own, including tiers that never publish a report.
-            // FifoQueue is asserted instead because it is immutable from creation; this one is provisioned by
-            // localstack-init/init-aws.sh and re-read continuously by HealthIndicators.
-            SqsAsyncClient client = stubbedQueue(Map.of(
-                    QueueAttributeName.FIFO_QUEUE.toString(), "true",
-                    QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString(), "true"));
-
-            Logger verifierLogger = (Logger) LoggerFactory.getLogger(AwsConfig.class);
-            ListAppender<ILoggingEvent> captured = new ListAppender<>();
-            captured.start();
-            verifierLogger.addAppender(captured);
-            try {
-                ApplicationRunner verifier = compliantConfig().cardDemoFifoQueueContractVerifier(client);
-
-                assertThatNoException()
-                        .as("an enabled content hash must not abort startup: the explicit deduplication "
-                                + "identifier on every send already guarantees the append parity")
-                        .isThrownBy(() -> verifier.run(null));
-            } finally {
-                verifierLogger.detachAppender(captured);
-                captured.stop();
-            }
-
-            assertThat(captured.list)
-                    .as("the drift is still reported, and at WARN so it is not lost among the informational "
-                            + "startup lines")
-                    .anySatisfy(event -> {
-                        assertThat(event.getLevel()).isEqualTo(Level.WARN);
-                        assertThat(event.getFormattedMessage())
-                                .contains(QueueAttributeName.CONTENT_BASED_DEDUPLICATION.toString())
-                                .contains("localstack-init/init-aws.sh");
-                    });
-        }
-
-        @Test
-        @DisplayName("the startup verifier reports a failed call without disclosing the queue address")
-        void verifierReportsFailureSafely() {
-            SqsAsyncClient client = mock(SqsAsyncClient.class);
-            when(client.getQueueUrl(any(GetQueueUrlRequest.class)))
-                    .thenReturn(CompletableFuture.failedFuture(new IllegalStateException(
-                            "https://sqs.us-east-1.amazonaws.com/123456789012/carddemo-report-jobs.fifo")));
-
-            ApplicationRunner verifier = compliantConfig().cardDemoFifoQueueContractVerifier(client);
-
-            assertThatThrownBy(() -> verifier.run(null))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("java.lang.IllegalStateException")
-                    .hasMessageNotContaining("123456789012");
-        }
-
-        /** Builds a fully valid configuration. */
-        private AwsConfig compliantConfig() {
-            return newConfig(LOCAL_ENDPOINT, LOCAL_ENDPOINT, LOCAL_ENDPOINT, "test", "test", PHYSICAL_QUEUE);
-        }
-
-        /** Stubs a queue client that resolves the queue and answers with the given attributes. */
-        private static SqsAsyncClient stubbedQueue(final Map<String, String> attributes) {
-            SqsAsyncClient client = mock(SqsAsyncClient.class);
-            when(client.getQueueUrl(any(GetQueueUrlRequest.class))).thenReturn(CompletableFuture.completedFuture(
-                    GetQueueUrlResponse.builder()
-                            .queueUrl("http://localhost:4566/000000000000/" + PHYSICAL_QUEUE)
-                            .build()));
-            when(client.getQueueAttributes(any(GetQueueAttributesRequest.class)))
-                    .thenReturn(CompletableFuture.completedFuture(GetQueueAttributesResponse.builder()
-                            .attributesWithStrings(attributes)
-                            .build()));
-            return client;
+            // Declared-method reflection rather than a text search, so that a runner added under any bean name
+            // or through any annotation fails this immediately.
+            assertThat(Stream.of(AwsConfig.class.getDeclaredMethods())
+                    .filter(method -> ApplicationRunner.class.isAssignableFrom(method.getReturnType())
+                            || CommandLineRunner.class.isAssignableFrom(method.getReturnType()))
+                    .map(Method::getName))
+                    .as("the AAP's contract for this class allows no runner and no Java-side provisioning; "
+                            + "a startup check belongs in provisioning or in readiness, both of which own it")
+                    .isEmpty();
         }
     }
 

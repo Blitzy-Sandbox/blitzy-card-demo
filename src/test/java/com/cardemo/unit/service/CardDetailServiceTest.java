@@ -149,7 +149,7 @@ import org.springframework.dao.QueryTimeoutException;
  * would be collected by neither plugin and would silently never run. Run it with
  * {@code ./mvnw -B -ntp test -Dtest=CardDetailServiceTest}, the whole unit tier with
  * {@code ./mvnw -B -ntp test}, and the gated build with
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. A JDK 25 toolchain and Maven 3.9.11
+ * {@code ./mvnw -B -ntp clean verify}. A JDK 25 toolchain and Maven 3.9.11
  * are installed on the host, so no container is needed; where a host toolchain is genuinely absent the
  * equivalent is
  * {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -q test}.

@@ -34,6 +34,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -53,6 +54,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import com.cardemo.batch.GenerationPrefixContract;
 import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.FatalProcessingException;
@@ -132,7 +134,7 @@ import io.awspring.cloud.s3.S3Operations;
  * value is required, and a context that does not supply it fails to start rather than silently writing
  * somewhere unintended. Declared as {@code carddemo.aws.s3.batch-output-bucket} in
  * {@code src/main/resources/application.yml} and supplied through
- * {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}, the name {@code .env.example:81} ships and
+ * {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}, the name {@code .env.example} ships and
  * {@code localstack-init/init-aws.sh} provisions.</li>
  * <li>{@code carddemo.aws.s3.transaction-object-prefix} - the base-name segment every key starts with.
  * Defaults
@@ -447,6 +449,43 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * that every {@code ExecutionContext} serialiser supports without a trusted-class allow-list.
      */
     public static final String OBJECT_KEYS_COUNT_ENTRY = "carddemo.transaction.object.keys.count";
+    /**
+     * Step execution context entry naming the object a committed chunk still owes the store, {@value}.
+     *
+     * <p><strong>Finding M-07, severity Major, RESOLVED - and this entry is the outbox.</strong> The object is
+     * uploaded after the chunk transaction commits, which is the only ordering that cannot publish an object
+     * describing rows that were rolled back. But it leaves the mirror image of that problem: if the upload
+     * fails, the rows are already durable and cannot be taken back, so the relation held transactions that no
+     * object described and nothing in the target could ever notice or repair.
+     *
+     * <p>The remedy is a transactional outbox, and it needs no table of its own.
+     * {@code TaskletStep$ChunkTransactionCallback.doInTransaction} calls {@code ItemStream.update} and then
+     * {@code JobRepository.updateExecutionContext} <b>inside</b> the chunk transaction - verified against the
+     * 5.2.4 bytecode, not assumed - so an entry this writer places in the step execution context is committed
+     * atomically with the very rows it describes. A pending entry that survives a failure is therefore proof
+     * that the rows exist and the object does not, which is exactly what a reconciliation needs to be sound.
+     *
+     * <p>{@link #beforeStep(StepExecution)} settles any entry it finds before the step writes anything new.
+     */
+    public static final String PENDING_OBJECT_KEY_ENTRY = "carddemo.transaction.pending.objectKey";
+
+    /**
+     * Step execution context entry listing the identifiers a pending object must be rebuilt from, {@value}.
+     *
+     * <p>The payload is <b>re-derived from the committed rows</b> rather than carried here as bytes. Two
+     * reasons, and both matter. A context is not a place to put a chunk's worth of record images; and more
+     * importantly, re-reading the rows is what makes the reconciliation <em>true</em> - it emits what the
+     * database actually holds, so a mirror written by the retry cannot disagree with the relation it mirrors.
+     * {@link #composeFixedWidthImage(Transaction)} is public and pure precisely so that this reconstruction is
+     * the same function the original write used.
+     *
+     * <p>Comma separated, in write order, because the object's record order is the chunk's item order.
+     */
+    public static final String PENDING_IDENTIFIERS_ENTRY = "carddemo.transaction.pending.identifiers";
+
+    /** Separator between identifiers in {@link #PENDING_IDENTIFIERS_ENTRY}, {@value}. */
+    private static final String PENDING_IDENTIFIER_SEPARATOR = ",";
+
 
     /**
      * Prefix of the indexed job-execution entries described on {@link #OBJECT_KEYS_COUNT_ENTRY}. The entry for
@@ -481,16 +520,16 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * recoverable in full - the exact count, the generation prefix and the latest key - are published
      * unconditionally.
      *
-     * <p><b>Why this cap truncates where the statement cap refuses.</b>
-     * {@code carddemo.batch.statement-processor.max-transactions-per-run} bounds a structure the statement
-     * output is <em>computed from</em>, so exceeding it must fail loudly - a truncated table would silently
-     * drop transactions from a customer's statement. This manifest is a diagnostic and hand-off record, and
-     * nothing is dropped when it is capped: the count stays exact, {@link #OBJECT_KEY_CONTEXT_ENTRY} still
-     * names the latest object, and {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} names a prefix unique to this
-     * job instance, so listing that one prefix enumerates every object deterministically and without racing
-     * any concurrent producer. Refusing an otherwise successful posting run because it posted more records
-     * than its audit list can enumerate would be a behaviour the source does not have -
-     * {@code app/cbl/CBTRN02C.cbl} writes to a sequential dataset and imposes no such limit.
+     * <p><b>Why this cap truncates rather than refuses, and why it is the only cap left.</b> This manifest is
+     * a diagnostic and hand-off record, and nothing is dropped when it is capped: the count stays exact,
+     * {@link #OBJECT_KEY_CONTEXT_ENTRY} still names the latest object, and
+     * {@link #OBJECT_KEYS_GENERATION_PREFIX_ENTRY} names a prefix unique to this job instance, so listing that
+     * one prefix enumerates every object deterministically and without racing any concurrent producer.
+     * Refusing an otherwise successful posting run because it posted more records than its audit list can
+     * enumerate would be a behaviour the source does not have - {@code app/cbl/CBTRN02C.cbl} writes to a
+     * sequential dataset and imposes no such limit. That reasoning is exactly why the statement path now has
+     * no record ceiling at all: finding BAT-002 removed the run and card-group refusals that once stood in
+     * {@code StatementProcessor}, on the same ground that the corpus imposes no such limit either.
      */
     public static final String OBJECT_KEYS_INDEXED_ENTRY = "carddemo.transaction.object.keys.indexed";
 
@@ -527,8 +566,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
      * The property bounding how many object keys the indexed manifest enumerates.
      *
      * <p>Public so that the value is named once and asserted against
-     * {@code src/main/resources/application.yml} rather than repeated as a literal, exactly as
-     * {@code StatementProcessor.KEY_MAX_TRANSACTIONS_PER_RUN} is.
+     * {@code src/main/resources/application.yml} rather than repeated as a literal.
      */
     public static final String KEY_MAX_INDEXED_OBJECT_KEYS =
             "carddemo.batch.transaction-writer.max-indexed-object-keys";
@@ -979,6 +1017,7 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     @Override
     public void beforeStep(StepExecution execution) {
         this.stepExecution = execution;
+        settlePendingEmission(execution);
     }
 
     /**
@@ -1028,6 +1067,10 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
 
         byte[] payload = composePayload(items);
 
+        // The outbox entry goes in BEFORE the rows, and both are committed together: the framework persists
+        // this context inside the chunk transaction. See PENDING_OBJECT_KEY_ENTRY - this is what makes a
+        // failed upload recoverable instead of a permanent split (finding M-07).
+        recordPendingEmission(execution, objectKeyFor(execution, ordinal), items);
         persistChunk(items);
         promoteAfterCommit(execution, ordinal, payload, items);
     }
@@ -1104,8 +1147,121 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
 
         String objectKey = writeTransactionFile(payload, execution, ordinal);
         publishObjectKey(execution, objectKey);
+        clearPendingEmission(execution);
         metrics.countRecordsProcessed(reported);
         countTransactionAmounts(items);
+    }
+
+    /**
+     * Records, inside the chunk transaction, that this chunk's rows still owe the store an object.
+     *
+     * <p>Written before the rows rather than after them, so that no interleaving can commit the rows without
+     * the entry. Both land in the same transaction, so the entry cannot outlive a rollback either: a chunk that
+     * rolls back takes its own outbox entry with it, which is why a surviving entry is proof the rows exist.
+     *
+     * @param execution the step whose context is the outbox
+     * @param objectKey the object the chunk owes
+     * @param items the transactions the object must hold, in record order
+     */
+    private void recordPendingEmission(StepExecution execution, String objectKey,
+                                       List<? extends Transaction> items) {
+
+        StringBuilder identifiers = new StringBuilder(items.size() * 17);
+        for (Transaction item : items) {
+            if (identifiers.length() > 0) {
+                identifiers.append(PENDING_IDENTIFIER_SEPARATOR);
+            }
+            identifiers.append(item.getTransactionId());
+        }
+        ExecutionContext context = execution.getExecutionContext();
+        context.putString(PENDING_OBJECT_KEY_ENTRY, objectKey);
+        context.putString(PENDING_IDENTIFIERS_ENTRY, identifiers.toString());
+    }
+
+    /**
+     * Clears the outbox entry once the object it described exists.
+     *
+     * <p>Called from the post-commit publication, which runs <em>after</em> the framework has persisted the
+     * context - so the cleared state reaches the database at the next chunk's commit, not this one's. That
+     * window is deliberate and harmless: a process that dies inside it restarts with an entry whose object
+     * already exists, and the reconciliation rewrites the same deterministic key with the same bytes. An
+     * idempotent repeat is the correct outcome of an ambiguous outcome.
+     *
+     * @param execution the step whose context is the outbox
+     */
+    private void clearPendingEmission(StepExecution execution) {
+        ExecutionContext context = execution.getExecutionContext();
+        context.remove(PENDING_OBJECT_KEY_ENTRY);
+        context.remove(PENDING_IDENTIFIERS_ENTRY);
+    }
+
+    /**
+     * Settles an outbox entry left by an earlier attempt, before this attempt writes anything.
+     *
+     * <p><strong>This is the reconciliation half of finding M-07.</strong> An entry here means the previous
+     * attempt committed rows and then failed to emit their object. The rows are durable and cannot be taken
+     * back, so the only sound repair is to finish the emission - and to build it from <em>the rows themselves</em>
+     * rather than from anything the failed attempt left in memory, so that what the store ends up holding is
+     * what the database actually holds.
+     *
+     * <p><b>A missing row is the one case where the entry must NOT be honoured.</b> If any identifier the entry
+     * names is absent, the chunk's rows were rolled back after all, and uploading would create an object
+     * describing transactions that do not exist - precisely the orphan the post-commit ordering exists to
+     * prevent. The entry is then discarded with a warning rather than acted on.
+     *
+     * <p>Idempotent: the key is deterministic and the payload is a pure function of the rows, so settling an
+     * entry whose object already exists rewrites identical bytes.
+     *
+     * @param execution the step whose restored context may carry an entry
+     */
+    private void settlePendingEmission(StepExecution execution) {
+        if (execution == null) {
+            // A null execution is accepted here and reported at write time by requireStepContext, which is
+            // this class's existing contract: the listener callback must not be the place a missing wiring
+            // surfaces, because the message it could give names far less than the write-time one does.
+            return;
+        }
+        ExecutionContext context = execution.getExecutionContext();
+        String objectKey = context.getString(PENDING_OBJECT_KEY_ENTRY, "");
+        String identifiers = context.getString(PENDING_IDENTIFIERS_ENTRY, "");
+        if (objectKey.isBlank() || identifiers.isBlank()) {
+            return;
+        }
+
+        List<String> ordered = List.of(identifiers.split(PENDING_IDENTIFIER_SEPARATOR));
+        List<Transaction> committed = new ArrayList<>(ordered.size());
+        for (String identifier : ordered) {
+            Transaction row = transactionRepository.findById(identifier).orElse(null);
+            if (row == null) {
+                LOG.warn("{} found an outstanding emission for {} naming {} transaction(s), but at least one"
+                                + " of them is not in the relation, so the chunk was rolled back after all;"
+                                + " the entry is discarded rather than emitted, because an object describing"
+                                + " rows that do not exist is the very orphan the post-commit ordering"
+                                + " prevents",
+                        LOGICAL_FILE, objectKey, Integer.valueOf(ordered.size()));
+                clearPendingEmission(execution);
+                return;
+            }
+            committed.add(row);
+        }
+
+        byte[] payload = composePayload(committed);
+        ObjectMetadata metadata = ObjectMetadata.builder()
+                .contentType(OBJECT_CONTENT_TYPE)
+                .contentLength(Long.valueOf(payload.length))
+                .build();
+        try {
+            objectStorage.upload(outputBucket, objectKey, new ByteArrayInputStream(payload), metadata);
+        } catch (RuntimeException cause) {
+            LOG.error(WRITE_FAILURE_TEXT);
+            displayIoStatus(OBJECT_STORE_IO_STATUS);
+            throw abendProgram(OBJECT_STORE_IO_STATUS, objectKey, cause);
+        }
+        publishObjectKey(execution, objectKey);
+        clearPendingEmission(execution);
+        LOG.info("{} settled an outstanding emission from a previous attempt: {} record(s) re-derived from the"
+                        + " committed rows and written to {}, so the relation and the mirror agree again",
+                LOGICAL_FILE, Integer.valueOf(committed.size()), objectKey);
     }
 
     /**
@@ -2052,35 +2208,35 @@ public class TransactionWriter implements ItemWriter<Transaction>, StepExecution
     }
 
     /**
-     * Validates the configured key prefix and strips any trailing separator from it.
+     * Validates the configured key prefix against the one shared grammar.
      *
      * <p>{@link #KEY_TEMPLATE} writes the separator itself, so a prefix that arrives already ending in one
      * would compose a key carrying an empty segment - {@code base//0000...} rather than {@code base/0000...}.
      * That is not a cosmetic difference. Object storage has no directories, so the key is the whole name: the
      * consuming reader validates that the generation key it is handed names exactly one object inside the
      * configured namespace and refuses a {@code //} segment, so a doubled separator here is a key the reader
-     * is right to reject. The two sides therefore agree by construction: whichever form the prefix is
-     * supplied in, the composed key is identical.
+     * is right to reject.
      *
-     * <p>The reader normalises in the opposite direction - it <em>appends</em> exactly one separator, because
-     * it matches the prefix as a plain string and needs the boundary to keep {@code gdg/transact-bkup} from
-     * also matching {@code gdg/transact-bkup-shadow}. Both rules exist for the same reason and neither
-     * doubles: one owns the boundary in a match, the other owns it in a composition.
+     * <p><strong>Finding m-02, severity Minor, RESOLVED.</strong> This method used to <em>strip</em> a
+     * trailing separator so that either form composed the same key, and it checked nothing else. The shared
+     * grammar of {@link GenerationPrefixContract#requireRelativePrefix(String, String)} refuses the trailing
+     * form instead, which reaches the same guarantee by a stronger route: there is now exactly one accepted
+     * spelling rather than two spellings quietly folded into one. The declared value is {@code transact},
+     * which satisfies the grammar, so no shipped configuration changes behaviour.
+     *
+     * <p>The consuming reader still needs the opposite form - it <em>appends</em> exactly one separator,
+     * because it matches the prefix as a plain string and needs the boundary to keep
+     * {@code gdg/transact-bkup} from also matching {@code gdg/transact-bkup-shadow}. That form is now derived
+     * from the validated one by {@link GenerationPrefixContract#listingPrefixOf(String)}, so both rules come
+     * from one place: one owns the boundary in a match, the other owns it in a composition.
      *
      * @param configured the configured prefix
-     * @return the prefix with no trailing separator, never {@code null} and never blank
-     * @throws IllegalArgumentException if the value is absent, blank, or nothing but separators
+     * @return the prefix unchanged, once it satisfies the shared grammar
+     * @throws IllegalArgumentException if the value is absent, blank or malformed
      */
     private static String requireObjectPrefix(String configured) {
-        String value = requireConfigured(configured, "carddemo.aws.s3.transaction-object-prefix").strip();
-        while (value.endsWith(KEY_SEPARATOR)) {
-            value = value.substring(0, value.length() - KEY_SEPARATOR.length());
-        }
-        if (value.isEmpty()) {
-            throw new IllegalArgumentException("carddemo.aws.s3.transaction-object-prefix must name a "
-                    + "prefix, but was only separators");
-        }
-        return value;
+        return GenerationPrefixContract.requireRelativePrefix(
+                configured, "carddemo.aws.s3.transaction-object-prefix");
     }
 
     /**

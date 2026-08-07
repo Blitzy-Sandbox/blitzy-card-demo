@@ -142,7 +142,9 @@
  *       <strong>build failure</strong>.</li>
  *   <li><strong>Run.</strong> These are Spring beans and are never invoked directly; a controller or a batch
  *       step calls them. A manual exercise needs the compose stack up - {@code docker compose up -d} - and the
- *       environment loaded with {@code set -a; . ./.env; set +a}, because {@code JWT_SIGNING_KEY} has no default and
+ *       environment scoped to that one command rather than exported into the shell:
+ *       {@code ( set -a; . ./.env; set +a; <command> )}. The parentheses confine the values to the subshell
+ *       instead of leaving every later child inheriting them. {@code JWT_SIGNING_KEY} has no default and
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service}.
  *       {@code MainMenuServiceTest}, {@code MainMenuServiceCoverageTest}, {@code AdminMenuServiceTest},

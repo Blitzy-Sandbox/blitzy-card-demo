@@ -55,6 +55,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -79,6 +80,8 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cardemo.batch.processors.TransactionCombineProcessor;
+import com.cardemo.batch.jobs.CombineTransactionsJob;
+import com.cardemo.batch.readers.CombinedTransactionReader;
 import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.repository.TransactionRepository;
@@ -345,6 +348,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
     private final String publishedCountContextEntry = "carddemo.transact.combined.record.count";
 
     /** Bean name of {@code STEP05R} - {@code app/jcl/COMBTRAN.jcl:L22}. */
+    private final String archiveStepName = "combineTransactionsArchiveStep";
     private final String sortStepName = "combineTransactionsSortStep";
 
     /** Bean name of {@code STEP10} - {@code app/jcl/COMBTRAN.jcl:L41}. */
@@ -387,10 +391,27 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
      */
     private final String interestDateParameter = "2022071800";
 
-    /** Positive zoned-decimal overpunch alphabet: index is the final digit, so {@code '{'} is {@code +0}. */
+    /**
+     * Positive zoned-decimal overpunch alphabet: index is the final digit, so <code>'&#123;'</code> is
+     * {@code +0}.
+     *
+     * <p>Both brace characters are written as HTML entities inside a plain <code>code</code> element rather
+     * than inside an inline code tag, and that is not a stylistic choice. Javadoc counts braces while parsing
+     * an inline tag, so a literal opening brace inside one leaves the tag unterminated and the rest of the
+     * comment is swallowed; an entity is not expanded inside an inline code tag either, so escaping it there
+     * does not help. The character therefore has to leave the inline tag altogether to be both well formed
+     * and readable. An earlier revision of this comment described the hazard while still committing it.
+     */
     private final String positiveOverpunch = "{ABCDEFGHI";
 
-    /** Negative zoned-decimal overpunch alphabet: {@code '}'} is {@code -0} and {@code 'R'} is {@code -9}. */
+    /**
+     * Negative zoned-decimal overpunch alphabet: <code>'&#125;'</code> is {@code -0} and {@code 'R'} is
+     * {@code -9}.
+     *
+     * <p>The closing brace is an entity for the reason above, inverted: inside an inline code tag it would
+     * terminate the tag early, so the tag would end at the brace and the remaining quote would render as
+     * ordinary text.
+     */
     private final String negativeOverpunch = "}JKLMNOPQR";
 
     /** Scale of {@code TRAN-AMT PIC S9(09)V99}, matching the {@code NUMERIC(11,2)} column. */
@@ -538,6 +559,104 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
     private final String shellMetacharacters = "; id && $(id) | `id` > /nowhere";
 
     // =================================================================================================
+    // app/jcl/TRANBKP.jcl - the archive-and-reset that makes the stream repeatable (finding C-06)
+    // =================================================================================================
+
+    /**
+     * The instructed archive unloads the master, empties it, and its generation becomes the first leg.
+     *
+     * <p>Purpose: assert finding C-06 end to end, against real object storage and a real relation. The
+     * defect was that the pipeline ran {@code app/jcl/COMBTRAN.jcl} without first running
+     * {@code app/jcl/TRANBKP.jcl}, so {@code :L48} loaded the merged set into a master that still held every
+     * row the first leg had just supplied. Every identifier collided, the load refused with return code 8,
+     * and <b>the daily stream could not be run a second time</b>.
+     *
+     * <p>Shape of the case, which is a two-run case because repeatability cannot be observed in one run.
+     * Run one is standalone and simply populates the master, exactly as the previous revision left it. Run
+     * two carries {@code archiveAndResetMaster}, and the assertions are that it (a) wrote a
+     * {@code TRANSACT.BKUP} generation holding precisely the rows run one had loaded, (b) emptied the
+     * relation, and (c) resolved <em>that</em> generation as its own {@code SORTIN} first leg rather than the
+     * stale seeded one - which is what {@code app/jcl/TRANBKP.jcl:L23-L33} then {@code :L37-L67} do, in that
+     * order. Run two therefore completes where the previous revision failed with a duplicate identifier.
+     *
+     * <p>Run two's {@code SYSTRAN} generation carries identifiers disjoint from run one's, because the
+     * pipeline's interest stage catalogues a fresh generation on every run
+     * ({@code app/jcl/INTCALC.jcl:L37-L41} allocates a new one) and re-reading run one's would be a genuine
+     * duplicate rather than a defect in the archive.
+     */
+    @Test
+    @DisplayName("2. app/jcl/TRANBKP.jcl:L23-L33 then :L37-L67 - the instructed archive unloads the master, "
+            + "empties it, and its own generation becomes the SORTIN first leg, so the stream repeats")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void theInstructedArchiveEmptiesTheMasterAndBecomesTheFirstLeg() {
+        // ---- run one: standalone, no archive instruction. This is what fills the master.
+        final List<String> seededBackup = seedBackupGeneration(firstFixtureRecords(3));
+        final List<String> firstSystran = seedSystranGeneration(interestRecords(firstFixtureRecords(3), 2));
+        final JobExecution first = launchCombine();
+        assertCombineCompleted(first);
+
+        final List<String> loadedByRunOne = identifiersOf(combinedRecords(first));
+        assertThat(transactionRepository.count())
+                .as("run one loads both legs into an empty master, which is the state the archive must "
+                        + "then deal with")
+                .isEqualTo(seededBackup.size() + firstSystran.size());
+
+        // ---- run two: a fresh interest generation, and the archive instruction the orchestrator gives.
+        final List<String> secondSystran = new ArrayList<>();
+        final List<String> templates = firstFixtureRecords(2);
+        for (int index = 0; index < templates.size(); index++) {
+            secondSystran.add(withIdentifier(
+                    templates.get(index), interestIdentifier(sixDigitSuffix(400 + index))));
+        }
+        final String secondSystranKey =
+                generationKey(systranPrefix, "0000000000000000009", systranObjectName);
+        putGeneration(secondSystranKey, secondSystran);
+
+        final JobExecution second = launchJob(combineTransactionsJob, runIdParameters(Map.of(
+                CombineTransactionsJob.JOB_PARAMETER_ARCHIVE_MASTER, "true",
+                CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER,
+                generationPrefixKey(systranPrefix, "0000000000000000009"))));
+
+        assertThat(second.getAllFailureExceptions())
+                .as("this is the run that used to fail: without app/jcl/TRANBKP.jcl the load hit a repeated "
+                        + "identifier on every row run one had already loaded")
+                .isEmpty();
+        assertCombineCompleted(second);
+
+        // (a) the archive holds exactly what run one had loaded, at the declared 350-byte geometry.
+        final String archivedKey = second.getExecutionContext()
+                .getString(CombineTransactionsJob.BACKUP_OBJECT_KEY_CONTEXT_ENTRY, null);
+        assertThat(archivedKey)
+                .as("app/jcl/TRANBKP.jcl:L33 catalogues TRANSACT.BKUP(+1), so the run must publish the "
+                        + "concrete key it created")
+                .isNotNull()
+                .startsWith(backupPrefix);
+        assertThat(second.getExecutionContext()
+                        .getLong(CombineTransactionsJob.BACKUP_RECORD_COUNT_CONTEXT_ENTRY, -1L))
+                .as("and the count travels with it")
+                .isEqualTo(loadedByRunOne.size());
+        assertThat(identifiersOf(fixedWidthRecords(generationPayload(archivedKey))))
+                .as("app/jcl/TRANBKP.jcl:L23-L33 is a complete unload of the cluster: every row the master "
+                        + "held, and nothing else")
+                .containsExactlyElementsOf(loadedByRunOne);
+
+        // (b) and (c) the master ends holding only what run two combined - which proves both that the
+        // archive emptied it and that the first leg was the archive rather than the stale seeded generation.
+        final List<String> combinedByRunTwo = identifiersOf(combinedRecords(second));
+        final List<String> expected = new ArrayList<>(loadedByRunOne);
+        expected.addAll(identifiersOf(secondSystran));
+        Collections.sort(expected);
+        assertThat(combinedByRunTwo)
+                .as("the first leg is the archive this run wrote, not the seeded generation: the merged set "
+                        + "is run one's rows plus run two's interest records, ascending by TRAN-ID")
+                .isEqualTo(expected);
+        assertThat(transactionRepository.count())
+                .as("app/jcl/COMBTRAN.jcl:L48 loaded into an EMPTY target, so the master now holds the "
+                        + "merged set exactly once - the property that makes the stream repeatable")
+                .isEqualTo(expected.size());
+    }
+
+    // =================================================================================================
     // STEP TOPOLOGY - app/jcl/COMBTRAN.jcl:L22 and :L41, and the absence of COND between them
     // =================================================================================================
 
@@ -548,16 +667,23 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
      * {@code :L22} and {@code //STEP10 EXEC PGM=IDCAMS} at {@code :L41} - and <strong>neither carries a
      * {@code COND} parameter</strong>. Absent {@code COND} a step runs regardless of what preceded it, so
      * the correct translation has no gate between the two and this test asserts the absence rather than
-     * inventing a gate to assert. What it checks is therefore deliberately narrow: two step executions, in
-     * source order, both completed, and the {@code (+1)} handoff present on the job execution context.
+     * inventing a gate to assert.
+     *
+     * <p><b>Three step executions since finding C-06, and the third is not invented work.</b> The archive
+     * step reproduces {@code app/jcl/TRANBKP.jcl}, the separate member that precedes this one in the
+     * operator's stream and leaves {@code REPRO} an empty target. It is always a step so the topology is one
+     * shape rather than two, but its <em>work</em> is gated: this case launches the job standalone, without
+     * {@code archiveAndResetMaster}, so the step completes as a logged no-operation and the seeded master is
+     * left alone. That is what makes a standalone combine safe, and the case that proves the archive actually
+     * archives is {@code theInstructedArchiveEmptiesTheMasterAndBecomesTheFirstLeg} below.
      *
      * <p>The handoff check is here rather than only in the case that needs it, because every later
      * assertion in this class reads the published key. If the entry name ever changes on the production
      * side, this test says so directly instead of the whole class failing with a null key.
      */
     @Test
-    @DisplayName("1. app/jcl/COMBTRAN.jcl:L22 then :L41 - exactly two steps, in source order, with no COND "
-            + "gate between them, and the (+1) generation handoff published for :L44")
+    @DisplayName("1. app/jcl/TRANBKP.jcl then app/jcl/COMBTRAN.jcl:L22 then :L41 - three steps, in source "
+            + "order, with no COND gate between them, and the (+1) generation handoff published for :L44")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void stepsRunInSourceOrderWithNoGateBetweenThem() {
         final List<String> backup = seedBackupGeneration(firstFixtureRecords(3));
@@ -578,10 +704,11 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
         }
 
         assertThat(names)
-                .as("app/jcl/COMBTRAN.jcl declares two EXEC statements and no more: PGM=SORT at :L22 then "
-                        + "PGM=IDCAMS at :L41. A third step execution would be invented work, and a "
-                        + "different order would invert the (+1) handoff of :L43-L44")
-                .containsExactly(sortStepName, loadStepName);
+                .as("the stream is app/jcl/TRANBKP.jcl then app/jcl/COMBTRAN.jcl's two EXEC statements: "
+                        + "PGM=SORT at :L22 then PGM=IDCAMS at :L41. A fourth step execution would be "
+                        + "invented work, and a different order would either load a non-empty target or "
+                        + "invert the (+1) handoff of :L43-L44")
+                .containsExactly(archiveStepName, sortStepName, loadStepName);
 
         assertThat(execution.getExecutionContext().containsKey(publishedKeyContextEntry))
                 .as("the sort step must publish the concrete key it created under '%s'. :L44 re-references "
@@ -1013,7 +1140,7 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
      *
      * <p>The mirror boundary. The distinction that matters is between <em>empty</em> and <em>absent</em>: an
      * empty generation is a real state and is exercised here, and the absent-generation state is exercised by
-     * {@link #anAbsentBackupGenerationPrefixCombinesTheSystranRecordsAlone()} immediately below.
+     * {@link #anAbsentBackupGenerationFailsAllocation()} immediately below.
      *
      * <p>An earlier revision of this class recorded the absent case as <strong>Not available</strong> as a
      * parity claim and declined to test it, on the grounds that a file-unavailable status occurs nowhere in
@@ -1041,33 +1168,35 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
     }
 
     /**
-     * An <em>absent</em> {@code TRANSACT.BKUP} prefix is the clean-environment state, not a failure.
+     * An <em>absent</em> {@code TRANSACT.BKUP} generation fails allocation; it is not an empty leg.
      *
-     * <p>This is the state every first run of the pipeline is in. Nothing in this application produces a
-     * {@code TRANSACT.BKUP} generation before the combine stage: the sole producer is
-     * {@code TransactionReportJob}'s {@code STEP01R} ({@code app/proc/TRANREPT.prc:L21}), which runs in
-     * <strong>stage 4</strong>, downstream of the stage 3 combine that reads the base. The mainframe's
-     * producer for that leg is {@code app/jcl/TRANBKP.jcl}, a separate operator member with no Java analogue
-     * by recorded decision. So on a clean environment the first leg is absent <em>by construction</em>.
+     * <p>{@code app/jcl/COMBTRAN.jcl:L23-L26} allocates both halves of the concatenated {@code SORTIN} with
+     * {@code DISP=SHR}, and {@code DISP=SHR} on a relative generation reference fails <strong>allocation</strong>
+     * - before {@code SORT} receives control - when the generation is not catalogued. The absence of a
+     * {@code COND=} parameter on {@code :L22} or {@code :L41} says nothing about it: {@code COND} gates step
+     * <em>execution</em> on a preceding return code, while allocation happens first and unconditionally.
      *
-     * <p>An earlier revision reported this as file status {@code '35'} from
-     * {@code CombinedTransactionReader}, which made the authored five-stage topology
-     * {@code POSTTRAN -> INTCALC -> COMBTRAN -> (CREASTMT || TRANREPT)} unsatisfiable: the pipeline abended in
-     * stage 3 and stages 4's two branches never received a {@code StepExecution} at all. Nothing in the
-     * corpus justified it - {@code app/jcl/COMBTRAN.jcl} carries no {@code COND=} on either {@code :L22} or
-     * {@code :L41}, so the member asserts no precondition on either DD - and the same reader already treated
-     * an absent {@code SYSTRAN} generation as an ordinary empty read. The two legs are now symmetric.
+     * <p><strong>Two earlier readings of this case are withdrawn.</strong> The first reported an absent
+     * {@code TRANSACT.BKUP} as {@code '35'} while treating an absent {@code SYSTRAN} generation as an empty
+     * read - an asymmetry the member does not support. The second replaced it with symmetric <em>success</em>,
+     * because the pipeline's own stage ordering places the sole {@code TRANSACT.BKUP} producer
+     * ({@code TransactionReportJob}'s {@code STEP01R}, {@code app/proc/TRANREPT.prc:L21}) downstream of the
+     * combine. That inverted the dependency: a topology that cannot satisfy a precondition is a topology to
+     * state honestly, and reporting an unsatisfied input as a {@code COMPLETED} run with a record count of
+     * zero is the one outcome an operator cannot distinguish from a genuinely empty input. On the mainframe
+     * the producer is the preceding daily cycle, which is exactly why {@code :L25} reads {@code (0)} and not
+     * {@code (+1)}.
      *
      * <p>The precondition is asserted rather than assumed: the case proves the prefix holds no object at all,
      * so that a future change to per-test bucket cleanup cannot quietly turn this into a re-run of the
      * empty-object case above.
      */
     @Test
-    @DisplayName("9a. an ABSENT TRANSACT.BKUP prefix is the clean-environment state and combines the "
-            + "SYSTRAN(0) records alone, rather than abending on file status 35")
+    @DisplayName("9a. an ABSENT TRANSACT.BKUP generation fails the step on file status 35, because DISP=SHR "
+            + "at app/jcl/COMBTRAN.jcl:L25 fails allocation rather than reading nothing")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    void anAbsentBackupGenerationPrefixCombinesTheSystranRecordsAlone() {
-        final List<String> systran = seedSystranGeneration(interestRecords(firstFixtureRecords(3), 3));
+    void anAbsentBackupGenerationFailsAllocation() {
+        seedSystranGeneration(interestRecords(firstFixtureRecords(3), 3));
 
         assertThat(s3Client.listObjectsV2(ListObjectsV2Request.builder()
                         .bucket(batchOutputBucket)
@@ -1078,14 +1207,19 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
                 .isEmpty();
 
         final JobExecution execution = launchCombine();
-        assertCombineCompleted(execution);
 
-        assertThat(identifiersOf(combinedRecords(execution)))
-                .as("the absent first leg contributes nothing and the second is combined on its own")
-                .isEqualTo(identifiersOf(systran));
+        assertThat(execution.getStatus())
+                .as("an unallocatable DISP=SHR generation ends the step failed, never completed")
+                .isEqualTo(org.springframework.batch.core.BatchStatus.FAILED);
+        assertThat(execution.getAllFailureExceptions())
+                .as("the failure names the dataset, the DD ordinal and the remediation")
+                .isNotEmpty();
+        assertThat(execution.getAllFailureExceptions().get(0).getMessage())
+                .contains("TRANSACT.BKUP")
+                .contains("DISP=SHR");
         assertThat(transactionRepository.count())
-                .as("and every one of its records is loaded")
-                .isEqualTo(systran.size());
+                .as("and nothing is loaded from a run whose input could not be allocated")
+                .isZero();
     }
 
     /**
@@ -1495,6 +1629,114 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
     }
 
     /**
+     * The pinned generation key outranks a newer one, which is the whole of the {@code SYSTRAN(0)} race.
+     *
+     * <p>Purpose: assert finding C-04's resolution end to end against a real object store. Inputs: two
+     * {@code SYSTRAN} generations, an older one that a pipeline's stage 2 would have catalogued and a newer
+     * one standing in for a concurrent interest run, plus the older key handed over as a job parameter.
+     * Output: the combined generation. Side effects: the load commits and is undone by the harness.
+     *
+     * <p>{@code SYSTRAN(0)} is a relative reference, and on the mainframe the catalogue resolves it
+     * atomically when the dataset is opened, so a step reads the generation its predecessor catalogued. An
+     * object store has no catalogue, so the reader resolved the equivalent by listing and taking the greatest
+     * key - which is latest-wins. A second interest run catalogued between stage 2 and stage 3 therefore
+     * redirected stage 3 onto a generation its own pipeline never produced, silently, because reading the
+     * newest generation is exactly what the reader had been asked to do.
+     *
+     * <p>Error modes: a reader that ignored the parameter reads the newer generation and this fails on the
+     * identifiers; a reader that took the parameter but did not validate it would be caught by the sibling
+     * case below.
+     */
+    @Test
+    @DisplayName("13. a pinned SYSTRAN(0) key is read even though a newer generation exists (C-04)")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void aPinnedGenerationKeyOutranksANewerOne() {
+        final List<String> pinnedRecords = seedSystranGeneration(interestRecords(firstFixtureRecords(3), 3));
+        putGeneration(backupGenerationKey(), List.of());
+
+        // A newer generation, in the job's own key shape so that a latest-wins resolution would find
+        // something indistinguishable from a genuine successor rather than something it would reject.
+        // Two records rather than the pinned generation's three, so which generation was read is decided by
+        // the identifier set rather than by anything incidental.
+        final String newerKey = generationKey(systranPrefix, "0000000000000000009", systranObjectName);
+        putGeneration(newerKey, interestRecords(firstFixtureRecords(2), 2));
+
+        final JobExecution execution = launchJob(combineTransactionsJob, runIdParameters(Map.of(
+                CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER,
+                generationPrefixKey(systranPrefix, currentGenerationSegment))));
+        assertCombineCompleted(execution);
+
+        assertThat(identifiersOf(combinedRecords(execution)))
+                .as("the generation the caller pinned, not the newest one on the store. A concurrent "
+                        + "interest run must not be able to redirect this stage")
+                .isEqualTo(identifiersOf(pinnedRecords));
+        assertThat(transactionRepository.count())
+                .as("and only those records were loaded")
+                .isEqualTo(pinnedRecords.size());
+    }
+
+    /**
+     * An instructed absence suppresses the listing rather than falling back to it.
+     *
+     * <p>Purpose: assert the second half of finding C-04. A pipeline whose interest stage catalogued nothing -
+     * every applicable disclosure rate was zero, per {@code app/cbl/CBACT04C.cbl:L214-L217} - must not have
+     * its combine stage read the <em>previous</em> run's generation, which is what resolving the relative
+     * reference would do. Inputs: a generation on the store, and the absent marker handed over instead of a
+     * key. Output: a combined generation holding nothing from that source.
+     *
+     * <p>Error modes: a reader that treated the marker as "no instruction" falls back to the listing, finds
+     * the seeded generation and fails this assertion.
+     */
+    @Test
+    @DisplayName("14. an instructed absence reads no SYSTRAN generation at all, never the previous one")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void anInstructedAbsenceDoesNotFallBackToTheNewestGeneration() {
+        final List<String> backup = seedBackupGeneration(firstFixtureRecords(4));
+        // Present on the store, and deliberately NOT to be read.
+        seedSystranGeneration(interestRecords(firstFixtureRecords(3), 3));
+
+        final JobExecution execution = launchJob(combineTransactionsJob, runIdParameters(Map.of(
+                CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER, "<absent>")));
+        assertCombineCompleted(execution);
+
+        assertThat(identifiersOf(combinedRecords(execution)))
+                .as("only the first leg: the second was instructed to be absent, and a fallback to the "
+                        + "listing would have loaded interest transactions this run did not generate")
+                .isEqualTo(identifiersOf(backup));
+        assertThat(transactionRepository.count()).isEqualTo(backup.size());
+    }
+
+    /**
+     * A pinned key outside the configured generation prefix is refused rather than trusted.
+     *
+     * <p>Purpose: the pinned key arrives as a job parameter, which is caller-supplied, so it is validated
+     * against the configured prefix exactly as a listed candidate is. Inputs: a key naming another prefix.
+     * Output: none. Side effects: none; the run fails before loading.
+     *
+     * <p>Error modes: a reader that read whatever key it was given would let a caller redirect the stage onto
+     * an arbitrary object, which is the opposite of the guarantee the pinning exists to provide.
+     */
+    @Test
+    @DisplayName("15. a pinned key outside the generation prefix is refused, not read")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void aPinnedKeyOutsideTheGenerationPrefixIsRefused() {
+        seedBackupGeneration(firstFixtureRecords(2));
+        seedSystranGeneration(interestRecords(firstFixtureRecords(2), 2));
+
+        final JobExecution execution = launchJob(combineTransactionsJob, runIdParameters(Map.of(
+                CombinedTransactionReader.SYSTRAN_GENERATION_JOB_PARAMETER,
+                "somewhere-else/generation=0000000000000000001/SYSTRAN")));
+
+        assertThat(execution.getStatus())
+                .as("a caller-supplied key is untrusted input; failure details: %s",
+                        execution.getAllFailureExceptions())
+                .isEqualTo(BatchStatus.FAILED);
+        assertThat(transactionRepository.count())
+                .as("and nothing was loaded from it")
+                .isZero();
+    }
+
+    /**
      * A key under the combined prefix that sorts above every key the job can produce.
      *
      * <p>It borrows the job's own key shape deliberately, so that an implementation which resolved the
@@ -1518,6 +1760,24 @@ class CombineTransactionsJobTest extends AbstractBatchIntegrationTest {
      */
     private String generationKey(final String prefix, final String generation, final String objectName) {
         return stripTrailingSeparators(prefix) + "/generation=" + generation + "/" + objectName;
+    }
+
+    /**
+     * The GENERATION a key belongs to, which is what the pinning job parameter carries.
+     *
+     * <p>Deliberately not {@link #generationKey(String, String, String)}. The handoff names a generation and
+     * never a single object, because a generation may hold several objects - one per chunk - and
+     * {@code CombinedTransactionReader} resolves a pin by LISTING it, so pinning one object key would either
+     * drop that generation's siblings or, as here, list a prefix that no object sits under and read nothing at
+     * all. {@code BatchPipelineOrchestrator} publishes the same shape on the live handoff, and the reader's own
+     * resolution treats the generation as the first path segment after the base prefix.
+     *
+     * @param prefix the configured base prefix
+     * @param generation the nineteen-digit generation segment
+     * @return the generation prefix, separator-terminated so a listing under it is bounded to that generation
+     */
+    private String generationPrefixKey(final String prefix, final String generation) {
+        return stripTrailingSeparators(prefix) + "/generation=" + generation + "/";
     }
 
     /**

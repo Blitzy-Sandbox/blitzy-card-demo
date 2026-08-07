@@ -50,8 +50,10 @@ import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.dto.StatementTransaction;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.service.shared.FileService;
+import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -584,14 +586,17 @@ class StatementProcessorStreamingTest {
     }
 
     @Nested
-    @DisplayName("H4 - the deviation from the legacy 510-record ceiling is bounded loudly")
+    @DisplayName("H4 - the legacy 510-record ceiling is removed and nothing is authored in its place")
     class CapacityDeviation {
 
         @Test
-        @DisplayName("the per-group ceiling replaces the run-wide one and names the source table")
-        void perGroupCeilingReplacesRunWideOne() {
-            // The constant is public so the deviation is inspectable rather than implicit.
-            assertThat(StatementProcessor.MAX_TRANSACTIONS_PER_CARD_GROUP).isPositive();
+        @DisplayName("no ceiling remains, and the legacy capacity is still recorded as constants")
+        void noCeilingRemainsAndTheLegacyCapacityIsRecorded() {
+            // Finding BAT-002. A public MAX_TRANSACTIONS_PER_CARD_GROUP stood here and was asserted positive;
+            // it refused a run at an authored threshold app/cbl/CBSTM03A.CBL does not have. The legacy figures
+            // stay, because they record a historical capacity rather than enforce one.
+            assertThat(Arrays.stream(StatementProcessor.class.getDeclaredFields()).map(Field::getName))
+                    .doesNotContain("MAX_TRANSACTIONS_PER_CARD_GROUP", "MAX_TRANSACTIONS_PER_RUN");
             assertThat(StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_RUN)
                     .isEqualTo(StatementTransaction.LEGACY_MAX_CARDS_PER_RUN
                             * StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_CARD);

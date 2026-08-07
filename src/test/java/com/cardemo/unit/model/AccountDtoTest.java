@@ -97,7 +97,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <p>This class is a pure-JVM unit test: no container, no Spring context, no database, no cloud endpoint
  * and no network. Run the tier with {@code ./mvnw -B -ntp -Ddependency-check.skip=true test}, or the whole
- * gate with {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. Collection is by
+ * gate with {@code ./mvnw -B -ntp clean verify}. Collection is by
  * <strong>Surefire</strong>, which includes {@code **}{@code /*Test.java} and excludes the
  * {@code integration} and {@code e2e} trees, so this file has to stay at
  * {@code src/test/java/com/cardemo/unit/model/}: moved elsewhere it would be claimed by neither Surefire

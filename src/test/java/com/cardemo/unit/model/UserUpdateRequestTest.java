@@ -155,8 +155,10 @@ import org.junit.jupiter.api.Nested;
  * {@code -Xlint:all}, {@code -Werror} and {@code failOnWarning}, and those settings reach test compilation
  * as well as main compilation. {@code maven-enforcer-plugin} 3.5.0 asserts the toolchain, and JaCoCo applies
  * a line-coverage floor at {@code verify}. No dependency is added by this class: JUnit Jupiter 5.12.2,
- * AssertJ 3.27.7, Jackson 2.19.4 and Hibernate Validator 8.0.3.Final are already on the test classpath
- * through the pinned starters.</p>
+ * AssertJ 3.27.7, Jackson <strong>2.22.1</strong> and Hibernate Validator <strong>8.0.5.Final</strong> are
+ * already on the test classpath through the pinned starters - both are forward overrides declared in
+ * {@code pom.xml}, and an earlier revision of this sentence published the parent-managed 2.19.4 and
+ * 8.0.3.Final instead. Re-derive with {@code ./mvnw -B -ntp dependency:list} rather than quoting either.</p>
  *
  * <h2>Key configurations and defaults</h2>
  *

@@ -42,9 +42,15 @@ import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.security.InvalidKeyException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
@@ -59,6 +65,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Component;
 
+import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
@@ -204,7 +211,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * this reader or its job.
  *
  * <p>Build and static gates, from the repository root:
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The compiler runs at
+ * {@code ./mvnw -B -ntp clean verify}. The compiler runs at
  * {@code release 25} with {@code -Xlint:all -Werror} and {@code failOnWarning}, and the
  * documentation gate runs {@code javadoc-no-fork} with {@code doclint=all},
  * {@code failOnWarnings=true} and {@code show=private}, so every private member of this file is
@@ -249,6 +256,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       profile.</li>
  *   <li>The charset is fixed in code at {@code ISO-8859-1} and passed explicitly at every decode
  *       site; no platform default, locale or time zone is ever consulted.</li>
+ *   <li>{@code carddemo.security.jwt.signing-key} - the material the input object's authenticity key is
+ *       derived from. <b>No default anywhere in this repository</b>, and required non-blank only when the
+ *       {@code fixed-width} path is selected. See the authenticity section below.</li>
  *   <li>Chunk size and the step's commit interval come from {@code com.cardemo.config.BatchConfig}
  *       and {@code carddemo.batch.chunk-size}; they are not this class's to set.</li>
  *   <li>{@code spring.jpa.hibernate.ddl-auto: validate} and {@code spring.jpa.open-in-view: false}
@@ -270,6 +280,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       code {@value com.cardemo.exception.FatalProcessingException#BATCH_RETURN_CODE}.</li>
  *   <li><b>A row length other than 350</b> throws {@link DataIntegrityException} naming the row
  *       number, the observed length and the expected 350 - never the record content.</li>
+ *   <li><b>A record separator inside the input object</b> throws {@link DataIntegrityException} naming
+ *       the row number and the separator byte. The {@code fixed-width} path is undelimited, so an
+ *       object whose length is not a whole multiple of 350 - a line-terminated file uploaded by
+ *       mistake, or a transfer truncated part-way - is refused rather than read as though every record
+ *       after the stray byte were still aligned. Remedy: upload the concatenated 350-byte images, or
+ *       use the {@code repository} path, which is what ingests the line-terminated ASCII fixture.</li>
  *   <li><b>An unrecognised terminal overpunch character</b> in bytes 133-143 throws
  *       {@link DataIntegrityException} naming the row number and the offending byte position, never
  *       the record content.</li>
@@ -320,6 +336,31 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code 'ERROR READING DALYTRAN FILE'} at {@code :L363} and
  *       {@code 'ERROR CLOSING DALYTRAN FILE'} at {@code :L593} both carry.</li>
  * </ol>
+ *
+ * <h2>Authenticity of the input object, and the producer contract</h2>
+ *
+ * <p><b>Finding M-11, severity Major, RESOLVED.</b> On the {@code fixed-width} path this class reads an
+ * object that something outside this application wrote. Parsing it correctly proves it is well formed, not
+ * that it is ours: the bucket lives in an emulator whose community edition was <em>measured</em> to enforce no
+ * authorisation at all - the evidence is recorded on the {@code localstack} service in
+ * {@code docker-compose.yml} - so any principal able to reach the emulator port could replace this object
+ * with 350-byte records that parse perfectly and post as real transactions. Network containment narrows who
+ * can reach the port; it cannot tell one reachable principal from another.
+ *
+ * <p>The object is therefore refused unless it carries a keyed authenticity envelope over its own manifest
+ * <em>and</em> its bytes match the digest that manifest vouches for. Both halves are necessary: the code alone
+ * would accept a valid manifest copied onto a different body of the same length, and a digest alone would
+ * accept a body and manifest that an attacker wrote together. There is <b>no unverified mode</b> - a control
+ * that can be switched off by omitting configuration is a control that will be off - and the check runs
+ * before the first record is parsed, because verifying while streaming would authenticate the tail only after
+ * the head had already been posted.
+ *
+ * <p>The full producer contract, including the six-line canonical manifest, the three metadata members and
+ * the two-step key derivation, is documented on {@link InputObjectEnvelope}. It is stated there in full and
+ * kept executable through {@link InputObjectEnvelope#sign(String, String, long, String, String, String)},
+ * because the producer of this object is outside this repository and a contract it cannot compute is not a
+ * contract. The {@code repository} path authenticates nothing and needs no key, because nothing external is
+ * read there.
  *
  * <h2>Log hygiene: what this class will not name</h2>
  *
@@ -435,6 +476,38 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
 
     /** The property that names the input bucket, declared once in {@code application.yml}. */
     private static final String PROPERTY_INPUT_BUCKET = "carddemo.aws.s3.batch-input-bucket";
+
+    /**
+     * The property holding the application signing key, from which the object-authenticity key is derived.
+     *
+     * <p>The same key the token layer uses, and deliberately so: it is mandatory in all four profiles,
+     * environment-indirected with no committed default anywhere in this repository, and already refused at
+     * startup when it is too short. A separate secret for this control would be one more thing an operator
+     * could leave unset, and a control that is off when unconfigured is not a control. Domain separation is
+     * achieved by <em>deriving</em> a single-purpose key from it - see
+     * {@link InputObjectEnvelope#KEY_DERIVATION_LABEL} - so an object signature can never be replayed as a
+     * token and a token can never be replayed as an object signature.
+     */
+    private static final String PROPERTY_SIGNING_KEY = "carddemo.security.jwt.signing-key";
+
+    /**
+     * The abend reason of an authenticity refusal, {@code ABEND-REASON PIC X(50)} of
+     * {@code app/cpy/CSMSG02Y.cpy} being fifty characters wide.
+     *
+     * <p>Additive: the source has no counterpart, because a z/OS dataset was reachable only through the
+     * catalogue and RACF and could not be replaced by an arbitrary principal. It is one closed literal so that
+     * a refusal is greppable and so that no rejection reveals which of the checks it failed.
+     */
+    private static final String REASON_INPUT_NOT_AUTHENTIC = "DALYTRAN INPUT NOT AUTHENTIC";
+
+    /**
+     * Bytes per read while measuring the content digest.
+     *
+     * <p>Sixteen kibibytes: large enough that a 105,300-byte fixture is seven reads rather than three hundred,
+     * small enough that the buffer is bounded and independent of the object's size. The buffer holds no content
+     * after the pass, so digesting a large object costs a linear read and no retained memory.
+     */
+    private static final int DIGEST_BUFFER_BYTES = 16 * 1024;
 
     /** The environment variable behind {@link #PROPERTY_INPUT_BUCKET}, named in its failure message. */
     private static final String ENV_INPUT_BUCKET = "CARDDEMO_S3_BATCH_INPUT_BUCKET";
@@ -617,9 +690,10 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     /**
      * Buffer size for the character stream on the {@code fixed-width} path, in characters.
      * <p>
-     * Sized to hold whole records: 32 records of 350 characters plus their terminators. It bounds heap
-     * use independently of the object size, which is what keeps the read streaming rather than
-     * materialising.
+     * Sized to hold whole records with one character of slack each, which is the look-ahead
+     * {@link #rejectRecordSeparator()} needs to inspect the character after a record without a further
+     * physical read. It bounds heap use independently of the object size, which is what keeps the read
+     * streaming rather than materialising.
      */
     private static final int STREAM_BUFFER_CHARS = 32 * (RECORD_LENGTH + 1);
 
@@ -660,14 +734,19 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     private static final char DIGIT_ONE = '1';
 
     // ----------------------------------------------------------------------------------------------------
-    // Row terminators. The measured fixture has a single-byte terminator, giving a 351-byte stride, but a
-    // RECFM=F dataset has none at all, so both are handled rather than one being assumed.
+    // Record separators. Named here in order to be REFUSED, not consumed. app/cbl/CBTRN02C.cbl:L66-L69
+    // declares FD DALYTRAN-FILE as a single fixed 350-character group, X(16) plus X(334), over the
+    // ORGANIZATION IS SEQUENTIAL file of :L29-L32, so the record boundary IS the record length and the
+    // dataset carries no delimiter byte at all. On the fixed-width path a separator is therefore a data
+    // defect rather than a row boundary. The line-terminated 351-byte stride of
+    // app/data/ASCII/dailytran.txt belongs to the seed migration and to the test fixture loader, which read
+    // that file as text by name; it is deliberately not a mode of this reader. See rejectRecordSeparator.
     // ----------------------------------------------------------------------------------------------------
 
-    /** Line feed, the terminator every row of the measured fixture carries. */
+    /** Line feed, refused after a complete record image on the {@code fixed-width} path. */
     private static final char LINE_FEED = '\n';
 
-    /** Carriage return, stripped defensively; the fixture contains none. */
+    /** Carriage return, refused after a complete record image on the {@code fixed-width} path. */
     private static final char CARRIAGE_RETURN = '\r';
 
     /** The value {@link java.io.Reader#read()} returns at end of stream. */
@@ -828,6 +907,12 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
 
     /** The object key read on the {@code fixed-width} path; validated at construction. */
     private final String objectKey;
+    /**
+     * The application signing key the object-authenticity key is derived from. Empty on the
+     * {@code repository} path, where no object is read and nothing needs authenticating; never logged and
+     * never placed in an exception message.
+     */
+    private final String signingKey;
 
     // ----------------------------------------------------------------------------------------------------
     // Cursor state. Every field below is the Java counterpart of a WORKING-STORAGE item at
@@ -919,10 +1004,13 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      *     required non-blank only when the {@code fixed-width} path is selected
      * @param objectKey the input object key from {@value #PROPERTY_OBJECT_KEY}, defaulting to
      *     {@value #DEFAULT_OBJECT_KEY}; must not be blank
+     * @param signingKey the application signing key from {@value #PROPERTY_SIGNING_KEY}, which has no
+     *     default anywhere in this repository; the object-authenticity key is derived from it and it is
+     *     required non-blank only when the {@code fixed-width} path is selected
      * @throws NullPointerException if any collaborator is {@code null}
      * @throws IllegalArgumentException if the selector names neither path, if {@code pageSize} is less
      *     than one, if {@code objectKey} is blank, or if the {@code fixed-width} path is selected with a
-     *     blank bucket
+     *     blank bucket or a blank signing key
      */
     public DailyTransactionReader(
             final DailyTransactionRepository dailyTransactionRepository,
@@ -931,7 +1019,8 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
             @Value("${" + PROPERTY_SOURCE + ":repository}") final String configuredSource,
             @Value("${" + PROPERTY_PAGE_SIZE + ":" + DEFAULT_PAGE_SIZE + "}") final int pageSize,
             @Value("${" + PROPERTY_INPUT_BUCKET + ":}") final String inputBucket,
-            @Value("${" + PROPERTY_OBJECT_KEY + ":" + DEFAULT_OBJECT_KEY + "}") final String objectKey) {
+            @Value("${" + PROPERTY_OBJECT_KEY + ":" + DEFAULT_OBJECT_KEY + "}") final String objectKey,
+            @Value("${" + PROPERTY_SIGNING_KEY + ":}") final String signingKey) {
         // Only Objects.requireNonNull and private static validators are called here. Invoking an
         // overridable instance method from the constructor of a non-final class would publish a
         // partially built reference, which -Xlint:all -Werror reports as this-escape; the step scope
@@ -944,6 +1033,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         this.pageSize = requirePositivePageSize(pageSize);
         this.objectKey = requireObjectKey(objectKey);
         this.inputBucket = requireInputBucket(inputBucket, this.inputSource);
+        this.signingKey = requireSigningKey(signingKey, this.inputSource);
     }
 
     // ====================================================================================================
@@ -1368,14 +1458,13 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     }
 
     // ====================================================================================================
-    // Fixed-width stream primitives. RECFM=F semantics: exactly RECORD_LENGTH characters per record, then
-    // an OPTIONAL single terminator. Both shapes are handled because both exist - the measured fixture
-    // app/data/ASCII/dailytran.txt has a one-byte terminator, giving its 351-byte stride, while a true
-    // RECFM=F dataset has none at all - and assuming either one would break on the other.
+    // Fixed-width stream primitives. RECFM=FB semantics and nothing else: exactly RECORD_LENGTH characters
+    // per record, undelimited, so the object length is a whole multiple of RECORD_LENGTH. A separator byte
+    // is refused rather than consumed - see rejectRecordSeparator for why the earlier tolerance was wrong.
     // ====================================================================================================
 
     /**
-     * Reads exactly {@value #RECORD_LENGTH} characters and consumes an optional single terminator.
+     * Reads exactly {@value #RECORD_LENGTH} characters and refuses any separator that follows them.
      * <p>
      * <b>The charset is explicit and applied once, at the stream.</b> The bytes were decoded through
      * {@link #RECORD_CHARSET} by the {@link InputStreamReader} created in
@@ -1384,10 +1473,16 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * {@link String}, which takes no charset at all, so the platform-default {@code new String(byte[])}
      * overload is never reached anywhere in this class.
      * <p>
-     * <b>The terminator is optional and is not assumed to be the platform separator.</b> A lone
-     * {@code \n}, a {@code \r\n} pair and a lone {@code \r} are each consumed, and anything else is
-     * pushed back so the next record starts exactly where it should. That is what lets one
-     * implementation read both the line-terminated ASCII fixture and an unterminated fixed-block image.
+     * <b>The stream is undelimited and a separator byte is a hard failure.</b>
+     * {@code app/cbl/CBTRN02C.cbl:L66-L69} declares the whole {@code DALYTRAN} record as one fixed
+     * {@value #RECORD_LENGTH}-character group, so the object is a whole number of
+     * {@value #RECORD_LENGTH}-byte records and nothing else. See {@link #rejectRecordSeparator()} for why
+     * the optional-terminator tolerance this method used to carry has been withdrawn.
+     * <p>
+     * <b>The exact-multiple rule is enforced by construction rather than by a separate length probe.</b> A
+     * short final read is a geometry failure naming the observed length, and a full read followed by a
+     * separator byte is a delimiter failure naming the byte; between them, an object whose length is not a
+     * whole multiple of {@value #RECORD_LENGTH} cannot be consumed silently.
      * <p>
      * <b>Bounds are checked before anything is used.</b> Zero characters at a record boundary is a clean
      * end of data. Anything from one to {@value #RECORD_LENGTH} minus one is a truncated record, which is
@@ -1397,7 +1492,8 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      *
      * @return the {@value #RECORD_LENGTH}-character image, or {@code null} at a clean end of data
      * @throws IOException if the underlying stream fails
-     * @throws DataIntegrityException if a partial record is present at the end of the stream
+     * @throws DataIntegrityException if a partial record is present at the end of the stream, or if a
+     *     record separator follows a complete record
      */
     private String readFixedWidthImage() throws IOException {
         int filled = 0;
@@ -1425,38 +1521,56 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
                     LOGICAL_FILE, inputBucket);
         }
 
-        consumeRecordTerminator();
+        rejectRecordSeparator();
         return new String(recordBuffer, 0, RECORD_LENGTH);
     }
 
     /**
-     * Consumes the optional single row terminator that follows a record, leaving the stream positioned at
-     * the first character of the next record.
+     * Refuses a record separator following a complete record image, leaving the stream positioned at the
+     * first character of the next record.
      * <p>
-     * A carriage return is stripped defensively even though the measured fixture contains none: the
-     * object may have been produced on a platform that writes {@code \r\n}, and the terminator shape is
-     * not something to assume (Rule 1 clause C2, no environment-specific assumption).
+     * <b>The tolerance this method replaces was a defect, not a convenience.</b> An earlier revision
+     * consumed a lone {@code \n}, a {@code \r\n} pair or a lone {@code \r} after every record, on the
+     * grounds that {@code app/data/ASCII/dailytran.txt} carries one and that a terminator shape should
+     * not be assumed. The effect was that corrupt object geometry became indistinguishable from valid
+     * input: an object written by something other than this application, or truncated mid-transfer, would
+     * be consumed as though every record after the first stray byte were correctly aligned, and the run
+     * would report success over shifted fields.
+     * <p>
+     * {@code app/cbl/CBTRN02C.cbl:L29-L32} declares {@code DALYTRAN-FILE} as
+     * {@code ORGANIZATION IS SEQUENTIAL} and {@code :L66-L69} gives it one fixed
+     * {@value #RECORD_LENGTH}-character record group, {@code FD-TRAN-ID PIC X(16)} plus
+     * {@code FD-CUST-DATA PIC X(334)}. The record boundary is therefore the record length, the mainframe
+     * dataset carries no delimiter byte, and this application's fixed-width writers emit none - so on this
+     * path a separator can only mean the object is not the dataset it claims to be.
+     * {@code app/jcl/POSTTRAN.jcl:L30-L31} is deliberately <em>not</em> cited: that DD statement carries no
+     * {@code DCB}, no {@code LRECL} and no {@code RECFM}, and this class does not attribute a geometry to it.
+     * Line-oriented ingestion of the ASCII fixture belongs to
+     * {@code src/main/resources/db/migration/V3__seed_data.sql} and to the test fixture loader, which read
+     * the file as text by name and feed the {@code repository} path; it is deliberately not a mode of this
+     * reader.
      *
      * @throws IOException if the underlying stream fails, or if it does not support the mark needed to
-     *     push a non-terminator character back
+     *     push a non-separator character back
+     * @throws DataIntegrityException if the next character is {@code LF} or {@code CR}
      */
-    private void consumeRecordTerminator() throws IOException {
-        recordStream.mark(2);
-        final int first = recordStream.read();
-        if (first == END_OF_STREAM || first == LINE_FEED) {
+    private void rejectRecordSeparator() throws IOException {
+        recordStream.mark(1);
+        final int next = recordStream.read();
+        if (next == END_OF_STREAM) {
             return;
         }
-        if (first == CARRIAGE_RETURN) {
-            recordStream.mark(1);
-            final int second = recordStream.read();
-            if (second != END_OF_STREAM && second != LINE_FEED) {
-                // A lone CR terminated the row; the character just read belongs to the next record.
-                recordStream.reset();
-            }
-            return;
+        if (next == LINE_FEED || next == CARRIAGE_RETURN) {
+            throw new DataIntegrityException(String.format(Locale.ROOT,
+                    "%s object '%s' in bucket '%s' carries a 0x%02X record separator after row %d; "
+                            + "app/cbl/CBTRN02C.cbl:L66-L69 declares one fixed %d-character record group "
+                            + "with no delimiter, so a separator means the object was not written by this "
+                            + "application or was corrupted in transfer",
+                    LOGICAL_FILE, objectKey, inputBucket, Integer.valueOf(next),
+                    Long.valueOf(recordsRead + 1L), Integer.valueOf(RECORD_LENGTH)),
+                    LOGICAL_FILE, inputBucket);
         }
-        // No terminator at all: an unterminated fixed-block image, so the character just read is the
-        // first of the next record and is pushed back.
+        // No separator: the character just read is the first of the next record and is pushed back.
         recordStream.reset();
     }
 
@@ -1895,6 +2009,14 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         try {
             // OPEN INPUT DALYTRAN-FILE  (:L238)
             ioStatus = openInputSource();
+        } catch (final CardDemoException alreadyTyped) {
+            // Finding M-11, severity Major. An authenticity refusal is NOT an input-output error and must not
+            // be re-reported as one: it is already the typed, fully described abend this class would raise,
+            // and re-wrapping it as status '9x' would replace "this object is not ours" with "the device
+            // failed" - the one substitution that would make an attack look like a hardware fault. Placed
+            // above the catch below because CardDemoException is a RuntimeException, so the order is what
+            // makes the distinction reachable.
+            throw alreadyTyped;
         } catch (IOException | RuntimeException failure) {
             // The COBOL OPEN reports through DALYTRAN-STATUS. A relational store reports by throwing a
             // DataAccessException and an object store by throwing an unchecked SDK exception or an
@@ -1980,6 +2102,9 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         }
 
         final S3Resource resource = objectStorage.download(inputBucket, objectKey);
+        // Finding M-11, severity Major: BEFORE any byte is decoded. See verifyInputObjectAuthenticity for
+        // why both the manifest code and the content digest are checked, and why neither alone is enough.
+        verifyInputObjectAuthenticity(resource);
         final InputStream bytes = resource.getInputStream();
         // The charset is applied HERE and only here, explicitly. Every subsequent operation is on
         // characters, so no platform-default byte-to-character conversion is reachable.
@@ -2371,5 +2496,473 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
         return status.code().orElseThrow(() -> new IllegalStateException(String.format(Locale.ROOT,
                 "FileStatus.%s must expose an exact two-character code; it reports itself as a family",
                 status.name())));
+    }
+
+    /**
+     * Validates the signing key the object-authenticity key is derived from.
+     *
+     * <p>Required only on the {@code fixed-width} path, and required <b>at construction</b> rather than at
+     * the first read, so a topology that selected the object path without the key fails before any work is
+     * done. On the {@code repository} path an absent value is legitimate and yields an empty string: nothing
+     * is authenticated there because nothing external is read.
+     *
+     * <p>The message names the property and the environment variable and never any part of the value.
+     *
+     * @param configured the value bound from {@value #PROPERTY_SIGNING_KEY}, possibly {@code null}
+     * @param selected the resolved input path
+     * @return the key, or an empty string on the {@code repository} path
+     * @throws IllegalArgumentException if the {@code fixed-width} path is selected with a blank key
+     */
+    private static String requireSigningKey(final String configured, final InputSource selected) {
+        final String normalised = configured == null ? "" : configured;
+        if (selected == InputSource.FIXED_WIDTH && normalised.isBlank()) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT,
+                    "%s must be configured when %s is 'fixed-width', because the authenticity key of the "
+                            + "input object is derived from it and an unauthenticated object is never read; "
+                            + "set JWT_SIGNING_KEY. There is no default and no unverified mode",
+                    PROPERTY_SIGNING_KEY, PROPERTY_SOURCE));
+        }
+        return normalised;
+    }
+
+    // ====================================================================================================
+    // Finding M-11, severity Major: the authenticity of the external input object.
+    // ====================================================================================================
+
+    /**
+     * Refuses the input object unless it carries a valid authenticity envelope, before a record is parsed.
+     *
+     * <p><b>Finding M-11, severity Major, RESOLVED.</b> Correct length-and-charset parsing establishes that
+     * an object is <em>well formed</em>, not that it is <em>ours</em>. The input bucket lives in an emulator
+     * whose community edition was measured to enforce no authorisation at all - see the evidence recorded in
+     * {@code docker-compose.yml} on the {@code localstack} service - so any principal able to reach the
+     * emulator port could replace this object with 350-byte records that parse perfectly and post as real
+     * transactions. Network containment narrows who can reach the port; it cannot tell one reachable
+     * principal from another. That distinction is made here.
+     *
+     * <p><b>Both halves are necessary, and each closes what the other cannot.</b> The keyed code over the
+     * manifest proves that a holder of the key vouched for <em>this</em> bucket, <em>this</em> key,
+     * <em>this</em> length and <em>this</em> content digest - so metadata cannot be forged. The digest pass
+     * then proves the bytes are the ones that were vouched for - so a valid manifest cannot be copied onto a
+     * different body, which a signature check alone would accept whenever the substituted body kept the same
+     * length.
+     *
+     * <p><b>Why the digest is computed before parsing rather than while parsing.</b> Verifying as the records
+     * stream would authenticate the tail only after the head had already been posted and committed, which is
+     * indistinguishable from having accepted it. The object is therefore read once through the digest and
+     * once for the records. The digest pass allocates one fixed buffer and holds no content, so the cost is a
+     * second linear read rather than a second copy in memory - the same bounded-read discipline the report
+     * job applies to its own generation.
+     *
+     * <p><b>No rejection says which check failed.</b> The three metadata members, the version prefix, the
+     * code itself, the declared length and the digest are all refused with one reason, because the
+     * distinctions are exactly the feedback a forger would iterate against. The reason names the logical
+     * dataset and the bucket; it never names the object key, the writer, the digest or any record content.
+     *
+     * @param resource the object about to be read, already proven to exist; never {@code null}
+     * @throws FatalProcessingException if the object does not carry a valid envelope for its own bytes
+     */
+    private void verifyInputObjectAuthenticity(final S3Resource resource) {
+        final Map<String, String> metadata = resource.metadata() == null
+                ? Map.of()
+                : resource.metadata();
+        final String writer = metadataValue(metadata, InputObjectEnvelope.METADATA_WRITER);
+        final String declaredDigest = metadataValue(metadata, InputObjectEnvelope.METADATA_CONTENT_SHA256);
+        final String presentedCode = metadataValue(metadata, InputObjectEnvelope.METADATA_SIGNATURE);
+        final long declaredLength = resource.contentLength();
+
+        final boolean manifestAccepted = InputObjectEnvelope.isPermittedWriter(writer)
+                && InputObjectEnvelope.isRenderedDigest(declaredDigest)
+                && declaredLength >= 0
+                && InputObjectEnvelope.verify(inputBucket, objectKey, declaredLength, writer,
+                        declaredDigest, signingKey, presentedCode);
+        if (!manifestAccepted) {
+            throw refuseInputObject();
+        }
+
+        final DigestOutcome measured = digestOf(resource);
+        if (measured.length() != declaredLength
+                || !MessageDigest.isEqual(InputObjectEnvelope.fromHexadecimal(declaredDigest),
+                        measured.digest())) {
+            throw refuseInputObject();
+        }
+
+        // The writer identity is attribution rather than personal data, and it is inside the authenticated
+        // manifest, so an operator reading this line knows WHO vouched for the object rather than merely that
+        // something did. The object key is still withheld, for the reason the log-hygiene section gives: it is
+        // date partitioned and therefore carries a business date.
+        LOG.info("{} input object authenticity verified; writer={} bytes={}", LOGICAL_FILE, writer,
+                Long.valueOf(measured.length()));
+    }
+
+    /**
+     * Builds the one refusal this control raises, with the one reason vocabulary it uses.
+     *
+     * @return the refusal, never {@code null}
+     */
+    private FatalProcessingException refuseInputObject() {
+        LOG.error("{} input object refused: no valid authenticity envelope for its own content in bucket "
+                + "'{}'", LOGICAL_FILE, inputBucket);
+        return new FatalProcessingException(
+                Integer.toString(FatalProcessingException.BATCH_ABEND_CODE),
+                ABEND_CULPRIT,
+                REASON_INPUT_NOT_AUTHENTIC,
+                String.format(Locale.ROOT,
+                        "%s (%s, %s): the configured input object in bucket '%s' does not carry a valid "
+                                + "authenticity envelope for its own content, so no record was parsed. The "
+                                + "producer must set the three '%s'-prefixed metadata members described on "
+                                + "%s.InputObjectEnvelope",
+                        REASON_INPUT_NOT_AUTHENTIC, LOGICAL_FILE, OPERATION_OPEN, inputBucket,
+                        InputObjectEnvelope.METADATA_PREFIX, DailyTransactionReader.class.getSimpleName()),
+                null);
+    }
+
+    /**
+     * Looks a metadata member up without depending on the case the store reports.
+     *
+     * <p>Object stores lower-case user-metadata names in transit, and a producer may have written any case,
+     * so a case-sensitive lookup would make the control depend on a detail neither side controls.
+     *
+     * @param metadata the object's user metadata, never {@code null}
+     * @param name the member name, already lowercase
+     * @return the value, stripped, or an empty string when the member is absent or blank
+     */
+    private static String metadataValue(final Map<String, String> metadata, final String name) {
+        for (final Map.Entry<String, String> member : metadata.entrySet()) {
+            if (member.getKey() != null && member.getKey().equalsIgnoreCase(name)) {
+                return member.getValue() == null ? "" : member.getValue().strip();
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Reads the object once and reports its digest and its exact byte count.
+     *
+     * @param resource the object to measure; never {@code null}
+     * @return the measured digest and length, never {@code null}
+     * @throws FatalProcessingException if the object cannot be read while being measured
+     */
+    private DigestOutcome digestOf(final S3Resource resource) {
+        final MessageDigest digest = InputObjectEnvelope.newDigest();
+        final byte[] buffer = new byte[DIGEST_BUFFER_BYTES];
+        long length = 0L;
+        try (InputStream bytes = resource.getInputStream()) {
+            int read = bytes.read(buffer);
+            while (read >= 0) {
+                digest.update(buffer, 0, read);
+                length += read;
+                read = bytes.read(buffer);
+            }
+        } catch (final IOException failure) {
+            // Not an authenticity refusal: the object could not be read at all. Reported as the OPEN failure
+            // it is, with the cause attached so nothing is swallowed.
+            throw new FatalProcessingException(
+                    Integer.toString(FatalProcessingException.BATCH_ABEND_CODE),
+                    ABEND_CULPRIT,
+                    ERROR_OPENING_MESSAGE,
+                    String.format(Locale.ROOT,
+                            "%s (%s, %s): the configured input object in bucket '%s' could not be read while "
+                                    + "its content digest was being measured",
+                            ERROR_OPENING_MESSAGE, LOGICAL_FILE, OPERATION_OPEN, inputBucket),
+                    failure);
+        }
+        return new DigestOutcome(digest.digest(), length);
+    }
+
+    /**
+     * What one digest pass measured: the digest of the content and the number of bytes it covered.
+     *
+     * @param digest the raw digest bytes; never {@code null}
+     * @param length the exact number of content bytes digested
+     */
+    private record DigestOutcome(byte[] digest, long length) {
+    }
+
+    /**
+     * The authenticity envelope that makes the external input object provably vouched for.
+     *
+     * <p><b>Finding M-11, severity Major.</b> This is the object-side counterpart of the queue-side envelope
+     * in {@code com.cardemo.service.report.ReportSubmissionService.JobSubmissionEnvelope}, and the two are
+     * deliberately <em>separate contracts rather than one shared implementation</em>: they authenticate
+     * different things - a message body against an object manifest - and they derive different keys from the
+     * same material precisely so that neither can be replayed as the other. What they share is a
+     * standard-library keyed hash and a hexadecimal rendering, which cannot diverge in behaviour the way two
+     * validation grammars can. Each cites the other so a reader finds both.
+     *
+     * <p><b>The producer contract, stated in full because the producer is outside this repository.</b> An
+     * upstream feed writes the object with three user-metadata members:
+     *
+     * <ul>
+     *   <li>{@value #METADATA_WRITER} - who produced it. Attribution, carried inside the authenticated
+     *       manifest so it cannot be swapped, and bounded to {@value #WRITER_MAX_LENGTH} printable
+     *       characters.</li>
+     *   <li>{@value #METADATA_CONTENT_SHA256} - the SHA-256 of the object's bytes, lowercase hexadecimal.</li>
+     *   <li>{@value #METADATA_SIGNATURE} - {@value #SIGNATURE_VERSION}, then {@code =}, then the lowercase
+     *       hexadecimal keyed code of the canonical manifest.</li>
+     * </ul>
+     *
+     * <p>The canonical manifest is these six lines joined by {@code \n}, in this order and with no trailing
+     * newline: the derivation label, the bucket, the object key, the decimal content length, the writer, and
+     * the lowercase hexadecimal digest. Bucket and key are inside it on purpose - a validly signed object
+     * cannot then be moved to another key, or into another bucket, and still verify, which is what stops a
+     * stale generation being replayed as today's input.
+     *
+     * <p>The purpose key is {@code HMAC-SHA-256(signing key, }{@value #KEY_DERIVATION_LABEL}{@code )} and the
+     * code is {@code HMAC-SHA-256(purpose key, canonical manifest)}. With {@code openssl} that is two calls,
+     * which is why this contract needs no tooling in this repository to be satisfiable.
+     */
+    public static final class InputObjectEnvelope {
+
+        /** The common prefix of the three metadata members, named in the refusal so a producer can find them. */
+        public static final String METADATA_PREFIX = "carddemo-";
+
+        /** Metadata member naming the producer of the object. */
+        public static final String METADATA_WRITER = METADATA_PREFIX + "writer";
+
+        /** Metadata member carrying the lowercase hexadecimal SHA-256 of the object's bytes. */
+        public static final String METADATA_CONTENT_SHA256 = METADATA_PREFIX + "content-sha256";
+
+        /** Metadata member carrying the rendered keyed code of the canonical manifest. */
+        public static final String METADATA_SIGNATURE = METADATA_PREFIX + "signature";
+
+        /**
+         * The version prefix of a rendered code, so a future algorithm change is a new prefix rather than an
+         * ambiguous byte string and a consumer refuses a version it does not implement.
+         */
+        public static final String SIGNATURE_VERSION = "v1";
+
+        /**
+         * The domain-separation label. Any change to it invalidates every previously issued code, which is
+         * why it carries the version {@link #SIGNATURE_VERSION} renders.
+         */
+        public static final String KEY_DERIVATION_LABEL = "carddemo/s3/dalytran-object/v1";
+
+        /** Longest accepted writer identity. Bounded because it is untrusted input that reaches a log. */
+        public static final int WRITER_MAX_LENGTH = 64;
+
+        /** Characters of a rendered SHA-256: 32 bytes as lowercase hexadecimal. */
+        private static final int DIGEST_HEX_LENGTH = 64;
+
+        /** The keyed hash and the digest. Both are on every supported runtime, so no configuration selects them. */
+        private static final String MAC_ALGORITHM = "HmacSHA256";
+
+        /** The content digest algorithm. */
+        private static final String DIGEST_ALGORITHM = "SHA-256";
+
+        /** Not instantiable: this type is a contract, and its operations are pure functions. */
+        private InputObjectEnvelope() {
+            throw new AssertionError("InputObjectEnvelope is a contract holder and is never instantiated");
+        }
+
+        /**
+         * Renders the code an authorised producer writes into {@value #METADATA_SIGNATURE}.
+         *
+         * <p>Published rather than private because the producer contract has to be executable to be real:
+         * this is the definition the integration tests sign with, and the definition any future in-repository
+         * feed would call instead of restating the canonical form.
+         *
+         * @param bucket the destination bucket; must not be {@code null}
+         * @param key the destination object key; must not be {@code null}
+         * @param contentLength the exact number of content bytes
+         * @param writer the producer identity; must not be {@code null}
+         * @param contentSha256Hex the lowercase hexadecimal SHA-256 of the content; must not be {@code null}
+         * @param signingKey the application signing key the purpose key is derived from; never blank
+         * @return the rendered code, never {@code null}
+         * @throws IllegalArgumentException if the signing key is absent or blank
+         */
+        public static String sign(final String bucket, final String key, final long contentLength,
+                final String writer, final String contentSha256Hex, final String signingKey) {
+
+            return SIGNATURE_VERSION + '=' + hexadecimal(mac(purposeKey(signingKey),
+                    canonicalManifest(bucket, key, contentLength, writer, contentSha256Hex)
+                            .getBytes(StandardCharsets.UTF_8)));
+        }
+
+        /**
+         * Decides whether a presented code was produced for this exact manifest by a holder of the key.
+         *
+         * <p>Every rejection returns {@code false} rather than throwing, so the caller decides what a failed
+         * verification means; and no rejection reports which reason applied.
+         *
+         * @param bucket the bucket the object was read from; must not be {@code null}
+         * @param key the object key that was read; must not be {@code null}
+         * @param contentLength the length the store reports
+         * @param writer the writer identity the metadata carried; must not be {@code null}
+         * @param contentSha256Hex the digest the metadata carried; must not be {@code null}
+         * @param signingKey the application signing key; never blank
+         * @param presented the metadata value exactly as delivered, possibly empty
+         * @return {@code true} only when the presented value is a well-formed code of a version this
+         *     implementation produces and equals the code for this manifest
+         * @throws IllegalArgumentException if the signing key is absent or blank
+         */
+        public static boolean verify(final String bucket, final String key, final long contentLength,
+                final String writer, final String contentSha256Hex, final String signingKey,
+                final String presented) {
+
+            final String prefix = SIGNATURE_VERSION + '=';
+            if (presented == null || !presented.startsWith(prefix)) {
+                return false;
+            }
+            final byte[] offered = fromHexadecimal(presented.substring(prefix.length()));
+            if (offered == null) {
+                return false;
+            }
+            final byte[] expected = mac(purposeKey(signingKey),
+                    canonicalManifest(bucket, key, contentLength, writer, contentSha256Hex)
+                            .getBytes(StandardCharsets.UTF_8));
+            return MessageDigest.isEqual(expected, offered);
+        }
+
+        /**
+         * Reports whether a writer identity is acceptable at all: present, bounded and printable.
+         *
+         * <p>Bounded and character-checked because it is untrusted input that reaches a log line, and a
+         * newline inside it would forge a second log record.
+         *
+         * @param writer the value the metadata carried, possibly empty
+         * @return true when the value may be used
+         */
+        public static boolean isPermittedWriter(final String writer) {
+            if (writer == null || writer.isEmpty() || writer.length() > WRITER_MAX_LENGTH) {
+                return false;
+            }
+            for (int position = 0; position < writer.length(); position++) {
+                final char character = writer.charAt(position);
+                if (character < 0x20 || character > 0x7E) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * Reports whether a value has the exact shape of a rendered SHA-256.
+         *
+         * @param digestHex the value the metadata carried, possibly empty
+         * @return true when it is {@value #DIGEST_HEX_LENGTH} lowercase hexadecimal characters
+         */
+        public static boolean isRenderedDigest(final String digestHex) {
+            if (digestHex == null || digestHex.length() != DIGEST_HEX_LENGTH) {
+                return false;
+            }
+            return fromHexadecimal(digestHex) != null;
+        }
+
+        /**
+         * Builds a digest instance for one pass over an object's content.
+         *
+         * @return a fresh digest, never {@code null}
+         * @throws IllegalStateException if the platform lacks SHA-256, which no supported runtime does
+         */
+        public static MessageDigest newDigest() {
+            try {
+                return MessageDigest.getInstance(DIGEST_ALGORITHM);
+            } catch (final NoSuchAlgorithmException absent) {
+                throw new IllegalStateException(DIGEST_ALGORITHM + " is required by every supported runtime",
+                        absent);
+            }
+        }
+
+        /**
+         * Renders bytes as lowercase hexadecimal.
+         *
+         * @param value the bytes; must not be {@code null}
+         * @return the rendering, never {@code null}
+         */
+        public static String hexadecimal(final byte[] value) {
+            final StringBuilder rendered = new StringBuilder(value.length * 2);
+            for (final byte element : value) {
+                rendered.append(Character.forDigit((element >> 4) & 0xF, 16));
+                rendered.append(Character.forDigit(element & 0xF, 16));
+            }
+            return rendered.toString();
+        }
+
+        /**
+         * Parses lowercase hexadecimal, reporting a malformed value as {@code null} rather than by throwing.
+         *
+         * <p>{@code null} rather than an exception because a malformed value is one of the ordinary rejection
+         * paths of an untrusted metadata member, not a programming error.
+         *
+         * @param value the rendering to parse; may be empty
+         * @return the bytes, or {@code null} when the value is not an even-length run of lowercase
+         *     hexadecimal digits
+         */
+        public static byte[] fromHexadecimal(final String value) {
+            if (value == null || value.isEmpty() || value.length() % 2 != 0) {
+                return null;
+            }
+            final byte[] parsed = new byte[value.length() / 2];
+            for (int index = 0; index < parsed.length; index++) {
+                final int high = Character.digit(value.charAt(index * 2), 16);
+                final int low = Character.digit(value.charAt(index * 2 + 1), 16);
+                if (high < 0 || low < 0
+                        || Character.isUpperCase(value.charAt(index * 2))
+                        || Character.isUpperCase(value.charAt(index * 2 + 1))) {
+                    return null;
+                }
+                parsed[index] = (byte) ((high << 4) | low);
+            }
+            return parsed;
+        }
+
+        /**
+         * Joins the six authenticated members into the exact bytes the code is taken over.
+         *
+         * @param bucket the bucket
+         * @param key the object key
+         * @param contentLength the content length
+         * @param writer the writer identity
+         * @param contentSha256Hex the rendered content digest
+         * @return the canonical manifest, never {@code null}
+         */
+        private static String canonicalManifest(final String bucket, final String key,
+                final long contentLength, final String writer, final String contentSha256Hex) {
+
+            return KEY_DERIVATION_LABEL + '\n'
+                    + Objects.requireNonNull(bucket, "bucket must not be null") + '\n'
+                    + Objects.requireNonNull(key, "key must not be null") + '\n'
+                    + Long.toString(contentLength) + '\n'
+                    + Objects.requireNonNull(writer, "writer must not be null") + '\n'
+                    + Objects.requireNonNull(contentSha256Hex, "contentSha256Hex must not be null");
+        }
+
+        /**
+         * Derives the single-purpose key from the application signing key.
+         *
+         * @param signingKey the application signing key; never blank
+         * @return the derived key material, never {@code null}
+         * @throws IllegalArgumentException if the signing key is absent or blank
+         */
+        private static byte[] purposeKey(final String signingKey) {
+            if (signingKey == null || signingKey.isBlank()) {
+                throw new IllegalArgumentException("the input-object envelope key is derived from "
+                        + PROPERTY_SIGNING_KEY + ", which must be configured; it has no default anywhere in "
+                        + "this repository and an unauthenticated input object is never read");
+            }
+            return mac(signingKey.getBytes(StandardCharsets.UTF_8),
+                    KEY_DERIVATION_LABEL.getBytes(StandardCharsets.UTF_8));
+        }
+
+        /**
+         * Computes one keyed code.
+         *
+         * @param key the key material; must not be {@code null}
+         * @param content the bytes to authenticate; must not be {@code null}
+         * @return the raw code bytes, never {@code null}
+         * @throws IllegalStateException if the platform lacks the algorithm, which no supported runtime does
+         */
+        private static byte[] mac(final byte[] key, final byte[] content) {
+            try {
+                final Mac keyedHash = Mac.getInstance(MAC_ALGORITHM);
+                keyedHash.init(new SecretKeySpec(key, MAC_ALGORITHM));
+                return keyedHash.doFinal(content);
+            } catch (final NoSuchAlgorithmException | InvalidKeyException unavailable) {
+                throw new IllegalStateException(MAC_ALGORITHM
+                        + " is required by every supported runtime and the derived key is never empty",
+                        unavailable);
+            }
+        }
     }
 }

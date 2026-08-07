@@ -118,10 +118,22 @@
 # the one that trips people up.
 #
 #   1. REQUIRED, no default - `${VAR:?message}`. Interpolation fails and the
-#      command aborts before a container is created. JWT_SIGNING_KEY,
-#      POSTGRES_PASSWORD, GRAFANA_ADMIN_USER, GRAFANA_ADMIN_PASSWORD,
-#      AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. A committed default for
-#      any of them would be a usable credential in version control.
+#      command aborts before a container is created. Nine of them:
+#      JWT_SIGNING_KEY, POSTGRES_PASSWORD, CARDDEMO_DB_APP_PASSWORD,
+#      CARDDEMO_DB_MIGRATION_PASSWORD, METRICS_SCRAPE_PASSWORD,
+#      GRAFANA_ADMIN_USER, GRAFANA_ADMIN_PASSWORD, AWS_ACCESS_KEY_ID and
+#      AWS_SECRET_ACCESS_KEY. A committed default for any of them would be a
+#      usable credential in version control.
+#
+#      The two CARDDEMO_DB_* passwords joined this group rather than keeping a
+#      default: their defaults were what let the runtime authenticate as the
+#      bootstrap SUPERUSER. The app service fell back to POSTGRES_PASSWORD for
+#      the password and POSTGRES_USER for the name, while the postgres service
+#      and the role-provisioning config created carddemo_app and
+#      carddemo_migrator - so a start that supplied neither password produced
+#      two unused least-privilege roles and a superuser serving every request.
+#      Their two NAMES keep defaults, because a name is not a credential and
+#      one spelling in all three places is exactly the point.
 #
 #   2. HOST-VIEW PORTS - `${VAR:-default}` on the left of a port mapping only.
 #      SERVER_PORT 8080, POSTGRES_PORT 5432, LOCALSTACK_PORT 4566,
@@ -395,26 +407,34 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
-      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env - copy .env.example and choose a local value}"
-      # Least privilege for the runtime principal. application.yml binds
-      # spring.datasource to the APP pair and spring.flyway to the MIGRATION
-      # pair, each falling back to POSTGRES_USER/POSTGRES_PASSWORD when unset so
-      # that an existing volume keeps working; application-prod.yml requires all
-      # four with no fallback. Passing them through here is what lets the app
-      # container stop connecting as the bootstrap SUPERUSER.
+      # ----------------------------------------------------------------------
+      # LEAST PRIVILEGE, REQUIRED RATHER THAN DEFAULTED (Rule 1 Clause D)
+      # ----------------------------------------------------------------------
+      # THE BOOTSTRAP PAIR IS DELIBERATELY NOT PASSED TO THIS CONTAINER. Neither
+      # POSTGRES_USER nor POSTGRES_PASSWORD appears here any more: no profile the
+      # application activates reads either one, so handing the container the
+      # cluster SUPERUSER credential would grant reach for nothing. A credential
+      # that never arrives cannot be bound, logged or leaked.
       #
-      # The fallback is resolved HERE rather than in application.yml because
-      # Compose's `:-` treats an EMPTY value as unset while Spring's `${a:b}`
-      # does not - it applies its default only when the property is absent, so a
-      # blank variable would arrive as a blank username. Resolving it here means
-      # the container always receives a usable pair. The nested fallback needs no
-      # `:?` guard of its own: POSTGRES_PASSWORD carries one four lines above, on
-      # this same service, so an unset password already stops the stack there.
-      CARDDEMO_DB_APP_USER: ${CARDDEMO_DB_APP_USER:-${POSTGRES_USER:-carddemo}}
-      CARDDEMO_DB_APP_PASSWORD: "${CARDDEMO_DB_APP_PASSWORD:-${POSTGRES_PASSWORD}}"
-      CARDDEMO_DB_MIGRATION_USER: ${CARDDEMO_DB_MIGRATION_USER:-${POSTGRES_USER:-carddemo}}
-      CARDDEMO_DB_MIGRATION_PASSWORD: "${CARDDEMO_DB_MIGRATION_PASSWORD:-${POSTGRES_PASSWORD}}"
+      # application.yml binds spring.datasource to the APP pair and
+      # application-local.yml binds spring.flyway to the MIGRATION pair, each
+      # with NO default and NO fallback, exactly as application-prod.yml always
+      # has. All four are therefore guarded with `:?` rather than defaulted with
+      # `:-`. The earlier `:-` form resolved an absent OR EMPTY value to
+      # POSTGRES_USER/POSTGRES_PASSWORD, which is precisely how a stack that
+      # reported itself healthy came to serve every request as the superuser:
+      # falling back is indistinguishable from succeeding. A guard turns the
+      # same condition into a named failure out of `docker compose config`,
+      # before any container is created. The database service below guards the
+      # same four identically, so the credentials the application receives and
+      # the roles that actually get provisioned cannot disagree.
+      CARDDEMO_DB_APP_USER: "${CARDDEMO_DB_APP_USER:?set CARDDEMO_DB_APP_USER in .env - see .env.example}"
+      CARDDEMO_DB_APP_PASSWORD: "${CARDDEMO_DB_APP_PASSWORD:?set CARDDEMO_DB_APP_PASSWORD in .env -
+        generate one, e.g. openssl rand -base64 32}"
+      CARDDEMO_DB_MIGRATION_USER: "${CARDDEMO_DB_MIGRATION_USER:?set CARDDEMO_DB_MIGRATION_USER in .env -
+        see .env.example}"
+      CARDDEMO_DB_MIGRATION_PASSWORD: "${CARDDEMO_DB_MIGRATION_PASSWORD:?set CARDDEMO_DB_MIGRATION_PASSWORD
+        in .env - generate one, e.g. openssl rand -base64 32}"
       # The ceiling on waiting for a ROW lock; see application.yml's
       # connection-init-sql. Without it a held row stalled a request forever.
       POSTGRES_LOCK_TIMEOUT_MS: ${POSTGRES_LOCK_TIMEOUT_MS:-5000}
@@ -431,8 +451,8 @@ services:
       # Emulator placeholders, supplied externally and never committed.
       # AwsConfig.java refuses any value beginning AKIA or ASIA, so a live
       # key cannot be used here even by accident.
-      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID in .env to the emulator placeholder - see .env.example}"
-      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY in .env to the emulator placeholder - see .env.example}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID in .env - see .env.example}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY in .env - see .env.example}"
       # Traces leave over OTLP/HTTP. management.otlp.tracing.endpoint binds
       # this name and expects the full /v1/traces path.
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
@@ -448,7 +468,7 @@ services:
       # credential means every scrape is answered 401 and the Prometheus target
       # reports down - visible within one scrape interval, which is the correct
       # failure direction for a metrics credential.
-      METRICS_SCRAPE_PASSWORD: "${METRICS_SCRAPE_PASSWORD:?set METRICS_SCRAPE_PASSWORD in .env - copy .env.example and generate a value, e.g. openssl rand -base64 32}"
+      METRICS_SCRAPE_PASSWORD: "${METRICS_SCRAPE_PASSWORD:?set METRICS_SCRAPE_PASSWORD in .env - see .env.example}"
     ports:
       # The application and its actuator share one port: no profile sets a
       # separate management port, and the Dockerfile exposes 8080 alone, so this
@@ -478,26 +498,26 @@ services:
         condition: service_healthy
       localstack:
         condition: service_healthy
-      # JAEGER IS DELIBERATELY ABSENT FROM THIS LIST. It was here as
-      # `condition: service_started` for ordering, on the reasoning that waiting
-      # for the container to exist spares the first spans a connection-refused
-      # round trip. That reasoning is wrong in a way worth recording, because it
-      # makes tracing gate the data path it was added to observe: a Jaeger image
-      # that cannot be pulled, a container that exits, or a name that does not
-      # resolve now holds up the application, so a telemetry sink becomes a
-      # single point of failure for a payment system. The legacy analogue draws
-      # the line in the same place - app/jcl/OPENFIL.jcl:L26-L30 issues
-      # `CEMT SET FIL(...) OPE` for the five DATASETS the region serves from and
-      # for nothing else, because the corpus has no telemetry sink to wait on.
-      #
-      # Nothing is lost by removing it. The OTLP exporter is asynchronous and
-      # already tolerates an absent collector: an export failure is retried and
-      # then dropped, on the exporter's own thread, and no request or batch step
-      # observes it. The saving it bought was at most one connection attempt on
-      # the first span. The two conditions that remain are the two that carry
-      # data - the relational substrate and the emulator holding the buckets,
-      # the FIFO queue and the topic - and both are service_healthy rather than
-      # service_started because for those, existing is not the same as ready.
+    # JAEGER IS DELIBERATELY ABSENT FROM THIS LIST. It was here as
+    # `condition: service_started` for ordering, on the reasoning that waiting
+    # for the container to exist spares the first spans a connection-refused
+    # round trip. That reasoning is wrong in a way worth recording, because it
+    # makes tracing gate the data path it was added to observe: a Jaeger image
+    # that cannot be pulled, a container that exits, or a name that does not
+    # resolve now holds up the application, so a telemetry sink becomes a
+    # single point of failure for a payment system. The legacy analogue draws
+    # the line in the same place - app/jcl/OPENFIL.jcl:L26-L30 issues
+    # `CEMT SET FIL(...) OPE` for the five DATASETS the region serves from and
+    # for nothing else, because the corpus has no telemetry sink to wait on.
+    #
+    # Nothing is lost by removing it. The OTLP exporter is asynchronous and
+    # already tolerates an absent collector: an export failure is retried and
+    # then dropped, on the exporter's own thread, and no request or batch step
+    # observes it. The saving it bought was at most one connection attempt on
+    # the first span. The two conditions that remain are the two that carry
+    # data - the relational substrate and the emulator holding the buckets,
+    # the FIFO queue and the topic - and both are service_healthy rather than
+    # service_started because for those, existing is not the same as ready.
     healthcheck:
       # No `test` key: the probe is declared once, in the Dockerfile, and
       # inherited here so the two cannot drift. It opens /dev/tcp on the
@@ -573,7 +593,7 @@ services:
       # pair is never used, and the password has no default at all.
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
       POSTGRES_USER: ${POSTGRES_USER:-carddemo}
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env - copy .env.example and choose a local value}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env - see .env.example}"
       # Explicit, so `trust` cannot be reached from outside the container. The
       # loopback `trust` lines initdb writes into pg_hba.conf remain, but they
       # are reachable only from inside this container, which publishes no
@@ -581,14 +601,24 @@ services:
       POSTGRES_HOST_AUTH_METHOD: scram-sha-256
       # Consumed ONLY by the postgres-least-privilege-roles init script below,
       # which runs as the bootstrap superuser on first initialisation and
-      # provisions a DML-only runtime role plus a DDL-only migration role. When
-      # either password is unset the script logs why and exits 0, leaving the
-      # bootstrap superuser in place - so an existing deployment never breaks,
-      # it simply keeps the finding open until the values are supplied.
-      CARDDEMO_DB_APP_USER: ${CARDDEMO_DB_APP_USER:-carddemo_app}
-      CARDDEMO_DB_APP_PASSWORD: ${CARDDEMO_DB_APP_PASSWORD:-}
-      CARDDEMO_DB_MIGRATION_USER: ${CARDDEMO_DB_MIGRATION_USER:-carddemo_migrator}
-      CARDDEMO_DB_MIGRATION_PASSWORD: ${CARDDEMO_DB_MIGRATION_PASSWORD:-}
+      # provisions a DML-only runtime role plus a DDL-only migration role.
+      #
+      # GUARDED, NOT DEFAULTED, and the script now FAILS rather than skipping.
+      # The earlier shape defaulted the two passwords to the empty string, and
+      # the script treated that as a reason to succeed with a log line - so the
+      # bootstrap superuser stayed in place, the application fell back to it,
+      # and the whole condition was reported as a successful start. Both halves
+      # of that are closed: `:?` stops `docker compose config` here, and the
+      # script exits non-zero if it is ever reached without all four values.
+      # The spellings match the application service above exactly, because the
+      # role the application binds and the role that gets created must be one.
+      CARDDEMO_DB_APP_USER: "${CARDDEMO_DB_APP_USER:?set CARDDEMO_DB_APP_USER in .env - see .env.example}"
+      CARDDEMO_DB_APP_PASSWORD: "${CARDDEMO_DB_APP_PASSWORD:?set CARDDEMO_DB_APP_PASSWORD in .env -
+        generate one, e.g. openssl rand -base64 32}"
+      CARDDEMO_DB_MIGRATION_USER: "${CARDDEMO_DB_MIGRATION_USER:?set CARDDEMO_DB_MIGRATION_USER in .env -
+        see .env.example}"
+      CARDDEMO_DB_MIGRATION_PASSWORD: "${CARDDEMO_DB_MIGRATION_PASSWORD:?set CARDDEMO_DB_MIGRATION_PASSWORD
+        in .env - generate one, e.g. openssl rand -base64 32}"
       # Deterministic collation and encoding. C ordering is byte ordering,
       # which is what the fixed-width uppercase and numeric keys inherited
       # from the copybooks sort by; a locale-dependent collation would make
@@ -657,7 +687,13 @@ services:
   # supplying neither.
   # ==========================================================================
   localstack:
-    image: ${LOCALSTACK_IMAGE:-localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a}
+    # Double-quoted with a backslash escaped line break: YAML emits NO
+    # character for it, so the reference resolves byte-identically to the
+    # single-line form. A PLAIN fold would fold the break to a space and
+    # corrupt the digest - do not remove the backslash. The break sits after
+    # `sha256:` so the 64-hex digest stays whole on one line.
+    image: "${LOCALSTACK_IMAGE:-localstack/localstack:4.14.0@sha256:\
+      3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a}"
     container_name: carddemo-localstack${CLONE_INDEX:+-}${CLONE_INDEX:-}
     environment:
       <<: *carddemo-aws-context
@@ -697,6 +733,41 @@ services:
       # it means a licensed image enforces immediately rather than after
       # someone remembers to add it. It is NOT relied upon.
       ENFORCE_IAM: "1"
+      # ----------------------------------------------------------------------
+      # FINDING M-11, severity Major, RESOLVED - AND WHERE IT IS RESOLVED
+      # ----------------------------------------------------------------------
+      # Network containment answers "who can reach the port". It cannot answer
+      # "is this queue message, or this input object, ours" - and because the
+      # measurement above shows the emulator will not answer that either, an
+      # application that trusted a structurally valid message or a correctly
+      # parsed object was trusting reachability alone.
+      #
+      # That is now answered IN THE APPLICATION, by two keyed authenticity
+      # envelopes, and it is answered whether or not this emulator ever
+      # enforces anything:
+      #
+      #   * the report queue - the SQS listener refuses a message that does not
+      #     carry a valid code over its canonical body before it launches any
+      #     job. See ReportSubmissionService.JobSubmissionEnvelope and the
+      #     listener in BatchConfig.
+      #   * the DALYTRAN input object - the reader refuses an object that does
+      #     not carry a valid code over its manifest, and re-measures the
+      #     content digest that manifest vouches for, BEFORE it parses the
+      #     first record. See DailyTransactionReader.InputObjectEnvelope.
+      #
+      # Neither has an off switch, and neither introduces a new secret: both
+      # derive a single-purpose key from JWT_SIGNING_KEY under distinct labels,
+      # so a message code cannot be replayed as an object code and neither can
+      # be replayed as a token.
+      #
+      # SEPARATE PRINCIPALS, and what they are worth here. The application
+      # authenticates with the AWS_ACCESS_KEY_ID pair below; the provisioning
+      # hook does NOT inherit it - localstack-init/init-aws.sh pins the
+      # emulator's own documented placeholder identity and unsets every other
+      # link of the credential chain, so the two are already distinct
+      # identities rather than one shared key. Given the measurement above that
+      # buys attribution and licensed-image readiness, NOT enforcement, and it
+      # is recorded as such rather than presented as a control.
     ports:
       # The edge port only. The 4510-4559 external-service range and the
       # developer-endpoint port are not published, because no CardDemo code
@@ -989,10 +1060,16 @@ volumes:
 # The value is never committed: it comes from the environment, .env.example
 # documents it with no value, and the `:?` guard below aborts `up` with a named
 # message rather than starting a stack whose every scrape would 401.
+#
+# The `content` scalar below is deliberately kept on ONE line. Folding it
+# across two would put a space where the break was, and that space would be
+# written into the password file Prometheus reads - a 401 with no obvious
+# cause. Shorten the message instead of wrapping it; .env.example is where
+# the per-variable guidance lives.
 # ----------------------------------------------------------------------------
 configs:
   prometheus-scrape-password:
-    content: "${METRICS_SCRAPE_PASSWORD:?set METRICS_SCRAPE_PASSWORD in .env - copy .env.example and generate a value, e.g. openssl rand -base64 32}"
+    content: "${METRICS_SCRAPE_PASSWORD:?set METRICS_SCRAPE_PASSWORD in .env - see .env.example}"
 
   # ==========================================================================
   # LEAST PRIVILEGE FOR THE RUNTIME DATABASE PRINCIPAL (Rule 1 Clause D)
@@ -1030,25 +1107,52 @@ configs:
       # Provisions the least-privilege application role and the migration role.
       # Runs as the bootstrap superuser, on first initialisation of the data
       # directory only. Idempotent; creates roles and grants exclusively.
+      #
+      # IT FAILS CLOSED. All four values are required and none is defaulted. An
+      # earlier revision defaulted the two role names, treated a blank password
+      # as a reason to succeed with an explanatory log line, and so left the
+      # bootstrap SUPERUSER serving every request while reporting the run as a
+      # success. Every caller now supplies all four: the two service definitions
+      # above guard them with Compose's `:?`, and the manual `docker exec` path
+      # inherits them from this container's environment.
+      #
+      # NEITHER PASSWORD IS PASSED AS AN ARGUMENT. psql imports all four values
+      # with \getenv, out of the environment it already inherits, so no value
+      # reaches this process's argv - where /proc/<pid>/cmdline and `ps` expose
+      # it to anything else running in the container for as long as psql lives.
       set -eu
 
-      APP_USER="$${CARDDEMO_DB_APP_USER:-carddemo_app}"
-      APP_PASSWORD="$${CARDDEMO_DB_APP_PASSWORD:-}"
-      MIGRATION_USER="$${CARDDEMO_DB_MIGRATION_USER:-carddemo_migrator}"
-      MIGRATION_PASSWORD="$${CARDDEMO_DB_MIGRATION_PASSWORD:-}"
+      # Presence is proven here, not inside psql: \getenv simply leaves a psql
+      # variable unset when the environment variable is absent, which would
+      # reach the server as unsubstituted text rather than as a failure.
+      missing=''
+      [ -n "$${CARDDEMO_DB_APP_USER:-}" ] || missing="$$missing CARDDEMO_DB_APP_USER"
+      [ -n "$${CARDDEMO_DB_APP_PASSWORD:-}" ] || missing="$$missing CARDDEMO_DB_APP_PASSWORD"
+      [ -n "$${CARDDEMO_DB_MIGRATION_USER:-}" ] || missing="$$missing CARDDEMO_DB_MIGRATION_USER"
+      [ -n "$${CARDDEMO_DB_MIGRATION_PASSWORD:-}" ] || missing="$$missing CARDDEMO_DB_MIGRATION_PASSWORD"
 
-      if [ -z "$$APP_PASSWORD" ] || [ -z "$$MIGRATION_PASSWORD" ]; then
-        echo "carddemo: CARDDEMO_DB_APP_PASSWORD or CARDDEMO_DB_MIGRATION_PASSWORD is unset;" >&2
-        echo "carddemo: skipping least-privilege role creation. The application will fall back" >&2
-        echo "carddemo: to POSTGRES_USER, which is a SUPERUSER. Set both in .env to close that." >&2
-        exit 0
+      # Refuse rather than skip. Skipping used to leave the roles absent while
+      # the application connected as POSTGRES_USER, a SUPERUSER, which is the
+      # exact outcome this config exists to prevent. Compose guards all four
+      # variables with `:?` on this service and on the app service, so `up`
+      # stops before reaching here; this is the guard for a hand-applied run.
+      if [ -n "$$missing" ]; then
+        echo "carddemo: cannot provision least-privilege roles - unset or empty:$$missing" >&2
+        echo "carddemo: refusing to initialise. Leaving POSTGRES_USER in place would keep the" >&2
+        echo "carddemo: application connected as a cluster SUPERUSER, which is the condition" >&2
+        echo "carddemo: this script exists to remove. Set all four in .env, then retry." >&2
+        exit 1
       fi
 
       psql --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB" \
-           --set ON_ERROR_STOP=on --no-psqlrc \
-           --set app_user="$$APP_USER" --set app_password="$$APP_PASSWORD" \
-           --set migration_user="$$MIGRATION_USER" --set migration_password="$$MIGRATION_PASSWORD" \
-           <<'SQL'
+           --set ON_ERROR_STOP=on --no-psqlrc <<'SQL'
+      -- The four values arrive from the environment rather than from --set
+      -- arguments, which is what keeps both passwords out of process argv.
+      \getenv app_user CARDDEMO_DB_APP_USER
+      \getenv app_password CARDDEMO_DB_APP_PASSWORD
+      \getenv migration_user CARDDEMO_DB_MIGRATION_USER
+      \getenv migration_password CARDDEMO_DB_MIGRATION_PASSWORD
+
       -- Create each role only if it is absent. \gexec is used rather than a DO
       -- block because psql does NOT interpolate its variables inside a
       -- dollar-quoted body, so :'app_user' would arrive at the server as the
@@ -1114,7 +1218,19 @@ configs:
         GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_user";
       ALTER DEFAULT PRIVILEGES FOR ROLE :"USER" IN SCHEMA public
         GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO :"app_user";
+
+      -- Neither password survives the session that used it. A psql variable
+      -- otherwise lives until psql exits and is printed in full by \set with no
+      -- argument, so an interactive session opened against the same invocation
+      -- would list both values.
+      \unset app_password
+      \unset migration_password
       SQL
 
-      echo "carddemo: provisioned $$APP_USER (DML only) and $$MIGRATION_USER (DDL) as NOSUPERUSER."
+      # Both passwords leave this shell's environment as soon as psql has exited,
+      # so nothing the entrypoint runs after this script inherits either one. The
+      # two role names are not secrets and are kept for the confirmation below.
+      unset CARDDEMO_DB_APP_PASSWORD CARDDEMO_DB_MIGRATION_PASSWORD
 
+      echo "carddemo: provisioned $$CARDDEMO_DB_APP_USER (DML only) and"
+      echo "carddemo: $$CARDDEMO_DB_MIGRATION_USER (DDL owner), both NOSUPERUSER."

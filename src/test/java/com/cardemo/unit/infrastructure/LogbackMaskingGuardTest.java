@@ -61,6 +61,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import com.cardemo.batch.writers.StatementWriter;
+
 /**
  * Asserts the masking contract of {@code logback-spring.xml} by executing its rules rather than reading
  * them.
@@ -85,12 +87,27 @@ import org.junit.jupiter.params.provider.ValueSource;
  * actual widths the copybooks fix: eleven for an account identifier, sixteen for a transaction
  * identifier and a card number, nineteen for a generation segment.
  *
- * <p><strong>Scope, stated so the omission is not mistaken for an oversight.</strong> These tests
- * exercise the rules, not a configured Logback pipeline. Booting the real configuration would replace
- * the {@code LoggerContext} for the whole Surefire JVM and break every test that attaches an appender
- * to observe its own logger, so full configuration is validated separately and out of band. What is
- * asserted here is exactly what a reviewer cannot verify by reading: that each pattern compiles, that
- * each matches what it must, and that each leaves alone what it must.
+ * <p><strong>Scope: this class owns the RULES, another class owns the PIPELINE.</strong> These tests
+ * compile each rule out of the configuration and apply it the way logback's decorator does. They do not
+ * boot a configured pipeline, and they must not: doing so would replace the {@code LoggerContext} for the
+ * whole Surefire JVM and break every test that attaches an appender to observe its own logger.
+ *
+ * <p>That boundary is real and it is also a limit worth naming, because the class of defect on the far
+ * side of it is invisible here. A rule can compile, match, and never be reached - attached to the wrong
+ * decorator, listed where the encoder does not consult it, or shadowed by an earlier rule that consumes
+ * the same text. Every assertion in this class would still pass. So the effect is asserted where a
+ * configured encoder exists, in
+ * {@code src/test/java/com/cardemo/integration/aws/ObservabilityHealthMetricsIntegrationTest.java}:
+ * {@code aDriverInlinedBoundValueIsWithheldByTheConfiguredEncoder} and
+ * {@code theFailingRowImageIsWithheldByTheConfiguredEncoder} push these same driver shapes through the
+ * encoder the console appender is actually configured with, and assert both that the values are withheld
+ * and that the diagnosis survives. Verified causally: neutralising the parenthesised-literal rule or the
+ * failing-row rule in the configuration makes the corresponding test at that tier fail.
+ *
+ * <p>What is asserted <em>here</em>, then, is exactly what a reviewer cannot verify by reading and what no
+ * amount of pipeline testing would localise: that each pattern compiles, that each matches what it must,
+ * that each leaves alone what it must, and that none carries the truncation sequence. Read the two tiers
+ * together - this one says the rule is right, that one says the rule runs.
  */
 @DisplayName("logback-spring.xml: the masking rules compile, redact AWS identity and nothing else")
 class LogbackMaskingGuardTest {
@@ -311,8 +328,16 @@ class LogbackMaskingGuardTest {
         }
     }
 
+    /**
+     * The two driver-shape rules, applied in isolation.
+     *
+     * <p>These cases are the pattern's own contract: what it matches and what it leaves. That the rules are
+     * reached by the configured encoder at all is asserted at the integration tier, by the two methods
+     * named in this class's documentation. Neither tier is sufficient alone, and this one is the faster of
+     * the two to run and the more precise when it fails, which is why it stays rather than being folded in.
+     */
     @Nested
-    @DisplayName("Driver-rendered bound values and failing-row images (R16, R17)")
+    @DisplayName("Driver-rendered bound values and failing-row images (R16, R17) - the rules in isolation")
     class DriverRenderedValues {
 
         /**
@@ -404,8 +429,10 @@ class LogbackMaskingGuardTest {
 
         @ParameterizedTest
         @CsvSource({
-            // The statements key: ACCT-ID is eleven digits, app/cpy/CVACT01Y.cpy:L5.
-            "'statements/00000000011/2026-08/statement.txt',eleven-digit account segment",
+            // An eleven-digit path segment that is NOT a statement key's account segment. R19 is keyed on
+            // the literal 'statements/account=', so a bare segment of that width is untouched wherever it
+            // appears - which is what keeps R19 a key rule rather than a digit rule.
+            "'transact/00000000011/record.dat',eleven-digit segment of another key",
             // The writers' key number width is nineteen digits, replacing the GDG generations.
             "'gdg/dalyrejs/0000000000000000042/rejects.dat',nineteen-digit generation segment",
             "'gdg/tranrept/0000000000000000007/report.txt',nineteen-digit job instance segment",
@@ -553,6 +580,53 @@ class LogbackMaskingGuardTest {
                     "START OF EXECUTION OF PROGRAM CBTRN02C",
                     "END OF EXECUTION OF PROGRAM CBTRN02C")) {
                 assertThat(maskAll(value)).as("parity line [%s]", value).isEqualTo(value);
+            }
+        }
+
+        @Test
+        @DisplayName("m-03: the account segment of a statement object key is redacted, the rest of the key "
+                + "survives")
+        void theStatementKeyAccountSegmentIsRedacted() {
+            // The key shape is composed by StatementWriter.objectKey. Everything after the account segment is
+            // what makes a failed object findable, and none of it identifies a customer, so the assertion
+            // checks BOTH halves: the digits are gone and every other segment is byte for byte intact.
+            String key = "statements/account=00000000011/month=2026-08"
+                    + "/generation=0000000000000000042/statement=0000000000000000003/STATEMNT.PS";
+
+            String masked = maskAll("software.amazon.awssdk.services.s3.model.S3Exception: Access Denied "
+                    + "(Bucket: carddemo-statements, Key: " + key + ")");
+
+            assertThat(masked)
+                    .as("the eleven account digits do not travel inside a rendered cause")
+                    .doesNotContain("00000000011")
+                    .contains("statements/account=[REDACTED_ACCOUNT]/month=2026-08")
+                    .contains("/generation=0000000000000000042/statement=0000000000000000003/STATEMNT.PS")
+                    .as("the classification and the bucket are diagnosis, not disclosure")
+                    .contains("S3Exception: Access Denied")
+                    .contains("Bucket: carddemo-statements");
+        }
+
+        @Test
+        @DisplayName("m-03: the redaction literal is the one StatementWriter substitutes, so one vocabulary "
+                + "appears whichever layer acted")
+        void theRedactionLiteralAgreesWithTheSanitiser() {
+            // Read from the class rather than retyped, because the point of the assertion is that the two
+            // definitions cannot drift: the appender rule catches a key that reaches a log, and the writer's
+            // own sanitiser catches the same key on the path no appender rule can reach - the rendered stack
+            // Spring Batch stores in BATCH_STEP_EXECUTION.EXIT_MESSAGE.
+            assertThat(maskAll("statements/account=00000000011/month=2026-08/STATEMNT.PS"))
+                    .contains(StatementWriter.ACCOUNT_SEGMENT_REDACTION);
+        }
+
+        @Test
+        @DisplayName("m-03: a labelled account identifier is still NOT masked, which Gate 1 requires")
+        void theLabelledAccountIdentifierRemainsVisible() {
+            // The file's own R1 paragraph records this decision: ACCT-ID is the control-break key of
+            // app/cbl/CBACT04C.cbl:L194 and the reported key of the 133-byte report line, and Gate 1 compares
+            // those lines against the legacy baseline. R19 must not have widened into that.
+            for (String value : List.of("accountId=00000000011 processed=300 rejected=2",
+                    "ACCT-ID 00000000011 control break", "account=00000000011")) {
+                assertThat(maskAll(value)).as("diagnostic [%s]", value).isEqualTo(value);
             }
         }
 

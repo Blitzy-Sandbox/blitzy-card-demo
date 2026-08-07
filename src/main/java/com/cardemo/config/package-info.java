@@ -221,7 +221,7 @@
  * <pre>{@code
  * ./mvnw -B -ntp clean compile
  * ./mvnw -B -ntp test
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ./mvnw -B -ntp clean verify
  * docker compose up -d
  * }</pre>
  *
@@ -235,11 +235,18 @@
  * }</pre>
  *
  * <p>The {@code -Ddependency-check.skip=true} flag suppresses only the vulnerability scan, which needs
- * network access to the feed and takes roughly half an hour on a cold cache; continuous integration runs it
- * as a separate job so that skipping it locally cannot hide a finding. Loading the git-ignored environment
- * file with {@code set -a; . ./.env; set +a} before invoking Maven is not optional for anything that starts
- * a context: {@code carddemo.security.jwt.signing-key} has no default and a context without it fails fast by
- * design.
+ * network access to the feed and takes roughly half an hour on a cold cache. <strong>An earlier revision of
+ * this paragraph added that continuous integration "runs it as a separate job so that skipping it locally
+ * cannot hide a finding"; that clause is withdrawn.</strong> No separate scan job exists. The workflow's
+ * {@code verify} job runs one {@code ./mvnw --batch-mode --no-transfer-progress clean verify} carrying no skip
+ * flag - the step named <em>Verify - compile warning-free, run every tier, enforce every gate</em> of the
+ * {@code verify} job in {@code .github/workflows/build.yml} - so the scan is part of the full gate itself and a
+ * run that
+ * carries the flag is a local shortcut rather than gate evidence. Loading the git-ignored environment file is
+ * not optional for anything that starts a context, because {@code carddemo.security.jwt.signing-key} has no
+ * default and a context without it fails fast by design - load it for the one command that needs it,
+ * {@code ( set -a; . ./.env; set +a; ./mvnw -B -ntp verify )}, rather than exporting it into the shell where
+ * every later child inherits it.
  *
  * <h3>The gates, and what each one fails on</h3>
  *
@@ -453,17 +460,15 @@
  *   <dd>{@code 100}, and this is the only key the batch configuration class itself binds; the default lives
  *       on the constructor parameter, so the key may be omitted entirely.</dd>
  *
- *   <dt>{@code carddemo.batch.statement-processor.max-transactions-per-run}</dt>
- *   <dd>Defaults to {@code 1000000}. It exists because the legacy statement program held its working set in a fixed
- *       table of 51 cards by 10 transactions - a hard ceiling of 510 with no bounds check anywhere. Streaming
- *       removes a silent overrun, which is an improvement rather than parity, so the deviation is labelled
- *       and logged rather than presented as equivalence, and this bound replaces the ceiling explicitly.</dd>
  *
  *   <dt>{@code carddemo.batch.jobs.posttran}, {@code .intcalc}, {@code .tranrept}, {@code .combtran} and
  *       {@code .creastmt}</dt>
  *   <dd>Each names its job - {@code POSTTRAN}, {@code INTCALC}, {@code TRANREPT}, {@code COMBTRAN} and
- *       {@code CREASTMT} - and each is enabled by default; the statement entry additionally records its five
- *       steps. There are <strong>exactly six jobs</strong>, being those five stages plus the orchestrator,
+ *       {@code CREASTMT} - and the name is all each carries: every job binds this namespace, and no
+ *       {@code .enabled} flag or {@code .steps} count is declared, because a job cannot be disabled while
+ *       the five stages are constructor dependencies of the orchestrator and the statement job's step count
+ *       is a structural fact of {@code app/jcl/CREASTMT.JCL}. There are
+ *       <strong>exactly six jobs</strong>, being those five stages plus the orchestrator,
  *       and <strong>never a seventh</strong>. {@code CBTRN01C} is not one of them: it is read-only - six
  *       {@code SELECT} statements with no {@code WRITE}, {@code REWRITE} or {@code DELETE} anywhere - and
  *       has no job of its own in the legacy stream, so it is a labelled pre-flight <em>step</em> inside the
@@ -920,14 +925,14 @@
  *       {@code Not available} here and their function is discharged by framework mechanisms instead.
  *       <em>Needed:</em> nothing; neither absence blocks anything.</dd>
  *
- *   <dt>7. The evidence register itself, at this commit: {@code Not available}</dt>
+ *   <dt>7. The evidence register itself: <em>authored</em>, and no longer an unavailability</dt>
  *   <dd>Rule 1 Clause B forbids a deferred item without an owner or a tracking reference, and the reference
- *       used throughout this document is the planned {@code DECISION_LOG.md} with its companion
- *       {@code TRACEABILITY_MATRIX.md}. <strong>Neither file exists yet at the anchor commit.</strong> Until
- *       they do, the tracking reference for every deviation and preserved quirk named here is the citation
- *       printed beside it, which is why each one carries a path and a locator rather than a bare assertion.
- *       <em>Needed:</em> creation of those two root-owned documents; this package neither creates nor edits
- *       them.</dd>
+ *       used throughout this document is {@code DECISION_LOG.md} with its companion
+ *       {@code TRACEABILITY_MATRIX.md}. <strong>Both are authored at the repository root.</strong> An earlier
+ *       revision of this entry reported {@code Not available} and said neither existed yet at the anchor
+ *       commit; that record is withdrawn. The tracking reference for every deviation and preserved quirk
+ *       named here remains the citation printed beside it, because a path and a locator cannot drift from the
+ *       configuration they explain in the way a second copy in a separate document can.</dd>
  * </dl>
  *
  * <h3>The one Rule 1 conflict, and how it is resolved</h3>

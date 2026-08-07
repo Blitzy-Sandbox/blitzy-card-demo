@@ -144,14 +144,16 @@ import org.springframework.data.jpa.repository.Query;
  * explicitly with {@code Mockito.verify} and {@code verifyNoMoreInteractions} where it matters, which is
  * the stronger statement.
  *
- * <p><b>The three retained parity artefacts, and the one Rule 1 conflict they raise.</b> Rule 1 clause B
- * forbids dead code; the parity mandate requires reproducing reachable no-ops and preserving legacy
+ * <p><b>The retained parity artefacts of {@code CBACT04C}, and the one Rule 1 conflict they raise.</b> Rule 1
+ * clause B forbids dead code; the parity mandate requires reproducing reachable no-ops and preserving legacy
  * defects verbatim. <b>Parity governs</b>, and clause B's actual intent - no <em>untracked</em> residue -
- * is satisfied because each artefact is marked in code, asserted here, and is owed
- * an entry in the planned {@code DECISION_LOG.md} plus a row in the planned
- * {@code TRACEABILITY_MATRIX.md}. Deleting any of them would fail
- * a stated acceptance criterion (the paragraph map that gate 7 verifies) to satisfy a stylistic one. All
- * three instances that belong to {@code CBACT04C} are covered here:
+ * is satisfied because each artefact is marked in code, asserted here, and carries an entry in
+ * {@code DECISION_LOG.md} plus a row in {@code TRACEABILITY_MATRIX.md}. Deleting any of them would fail
+ * a stated acceptance criterion (the paragraph map that gate 7 verifies) to satisfy a stylistic one. This
+ * list is scoped to <em>this program</em> and is deliberately not a global census: the tree-wide register is
+ * enumerated by locator in {@code com.cardemo}'s package documentation and its size is derived on every run
+ * by {@code GateVerificationTest} as {@code dispositions.justifiedNoOps}. The instances that belong to
+ * {@code CBACT04C} are covered here:
  * <ol>
  * <li><b>The canonical instance.</b> {@code 1400-COMPUTE-FEES} at {@code app/cbl/CBACT04C.cbl:L518}-{@code :L520}
  * is empty apart from the comment {@code * To be implemented}, has no {@code -EXIT} label, and is
@@ -2091,7 +2093,7 @@ class InterestCalculationProcessorTest {
          * observable output the parity comparison is measured against, so correcting it to
          * {@code 'ERROR OPENING DISCLOSURE GROUP FILE'} would register as a diff. Severity <b>Low</b> - an
          * operator reading the line is pointed at the wrong dataset, and nothing else - owed an
-         * entry in the planned {@code DECISION_LOG.md} as its tracking reference, which is what keeps
+         * entry in the {@code DECISION_LOG.md} as its tracking reference, which is what keeps
          * it a documented
          * reproduction rather than untracked residue under Rule 1 clause B.
          *

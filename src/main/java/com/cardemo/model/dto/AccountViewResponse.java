@@ -60,11 +60,34 @@ import java.util.Objects;
  * A 3270 terminal in a card-operations centre could display them; an HTTP response body is logged by proxies,
  * cached by clients and captured by browser tooling, so it may not.</p>
  *
- * <p>Two consequences are worth stating plainly. A caller that legitimately needs those values needs an
- * operation designed for that purpose, with its own authorisation, and none exists in this scope. And a caller
- * updating an account does <b>not</b> need them: the values it must echo travel inside
- * {@link #snapshotToken}, sealed, which is precisely why the update precondition can be satisfied without any
- * protected value ever crossing the wire in the clear.</p>
+ * <p>The withholding applies to the <b>display</b> components. A caller that legitimately needs those values
+ * for some other purpose needs an operation designed for it, with its own authorisation, and none exists in
+ * this scope.</p>
+ *
+ * <h2>The as-displayed group, carried verbatim</h2>
+ *
+ * <p>{@link #oldDetails} is the one place a protected value does appear, and it is there because
+ * transformation Rule 7 requires it. {@code ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:669} lived in
+ * {@code WS-THIS-PROGCOMMAREA} at {@code :652} between the two turns of the pseudo-conversation, and a
+ * stateless server has nowhere to put it, so the matching {@code PUT} carries it in its request body and this
+ * read is what supplies it. {@code 9700-CHECK-CHANGE-IN-REC} at {@code :4109-4193} compares all
+ * twenty-nine of its values against the live record, so every one of them has to be here.</p>
+ *
+ * <p>It is carried as the group itself rather than as flat components, and that is not a stylistic choice.
+ * The comparison is representation-sensitive in ways a caller cannot be expected to reconstruct: the date of
+ * birth is compared at live offsets {@code 1}, {@code 6} and {@code 9} against snapshot offsets {@code 1},
+ * {@code 5} and {@code 7}, because the live record is dash-separated and the snapshot is not
+ * ({@code :L4174-L4179}); the account group identifier is folded to lower case on both sides while the
+ * customer name and address fields are folded to upper case and the remainder are not folded at all. A caller
+ * that assembled the group from flat display fields would get the date of birth wrong on every request.
+ * Echoing this component back unaltered is therefore the whole contract, and the type is the very type the
+ * {@code PUT} binds, so there is no shape to translate.</p>
+ *
+ * <p>What that costs is stated rather than hidden: the group is personal data on an HTTP response. The
+ * mitigations in force are the general ones - transport is the deployment's concern, the logging configuration
+ * masks the social security number and credentials in every log event, and no handler in this scope reinstates
+ * binding messages that could echo a submitted value. Encryption at rest for personally identifiable data is
+ * recorded as deferred hardening rather than claimed.</p>
  *
  * <h2>Money is text, exactly as the source rendered it</h2>
  *
@@ -75,7 +98,8 @@ import java.util.Objects;
  *
  * <h2>Inputs, outputs, side effects, failure modes</h2>
  *
- * <p><b>Inputs.</b> Built by {@link #of}, from a service-produced {@link AccountDto} and a sealed token.
+ * <p><b>Inputs.</b> Built by {@link #of}, from a service-produced {@link AccountDto} and the as-displayed
+ * group the update service fetched.
  * <b>Outputs.</b> Serialised by Jackson; every component is a JSON property and there are no others.
  * <b>Side effects.</b> None. <b>Failure modes.</b> A null projection is a wiring defect and raises
  * {@link NullPointerException}.</p>
@@ -108,10 +132,9 @@ import java.util.Objects;
  *     enumerated counterpart, {@code ACSPFLGI PIC X(1)}
  * @param informationMessage {@code INFOMSGI PIC X(45)}, the byte-exact screen literal; may be null
  * @param errorMessage {@code ERRMSGI PIC X(78)}, on the same terms; may be null
- * @param snapshotToken the sealed as-displayed snapshot to return in {@code If-Match} on a subsequent update.
- *     Opaque, bound to this account, and expiring. It is the mechanism by which the legacy field-by-field
- *     change detection survives statelessness without the caller holding - or being able to alter - the
- *     values being compared
+ * @param oldDetails the {@code ACUP-OLD-DETAILS} group of {@code app/cbl/COACTUPC.cbl:669} exactly as the
+ *     read projected it, to be echoed back unaltered as the {@code oldDetails} member of the matching
+ *     update's request body. Never null on a successful read
  */
 public record AccountViewResponse(
         String accountId,
@@ -136,7 +159,7 @@ public record AccountViewResponse(
         String primaryCardHolderIndicator,
         String informationMessage,
         String errorMessage,
-        String snapshotToken) {
+        AccountUpdateRequest.OldDetails oldDetails) {
 
     /**
      * The names of the legacy projection's components that this type must never carry.
@@ -157,17 +180,21 @@ public record AccountViewResponse(
             "eftAccountId");
 
     /**
-     * Projects a service-produced account onto its response form, withholding the nine protected values and
-     * attaching the sealed snapshot.
+     * Projects a service-produced account onto its response form, withholding the nine protected display
+     * values and attaching the as-displayed group the matching update must echo.
+     *
+     * <p>The group is relayed by reference and is neither copied nor rewritten, because the caller returns it
+     * unaltered and the comparison it feeds is byte-sensitive.</p>
      *
      * @param projection the thirty-seven-field projection the account-view service produced; must not be null
-     * @param snapshotToken the sealed as-displayed snapshot for a subsequent update; may be null only when one
-     *     could not be issued, in which case the client will be unable to update and the reason belongs in the
-     *     log rather than in this body
+     * @param oldDetails the as-displayed group for a subsequent update; may be null only when the read could
+     *     not produce one, in which case the client will be unable to update and the reason belongs in the log
+     *     rather than in this body
      * @return the response; never null
      * @throws NullPointerException if {@code projection} is null
      */
-    public static AccountViewResponse of(final AccountDto projection, final String snapshotToken) {
+    public static AccountViewResponse of(final AccountDto projection,
+                                         final AccountUpdateRequest.OldDetails oldDetails) {
         Objects.requireNonNull(projection, "projection must not be null");
         return new AccountViewResponse(
                 projection.accountId(),
@@ -192,6 +219,6 @@ public record AccountViewResponse(
                 projection.primaryCardHolderIndicator(),
                 projection.informationMessage(),
                 projection.errorMessage(),
-                snapshotToken);
+                oldDetails);
     }
 }

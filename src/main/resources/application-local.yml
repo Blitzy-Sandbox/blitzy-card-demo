@@ -151,13 +151,17 @@
 #     copied verbatim from the committed .env.example and are the whole
 #     point of a local profile: a developer should need no environment at
 #     all beyond a running stack. They are POSTGRES_HOST, POSTGRES_DB,
-#     POSTGRES_USER, AWS_ENDPOINT_URL, AWS_DEFAULT_REGION, the three bucket
-#     variables, the queue variable, the topic variable and the OTLP
-#     endpoint. None is sensitive and each addresses a container on the
-#     loopback interface.
-#   * A SECRET NEVER carries a default, here or anywhere. POSTGRES_PASSWORD
-#     and the JWT signing key have no default and no committed value in this
-#     file or in the base. Rule 1 Clause D forbids secrets in configuration,
+#     AWS_ENDPOINT_URL, AWS_DEFAULT_REGION, the three bucket variables, the
+#     queue variable, the topic variable and the OTLP endpoint. None is
+#     sensitive and each addresses a container on the loopback interface.
+#     A DATABASE PRINCIPAL IS NOT IN THAT CATEGORY: neither the runtime role
+#     nor the migration role carries a default anywhere, and the pair of
+#     fallbacks that once ended at POSTGRES_USER here is gone, because it
+#     silently made the local principal the cluster superuser.
+#   * A SECRET NEVER carries a default, here or anywhere.
+#     CARDDEMO_DB_APP_PASSWORD, CARDDEMO_DB_MIGRATION_PASSWORD and the JWT
+#     signing key have no default and no committed value in this file or in
+#     the base. Rule 1 Clause D forbids secrets in configuration,
 #     and a default credential is a committed credential no matter how
 #     harmless the value looks. The AWS credential pair is not in that
 #     category and is not a secret: LocalStack validates no credential, the
@@ -168,8 +172,11 @@
 #
 # Resource names are NOT re-invented here. The three buckets, the FIFO
 # queue and the topic use the published contract spelling asserted at
-# .env.example:146-149 and matched byte-for-byte by docker-compose.yml:97-99
-# and by the resolution block of localstack-init/init-aws.sh:529-533. That
+# .env.example under the CARDDEMO_S3_*, CARDDEMO_SQS_REPORT_QUEUE and
+# CARDDEMO_SNS_NOTIFICATION_TOPIC names, matched byte-for-byte by
+# docker-compose.yml's x-carddemo-aws-context anchor and by the resolution
+# block of localstack-init/init-aws.sh - its readonly INPUT_BUCKET through
+# NOTIFICATION_TOPIC declarations. That
 # script is the only thing that creates these resources, so a divergent
 # spelling here would resolve to a bucket that does not exist.
 #
@@ -179,10 +186,14 @@
 # base on purpose. Adding any of them would be dead configuration under
 # Rule 1 Clause B, or a security regression under Clause D, or both.
 #
-#   * spring.datasource.password. The base already resolves
-#     ${POSTGRES_PASSWORD} with NO default, which is precisely the required
-#     behaviour, so restating it would change nothing while duplicating a
-#     credential reference. Absent here means inherited unchanged.
+#   * spring.datasource.username and spring.datasource.password. The base
+#     already resolves ${CARDDEMO_DB_APP_USER} and
+#     ${CARDDEMO_DB_APP_PASSWORD} with NO default and NO fallback, which is
+#     precisely the required behaviour, so restating either would change
+#     nothing while duplicating a credential reference that could drift.
+#     Absent here means inherited unchanged - and, since this is the profile
+#     docker-compose.yml activates, inheriting is what keeps every local run
+#     on the DML-only role instead of the bootstrap superuser.
 #   * carddemo.security.jwt.signing-key. Same reasoning, and stronger: this
 #     file contains no signing key, no default, no example and no fallback.
 #     An unset key fails startup under the local profile exactly as it does
@@ -244,8 +255,14 @@
 #     pg_isready. If another PostgreSQL already owns 5432, export
 #     POSTGRES_PORT and CLONE_INDEX.
 #   * Startup aborts on an unresolved placeholder for
-#     spring.datasource.password. POSTGRES_PASSWORD is unset. Export it -
-#     .env.example ships the Compose value. Do not add a default here.
+#     spring.datasource.username, spring.datasource.password,
+#     spring.flyway.user or spring.flyway.password. One of
+#     CARDDEMO_DB_APP_USER, CARDDEMO_DB_APP_PASSWORD,
+#     CARDDEMO_DB_MIGRATION_USER or CARDDEMO_DB_MIGRATION_PASSWORD is unset.
+#     All four are REQUIRED and none has a fallback: export them -
+#     .env.example ships the two role names and leaves the two passwords for
+#     you to generate. Do not add a default here, and do not reach for
+#     POSTGRES_USER, which is the cluster superuser.
 #   * Startup aborts on an unresolved placeholder for
 #     spring.cloud.aws.credentials.access-key or .secret-key.
 #     AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY is unset. Export the
@@ -335,7 +352,7 @@
 #     forbids, and would have silently resolved to nothing, because
 #     init-aws.sh reads the published names when it creates the buckets.
 #   * LOW - init-aws.sh documents variable names its own code does not read.
-#     Its KEY CONFIGS block at localstack-init/init-aws.sh:184-195 lists
+#     Its KEY CONFIGS AND DEFAULTS block lists
 #     CARDDEMO_BATCH_INPUT_BUCKET, CARDDEMO_STATEMENTS_BUCKET,
 #     CARDDEMO_REPORT_QUEUE and CARDDEMO_NOTIFICATION_TOPIC, without the
 #     S3/SQS/SNS infix that its resolution block at :529-533 actually reads.
@@ -402,30 +419,33 @@ spring:
   # default matching docker-compose.yml, and the password does not.
   # ----------------------------------------------------------------
   datasource:
-    # docker-compose.yml:59 publishes "${POSTGRES_PORT:-5432}:5432" on the
+    # docker-compose.yml's postgres `ports` publishes 5432 on the
     # host, so `localhost` is right for a host-side run; inside the Compose
     # network the service hostname `postgres` applies instead - override
     # POSTGRES_HOST for that case. POSTGRES_PORT keeps the base's own
     # default because only the host and database segments are new here.
-    # Database name default matches docker-compose.yml:54.
+    # Database name default matches the compose postgres service's
+    # POSTGRES_DB.
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:carddemo}
-    # A role name is not a credential; the password behind it is, and is
-    # inherited from the base with no default - see DELIBERATE OMISSIONS.
+    # NEITHER CREDENTIAL IS REDECLARED HERE ANY LONGER, and their absence is
+    # the control rather than an omission. This profile exists to give the
+    # NON-SECRET segments of a local run a working default; a database
+    # principal is not one of those segments. An earlier revision read
+    # ${CARDDEMO_DB_APP_USER:${POSTGRES_USER:carddemo}} and
+    # ${CARDDEMO_DB_APP_PASSWORD:${POSTGRES_PASSWORD}} here, and because this
+    # is the profile docker-compose.yml activates, that pair of fallbacks was
+    # what actually decided the local principal: with the dedicated variables
+    # unset every local run connected as the cluster BOOTSTRAP role, which the
+    # postgres image creates as a SUPERUSER, whatever the base profile said.
     #
-    # THE LEAST-PRIVILEGE ROLE COMES FIRST HERE TOO, and it has to: this is the
-    # profile docker-compose.yml activates, so a plain ${POSTGRES_USER} here
-    # would keep every local run connected as the cluster BOOTSTRAP role - which
-    # the postgres image creates as a SUPERUSER - no matter what the base
-    # profile says. The order is the same as the base's: the DML-only runtime
-    # role if it is supplied, otherwise the bootstrap role so that an existing
-    # volume keeps working. docker-compose.yml provisions the role and resolves
-    # its own default with Compose's `:-`, which unlike Spring's `:` treats an
-    # empty value as unset.
-    #
-    # The final ${POSTGRES_USER:carddemo} default matches
-    # docker-compose.yml's POSTGRES_USER: ${POSTGRES_USER:-carddemo}.
-    username: ${CARDDEMO_DB_APP_USER:${POSTGRES_USER:carddemo}}
-    password: ${CARDDEMO_DB_APP_PASSWORD:${POSTGRES_PASSWORD}}
+    # application.yml now binds ${CARDDEMO_DB_APP_USER} and
+    # ${CARDDEMO_DB_APP_PASSWORD} bare, with no default and no fallback, so
+    # inheriting them unchanged is what makes a local run use the DML-only role
+    # or refuse to start. Restating them here could only weaken that, and
+    # repeating them identically would be duplication that can drift.
+    # docker-compose.yml supplies both to the container and guards both with
+    # Compose's `:?`; .env.example ships the role name and leaves the password
+    # empty for an operator to generate.
 
   batch:
     jdbc:
@@ -483,11 +503,21 @@ spring:
     # injects from its Testcontainers container. The base profile records the
     # full reasoning.
     #
-    # The fallback is the bootstrap role, so a volume created before these roles
-    # existed still migrates and still validates. docker-compose.yml provisions
-    # both roles on first initialisation of a fresh volume.
-    user: ${CARDDEMO_DB_MIGRATION_USER:${POSTGRES_USER:carddemo}}
-    password: ${CARDDEMO_DB_MIGRATION_PASSWORD:${POSTGRES_PASSWORD}}
+    # REQUIRED, WITH NO FALLBACK, for the same reason the datasource credentials
+    # above are no longer declared here at all. The fallback these two lines
+    # once carried ended at ${POSTGRES_USER:carddemo}, so an operator who had
+    # not been told about the migration role migrated the schema as the
+    # bootstrap SUPERUSER - and then owned every object in it as that role,
+    # which is the condition the ALTER DEFAULT PRIVILEGES declarations in
+    # docker-compose.yml exist to work around rather than to bless.
+    #
+    # Bound bare, an absent value aborts startup naming the variable, exactly as
+    # application-prod.yml has always required. docker-compose.yml provisions
+    # both roles on first initialisation of a fresh volume and guards all four
+    # variables with Compose's `:?`, so this profile is never reached with one
+    # of them missing.
+    user: ${CARDDEMO_DB_MIGRATION_USER}
+    password: ${CARDDEMO_DB_MIGRATION_PASSWORD}
     placeholders:
       # OPENS the demonstration-user gate that application.yml closes. This is
       # one of the very few keys in this profile that changes behaviour rather
@@ -508,9 +538,10 @@ spring:
     aws:
       region:
         # The base resolves ${AWS_REGION:${AWS_DEFAULT_REGION}} with no
-        # terminal default. This adds one, matching .env.example:132 and the
-        # AWS CLI precedence that localstack-init/init-aws.sh:196-198
-        # documents: AWS_REGION wins when set, AWS_DEFAULT_REGION otherwise.
+        # terminal default. This adds one, matching the AWS_DEFAULT_REGION
+        # .env.example ships and the AWS CLI precedence that
+        # localstack-init/init-aws.sh resolves in its readonly REGION:
+        # AWS_REGION wins when set, AWS_DEFAULT_REGION otherwise.
         # LocalStack accepts any region; naming it explicitly keeps request
         # signing deterministic rather than environment dependent.
         static: ${AWS_REGION:${AWS_DEFAULT_REGION:us-east-1}}
@@ -518,7 +549,8 @@ spring:
       credentials:
         # LocalStack-only placeholders, supplied by the ENVIRONMENT and never
         # committed here - not even the documented `test`/`test` pair, which
-        # .env.example:127-128 ships. No default: an unset variable fails
+        # .env.example ships as AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
+        # No default: an unset variable fails
         # placeholder resolution at startup rather than booting on a guess.
         #
         # Setting these is a SECURITY CONTROL, not a convenience. A static
@@ -531,19 +563,20 @@ spring:
         access-key: ${AWS_ACCESS_KEY_ID}
         secret-key: ${AWS_SECRET_ACCESS_KEY}
 
-      # Only s3, sqs and sns are configured, because docker-compose.yml:84
-      # enables only `SERVICES: s3,sqs,sns` on the container. The library
+      # Only s3, sqs and sns are configured, because docker-compose.yml
+      # enables only `SERVICES: s3,sqs,sns` on the localstack service. The library
       # also offers a single global spring.cloud.aws.endpoint, and it is
       # NOT used here: it would redirect dynamodb, secretsmanager, ses,
       # cloudwatch and parameterstore at the same edge, declaring an
       # integration surface this application does not have.
       #
       # Endpoint host: `localhost` is correct for a host-side run against
-      # the port docker-compose.yml:103 publishes. Inside the Compose
-      # network use `http://carddemo-localstack:4566`. Both spellings, plus
-      # `localhost.localstack.cloud`, are accepted by the endpoint allowlist
-      # of localstack-init/init-aws.sh:199-209; the default below matches
-      # the committed .env.example:137.
+      # the port docker-compose.yml's localstack `ports` publishes. Inside
+      # the Compose network use `http://carddemo-localstack:4566`. Both
+      # spellings, plus `localhost.localstack.cloud`, are accepted by the
+      # endpoint allowlist localstack-init/init-aws.sh applies in
+      # require_local_endpoint and validate_endpoint_port; the default below
+      # matches the AWS_ENDPOINT_URL .env.example commits.
       s3:
         # THE DEVELOPER DEFAULT LIVES HERE, and only here. The base profile
         # declares the same three keys with no literal default, so an unset
@@ -575,9 +608,11 @@ carddemo:
       # :L1631, :L2919 and :L3021 (entry census GDG 7).
       #
       # The base declares all three with NO default. Only the defaults are
-      # new here, and each is the name localstack-init/init-aws.sh:529-531
-      # actually creates - the published contract asserted at
-      # .env.example:146-149 and matched at docker-compose.yml:97-99. A
+      # new here, and each is the name localstack-init/init-aws.sh actually
+      # creates through readonly INPUT_BUCKET, OUTPUT_BUCKET and
+      # STATEMENTS_BUCKET - the published contract .env.example declares as
+      # the three CARDDEMO_S3_* names and docker-compose.yml matches in its
+      # x-carddemo-aws-context anchor. A
       # divergent spelling here would resolve to a bucket that does not exist.
       #
       # GDG GENERATIONS BECOME DETERMINISTIC KEY PREFIXES. A relative
@@ -628,29 +663,37 @@ carddemo:
       # profile. Ordering is why the queue is FIFO rather than standard -
       # DISPOSITION(MOD) appended, and submission order was observable.
       #
-      # Default matches localstack-init/init-aws.sh:532. The physical name
-      # keeps the `.fifo` suffix AWS requires; the logical name
+      # Default matches the REPORT_QUEUE declaration in
+      # localstack-init/init-aws.sh (readonly REPORT_QUEUE, line 542). The
+      # physical name keeps the `.fifo` suffix AWS requires; the logical name
       # carddemo-report-jobs and the message group id are already declared
-      # in the base profile and are not restated.
+      # in the base profile and are not restated. That script also pins the
+      # queue's VisibilityTimeout to 900 seconds - QUEUE_VISIBILITY_TIMEOUT_SECONDS
+      # - which is the same window com.cardemo.config.BatchConfig declares on its
+      # listener, so a report job cannot outlive its own message (finding M-02).
       report-queue: ${CARDDEMO_SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
 
     sns:
-      # Operator notification. Exactly ONE topic is provisioned, by
-      # localstack-init/init-aws.sh:533, with zero subscriptions; least
-      # privilege forbids a delivery surface no code path consumes. Base
-      # declares the key with no default; only the default is new.
+      # Operator notification. Exactly ONE topic is provisioned, by the
+      # NOTIFICATION_TOPIC declaration in localstack-init/init-aws.sh (line 543),
+      # together with exactly ONE subscriber: the standard queue
+      # NOTIFICATION_INBOX_QUEUE, subscribed with raw delivery by
+      # ensure_notification_subscription. A topic with no subscriber accepts every
+      # publish and discards it, which is the defect finding M-04 reported; least
+      # privilege means one subscriber, not none. Base declares the key with no
+      # default; only the default is new.
       notification-topic: ${CARDDEMO_SNS_NOTIFICATION_TOPIC:carddemo-notifications}
 
 management:
   otlp:
     tracing:
-      # The Jaeger all-in-one OTLP receiver from docker-compose.yml:127,
-      # which publishes ${JAEGER_OTLP_HTTP_PORT:-4318}:4318. The base
+      # The Jaeger all-in-one OTLP receiver from docker-compose.yml, whose
+      # jaeger `ports` publishes ${JAEGER_OTLP_HTTP_PORT:-4318}:4318. The base
       # declares this key with no default so that a missing collector fails
       # loudly - Boot gates its OTLP exporter on @ConditionalOnProperty, so
       # an absent value would create no exporter and drop every span in
       # silence. This adds the local default only, matching the value
-      # .env.example:172 ships for OTEL_EXPORTER_OTLP_ENDPOINT.
+      # .env.example ships for OTEL_EXPORTER_OTLP_ENDPOINT.
       #
       # It MUST be the HTTP receiver on 4318 with the /v1/traces path, not
       # the gRPC receiver on 4317. Sampling is not set here: the base

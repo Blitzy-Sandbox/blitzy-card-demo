@@ -458,7 +458,7 @@ public class AdminMenuService {
             // ---- THE XCTL FALL-THROUGH GUARD. Under CICS, XCTL never returns, so :L147-L154 is
             // unreachable from here. In Java the call would return, so returning now is what preserves
             // the source's behaviour; falling through would announce "coming soon" for every valid
-            // selection. Owed an entry in the planned DECISION_LOG.md as a mechanism substitution.
+            // selection. Owed an entry in the DECISION_LOG.md as a mechanism substitution.
             return new AdminMenuSelection(optionNumber, selectedOption.optionName(), targetProgram,
                     NO_MESSAGE, false);
         }
@@ -470,7 +470,7 @@ public class AdminMenuService {
         //
         // INTENTIONAL RETENTION: none of the four shipped program names begins with 'DUMMY', so this
         // branch is unreachable in production. It is retained verbatim for behavioural parity rather than
-        // deleted, and it is tracked - not an untracked leftover - by an entry in the planned DECISION_LOG.md and by
+        // deleted, and it is tracked - not an untracked leftover - by an entry in the DECISION_LOG.md and by
         // the package-private test seam on this class, which is how it is covered without weakening the coverage
         // gate.
         LOG.debug("Admin menu option {} of transaction {} targets placeholder program prefix {};"
@@ -486,7 +486,7 @@ public class AdminMenuService {
      * {@code SPACES} a field of blanks - the two ways a fixed-width field expresses "unset" - so the Java test covers
      * {@code null}, empty and all-blank, which are their counterparts. The transfer at {@code :L165-L167} has no
      * counterpart: the resolved name is returned and the client navigates. Retained rather than consolidated into its
-     * callers, with a reference owed to the planned DECISION_LOG.md.
+     * callers, with a reference owed to the DECISION_LOG.md.
      *
      * @param requestedProgram the requested target, standing in for {@code CDEMO-TO-PROGRAM}.
      * @return the requested program when it carries a value, otherwise {@link #SIGN_ON_PROGRAM}
@@ -509,7 +509,7 @@ public class AdminMenuService {
      * counterpart: the map and mapset names address a 3270 screen that is not reimplemented, and the controller
      * serialises the returned view instead. {@code ERASE} clears the physical screen before painting, which a
      * stateless response does implicitly by carrying the whole payload. Retained one for one with a reference owed to
-     * the planned DECISION_LOG.md.
+     * the DECISION_LOG.md.
      *
      * @param message the message to carry, either empty or one of the two source literals
      * @return the assembled view, never {@code null}

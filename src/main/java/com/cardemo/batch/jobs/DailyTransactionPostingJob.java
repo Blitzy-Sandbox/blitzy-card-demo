@@ -218,7 +218,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * unit</strong>, so the orphan hazard cannot occur. The interval is <strong>one record</strong>, which is what
  * keeps the unit of work exactly as wide as the source's own: a failure on one record rolls back that record
  * and no other, and every record already processed is already durable. Owed an entry, with the locator above,
- * in the planned {@code DECISION_LOG.md}.
+ * in the {@code DECISION_LOG.md}.
  *
  * <h2>Deviation 2 - the pre-flight adds two datasets POSTTRAN never supplied</h2>
  *

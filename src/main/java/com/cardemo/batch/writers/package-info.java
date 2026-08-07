@@ -148,8 +148,9 @@
  *       {@code [25,)} enforced, {@code release} 25, {@code -Xlint:all -Werror failOnWarning}.</li>
  *   <li><strong>Run.</strong> These are {@code ItemWriter} beans driven by a step; they are never invoked
  *       directly, and being step scoped they cannot be resolved outside a step context. They need both the
- *       database and the object-storage emulator up - {@code docker compose up -d} - and the environment loaded
- *       with {@code set -a; . ./.env; set +a}.</li>
+ *       database and the object-storage emulator up - {@code docker compose up -d} - and the environment scoped
+ *       to the one command that needs it: {@code ( set -a; . ./.env; set +a; ./mvnw -B -ntp verify )}. The
+ *       parentheses confine the values to the subshell instead of leaving every later child inheriting them.</li>
  *   <li><strong>Test.</strong> {@code StatementWriterDeliveryTest} covers the delivery contract and the payload
  *       parity of the statement outputs; {@code BatchWriterScopeIsolationTest} covers the scoping and
  *       per-execution key derivation of both the transaction and statement writers.

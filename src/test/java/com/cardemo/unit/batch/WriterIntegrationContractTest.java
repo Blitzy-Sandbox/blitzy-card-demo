@@ -62,7 +62,6 @@ import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.ByteArrayOutputStream;
-import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -311,26 +310,80 @@ class WriterIntegrationContractTest {
     }
 
     /**
-     * Stubs an object-store mock so that a streamed write lands in a buffer instead of returning {@code null}.
+     * Stubs an object-store mock so that a chunk's durable part upload succeeds instead of returning
+     * {@code null}.
      *
-     * <p>{@link RejectWriter} writes one {@code (+1)} generation as one stream - finding H-04 - so it reaches
-     * the store through {@code createResource} rather than {@code upload}. A mock that does not answer that call
-     * hands the writer a {@code null} resource, which the writer correctly reports as a physical write failure;
-     * stubbing it is what lets these contract assertions exercise the success path.
+     * <p>{@link RejectWriter} uploads each chunk as its own complete part object and assembles the one
+     * {@code (+1)} generation from them at close - findings H-04 and M-06 - so it reaches the store through
+     * {@code upload}, {@code listObjects} and {@code download}. A mock that does not answer those calls hands
+     * the writer a {@code null}, which the writer correctly reports as a physical write failure; stubbing them
+     * is what lets these contract assertions exercise the success path.
      *
      * @param objectStorage the mock to stub, never {@code null}
-     * @return the buffer every streamed write lands in, never {@code null}
+     * @return the buffer holding the bytes of the most recent write, never {@code null}
      */
     private static ByteArrayOutputStream stubStreamedWrites(S3Operations objectStorage) {
-        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        final java.util.Map<String, byte[]> objects = new java.util.LinkedHashMap<>();
+        when(objectStorage.upload(anyString(), anyString(), any(java.io.InputStream.class),
+                any(io.awspring.cloud.s3.ObjectMetadata.class)))
+                .thenAnswer(invocation -> {
+                    final String key = invocation.getArgument(1, String.class);
+                    final byte[] bytes;
+                    try (java.io.InputStream body =
+                            invocation.getArgument(2, java.io.InputStream.class)) {
+                        bytes = body.readAllBytes();
+                    }
+                    objects.put(key, bytes);
+                    if (!key.contains("/parts/")) {
+                        // The promoted generation object. The sink holds the generation's content, not the
+                        // sum of the parts and the generation, so a caller reading it sees one copy.
+                        sink.reset();
+                        sink.write(bytes);
+                    }
+                    return storedResource(key, bytes);
+                });
+        when(objectStorage.listObjects(anyString(), anyString())).thenAnswer(invocation -> {
+            final String prefix = invocation.getArgument(1, String.class);
+            final List<S3Resource> found = new java.util.ArrayList<>();
+            for (final java.util.Map.Entry<String, byte[]> entry
+                    : new java.util.LinkedHashMap<>(objects).entrySet()) {
+                if (entry.getKey().startsWith(prefix)) {
+                    found.add(storedResource(entry.getKey(), entry.getValue()));
+                }
+            }
+            return found;
+        });
+        when(objectStorage.download(anyString(), anyString())).thenAnswer(invocation -> {
+            final String key = invocation.getArgument(1, String.class);
+            return storedResource(key, objects.getOrDefault(key, new byte[0]));
+        });
+        when(objectStorage.objectExists(anyString(), anyString())).thenAnswer(invocation ->
+                Boolean.valueOf(objects.containsKey(invocation.getArgument(1, String.class))));
+        org.mockito.Mockito.doAnswer(invocation -> {
+            objects.remove(invocation.getArgument(1, String.class));
+            return null;
+        }).when(objectStorage).deleteObject(anyString(), anyString());
+        return sink;
+    }
+
+    /**
+     * Builds a resource view of one object, for the stubs above.
+     *
+     * @param key the object key
+     * @param bytes its content
+     * @return a resource reporting that key, length and content
+     */
+    private static S3Resource storedResource(final String key, final byte[] bytes) {
         S3Resource resource = mock(S3Resource.class);
+        when(resource.getFilename()).thenReturn(key);
+        when(resource.contentLength()).thenReturn(Long.valueOf(bytes.length));
         try {
-            when(resource.getOutputStream()).thenReturn((OutputStream) sink);
+            when(resource.getInputStream()).thenReturn(new java.io.ByteArrayInputStream(bytes));
         } catch (java.io.IOException impossible) {
             throw new IllegalStateException("stubbing cannot fail", impossible);
         }
-        when(objectStorage.createResource(anyString(), anyString())).thenReturn(resource);
-        return sink;
+        return resource;
     }
 
     // ====================================================================================================
@@ -583,25 +636,33 @@ class WriterIntegrationContractTest {
         }
 
         @Test
-        @DisplayName("a configured prefix with or without a trailing slash composes the identical key")
-        void trailingSeparatorIsNormalised() throws Exception {
+        @DisplayName("finding m-02: a configured prefix with a trailing slash is REFUSED, so exactly one "
+                + "spelling reaches key composition")
+        void trailingSeparatorIsRefusedRatherThanNormalised() throws Exception {
+            // This asserted that both spellings composed the identical key until finding m-02 centralized the
+            // prefix grammar across the six object-key classes. Folding two spellings into one was the defect
+            // rather than the feature: the writer rewrote the configured value and nothing reported the
+            // rewrite, so the catalogue an operator reads and the namespace in force could differ. The
+            // canonical spelling is still asserted to compose the expected key, so nothing about key
+            // composition is left unproven - only the tolerance is withdrawn.
             StepExecution bare = stepExecution(5L);
-            StepExecution slashed = stepExecution(5L);
             RejectWriter bareWriter = rejectWriter(mock(S3Operations.class), bare);
             bareWriter.write(new Chunk<>(List.of(new RejectWriter.RejectedTransaction(
                     dailyTransaction("ONE"), RejectCode.INVALID_CARD_NUMBER))));
             bareWriter.close();
-            S3Operations slashedStorage = mock(S3Operations.class);
-            stubStreamedWrites(slashedStorage);
-            RejectWriter slashedWriter = new RejectWriter(slashedStorage, metrics, new FileStatusMapper(),
-                    OUTPUT_BUCKET, CONFIGURED_REJECT_PREFIX + "/", slashed);
-            slashedWriter.write(new Chunk<>(List.of(new RejectWriter.RejectedTransaction(
-                    dailyTransaction("ONE"), RejectCode.INVALID_CARD_NUMBER))));
-            slashedWriter.close();
 
             assertThat(bare.getExecutionContext().getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY))
-                    .isEqualTo(slashed.getExecutionContext()
-                            .getString(RejectWriter.REJECT_OBJECT_KEY_CONTEXT_KEY));
+                    .as("the one accepted spelling composes exactly one separator between the root and the "
+                            + "job-instance segment")
+                    .startsWith(CONFIGURED_REJECT_PREFIX + "/")
+                    .doesNotContain("//");
+
+            assertThatThrownBy(() -> new RejectWriter(mock(S3Operations.class), metrics,
+                    new FileStatusMapper(), OUTPUT_BUCKET, CONFIGURED_REJECT_PREFIX + "/",
+                    stepExecution(5L)))
+                    .as("the shared grammar refuses the trailing form by naming the property")
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("carddemo.aws.s3.gdg-prefixes.daly-rejs");
         }
 
         @Test

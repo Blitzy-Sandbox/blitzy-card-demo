@@ -86,17 +86,26 @@ import jakarta.validation.constraints.Size;
  * is a deliberate security correction rather than an oversight, and it is why the response side of the
  * update flow carries no password property of any kind. The consequence for callers is set out next.</p>
  *
- * <p><strong>A blank password means "leave the stored credential unchanged".</strong> Three states are
- * therefore distinct and must stay distinct: absent (the JSON property is missing, so the component is
- * {@code null}), blank (the property is present and empty, so the component is the empty string) and
- * populated (a value the service will hash and store). In the legacy program a blank password was an error,
- * reported as "Password can NOT be empty..." at {@code app/cbl/COUSR02C.cbl:198-203}, but only because
- * line 169 had already filled the field with the stored value, so a blank field could only mean the
- * operator had erased it. Once the stored credential is no longer echoed, blank can no longer mean erasure,
- * and the only interpretation that neither silently blanks a stored credential nor silently ignores an
- * intended change is "leave it as it is". Collapsing the three states would do exactly one of those two
- * damaging things, so this type never coerces {@code null} to the empty string, never coerces the empty
- * string to {@code null}, and never substitutes a sentinel.</p>
+ * <p><strong>The password is required on every update, and a blank one is refused.</strong> An earlier
+ * revision of this paragraph asserted the opposite - that a blank password means "leave the stored credential
+ * unchanged" - and that claim is withdrawn, because it did not describe the behaviour a caller gets.
+ * {@code com.cardemo.service.admin.UserUpdateService} tests the field for emptiness at
+ * {@code app/cbl/COUSR02C.cbl:198} and answers {@code :200}'s literal, {@code "Password can NOT be
+ * empty..."}, as a {@code 400} carrying {@code errorCode} {@code CARDDEMO-VALIDATION-REJECTED}. Absent and
+ * blank therefore reach the same refusal; a caller cannot omit the field to mean "no change".</p>
+ *
+ * <p><strong>The no-change outcome is reached by resubmitting the same password, not by omitting it.</strong>
+ * The service's predicate is {@code !passwordEncoder.matches(presented, storedDigest)}, so a value that
+ * matches the stored digest leaves the digest untouched - which is the ordinary no-change result. That is why
+ * the reasoning behind the withdrawn claim, though sound as design, does not describe this implementation: the
+ * source governs, and the source rejects an empty field. Because the stored credential is no longer echoed on
+ * any response, a caller has to hold or re-collect the password rather than read it back and resubmit it.</p>
+ *
+ * <p>Three input states are nonetheless still carried through distinctly, because the <em>refusal</em> has to
+ * be reported accurately even though absent and blank share an outcome: absent (the JSON property is missing,
+ * so the component is {@code null}), blank (the property is present and empty, so the component is the empty
+ * string) and populated (a value the service will hash and store). This type never coerces {@code null} to
+ * the empty string, never coerces the empty string to {@code null}, and never substitutes a sentinel.</p>
  *
  * <p>For the same reason nothing is normalised on the way in: no trimming, no case folding, no padding to
  * the picture width. Trimming would turn a blank field into an empty one and erase the distinction just
@@ -249,10 +258,12 @@ import jakarta.validation.constraints.Size;
  * @param password        {@code PASSWDI PIC X(8)} at {@code app/cpy-bms/COUSR02.CPY:78}. The presented
  *                        plaintext credential. <strong>Inbound only</strong>: it binds from a request body
  *                        and is never serialised into a response, never rendered by
- *                        {@link #toString()}, and never stored as given, since the service hashes it. A
- *                        <strong>blank</strong> value means "leave the stored credential unchanged", which
- *                        is a different intent from an absent property and from a populated one, so the
- *                        three states are carried through untouched.
+ *                        {@link #toString()}, and never stored as given, since the service hashes it.
+ *                        <strong>Required in practice</strong>: an absent or blank value is refused with
+ *                        {@code 400} and {@code app/cbl/COUSR02C.cbl:200}'s literal, {@code "Password can NOT
+ *                        be empty..."}. The no-change outcome is reached by resubmitting a value that matches
+ *                        the stored digest, not by omitting the field. All three input states are still
+ *                        carried through untouched so the refusal can be reported accurately.
  * @param userType        {@code USRTYPEI PIC X(1)} at {@code app/cpy-bms/COUSR02.CPY:84}. The raw
  *                        one-character user-type code, carried as declared and deliberately not bound to
  *                        the {@code UserType} enum, so that an out-of-domain character reaches the
@@ -291,7 +302,23 @@ public record UserUpdateRequest(
         // LNAMEI   PIC X(20) - app/cpy-bms/COUSR02.CPY:72
         @Size(max = 20) String lastName,
 
-        // PASSWDI  PIC X(8)  - app/cpy-bms/COUSR02.CPY:78 (write-only; blank means unchanged)
+        // PASSWDI  PIC X(8)  - app/cpy-bms/COUSR02.CPY:78
+        //
+        // WRITE-ONLY AND REQUIRED IN PRACTICE. An earlier revision of this comment said "blank means
+        // unchanged", and that is withdrawn: it was wrong about the behaviour a caller actually gets.
+        // app/cbl/COUSR02C.cbl:198 tests this field for emptiness and :200 answers "Password can NOT be
+        // empty...", so UserUpdateService rejects a blank or absent password with a 400 carrying that exact
+        // literal and errorCode CARDDEMO-VALIDATION-REJECTED. A blank value is refused, never interpreted as
+        // "leave the stored credential alone".
+        //
+        // The no-change outcome does exist, but it is reached differently: supply the password and let it
+        // MATCH the stored digest. The service's predicate is !passwordEncoder.matches(presented, stored), so
+        // a matching resubmission simply leaves the digest untouched. Every rewrite of this record must
+        // therefore carry the password, and because the current value is never readable - the stored digest is
+        // deliberately not echoed on any response - a caller cannot pre-fill it from a prior read.
+        //
+        // WRITE_ONLY is what keeps it out of every response body: the field is bound on the way in and
+        // omitted on the way out, so no digest and no plaintext can leave through this type.
         @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
         @Size(max = 8) String password,
 

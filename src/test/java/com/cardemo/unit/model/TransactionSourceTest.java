@@ -121,7 +121,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <pre>
  *   ./mvnw -B -ntp -Ddependency-check.skip=true test -Dtest=TransactionSourceTest
- *   ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ *   ./mvnw -B -ntp clean verify
  * </pre>
  *
  * <p>Evidence of collection is {@code target/surefire-reports/TEST-com.cardemo.unit.model.

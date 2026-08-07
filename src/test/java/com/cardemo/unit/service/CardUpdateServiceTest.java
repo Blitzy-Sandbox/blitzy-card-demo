@@ -50,20 +50,16 @@ import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.CardUpdateRequest;
 import com.cardemo.model.entity.Card;
 import com.cardemo.repository.CardRepository;
-import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.card.CardUpdateService;
 import com.cardemo.service.shared.FileStatusMapper;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
-import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -115,11 +111,12 @@ import org.springframework.transaction.annotation.Transactional;
  * outside that tree matches neither Surefire's nor Failsafe's include set and silently never runs.
  *
  * <pre>
- * set -a; . ./.env; set +a
  * ./mvnw -B -ntp test-compile
- * ./mvnw -B -ntp test -Dtest=CardUpdateServiceTest
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ( set -a; . ./.env; set +a; ./mvnw -B -ntp test -Dtest=CardUpdateServiceTest )
+ * ( set -a; . ./.env; set +a; ./mvnw -B -ntp clean verify )
  * </pre>
+ * <p>Each subshell confines the exported values to the one command that needs them; test compilation needs
+ * none. An export into the shell would instead be inherited by every later child until it was unset.</p>
  *
  * <p>All three were executed on 2026-08-02 against OpenJDK 25.0.3 and Maven 3.9.11 and exited 0
  * with zero compiler warnings; the second reported this class's full test count with no failure,
@@ -415,55 +412,16 @@ final class CardUpdateServiceTest {
     @Mock
     private CardRepository cardRepository;
 
-    /**
-     * A signing key of at least the length {@code SnapshotTokenService} requires, so the sealer can be built
-     * without the environment. It is generated per run rather than declared, so no key material is committed,
-     * and it signs nothing outside this suite.
-     */
-    private static final String TEST_SIGNING_KEY = ephemeralSigningKey();
-
-    /** The token lifetime the sealer is built with, long enough that no test can age one out by accident. */
-    private static final long TOKEN_LIFETIME_SECONDS = 900L;
-
-    /**
-     * The real sealer, not a mock.
-     *
-     * <p>Deliberate: the contract under test is that the update reads its as-displayed snapshot from a value
-     * only this server can have produced, and a mocked sealer would let a test hand the service any snapshot
-     * it liked - which is exactly the property the sealing exists to remove. Using the real one means every
-     * snapshot these tests supply travelled through authenticated encryption, so the tests exercise the
-     * production path rather than a stand-in for it.</p>
-     */
-    private SnapshotTokenService snapshotTokenService;
-
     /** The system under test, rebuilt before every test so no state can leak between them. */
     private CardUpdateService service;
 
     /**
-     * Builds the bean with the mocked repository, a fixed clock and a real sealer, so the screen date and
-     * time are reproducible and no validation outcome can depend on when the suite runs.
+     * Builds the bean with the mocked repository and a fixed clock, so the screen date and time are
+     * reproducible and no validation outcome can depend on when the suite runs.
      */
     @BeforeEach
     void createServiceUnderTest() {
-        snapshotTokenService = new SnapshotTokenService(TEST_SIGNING_KEY, TOKEN_LIFETIME_SECONDS,
-                Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC), new ObjectMapper());
-        service = new CardUpdateService(cardRepository, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC),
-                snapshotTokenService);
-    }
-
-    /**
-     * Seals the snapshot a request carries, producing the {@code If-Match} value the update requires.
-     *
-     * <p>This is what a client does with the {@code ETag} the detail read returned, expressed in one line so
-     * that every call site below reads as "submit this request with its own authentic snapshot". The record
-     * key is the request's card number, which is what binds a token to one card.</p>
-     *
-     * @param request the request whose {@code oldDetails} group is to be sealed
-     * @return the sealed token, never null
-     */
-    private String sealed(final CardUpdateRequest request) {
-        return snapshotTokenService.seal(CardUpdateService.SNAPSHOT_KIND, request.cardNumber(),
-                CardUpdateService.CardSnapshot.from(request.oldDetails()));
+        service = new CardUpdateService(cardRepository, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
     }
 
     // -----------------------------------------------------------------------------------------
@@ -659,8 +617,8 @@ final class CardUpdateServiceTest {
                     .as("no request component can accept one, which is why the clause has no operand: "
                             + "COCRDUPC never assigns CCUP-NEW-CVV-CD and no symbolic map carries the field")
                     .noneMatch(component -> namesVerificationValue(component.getName()));
-            assertThat(CardUpdateService.CardSnapshot.class.getRecordComponents())
-                    .as("nor can the sealed snapshot record one")
+            assertThat(com.cardemo.model.dto.CardResponse.class.getRecordComponents())
+                    .as("nor can the read response return one, so neither wire shape can carry it")
                     .noneMatch(component -> namesVerificationValue(component.getName()));
         }
 
@@ -681,7 +639,7 @@ final class CardUpdateServiceTest {
 
             final CardUpdateRequest request =
                     requestWith(matchingSnapshot(), "ANNA LEE", "N", "12", "2099", "28");
-            service.updateCard(request, sealed(request));
+            service.updateCard(request);
 
             verify(cardRepository).save(persisted.capture());
             assertThat(persisted.getValue().matchesVerificationValue(STORED_VERIFICATION_VALUE))
@@ -1217,7 +1175,7 @@ final class CardUpdateServiceTest {
                     ACCOUNT_ID_NUMERIC)).thenReturn(Optional.of(storedCard()));
 
             final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
-            service.updateCard(request, sealed(request));
+            service.updateCard(request);
 
             verify(cardRepository, times(1)).findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC);
             verify(cardRepository, times(1)).save(any(Card.class));
@@ -1276,7 +1234,7 @@ final class CardUpdateServiceTest {
             final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
 
             final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request, sealed(request)));
+                    ConcurrentUpdateException.class, () -> service.updateCard(request));
 
             assertThat(failure).hasMessage(MSG_COULD_NOT_LOCK).hasNoCause();
             assertThat(failure.getOutcome())
@@ -1299,7 +1257,7 @@ final class CardUpdateServiceTest {
 
             final CardUpdateRequest request =
                     requestWith(matchingSnapshot(), "ANNA LEE", "N", "12", "2099", "28");
-            service.updateCard(request, sealed(request));
+            service.updateCard(request);
 
             verify(cardRepository).save(persisted.capture());
             final Card written = persisted.getValue();
@@ -1351,7 +1309,7 @@ final class CardUpdateServiceTest {
             for (final String submittedDay : new String[] {"28", null, "  "}) {
                 final CardUpdateRequest request =
                         requestWith(matchingSnapshot(), "ANNA LEE", "N", "12", "2099", submittedDay);
-                service.updateCard(request, sealed(request));
+                service.updateCard(request);
             }
 
             verify(cardRepository, times(3)).save(persisted.capture());
@@ -1657,7 +1615,7 @@ final class CardUpdateServiceTest {
 
             final ValidationException failure =
                     catchThrowableOfType(ValidationException.class,
-                            () -> service.updateCard(request, sealed(request)));
+                            () -> service.updateCard(request));
 
             assertThat(failure).hasMessage(MSG_NAME_NOT_PROVIDED).hasNoCause();
             assertThat(failure.getFieldName()).isEqualTo("cardholderName");
@@ -1677,7 +1635,7 @@ final class CardUpdateServiceTest {
 
             final ValidationException failure =
                     catchThrowableOfType(ValidationException.class,
-                            () -> service.updateCard(request, sealed(request)));
+                            () -> service.updateCard(request));
 
             assertThat(failure).hasMessage(MSG_NAME_MUST_BE_ALPHA);
             assertThat(failure.getFailureKind()).isEqualTo(ValidationException.FailureKind.INVALID);
@@ -1698,7 +1656,7 @@ final class CardUpdateServiceTest {
 
             final CardUpdateRequest request = requestWith(matchingSnapshot(), overLong,
                     CARD_STATUS_TOGGLED, STORED_MONTH, STORED_YEAR, STORED_DAY);
-            service.updateCard(request, sealed(request));
+            service.updateCard(request);
 
             verify(cardRepository).save(persisted.capture());
             assertThat(persisted.getValue().getEmbossedName())
@@ -1801,7 +1759,7 @@ final class CardUpdateServiceTest {
 
             final ValidationException failure =
                     catchThrowableOfType(ValidationException.class,
-                            () -> service.updateCard(request, sealed(request)));
+                            () -> service.updateCard(request));
 
             assertThat(failure).hasMessage(MSG_STATUS_MUST_BE_YES_NO);
             assertThat(failure.getFieldName()).isEqualTo("cardStatusCode");
@@ -1912,7 +1870,7 @@ final class CardUpdateServiceTest {
 
             final ValidationException failure =
                     catchThrowableOfType(ValidationException.class,
-                            () -> service.updateCard(request, sealed(request)));
+                            () -> service.updateCard(request));
 
             assertThat(failure).hasMessage(MSG_MONTH_NOT_VALID);
             assertThat(failure.getFieldName()).isEqualTo("expiryMonth");
@@ -2021,11 +1979,9 @@ final class CardUpdateServiceTest {
         @DisplayName("moving the injected clock by eighty years changes no validation outcome")
         void movingTheInjectedClockChangesNoOutcome() {
             final CardUpdateService inThePast = new CardUpdateService(cardRepository,
-                    Clock.fixed(Instant.parse("1970-01-01T00:00:00Z"), ZoneOffset.UTC),
-                    snapshotTokenService);
+                    Clock.fixed(Instant.parse("1970-01-01T00:00:00Z"), ZoneOffset.UTC));
             final CardUpdateService inTheFuture = new CardUpdateService(cardRepository,
-                    Clock.fixed(Instant.parse("2050-12-31T23:59:59Z"), ZoneOffset.UTC),
-                    snapshotTokenService);
+                    Clock.fixed(Instant.parse("2050-12-31T23:59:59Z"), ZoneOffset.UTC));
             final CardUpdateRequest request = requestWith(matchingSnapshot(), "JOHN SMITH",
                     CARD_STATUS_TOGGLED, STORED_MONTH, "1950", STORED_DAY);
 
@@ -2558,25 +2514,25 @@ final class CardUpdateServiceTest {
     class StatelessnessContract {
 
         /**
-         * The bean holds exactly three final instance fields - the repository, the clock and the snapshot
-         * sealer - so nothing survives a request the way {@code WORKING-STORAGE} did. The sealer is stateless
-         * itself: it derives its key once at construction and keeps no per-request field, which is why adding
-         * it does not reintroduce carried state.
+         * The bean holds exactly two final instance fields - the repository and the clock - so nothing
+         * survives a request the way {@code WORKING-STORAGE} did. The as-displayed group travels on the
+         * request under transformation Rule 7, so no collaborator is needed to carry it between the two turns
+         * of the pseudo-conversation and none is held.
          */
         @Test
-        @DisplayName("every instance field is final and there are exactly three collaborators")
-        void everyInstanceFieldIsFinalAndThereAreExactlyThree() {
+        @DisplayName("every instance field is final and there are exactly two collaborators")
+        void everyInstanceFieldIsFinalAndThereAreExactlyTwo() {
             final Field[] instanceFields = Arrays.stream(CardUpdateService.class.getDeclaredFields())
                     .filter(field -> !Modifier.isStatic(field.getModifiers()))
                     .toArray(Field[]::new);
 
-            assertThat(instanceFields).hasSize(3);
+            assertThat(instanceFields).hasSize(2);
             assertThat(instanceFields).allSatisfy(field ->
                     assertThat(Modifier.isFinal(field.getModifiers()))
                             .as("field %s must be final", field.getName())
                             .isTrue());
             assertThat(instanceFields).extracting(Field::getName)
-                    .containsExactlyInAnyOrder("cardRepository", "clock", "snapshotTokenService");
+                    .containsExactlyInAnyOrder("cardRepository", "clock");
         }
 
         /**
@@ -2704,115 +2660,27 @@ final class CardUpdateServiceTest {
 
         /**
          * An absent snapshot is an unmet precondition rather than a silent skip, because without it the
-         * comparison of {@code 9300} could not be performed at all. Under the sealed-token contract "absent"
-         * means no token was presented: the snapshot no longer arrives in the body, so there is nothing a
-         * caller could omit from the body that would reach this branch instead.
+         * comparison of {@code 9300} could not be performed at all. Under the body-carried contract of
+         * transformation Rule 7, "absent" means the request omitted its {@code oldDetails} group.
          */
         @Test
-        @DisplayName("an absent snapshot token is an unmet precondition, never a silent skip")
-        void absentSnapshotTokenIsAnUnmetPrecondition() {
+        @DisplayName("an absent oldDetails group is an unmet precondition, never a silent skip")
+        void absentSnapshotGroupIsAnUnmetPrecondition() {
             final CardUpdateRequest request = changedNameRequest(null);
 
             final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request, null));
+                    ConcurrentUpdateException.class, () -> service.updateCard(request));
 
-            assertThat(failure).hasMessage(SnapshotTokenService.MISSING_TOKEN_MESSAGE).hasNoCause();
+            assertThat(failure).hasMessage(MSG_PROMPT_FOR_SEARCH_KEYS).hasNoCause();
             assertThat(failure.getOutcome())
                     .isEqualTo(ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED);
             verifyNoInteractions(cardRepository);
         }
 
         /**
-         * A blank token is the same condition as an absent one: a header present but empty is not a
-         * precondition, and it must not be read as one.
-         */
-        @Test
-        @DisplayName("a blank snapshot token is the same unmet precondition as an absent one")
-        void blankSnapshotTokenIsTheSameUnmetPrecondition() {
-            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
-
-            final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request, "   "));
-
-            assertThat(failure.getOutcome())
-                    .isEqualTo(ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED);
-            verifyNoInteractions(cardRepository);
-        }
-
-        /**
-         * A token whose ciphertext has been altered does not open, so the write is refused. This is the
-         * property that a body-carried snapshot could not have: the values the comparison uses are the values
-         * this server sealed, and no other values can be substituted for them.
-         */
-        @Test
-        @DisplayName("an altered snapshot token is refused and reaches no repository")
-        void alteredSnapshotTokenIsRefused() {
-            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
-            final String authentic = sealed(request);
-            // The seal frames a fresh SecureRandom nonce ahead of the ciphertext and base64url-encodes the
-            // pair, so every character of the token varies from run to run. The substitute must therefore
-            // be chosen against the character actually being replaced: testing any other position leaves
-            // the token byte-identical on the runs where the replaced position already holds the
-            // substitute, and an unaltered token opens and the write is not refused at all.
-            final char penultimate = authentic.charAt(authentic.length() - 2);
-            final String tampered = authentic.substring(0, authentic.length() - 2)
-                    + (penultimate == 'A' ? 'B' : 'A') + authentic.charAt(authentic.length() - 1);
-            assertThat(tampered)
-                    .as("the alteration must land whatever nonce this run drew, or nothing is altered")
-                    .isNotEqualTo(authentic)
-                    .hasSize(authentic.length());
-
-            final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request, tampered));
-
-            assertThat(failure).hasMessage(SnapshotTokenService.INVALID_TOKEN_MESSAGE);
-            assertThat(failure.getOutcome())
-                    .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE);
-            verifyNoInteractions(cardRepository);
-        }
-
-        /**
-         * A token sealed for one card cannot be replayed against another. The record key is authenticated
-         * additional data as well as an envelope member, so substituting the card number invalidates the seal
-         * itself rather than merely failing a comparison inside it.
-         */
-        @Test
-        @DisplayName("a snapshot token sealed for another card cannot be replayed")
-        void snapshotTokenSealedForAnotherCardCannotBeReplayed() {
-            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
-            final String foreign = snapshotTokenService.seal(CardUpdateService.SNAPSHOT_KIND,
-                    "9999888877776666", CardUpdateService.CardSnapshot.from(request.oldDetails()));
-
-            final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request, foreign));
-
-            assertThat(failure.getOutcome())
-                    .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE);
-            verifyNoInteractions(cardRepository);
-        }
-
-        /**
-         * A token sealed for a different operation cannot be replayed here either, which is what stops a
-         * cursor or an account snapshot from standing in for a card snapshot.
-         */
-        @Test
-        @DisplayName("a snapshot token sealed for another operation cannot be replayed")
-        void snapshotTokenSealedForAnotherOperationCannotBeReplayed() {
-            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
-            final String foreignKind = snapshotTokenService.seal("account-update", request.cardNumber(),
-                    CardUpdateService.CardSnapshot.from(request.oldDetails()));
-
-            final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request, foreignKind));
-
-            assertThat(failure.getOutcome())
-                    .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE);
-            verifyNoInteractions(cardRepository);
-        }
-
-        /**
-         * A snapshot whose every component is null is treated as absent, matching the source's {@code LOW-VALUES}
-         * test rather than dereferencing it.
+         * A snapshot whose every component is null is treated as absent, matching the source's
+         * {@code LOW-VALUES} state test at {@code :276-280} rather than dereferencing it. A group present but hollow is
+         * not a precondition, and it must not be read as one.
          */
         @Test
         @DisplayName("an all-null snapshot is treated as absent, not as a snapshot of nulls")
@@ -2824,77 +2692,110 @@ final class CardUpdateServiceTest {
             final CardUpdateRequest request = changedNameRequest(hollow);
 
             final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request, sealed(request)));
+                    ConcurrentUpdateException.class, () -> service.updateCard(request));
 
             assertThat(failure).hasMessage(MSG_PROMPT_FOR_SEARCH_KEYS);
+            assertThat(failure.getOutcome())
+                    .isEqualTo(ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED);
             verifyNoInteractions(cardRepository);
         }
 
         /**
-         * The read half of the stateless substitution: {@code issueUpdateSnapshot} produces a token that opens
-         * to exactly the values {@code 9000-READ-DATA} snapshotted at {@code :1345-1367}, less the card
-         * verification value of {@code :294}, which nothing stores and the seal therefore never sees. This is
-         * the property that lets the update compare against the as-displayed values without any of them being
-         * disclosed.
+         * The snapshot is never derived from the live row, which is the decisive property of the guard. If it
+         * were, the Regime B comparison at {@code :1503-1508} would be tautologically true and the write
+         * could never be refused. Here the submitted group disagrees with the stored row and the write is
+         * abandoned, which can only happen if the two sides came from different places.
          */
         @Test
-        @DisplayName("issueUpdateSnapshot seals every fetched value the record actually carries")
-        void issueUpdateSnapshotSealsTheFetchedValues() {
+        @DisplayName("the submitted group, never the live row, is what Regime B compares against")
+        void theSnapshotIsNeverDerivedFromTheLiveRow() {
+            when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER,
+                    ACCOUNT_ID_NUMERIC)).thenReturn(Optional.of(storedCard()));
+
+            final ConcurrentUpdateException failure = catchThrowableOfType(
+                    ConcurrentUpdateException.class,
+                    () -> service.updateCard(changedNameRequest(snapshotOf(
+                            "SOMEONE ELSE", STORED_YEAR, STORED_MONTH, STORED_DAY, STORED_STATUS))));
+
+            assertThat(failure.getOutcome())
+                    .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * The read half of the stateless substitution: {@code fetchSnapshotForUpdate} projects exactly the
+         * values {@code 9000-READ-DATA} snapshotted at {@code :1345-1367}, less the card verification value
+         * of {@code :294}, which is stored but has no read path. The expiry <strong>day</strong> is asserted
+         * because {@code app/cpy-bms/COCRDSL.CPY} declares no field for it, which makes this the only route
+         * by which a client can obtain the operand {@code :1507} compares.
+         */
+        @Test
+        @DisplayName("fetchSnapshotForUpdate projects every fetched value the record actually carries")
+        void fetchSnapshotForUpdateProjectsTheFetchedValues() {
             // The READ half uses the account-scoped, read-only finder; the locking one belongs to the write
             // half. 9000-READ-DATA snapshots what the screen displays and holds no lock across the two turns,
-            // which is exactly why the as-displayed values must travel in a sealed token at all.
+            // which is exactly why the as-displayed values must travel to the caller and back at all.
             when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
 
-            final String token = service.issueUpdateSnapshot(ACCOUNT_ID, CARD_NUMBER);
-            final CardUpdateService.CardSnapshot opened = snapshotTokenService.open(token,
-                    CardUpdateService.SNAPSHOT_KIND, CARD_NUMBER,
-                    CardUpdateService.CardSnapshot.class);
+            final CardUpdateRequest.CardDetails projected =
+                    service.fetchSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER);
 
-            assertThat(opened.cardNumber()).isEqualTo(CARD_NUMBER);
-            assertThat(opened.cardholderName()).isEqualTo(STORED_NAME);
-            assertThat(opened.cardStatusCode()).isEqualTo(STORED_STATUS);
-            assertThat(opened.expiryYear()).isEqualTo(STORED_YEAR);
-            assertThat(opened.expiryMonth()).isEqualTo(STORED_MONTH);
-            assertThat(opened.expiryDay()).isEqualTo(STORED_DAY);
+            assertThat(projected.cardNumber()).isEqualTo(CARD_NUMBER);
+            assertThat(projected.cardData().cardholderName()).isEqualTo(STORED_NAME);
+            assertThat(projected.cardData().cardStatusCode()).isEqualTo(STORED_STATUS);
+            assertThat(projected.cardData().expiraionDate().expiryYear()).isEqualTo(STORED_YEAR);
+            assertThat(projected.cardData().expiraionDate().expiryMonth()).isEqualTo(STORED_MONTH);
+            assertThat(projected.cardData().expiraionDate().expiryDay())
+                    .as("COCRDSL.CPY declares no expiry-day field, so this is the only carrier for it")
+                    .isEqualTo(STORED_DAY);
         }
 
         /**
-         * The token itself discloses nothing. It is checked against the verification value, the card number
-         * and the embossed name, because those are the three values in it that must never appear on the wire in
-         * a readable form.
+         * The projected group carries no card verification value. That is the shape assertion behind the
+         * F-023 disposition: the value is stored - {@code card_cvv_cd CHAR(3) NOT NULL} - but has no read
+         * path, and no symbolic map declares a field a caller could echo, so the concurrency question
+         * {@code :1503} asked is answered by the {@code @Version} column instead.
          */
         @Test
-        @DisplayName("the sealed snapshot discloses neither the card number nor the embossed name")
-        void theSealedSnapshotDisclosesNothing() {
+        @DisplayName("the projected group carries no verification value, because none can be read")
+        void theProjectedGroupCarriesNoVerificationValue() {
             when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
 
-            final String token = service.issueUpdateSnapshot(ACCOUNT_ID, CARD_NUMBER);
+            final CardUpdateRequest.CardDetails projected =
+                    service.fetchSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER);
 
-            assertThat(token).doesNotContain(CARD_NUMBER)
-                    .doesNotContain(ACCOUNT_ID)
-                    .doesNotContain(STORED_NAME);
+            assertThat(java.util.Arrays.stream(CardUpdateRequest.CardDetails.class.getRecordComponents())
+                    .map(java.lang.reflect.RecordComponent::getName)
+                    .toList())
+                    .noneSatisfy(name -> assertThat(name.toLowerCase(java.util.Locale.ROOT))
+                            .contains("cvv"));
+            assertThat(projected.toString())
+                    .doesNotContainIgnoringCase("cvv")
+                    .doesNotContain(STORED_VERIFICATION_VALUE);
         }
 
         /**
-         * A token this service issued is the token the update accepts, end to end, with no value passing
-         * through the caller in a readable form. It is the one test that proves the read and the write halves
-         * agree on the kind, the record key and the payload shape simultaneously.
+         * A group from the read is the group the write accepts, end to end. It is the one test that proves the
+         * read and write halves agree on the shape simultaneously, which is what the sealed-token contract
+         * used to prove about the kind, record key and payload.
          */
         @Test
-        @DisplayName("a token from the read is accepted by the write, and the row is saved")
-        void aTokenFromTheReadIsAcceptedByTheWrite() {
-            // Both finders are stubbed, because this is the one test that spans both halves: the read issues
-            // the token through the read-only account-scoped finder, and the write re-reads under the lock.
+        @DisplayName("a group from the read is accepted by the write, and the row is saved")
+        void aGroupFromTheReadIsAcceptedByTheWrite() {
+            // Both finders are stubbed, because this is the one test that spans both halves: the read
+            // projects the group through the read-only account-scoped finder, and the write re-reads under
+            // the lock.
             when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
             when(cardRepository.findByIdAndAccountIdForUpdate(CARD_NUMBER, ACCOUNT_ID_NUMERIC))
                     .thenReturn(Optional.of(storedCard()));
             when(cardRepository.save(any(Card.class))).thenAnswer(saved -> saved.getArgument(0));
 
-            final String token = service.issueUpdateSnapshot(ACCOUNT_ID, CARD_NUMBER);
-            service.updateCard(changedNameRequest(null), token);
+            final CardUpdateRequest.CardDetails projected =
+                    service.fetchSnapshotForUpdate(ACCOUNT_ID, CARD_NUMBER);
+            service.updateCard(changedNameRequest(projected));
 
             verify(cardRepository, times(1)).save(any(Card.class));
         }
@@ -2928,7 +2829,7 @@ final class CardUpdateServiceTest {
             final ArgumentCaptor<Card> persisted = ArgumentCaptor.forClass(Card.class);
 
             final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
-            service.updateCard(request, sealed(request));
+            service.updateCard(request);
 
             verify(cardRepository).save(persisted.capture());
             assertThat(persisted.getValue().getEmbossedName()).hasSize(50);
@@ -3094,7 +2995,7 @@ final class CardUpdateServiceTest {
         @Test
         @DisplayName("a null request is rejected by name on the update entry point")
         void nullRequestIsRejectedOnTheUpdateEntryPoint() {
-            assertThatThrownBy(() -> service.updateCard(null, null))
+            assertThatThrownBy(() -> service.updateCard(null))
                     .isInstanceOf(NullPointerException.class)
                     .hasMessage("request must not be null");
             verifyNoInteractions(cardRepository);
@@ -3236,7 +3137,7 @@ final class CardUpdateServiceTest {
             final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
 
             final ConcurrentUpdateException failure = catchThrowableOfType(
-                    ConcurrentUpdateException.class, () -> service.updateCard(request, sealed(request)));
+                    ConcurrentUpdateException.class, () -> service.updateCard(request));
 
             assertThat(failure.getAffectedRecord())
                     .isNotEqualTo(CARD_NUMBER)
@@ -3250,10 +3151,12 @@ final class CardUpdateServiceTest {
          * verification value.
          *
          * <p>The verification dimension is asserted on the <em>token</em> rather than on a specimen value.
-         * Since finding F13 removed {@code CARD-CVV-CD} from the operational record there is no value left
-         * to plant, so a {@code doesNotContain("123")} clause would pass unconditionally and prove nothing.
-         * A message that named the field at all would mean the concept had returned, which is the condition
-         * worth detecting.</p>
+         * <p>The verification dimension is asserted on the <em>token</em> rather than on a specimen value.
+         * The stored value is real - {@code card_cvv_cd} is declared and seeded - but it is write-once with
+         * no getter of any visibility, so no read path exists by which a message could ever quote it and a
+         * {@code doesNotContain("123")} clause would pass without proving anything. A message that named
+         * the field at all would mean the concept had returned to the readable surface, which is the
+         * condition worth detecting.</p>
          */
         @Test
         @DisplayName("no thrown message leaks the card number or names the verification value")
@@ -3486,27 +3389,6 @@ final class CardUpdateServiceTest {
                     + "'. If a write entry point was renamed, update this list rather than removing the "
                     + "guard.");
         }
-    }
-
-    /**
-     * Generates a single-use signing key for this suite.
-     *
-     * <p>Rule 1 Clause D forbids secrets in code, in configuration and <em>in tests</em>, with no carve-out
-     * for material that happens to be synthetic: a literal key in a committed file is still committed key
-     * material, indexable and copyable into a deployment, and it teaches the pattern the clause exists to
-     * stop. Generating it removes the class of problem instead of declaring one instance of it harmless. The
-     * value exists only in memory for the lifetime of this class, so there is nothing to leak or rotate, and
-     * no assertion anywhere depends on its content - only on its being long enough and internally consistent.
-     *
-     * <p>Thirty-two bytes of entropy is the HS256 minimum the sealer enforces; URL-safe unpadded encoding
-     * widens that to forty-three characters, so the length guard passes with room to spare.
-     *
-     * @return a freshly generated key, never {@code null}, never logged and never persisted
-     */
-    private static String ephemeralSigningKey() {
-        final byte[] keyMaterial = new byte[32];
-        new SecureRandom().nextBytes(keyMaterial);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(keyMaterial);
     }
 
 }

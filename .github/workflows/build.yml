@@ -97,7 +97,9 @@
 #   docker compose up --build --wait
 #
 # Prerequisites: JDK 25, a container runtime for the Testcontainers-backed
-# tiers, and unzip plus curl or wget for the wrapper (see failure mode 10).
+# tiers, and - only when the wrapper must download its distribution - curl or
+# wget. unzip is NOT a prerequisite: the launcher falls back to the JDK's own jar
+# tool to expand the pinned zip (see failure mode 10).
 # Maven itself is NOT a prerequisite - ./mvnw provisions the pinned version
 # and verifies its checksum first.
 #
@@ -192,17 +194,27 @@
 #     Remedy: supply it through the environment. This workflow generates an
 #     ephemeral one per run.
 #
-# 10. "Failed to validate Maven distribution SHA-256, your Maven distribution
-#     might be compromised." with a checksum that is in fact correct. This
-#     trap is Unix-only and the message actively misleads.
-#     The script-only launcher rewrites the distribution URL to a .tar.gz when
-#     unzip is absent, while distributionSha256Sum still pins the .zip, so the
-#     hashes cannot match and the launcher exits 1.
-#     Remedy: make unzip, and curl or wget, available on the runner. Never
-#     blank or delete the checksum - a blank value silently disables integrity
-#     verification altogether and the build then passes having checked
-#     nothing. Never pin the .tar.gz either; the launcher rejects a URL that
-#     does not end in -bin.zip.
+# 10. A missing unzip on the runner. Read mvnw before diagnosing this: an
+#     earlier revision of this note described the UPSTREAM launcher's
+#     behaviour, not the committed one, and sent a reader looking for a
+#     checksum failure that this launcher cannot produce that way.
+#     What upstream does, and what the note wrongly described: rewrite the
+#     distribution URL to the .tar.gz variant when unzip is absent, while
+#     distributionSha256Sum still pins the .zip - so the hashes cannot match
+#     and it reports a possibly compromised distribution for what is only a
+#     missing tool.
+#     What THIS launcher does, at mvnw:99-105, :374-395 and :696-703: it never
+#     retargets. The URL must end in apache-maven-<version>-bin.zip or the
+#     launcher refuses it outright, and when unzip is absent it expands the
+#     same zip with the JDK jar tool - which every runner has, since a JDK is
+#     already required - and only if THAT is also unreachable does it fail,
+#     with a message naming both tools. So a missing unzip is ordinarily
+#     invisible here, and a real checksum failure means what it says.
+#     Remedy for the fail-both case: install unzip, or make
+#     $JAVA_HOME/bin/jar reachable. Never blank or delete the checksum - a
+#     blank value silently disables integrity verification and the build then
+#     passes having checked nothing. Never pin the .tar.gz either; the
+#     launcher rejects any URL that does not end in -bin.zip.
 # ==================================================================
 
 name: build
@@ -318,7 +330,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out with full history
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Full history: the frozen-corpus comparison needs the pull request's
           # base commit to be present, and nothing shallower guarantees that.
@@ -376,25 +388,74 @@ jobs:
           # expanding one inside a shell is the injection pattern Rule 1 clause D
           # names explicitly.
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The commit the ref pointed at BEFORE this push. Same routing, same
+          # reason. It exists only on a push event and is all-zeros when the ref
+          # is newly created, both of which the ladder below handles.
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           . "${RUNNER_TEMP}/finding.sh"
 
-          base="${PR_BASE_SHA:-}"
-          if [ -z "${base}" ]; then
-            if git rev-parse --verify --quiet 'HEAD~1' > /dev/null; then
-              base="$(git rev-parse 'HEAD~1')"
-            else
-              base="$(git rev-parse HEAD)"
-            fi
+          # WHICH COMMIT TO COMPARE AGAINST, and why the order is this order.
+          #
+          # An earlier revision compared against HEAD~1 whenever no pull-request
+          # base was available, which is wrong for the ordinary case: a push of
+          # several commits is diffed against its own second-to-last commit, so an
+          # edit under app/ made in any EARLIER commit of that same push is inside
+          # the range and invisible. The check then reported the frozen corpus
+          # intact while a modification had just landed on the branch.
+          #
+          # 1. THE TRACEABILITY ANCHOR, preferred whenever it resolves. The AAP
+          #    keys every citation to 7756d89 and freezes the corpus as of that
+          #    commit, so the invariant is absolute - app/, samples/ and diagrams/
+          #    must be byte-for-byte what the anchor holds - not incremental.
+          #    Comparing against it is independent of how many commits a push
+          #    carries, of force pushes, and of which branch is being built.
+          # 2. The pull-request base, which spans the whole branch rather than one
+          #    commit, for a fork whose history does not contain the anchor.
+          # 3. The push event's before SHA, which spans the whole push. Skipped
+          #    when it is empty, all-zeros (a newly created ref) or unresolvable
+          #    (a force push whose old tip was rewritten away).
+          # 4. HEAD~1, then HEAD, as a last resort. Both are announced as
+          #    incremental so a reader never mistakes a weaker comparison for the
+          #    absolute one.
+          ANCHOR=7756d895ffeb65f7ea72aaa609e356d9899afcec
+          ZERO=0000000000000000000000000000000000000000
+
+          resolves() {
+            [ -n "$1" ] && [ "$1" != "${ZERO}" ] \
+              && git cat-file -e "$1^{commit}" 2> /dev/null
+          }
+
+          base=''
+          scope=''
+          if resolves "${ANCHOR}"; then
+            base="${ANCHOR}"
+            scope='the frozen-corpus traceability anchor - an ABSOLUTE comparison'
+          elif resolves "${PR_BASE_SHA:-}"; then
+            base="${PR_BASE_SHA}"
+            scope='the pull-request base - spans every commit on this branch'
+          elif resolves "${PUSH_BEFORE_SHA:-}"; then
+            base="${PUSH_BEFORE_SHA}"
+            scope='the pre-push tip - spans every commit in this push'
+          elif git rev-parse --verify --quiet 'HEAD~1' > /dev/null; then
+            base="$(git rev-parse 'HEAD~1')"
+            scope='HEAD~1 - INCREMENTAL, so an edit in an earlier commit of a multi-commit push is out of range'
+          else
+            base="$(git rev-parse HEAD)"
+            scope='HEAD itself - the tree has no parent, so only the working tree below is checked'
           fi
-          printf 'Comparing the frozen trees against %s\n' "${base}"
+          printf 'Comparing the frozen trees against %s\n  basis: %s\n' \
+            "${base}" "${scope}"
 
           changed="$(git diff --name-only "${base}" HEAD -- app/ samples/ diagrams/)"
           if [ -n "${changed}" ]; then
+            remedy='revert every change under these trees. They are read-only reference material: the'
+            remedy="${remedy}"' parity oracle, the field-contract source and the traceability anchor. The migration'
+            remedy="${remedy}"' is additive only.'
             finding Blocker 'app/ samples/ diagrams/' 'git diff --name-only' \
               'no changed paths' "$(printf '%s' "${changed}" | tr '\n' ' ')" \
-              'revert every change under these trees. They are read-only reference material: the parity oracle, the field-contract source and the traceability anchor. The migration is additive only.'
+              "${remedy}"
           fi
 
           dirty="$(git status --porcelain app/ samples/ diagrams/)"
@@ -444,8 +505,10 @@ jobs:
             fi
             actual="$(members "$1")"
             if [ "${actual}" != "$2" ]; then
+              remedy='restore the frozen corpus, or correct the expected count here only if the AAP'
+              remedy="${remedy}"' inventory in docs/technical-specifications.md section 0.2 changed.'
               finding "$3" "$1" 'non-.gitkeep member count' "$2" "${actual}" \
-                'restore the frozen corpus, or correct the expected count here only if the AAP inventory in docs/technical-specifications.md section 0.2 changed.'
+                "${remedy}"
             else
               printf '%-20s %s members\n' "$1" "${actual}"
             fi
@@ -469,9 +532,11 @@ jobs:
           # it is only reachable case-insensitively.
           cbl_lines="$(find app/cbl -type f -iname '*.cbl' -exec cat {} + | wc -l | tr -d ' ')"
           if [ "${cbl_lines}" != "19254" ]; then
+            remedy='enumerate with -iname. A lowercase-only glob reports 18,100 because CBSTM03A.CBL and'
+            remedy="${remedy}"' CBSTM03B.CBL carry an uppercase extension.'
             finding High app/cbl 'total lines across *.cbl, case-insensitive' \
               '19254' "${cbl_lines}" \
-              'enumerate with -iname. A lowercase-only glob reports 18,100 because CBSTM03A.CBL and CBSTM03B.CBL carry an uppercase extension.'
+              "${remedy}"
           else
             printf 'app/cbl              %s lines across 28 programs\n' "${cbl_lines}"
           fi
@@ -481,8 +546,10 @@ jobs:
           for upper in app/cbl/CBSTM03A.CBL app/cbl/CBSTM03B.CBL \
                        app/cpy/COSTM01.CPY app/jcl/CREASTMT.JCL; do
             if [ ! -f "${upper}" ]; then
+              remedy='restore it. Its uppercase extension is exactly why every pattern touching these'
+              remedy="${remedy}"' directories must be case-insensitive.'
               finding High "${upper}" 'uppercase-extension member' 'present' 'absent' \
-                'restore it. Its uppercase extension is exactly why every pattern touching these directories must be case-insensitive.'
+                "${remedy}"
             fi
           done
 
@@ -495,9 +562,11 @@ jobs:
             bytes="$(wc -c < "${fixture}" | tr -d ' ')"
             lines="$(wc -l < "${fixture}" | tr -d ' ')"
             if [ "${bytes}" != "105300" ] || [ "${lines}" != "300" ]; then
+              remedy='restore the fixture. Its geometry is load-bearing: 300 x 350 = 105,300, and it'
+              remedy="${remedy}"' carries both positive and negative overpunch signs, so it must not be normalised.'
               finding Blocker "${fixture}" 'size and record count' \
                 '105300 bytes / 300 records of 350' "${bytes} bytes / ${lines} records" \
-                'restore the fixture. Its geometry is load-bearing: 300 x 350 = 105,300, and it carries both positive and negative overpunch signs, so it must not be normalised.'
+                "${remedy}"
             else
               printf '%s   %s bytes / %s records\n' "${fixture}" "${bytes}" "${lines}"
             fi
@@ -546,6 +615,93 @@ jobs:
               'Flyway applies the three migrations in prefix order; a missing one leaves the schema incomplete'
           done
 
+          # ------------------------------------------------------------------
+          # THE SCOPED DOCUMENTS, and why they are asserted HERE by exact name.
+          #
+          # An earlier revision of this step asserted the build, container,
+          # provisioning, observability and migration artefacts and stopped
+          # there. The documentation set the AAP mandates was checked nowhere in
+          # this workflow, so a run in which two of these files were simply
+          # absent passed this step and every step after it. That is precisely
+          # the omission a completeness check exists to catch, and it is why the
+          # names are literal rather than a glob: a glob over docs/ passes on
+          # whatever happens to be there.
+          #
+          # api-contracts.md stands in for generated OpenAPI, which is out of
+          # scope, so its absence removes the only endpoint contract there is.
+          # ------------------------------------------------------------------
+          for document in \
+            docs/api-contracts.md \
+            docs/architecture-before-after.md \
+            docs/onboarding-guide.md \
+            docs/validation-gates.md \
+            docs/executive-presentation.html \
+            docs/technical-specifications.md; do
+            remedy='the AAP mandates this document in the same single phase as the code; there is no'
+            remedy="${remedy}"' staged delivery in which it is legitimately still absent'
+            expect_file "${document}" High \
+              "${remedy}"
+          done
+
+          # DECISION_LOG.md and TRACEABILITY_MATRIX.md are deliberately NOT in that
+          # list. The next step owns them, at their own severities and with the
+          # deeper assertion that the matrix cites all 28 programs. Asserting mere
+          # presence here as well would emit two annotations for one absence and
+          # would let this list's severity contradict that step's.
+
+          # ------------------------------------------------------------------
+          # AND THE NAVIGATION, because presence on disk is not publication.
+          #
+          # catalog-info.yaml sets backstage.io/techdocs-ref: dir:. so TechDocs
+          # renders straight from mkdocs.yml's nav. A document absent from that
+          # nav never appears in the published site and produces NO error while
+          # failing to publish - the one omission in this repository with no
+          # symptom at all. Both halves are therefore asserted: the file exists,
+          # and the nav points at it.
+          # ------------------------------------------------------------------
+          expect_file mkdocs.yml Blocker \
+            'the published documentation site is generated from it, and TechDocs renders its nav'
+
+          nav_missing=''
+          for target in \
+            index.md \
+            project-guide.md \
+            technical-specifications.md \
+            api-contracts.md \
+            architecture-before-after.md \
+            onboarding-guide.md \
+            validation-gates.md \
+            executive-presentation.html; do
+            # BOTH halves, because either alone passes on a broken site: a nav
+            # entry pointing at a file that is not there builds nothing under
+            # --strict, and a file with no nav entry publishes nothing at all.
+            if ! grep -qF -- "${target}" mkdocs.yml; then
+              nav_missing="${nav_missing} ${target}(no-nav-entry)"
+            elif [ ! -s "docs/${target}" ]; then
+              nav_missing="${nav_missing} ${target}(nav-entry-resolves-to-nothing)"
+            fi
+          done
+          # Counted as nav ITEMS - a top-level list entry inside the nav block -
+          # rather than as lines containing a colon. The nav block carries
+          # explanatory comments, several of which contain a colon, and counting
+          # those reported twelve entries for a nav holding eight.
+          nav_entries="$(awk '
+            /^nav:/          { inside = 1; next }
+            /^[^[:space:]#]/ { inside = 0 }
+            inside && /^[[:space:]]*-[[:space:]]/ { count++ }
+            END              { print count + 0 }' mkdocs.yml)"
+          if [ -n "${nav_missing}" ] || [ "${nav_entries}" != "8" ]; then
+            remedy='add a nav entry for each document named above. A document missing from nav is absent'
+            remedy="${remedy}"' from the published site and reports nothing, so this is the only place the omission'
+            remedy="${remedy}"' surfaces.'
+            finding High mkdocs.yml 'nav coverage' \
+              'eight entries, one per scoped document' \
+              "entries=${nav_entries}${nav_missing:+, unreferenced:${nav_missing}}" \
+              "${remedy}"
+          else
+            printf 'mkdocs.yml nav lists all 8 scoped documents.\n'
+          fi
+
           conclude 'Mandated artefacts'
 
       # ----------------------------------------------------------------------
@@ -562,8 +718,10 @@ jobs:
           # TRACEABILITY_MATRIX.md lives at the repository ROOT, not under docs/.
           matrix=TRACEABILITY_MATRIX.md
           if [ ! -s "${matrix}" ]; then
+            remedy='the paragraph-level mapping from all 28 COBOL programs to their Java methods has not'
+            remedy="${remedy}"' been generated; Gate 7 cannot be evidenced until it exists at the repository root'
             unavailable High "${matrix}" \
-              'the paragraph-level mapping from all 28 COBOL programs to their Java methods has not been generated; Gate 7 cannot be evidenced until it exists at the repository root'
+              "${remedy}"
           else
             missing=''
             while IFS= read -r program; do
@@ -574,30 +732,178 @@ jobs:
               fi
             done <<< "$(find app/cbl -type f -iname '*.cbl' | sort)"
             if [ -n "${missing}" ]; then
+              remedy='add a row for each program named above. Enumerate the corpus case-insensitively or'
+              remedy="${remedy}"' CBSTM03A and CBSTM03B are silently omitted.'
               finding High "${matrix}" 'program coverage' \
                 'all 28 programs cited' "unmapped:${missing}" \
-                'add a row for each program named above. Enumerate the corpus case-insensitively or CBSTM03A and CBSTM03B are silently omitted.'
+                "${remedy}"
             else
               printf '%s cites all 28 programs.\n' "${matrix}"
             fi
           fi
 
           if [ ! -s DECISION_LOG.md ]; then
+            remedy='every mechanism substitution and every deliberately preserved legacy quirk must be'
+            remedy="${remedy}"' recorded with its COBOL locator; the register has not been generated'
             unavailable Medium DECISION_LOG.md \
-              'every mechanism substitution and every deliberately preserved legacy quirk must be recorded with its COBOL locator; the register has not been generated'
+              "${remedy}"
           fi
 
           if [ ! -s docs/validation-gates.md ]; then
+            remedy='the eight gate definitions with their anchors #gate-1 through #gate-8, evidence'
+            remedy="${remedy}"' paths, severities and remediations have not been generated; this workflow reports'
+            remedy="${remedy}"' against them'
             unavailable High docs/validation-gates.md \
-              'the eight gate definitions with their anchors #gate-1 through #gate-8, evidence paths, severities and remediations have not been generated; this workflow reports against them'
+              "${remedy}"
           fi
 
           if [ ! -s src/test/java/com/cardemo/e2e/GateVerificationTest.java ]; then
+            remedy='the machine-checkable gate assertions have not been generated; Failsafe already'
+            remedy="${remedy}"' includes **/e2e/**/*Test.java, so the class runs as soon as it exists'
             unavailable High src/test/java/com/cardemo/e2e/GateVerificationTest.java \
-              'the machine-checkable gate assertions have not been generated; Failsafe already includes **/e2e/**/*Test.java, so the class runs as soon as it exists'
+              "${remedy}"
           fi
 
           conclude 'Evidence artefacts'
+
+      # ----------------------------------------------------------------------
+      # Documentation publication, which is the one failure in this repository
+      # that reports NOTHING at all.
+      #
+      # catalog-info.yaml sets backstage.io/techdocs-ref: dir:. so TechDocs
+      # renders straight from the nav block of mkdocs.yml. A page omitted from
+      # that block never appears in the published site: the build succeeds, the
+      # file sits in the repository, and the reader who needs it cannot reach
+      # it. Review findings H-04 (both documents absent) and H-05 (three nav
+      # entries where eight are needed) were both of that shape.
+      #
+      # The obvious safety net does not work, which is why the policy itself is
+      # asserted below. `mkdocs build --strict` promotes WARNINGS to errors, but
+      # MkDocs defaults validation.nav.omitted_files to INFO, so under a
+      # configuration declaring no validation block an omitted page passes a
+      # strict build silently. The failure is warning-free by default, not
+      # merely error-free.
+      #
+      # WHY THIS STEP DOES NOT RUN MKDOCS. MkDocs is a Python tool, is not a
+      # build dependency of this project, and is absent from the runner image.
+      # Installing it here would mean pinning mkdocs, mkdocs-techdocs-core and
+      # mkdocs-mermaid2-plugin into a job whose purpose is repository integrity,
+      # and an unpinned install would breach the deterministic-build rule. The
+      # invariant is provable from the file itself, so it is proved from the
+      # file. The executed strict build and its result are recorded in
+      # docs/validation-gates.md, section 2.5.
+      #
+      # This duplicates the guard in
+      # src/test/java/com/cardemo/unit/infrastructure/DocumentationConsistencyTest
+      # deliberately, and the duplication is the point: that class runs in the
+      # Surefire tier of the `verify` job, so a tree that fails to compile for
+      # any unrelated reason would never reach it and would report the
+      # documentation gap nowhere. This job needs no JDK and no build.
+      # ----------------------------------------------------------------------
+      - name: Assert every document under docs/ is published, and that an omission would fail
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          config=mkdocs.yml
+
+          if [ ! -s "${config}" ]; then
+            unavailable High "${config}" \
+              'the site configuration carries the nav block TechDocs renders from; without it no document publishes'
+            conclude 'Documentation publication'
+            exit 0
+          fi
+
+          # The nav BLOCK only, ending at the next top-level key. Scoped rather
+          # than matched across the whole file so that a document merely named
+          # in one of this file's explanatory comments cannot satisfy a check
+          # about being published.
+          nav="$(awk '
+            /^nav:[[:space:]]*$/ { inNav = 1; next }
+            inNav && /^[^[:space:]#]/ { exit }
+            inNav { print }
+          ' "${config}")"
+
+          if [ -z "${nav}" ]; then
+            finding High "${config}" 'nav' \
+              'a nav block listing every document' 'no nav block found' \
+              'declare nav: with one entry per document under docs/. TechDocs renders the site from it.'
+          fi
+
+          # 1. The two CREATE deliverables the review recorded as absent. Named
+          #    explicitly because the general scan below can only prove that
+          #    whatever EXISTS is published; it cannot notice a document that
+          #    was never written, and that was precisely this pair's defect.
+          for document in docs/onboarding-guide.md docs/executive-presentation.html; do
+            if [ ! -f "${document}" ]; then
+              unavailable High "${document}" \
+                'a mandated CREATE deliverable of the Agent Action Plan has not been generated'
+            elif [ ! -s "${document}" ]; then
+              finding High "${document}" 'file size' \
+                'non-empty' 'present but empty' \
+                'an empty file publishes a blank page, which is the same failure as omitting it. Author the document.'
+            else
+              printf '%s   %s bytes\n' "${document}" "$(wc -c < "${document}" | tr -d ' ')"
+            fi
+          done
+
+          # 2. The five entries the review found missing, asserted as literal
+          #    `title: file` pairs. The titles are not free choices: they were
+          #    fixed by docs/technical-specifications.md and
+          #    docs/validation-gates.md before the documents existed, so a
+          #    renamed title is a finding too.
+          while IFS= read -r entry; do
+            [ -n "${entry}" ] || continue
+            if ! printf '%s' "${nav}" | grep -qF -- "${entry}"; then
+              finding High "${config}" 'nav' \
+                "an entry reading '${entry}'" 'absent' \
+                'add it. A document omitted from the nav never publishes, and the omission produces no error and no output.'
+            fi
+          done <<'ENTRIES'
+          API Contracts: api-contracts.md
+          Architecture Before and After: architecture-before-after.md
+          Onboarding Guide: onboarding-guide.md
+          Validation Gates: validation-gates.md
+          Executive Presentation: executive-presentation.html
+          ENTRIES
+
+          # 3. The invariant, rather than a fixed list, so this keeps holding as
+          #    the document set changes: anything publishable under docs/ must be
+          #    reachable from the nav.
+          for document in docs/*.md docs/*.html; do
+            [ -f "${document}" ] || continue
+            name="$(basename "${document}")"
+            if ! printf '%s' "${nav}" | grep -qF -- ": ${name}"; then
+              finding High "${config}" 'nav' \
+                "an entry for ${name}" 'unpublished - present under docs/ but absent from the nav' \
+                'add a nav entry in the same change that adds the document.'
+            fi
+          done
+
+          # 4. The detection policy itself. Without it the omission above is not
+          #    merely error-free but warning-free, so a strict build passes.
+          #
+          #    The top-level key is matched ANCHORED. A plain substring match for
+          #    'validation:' also matches 'disabled_validation:', so renaming the
+          #    block away - the obvious way to disable it - would have satisfied
+          #    an unanchored check. Verified by mutation: the unanchored form
+          #    passed that rename, the anchored form fails it.
+          if ! grep -qE '^validation:' "${config}"; then
+            finding High "${config}" 'validation' \
+              'a top-level validation: block' 'absent, or renamed so it no longer applies' \
+              'declare validation: at the top level. MkDocs reads the policy only under that exact key; anything else is inert configuration.'
+          fi
+
+          for key in 'omitted_files: warn' 'not_found: warn'; do
+            if ! grep -qF -- "${key}" "${config}"; then
+              finding High "${config}" 'validation' \
+                "${key} declared" 'absent' \
+                'MkDocs defaults validation.nav.omitted_files to info and --strict acts only on warnings, so without this an omitted page passes a strict build silently. Do not remove or lower it.'
+            fi
+          done
+
+          conclude 'Documentation publication'
+
 
       # ----------------------------------------------------------------------
       # Gate 6, the parts provable from source text alone.
@@ -614,12 +920,17 @@ jobs:
           set -euo pipefail
           . "${RUNNER_TEMP}/finding.sh"
 
-          declarations='(private|protected|public|final)[[:space:]]+(float|double|Float|Double)[[:space:]]+[A-Za-z_]|[(,][[:space:]]*(float|double|Float|Double)[[:space:]]+[A-Za-z_]'
+          declarations='(private|protected|public|final)[[:space:]]+'
+          declarations="${declarations}"'(float|double|Float|Double)[[:space:]]+[A-Za-z_]'
+          declarations="${declarations}"'|[(,][[:space:]]*'
+          declarations="${declarations}"'(float|double|Float|Double)[[:space:]]+[A-Za-z_]'
           if hits="$(grep -rnE "${declarations}" src/main/java --include='*.java')"; then
+            remedy='replace the declaration with BigDecimal at the scale the PIC clause dictates, compare'
+            remedy="${remedy}"' with compareTo rather than equals, and round HALF_EVEN.'
             finding Blocker src/main/java 'float/double declaration' \
               'none; every monetary and rate value is java.math.BigDecimal' \
               "$(printf '%s' "${hits}" | head -c 400 | tr '\n' ' ')" \
-              'replace the declaration with BigDecimal at the scale the PIC clause dictates, compare with compareTo rather than equals, and round HALF_EVEN.'
+              "${remedy}"
           else
             printf 'src/main/java declares no float or double field, component or parameter.\n'
           fi
@@ -627,10 +938,12 @@ jobs:
           if sql="$(grep -rinE '\b(double precision|float[0-9]*|real)\b' \
               src/main/resources/db/migration --include='*.sql' \
               | grep -vE ':[0-9]+:[[:space:]]*--')"; then
+            remedy='use NUMERIC with the precision and scale the copybook PIC clause fixes. An'
+            remedy="${remedy}"' approximate type cannot reproduce packed-decimal arithmetic.'
             finding Blocker src/main/resources/db/migration 'column type' \
               'NUMERIC(p,2) for every monetary and rate column' \
               "$(printf '%s' "${sql}" | head -c 400 | tr '\n' ' ')" \
-              'use NUMERIC with the precision and scale the copybook PIC clause fixes. An approximate type cannot reproduce packed-decimal arithmetic.'
+              "${remedy}"
           else
             printf 'The migrations declare no approximate numeric column type.\n'
           fi
@@ -651,7 +964,11 @@ jobs:
           targets='src pom.xml docker-compose.yml Dockerfile .env.example localstack-init observability'
 
           # Provider-shaped key material and private keys.
-          patterns='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[0-9A-Za-z]{20,}|github_pat_[0-9A-Za-z_]{20,}|xox[abps]-[0-9A-Za-z-]{10,}|AIza[0-9A-Za-z_-]{35}|sk_live_[0-9A-Za-z]{16,}|pk_live_[0-9A-Za-z]{16,}|-----BEGIN[[:space:]][A-Z ]*PRIVATE KEY-----'
+          patterns='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
+          patterns="${patterns}"'|gh[pousr]_[0-9A-Za-z]{20,}|github_pat_[0-9A-Za-z_]{20,}'
+          patterns="${patterns}"'|xox[abps]-[0-9A-Za-z-]{10,}|AIza[0-9A-Za-z_-]{35}'
+          patterns="${patterns}"'|sk_live_[0-9A-Za-z]{16,}|pk_live_[0-9A-Za-z]{16,}'
+          patterns="${patterns}"'|-----BEGIN[[:space:]][A-Z ]*PRIVATE KEY-----'
 
           # -o so each MATCHED TOKEN is judged individually rather than the whole
           # line, then self-declared non-functional placeholders are dropped: a
@@ -683,13 +1000,17 @@ jobs:
           fi
 
           if [ -s "${filtered}" ]; then
+            remedy='remove the value, rotate it at the provider, and read it from the environment'
+            remedy="${remedy}"' instead. Never commit a credential.'
             finding Blocker "${targets}" 'provider credential pattern' \
               'no key material of any kind' \
               "$(head -c 300 "${filtered}" | tr '\n' ' ')" \
-              'remove the value, rotate it at the provider, and read it from the environment instead. Never commit a credential.'
+              "${remedy}"
           else
             printf 'No provider-shaped credential material found outside the frozen corpus.\n'
-            printf 'Documented EXAMPLE placeholders in negative security tests are excluded by design: %s such token(s) seen.\n' \
+            note='Documented EXAMPLE placeholders in negative security tests are'
+            note="${note}"' excluded by design:'
+            printf '%s %s such token(s) seen.\n' "${note}" \
               "$(wc -l < "${raw}" | tr -d ' ')"
           fi
 
@@ -705,12 +1026,16 @@ jobs:
           # "$", so the environment-indirected form is accepted and a literal is
           # not. Anchoring on leading whitespace also means a commented example
           # cannot trigger it, since a comment line begins with "#".
-          if hits="$(grep -rnE '^[[:space:]]*(signing-key|signingKey|jwt-secret|jwt_secret)[[:space:]]*:[[:space:]]*[^$[:space:]#]' \
+          literal_key='^[[:space:]]*(signing-key|signingKey|jwt-secret|jwt_secret)'
+          literal_key="${literal_key}"'[[:space:]]*:[[:space:]]*[^$[:space:]#]'
+          if hits="$(grep -rnE "${literal_key}" \
               src/main/resources --include='*.yml')"; then
+            remedy='indirect the key through the environment in every profile and let the application'
+            remedy="${remedy}"' fail fast when it is unset. A committed default is a shipped credential.'
             finding Blocker src/main/resources 'JWT signing key' \
               'an environment reference with no committed default' \
               "$(printf '%s' "${hits}" | head -c 300 | tr '\n' ' ')" \
-              'indirect the key through the environment in every profile and let the application fail fast when it is unset. A committed default is a shipped credential.'
+              "${remedy}"
           else
             printf 'The signing key is environment-indirected in every profile.\n'
           fi
@@ -725,9 +1050,13 @@ jobs:
           actual="$(find .github -type f | sort | tr '\n' ' ')"
           expected='.github/workflows/build.yml '
           if [ "${actual}" != "${expected}" ]; then
+            remedy='this folder holds exactly one workflow. A release, deploy, publish or second'
+            remedy="${remedy}"' workflow, a composite action, a version-bump bot manifest, an owners file, a'
+            remedy="${remedy}"' duplicate security policy or an issue template all either contradict the determinism'
+            remedy="${remedy}"' this file exists to provide or duplicate guidance CONTRIBUTING.md already gives.'
             finding Medium .github 'directory contents' \
               "${expected}" "${actual}" \
-              'this folder holds exactly one workflow. A release, deploy, publish or second workflow, a composite action, a version-bump bot manifest, an owners file, a duplicate security policy or an issue template all either contradict the determinism this file exists to provide or duplicate guidance CONTRIBUTING.md already gives.'
+              "${remedy}"
           else
             printf '.github holds exactly one file: .github/workflows/build.yml\n'
           fi
@@ -750,12 +1079,12 @@ jobs:
       MAVEN_OPTS: -Xmx3072m -XX:MaxMetaspaceSize=512m
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up JDK ${{ env.JAVA_FEATURE_VERSION }}
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_FEATURE_VERSION }}
@@ -823,8 +1152,10 @@ jobs:
           if [ ! -f mvnw ]; then
             unavailable Blocker mvnw 'the launcher is absent; restore it and mark it executable'
           elif [ ! -x mvnw ]; then
+            remedy='run "git update-index --chmod=+x mvnw" and commit the mode change, or every job must'
+            remedy="${remedy}"' invoke it through an interpreter.'
             finding Blocker mvnw 'file mode' 'executable' 'not executable' \
-              'run "git update-index --chmod=+x mvnw" and commit the mode change, or every job must invoke it through an interpreter.'
+              "${remedy}"
           else
             printf 'mvnw is present and executable.\n'
           fi
@@ -844,61 +1175,91 @@ jobs:
 
           # Key by key, each asserted against its exact expected form.
           if ! grep -qE '^wrapperVersion=3\.3\.4$' "${WRAPPER_PROPERTIES}"; then
+            remedy='pin the wrapper version exactly; a floating value reintroduces the nondeterminism'
+            remedy="${remedy}"' this file exists to remove.'
             finding Medium "${WRAPPER_PROPERTIES}" wrapperVersion '3.3.4' \
               "$(grep -E '^wrapperVersion=' "${WRAPPER_PROPERTIES}" || echo absent)" \
-              'pin the wrapper version exactly; a floating value reintroduces the nondeterminism this file exists to remove.'
+              "${remedy}"
           fi
 
           if ! grep -qE '^distributionType=only-script$' "${WRAPPER_PROPERTIES}"; then
+            remedy='keep the script-only launcher. Any other type expects a committed wrapper jar, which'
+            remedy="${remedy}"' this repository deliberately does not carry.'
             finding Medium "${WRAPPER_PROPERTIES}" distributionType 'only-script' \
               "$(grep -E '^distributionType=' "${WRAPPER_PROPERTIES}" || echo absent)" \
-              'keep the script-only launcher. Any other type expects a committed wrapper jar, which this repository deliberately does not carry.'
+              "${remedy}"
           fi
 
           if ! grep -qE '^distributionUrl=https://.*apache-maven-3\.9\.11-bin\.zip$' \
               "${WRAPPER_PROPERTIES}"; then
+            remedy='pin the exact -bin.zip distribution over https. The launcher rejects a URL that does'
+            remedy="${remedy}"' not end in -bin.zip, so pinning the .tar.gz is not an option.'
             finding Blocker "${WRAPPER_PROPERTIES}" distributionUrl \
               "an https URL ending in apache-maven-${MAVEN_VERSION}-bin.zip" \
               "$(grep -E '^distributionUrl=' "${WRAPPER_PROPERTIES}" || echo absent)" \
-              'pin the exact -bin.zip distribution over https. The launcher rejects a URL that does not end in -bin.zip, so pinning the .tar.gz is not an option.'
+              "${remedy}"
           fi
 
           # The checksum must be present, exactly 64 characters, and LOWERCASE.
           if ! grep -qE '^distributionSha256Sum=[0-9a-f]{64}$' "${WRAPPER_PROPERTIES}"; then
+            remedy='restore the published SHA-256 in lowercase. A blank value disables verification'
+            remedy="${remedy}"' entirely while still exiting 0, and an uppercase value passes here but fails only on'
+            remedy="${remedy}"' Windows.'
             finding Blocker "${WRAPPER_PROPERTIES}" distributionSha256Sum \
               '64 lowercase hexadecimal characters' \
               "$(grep -E '^distributionSha256Sum=' "${WRAPPER_PROPERTIES}" \
                  | sed 's/=.*/=<redacted-shape-mismatch>/' || echo absent)" \
-              'restore the published SHA-256 in lowercase. A blank value disables verification entirely while still exiting 0, and an uppercase value passes here but fails only on Windows.'
+              "${remedy}"
           else
             printf '%s pins Apache Maven %s with a 64-character lowercase SHA-256.\n' \
               "${WRAPPER_PROPERTIES}" "${MAVEN_VERSION}"
           fi
 
-          # Failure mode 10, reported rather than enforced, and the distinction is
-          # deliberate. Without unzip the launcher rewrites the distribution URL
-          # to a .tar.gz while distributionSha256Sum still pins the .zip, so the
-          # hashes cannot match and it exits 1 claiming the distribution "might be
-          # compromised" - when the checksum is in fact correct and the archive is
-          # simply a different one. Naming that here means the misleading message
-          # arrives already explained.
+          # Failure mode 10, reported rather than enforced, and stated against
+          # what the committed launcher does rather than what the upstream one
+          # does. An earlier revision of this comment said that without unzip the
+          # launcher retargets the URL at a .tar.gz and then fails the zip
+          # checksum claiming a possibly compromised distribution. That is
+          # upstream's behaviour; mvnw:99-105 records the divergence, :374-395
+          # expands the pinned zip with the JDK jar tool when unzip is missing,
+          # and :696-703 refuses any URL that is not apache-maven-<version>-bin.zip.
+          # So an absent unzip does not produce a checksum failure here, and a
+          # checksum failure must not be diagnosed as an absent unzip.
           #
-          # It is NOT a finding, because the tool is only needed when the
+          # None of the three is a finding, because each is needed only when the
           # distribution must actually be downloaded and extracted: a runner whose
-          # wrapper cache already holds the pinned distribution never invokes it,
-          # and failing such a run would be a false positive on a build that works.
-          # A gate that fails a working build is how gates lose their audience.
-          # The authoritative check is therefore the next step, which asserts the
-          # wrapper really did resolve the pinned version - the observable outcome
-          # rather than a proxy for it.
-          for tool in unzip curl wget; do
-            if command -v "${tool}" > /dev/null 2>&1; then
-              printf 'available %s\n' "${tool}"
-            else
-              printf '::warning title=Low::%s [runner tool: %s] expected: available on PATH | actual: absent | remediation: install it if the next step reports a checksum-mismatch failure, which is what an absent unzip looks like. Never blank the checksum and never pin the .tar.gz.\n' \
-                "${WRAPPER_PROPERTIES}" "${tool}"
-            fi
-          done
+          # wrapper cache already holds the pinned distribution invokes none of
+          # them, and failing such a run would be a false positive on a build that
+          # works. A gate that fails a working build is how gates lose their
+          # audience. The authoritative check is therefore the next step, which
+          # asserts the wrapper really did resolve the pinned version - the
+          # observable outcome rather than a proxy for it.
+          #
+          # unzip is reported separately from the download tools because its
+          # absence has a documented fallback and theirs does not.
+          if command -v unzip > /dev/null 2>&1; then
+            printf 'available unzip\n'
+          else
+            note="::warning title=Low::${WRAPPER_PROPERTIES} [runner tool: unzip]"
+            note="${note}"' expected: available on PATH | actual: absent |'
+            note="${note}"' remediation: none required in most cases - the launcher'
+            note="${note}"' expands the pinned zip with $JAVA_HOME/bin/jar instead, and'
+            note="${note}"' a JDK is already a prerequisite. Install unzip only if the'
+            note="${note}"' launcher reports that neither it nor the jar tool is'
+            note="${note}"' available. Never blank the checksum and never pin the'
+            note="${note}"' .tar.gz.'
+            printf '%s\n' "${note}"
+          fi
+          if command -v curl > /dev/null 2>&1 || command -v wget > /dev/null 2>&1; then
+            printf 'available at least one of curl, wget\n'
+          else
+            note="::warning title=Low::${WRAPPER_PROPERTIES} [runner tool: curl or wget]"
+            note="${note}"' expected: at least one on PATH | actual: neither |'
+            note="${note}"' remediation: install one. The launcher tries curl, then'
+            note="${note}"' wget, then fails explicitly - it deliberately does not'
+            note="${note}"' compile a Java downloader as a third fallback.'
+            printf '%s\n' "${note}"
+          fi
 
           conclude 'Maven wrapper'
 
@@ -911,9 +1272,11 @@ jobs:
           java_feature="$(java -version 2>&1 \
             | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -n 1)"
           if [ "${java_feature}" != "${JAVA_FEATURE_VERSION}" ]; then
+            remedy='provision JDK 25 through the pinned setup action. Never fall back to Java 21 or 17,'
+            remedy="${remedy}"' and never hardcode a host JDK path - the action supplies JAVA_HOME.'
             finding Blocker pom.xml 'maven.compiler.release / enforcer requireJavaVersion' \
               "Java feature version ${JAVA_FEATURE_VERSION}" "${java_feature:-unreadable}" \
-              'provision JDK 25 through the pinned setup action. Never fall back to Java 21 or 17, and never hardcode a host JDK path - the action supplies JAVA_HOME.'
+              "${remedy}"
           else
             printf 'Java feature version %s (patch level as shipped by the pinned distribution).\n' \
               "${java_feature}"
@@ -925,9 +1288,12 @@ jobs:
           resolved="$(./mvnw --version 2>/dev/null \
             | sed -n 's/^Apache Maven \([0-9][^ ]*\).*/\1/p' | head -n 1)"
           if [ "${resolved}" != "${MAVEN_VERSION}" ]; then
+            remedy='correct the distributionUrl and its checksum in that file, which is the single source'
+            remedy="${remedy}"' of this version. Do not install a Maven beside the wrapper, and do not accept 3.9.9'
+            remedy="${remedy}"' or the 3.8 line.'
             finding Blocker "${WRAPPER_PROPERTIES}" 'resolved Apache Maven version' \
               "${MAVEN_VERSION}" "${resolved:-unreadable}" \
-              'correct the distributionUrl and its checksum in that file, which is the single source of this version. Do not install a Maven beside the wrapper, and do not accept 3.9.9 or the 3.8 line.'
+              "${remedy}"
           else
             printf 'Apache Maven %s, resolved by the checksum-verified wrapper.\n' "${resolved}"
           fi
@@ -962,17 +1328,21 @@ jobs:
           declared="$(sed -n 's:.*<testcontainers\.version>\([^<]*\)</testcontainers\.version>.*:\1:p' \
             pom.xml | head -n 1)"
           if [ "${declared}" != "${expected_version}" ]; then
+            remedy='set the version property to the pinned value. This is half one of the remedy; without'
+            remedy="${remedy}"' it the managed 1.x version wins.'
             finding Blocker pom.xml 'testcontainers.version property' \
               "${expected_version}" "${declared:-absent}" \
-              'set the version property to the pinned value. This is half one of the remedy; without it the managed 1.x version wins.'
+              "${remedy}"
           else
             printf 'testcontainers.version property is %s.\n' "${declared}"
           fi
 
           if grep -q 'testcontainers-bom' pom.xml; then
+            remedy='remove the import. A second bill of materials competes with the one Spring Boot'
+            remedy="${remedy}"' already imports and makes resolution ordering-dependent.'
             finding Blocker pom.xml 'testcontainers-bom import' \
               'no import; the version property is the only lever' 'an import is declared' \
-              'remove the import. A second bill of materials competes with the one Spring Boot already imports and makes resolution ordering-dependent.'
+              "${remedy}"
           else
             printf 'No competing Testcontainers bill of materials is imported.\n'
           fi
@@ -1004,9 +1374,11 @@ jobs:
             }
           ' pom.xml)"
           if [ -n "${bare}" ]; then
+            remedy='rename each to its prefixed form. These coordinates do not exist at the pinned'
+            remedy="${remedy}"' version and fail resolution outright.'
             finding Blocker pom.xml 'bare Testcontainers module coordinate' \
               'none' "$(printf '%s' "${bare}" | tr '\n' ' ')" \
-              'rename each to its prefixed form. These coordinates do not exist at the pinned version and fail resolution outright.'
+              "${remedy}"
           else
             printf 'No bare Testcontainers module coordinate is declared.\n'
           fi
@@ -1057,7 +1429,18 @@ jobs:
           # maintainer has not configured an optional key would be the
           # environment-specific assumption Rule 1 clause C forbids.
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-        run: ./mvnw --batch-mode --no-transfer-progress clean verify
+        run: |
+          set -euo pipefail
+          # Stamped BEFORE Maven starts, and outside target/ so `clean` cannot
+          # remove it. Every report this build produces must be newer than this
+          # instant, which is what lets the reconciliation below distinguish a
+          # report this run wrote from one left behind by an earlier tree. In CI
+          # the workspace is fresh so staleness is already impossible; the stamp
+          # makes the same check meaningful when a maintainer runs these steps
+          # locally against a warm target/, which is where a stale report can
+          # otherwise satisfy an existence test.
+          date -u '+%s' > "${RUNNER_TEMP}/verify-started-at-epoch"
+          ./mvnw --batch-mode --no-transfer-progress clean verify
 
       # ----------------------------------------------------------------------
       # TEST-COLLECTION AUDIT: the testcase element count is the authority.
@@ -1144,6 +1527,286 @@ jobs:
                       collected - attribute_sum, under_advertising))
           PY
 
+      # ----------------------------------------------------------------------
+      # COLLECTION COMPLETENESS: the test TREE is the authority for what should
+      # have run, and the reports are reconciled against it.
+      #
+      # WHY THE AUDIT ABOVE IS NOT SUFFICIENT, stated plainly because the two
+      # steps look similar. That step asserts that cases were collected and that
+      # none failed. It deliberately asserts no total - a hardcoded figure would
+      # turn every added test into a CI failure - and that is exactly the hole:
+      # a whole suite, or a whole package, can stop being collected while the
+      # aggregate element count stays large, nonzero and green. Nothing in an
+      # aggregate can report an absence.
+      #
+      # This step closes it without hardcoding anything. The expected set is
+      # DERIVED from the tree: every *Test.java / *Tests.java source is expected
+      # to produce exactly one report, in the directory its own path determines -
+      # Failsafe for anything under integration/ or e2e/, Surefire otherwise,
+      # which is precisely the split pom.xml configures. Abstract suites are
+      # excluded by reading the source for an `abstract class` declaration rather
+      # than by naming them here, so adding or removing one needs no edit.
+      #
+      # Five distinct failures are separated, because they have different causes
+      # and different fixes:
+      #   MISSING       a source exists and produced no report - the TEST-013
+      #                 hole: deleted from a selection, filtered by a stale
+      #                 pattern, or silently not compiled.
+      #   EMPTY         a report exists carrying zero cases.
+      #   WRONG PLUGIN  the report is in the other tier's directory, which means
+      #                 the class moved package without moving directory.
+      #   DUPLICATED    both tiers reported it, so it ran twice and one of the
+      #                 two runs is meaningless.
+      #   ORPHAN        a report exists with no source, which is a leftover from
+      #                 an earlier tree being read as current evidence.
+      #   STALE         a report predates this build's start stamp.
+      #
+      # A source NOT named like a suite is support code, and support code must
+      # declare no @Test - otherwise renaming a suite is a way to remove it from
+      # collection while leaving its cases in the tree. The unit tier asserts the
+      # same property, and that is not a reason to omit it here: a test can only
+      # prove it if it was itself collected, which is the very thing under audit.
+      # ----------------------------------------------------------------------
+      - name: Reconcile every suite in the tree against the report it produced
+        if: always()
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+          python3 - <<'PY'
+          import glob
+          import os
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+
+          TEST_ROOT = "src/test/java"
+          SUITE_NAME = re.compile(r".*Tests?\.java$")
+          TEST_ANNOTATION = re.compile(r"@Test\b")
+          SUREFIRE = "target/surefire-reports"
+          FAILSAFE = "target/failsafe-reports"
+          TIERS = (SUREFIRE, FAILSAFE)
+
+          started_at = 0
+          stamp = os.path.join(os.environ.get("RUNNER_TEMP", "."), "verify-started-at-epoch")
+          if os.path.isfile(stamp):
+              with open(stamp, encoding="utf-8") as handle:
+                  started_at = int(handle.read().strip() or 0)
+
+          if not os.path.isdir(TEST_ROOT):
+              sys.exit("::error title=Blocker::{} [test tree] expected: the test sources | actual: the "
+                       "directory does not exist | remediation: the checkout is incomplete; nothing about "
+                       "collection can be concluded.".format(TEST_ROOT))
+
+          expected = {}
+          support = []
+          abstract = []
+
+          for directory, _, files in os.walk(TEST_ROOT):
+              for name in sorted(files):
+                  if not name.endswith(".java"):
+                      continue
+                  path = os.path.join(directory, name)
+                  relative = "/" + os.path.relpath(path, TEST_ROOT).replace(os.sep, "/")
+                  fqcn = relative[1:-len(".java")].replace("/", ".")
+                  with open(path, encoding="utf-8") as source:
+                      text = source.read()
+                  if not SUITE_NAME.match(name):
+                      support.append((fqcn, len(TEST_ANNOTATION.findall(text))))
+                      continue
+                  simple = name[:-len(".java")]
+                  if re.search(r"\babstract\s+class\s+" + re.escape(simple) + r"\b", text):
+                      abstract.append(fqcn)
+                      continue
+                  expected[fqcn] = FAILSAFE if ("/integration/" in relative
+                                                or "/e2e/" in relative) else SUREFIRE
+
+          def report_for(tier, fqcn):
+              return os.path.join(tier, "TEST-{}.xml".format(fqcn))
+
+          missing, empty, wrong_plugin, duplicated, stale = [], [], [], [], []
+          matched = 0
+          for fqcn in sorted(expected):
+              tier = expected[fqcn]
+              mine = report_for(tier, fqcn)
+              elsewhere = [other for other in TIERS
+                           if other != tier and os.path.isfile(report_for(other, fqcn))]
+              if os.path.isfile(mine):
+                  matched += 1
+                  if elsewhere:
+                      duplicated.append("{} reported by both tiers".format(fqcn))
+                  root = ET.parse(mine).getroot()
+                  if not list(root.iter("testcase")):
+                      empty.append(fqcn)
+                  if started_at and os.path.getmtime(mine) < started_at:
+                      stale.append(fqcn)
+              elif elsewhere:
+                  wrong_plugin.append("{} reported by {} but its path assigns it to {}".format(
+                      fqcn, elsewhere[0], tier))
+              else:
+                  missing.append("{} -> no {}".format(fqcn, mine))
+
+          on_disk = set()
+          for tier in TIERS:
+              for report in glob.glob(tier + "/TEST-*.xml"):
+                  on_disk.add(os.path.basename(report)[len("TEST-"):-len(".xml")])
+          orphan = sorted(on_disk - set(expected))
+          hiding = ["{} declares {} @Test".format(name, count) for name, count in support if count]
+
+          tiers_seen = {"unit": 0, "integration": 0, "e2e": 0}
+          for fqcn in expected:
+              for tier_name in tiers_seen:
+                  if ".{}.".format(tier_name) in fqcn:
+                      tiers_seen[tier_name] += 1
+
+          print("expected suites (DERIVED from the tree) : {}".format(len(expected)))
+          print("  Surefire / Failsafe                   : {} / {}".format(
+              sum(1 for t in expected.values() if t == SUREFIRE),
+              sum(1 for t in expected.values() if t == FAILSAFE)))
+          print("  per tier                              : {}".format(tiers_seen))
+          print("reports matched                          : {}".format(matched))
+          print("abstract suites excluded                 : {}".format(len(abstract)))
+          print("support sources (no @Test permitted)     : {}".format(len(support)))
+          print("build start stamp (epoch, 0 = absent)    : {}".format(started_at))
+
+          def report(kind, offenders, remediation):
+              if not offenders:
+                  return 0
+              shown = offenders[:20]
+              print("::error title=Blocker::{} [{}] expected: none | actual: {} | remediation: {}".format(
+                  TEST_ROOT, kind, len(offenders), remediation))
+              for offender in shown:
+                  print("  {} {}".format(kind, offender))
+              if len(offenders) > len(shown):
+                  print("  ... and {} more".format(len(offenders) - len(shown)))
+              return 1
+
+          problems = 0
+          problems += report("MISSING REPORT", missing,
+                             "a suite in the tree produced no report, so it did not run. Confirm no test "
+                             "selection property reached Maven and that the source compiles.")
+          problems += report("EMPTY REPORT", empty,
+                             "the suite reported zero cases; check for a disabled class or an empty tag "
+                             "filter.")
+          problems += report("WRONG PLUGIN", wrong_plugin,
+                             "move the source into the directory its package implies, so exactly one plugin "
+                             "owns it.")
+          problems += report("DUPLICATED", duplicated,
+                             "both plugins collected it; narrow the include patterns in pom.xml.")
+          problems += report("ORPHAN REPORT", orphan,
+                             "a report has no source. Run `clean` so an earlier tree's evidence is not read "
+                             "as this one's.")
+          problems += report("STALE REPORT", stale,
+                             "the report predates this build. Run `clean verify` rather than a bare test "
+                             "goal against a warm target/.")
+          problems += report("HIDDEN SUITE", hiding,
+                             "a support-named source declares test methods, which keeps them out of both "
+                             "plugins' include patterns. Rename it to end in Test or move the methods.")
+
+          if not expected:
+              sys.exit("::error title=Blocker::{} [expected suites] expected: at least one | actual: none | "
+                       "remediation: the walk matched nothing, so this audit proved nothing.".format(
+                           TEST_ROOT))
+          for tier_name, count in tiers_seen.items():
+              if count == 0:
+                  problems += 1
+                  print("::error title=Blocker::{} [{} tier] expected: at least one suite | actual: none | "
+                        "remediation: a whole tier is absent from the tree, which an aggregate count cannot "
+                        "report.".format(TEST_ROOT, tier_name))
+
+          if problems:
+              sys.exit("Collection reconciliation: {} problem class(es) reported above.".format(problems))
+          print("Collection reconciliation: every one of the {} suites in the tree produced exactly one "
+                "report, in the right tier, non-empty and newer than the build stamp.".format(len(expected)))
+          PY
+
+      # ----------------------------------------------------------------------
+      # THE GATE HARNESS SPECIFICALLY: its own report, its own raw marker, and
+      # the commit both describe.
+      #
+      # The reconciliation above proves that every suite named like one produced
+      # a report. That is a set property, and the eight validation gates rest on
+      # ONE named class, so its presence is asserted by name here rather than
+      # inferred from a set. The harness also writes a marker while it executes,
+      # which is the only artefact that distinguishes "ran and passed" from
+      # "never collected" - but a marker the workflow neither requires nor reads
+      # proves nothing to the workflow, and a marker with no commit in it cannot
+      # be told apart from one left over from an earlier tree. So all three are
+      # required: the exact report, the raw marker, and a commit inside the
+      # marker equal to the commit this job checked out.
+      #
+      # The commit is compared against `git rev-parse HEAD` in the workspace
+      # rather than against github.sha, deliberately: on a pull request those two
+      # differ by design, and what matters is the tree that was actually tested.
+      # ----------------------------------------------------------------------
+      - name: Assert the gate harness ran, on this commit, and left its raw evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          harness_report='target/failsafe-reports/TEST-com.cardemo.e2e.GateVerificationTest.xml'
+          marker='target/gate-verification/gate-verification-evidence.properties'
+          summary='target/gate-verification/gate-verification-summary.properties'
+
+          if [ ! -f "${harness_report}" ]; then
+            unavailable Blocker "${harness_report}" \
+              'the gate harness produced no report of its own, so no gate was asserted by this run. Confirm the class is still at src/test/java/com/cardemo/e2e/GateVerificationTest.java and that the Failsafe include patterns still reach it'
+          else
+            cases="$(python3 -c 'import sys,xml.etree.ElementTree as ET; print(len(list(ET.parse(sys.argv[1]).getroot().iter("testcase"))))' "${harness_report}")"
+            bad="$(python3 -c 'import sys,xml.etree.ElementTree as ET; r=ET.parse(sys.argv[1]).getroot(); print(sum(1 for c in r.iter("testcase") if c.find("failure") is not None or c.find("error") is not None))' "${harness_report}")"
+            printf 'gate harness cases: %s, failed or errored: %s\n' "${cases}" "${bad}"
+            if [ "${cases}" -lt 1 ]; then
+              finding Blocker "${harness_report}" 'testcase elements' 'at least one gate asserted' \
+                "${cases}" 'the harness was collected but asserted nothing; check for a disabled class.'
+            fi
+            if [ "${bad}" -ne 0 ]; then
+              finding Blocker "${harness_report}" 'testcase outcome' 'zero failures' \
+                "${bad} failed or errored" 'read the annotations above; a failing gate is a failing gate.'
+            fi
+          fi
+
+          for artefact in "${marker}" "${summary}"; do
+            if [ ! -s "${artefact}" ]; then
+              unavailable Blocker "${artefact}" \
+                'the harness wrote no raw evidence, so a silent non-run cannot be ruled out. This file is written by the harness while it executes; its absence after a completed build means the class never ran'
+            else
+              printf 'retained  %s (%s bytes)\n' "${artefact}" "$(wc -c < "${artefact}" | tr -d ' ')"
+            fi
+          done
+
+          # Every one of the eight gates must have recorded at least one figure.
+          # This is the assertion that a test count cannot make: 50 cases prove
+          # that fifty things ran, not that all eight gates were among them, and
+          # a hardcoded 50 would fail on every gate added. A per-gate key prefix
+          # is derived from what the harness itself published, so a gate that
+          # stops reporting is named here rather than absorbed into a total.
+          if [ -s "${summary}" ]; then
+            for gate in 1 2 3 4 5 6 7 8; do
+              recorded="$(grep -c "^gate${gate}\." "${summary}" || true)"
+              printf '  gate %s recorded %s figure(s)\n' "${gate}" "${recorded}"
+              if [ "${recorded}" -eq 0 ]; then
+                unavailable Blocker "${summary}" \
+                  "gate ${gate} recorded no figure at all, so this run asserted nothing about it. A case count cannot substitute: it says how many assertions ran, not which gates they covered"
+              fi
+            done
+          fi
+
+          if [ -s "${marker}" ]; then
+            checked_out="$(git rev-parse HEAD)"
+            stamped="$(sed -n 's/^gate\.harness\.commit=//p' "${marker}" | head -n 1)"
+            printf 'workspace commit: %s\nmarker commit   : %s\ngithub.sha      : %s\n' \
+              "${checked_out}" "${stamped:-<absent>}" "${GITHUB_SHA}"
+            if [ -z "${stamped}" ]; then
+              finding Blocker "${marker}" 'gate.harness.commit' 'the commit under test' 'absent' \
+                'the harness must stamp the commit it ran against, otherwise a leftover marker from an earlier tree is indistinguishable from a fresh one.'
+            elif [ "${stamped}" != "${checked_out}" ]; then
+              finding Blocker "${marker}" 'gate.harness.commit' "${checked_out}" "${stamped}" \
+                'the retained evidence describes a different tree than the one this job checked out. Run clean verify on this commit.'
+            fi
+          fi
+
+          conclude 'Gate harness evidence'
+
       # A green build that produced no report is not evidence, so the four
       # required reports are asserted to exist. This step runs only after the
       # gate above succeeded, which is when their absence would be genuinely
@@ -1171,8 +1834,10 @@ jobs:
             'the executable archive was not packaged, so there is nothing for the image build to ship'
 
           if ! ls target/site/jacoco/jacoco*.xml > /dev/null 2>&1; then
+            remedy='the machine-readable coverage report is absent; a human-readable report alone cannot'
+            remedy="${remedy}"' be consumed by a coverage tool'
             unavailable High 'target/site/jacoco/jacoco*.xml' \
-              'the machine-readable coverage report is absent; a human-readable report alone cannot be consumed by a coverage tool'
+              "${remedy}"
           else
             printf 'produced  %s\n' "$(ls target/site/jacoco/jacoco*.xml | head -n 1)"
           fi
@@ -1182,8 +1847,11 @@ jobs:
           # not execute, which is the "skipped scan read as a clean scan" failure
           # that must never pass silently.
           if [ ! -d target/dependency-check ]; then
+            remedy='the vulnerability scan produced no report after a successful verify, so the gate did'
+            remedy="${remedy}"' not execute. Confirm no skip property and no offline mode reached Maven, and that the'
+            remedy="${remedy}"' feed was reachable'
             unavailable Blocker target/dependency-check \
-              'the vulnerability scan produced no report after a successful verify, so the gate did not execute. Confirm no skip property and no offline mode reached Maven, and that the feed was reachable'
+              "${remedy}"
           else
             printf 'produced  %s\n' 'target/dependency-check'
           fi
@@ -1204,7 +1872,7 @@ jobs:
       # ----------------------------------------------------------------------
       - name: Upload the Surefire and Failsafe reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: test-reports
           path: |
@@ -1213,9 +1881,22 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
-      - name: Upload the JaCoCo coverage report - XML and HTML
+      # The harness's raw marker and summary, retained unaltered. The gate
+      # evidence job downloads this artifact and derives its document from these
+      # figures, so the published evidence is a rendering of what the run
+      # recorded rather than prose written alongside it.
+      - name: Upload the gate harness raw evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gate-harness-raw-evidence
+          path: target/gate-verification/**
+          if-no-files-found: error
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Upload the JaCoCo coverage report - XML and HTML
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: jacoco-coverage-report
           path: target/site/jacoco/**
@@ -1224,7 +1905,7 @@ jobs:
 
       - name: Upload the dependency vulnerability report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: dependency-check-report
           path: target/dependency-check/**
@@ -1233,7 +1914,7 @@ jobs:
 
       - name: Upload the executable archive
         if: success()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: carddemo-executable-jar
           path: target/carddemo-*.jar
@@ -1259,7 +1940,7 @@ jobs:
       INIT_SLEEP_SECONDS: "2"
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -1326,7 +2007,20 @@ jobs:
 
           # Non-secret settings. The emulator placeholders are deliberately the
           # literal word "test" so no reader can mistake them for real material.
+          #
+          # The two database ROLE NAMES belong here rather than above: a role
+          # name is not a credential, and docker-compose.yml guards all four
+          # least-privilege variables with `:?` - it no longer defaults either
+          # name to the bootstrap POSTGRES_USER - so `docker compose config`
+          # requires both to be present. Their two passwords are generated
+          # above, like every other secret on this path.
+          # They are spelled exactly as .env.example ships them, and the topology
+          # validator below asserts that agreement on the RENDERED configuration
+          # rather than trusting these two lines: a name without its password is
+          # what used to let the runtime fall back to the bootstrap SUPERUSER.
           cat >> .env <<'PLAIN'
+          CARDDEMO_DB_APP_USER=carddemo_app
+          CARDDEMO_DB_MIGRATION_USER=carddemo_migrator
           GRAFANA_ADMIN_USER=carddemo-admin
           AWS_ACCESS_KEY_ID=test
           AWS_SECRET_ACCESS_KEY=test
@@ -1342,9 +2036,166 @@ jobs:
           # .gitignore already excludes it; asserted rather than assumed, because
           # a tracked .env would put generated credentials into a commit.
           if ! git check-ignore --quiet .env; then
-            printf '::error title=Blocker::.gitignore [.env] expected: ignored | actual: tracked or untracked-but-not-ignored | remediation: add .env to .gitignore before this job can safely write one.\n'
+            note='::error title=Blocker::.gitignore [.env] expected: ignored |'
+            note="${note}"' actual: tracked or untracked-but-not-ignored |'
+            note="${note}"' remediation: add .env to .gitignore before this job can'
+            note="${note}"' safely write one.'
+            printf '%s\n' "${note}"
             exit 1
           fi
+
+      # ----------------------------------------------------------------------
+      # THE LOG SCRUBBER, BUILT AND SELF-TESTED BEFORE ANYTHING IS LOGGED.
+      #
+      # The uploaded container logs are the one artifact of this job that a human
+      # reads, and they are collected from a running application handling seeded
+      # customer data. Two things were wrong with scrubbing them inline at
+      # collection time. First the rule set was incomplete: it redacted a
+      # DASHED nine-digit national identifier and nothing else of that shape, so
+      # `ssn=123456789` - the form a JSON payload, a bind-parameter log or a
+      # constraint-violation message actually carries - survived into the
+      # artifact. Second, and worse, the rules were written and applied in the
+      # same step, so nothing ever demonstrated that any of them fires. A
+      # redaction rule that silently matches nothing is indistinguishable from a
+      # redaction rule that works, and the artifact is published either way.
+      #
+      # So the rules are built here, then run against a fixture that contains one
+      # instance of every shape they claim to cover, and the step fails unless
+      # each secret is gone AND its marker is present. The fixture is asserted to
+      # have contained the value BEFORE scrubbing too, so a rule cannot pass by
+      # being tested against input that never held the thing it removes.
+      #
+      # Over-reach is asserted against as well. An unlabelled nine-digit number
+      # is an account or transaction identifier in this domain, not a national
+      # one, and redacting it would destroy exactly the diagnostic value the logs
+      # are collected for. The label-aware rule keeps its label and replaces only
+      # the digits.
+      # ----------------------------------------------------------------------
+      - name: Build and self-test the container log scrubber
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          scrubber="${RUNNER_TEMP}/scrub.sed"
+          : > "${scrubber}"
+
+          # Every generated value, replaced BY VALUE rather than by shape. This
+          # half cannot be tested against a fixture without putting the real
+          # values in one, so the fixture below uses the values themselves,
+          # which are already masked in this runner's log output.
+          while IFS='=' read -r name value; do
+            case "${name}" in
+              JWT_SIGNING_KEY|POSTGRES_PASSWORD|CARDDEMO_DB_APP_PASSWORD|\
+              CARDDEMO_DB_MIGRATION_PASSWORD|METRICS_SCRAPE_PASSWORD|GRAFANA_ADMIN_PASSWORD)
+                printf 's|%s|REDACTED_%s|g\n' "${value}" "${name}" >> "${scrubber}"
+                ;;
+              *) ;;
+            esac
+          done < .env
+
+          # And by shape, for anything the application itself may have emitted.
+          #
+          # The label-aware rule preserves the label through a back-reference and
+          # is case-insensitive, because the same field is written CUST-SSN in the
+          # copybook, ssn in JSON and socialSecurityNumber in a method name.
+          #
+          # IT USES # AS ITS DELIMITER, and that is load-bearing rather than
+          # stylistic: with | as the delimiter, the \| inside the pattern is read
+          # as an ESCAPED DELIMITER - a literal pipe - and not as alternation, so
+          # the rule compiles, runs, matches nothing and reports nothing. The
+          # self-test below is what caught exactly that.
+          cat >> "${scrubber}" <<'SHAPES'
+          s|[0-9]\{3\}-[0-9]\{2\}-[0-9]\{4\}|REDACTED_NATIONAL_ID|g
+          s#\(ssn\|social[ _-]*security\([ _-]*number\)\?\|national[ _-]*id\(entifier\)\?\)\([^0-9A-Za-z]\{0,4\}\)[0-9]\{9\}#\1\4REDACTED_NATIONAL_ID#gI
+          s|\$2[aby]\$[0-9]\{2\}\$[A-Za-z0-9./]\{53\}|REDACTED_PASSWORD_HASH|g
+          s|eyJ[A-Za-z0-9_-]\{6,\}\.[A-Za-z0-9_-]\{6,\}\.[A-Za-z0-9_-]\{6,\}|REDACTED_JWT|g
+          s|[Bb]earer [A-Za-z0-9._~+/-]\{16,\}=*|Bearer REDACTED_TOKEN|g
+          SHAPES
+
+          printf 'Scrubber built with %s rule(s).\n' \
+            "$(wc -l < "${scrubber}" | tr -d ' ')"
+
+          # ---- the self-test ----
+          fixture="${RUNNER_TEMP}/scrub-fixture.log"
+          jwt_signing_key="$(sed -n 's/^JWT_SIGNING_KEY=//p' .env | head -n 1)"
+          grafana_admin_password="$(sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' .env | head -n 1)"
+          {
+            printf 'startup signing key resolved to %s\n' "${jwt_signing_key}"
+            printf 'dashboard admin password %s\n' "${grafana_admin_password}"
+            printf 'CUST-SSN=123-45-6789 loaded from the seed\n'
+            printf '{"ssn":"123456789","custId":"000000001"}\n'
+            printf 'socialSecurityNumber: 123456789 rejected by validation\n'
+            printf 'national-id 123456789 not found\n'
+            printf 'stored hash $2a$10$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0\n'
+            printf 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJBRE1JTjAwMSJ9.c2lnbmF0dXJl\n'
+            printf 'Authorization: Bearer 0123456789abcdefghijABCDEFGHIJ==\n'
+            printf 'transaction 123456789 posted to account 000000010\n'
+          } > "${fixture}"
+
+          # Non-vacuity FIRST: the fixture must really hold each value, or the
+          # assertions below would pass over input that never contained it.
+          for present in "${jwt_signing_key}" "${grafana_admin_password}" \
+              '123-45-6789' '"ssn":"123456789"' 'socialSecurityNumber: 123456789' \
+              'national-id 123456789' '$2a$10$' 'Bearer eyJ' \
+              'Bearer 0123456789abcdefghijABCDEFGHIJ'; do
+            if ! grep -qF -- "${present}" "${fixture}"; then
+              finding Blocker "${fixture}" 'self-test fixture' 'contains the value under test' \
+                'absent' 'the fixture no longer exercises this rule, so the rule is untested rather than proven.'
+            fi
+          done
+
+          sed -i -f "${scrubber}" "${fixture}"
+
+          # Each secret must be GONE. Compared with -F so a value containing a
+          # regex metacharacter cannot make the check pass by failing to compile.
+          for gone in "${jwt_signing_key}" "${grafana_admin_password}" \
+              '123-45-6789' '"ssn":"123456789"' '$2a$10$' 'Bearer eyJhbGciOiJIUzI1NiJ9' \
+              'Bearer 0123456789abcdefghijABCDEFGHIJ'; do
+            if grep -qF -- "${gone}" "${fixture}"; then
+              finding Blocker "${RUNNER_TEMP}/scrub.sed" 'redaction' 'the value is removed' \
+                'it survived scrubbing' 'fix the rule for this shape before any log is uploaded.'
+            fi
+          done
+
+          # And each marker must be PRESENT, so a rule cannot pass by deleting
+          # the whole line or by doing nothing to a value that was never there.
+          # 'Bearer REDACTED_JWT' rather than 'Bearer REDACTED_TOKEN' for the
+          # signed token, because the JWT rule is the more specific of the two and
+          # runs first; the opaque token on the next fixture line is what proves
+          # the general Bearer rule still fires.
+          for marker in REDACTED_JWT_SIGNING_KEY REDACTED_GRAFANA_ADMIN_PASSWORD \
+              REDACTED_NATIONAL_ID REDACTED_PASSWORD_HASH 'Bearer REDACTED_JWT' \
+              'Bearer REDACTED_TOKEN'; do
+            if ! grep -qF -- "${marker}" "${fixture}"; then
+              finding Blocker "${RUNNER_TEMP}/scrub.sed" 'redaction marker' \
+                "${marker} appears in the scrubbed output" 'absent' \
+                'the rule did not fire, so the shape it claims to cover is unprotected.'
+            fi
+          done
+
+          # The three labelled forms must each keep their label and lose only the
+          # digits, which is what makes a scrubbed log still readable.
+          for labelled in '"ssn":"REDACTED_NATIONAL_ID"' 'socialSecurityNumber: REDACTED_NATIONAL_ID' \
+              'national-id REDACTED_NATIONAL_ID'; do
+            if ! grep -qF -- "${labelled}" "${fixture}"; then
+              finding Blocker "${RUNNER_TEMP}/scrub.sed" 'label-aware redaction' \
+                "${labelled}" 'the label was lost or the digits survived' \
+                'the label-aware rule must preserve its label through the back-reference and replace only the nine digits.'
+            fi
+          done
+
+          # Over-reach: an UNLABELLED nine-digit number is an account or
+          # transaction identifier here, and destroying it would remove the
+          # diagnostic value the logs are collected for.
+          if ! grep -qF -- 'transaction 123456789 posted' "${fixture}"; then
+            finding Medium "${RUNNER_TEMP}/scrub.sed" 'over-reach' \
+              'an unlabelled nine-digit identifier passes through untouched' 'it was redacted' \
+              'narrow the rule to labelled occurrences; a blanket nine-digit rule redacts every account and transaction id in the log.'
+          fi
+
+          printf -- '--- scrubbed fixture ---\n'
+          cat "${fixture}"
+          conclude 'Log scrubber self-test'
 
       # ----------------------------------------------------------------------
       # The topology is validated before anything is started, so a
@@ -1357,9 +2208,31 @@ jobs:
           . "${RUNNER_TEMP}/finding.sh"
 
           docker compose config --quiet
-          docker compose config --format json > "${RUNNER_TEMP}/topology.json"
 
-          python3 - "${RUNNER_TEMP}/topology.json" <<'PY'
+          # ------------------------------------------------------------------
+          # THE RESOLVED TOPOLOGY IS NEVER WRITTEN TO DISK, and that is the
+          # point of the pipe rather than a stylistic preference.
+          #
+          # `docker compose config` INTERPOLATES .env. The .env this job writes
+          # a few steps above holds a generated JWT signing key, the PostgreSQL
+          # superuser password, both least-privilege role passwords, the metrics
+          # scrape password and the Grafana administrator password - so the
+          # resolved JSON is a complete credential set in plaintext. An earlier
+          # revision redirected it to ${RUNNER_TEMP}/topology.json, at whatever
+          # mode the default umask gave, and never removed it: it stayed for the
+          # life of the runner and was readable by anything else running there,
+          # for no benefit, since the only consumers are this validator and one
+          # image reference read by the promtool step below.
+          #
+          # The validator therefore reads the resolved JSON from STDIN, so it
+          # exists only in the pipe, and writes back a STRUCTURAL PROJECTION
+          # holding service names, image references, build flags and network
+          # names - no environment, no secrets, nothing interpolated from .env.
+          # The projection is what the later step reads. Neither umask nor chmod
+          # nor an rm is needed for a file that never contains a credential,
+          # which is a stronger guarantee than remembering to delete one.
+          # ------------------------------------------------------------------
+          cat > "${RUNNER_TEMP}/topology-check.py" <<'CHECKER'
           import json
           import re
           import sys
@@ -1368,7 +2241,7 @@ jobs:
           DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
           findings = []
 
-          topology = json.load(open(sys.argv[1]))
+          topology = json.load(sys.stdin)
           services = set(topology.get("services", {}))
           networks = set(topology.get("networks", {}))
 
@@ -1417,6 +2290,99 @@ jobs:
                           "daemon socket to an application or emulator container."
                           .format(name, source))
 
+          # ------------------------------------------------------------------
+          # The database principals, read back from the RENDERED topology.
+          #
+          # Three layers name these roles - the app service, the postgres
+          # service and the postgres-least-privilege-roles config - and the
+          # defect this guards against was them disagreeing: the app service
+          # defaulted both names to POSTGRES_USER (a SUPERUSER) while the other
+          # two defaulted to carddemo_app and carddemo_migrator, so a start
+          # without the names exported created two roles nobody then used and
+          # served every request as the superuser. Interpolation is what decides
+          # the outcome, so the assertion is made after interpolation.
+          # ------------------------------------------------------------------
+          app_env = topology["services"].get("app", {}).get("environment", {})
+          db_env = topology["services"].get("postgres", {}).get("environment", {})
+          roles = {
+              "runtime": ("CARDDEMO_DB_APP_USER", "CARDDEMO_DB_APP_PASSWORD", "APP_USER"),
+              "migration": ("CARDDEMO_DB_MIGRATION_USER", "CARDDEMO_DB_MIGRATION_PASSWORD",
+                            "MIGRATION_USER"),
+          }
+          provisioner = topology.get("configs", {}).get(
+              "postgres-least-privilege-roles", {}).get("content", "")
+
+          for role, (user_name, password_name, script_variable) in sorted(roles.items()):
+              app_user = app_env.get(user_name, "")
+              db_user = db_env.get(user_name, "")
+              app_password = app_env.get(password_name, "")
+              db_password = db_env.get(password_name, "")
+
+              if not app_user or app_user != db_user:
+                  findings.append(
+                      "docker-compose.yml [{}] expected: one non-empty {} role name "
+                      "on both the app and postgres services | actual: app={} "
+                      "postgres={} | remediation: spell the default once and "
+                      "identically on both services.".format(
+                          user_name, role, app_user or "absent", db_user or "absent"))
+
+              if not app_password or app_password != db_password:
+                  findings.append(
+                      "docker-compose.yml [{}] expected: one non-empty {} role "
+                      "password on both the app and postgres services | actual: "
+                      "app={} postgres={} | remediation: the role the script "
+                      "creates and the role the application authenticates as must "
+                      "share one password variable.".format(
+                          password_name, role,
+                          "set" if app_password else "absent",
+                          "set" if db_password else "absent"))
+
+              # The variable the provisioning script reads, out of the rendered
+              # config body. `$$` survives rendering because Compose must not
+              # interpolate a shell expansion it will hand to sh.
+              #
+              # The services guard all four names with `:?` and carry no `:-`
+              # default, so there is exactly ONE source for each name and the
+              # created role cannot differ from the authenticated one by
+              # construction. What is asserted is therefore that the script
+              # binds the SAME variable - through psql's \getenv, which is what
+              # keeps the value out of argv - and that, if the script ever
+              # reintroduces a literal default, that default agrees with the
+              # rendered service value rather than silently overriding it.
+              bound = re.search(
+                  r'\\getenv\s+\w+\s+{}\b'.format(user_name), provisioner)
+              if bound is None:
+                  findings.append(
+                      "docker-compose.yml [configs.postgres-least-privilege-roles] "
+                      "expected: {} derived from {} | actual: no such binding | "
+                      "remediation: the script must read the same variable the "
+                      "services read.".format(script_variable, user_name))
+              declared = re.search(
+                  r'{}="\$\$\{{{}:-([^}}]*)\}}"'.format(script_variable, user_name),
+                  provisioner)
+              if declared is not None and declared.group(1) and declared.group(1) != app_user:
+                  findings.append(
+                      "docker-compose.yml [configs.postgres-least-privilege-roles] "
+                      "expected: {} default {} to match the rendered service value "
+                      "| actual: {} | remediation: a role is created under one name "
+                      "and authenticated under another; make the two agree."
+                      .format(script_variable, app_user, declared.group(1)))
+
+              if app_user and app_user == app_env.get("POSTGRES_USER", ""):
+                  findings.append(
+                      "docker-compose.yml [{}] expected: a dedicated role distinct "
+                      "from the bootstrap POSTGRES_USER | actual: {} | remediation: "
+                      "the bootstrap role is a cluster SUPERUSER and ignores every "
+                      "grant; the {} role must not resolve to it.".format(
+                          user_name, app_user, role))
+
+              if app_password and app_password == app_env.get("POSTGRES_PASSWORD", ""):
+                  findings.append(
+                      "docker-compose.yml [{}] expected: a secret of its own | "
+                      "actual: the bootstrap POSTGRES_PASSWORD | remediation: "
+                      "sharing it means recovering the {} role's password recovers "
+                      "the superuser's.".format(password_name, role))
+
           localstack = topology["services"].get("localstack", {}).get("image", "")
           if "localstack-pro" in localstack:
               findings.append(
@@ -1433,7 +2399,36 @@ jobs:
           print("Six digest-pinned services on one isolated network:")
           for name, service in sorted(topology["services"].items()):
               print("  {:<11} {}".format(name, service.get("image", "<built locally>")))
-          PY
+
+          print("Database principals, agreed across app, postgres and the role script:")
+          print("  runtime   {} (DML only)".format(app_env.get("CARDDEMO_DB_APP_USER")))
+          print("  migration {} (DDL, Flyway only)".format(
+              app_env.get("CARDDEMO_DB_MIGRATION_USER")))
+          print("  bootstrap {} (SUPERUSER, used by neither)".format(
+              app_env.get("POSTGRES_USER", "not passed to the app service")))
+
+          # The structural projection: exactly the four facts a later step needs,
+          # copied field by field rather than by filtering the resolved document,
+          # so a key added upstream cannot leak in by default.
+          projection = {
+              "services": {
+                  name: {
+                      "image": service.get("image", ""),
+                      "build": "build" in service,
+                  }
+                  for name, service in sorted(topology["services"].items())
+              },
+              "networks": sorted(networks),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as handle:
+              json.dump(projection, handle, indent=2, sort_keys=True)
+          print("Structural projection written to {} (no interpolated value)."
+                .format(sys.argv[1]))
+          CHECKER
+
+          docker compose config --format json \
+            | python3 "${RUNNER_TEMP}/topology-check.py" \
+                "${RUNNER_TEMP}/topology-projection.json"
 
           conclude 'Container topology'
 
@@ -1447,10 +2442,13 @@ jobs:
           set -euo pipefail
           . "${RUNNER_TEMP}/finding.sh"
 
+          # Read from the structural projection the topology step wrote, not from
+          # a resolved compose document: an image reference is all this needs, and
+          # the projection carries no interpolated credential to be careless with.
           image="$(python3 -c "
           import json, sys
           print(json.load(open(sys.argv[1]))['services']['prometheus']['image'])
-          " "${RUNNER_TEMP}/topology.json")"
+          " "${RUNNER_TEMP}/topology-projection.json")"
           printf 'Validating with the compose-pinned image: %s\n' "${image}"
 
           secrets_dir="${RUNNER_TEMP}/prometheus-secrets"
@@ -1515,9 +2513,11 @@ jobs:
 
           case "${user}" in
             ''|root|0|0:0)
+              remedy='declare an unprivileged numeric USER in the runtime stage. A container that runs as'
+              remedy="${remedy}"' root turns any application defect into host-adjacent exposure.'
               finding Blocker Dockerfile 'USER' 'a non-root, unprivileged user' \
                 "${user:-unset, which means root}" \
-                'declare an unprivileged numeric USER in the runtime stage. A container that runs as root turns any application defect into host-adjacent exposure.'
+                "${remedy}"
               ;;
             *)
               printf 'The delivered image does not run as root.\n'
@@ -1545,9 +2545,12 @@ jobs:
             | tr -d '\r' | sed '/^[[:space:]]*$/d' | tr -d '[:blank:]' | paste -sd, -)"
 
           if [ "${applied}" != "1,2,3" ]; then
+            remedy='apply the three migrations against a clean volume. A checksum mismatch or an'
+            remedy="${remedy}"' already-populated schema stops the migrate step - run "docker compose down --volumes"'
+            remedy="${remedy}"' and bring the topology up again.'
             finding Blocker src/main/resources/db/migration 'flyway_schema_history' \
               'versions 1,2,3 all successful' "${applied:-none}" \
-              'apply the three migrations against a clean volume. A checksum mismatch or an already-populated schema stops the migrate step - run "docker compose down --volumes" and bring the topology up again.'
+              "${remedy}"
           else
             printf 'Migrations 1, 2 and 3 applied successfully.\n'
           fi
@@ -1591,8 +2594,10 @@ jobs:
               | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
             printf '%-10s %s -> %s\n' "$1" "$2" "${status}"
             if [ "${status}" != "UP" ]; then
+              remedy='inspect the collected container logs. The readiness group covers readinessState,'
+              remedy="${remedy}"' db, s3 and sqs, so a DOWN names a real unreachable dependency.'
               finding Blocker "$2" 'health status' 'UP' "${status:-unreadable}" \
-                'inspect the collected container logs. The readiness group covers readinessState, db, s3 and sqs, so a DOWN names a real unreachable dependency.'
+                "${remedy}"
             fi
           }
 
@@ -1603,11 +2608,181 @@ jobs:
           conclude 'Health and readiness'
 
       # ----------------------------------------------------------------------
+      # PACKAGED-ARTEFACT API SMOKE. The image, not the tree.
+      #
+      # WHY NO TEST TIER CAN REPLACE THIS. Surefire and Failsafe put
+      # target/classes and the dependency jars on the class path directly, so the
+      # layout the Dockerfile actually ships - BOOT-INF/classes, BOOT-INF/lib,
+      # BOOT-INF/classpath.idx and the loader that reads them - is never
+      # exercised by any of them. A runtime assessment once reported 500 for every
+      # chunked request body against the packaged archive while the identical
+      # request answered 200 from an exploded class path. Whatever the cause in
+      # any one environment, the structural gap is real, and an earlier revision
+      # of this workflow closed it and then a later rewrite deleted the closure,
+      # leaving a replacement that starts the image and probes only Actuator.
+      # Health says the context started. It says nothing about request framing,
+      # content negotiation or the authored error envelope.
+      #
+      # THE THREE PROBES ARE THE THREE THINGS THAT WERE REPORTED BROKEN, plus a
+      # happy path so a green result cannot come from an application that refuses
+      # everything:
+      #   1. a chunked request body must be read like any other;
+      #   2. a wildcard Content-Type must be 415 carrying the AUTHORED problem
+      #      envelope, never a 500 with the framework's default body;
+      #   3. a well-framed body must succeed and return a token.
+      #
+      # THE IDENTITY IS GENERATED PER RUN, and no credential is committed. The
+      # bootstrap is unavoidable - a sign-on needs an account that already exists
+      # - so it is read at run time from the frozen public sample data that seeds
+      # the demo users, app/jcl/DUSRSECJ.jcl columns 49-56, and masked before it
+      # is used. Every assertion below then runs against an identity this run
+      # created and deletes again, so the shared demo credential is a bootstrap
+      # and never the subject.
+      # ----------------------------------------------------------------------
+      - name: Smoke the packaged image - request framing, media type, happy path
+        run: |
+          set -euo pipefail
+          . "${RUNNER_TEMP}/finding.sh"
+
+          base='http://127.0.0.1:8080'
+          json='Content-Type: application/json'
+
+          # ---- bootstrap, read from the frozen corpus rather than committed ----
+          bootstrap_id='ADMIN001'
+          bootstrap_pw="$(awk '/^ADMIN001/ {print substr($0, 49, 8); exit}' app/jcl/DUSRSECJ.jcl)"
+          printf '::add-mask::%s\n' "${bootstrap_pw}"
+          if [ "${#bootstrap_pw}" -ne 8 ]; then
+            finding Blocker app/jcl/DUSRSECJ.jcl 'inline seed record columns 49-56' \
+              'an eight-character credential' "${#bootstrap_pw} characters" \
+              'the frozen seed layout is SEC-USR-PWD PIC X(08) at columns 49-56; if that moved, the corpus was modified, which this workflow forbids elsewhere.'
+            conclude 'Packaged-image API smoke'
+            exit 1
+          fi
+
+          token_of() {
+            python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' < "$1"
+          }
+
+          admin_token="$(curl --silent --show-error --max-time 20 \
+            -o "${RUNNER_TEMP}/smoke-bootstrap.json" -w '%{http_code}' \
+            -X POST "${base}/api/auth/signon" -H "${json}" \
+            --data-binary "{\"userId\":\"${bootstrap_id}\",\"password\":\"${bootstrap_pw}\"}")"
+          if [ "${admin_token}" != '200' ]; then
+            finding Blocker "${base}/api/auth/signon" 'bootstrap sign-on' '200' "${admin_token}" \
+              'the demo users are seeded only when the seeddemousers placeholder is true, which the local profile sets. Confirm the image is running that profile and that the seed migration applied.'
+            conclude 'Packaged-image API smoke'
+            exit 1
+          fi
+          admin_token="$(token_of "${RUNNER_TEMP}/smoke-bootstrap.json")"
+          printf '::add-mask::%s\n' "${admin_token}"
+
+          # ---- the per-run identity ----
+          smoke_id="CI$(openssl rand -hex 3 | tr 'a-f' 'A-F')"
+          smoke_pw="$(openssl rand -hex 4 | tr 'a-f' 'A-F')"
+          printf '::add-mask::%s\n' "${smoke_pw}"
+          printf 'provisioning the per-run identity %s\n' "${smoke_id}"
+
+          created="$(curl --silent --show-error --max-time 20 \
+            -o "${RUNNER_TEMP}/smoke-create.json" -w '%{http_code}' \
+            -X POST "${base}/api/admin/users" -H "${json}" \
+            -H "Authorization: Bearer ${admin_token}" \
+            --data-binary "{\"firstName\":\"CI\",\"lastName\":\"SMOKE\",\"userId\":\"${smoke_id}\",\"password\":\"${smoke_pw}\",\"userType\":\"U\"}")"
+          if [ "${created}" != '201' ]; then
+            finding Blocker "${base}/api/admin/users" 'per-run identity creation' '201' "${created}" \
+              'the smoke cannot run against a generated identity without this. Inspect the response body below.'
+            cat "${RUNNER_TEMP}/smoke-create.json" || true
+            conclude 'Packaged-image API smoke'
+            exit 1
+          fi
+
+          credentials="{\"userId\":\"${smoke_id}\",\"password\":\"${smoke_pw}\"}"
+          smoke_failures=0
+
+          # 1. A chunked body must be read like any other. curl sends chunked
+          #    when the length is unknown, which --data-binary @- from a pipe is.
+          chunked="$(printf '%s' "${credentials}" | curl --silent --show-error --max-time 20 \
+            -o "${RUNNER_TEMP}/smoke-chunked.json" -w '%{http_code}' \
+            -X POST "${base}/api/auth/signon" -H "${json}" \
+            -H 'Transfer-Encoding: chunked' --data-binary @-)"
+          printf 'chunked sign-on      -> %s\n' "${chunked}"
+          if [ "${chunked}" != '200' ]; then
+            smoke_failures=$((smoke_failures + 1))
+            finding Blocker "${base}/api/auth/signon" 'chunked request body' '200' "${chunked}" \
+              'a chunked body is a valid HTTP/1.1 request. A 5xx here is the packaged-layout defect this probe exists to catch; a 4xx means the body was not read at all.'
+            cat "${RUNNER_TEMP}/smoke-chunked.json" || true
+          elif [ -z "$(token_of "${RUNNER_TEMP}/smoke-chunked.json")" ]; then
+            smoke_failures=$((smoke_failures + 1))
+            finding Blocker "${base}/api/auth/signon" 'chunked response body' 'a token' 'none' \
+              'the status was 200 but the response carried no token, so the request was answered without being honoured.'
+          fi
+
+          # 2. A wildcard Content-Type must be 415 in the AUTHORED envelope.
+          media="$(printf '%s' "${credentials}" | curl --silent --show-error --max-time 20 \
+            -o "${RUNNER_TEMP}/smoke-media.json" -w '%{http_code}' \
+            -X POST "${base}/api/auth/signon" -H 'Content-Type: */*' --data-binary @-)"
+          printf 'wildcard media type  -> %s\n' "${media}"
+          if [ "${media}" != '415' ]; then
+            smoke_failures=$((smoke_failures + 1))
+            finding Blocker "${base}/api/auth/signon" 'wildcard Content-Type' '415' "${media}" \
+              'a wildcard media type is not a supported request representation; answering anything else - a 500 in particular - means the negotiation failure escaped as an error.'
+            cat "${RUNNER_TEMP}/smoke-media.json" || true
+          elif ! grep -q 'CARDDEMO-UNSUPPORTED-MEDIA-TYPE' "${RUNNER_TEMP}/smoke-media.json"; then
+            smoke_failures=$((smoke_failures + 1))
+            finding Blocker "${base}/api/auth/signon" '415 response body' \
+              'the authored problem envelope' "the framework default" \
+              'the status is right and the body is not the authored one, so the error contract is not being applied to negotiation failures.'
+            cat "${RUNNER_TEMP}/smoke-media.json" || true
+          fi
+
+          # 3. The happy path, so a green result cannot come from an application
+          #    that refuses everything.
+          happy="$(printf '%s' "${credentials}" | curl --silent --show-error --max-time 20 \
+            -o "${RUNNER_TEMP}/smoke-happy.json" -w '%{http_code}' \
+            -X POST "${base}/api/auth/signon" -H "${json}" --data-binary @-)"
+          printf 'well-framed sign-on  -> %s\n' "${happy}"
+          if [ "${happy}" != '200' ]; then
+            smoke_failures=$((smoke_failures + 1))
+            finding Blocker "${base}/api/auth/signon" 'well-framed sign-on' '200' "${happy}" \
+              'the generated identity cannot authenticate, so the two probes above prove nothing about a working application.'
+            cat "${RUNNER_TEMP}/smoke-happy.json" || true
+          elif [ -z "$(token_of "${RUNNER_TEMP}/smoke-happy.json")" ]; then
+            smoke_failures=$((smoke_failures + 1))
+            finding Blocker "${base}/api/auth/signon" 'sign-on response body' 'a token' 'none' \
+              'a 200 with no token is not a successful sign-on.'
+          fi
+
+          # ---- symmetric cleanup, whatever the probes did ----
+          removed="$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' \
+            -X DELETE "${base}/api/admin/users/${smoke_id}?confirmed=true" \
+            -H "Authorization: Bearer ${admin_token}")"
+          printf 'per-run identity %s removed -> %s\n' "${smoke_id}" "${removed}"
+          case "${removed}" in
+            200|204) ;;
+            *) finding Medium "${base}/api/admin/users" 'per-run identity cleanup' '200 or 204' \
+                 "${removed}" 'the runner is ephemeral so nothing leaks, but a delete that does not work is a finding in its own right.' ;;
+          esac
+
+          printf 'packaged-image smoke: %s probe failure(s).\n' "${smoke_failures}"
+          conclude 'Packaged-image API smoke'
+
+      # ----------------------------------------------------------------------
       # The provisioned inventory, asserted exactly rather than approximately,
       # and read back from the emulator rather than from the script's own output.
       # Versioning in particular is verified by READ-BACK: the output bucket must
       # report Enabled and the other two must not, because "it was requested"
       # and "it is in effect" are different claims.
+      #
+      # EVERY BLANK-LINE FILTER BELOW IS awk 'NF', NEVER grep -v '^$', and the
+      # difference decides whether this step can report its own failure. grep
+      # exits 1 when it selects no line, and an empty inventory selects none - so
+      # under set -o pipefail the command substitution inherits status 1 and
+      # set -e terminates the step at that assignment, BEFORE the finding(...)
+      # branch that would name what was missing. The one case these checks exist
+      # for - nothing provisioned at all - was therefore the one case that
+      # produced an opaque failure instead of a diagnosis. awk 'NF' drops the same
+      # blank lines and exits 0 on empty input, so the empty string reaches the
+      # comparison and the finding is reported. Four sites use it: the bucket,
+      # queue and topic inventories here, and the idempotence snapshot below.
       # ----------------------------------------------------------------------
       - name: Assert the provisioned object store, queue and topic inventory
         run: |
@@ -1619,12 +2794,14 @@ jobs:
           }
 
           buckets="$(inventory 'awslocal s3api list-buckets --query "Buckets[].Name" --output text' \
-            | tr -s '[:space:]' '\n' | grep -v '^$' | sort | tr '\n' ' ')"
+            | tr -s '[:space:]' '\n' | awk 'NF' | sort | tr '\n' ' ')"
           expected_buckets='carddemo-batch-input carddemo-batch-output carddemo-statements '
           if [ "${buckets}" != "${expected_buckets}" ]; then
+            remedy='exactly three buckets are provisioned. Re-run the ready hook with "docker compose'
+            remedy="${remedy}"' exec localstack bash /etc/localstack/init/ready.d/init-aws.sh"; it is idempotent.'
             finding Blocker localstack-init/init-aws.sh 'S3 bucket inventory' \
               "${expected_buckets}" "${buckets:-none}" \
-              'exactly three buckets are provisioned. Re-run the ready hook with "docker compose exec localstack bash /etc/localstack/init/ready.d/init-aws.sh"; it is idempotent.'
+              "${remedy}"
           else
             printf 'Buckets: %s\n' "${buckets}"
           fi
@@ -1643,14 +2820,16 @@ jobs:
             fi
             printf '  %-26s versioning=%s (expected %s)\n' "${bucket}" "${state:-None}" "${wanted}"
             if [ "${state:-None}" != "${wanted}" ] && ! { [ "${wanted}" = 'None' ] && [ -z "${state}" ]; }; then
+              remedy='versioning belongs on the batch output bucket alone: it is what replaces relative'
+              remedy="${remedy}"' generation references. Enabling it elsewhere retains objects no gate reads.'
               finding High localstack-init/init-aws.sh "s3:${bucket} versioning" \
                 "${wanted}" "${state:-None}" \
-                'versioning belongs on the batch output bucket alone: it is what replaces relative generation references. Enabling it elsewhere retains objects no gate reads.'
+                "${remedy}"
             fi
           done
 
           queues="$(inventory 'awslocal sqs list-queues --query "QueueUrls[]" --output text' \
-            | tr -s '[:space:]' '\n' | grep -v '^$' | sort)"
+            | tr -s '[:space:]' '\n' | awk 'NF' | sort)"
           queue_count="$(printf '%s\n' "${queues}" | sed '/^$/d' | wc -l | tr -d ' ')"
           if [ "${queue_count}" != "1" ]; then
             finding Blocker localstack-init/init-aws.sh 'SQS queue count' '1' \
@@ -1660,9 +2839,11 @@ jobs:
           case "${queues}" in
             *carddemo-report-jobs.fifo) printf 'Queue: %s\n' "${queues}" ;;
             *)
+              remedy='a FIFO queue name must end in .fifo. Ordering is required because the queue carries'
+              remedy="${remedy}"' report job submissions in the order the operator made them.'
               finding Blocker localstack-init/init-aws.sh 'SQS queue name' \
                 'carddemo-report-jobs.fifo (logical carddemo-report-jobs)' "${queues:-none}" \
-                'a FIFO queue name must end in .fifo. Ordering is required because the queue carries report job submissions in the order the operator made them.'
+                "${remedy}"
               ;;
           esac
 
@@ -1679,7 +2860,7 @@ jobs:
           fi
 
           topics="$(inventory 'awslocal sns list-topics --query "Topics[].TopicArn" --output text' \
-            | tr -s '[:space:]' '\n' | grep -v '^$' | sort)"
+            | tr -s '[:space:]' '\n' | awk 'NF' | sort)"
           topic_count="$(printf '%s\n' "${topics}" | sed '/^$/d' | wc -l | tr -d ' ')"
           if [ "${topic_count}" != "1" ]; then
             finding High localstack-init/init-aws.sh 'SNS topic count' '1' "${topic_count}" \
@@ -1692,9 +2873,11 @@ jobs:
             --query "Subscriptions[].SubscriptionArn" --output text' \
             | tr -s '[:space:]' '\n' | sed '/^$/d' | wc -l | tr -d ' ')"
           if [ "${subscriptions}" != "0" ]; then
+            remedy='the topic is provisioned without subscribers. A subscription nothing in this'
+            remedy="${remedy}"' repository creates is configuration no code reads.'
             finding Medium localstack-init/init-aws.sh 'SNS subscription count' '0' \
               "${subscriptions}" \
-              'the topic is provisioned without subscribers. A subscription nothing in this repository creates is configuration no code reads.'
+              "${remedy}"
           else
             printf 'Subscriptions: 0\n'
           fi
@@ -1718,7 +2901,7 @@ jobs:
               awslocal s3api list-buckets --query "Buckets[].Name" --output text
               awslocal sqs list-queues --query "QueueUrls[]" --output text
               awslocal sns list-topics --query "Topics[].TopicArn" --output text' \
-              | tr -s '[:space:]' '\n' | grep -v '^$' | sort
+              | tr -s '[:space:]' '\n' | awk 'NF' | sort
           }
 
           before="$(snapshot)"
@@ -1733,9 +2916,11 @@ jobs:
             printf 'The second run exited 0.\n'
           else
             status=$?
+            remedy='the script must converge. Exit 2 is a configuration error and exit 3 means the edge'
+            remedy="${remedy}"' never came up; raise INIT_MAX_ATTEMPTS or INIT_SLEEP_SECONDS on a slow host.'
             finding Blocker localstack-init/init-aws.sh 'second-run exit status' '0' \
               "${status}" \
-              'the script must converge. Exit 2 is a configuration error and exit 3 means the edge never came up; raise INIT_MAX_ATTEMPTS or INIT_SLEEP_SECONDS on a slow host.'
+              "${remedy}"
           fi
           sed -n '1,80p' "${RUNNER_TEMP}/init-rerun.log"
 
@@ -1753,7 +2938,12 @@ jobs:
               "${RUNNER_TEMP}/init-rerun.log"; then
             printf 'The second run logged existing resources as already present.\n'
           else
-            printf '::warning title=Low::localstack-init/init-aws.sh [second-run log] expected: existing resources logged as already present | actual: no such line | remediation: the inventory did converge and exit 0, so this is a reporting observation only.\n'
+            note='::warning title=Low::localstack-init/init-aws.sh [second-run log]'
+            note="${note}"' expected: existing resources logged as already present |'
+            note="${note}"' actual: no such line | remediation: the inventory did'
+            note="${note}"' converge and exit 0, so this is a reporting observation'
+            note="${note}"' only.'
+            printf '%s\n' "${note}"
           fi
 
           conclude 'Provisioning idempotence'
@@ -1789,9 +2979,12 @@ jobs:
           done
 
           if [ "${target_health}" != 'up' ]; then
+            remedy='the scrape uses basic authentication against a password file, so confirm'
+            remedy="${remedy}"' METRICS_SCRAPE_PASSWORD reached both the server config and the application, and that'
+            remedy="${remedy}"' /actuator/prometheus is in the exposure list.'
             finding High observability/prometheus.yml 'activeTargets[job=carddemo-app].health' \
               'up' "${target_health:-not registered}" \
-              'the scrape uses basic authentication against a password file, so confirm METRICS_SCRAPE_PASSWORD reached both the server config and the application, and that /actuator/prometheus is in the exposure list.'
+              "${remedy}"
           else
             printf 'The carddemo-app scrape target reports health=up.\n'
           fi
@@ -1845,17 +3038,22 @@ jobs:
           anonymous_metrics="$(code 'http://127.0.0.1:8080/actuator/prometheus')"
           printf '  anonymous     /actuator/%-12s %s\n' prometheus "${anonymous_metrics}"
           if [ "${anonymous_metrics}" != '401' ]; then
+            remedy='the scrape endpoint must require a credential. Answering 200 anonymously would'
+            remedy="${remedy}"' publish the business counters to any caller that can route to the port.'
             finding High src/main/resources/application.yml \
               'anonymous GET /actuator/prometheus' '401' "${anonymous_metrics}" \
-              'the scrape endpoint must require a credential. Answering 200 anonymously would publish the business counters to any caller that can route to the port.'
+              "${remedy}"
           fi
 
           scraped="$(authenticated 'http://127.0.0.1:8080/actuator/prometheus')"
           printf '  authenticated /actuator/%-12s %s\n' prometheus "${scraped}"
           if [ "${scraped}" != '200' ]; then
+            remedy='confirm METRICS_SCRAPE_USERNAME and METRICS_SCRAPE_PASSWORD reached both the'
+            remedy="${remedy}"' application and the scrape configuration, and that prometheus is in the exposure'
+            remedy="${remedy}"' list.'
             finding High src/main/resources/application.yml \
               'authenticated GET /actuator/prometheus' '200' "${scraped}" \
-              'confirm METRICS_SCRAPE_USERNAME and METRICS_SCRAPE_PASSWORD reached both the application and the scrape configuration, and that prometheus is in the exposure list.'
+              "${remedy}"
           fi
 
           # Endpoints that disclose configuration or memory contents. Probed WITH
@@ -1868,10 +3066,12 @@ jobs:
             status="$(authenticated "http://127.0.0.1:8080/actuator/${endpoint}")"
             printf '  authenticated /actuator/%-12s %s\n' "${endpoint}" "${status}"
             if [ "${status}" = '200' ]; then
+              remedy='narrow the exposure list back to health,info,prometheus. Never widen it to "*". The'
+              remedy="${remedy}"' scrape credential is not an administrative credential.'
               finding Blocker src/main/resources/application.yml \
                 "management.endpoints.web.exposure.include -> /actuator/${endpoint}" \
                 'not readable, even with the scrape credential' 'answered 200' \
-                'narrow the exposure list back to health,info,prometheus. Never widen it to "*". The scrape credential is not an administrative credential.'
+                "${remedy}"
             fi
           done
 
@@ -1879,46 +3079,38 @@ jobs:
 
       # ----------------------------------------------------------------------
       # Diagnostics, collected before teardown so a failing run still explains
-      # itself. Scrubbed on the way out: the generated values are replaced by
-      # value, and social-security-shaped and bearer-token-shaped strings are
-      # redacted by shape, because the customer layout carries a nine-digit
-      # national identifier and the user layout carries a password field.
+      # itself. Scrubbed on the way out with the rule set built and PROVEN
+      # earlier in this job, rather than with rules written here and never
+      # exercised.
+      #
+      # FAIL-CLOSED: if the scrubber is absent - because the step that builds it
+      # did not run, which happens when the job failed before reaching it - the
+      # logs are NOT collected. Publishing an unscrubbed application log because
+      # an earlier step failed would be the worst possible moment to publish one,
+      # since a failing run is exactly when the log is most likely to contain a
+      # payload, a bind parameter or a constraint-violation row image.
       # ----------------------------------------------------------------------
       - name: Collect and scrub the container logs
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/compose-logs"
+          scrubber="${RUNNER_TEMP}/scrub.sed"
+          if [ ! -s "${scrubber}" ]; then
+            printf '::warning title=Medium::%s Not available - the self-tested scrubber was never built, so no log is collected. Collecting an unscrubbed application log would publish whatever the run happened to emit; the earlier step failure is the finding to act on.\n' \
+              "${scrubber}"
+            exit 0
+          fi
 
+          mkdir -p "${RUNNER_TEMP}/compose-logs"
           docker compose logs --no-color --timestamps > "${RUNNER_TEMP}/compose-logs/compose.log"
           docker compose ps --all > "${RUNNER_TEMP}/compose-logs/services.txt"
-
-          # Every generated value, replaced by value rather than by pattern.
-          scrubber="${RUNNER_TEMP}/scrub.sed"
-          : > "${scrubber}"
-          while IFS='=' read -r name value; do
-            case "${name}" in
-              JWT_SIGNING_KEY|POSTGRES_PASSWORD|CARDDEMO_DB_APP_PASSWORD|\
-              CARDDEMO_DB_MIGRATION_PASSWORD|METRICS_SCRAPE_PASSWORD|GRAFANA_ADMIN_PASSWORD)
-                printf 's|%s|REDACTED_%s|g\n' "${value}" "${name}" >> "${scrubber}"
-                ;;
-              *) ;;
-            esac
-          done < .env
-
-          # And by shape, for anything the application itself may have emitted.
-          cat >> "${scrubber}" <<'SHAPES'
-          s|[0-9]\{3\}-[0-9]\{2\}-[0-9]\{4\}|REDACTED_NATIONAL_ID|g
-          s|\$2[aby]\$[0-9]\{2\}\$[A-Za-z0-9./]\{53\}|REDACTED_PASSWORD_HASH|g
-          s|eyJ[A-Za-z0-9_-]\{6,\}\.[A-Za-z0-9_-]\{6,\}\.[A-Za-z0-9_-]\{6,\}|REDACTED_JWT|g
-          s|[Bb]earer [A-Za-z0-9._~+/-]\{16,\}=*|Bearer REDACTED_TOKEN|g
-          SHAPES
 
           for log in "${RUNNER_TEMP}/compose-logs"/*; do
             sed -i -f "${scrubber}" "${log}"
           done
-          printf 'Collected and scrubbed %s log file(s).\n' \
-            "$(find "${RUNNER_TEMP}/compose-logs" -type f | wc -l | tr -d ' ')"
+          printf 'Collected and scrubbed %s log file(s) with %s proven rule(s).\n' \
+            "$(find "${RUNNER_TEMP}/compose-logs" -type f | wc -l | tr -d ' ')" \
+            "$(wc -l < "${scrubber}" | tr -d ' ')"
 
       # if: always() so the runner is left clean whatever happened above. A step
       # that SUCCEEDS after an earlier failure does not reset the job's
@@ -1934,14 +3126,18 @@ jobs:
               > "${RUNNER_TEMP}/teardown.log" 2>&1; then
             printf 'Topology removed, including its volumes.\n'
           else
-            printf '::warning title=Low::docker-compose.yml [teardown] expected: a clean shutdown | actual: the command reported a problem | remediation: the runner is ephemeral so nothing leaks, but the output below should be read.\n'
+            note='::warning title=Low::docker-compose.yml [teardown] expected: a'
+            note="${note}"' clean shutdown | actual: the command reported a problem |'
+            note="${note}"' remediation: the runner is ephemeral so nothing leaks, but'
+            note="${note}"' the output below should be read.'
+            printf '%s\n' "${note}"
             cat "${RUNNER_TEMP}/teardown.log"
           fi
           rm -f .env
 
       - name: Upload the container topology evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: container-topology-evidence
           path: ${{ runner.temp }}/compose-logs/**
@@ -1998,9 +3194,13 @@ jobs:
       TRIVY_JAVA_DB: mirror.gcr.io/aquasec/trivy-java-db:1,ghcr.io/aquasecurity/trivy-java-db:1
       IMAGE_TAG: carddemo:scan-${{ github.sha }}
       SCAN_OUT: ${{ github.workspace }}/target/image-scan
+      # The saved image the scanner reads INSTEAD of the Docker daemon. Kept
+      # under RUNNER_TEMP rather than the workspace so it is never a candidate
+      # for the uploaded evidence artefact: it is a full copy of the image.
+      IMAGE_ARCHIVE: ${{ runner.temp }}/image-archive/carddemo-image.tar
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -2013,6 +3213,37 @@ jobs:
           docker image inspect "${IMAGE_TAG}" \
             --format 'scanned image id: {{.Id}}{{"\n"}}created: {{.Created}}{{"\n"}}user: {{.Config.User}}'
 
+      # ----------------------------------------------------------------------
+      # THE IMAGE IS HANDED TO THE SCANNER AS A FILE, NOT AS DAEMON ACCESS.
+      #
+      # Both Trivy steps below previously mounted /var/run/docker.sock. The :ro
+      # flag on that mount is misleading protection: it makes the SOCKET FILE
+      # read-only, not the daemon API behind it, and that API can create
+      # privileged containers, bind-mount any host path and read every image and
+      # secret the daemon can see. Docker documents daemon access as equivalent
+      # to root on the host. Handing it to a third-party container image - even a
+      # digest-pinned one - grants that authority to whatever that image runs.
+      #
+      # It was also unnecessary, which is what makes it a defect rather than a
+      # trade-off: Trivy reads a `docker save` archive directly with --input, and
+      # the informational topology scan further down already runs socketless.
+      # The archive is written under a 0700 directory at 0600 by the same user
+      # that will read it, so nothing else on the runner can open it, and the
+      # scanner container gets exactly one read-only file.
+      # ----------------------------------------------------------------------
+      - name: Save the delivered image to a restricted runner-local archive
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$(dirname "${IMAGE_ARCHIVE}")"
+          chmod 700 "$(dirname "${IMAGE_ARCHIVE}")"
+          docker save --output "${IMAGE_ARCHIVE}" "${IMAGE_TAG}"
+          chmod 600 "${IMAGE_ARCHIVE}"
+          printf 'Saved %s -> %s (%s bytes, mode %s)\n' \
+            "${IMAGE_TAG}" "${IMAGE_ARCHIVE}" \
+            "$(wc -c < "${IMAGE_ARCHIVE}" | tr -d ' ')" \
+            "$(stat --format '%a' "${IMAGE_ARCHIVE}")"
+
       # Written as the invoking user so no elevation is needed to read the
       # reports back, which is why there is no ownership fix-up anywhere here.
       - name: Generate a CycloneDX bill of materials for the delivered image
@@ -2021,15 +3252,15 @@ jobs:
           mkdir -p "${SCAN_OUT}"
           docker run --rm \
             --user "$(id -u):$(id -g)" \
-            --volume /var/run/docker.sock:/var/run/docker.sock:ro \
+            --volume "${IMAGE_ARCHIVE}:/scan/image.tar:ro" \
             --volume "${SCAN_OUT}:/out" \
             "${TRIVY_IMAGE}" \
               image \
+              --input /scan/image.tar \
               --db-repository "${TRIVY_DB}" \
               --java-db-repository "${TRIVY_JAVA_DB}" \
               --format cyclonedx \
-              --output /out/carddemo-image-sbom.cdx.json \
-              "${IMAGE_TAG}"
+              --output /out/carddemo-image-sbom.cdx.json
           printf 'Bill of materials written: %s bytes\n' \
             "$(wc -c < "${SCAN_OUT}/carddemo-image-sbom.cdx.json" | tr -d ' ')"
 
@@ -2046,10 +3277,11 @@ jobs:
           mkdir -p "${SCAN_OUT}"
           if docker run --rm \
               --user "$(id -u):$(id -g)" \
-              --volume /var/run/docker.sock:/var/run/docker.sock:ro \
+              --volume "${IMAGE_ARCHIVE}:/scan/image.tar:ro" \
               --volume "${SCAN_OUT}:/out" \
               "${TRIVY_IMAGE}" \
                 image \
+                --input /scan/image.tar \
                 --db-repository "${TRIVY_DB}" \
                 --java-db-repository "${TRIVY_JAVA_DB}" \
                 --scanners vuln \
@@ -2057,8 +3289,7 @@ jobs:
                 --ignore-unfixed=false \
                 --exit-code 1 \
                 --format table \
-                --output /out/image-vulnerabilities.txt \
-                "${IMAGE_TAG}"; then
+                --output /out/image-vulnerabilities.txt; then
             status=0
           else
             status=$?
@@ -2067,8 +3298,14 @@ jobs:
           cat "${SCAN_OUT}/image-vulnerabilities.txt"
 
           if [ "${status}" -ne 0 ]; then
-            printf '::error title=Blocker::%s [HIGH and CRITICAL findings] expected: none | actual: the findings listed above | remediation: raise the pinned base image in Dockerfile, or the affected dependency in pom.xml, to a fixed release. Suppressing a finding here is deliberately not available: this gate exists precisely because the dependency scan cannot see the image.\n' \
-              "${IMAGE_TAG}"
+            note="::error title=Blocker::${IMAGE_TAG} [HIGH and CRITICAL findings]"
+            note="${note}"' expected: none | actual: the findings listed above |'
+            note="${note}"' remediation: raise the pinned base image in Dockerfile, or'
+            note="${note}"' the affected dependency in pom.xml, to a fixed release.'
+            note="${note}"' Suppressing a finding here is deliberately not available:'
+            note="${note}"' this gate exists precisely because the dependency scan'
+            note="${note}"' cannot see the image.'
+            printf '%s\n' "${note}"
           else
             printf 'The delivered image carries no HIGH or CRITICAL finding.\n'
           fi
@@ -2113,7 +3350,13 @@ jobs:
             docker-compose.yml | sort -u)
 
           if [ "${#images[@]}" -eq 0 ]; then
-            printf '::error title=High::docker-compose.yml [digest-pinned images] expected: at least one | actual: none found | remediation: this step would otherwise report nothing while appearing to succeed. Every service image in that file is digest-pinned; if that changed, fix the pin rather than this step.\n'
+            note='::error title=High::docker-compose.yml [digest-pinned images]'
+            note="${note}"' expected: at least one | actual: none found |'
+            note="${note}"' remediation: this step would otherwise report nothing while'
+            note="${note}"' appearing to succeed. Every service image in that file is'
+            note="${note}"' digest-pinned; if that changed, fix the pin rather than this'
+            note="${note}"' step.'
+            printf '%s\n' "${note}"
             exit 1
           fi
 
@@ -2135,7 +3378,7 @@ jobs:
 
       - name: Upload the image scan and bill of materials
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: image-scan-evidence
           path: target/image-scan/**
@@ -2170,173 +3413,573 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       # ----------------------------------------------------------------------
-      # The document is produced from a HEREDOC over precomputed variables, not
-      # from a sequence of printf calls. That is a correctness decision: a long
-      # line split across two printf calls puts the %s placeholders in the first
-      # format and the arguments on the second, so the placeholders render empty
-      # and the arguments are silently discarded - an evidence document that
-      # states no evidence, which is the one failure this file must not have. A
-      # heredoc has no format string and therefore no way to separate the two.
+      # The evidence this job renders is DOWNLOADED, not described. This job runs
+      # on a fresh runner with no target/ of its own, so without these two
+      # downloads it can see nothing but the other jobs' pass/fail conclusions -
+      # which is exactly how the document it produces came to carry hardcoded
+      # lifecycle prose that the run it described had already contradicted.
+      #
+      # continue-on-error, because a run that failed before the tiers executed
+      # genuinely has no artifact to fetch. That is a real condition and the
+      # document reports it as "Not available" with what is needed, rather than
+      # this job failing and publishing nothing at all.
+      # ----------------------------------------------------------------------
+      - name: Download the retained test reports
+        id: reports
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: test-reports
+          path: ${{ runner.temp }}/evidence/test-reports
+
+      - name: Download the retained gate harness evidence
+        id: harness
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: gate-harness-raw-evidence
+          path: ${{ runner.temp }}/evidence/gate-harness
+
+      # ----------------------------------------------------------------------
+      # The document is GENERATED FROM THE RETAINED EVIDENCE, gate by gate.
+      #
+      # An earlier revision built it from a heredoc over four job-conclusion
+      # variables. Everything a job conclusion cannot express was therefore
+      # written by hand, and hand-written lifecycle prose does not age: this file
+      # went on publishing "the end-to-end tier is pending implementation and
+      # execution" and "no legacy baseline exists, so a field-level comparison
+      # cannot be produced" for gates that had since been implemented, measured
+      # and asserted - in the same document that claims no figure is carried over
+      # from an earlier run. A statement about the lifecycle IS a figure.
+      #
+      # So every Result below is derived: from the suite XML the verify job
+      # retained, from the harness's own recorded figures, and from the job
+      # conclusions where a conclusion is genuinely the whole answer. Nothing that
+      # cannot be derived is asserted - it is reported as "Not available" together
+      # with what would produce it, which is the disclosure Rule 1 clause F
+      # requires and which a hardcoded sentence cannot honestly make.
+      #
+      # Generated with python rather than a heredoc for a specific reason. The
+      # heredoc was chosen originally to avoid a printf hazard - a long line split
+      # across two calls leaves the placeholders in one and the arguments in the
+      # other, rendering an evidence document that states no evidence. Python has
+      # no format-and-argument split to get wrong, and unlike a heredoc it can
+      # express "derive this, and say so plainly when you cannot".
       # ----------------------------------------------------------------------
       - name: Collate the eight gates and their evidence
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/gate-evidence"
-          report="${RUNNER_TEMP}/gate-evidence/validation-gate-evidence.md"
 
-          # observed <job-result> -> the wording used for a gate this run drove.
-          # A successful job is reported as "no findings reported", never as a
-          # pass: this workflow states what it observed, and a reviewer draws the
-          # conclusion from the named evidence.
-          observed() {
-            case "$1" in
-              success)   printf 'no findings reported' ;;
-              failure)   printf 'findings reported - see the annotations in the run' ;;
-              cancelled) printf 'Not available - the job was cancelled before it concluded' ;;
-              skipped)   printf 'Not available - the job did not run because a prerequisite job failed' ;;
-              *)         printf 'Not available - the job reported an unrecognised conclusion' ;;
-            esac
+          # The commit THIS job checked out. The harness stamps the commit it ran
+          # against into its own marker, so an artefact downloaded from a different
+          # commit is detectable here instead of being rendered as this run's
+          # evidence. That is the mechanism behind the "no figure carried over"
+          # claim at the foot of the document: it is now enforced, not asserted.
+          CHECKED_OUT_COMMIT="$(git rev-parse HEAD)"
+          export CHECKED_OUT_COMMIT
+          export EVIDENCE_ROOT="${RUNNER_TEMP}/evidence"
+          export REPORT_PATH="${RUNNER_TEMP}/gate-evidence/validation-gate-evidence.md"
+          export BLOCKER_PATH="${RUNNER_TEMP}/gate-evidence/blocker.txt"
+
+          # Everything the generator needs arrives through the environment, and the
+          # heredoc is quoted, so the shell expands nothing inside the script. There
+          # is no interpolation site for a value to break out of.
+          python3 - <<'PY'
+          """Render one run's gate evidence from the artefacts that run retained.
+
+          Nothing here describes a gate's lifecycle. Each Result is derived from the
+          suite XML the verify job retained, from the figures the gate harness
+          recorded into its own marker and summary, or from a job conclusion where a
+          conclusion is genuinely the whole answer. A figure that was not retained is
+          reported as "Not available" together with what would produce it.
+          """
+
+          import os
+          import xml.etree.ElementTree as ElementTree
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          EVIDENCE_ROOT = Path(os.environ["EVIDENCE_ROOT"])
+          REPORT_PATH = Path(os.environ["REPORT_PATH"])
+          BLOCKER_PATH = Path(os.environ["BLOCKER_PATH"])
+          CHECKED_OUT = os.environ["CHECKED_OUT_COMMIT"]
+          RUN_URL = os.environ.get("RUN_URL", "")
+          GITHUB_SHA = os.environ.get("GITHUB_SHA", "")
+
+          HARNESS = "com.cardemo.e2e.GateVerificationTest"
+          MARKER_NAME = "gate-verification-evidence.properties"
+          SUMMARY_NAME = "gate-verification-summary.properties"
+          NA = "Not available"
+
+          CONCLUSIONS = {
+              "repository-integrity": os.environ.get("INTEGRITY_RESULT", ""),
+              "verify": os.environ.get("VERIFY_RESULT", ""),
+              "integration": os.environ.get("INTEGRATION_RESULT", ""),
+              "image-scan": os.environ.get("IMAGE_SCAN_RESULT", ""),
           }
 
-          integrity_observed="$(observed "${INTEGRITY_RESULT}")"
-          verify_observed="$(observed "${VERIFY_RESULT}")"
-          integration_observed="$(observed "${INTEGRATION_RESULT}")"
-          image_scan_observed="$(observed "${IMAGE_SCAN_RESULT}")"
-          executed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-          cat > "${report}" <<EVIDENCE
-          # Validation gate evidence
+          def observed(job):
+              """Say what a job's conclusion shows, never what it proves."""
+              result = CONCLUSIONS.get(job, "")
+              if result == "success":
+                  return "no findings reported"
+              if result == "failure":
+                  return "findings reported - see the annotations in the run"
+              if result == "cancelled":
+                  return NA + " - the job was cancelled before it concluded"
+              if result == "skipped":
+                  return NA + " - the job did not run because a prerequisite failed"
+              return NA + " - the job reported an unrecognised conclusion"
 
-          Gate definitions, severities and remediations live in
-          \`docs/validation-gates.md\`, anchors \`#gate-1\` to \`#gate-8\`. This file
-          records one run against them; it defines nothing.
 
-          - Run: ${RUN_URL}
-          - Commit: ${GITHUB_SHA}
-          - Executed (UTC): ${executed_at}
-          - Job conclusions: repository-integrity=${INTEGRITY_RESULT},
-            verify=${VERIFY_RESULT}, integration=${INTEGRATION_RESULT},
-            image-scan=${IMAGE_SCAN_RESULT}
+          def locate(filename):
+              """Find one retained file by name, wherever the download placed it."""
+              if not EVIDENCE_ROOT.is_dir():
+                  return None
+              for candidate in sorted(EVIDENCE_ROOT.rglob(filename)):
+                  if candidate.is_file():
+                      return candidate
+              return None
 
-          ## Gate 1 - end-to-end boundary parity
 
-          - Severity on failure: Blocker
-          - Command: \`./mvnw --batch-mode --no-transfer-progress clean verify\`, the
-            end-to-end tier, driving \`app/data/ASCII/dailytran.txt\`
-          - Evidence: \`target/failsafe-reports/\`
-          - Result: Not available - no legacy baseline artefact exists in this
-            repository, so a field-level comparison against legacy output cannot be
-            produced and is not claimed. Needed: a captured legacy output set for the
-            300-record fixture, produced on the mainframe and committed as a parity
-            baseline. The end-to-end tier itself is *pending implementation and
-            execution* rather than blocked - this runner has a container runtime.
-          - Remediation: obtain and commit the legacy baseline; never synthesise one.
+          def properties(path):
+              """Read a properties file into a dict, tolerating its absence."""
+              values = {}
+              if path is None:
+                  return values
+              for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                  line = raw.strip()
+                  if not line or line.startswith("#") or "=" not in line:
+                      continue
+                  key, _, value = line.partition("=")
+                  values[key.strip()] = value.strip()
+              return values
 
-          ## Gate 2 - zero-warning build and dependency vulnerability scan
 
-          - Severity on failure: Blocker
-          - Command: \`./mvnw --batch-mode --no-transfer-progress clean verify\`
-          - Evidence: \`target/surefire-reports/\`, \`target/failsafe-reports/\`,
-            \`target/site/jacoco/\`, \`target/dependency-check/\`
-          - Tool versions: JDK feature 25 and Apache Maven 3.9.11, both asserted in
-            this run rather than assumed
-          - Result: ${verify_observed} (job conclusion ${VERIFY_RESULT})
-          - Remediation: fix the warning rather than relaxing the lint set; add tests
-            rather than lowering the coverage floor; raise the affected dependency
-            rather than adding a skip or widening the suppression file.
+          def suites():
+              """Index every retained suite report by its fully qualified class name.
 
-          ## Gate 3 - performance baseline
+              Counted from the `testcase` ELEMENTS, never from the root `testsuite`
+              element's summary attributes. Those attributes are not reliable for a
+              suite that uses nested classes: the harness's own report carries
+              tests="0" on its root while holding 50 `testcase` children, because the
+              cases are attributed to the nested classes rather than to the file's
+              own class. Reading the attribute renders a suite that ran everything as
+              a suite that ran nothing - which is how a first draft of this generator
+              reported the harness as having been collected but not run. The two
+              collection-audit steps in the verify job count elements for the same
+              reason; this agrees with them deliberately.
+              """
+              found = {}
+              if not EVIDENCE_ROOT.is_dir():
+                  return found
+              for report in sorted(EVIDENCE_ROOT.rglob("TEST-*.xml")):
+                  tier = "failsafe" if "failsafe" in str(report.parent).lower() else "surefire"
+                  try:
+                      root = ElementTree.parse(report).getroot()
+                  except ElementTree.ParseError:
+                      found[report.stem[len("TEST-"):]] = {"tier": tier, "unreadable": True}
+                      continue
+                  name = root.get("name") or report.stem[len("TEST-"):]
+                  cases = list(root.iter("testcase"))
+                  found[name] = {
+                      "tier": tier,
+                      "tests": len(cases),
+                      "failures": sum(1 for case in cases if case.find("failure") is not None),
+                      "errors": sum(1 for case in cases if case.find("error") is not None),
+                      "skipped": sum(1 for case in cases if case.find("skipped") is not None),
+                  }
+              return found
 
-          - Severity on failure: Medium
-          - Result: Not available - deliberately. This gate is a MEASURED BASELINE and
-            never a threshold. The COBOL corpus publishes no service level, so none
-            may be invented, and this workflow therefore asserts no throughput,
-            latency or heap figure and reports none. Needed: a measurement harness run
-            separately, whose numbers are recorded in \`docs/validation-gates.md\` as a
-            baseline for future comparison.
-          - Remediation: none applicable; a baseline cannot fail.
 
-          ## Gate 4 - named-fixture validation
+          MARKER = properties(locate(MARKER_NAME))
+          SUMMARY = properties(locate(SUMMARY_NAME))
+          SUITES = suites()
 
-          - Severity on failure: Blocker
-          - Command: the seed migration plus the end-to-end tier, both driven by
-            \`./mvnw --batch-mode --no-transfer-progress clean verify\`
-          - Evidence: \`target/failsafe-reports/\`, and the migration history asserted
-            in the integration job
-          - Result: fixture inventory - ${integrity_observed}; pipeline execution is
-            *pending implementation and execution*
-          - Remediation: keep the nine ASCII fixtures under their actual committed
-            names - the fixture is \`dailytran.txt\`, not the mainframe DD name - and
-            decode overpunch signs position-aware from the PIC clauses.
 
-          ## Gate 5 - API contract, 17 endpoints
+          def suite_line(fqcn):
+              """Report one suite's retained outcome, or say it was not retained.
 
-          - Severity on failure: Blocker
-          - Command: the integration and end-to-end tiers
-          - Evidence: \`target/failsafe-reports/\`, \`docs/api-contracts.md\`
-          - Result: ${verify_observed} (job conclusion ${VERIFY_RESULT}). Seventeen
-            operations, not eighteen: the eighteenth CICS transaction fronts a program
-            with no source anywhere in the repository, so no endpoint is invented for
-            it. *Pending implementation and execution* where coverage is incomplete.
-          - Remediation: exercise every endpoint against a real application context.
+              A report recording zero cases is reported as unavailable, not as clean.
+              Surefire and Failsafe both write a well-formed report for a suite that
+              was collected but ran nothing - a filtered run, an assumption that
+              aborted every case - and "0 case(s) with no failure and no error" is
+              indistinguishable from a suite that passed. That substitution of a
+              count for a named suite having run is the exact defect this whole
+              derivation exists to remove, so it is refused here too.
+              """
+              suite = SUITES.get(fqcn)
+              if suite is None:
+                  return NA + " - no `" + fqcn + "` report was retained by this run"
+              if suite.get("unreadable"):
+                  return NA + " - the `" + fqcn + "` report could not be parsed"
+              if suite["tests"] == 0:
+                  return (NA + " - the retained `" + fqcn + "` report records 0 cases, so "
+                          "the suite was collected but ran nothing. Needed: an unfiltered "
+                          "run of the tier that owns it.")
+              adverse = suite["failures"] + suite["errors"]
+              body = "`" + fqcn + "` ran " + str(suite["tests"]) + " case(s)"
+              if adverse:
+                  return (body + " and reported " + str(suite["failures"])
+                          + " failure(s), " + str(suite["errors"]) + " error(s)")
+              return body + " with no failure and no error"
 
-          ## Gate 6 - security audit
 
-          - Severity on failure: Blocker
-          - Command: the source-integrity steps in the repository-integrity job, plus
-            the dependency vulnerability scan and the delivered-image scan
-          - Evidence: this run log, \`target/dependency-check/\`, \`target/image-scan/\`
-          - Result: source and secret hygiene - ${integrity_observed} (job conclusion
-            ${INTEGRITY_RESULT}); delivered image - ${image_scan_observed} (job
-            conclusion ${IMAGE_SCAN_RESULT})
-          - Remediation: replace any floating-point money field with \`BigDecimal\`;
-            store passwords only as BCrypt hashes; indirect every secret through the
-            environment with no committed default.
+          def figure(key, needed):
+              """Return a recorded figure, or say plainly what would produce it."""
+              value = SUMMARY.get(key)
+              if not value:
+                  return NA + " - the harness recorded no `" + key + "`. Needed: " + needed
+              return value
 
-          ## Gate 7 - scope coverage, 28 programs
 
-          - Severity on failure: High
-          - Command: the traceability assertion in the repository-integrity job
-          - Evidence: \`TRACEABILITY_MATRIX.md\` at the repository root
-          - Result: ${integrity_observed} (job conclusion ${INTEGRITY_RESULT})
-          - Remediation: map every program, enumerating the corpus
-            case-insensitively. A lowercase-only pattern reports 26 of 28 and
-            silently omits the two programs whose extension is uppercase.
+          def tier(name):
+              """Total the retained reports of one test plugin."""
+              totals = {"suites": 0, "tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+              for suite in SUITES.values():
+                  if suite.get("tier") != name or suite.get("unreadable"):
+                      continue
+                  totals["suites"] += 1
+                  for field in ("tests", "failures", "errors", "skipped"):
+                      totals[field] += suite[field]
+              return totals
 
-          ## Gate 8 - integration sign-off, 6 compose services
 
-          - Severity on failure: High
-          - Command: \`docker compose up --build --wait\`
-          - Evidence: the container-topology-evidence artifact of this run
-          - Result: ${integration_observed} (job conclusion ${INTEGRATION_RESULT}).
-            *Pending implementation and execution* where coverage is incomplete -
-            this runner provides a container runtime, so nothing here is
-            container-blocked.
-          - Remediation: start from a clean volume when a migration checksum
-            conflicts, and raise \`INIT_MAX_ATTEMPTS\` or \`INIT_SLEEP_SECONDS\` when
-            the emulator is slow to report ready.
+          def tier_line(name):
+              """Render one plugin's retained totals."""
+              totals = tier(name)
+              if totals["suites"] == 0:
+                  return NA + " - no " + name + " report was retained"
+              return (str(totals["suites"]) + " suite(s), " + str(totals["tests"])
+                      + " case(s), " + str(totals["failures"]) + " failure(s), "
+                      + str(totals["errors"]) + " error(s), " + str(totals["skipped"])
+                      + " skipped")
 
-          ## What this file deliberately does not contain
 
-          - No badge, no completion percentage and no performance figure, because none
-            is supported by a measurement this run made.
-          - No gate asserted as passing that this run did not execute.
-          - No figure carried over from an earlier run. Coverage, test counts and
-            decision counts recorded in \`docs/project-guide.md\` describe a previous
-            implementation and are not evidence for this one.
-          EVIDENCE
+          # Marker freshness. Absent is a real condition and is reported; present but
+          # stamped with another commit is a wrong-commit artefact and fails the job.
+          marker_commit = MARKER.get("gate.harness.commit", "")
+          if not MARKER:
+              freshness = (NA + " - the gate harness marker was not retained, so no figure "
+                           "below is attributed to the harness. Needed: a run in which the "
+                           "verify job reaches the end-to-end tier and uploads "
+                           "`gate-harness-raw-evidence`.")
+              stale = ""
+          elif not marker_commit:
+              freshness = (NA + " - the retained marker carries no `gate.harness.commit`, so "
+                           "its figures cannot be attributed to this commit.")
+              stale = ""
+          elif marker_commit == CHECKED_OUT:
+              freshness = ("current - the retained marker was stamped `" + marker_commit
+                           + "`, which is the commit this job checked out")
+              stale = ""
+          else:
+              freshness = ("STALE - the retained marker was stamped `" + marker_commit
+                           + "`, but this job checked out `" + CHECKED_OUT + "`")
+              stale = ("docs/validation-gates.md [gate-evidence] expected: the retained gate "
+                       "harness marker to be stamped with the commit under test | actual: "
+                       "marker=" + marker_commit + " checkout=" + CHECKED_OUT + " | "
+                       "remediation: the downloaded artefact belongs to another commit, so "
+                       "every harness figure in the published evidence would describe code "
+                       "this run did not build. Re-run the whole workflow rather than "
+                       "re-running this job alone, which reuses the earlier upload.")
 
-          cat "${report}"
-          cat "${report}" >> "${GITHUB_STEP_SUMMARY}"
+          census = []
+          for number in range(1, 9):
+              keys = sorted(key for key in SUMMARY if key.startswith("gate" + str(number) + "."))
+              census.append("  - Gate " + str(number) + ": " + (
+                  str(len(keys)) + " recorded figure(s)" if keys else NA + " - none recorded"))
+
+          lines = []
+          add = lines.append
+
+          add("# Validation gate evidence")
+          add("")
+          add("Gate definitions, severities and remediations live in")
+          add("`docs/validation-gates.md`, anchors `#gate-1` to `#gate-8`. This file")
+          add("records one run against them; it defines nothing.")
+          add("")
+          add("- Run: " + (RUN_URL or NA))
+          add("- Commit: " + (GITHUB_SHA or NA) + " (checked out here: " + CHECKED_OUT + ")")
+          add("- Collated (UTC): " + datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+          add("- Job conclusions: " + ", ".join(
+              job + "=" + (result or NA) for job, result in CONCLUSIONS.items()))
+          add("")
+          add("## How every Result below was obtained")
+          add("")
+          add("Each Result is derived, never described. Three sources only:")
+          add("")
+          add("1. The suite XML the verify job retained. Surefire: " + tier_line("surefire")
+              + ". Failsafe: " + tier_line("failsafe") + ".")
+          add("2. The figures the gate harness recorded into `" + MARKER_NAME + "` and")
+          add("   `" + SUMMARY_NAME + "`, retained unaltered as the")
+          add("   `gate-harness-raw-evidence` artifact of this run.")
+          add("3. A job conclusion, where a conclusion is genuinely the whole answer.")
+          add("")
+          add("- Gate harness: " + suite_line(HARNESS))
+          add("- Harness marker freshness: " + freshness)
+          add("- Recorded figures per gate:")
+          for entry in census:
+              add(entry)
+          add("")
+          # Deliberately does not quote the withdrawn wording. A document that
+          # repudiates a phrase while containing it still contains it, and any scan
+          # for the phrase - a reviewer's or a later gate's - would find it here and
+          # be right to. The same correction was applied to an illustrative feature
+          # identifier in TRACEABILITY_MATRIX.md, and for the same reason.
+          add("Anything none of the three sources supplies is reported as \"" + NA + "\"")
+          add("with what would produce it. No claim about a gate's lifecycle is written")
+          add("by hand here. An earlier revision of this step did exactly that, and went")
+          add("on describing gates as awaiting implementation and execution long after")
+          add("they had been implemented, measured and asserted - in the same document")
+          add("that claimed to carry no figure from an earlier run.")
+          add("")
+
+          add("## Gate 1 - end-to-end boundary parity")
+          add("")
+          add("- Severity on failure: Blocker")
+          add("- Command: `./mvnw --batch-mode --no-transfer-progress clean verify`, the")
+          add("  end-to-end tier, driving `app/data/ASCII/dailytran.txt`")
+          add("- Evidence: the retained `failsafe-reports/`, and the committed oracle at")
+          add("  " + figure("gate1.oracleDirectory", "a run that reaches the end-to-end tier"))
+          add("- Result: " + suite_line("com.cardemo.e2e.BatchPipelineE2ETest"))
+          add("  - Whole-stream run: " + suite_line("com.cardemo.e2e.SuccessfulPipelineRunTest"))
+          add("  - Oracle files compared: " + figure("gate1.oracleFileCount", "the oracle"))
+          add("  - Fixture records processed: " + figure("gate1.oracleProcessedCount", "the oracle"))
+          add("  - Posted: " + figure("gate1.oraclePostedCount", "the oracle")
+              + "; rejected: " + figure("gate1.oracleRejectCount", "the oracle")
+              + "; return code: " + figure("gate1.oracleReturnCode", "the oracle"))
+          add("  - Reject record width asserted: "
+              + figure("gate1.rejectRecordWidth", "the oracle") + " bytes")
+          add("  - Committed reject rows: " + figure("gate1.committedRejectRows", "the oracle"))
+          add("  - Corroboration against the real z/OS runtime: "
+              + figure("gate1.capturedMainframeRun", "a captured legacy run"))
+          add("    Needed: " + figure("gate1.neededEvidence", "a captured legacy run"))
+          add("- Remediation: the oracle is derived from `app/cbl/CBTRN02C.cbl` and the")
+          add("  frozen fixture, so it proves the Java against the source of record. It")
+          add("  does not stand in for a captured mainframe run and is not claimed to.")
+          add("")
+
+          add("## Gate 2 - zero-warning build and dependency vulnerability scan")
+          add("")
+          add("- Severity on failure: Blocker")
+          add("- Command: `./mvnw --batch-mode --no-transfer-progress clean verify`")
+          add("- Evidence: the retained `surefire-reports/`, `failsafe-reports/`, plus")
+          add("  `target/site/jacoco/` and `target/dependency-check/` of this run")
+          add("- Result: " + observed("verify") + " (job conclusion "
+              + (CONCLUSIONS["verify"] or NA) + ")")
+          add("  - Unit tier retained: " + tier_line("surefire"))
+          add("  - Integration and end-to-end tiers retained: " + tier_line("failsafe"))
+          add("  - Warnings fatal: " + figure("gate2.warningsAreFatal", "a harness run"))
+          add("  - Toolchain observed: "
+              + figure("gate2.runtimeVersion", "a harness run") + ", feature "
+              + figure("gate2.runtimeFeatureVersion", "a harness run"))
+          add("  - Container library pin: " + figure("gate2.testcontainersPin", "a harness run"))
+          add("  - Coverage floor: " + figure("gate2.coverageFloor", "a harness run"))
+          add("  - Vulnerability scan: " + figure("gate2.vulnerabilityScan", "an unskipped scan"))
+          add("- Remediation: fix the warning rather than relaxing the lint set; add tests")
+          add("  rather than lowering the coverage floor. For a finding at or above the CVSS")
+          add("  threshold, in this order: pin the affected dependency FORWARD to a fixed")
+          add("  release; if no fixed release exists, disposition it in")
+          add("  `owasp-suppressions.xml` with a narrow, dated, evidence-based entry naming")
+          add("  the coordinate and the single CVE, and delete that entry the moment the")
+          add("  fixed release can be pinned. Lowering `owasp.failBuildOnCVSS`, adding a")
+          add("  skip, or widening an entry to turn a red scan green is not remediation and")
+          add("  is refused.")
+          add("")
+
+          add("## Gate 3 - performance baseline")
+          add("")
+          add("- Severity on failure: Medium")
+          add("- Command: the end-to-end tier's measurement assertions, over a real job")
+          add("  launch and real HTTP against a running servlet container")
+          add("- Evidence: the retained `" + SUMMARY_NAME + "`")
+          add("- Result: MEASURED BASELINE. No threshold is applied to any figure below,")
+          add("  so this gate cannot fail on a number - only on a number being absent.")
+          add("  - Workload: " + figure("gate3.workload", "a harness run"))
+          add("  - Records read: " + figure("gate3.recordsRead", "a harness run")
+              + " in " + figure("gate3.batchElapsedMillis", "a harness run") + " ms")
+          add("  - Throughput: " + figure("gate3.recordsPerSecond", "a harness run")
+              + " records/second")
+          add("  - Per-step read counts: " + figure("gate3.readPerStep", "a harness run"))
+          add("  - Endpoint p95 (ns): " + figure("gate3.endpointP95Nanos", "a harness run"))
+          add("  - Endpoint median (ns): " + figure("gate3.endpointMedianNanos", "a harness run"))
+          add("  - Samples per endpoint: "
+              + figure("gate3.endpointLatencySamplesPerEndpoint", "a harness run"))
+          add("  - How the latency was measured: "
+              + figure("gate3.endpointLatencyMethod", "a harness run"))
+          add("  - Database round trip, median/p95 (ns): "
+              + figure("gate3.databaseRoundTripMedianNanos", "a harness run") + " / "
+              + figure("gate3.databaseRoundTripP95Nanos", "a harness run"))
+          add("  - Peak heap (bytes): " + figure("gate3.peakHeapBytes", "a harness run"))
+          add("    Scope: " + figure("gate3.peakHeapScope", "a harness run"))
+          add("  - Service-level objective: "
+              + figure("gate3.serviceLevelObjective", "a stated objective from the business"))
+          add("- Remediation: none applicable to the figures; a baseline cannot fail. A")
+          add("  missing figure is remediated by running the tier that measures it.")
+          add("")
+
+          add("## Gate 4 - named-fixture validation")
+          add("")
+          add("- Severity on failure: Blocker")
+          add("- Command: the seed migration plus the end-to-end tier, both driven by")
+          add("  `./mvnw --batch-mode --no-transfer-progress clean verify`")
+          add("- Evidence: the retained `failsafe-reports/`, and the migration history")
+          add("  asserted in the integration job")
+          add("- Result: fixture inventory - " + observed("repository-integrity")
+              + "; pipeline execution - " + suite_line("com.cardemo.e2e.BatchPipelineE2ETest"))
+          add("  - Daily rows seeded from the fixture: "
+              + figure("gate4.dailyRowsSeeded", "a harness run"))
+          add("  - Rows carrying a negative overpunch sign: "
+              + figure("gate4.negativeAmountRows", "a harness run"))
+          add("  - Account rows compared field-for-field: "
+              + figure("gate4.accountRowsCompared", "a harness run"))
+          add("  - Seeded users: " + figure("gate4.seededUsers", "a harness run")
+              + ", of which BCrypt-hashed: "
+              + figure("gate4.bcryptHashedCredentials", "a harness run"))
+          add("- Remediation: keep the nine ASCII fixtures under their actual committed")
+          add("  names - the fixture is `dailytran.txt`, not the mainframe DD name - and")
+          add("  decode overpunch signs position-aware from the PIC clauses.")
+          add("")
+
+          add("## Gate 5 - API contract, 17 endpoints")
+          add("")
+          add("- Severity on failure: Blocker")
+          add("- Command: the integration and end-to-end tiers")
+          add("- Evidence: the retained `failsafe-reports/`, `docs/api-contracts.md`")
+          add("- Result: " + suite_line("com.cardemo.e2e.OnlineTransactionE2ETest"))
+          add("  - Mapped operations: " + figure("gate5.mappedOperations", "a harness run"))
+          add("  - Controllers: " + figure("gate5.controllers", "a harness run"))
+          add("  - Seventeen operations, not eighteen: the eighteenth CICS transaction")
+          add("    fronts " + figure("gate7.cocrdsec", "a harness run") + ", so no")
+          add("    endpoint is invented for it.")
+          add("- Remediation: exercise every endpoint against a real application context.")
+          add("")
+
+          add("## Gate 6 - security audit")
+          add("")
+          add("- Severity on failure: Blocker")
+          add("- Command: the source-integrity steps in the repository-integrity job, plus")
+          add("  the dependency vulnerability scan and the delivered-image scan")
+          add("- Evidence: this run log, `target/dependency-check/`, `target/image-scan/`")
+          add("- Result: source and secret hygiene - " + observed("repository-integrity")
+              + " (job conclusion " + (CONCLUSIONS["repository-integrity"] or NA)
+              + "); delivered image - " + observed("image-scan") + " (job conclusion "
+              + (CONCLUSIONS["image-scan"] or NA) + ")")
+          add("  - Floating-point types in financial fields: "
+              + figure("gate6.floatingPointInFinancialFields", "a harness run"))
+          add("  - Declared money precisions: "
+              + figure("gate6.declaredPrecisions", "a harness run"))
+          add("  - Seeded credentials stored as BCrypt hashes: "
+              + figure("gate6.seededUserHashes", "a harness run") + " at cost "
+              + figure("gate6.bcryptCost", "a harness run"))
+          add("  - Committed credential candidates verified against the seed: "
+              + figure("gate6.credentialCandidatesVerified", "a harness run")
+              + ", of which authenticating: "
+              + figure("gate6.credentialsAuthenticatingAgainstTheSeed", "a harness run"))
+          add("  - Committed secrets: " + figure("gate6.committedSecrets", "a harness run"))
+          add("  - Scan exclusions: "
+              + figure("gate6.credentialWalkExclusions", "a harness run") + " - "
+              + figure("gate6.credentialWalkExclusionReason", "a harness run"))
+          add("- Remediation: replace any floating-point money field with `BigDecimal`;")
+          add("  store passwords only as BCrypt hashes; indirect every secret through the")
+          add("  environment with no committed default.")
+          add("")
+
+          add("## Gate 7 - scope coverage, 28 programs")
+          add("")
+          add("- Severity on failure: High")
+          add("- Command: the traceability assertion in the repository-integrity job, and")
+          add("  the coverage assertions in the gate harness")
+          add("- Evidence: `TRACEABILITY_MATRIX.md` at the repository root, and the")
+          add("  retained `" + SUMMARY_NAME + "`")
+          add("- Result: " + observed("repository-integrity") + " (job conclusion "
+              + (CONCLUSIONS["repository-integrity"] or NA) + ")")
+          add("  - Programs in the corpus: " + figure("gate7.programs", "a harness run")
+              + ", totalling " + figure("gate7.programLines", "a harness run") + " lines")
+          add("  - Forward-mapped programs: "
+              + figure("gate7.forwardMappedPrograms", "a harness run") + " onto "
+              + figure("gate7.forwardMappedTypes", "a harness run") + " Java types")
+          add("  - Procedure paragraphs derived: "
+              + figure("gate7.procedureParagraphs", "a harness run"))
+          add("  - Copybooks: " + figure("gate7.copybooks", "a harness run")
+              + "; JCL members: " + figure("gate7.jclMembers", "a harness run")
+              + "; screen input fields: "
+              + figure("gate7.screenInputFields", "a harness run"))
+          add("  - Catalogued features: "
+              + figure("gate7.cataloguedFeatures", "a harness run")
+              + ", identifiers published: "
+              + figure("gate7.featureIdentifiersPublished", "a harness run")
+              + ", proving tests resolved: "
+              + figure("gate7.featureProvingTests", "a harness run"))
+          add("  - Dataset verification steps registered: "
+              + figure("gate7.f020VerificationSteps", "a harness run") + " in job "
+              + figure("gate7.f020VerificationJob", "a harness run"))
+          add("  - Dead copybook: " + figure("gate7.deadCopybook", "a harness run"))
+          add("- Remediation: map every program, enumerating the corpus")
+          add("  case-insensitively. A lowercase-only pattern reports 26 of 28 and")
+          add("  silently omits the two programs whose extension is uppercase.")
+          add("")
+
+          add("## Gate 8 - integration sign-off, 6 compose services")
+          add("")
+          add("- Severity on failure: High")
+          add("- Command: `docker compose up --build --wait`")
+          add("- Evidence: the container-topology-evidence artifact of this run")
+          add("- Result: " + observed("integration") + " (job conclusion "
+              + (CONCLUSIONS["integration"] or NA) + ")")
+          add("  - Compose services: " + figure("gate8.composeServices", "a harness run"))
+          add("  - Migrations applied: " + figure("gate8.migrationsApplied", "a harness run"))
+          add("  - Domain tables: " + figure("gate8.domainTables", "a harness run")
+              + "; alternate indexes: "
+              + figure("gate8.alternateIndexes", "a harness run"))
+          add("  - Health contributors: "
+              + figure("gate8.healthContributors", "a harness run"))
+          add("- Remediation: start from a clean volume when a migration checksum")
+          add("  conflicts, and raise `INIT_MAX_ATTEMPTS` or `INIT_SLEEP_SECONDS` when")
+          add("  the emulator is slow to report ready.")
+          add("")
+
+          add("## What this file deliberately does not contain")
+          add("")
+          add("- No badge and no completion percentage, because neither is supported by a")
+          add("  measurement this run made.")
+          add("- No gate asserted as passing that this run did not execute, and no")
+          add("  statement about a gate's lifecycle written by hand.")
+          add("- No performance threshold. Gate 3's figures are baselines; the corpus")
+          add("  publishes no service level, so none is invented.")
+          add("- No figure carried over from an earlier run. This is enforced rather than")
+          add("  asserted: the harness stamps the commit it ran against, and a marker")
+          add("  stamped with any other commit fails this job. Coverage, test counts and")
+          add("  decision counts recorded in `docs/project-guide.md` describe a previous")
+          add("  implementation and are not evidence for this one.")
+
+          REPORT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          if stale:
+              BLOCKER_PATH.write_text(stale + "\n", encoding="utf-8")
+          PY
+
+          cat "${REPORT_PATH}"
+          cat "${REPORT_PATH}" >> "${GITHUB_STEP_SUMMARY}"
+
+          # Written by the generator only when a downloaded artefact belongs to
+          # another commit. Reported after the document is published, so the
+          # evidence bundle carries the reason this job failed.
+          if [ -s "${BLOCKER_PATH}" ]; then
+            printf '::error title=Blocker::%s\n' "$(cat "${BLOCKER_PATH}")"
+            exit 1
+          fi
 
       - name: Upload the gate evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: validation-gate-evidence
           path: ${{ runner.temp }}/gate-evidence/**
@@ -2363,8 +4006,13 @@ jobs:
           done
 
           if [ -n "${failures}" ]; then
-            printf '::error title=Blocker::docs/validation-gates.md [gate jobs] expected: every gate job to conclude success | actual:%s | remediation: open the named job in %s and act on its annotations, each of which carries the file path, the symbol checked, expected versus actual and a remediation line.\n' \
-              "${failures}" "${RUN_URL}"
+            note='::error title=Blocker::docs/validation-gates.md [gate jobs]'
+            note="${note}"' expected: every gate job to conclude success |'
+            note="${note} actual:${failures} | remediation: open the named job in"
+            note="${note} ${RUN_URL} and act on its annotations, each of which carries"
+            note="${note}"' the file path, the symbol checked, expected versus actual'
+            note="${note}"' and a remediation line.'
+            printf '%s\n' "${note}"
             exit 1
           fi
           printf 'Every gate job concluded success. Evidence: %s\n' "${RUN_URL}"

@@ -257,12 +257,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li>The plan's general note on the symbolic maps records {@code CURTIME} as {@code X(9)}. Both
  *       {@code app/cpy-bms/COUSR02.CPY}:54 and {@code app/cpy/CSDAT01Y.cpy} say eight. The source governs, so
  *       eight is used. Citation correction only.</li>
- *   <li>{@code com.cardemo.model.dto.UserUpdateRequest} notes in passing that a blank password could mean
- *       "leave the stored credential unchanged". On this program's update path it cannot: {@code :198} tests the
- *       field for emptiness and {@code :200} reports {@code "Password can NOT be empty..."}, so a blank password
- *       is rejected rather than interpreted. The source governs. Leaving the digest untouched is instead what
- *       happens when a password is supplied and <em>matches</em> the stored one, which is the ordinary
- *       no-change outcome.</li>
+ *   <li>A blank password is <strong>rejected, not interpreted as "leave the stored credential
+ *       unchanged"</strong>: {@code :198} tests the field for emptiness and {@code :200} reports
+ *       {@code "Password can NOT be empty..."}. The source governs. Leaving the digest untouched is instead
+ *       what happens when a password is supplied and <em>matches</em> the stored one, which is the ordinary
+ *       no-change outcome. {@code com.cardemo.model.dto.UserUpdateRequest} previously documented the opposite
+ *       and now documents this; the divergence between the two files is closed, and this entry is retained so
+ *       that a reader who remembers the old claim finds it addressed rather than silently gone.</li>
  *   </ul>
  *
  * <h2>Preserved legacy quirk: the exit-shaped key saves</h2>

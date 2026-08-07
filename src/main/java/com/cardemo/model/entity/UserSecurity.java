@@ -430,7 +430,9 @@ public class UserSecurity {
      *   <li><b>the version tag is one of {@code 2a}, {@code 2b} or {@code 2y}, and nothing else.</b>
      *       That is exactly the set the verifier accepts, which is what makes the set correct rather
      *       than merely conventional. {@code BCryptPasswordEncoder.BCryptVersion} of
-     *       {@code spring-security-crypto} 6.5.8 declares exactly three constants, for those three
+     *       {@code spring-security-crypto} <b>6.5.11</b> - the version {@code pom.xml} resolves through its
+     *       forward override, not the 6.5.8 the parent manages - declares exactly three constants, for those
+     *       three
      *       tags, and {@code BCrypt.gensalt(String, int, SecureRandom)} rejects any other third
      *       character with {@code IllegalArgumentException("Invalid prefix")}. The historical
      *       {@code 2x} tag is therefore deliberately excluded: the encoder can neither produce nor

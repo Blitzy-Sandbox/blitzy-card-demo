@@ -204,6 +204,21 @@ class BatchLogHygieneTest {
     private static final String DALYTRAN_OBJECT_KEY = "dalytran/2026-08-04/dailytran.txt";
 
     /**
+     * The signing key the input object's authenticity envelope is derived from, at least the thirty-two bytes
+     * the algorithm requires. A test literal: finding M-11 forbids a committed key anywhere in the repository.
+     */
+    private static final String SIGNING_KEY = "batch-log-hygiene-test-signing-key-0123456789";
+
+    /**
+     * The writer identity the stubbed input object claims.
+     *
+     * <p>Deliberately not a customer-derived value. It appears in the reader's own authenticity log line, and
+     * this class exists to assert what may and may not appear there: an attribution identity may, a business
+     * date or an object key may not.
+     */
+    private static final String OBJECT_WRITER = "carddemo-fixture-feed";
+
+    /**
      * A {@code TRANSACT.BKUP} generation key, and the value no {@code TransactionBackupReader} event may
      * carry. It identifies one concrete backup of the transaction cluster and the run that produced it.
      */
@@ -586,13 +601,13 @@ class BatchLogHygieneTest {
             // Every collaborator mock is fully built BEFORE the first when(...) on objectStorage. Building
             // one inside a thenReturn(...) argument would start a second stubbing while the first is still
             // open, which Mockito reports as UnfinishedStubbing.
-            final S3Resource object = emptyObject();
+            final S3Resource object = authenticatedEmptyObject();
             when(objectStorage.objectExists(BUCKET, DALYTRAN_OBJECT_KEY)).thenReturn(Boolean.TRUE);
             when(objectStorage.download(BUCKET, DALYTRAN_OBJECT_KEY)).thenReturn(object);
 
             final DailyTransactionReader reader = new DailyTransactionReader(dailyTransactionRepository,
                     objectStorage, fileStatusMapper, "fixed-width", PAGE_SIZE, BUCKET,
-                    DALYTRAN_OBJECT_KEY);
+                    DALYTRAN_OBJECT_KEY, SIGNING_KEY);
             reader.open(new ExecutionContext());
             reader.close();
 
@@ -628,7 +643,8 @@ class BatchLogHygieneTest {
             restart.putString("DailyTransactionReader.lastTransactionId", CHECKPOINTED_TRANSACTION_ID);
 
             final DailyTransactionReader reader = new DailyTransactionReader(dailyTransactionRepository,
-                    objectStorage, fileStatusMapper, "repository", PAGE_SIZE, "", DALYTRAN_OBJECT_KEY);
+                    objectStorage, fileStatusMapper, "repository", PAGE_SIZE, "", DALYTRAN_OBJECT_KEY,
+                    SIGNING_KEY);
             reader.open(restart);
             reader.close();
 
@@ -658,7 +674,8 @@ class BatchLogHygieneTest {
             restart.putLong("DailyTransactionReader.recordsRead", 4L);
 
             final DailyTransactionReader reader = new DailyTransactionReader(dailyTransactionRepository,
-                    objectStorage, fileStatusMapper, "repository", PAGE_SIZE, "", DALYTRAN_OBJECT_KEY);
+                    objectStorage, fileStatusMapper, "repository", PAGE_SIZE, "", DALYTRAN_OBJECT_KEY,
+                    SIGNING_KEY);
             reader.open(restart);
 
             assertThat(capturedLogText())
@@ -975,6 +992,33 @@ class BatchLogHygieneTest {
     private static S3Resource emptyObject() throws IOException {
         final S3Resource object = Mockito.mock(S3Resource.class);
         Mockito.doReturn(new ByteArrayInputStream(new byte[0])).when(object).getInputStream();
+        return object;
+    }
+
+    /**
+     * An empty object that also carries a valid authenticity envelope for its own (empty) content.
+     *
+     * <p>Finding M-11: the staging reader refuses an input object that is not vouched for, so on that one path
+     * a stub which is only a body is no longer a usable input. Kept separate from {@link #emptyObject()}
+     * rather than folded into it, because the three generation-reader tests never ask for metadata or a
+     * content length and Mockito's strict stubbing reports an unused stub as a failure - correctly, since an
+     * unused stub is a claim about a collaboration that does not happen.
+     *
+     * @return the stubbed object, never {@code null}
+     * @throws IOException never; declared because the stubbed method declares it
+     */
+    private static S3Resource authenticatedEmptyObject() throws IOException {
+        final S3Resource object = emptyObject();
+        final String emptyDigest = DailyTransactionReader.InputObjectEnvelope.hexadecimal(
+                DailyTransactionReader.InputObjectEnvelope.newDigest().digest(new byte[0]));
+        Mockito.doReturn(Long.valueOf(0L)).when(object).contentLength();
+        Mockito.doReturn(java.util.Map.of(
+                        DailyTransactionReader.InputObjectEnvelope.METADATA_WRITER, OBJECT_WRITER,
+                        DailyTransactionReader.InputObjectEnvelope.METADATA_CONTENT_SHA256, emptyDigest,
+                        DailyTransactionReader.InputObjectEnvelope.METADATA_SIGNATURE,
+                        DailyTransactionReader.InputObjectEnvelope.sign(BUCKET, DALYTRAN_OBJECT_KEY, 0L,
+                                OBJECT_WRITER, emptyDigest, SIGNING_KEY)))
+                .when(object).metadata();
         return object;
     }
 }

@@ -209,7 +209,7 @@ counter-intuitive enough that a client written to the obvious assumption will fa
 
 | # | Trap | The assumption that fails | Section |
 |--:|---|---|---|
-| T1 | The as-displayed snapshot for `PUT /api/accounts` is **server-issued and sealed**, travels in `If-Match`, and its date of birth is held **compact `YYYYMMDD`** | "I can build the old-values group myself and send it in the body, using `YYYY-MM-DD` like every other date" | [§11.2](#112-update-account) |
+| T1 | The as-displayed snapshot for `PUT /api/accounts` **travels in the request body as `oldDetails`, echoed back verbatim from the read**, and its date of birth is held **compact `YYYYMMDD`** while every other date is `YYYY-MM-DD` | "I can assemble the old-values group myself from the displayed fields, using `YYYY-MM-DD` like every other date" | [§11.2](#112-update-account) |
 | T2 | Page sizes are **fixed at 7, 10 and 10** by screen geometry and are **not** client-configurable | "`?size=50` will page bigger" | [§7](#7-pagination-contract) |
 | T3 | Bill payment always pays the **entire** balance; there is **no amount field** | "I can make a partial payment" | [§14.1](#141-bill-payment) |
 | T4 | The monthly report period is the **full current calendar month**, first day to **last** day | "Monthly means month-to-date" | [§15.1](#151-submit-transaction-report) |
@@ -223,8 +223,8 @@ each.
 ## 4. Field-contract provenance
 
 Every request and response field on this page derives from a field of a BMS symbolic map.
-The seventeen symbolic maps in `app/cpy-bms/` carry **441 input fields in total**, verified
-by machine count two independent ways, distributed as:
+The seventeen symbolic maps in `app/cpy-bms/` carry **441 input fields in total**, distributed
+as:
 
 | Symbolic map | Fields | Symbolic map | Fields | Symbolic map | Fields |
 |---|--:|---|--:|---|--:|
@@ -237,6 +237,26 @@ by machine count two independent ways, distributed as:
 
 The three highest counts are explained by row arrays rather than richer screens: `COTRN00`
 and `COUSR00` carry ten-row tables and `COCRDLI` carries seven.
+
+**How the census is derived, and why not 460.** The figure is counted, not transcribed. A BMS
+symbolic map names its input field `<field>I` at level `02`, so every row above and the total
+are reproduced by:
+
+```shell
+for f in app/cpy-bms/*.CPY; do
+  printf '%s %s\n' "$(basename "$f")" "$(grep -cE '^ +02 +[A-Z0-9]+I +PIC ' "$f")"
+done
+```
+
+`GateVerificationTest` asserts the same census independently, against
+`EXPECTED_BMS_INPUT_FIELDS = 441`, and so do `OnlineTransactionE2ETest`, `AccountDtoTest` and
+`TransactionDtoTest`.
+
+**A figure of 460 circulates in earlier prose and is wrong.** It is withdrawn here. It was
+also internally inconsistent with the per-map table it accompanied, which summed to 440 — the
+one differing cell being `COACTVW`, published as 36 where the map declares **37**. Neither 460
+nor 440 should be carried forward. The distinction is not cosmetic: this census is the DTO
+field budget, so an unverified total means unverified DTOs.
 
 ### 4.1 How to verify a width against the source
 
@@ -258,27 +278,67 @@ by a twelve-byte terminal-I/O header
 Only the `<name>I` data items are published in this document. The `L`, `F`, `A` and
 `FILLER` members are terminal-plumbing artefacts with no REST counterpart.
 
-### 4.2 Presentation chrome excluded from every JSON contract
+### 4.2 Presentation chrome is **accepted** on request, and absent from every response
 
-Six header fields recur on all seventeen maps and are **excluded from the JSON contract in
-every operation below** — they are terminal-rendering artefacts:
+An earlier revision of this section stated that the six recurring header fields were
+"excluded from the JSON contract in every operation below". **That is withdrawn, and it was
+wrong in the direction that breaks a client**: the request DTOs declare and deserialize
+every one of them, so a caller that omits them is fine and a caller that sends them is
+*also* fine — but a caller reading the withdrawn sentence would have concluded the fields
+were rejected, which they are not.
 
-| Field | Width | Why excluded |
-|---|---|---|
-| `TRNNAMEI` | `X(4)` | The CICS transaction identifier; routing is URL-based |
-| `TITLE01I` | `X(40)` | Screen title line 1 |
-| `CURDATEI` | `X(8)` | Server-rendered current date |
-| `PGMNAMEI` | `X(8)` | The COBOL program name that painted the screen |
-| `TITLE02I` | `X(40)` | Screen title line 2 |
-| `CURTIMEI` | `X(8)`, **but `X(9)` on `COSGN00.CPY`** | Server-rendered current time |
+The corrected contract has two halves, and they differ:
+
+* **On request** — accepted and ignored. Every request type carries the six as optional
+  `String` members. `SignOnRequest`, `BillPaymentRequest`, `ReportRequest`,
+  `TransactionAddRequest`, `UserUpdateRequest` and `CardUpdateRequest` declare them as
+  record components; `AccountUpdateRequest` and `UserCreateRequest` declare them as
+  `@JsonProperty`-annotated fields. Nothing reads them: no service consults a chrome member,
+  and none is persisted. They exist so that a payload captured from the legacy screen
+  round-trips without a deserialization failure, which matters because
+  `spring.jackson.deserialization.fail-on-unknown-properties` is **enabled** — with the
+  fields absent from the DTO, sending them would be a `400`.
+* **On response** — withheld from **every** response body, with no exception. No account,
+  card, transaction, billing, report, sign-on, menu or user response type puts a chrome
+  member on the wire, and `AccountViewResponse`, `UserCreateResponse`, `UserListResponse`
+  and `UserUpdateResponse` each publish a `WITHHELD_COMPONENTS` list naming the omitted
+  members explicitly, so the omission is asserted rather than incidental.
+
+  One nested type needs stating so it is not mistaken for an exception.
+  `MenuResponse.MenuScreen` is a record whose twenty components do begin with all six chrome
+  fields — it transcribes the twenty input fields of `app/cpy-bms/COMEN01.CPY` and
+  `app/cpy-bms/COADM01.CPY` as a field contract. **It is never serialized.** The two menu
+  operations return `MenuResponse<MainMenuOption>` and `MenuResponse<AdminMenuOption>`
+  [`MenuController.java:607`, `:691`], whose serialized members are exactly `menuType`,
+  `options` and `optionCount`; no code path anywhere places a `MenuScreen` in a response
+  body. The option records additionally suppress `programName` with
+  `@JsonIgnoreProperties("programName")` [`MenuResponse.java:413`, `:466`], so the one piece
+  of legacy dispatch state the map carries never reaches a client either.
+
+  Verify with
+  `grep -n transactionName src/main/java/com/cardemo/model/dto/*Response.java`: every match
+  outside `MenuResponse` sits inside a withheld-components list, and the `MenuResponse`
+  matches sit on the unserialized `MenuScreen` record.
+
+| Field | Width | JSON property | Status |
+|---|---|---|---|
+| `TRNNAMEI` | `X(4)` | `transactionName` | Accepted, ignored, never returned |
+| `TITLE01I` | `X(40)` | `title01` | Accepted, ignored, never returned |
+| `CURDATEI` | `X(8)` | `currentDate` | Accepted, ignored, never returned |
+| `PGMNAMEI` | `X(8)` | `programName` | Accepted, ignored, never returned |
+| `TITLE02I` | `X(40)` | `title02` | Accepted, ignored, never returned |
+| `CURTIMEI` | `X(8)`, **but `X(9)` on `COSGN00.CPY`** | `currentTime` | Accepted, ignored, never returned |
 
 `COSGN00.CPY` is the **only** map on which `CURTIME` is nine characters, and the only one
 carrying two further chrome fields, `APPLIDI X(8)` and `SYSIDI X(8)` — the CICS APPLID and
-system identifier, which likewise have no REST counterpart.
+system identifier. `SignOnRequest` accepts these two as `applicationId` and `systemId`, on
+the same terms.
 
-Function-key chrome is excluded on the same grounds wherever a map declares it:
-`FKEYSI`, `FKEY05I`, `FKEY12I` on `COACTUP`; `FKEYSI X(75)` on `COCRDSL`; `FKEYSI X(21)`
-and `FKEYSCI X(18)` on `COCRDUP`.
+Function-key chrome is likewise **accepted and ignored** wherever a map declares it, not
+rejected: `AccountUpdateRequest` accepts `functionKeys`, `functionKey05` and `functionKey12`
+(`FKEYSI`, `FKEY05I`, `FKEY12I` on `COACTUP`), and `CardUpdateRequest` accepts
+`functionKeys` and `functionKeysContinued` (`FKEYSI X(21)` and `FKEYSCI X(18)` on
+`COCRDUP`; `FKEYSI X(75)` on `COCRDSL`).
 
 **`ERRMSGI` and `INFOMSGI` are the exception.** They do have a counterpart, because they
 carry the exact observable message literals the 3270 screen displayed. Those literals are
@@ -351,8 +411,8 @@ Consequences a client must design for:
   string, a header or the body.
 * **Paging position is a request parameter, not a remembered cursor** ([§7](#7-pagination-contract)).
 * **The as-displayed snapshot for the two update operations cannot live on the server**
-  between the read and the write. That is precisely why those operations use a sealed
-  precondition token ([§11.2](#112-update-account), [§12.3](#123-update-card)).
+  between the read and the write. That is precisely why the read projects it and the write
+  carries it back in its request body ([§11.2](#112-update-account), [§12.3](#123-update-card)).
 
 ### 5.1 Role model
 
@@ -375,9 +435,12 @@ Authorisation, stated once and true for every operation:
 * **Every remaining operation accepts either role**, exactly as the legacy main menu made
   all ten of its options available to both user classes (see the note in
   [§10.1](#101-main-menu)).
-* A request with no usable credential is answered `401` with an **empty body**. A request
-  whose token carries neither recognised authority is answered `403` with an empty body.
-  Neither answer describes the resource.
+* A request with no usable credential is answered `401`, and one whose token carries neither
+  recognised authority is answered `403`. **Both carry a problem document, not an empty
+  body** — an earlier revision of this bullet said both bodies were empty and that is
+  withdrawn. The boundary shape is narrower than the controller shape and is documented at
+  [§8.1.1](#811-the-security-boundary-shape-six-members-and-no-instance). Neither answer
+  describes the resource.
 
 This is the least-privilege position: the administrator-only surface is separated by path
 prefix so that a single rule governs it, rather than by a per-operation check that a future
@@ -581,13 +644,27 @@ outcome, never an error (see [§8.2](#82-global-failure-and-status-mapping)).
 
 ## 8. Error-response envelope
 
-One shape, used by every operation **and by every refusal decided before an operation is
-reached**. Error bodies are **RFC 9457 / RFC 7807 problem details** served as
-`application/problem+json`. There is no path through this application — not an unreadable
-`Content-Type`, not an unsatisfiable `Accept`, not a wrong method, not a request the servlet
-container refuses while it is still parsing the request line — that answers with a different
-body shape, a different media type, or no body at all. [§8.5](#85-refusals-decided-before-an-operation-is-reached)
-names the four boundaries that make that true and what each one can and cannot carry.
+**One media type, and never an empty body.** Error bodies are **RFC 9457 / RFC 7807 problem
+details** served as `application/problem+json`, with no `charset` parameter. There is no path
+through this application — not an unreadable `Content-Type`, not an unsatisfiable `Accept`, not
+a wrong method, not a refused credential, not a request the servlet container refuses while it
+is still parsing the request line — that answers with a different media type or with no body at
+all.
+
+**Two shapes, one a strict subset of the other.** An earlier revision of this paragraph said
+"one shape, used by every operation and by every refusal decided before an operation is
+reached". That is withdrawn: it overstated the uniformity in the direction that breaks a client.
+The document below is the **controller shape**, published by the `@ExceptionHandler` that owns
+each operation, and it is the widest. Every refusal decided *before* a controller method is
+selected publishes the narrower **pre-operation shape** of exactly six members —
+`type`, `title`, `status`, `detail`, `errorCode`, `correlationId` — and no `instance`, `field`
+or `failureKind`, because none of those facts exists yet at that point. That shape is set out in
+[§8.1.1](#811-the-security-boundary-shape-six-members-and-no-instance), and
+[§8.5](#85-refusals-decided-before-an-operation-is-reached) names the pre-operation boundaries
+and what each one can and cannot carry.
+
+Match on `errorCode` and read `correlationId`, and the difference does not affect you: those two
+members, plus `type`, `title` and `status`, are present on **every** error body this API emits.
 
 ```json
 {
@@ -609,7 +686,7 @@ names the four boundaries that make that true and what each one can and cannot c
 | `title` | yes | Short, stable, human-readable summary of the problem class |
 | `status` | yes | The HTTP status code, repeated in the body |
 | `detail` | when a message exists | **The exact legacy message literal**, relayed byte for byte, whenever the failure carries one. When it does not, the member is omitted rather than invented |
-| `instance` | yes | The request path |
+| `instance` | **controller-decided refusals only** | The request path. **Absent at the security boundary** — see [§8.1.1](#811-the-security-boundary-shape-six-members-and-no-instance) |
 | `errorCode` | **yes** | Stable machine-readable outcome code — match on this, not on `title` or `detail` |
 | `correlationId` | **yes** | The correlation identifier for this request, from the `X-Correlation-Id` header when the caller supplied one and generated otherwise. The literal `unavailable` appears when no identifier could be resolved |
 | `field` | field-level failures | The **name** of the offending input. Never its value |
@@ -630,9 +707,21 @@ support request and the corresponding log records can be found.
 
 ### 8.1 Stable error codes
 
-Match on `errorCode`. These **nineteen** values are the complete set, and the table is
-exhaustive by construction — every `CARDDEMO-` literal that exists anywhere in
-`src/main/java` appears in exactly one row below.
+Match on `errorCode`. These **twenty** values are the complete set. An earlier revision of
+this sentence said nineteen and its table omitted `CARDDEMO-MALFORMED-REQUEST-BODY`
+entirely — a code a caller can actually receive, so the omission left an integrator with an
+unmatchable outcome. Both are corrected below.
+
+The set is exhaustive by construction, and it is derivable rather than asserted:
+
+```shell
+grep -rhoE '"CARDDEMO-[A-Z-]+"' src/main/java | sort -u
+```
+
+That reports **21** literals. Exactly one of them, `CARDDEMO-PIPELINE`, is **not** an error
+code — it is `DEFAULT_JOB_NAME` in `com.cardemo.batch.jobs.BatchPipelineOrchestrator`, a
+Spring Batch job name that never reaches an HTTP body. Twenty-one literals minus that one is
+the twenty rows below, each appearing in exactly one group.
 
 They fall into three groups, and the group tells you where the refusal was decided, which
 in turn tells you which optional members the body can carry.
@@ -647,7 +736,7 @@ and `failureKind`.
 | `CARDDEMO-AUTHENTICATION-FAILED` | `401` | A credential was refused at sign-on |
 | `CARDDEMO-RECORD-NOT-FOUND` | `404` | A record the operation required was absent |
 | `CARDDEMO-DUPLICATE-RECORD` | `409` | A key already exists |
-| `CARDDEMO-UPDATE-CONFLICT` | `409`, `412`, `423`, `428` | A concurrency precondition failed — see [§11.2.6](#1126-outcome-markers-and-status-mapping) |
+| `CARDDEMO-UPDATE-CONFLICT` | `409`, `412`, `423`, `428`, `500` | A concurrency precondition failed. Which status depends on the outcome **and on which operation answered** — see [§11.2.6](#1126-outcome-markers-and-status-mapping) for the account mapping and [§12.3](#123-update-card) for the card mapping, which differ |
 | `CARDDEMO-CONSTRAINT-REFUSED` | `409` / `422` | A referential, check or not-null constraint refused the write — see [§8.2.1](#821-a-vsam-write-had-one-failure-mode-a-table-has-four) |
 | `CARDDEMO-RESOURCE-UNAVAILABLE` | `503` | A required store or queue could not be opened |
 | `CARDDEMO-IO-FAILURE` | `502` | The store was reachable but the read or write failed |
@@ -655,8 +744,16 @@ and `failureKind`.
 | `CARDDEMO-INTERNAL-FAILURE` | `500`, `501` | A typed failure no other mapper on the controller claims, or a container-level failure at or above `500` |
 
 **Group B — the request never got as far as an operation's own logic.** The body was
-rejected, or the caller was not entitled to the operation at all. These carry `instance`
-but never `field` or `failureKind`, because no field was reached.
+rejected, or the caller was not entitled to the operation at all. None of these carries
+`field` or `failureKind`, because no field was ever bound.
+
+An earlier revision of this paragraph said "these carry `instance`". That was wrong for four
+of the five rows and is withdrawn. Only `CARDDEMO-REQUEST-BODY-UNREADABLE` is raised by a
+controller's own `@ExceptionHandler` and therefore carries `instance`; the other four are
+written by the security filter chain, which emits the six-member shape of
+[§8.1.1](#811-the-security-boundary-shape-six-members-and-no-instance) and no `instance` at
+all. A client that read the old sentence and dereferenced `instance` on a `401` or a `403`
+would have failed on a missing member.
 
 | `errorCode` | Typical status | Raised when |
 |---|--:|---|
@@ -664,6 +761,7 @@ but never `field` or `failureKind`, because no field was reached.
 | `CARDDEMO-AUTHORIZATION-DENIED` | `403` | A token was valid but its role does not admit the path and method — **including every path this API does not publish**, which is denied rather than reported as absent |
 | `CARDDEMO-REQUEST-BODY-UNREADABLE` | `400` | The body could not be deserialised: malformed JSON, or a value past one of the JSON parser bounds (nesting depth, string, number, name and document length) that are applied before deserialisation |
 | `CARDDEMO-REQUEST-BODY-TOO-LARGE` | `413` | The body declared or streamed more than 16 384 bytes, refused before authentication |
+| `CARDDEMO-MALFORMED-REQUEST-BODY` | `400` | The body could not be **read from the connection** at all — a truncated or aborted upload, a broken chunked framing, a client that disconnected mid-body. Distinct from `CARDDEMO-REQUEST-BODY-UNREADABLE`, which means the bytes arrived and would not parse. Raised by the body-screening filter (`SecurityConfig`), so it carries the boundary shape of [§8.1.1](#811-the-security-boundary-shape-six-members-and-no-instance) and never quotes the fragment it stopped on |
 
 **Group C — refused at the framework or protocol boundary**, before any operation was
 selected. These carry neither `instance`, `field` nor `failureKind`; see
@@ -677,6 +775,78 @@ boundary each one comes from.
 | `CARDDEMO-METHOD-NOT-ALLOWED` | `405`, `501` | The path is published but not for that method (`405`, with an `Allow` header), or the method is not implemented by the connector at all (`501`, `CONNECT` being the reachable case) |
 | `CARDDEMO-RESOURCE-NOT-FOUND` | `404` | Nothing is mapped to the path. Largely unreachable: an unpublished path is denied as `CARDDEMO-AUTHORIZATION-DENIED` first, which is the fail-closed choice and is deliberate |
 | `CARDDEMO-REQUEST-REJECTED` | `400` | The request was refused at the protocol boundary — an illegal character in the request target, or a method outside the HTTP firewall's allowed set such as `TRACE`. **The body deliberately says nothing about which**, for the reason given in [§8.5](#85-refusals-decided-before-an-operation-is-reached) |
+
+#### 8.1.1 The security boundary shape: six members and no instance
+
+Four of the twenty codes — `CARDDEMO-AUTHENTICATION-REQUIRED`,
+`CARDDEMO-AUTHORIZATION-DENIED`, `CARDDEMO-REQUEST-BODY-TOO-LARGE` and
+`CARDDEMO-MALFORMED-REQUEST-BODY`, plus `CARDDEMO-UNSUPPORTED-MEDIA-TYPE` when it is the
+security chain rather than the mapping layer that screens the header — are written inside the
+Spring Security filter chain, by
+`com.cardemo.config.SecurityConfig`'s private `writeProblemDetail`. That runs **before** any
+`@ExceptionHandler` and before a handler method has been selected, so it cannot reach the
+members a controller-owned refusal can. It publishes exactly six, and never more:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Authentication required",
+  "status": 401,
+  "detail": "The request did not carry a usable bearer token. Obtain one from the sign-on operation and present it in the Authorization header.",
+  "errorCode": "CARDDEMO-AUTHENTICATION-REQUIRED",
+  "correlationId": "8f14e45f-ea0c-4b9d-9f2a-6c1b7d3e5a90"
+}
+```
+
+| Member | Present at this boundary | Note |
+|---|---|---|
+| `type` | yes | Always the literal `about:blank` |
+| `title` | yes | One of five fixed titles, listed below |
+| `status` | yes | Read back off the response rather than assumed, so the body and the status line cannot disagree |
+| `detail` | yes | A fixed sentence per outcome. It never quotes the request — no header value, no body fragment, no offending method or character |
+| `errorCode` | yes | The value to match on |
+| `correlationId` | yes | Always present. The literal `unavailable` is published when no identifier is in scope |
+| `instance` | **no** | No handler was selected, so there is no mapping-relative request path to report |
+| `field` | **no** | No argument was bound |
+| `failureKind` | **no** | No validation ran |
+| `outcome`, `changeAction` | **no** | Concurrency and write-outcome vocabulary belongs to the account and card operations only |
+
+**The claim that a `401` or `403` carries an empty body is withdrawn.** An earlier revision of
+this document said a request with no usable credential "is answered `401` with an empty body".
+Both statuses carry a full problem document of the shape above. That correction matters in the
+direction that breaks a client: an integrator who coded for an empty body would have had no
+`errorCode` to branch on and would have discarded the `correlationId` that is the only join
+key back to the server-side log record.
+
+**The five fixed titles and details at this boundary**, each a compile-time constant:
+
+| Status | `title` | `errorCode` | Reached when |
+|--:|---|---|---|
+| `401` | `Authentication required` | `CARDDEMO-AUTHENTICATION-REQUIRED` | No usable bearer token on a protected operation |
+| `403` | `Authorization denied` | `CARDDEMO-AUTHORIZATION-DENIED` | A valid token whose authority does not admit the path and method |
+| `413` | `Request body too large` | `CARDDEMO-REQUEST-BODY-TOO-LARGE` | A body declared or streamed past the 16 384-byte bound |
+| `400` | `Request body could not be read` | `CARDDEMO-MALFORMED-REQUEST-BODY` | A length-less, transfer-encoded body whose framing could not be decoded |
+| `415` | `Unsupported media type` | `CARDDEMO-UNSUPPORTED-MEDIA-TYPE` | A `Content-Type` the seventeen operations cannot read, screened in the chain |
+
+The `401` and `403` rows each have **two** detail sentences rather than one, because the
+metrics scrape endpoint authenticates with HTTP Basic rather than a bearer token and says so:
+its `401` explains that a bearer token is not accepted there, and its `403` that the presented
+credentials lack the scrape authority. Title and `errorCode` are identical in both cases, so a
+client matching on `errorCode` needs no special case.
+
+**Media type.** `application/problem+json`, with **no `charset` parameter**. That is
+deliberate and it is a contract, not an accident: it is byte-for-byte what Spring emits for a
+controller's `ResponseEntity<ProblemDetail>`, and if the two boundaries disagreed on the header
+then their bodies would not be interchangeable to a client that negotiates on it. The bytes are
+UTF-8, which JSON is by specification.
+
+**The other pre-operation boundaries agree.** The four boundaries of
+[§8.5](#85-refusals-decided-before-an-operation-is-reached) are rendered by a second
+constant-only assembler, `WebConfig`'s private `renderProblemEnvelope`, which emits the same
+six members in the same order for the same reason. So there are exactly **two** shapes on this
+API: the controller shape of [§8](#8-error-response-envelope), which adds `instance` and the
+situational members, and this six-member pre-operation shape. Both are
+`application/problem+json`; neither is ever empty.
 
 ### 8.2 Global failure and status mapping
 
@@ -692,7 +862,7 @@ in the corpus uses.
 | `FILE STATUS '22'` / `DFHRESP(DUPREC)` | `DuplicateRecordException` | `409` | A key collision, and **only** a key collision — see [§8.2.1](#821-a-vsam-write-had-one-failure-mode-a-table-has-four) |
 | `FILE STATUS '35'` / `DFHRESP(NOTOPEN)` | `FileUnavailableException` | `503` | Store or queue unavailable; safe to retry |
 | `FILE STATUS '9x'` | `FileAccessException` | `502` | Physical or logical I/O failure. The exception carries the **four-character expanded status** the legacy `9910-DISPLAY-IO-STATUS` renderer produced; that rendering is logged, not published |
-| Snapshot comparison detected a change | `ConcurrentUpdateException` | `409` / `412` / `423` / `428` | Which of the four depends on the outcome — [§11.2.6](#1126-outcome-markers-and-status-mapping) |
+| Snapshot comparison detected a change | `ConcurrentUpdateException` | `409` / `412` / `423` / `428` / `500` | Which of the five depends on the outcome and on the answering operation — [§11.2.6](#1126-outcome-markers-and-status-mapping) |
 | A constraint other than a unique key refused the write | `DataIntegrityException` | `409` | A foreign key, a check constraint or a `NOT NULL` column refused the row. **Not retryable as submitted** — see [§8.2.1](#821-a-vsam-write-had-one-failure-mode-a-table-has-four) |
 | A submitted value the column cannot represent | `ValidationException` | `400` | Reported against the field the source's own cursor names on its `WHEN OTHER` arm — see [§8.2.1](#821-a-vsam-write-had-one-failure-mode-a-table-has-four) |
 | Field validation | `ValidationException` | `400` | Plus `401` at sign-on for a refused credential |
@@ -801,9 +971,16 @@ controller that owns them. That covers everything a controller method can be *re
 refuse — and it is deliberately where those refusals live, so that status selection is
 reviewable next to the paragraph it reproduces.
 
-It cannot cover a refusal decided **before** a controller method is selected, and four such
-boundaries exist. Each one now renders the same envelope; each is listed with what it can and
-cannot carry, because the differences are contractual rather than accidental.
+It cannot cover a refusal decided **before** a controller method is selected. **Five** such
+boundaries exist. The fifth is the Spring Security filter chain, and because it is where every
+credential and body-size refusal is decided it has its own sub-section: see
+[§8.1.1](#811-the-security-boundary-shape-six-members-and-no-instance). The four framework and
+protocol boundaries are tabulated here.
+
+All five render the same six-member pre-operation envelope — `type`, `title`, `status`,
+`detail`, `errorCode`, `correlationId` — at `application/problem+json`. What differs between
+them is only which `correlationId` they can reach, and that difference is contractual rather
+than accidental, so it is stated per row.
 
 | # | Boundary | Refuses | Publishes | Cannot publish |
 |--:|---|---|---|---|
@@ -873,7 +1050,7 @@ Content-Type: application/json
 | `systemId` | `SYSIDI` | `X(8)` | no | As above |
 | `errorMessage` | `ERRMSGI` | `X(78)` | no | Accepted at its declared width so the contract cannot be read as rejecting input the source accepts |
 
-The six chrome fields of [§4.2](#42-presentation-chrome-excluded-from-every-json-contract)
+The six chrome fields of [§4.2](#42-presentation-chrome-is-accepted-on-request-and-absent-from-every-response)
 are accepted at their declared widths and ignored — note that `currentTime` is `X(9)` here,
 the one map where it is nine characters.
 
@@ -1200,61 +1377,90 @@ Authorization: Bearer <token>
 > and the source additionally refuses zero with
 > `'Account number must be a non zero 11 digit number'`.
 
-**Response — `200 OK`.** Thirty-five business fields, all as declared in
-`app/cpy-bms/COACTVW.CPY`:
+**Response — `200 OK`.** `AccountViewResponse` declares **exactly 23 record components**,
+and the table below is that component list — not the map's field list. An earlier revision of
+this section published "thirty-five business fields, all as declared in
+`app/cpy-bms/COACTVW.CPY`" and listed nine personal-data members among them. **That is
+withdrawn.** It was a privacy defect and not merely a counting error: it told an integrator
+to expect a social security number, a date of birth, three name parts, two telephone
+numbers, a government identifier and an electronic funds account identifier in a response
+body that has never contained any of them.
 
-| Map field | PIC | Meaning |
-|---|---|---|
-| `ACCTSIDI` | `PIC 99999999999` | Account identifier |
-| `ACSTTUSI` | `X(1)` | Account status |
-| `ADTOPENI` | `X(10)` | Open date |
-| `ACRDLIMI` | `X(15)` | Credit limit |
-| `AEXPDTI` | `X(10)` | Expiry date |
-| `ACSHLIMI` | `X(15)` | Cash credit limit |
-| `AREISDTI` | `X(10)` | Reissue date |
-| `ACURBALI` | `X(15)` | Current balance |
-| `ACRCYCRI` | `X(15)` | Current cycle credit |
-| `AADDGRPI` | `X(10)` | Account group identifier |
-| `ACRCYDBI` | `X(15)` | Current cycle debit |
-| `ACSTNUMI` | `X(9)` | Customer identifier |
-| `ACSTSSNI` | `X(12)` | Customer social security number |
-| `ACSTDOBI` | `X(10)` | Customer date of birth |
-| `ACSTFCOI` | `X(3)` | FICO credit score |
-| `ACSFNAMI` | `X(25)` | Customer first name |
-| `ACSMNAMI` | `X(25)` | Customer middle name |
-| `ACSLNAMI` | `X(25)` | Customer last name |
-| `ACSADL1I` | `X(50)` | Address line 1 |
-| `ACSSTTEI` | `X(2)` | State code |
-| `ACSADL2I` | `X(50)` | Address line 2 |
-| `ACSZIPCI` | `X(5)` | Postal code |
-| `ACSCITYI` | `X(50)` | City (address line 3) |
-| `ACSCTRYI` | `X(3)` | Country code |
-| `ACSPHN1I` | `X(13)` | Telephone 1 — **one whole field on this map** |
-| `ACSGOVTI` | `X(20)` | Government-issued identifier |
-| `ACSPHN2I` | `X(13)` | Telephone 2 — **one whole field on this map** |
-| `ACSEFTCI` | `X(10)` | Electronic funds transfer account identifier |
-| `ACSPFLGI` | `X(1)` | Primary card-holder indicator |
-| `INFOMSGI` | `X(45)` | Informational message |
-| `ERRMSGI` | `X(78)` | Error message |
+| JSON property | Map field | PIC | Meaning |
+|---|---|---|---|
+| `accountId` | `ACCTSIDI` | `PIC 99999999999` | Account identifier |
+| `accountStatus` | `ACSTTUSI` | `X(1)` | Account status |
+| `openDate` | `ADTOPENI` | `X(10)` | Open date |
+| `expiryDate` | `AEXPDTI` | `X(10)` | Expiry date |
+| `reissueDate` | `AREISDTI` | `X(10)` | Reissue date |
+| `creditLimit` | `ACRDLIMI` | `X(15)` | Credit limit |
+| `cashCreditLimit` | `ACSHLIMI` | `X(15)` | Cash credit limit |
+| `currentBalance` | `ACURBALI` | `X(15)` | Current balance |
+| `currentCycleCredit` | `ACRCYCRI` | `X(15)` | Current cycle credit |
+| `currentCycleDebit` | `ACRCYDBI` | `X(15)` | Current cycle debit |
+| `accountGroupId` | `AADDGRPI` | `X(10)` | Account group identifier |
+| `customerId` | `ACSTNUMI` | `X(9)` | Customer identifier |
+| `customerFicoScore` | `ACSTFCOI` | `X(3)` | FICO credit score |
+| `addressLine1` | `ACSADL1I` | `X(50)` | Address line 1 |
+| `addressLine2` | `ACSADL2I` | `X(50)` | Address line 2 |
+| `addressCity` | `ACSCITYI` | `X(50)` | City (address line 3) |
+| `addressStateCode` | `ACSSTTEI` | `X(2)` | State code |
+| `addressZip` | `ACSZIPCI` | `X(5)` | Postal code |
+| `addressCountryCode` | `ACSCTRYI` | `X(3)` | Country code |
+| `primaryCardHolderIndicator` | `ACSPFLGI` | `X(1)` | Primary card-holder indicator |
+| `informationMessage` | `INFOMSGI` | `X(45)` | Informational message |
+| `errorMessage` | `ERRMSGI` | `X(78)` | Error message |
+| `oldDetails` | — | — | The **as-displayed snapshot group**, carrying the nine withheld components above. Required by [§11.2](#112-update-account): copy this object into the update's request body **verbatim**. No `ETag` is issued and no `If-Match` is read |
 
-The five money fields (`ACRDLIMI`, `ACSHLIMI`, `ACURBALI`, `ACRCYCRI`, `ACRCYDBI`) are
-`BigDecimal`-backed decimals per [§6.2](#62-monetary-representation).
+That is 23 rows. The five money fields (`creditLimit`, `cashCreditLimit`, `currentBalance`,
+`currentCycleCredit`, `currentCycleDebit`) are `BigDecimal`-backed decimals per
+[§6.2](#62-monetary-representation).
 
-Two further response members exist that have no map field, because they carry the write
-precondition:
+The last of those rows carries the snapshot, and it warrants a note of its own:
 
 | Member | Notes |
 |---|---|
-| `snapshotToken` | The **sealed, opaque, server-issued as-displayed snapshot**. Required by [§11.2](#112-update-account). Treat it as an opaque string: do not parse it, do not construct it, do not modify it |
-| `ETag` (response **header**) | The same token, quoted, so a caller may use the standard conditional-request idiom instead of reading it out of the body |
+| `oldDetails` | The **as-displayed snapshot group**, `ACUP-OLD-DETAILS` of [`app/cbl/COACTUPC.cbl:L669`], exactly as this read projected it. Required by [§11.2](#112-update-account): copy this object into the update's request body **verbatim**. It is the group and not flat fields because the comparison is representation-sensitive — its `dateOfBirth` is the compact `YYYYMMDD` form, not the `YYYY-MM-DD` the display fields use. No `ETag` is issued and no `If-Match` is read; there is no server-side state between the two requests |
 
 Note the asymmetry in what is *published*: `ACSTSSNI`, `ACSTDOBI`, `ACSPHN1I`, `ACSPHN2I`,
 `ACSGOVTI` and `ACSEFTCI` are on this map and are therefore part of the view contract, but
-they are **also** members of the snapshot group — which is exactly why the snapshot is
-sealed rather than returned in readable form ([§11.2.3](#1123-why-the-snapshot-is-sealed-and-server-issued)).
+they are **also** members of the snapshot group. That is why they are withheld as *display*
+components while the `oldDetails` object carries them: one carrier, not two
+([§11.2.3](#1123-how-the-snapshot-travels)).
 
-**Side effects.** None on business data. The operation performs one additional read to mint
-the snapshot token; that read is not a write.
+#### Withheld fields — on the map, deliberately not in the response
+
+`AccountViewResponse` publishes the list itself, as `WITHHELD_COMPONENTS`, so this is an
+asserted contract rather than an observation about the current code. **Nine members** of
+`app/cpy-bms/COACTVW.CPY` are read by the service, carried in the `oldDetails` group, and never
+serialised:
+
+| Map field | PIC | Withheld component | Why |
+|---|---|---|---|
+| `ACSTSSNI` | `X(12)` | `customerSsn` | Social security number |
+| `ACSTDOBI` | `X(10)` | `customerDateOfBirth` | Date of birth |
+| `ACSFNAMI` | `X(25)` | `customerFirstName` | Name part |
+| `ACSMNAMI` | `X(25)` | `customerMiddleName` | Name part |
+| `ACSLNAMI` | `X(25)` | `customerLastName` | Name part |
+| `ACSPHN1I` | `X(13)` | `phoneNumber1` | Telephone — **one whole field on this map** |
+| `ACSPHN2I` | `X(13)` | `phoneNumber2` | Telephone — **one whole field on this map** |
+| `ACSGOVTI` | `X(20)` | `governmentIssuedId` | Government-issued identifier |
+| `ACSEFTCI` | `X(10)` | `eftAccountId` | Electronic funds transfer account identifier |
+
+This is why the update operation needs the as-displayed values of all nine and why they
+travel in the `oldDetails` group rather than as display components
+([§11.2.3](#1123-how-the-snapshot-travels)): one carrier reproduces the source's
+field-by-field comparison without publishing the nine twice over. A caller that needs a
+customer's personal data does not get it as a display component of this endpoint, and there
+is no query parameter, header or role that turns these nine on as display components.
+
+Three further response types publish their own withheld list on the same principle —
+`UserCreateResponse`, `UserListResponse` and `UserUpdateResponse` — so the pattern is
+consistent across the tree: where a screen field is deliberately not serialised, the DTO
+says so in code rather than leaving the omission to be inferred.
+
+**Side effects.** None on business data. The operation performs one additional read to project
+the snapshot group; that read is not a write.
 
 **Validation and lookup order.** Preserved from the source:
 
@@ -1308,8 +1514,11 @@ is documented at length.
 ```http
 PUT /api/accounts?confirm=true HTTP/1.1
 Authorization: Bearer <token>
-If-Match: "<snapshotToken from GET /api/accounts/{accountId}>"
 Content-Type: application/json
+
+{ "accountId": "...", "...": "...",
+  "oldDetails": { <the oldDetails object from GET /api/accounts/{accountId}, verbatim> },
+  "newDetails": { ... } }
 ```
 
 **Role.** USER or ADMIN.
@@ -1352,11 +1561,12 @@ declared is least defensible on precisely the parameter where it matters most.
 * Present but empty → `400`, `failureKind` blank.
 * Present and neither exact token → `400`, `failureKind` invalid.
 
-**(b) Header — the as-displayed snapshot.**
+**(b) Headers.** None beyond `Authorization` and `Content-Type`. This operation reads no
+request header of its own: the as-displayed snapshot is a body member, described below.
 
-| Header | Required | Value |
+| Body member | Required | Value |
 |---|:--:|---|
-| `If-Match` | **yes** | The `snapshotToken` from [`GET /api/accounts/{accountId}`](#111-view-account), quoted or bare; a `W/` weak-validator prefix is tolerated and stripped |
+| `oldDetails` | **yes** | The `oldDetails` object from [`GET /api/accounts/{accountId}`](#111-view-account), copied **verbatim**. Absent or empty → `400` naming `oldDetails`; present but no longer matching the stored record → `412` |
 
 **(c) Body — the 54 map fields.** Every field is as declared in `app/cpy-bms/COACTUP.CPY`:
 
@@ -1392,8 +1602,8 @@ the same. Exactly one member of `newDetails` is consulted: `customerId`, cross-c
 the customer the cross-reference binds to the account — a disagreement refuses the update with
 `Record changed by some one else. Please review`, on the same reasoning as any other snapshot
 mismatch. Sending `newDetails` is therefore optional and never a substitute for the flat
-fields; sending `oldDetails` is refused outright
-([§11.2.3](#1123-why-the-snapshot-is-sealed-and-server-issued)).
+fields; sending `oldDetails` is **required**
+([§11.2.3](#1123-how-the-snapshot-travels)).
 
 **A single asterisk means "not supplied", but a run of asterisks is data.** The source applies
 one uniform normalisation to each of the fifty-four fields — `IF field = '*' OR field = SPACES`
@@ -1421,7 +1631,7 @@ components**:
 Sending a concatenated `"1985-03-17"` where three components are expected, or a single
 `"123456789"` where a three-part social security number is expected, is a contract error.
 
-#### 11.2.3 Why the snapshot is sealed and server-issued
+#### 11.2.3 How the snapshot travels
 
 The source compares the freshly read record against a **snapshot captured when the screen
 was first displayed**, held in two working-storage groups: `ACUP-OLD-DETAILS`
@@ -1441,27 +1651,36 @@ version column guards the store, the field comparison guards the business decisi
 ([§5](#5-stateless-identity-the-commarea-has-no-server-side-successor)), so it has to travel
 with the request. The way it travels is the part a client must get right:
 
-> **The snapshot is issued by the server, sealed, and returned in `If-Match`. It is not
-> built by the client and it is not sent in the request body.**
+> **The snapshot is projected by the server and echoed back by the client, in the request
+> body, as `oldDetails`. It is not assembled by the client and it is not carried in a header.**
 >
-> `GET /api/accounts/{accountId}` returns it as `snapshotToken` and as the `ETag`.
-> `PUT /api/accounts` reads it from `If-Match` **and from nowhere else**.
+> `GET /api/accounts/{accountId}` returns it as the `oldDetails` object.
+> `PUT /api/accounts` reads it from the body's `oldDetails` **and from nowhere else** — never
+> from the row it is about to write, because that would make the comparison tautologically
+> true and the guard worthless.
 >
-> **A request body carrying an `oldDetails` group is refused with `400`**, not ignored.
-> Refusing states the contract at the one moment the caller can act on it; ignoring it would
-> leave a caller believing it controlled the write precondition when it did not — a failure
-> that is silent and shows up only under concurrency.
+> **A request body with no `oldDetails` group, or an empty one, is refused with `400`**
+> naming that member — never treated as "nothing changed". Skipping the comparison would
+> forfeit the guarantee the source provides, silently, and only under concurrency.
 
-The reason the token is **sealed** rather than published in readable form is disclosure: the
-snapshot group carries the date of birth, the social security number, the government-issued
-identifier, both telephone numbers and the electronic funds account identifier. Publishing
-those in a form a client can hold and replay is not acceptable, and a caller-supplied
-precondition is in any case not a precondition.
+**Copy the object; do not rebuild it.** The comparison is representation-sensitive in a way a
+caller cannot be expected to reconstruct — most sharply for the date of birth, whose snapshot
+form carries **no separators** while the live record is dash-separated (see §11.2.4(c)). A
+group assembled from the response's display fields would differ on **every** request. The
+group is returned as the very object the `PUT` binds precisely so that copying it is enough.
+
+**What it costs, stated rather than hidden.** The group carries the date of birth, the social
+security number, the government-issued identifier, both telephone numbers and the electronic
+funds account identifier, because [`:L4109-L4192`] compares all twenty-nine of its values, so
+it is personal data on both the response and the request. The general mitigations apply —
+transport is the deployment's concern, and the logging configuration masks the social security
+number and credentials in every log event — and encryption at rest for personally identifiable
+data is recorded as deferred hardening rather than claimed. Note that the nine values stay
+withheld as *display* components of the read response: `oldDetails` is their single carrier.
 
 #### 11.2.4 Snapshot comparison semantics
 
-A client never formats the snapshot itself, because it is sealed — but the semantics below
-are what the sealed token encodes, and they are published for three reasons: they explain
+These are the semantics the group encodes. They are published for three reasons: they explain
 **which** concurrent changes trigger a conflict, they are the contract the target must keep,
 and they explain the one trap that would otherwise be invisible.
 
@@ -1521,9 +1740,8 @@ and 7. The source compares **1↔1, 6↔5, 9↔7** [`app/cbl/COACTUPC.cbl:L4174-
 `YYYY-MM-DD`.** A whole-string comparison of the two forms would never match, so **any
 implementation or client that treated the snapshot date as dash-separated would return a
 conflict on every single request**, making the operation permanently unusable. The
-server-issued sealed token stores it compact, which is why obtaining the token from the view
-operation — rather than assembling one — is not merely convenient but the only correct
-route.
+`oldDetails` object the view operation returns holds it compact, which is why copying that
+object — rather than assembling one — is not merely convenient but the only correct route.
 
 #### 11.2.5 Response and side effects
 
@@ -1556,15 +1774,44 @@ lookup markers. **Each maps to a distinguishable HTTP status.** Collapsing them 
 single conflict status would lose information the legacy screen displayed, so they are kept
 apart:
 
+The statuses below are the ones `AccountController.statusFor` actually returns
+[`AccountController.java:1465`], read off the `switch` rather than inferred. **Two rows of an
+earlier revision of this table were wrong and are corrected here**: the customer-lock outcome
+was published as `423` when the controller answers `409`, and the locked-but-update-failed
+outcome was published as `409` when the controller answers `500`. Both errors would have sent
+a client's retry logic down the wrong branch — a `500` in particular is not a conflict to be
+resolved by re-reading and resubmitting.
+
+| Legacy condition name | Outcome | Exact literal | `changeAction` | Status | `errorCode` |
+|---|---|---|:-:|--:|---|
+| `COULD-NOT-LOCK-ACCT-FOR-UPDATE` | `COULD_NOT_LOCK_ACCOUNT` | `Could not lock account record for update` | `L` | `423` | `CARDDEMO-UPDATE-CONFLICT` |
+| `COULD-NOT-LOCK-CUST-FOR-UPDATE` | `COULD_NOT_LOCK_CUSTOMER` | `Could not lock customer record for update` | `C` | `409` | `CARDDEMO-UPDATE-CONFLICT` |
+| `DATA-WAS-CHANGED-BEFORE-UPDATE` | `DATA_CHANGED_BEFORE_UPDATE` | `Record changed by some one else. Please review` | `S` | `412` | `CARDDEMO-UPDATE-CONFLICT` |
+| `LOCKED-BUT-UPDATE-FAILED` | `LOCKED_BUT_UPDATE_FAILED` | `Update of record failed` | `F` | `500` | `CARDDEMO-UPDATE-CONFLICT` |
+| *(no legacy flag — the confirmation gate)* | `CHANGES_NOT_CONFIRMED` | *(empty — the screen carried `Changes validated.Press F5 to save` instead)* | `N` | `428` | `CARDDEMO-UPDATE-CONFLICT` |
+| *(outcome absent)* | *(none — message-only construction)* | *(the constructor's own message)* | *(omitted)* | `409` | `CARDDEMO-UPDATE-CONFLICT` |
+
+Two further conditions are **not** concurrency outcomes and are answered by different
+handlers, so they are listed separately rather than mixed into the table above:
+
 | Legacy condition name | Exact literal | Meaning | Status | `errorCode` |
 |---|---|---|--:|---|
-| `COULD-NOT-LOCK-ACCT-FOR-UPDATE` | `Could not lock account record for update` | Account read-for-update failed | `423` | `CARDDEMO-UPDATE-CONFLICT` |
-| `COULD-NOT-LOCK-CUST-FOR-UPDATE` | `Could not lock customer record for update` | Customer read-for-update failed | `423` | `CARDDEMO-UPDATE-CONFLICT` |
-| `DATA-WAS-CHANGED-BEFORE-UPDATE` | `Record changed by some one else. Please review` | The snapshot comparison detected a change | `412` | `CARDDEMO-UPDATE-CONFLICT` |
-| `LOCKED-BUT-UPDATE-FAILED` | `Update of record failed` | A rewrite failed after locks were held | `409` | `CARDDEMO-UPDATE-CONFLICT` |
 | `DID-NOT-FIND-ACCT-IN-CARDXREF` | `Did not find this account in cards database` | Cross-reference lookup found nothing | `404` | `CARDDEMO-RECORD-NOT-FOUND` |
 | `XREF-READ-ERROR` | `Error reading Card Data File` | Cross-reference read failed | `502` | `CARDDEMO-IO-FAILURE` |
-| *(no legacy flag — the confirmation gate)* | `Changes validated.Press F5 to save` | `confirm` not asserted, or no snapshot presented | `428` | `CARDDEMO-UPDATE-CONFLICT` |
+
+**Read `outcome`, not the status, to identify the condition.** Every conflict body carries an
+`outcome` member naming one of the five constants above and a `changeAction` member carrying
+the one-character `ACUP-CHANGE-ACTION` marker [`app/cbl/COACTUPC.cbl:L654-L668`] the failed
+turn would have left on the screen. Both members are omitted only when the exception was built
+without an outcome, which is the `409` last row. Because two outcomes now share `409` and one
+answers `500`, the status alone no longer identifies the condition — the `outcome` member
+does, and it is why it is published.
+
+**`CHANGES_NOT_CONFIRMED` carries an empty literal**, not the `Changes validated.Press F5 to
+save` text an earlier revision of this row attributed to it. The enum constant's message is
+the empty string [`ConcurrentUpdateException.java:96`]; the `Press F5` caption is what the
+legacy screen painted on the *successful* validation turn, which in REST terms is the request
+the client is being asked to repeat with `confirm` asserted.
 
 **Spelling and spacing are preserved exactly**, including `some one` as two words in the
 data-changed literal [`app/cbl/COACTUPC.cbl:L521-L522`]. A client matching on that text must
@@ -1706,15 +1953,19 @@ and is recorded here rather than left for a reader to discover.
 walking the pages returns every card the caller may see. The primary account number is
 regulated data, and the target's own log configuration masks it
 ([§8.4](#84-credentials-and-secrets)); publishing in a response body what is scrubbed from a
-log line would be incoherent. The detail operation, which discloses one card the caller has
-already named, publishes it in full.
+log line would be incoherent. **The detail operation does not publish it in full either** —
+an earlier revision of this sentence said it did, and that is withdrawn: `CardResponse`
+declares `maskedCardNumber` and no raw-number component at all, so there is no endpoint,
+parameter, header or role anywhere in this API that returns a primary account number in
+readable form. The masking is applied identically on the list row and on the detail
+response; what the detail operation adds is not the number but the `oldDetails` group
+that the update operation requires.
 
 **What replaces it.** Masking on its own would break the one thing the column existed for:
 without the number, none of the values a row discloses is accepted by any other card
 operation, so a client reading only this API could reach a row and then go no further. Each
 row therefore carries `cardKey` — the account number and the card number sealed together by
-the same authenticated construction that seals the snapshot token
-([§11.2.3](#1123-why-the-snapshot-is-sealed-and-server-issued)) — and both
+an authenticated construction, under its own purpose label — and both
 `GET /api/cards/detail` and `PUT /api/cards` accept it in place of the two filters.
 
 **What the handle is and is not.**
@@ -1727,7 +1978,7 @@ the same authenticated construction that seals the snapshot token
 * It is **unambiguous**: presenting `cardKey` *together with* `accountFilter` or `cardFilter`
   is refused with `400` naming `cardKey`, because two different statements of which card is
   meant is not a request the operation can honour.
-* It is **not a precondition**. A handle says which card; the snapshot token
+* It is **not a precondition**. A handle says which card; the `oldDetails` group
   ([§12.2](#122-view-card)) says what the caller was shown. An update needs both.
 * It is **not durable**: treat it as valid for the conversation in which it was issued. A
   client that has kept one across a restart re-reads the list.
@@ -1795,18 +2046,39 @@ at-least-one-filter rule and every edit below still executes in the source's ord
 `cardKey` **together with** either filter is refused with `400` naming `cardKey`; a reference
 that does not verify, or that was sealed for another purpose, is refused the same way.
 
-**Response — `200 OK`.**
+**Response — `200 OK`.** `CardResponse` declares **exactly 10 record components**, and the
+table below is that list. Note the second row: **there is no raw card-number component.** An
+earlier revision published `CARDSIDI X(16)` as "Card number" without qualification, implying
+the full sixteen digits were returned here; that is withdrawn.
 
-| Map field | PIC | Meaning |
-|---|---|---|
-| `ACCTSIDI` | `X(11)` | Account number |
-| `CARDSIDI` | `X(16)` | Card number |
-| `CRDNAMEI` | `X(50)` | Embossed name |
-| `CRDSTCDI` | `X(1)` | Active status |
-| `EXPMONI` | `X(2)` | Expiry month |
-| `EXPYEARI` | `X(4)` | Expiry year |
-| `INFOMSGI` | `X(40)` | Informational message — **`X(40)` here, not `X(45)`** |
-| `ERRMSGI` | `X(80)` | Error message — **`X(80)` here, not `X(78)`** |
+| JSON property | Map field | PIC | Meaning |
+|---|---|---|---|
+| `accountId` | `ACCTSIDI` | `X(11)` | Account number, in full |
+| `maskedCardNumber` | `CARDSIDI` | `X(16)` | Card number, **masked** — twelve `*` then the last four digits, length preserved. See the masking rule below |
+| `cardholderName` | `CRDNAMEI` | `X(50)` | Embossed name |
+| `cardStatusCode` | `CRDSTCDI` | `X(1)` | Active status |
+| `expiryMonth` | `EXPMONI` | `X(2)` | Expiry month |
+| `expiryYear` | `EXPYEARI` | `X(4)` | Expiry year |
+| `informationMessage` | `INFOMSGI` | `X(40)` | Informational message — **`X(40)` here, not `X(45)`** |
+| `errorMessage` | `ERRMSGI` | `X(80)` | Error message — **`X(80)` here, not `X(78)`** |
+| `oldDetails` | — | — | The as-displayed snapshot group required by [§12.3](#123-update-card) |
+| `cardKey` | — | — | A fresh row reference to this same card |
+
+**The masking rule, stated once and applied everywhere a card number is serialised.** It
+lives in `com.cardemo.model.dto.ApiMasking.maskCardNumber`, and it is the same function that
+masks a list row and a transaction detail:
+
+* A value longer than **4** characters keeps its **last 4** and every earlier character
+  becomes `*`. **Length is preserved**, so `**` `**********` `1234` is sixteen characters wide
+  and a malformed value of a different length stays distinguishable from a well-formed one.
+* A value of 4 characters or fewer is masked **in full** — showing the last four of a
+  four-character value would show all of it.
+* `null` is returned unchanged, so "no card reference" stays distinct from "a masked one".
+* A **blank** value is returned unchanged, because the seven-row card list is padded to its
+  table depth with blanks and turning a filler row into a run of asterisks would invent a card
+  the source never displayed.
+* Trailing blanks are significant and preserved: the mask is applied to the trimmed extent and
+  the fixed-width padding is kept, because the symbolic maps declare fixed-width fields.
 
 > **The expiry has a month and a year but no day on this map.** `COCRDSL.CPY` declares
 > `EXPMONI X(2)` and `EXPYEARI X(4)` and **no `EXPDAYI`**, whereas the card-update map does
@@ -1817,17 +2089,17 @@ that does not verify, or that was sealed for another purpose, is refused the sam
 > maps: `INFOMSGI` is `X(40)` and `ERRMSGI` is `X(80)`, against `X(45)` and `X(78)`
 > elsewhere. Neither is normalised.
 
-Plus, as on account view, the write precondition:
+Two of those members carry references rather than field values, and they are not
+interchangeable:
 
 | Member | Notes |
 |---|---|
-| `snapshotToken` | The sealed, opaque, server-issued as-displayed snapshot required by [§12.3](#123-update-card) |
-| `ETag` (response **header**) | The same token, quoted |
-| `cardKey` | A fresh row reference to this same card, so a client that arrived by filter can continue by reference. It says *which* card; `snapshotToken` says *what was shown*. They are not interchangeable |
+| `oldDetails` | The **as-displayed snapshot group**, `CCUP-OLD-DETAILS` of [`app/cbl/COCRDUPC.cbl:L291-L301`], as this read projected it. Required by [§12.3](#123-update-card): copy this object into the update's request body **verbatim**. Its `cardData.expiraionDate.expiryDay` is the reason it travels as a group — `app/cpy-bms/COCRDSL.CPY` declares no expiry-day field, so this is the only route by which a client obtains the value [`:L1507`] compares. Its `cardNumber` member is deliberately **null**: [`:L1347`] sources that member from the *received* map field, so it is redundant with the request's own identity, and emitting it would hand back the digits `maskedCardNumber` withholds. No `ETag` is issued and no `If-Match` is read |
+| `cardKey` | A fresh row reference to this same card, so a client that arrived by filter can continue by reference. It says *which* card; `oldDetails` says *what was shown*. They are not interchangeable |
 
 `FKEYSI X(75)` is function-key chrome and is excluded.
 
-**Side effects.** None on business data; one additional read mints the snapshot token.
+**Side effects.** None on business data; one additional read projects the `oldDetails` group.
 
 **Validation order.** The source's order is preserved: account filter, then card filter, then
 the lookup.
@@ -1857,12 +2129,11 @@ validation `400`; card or account absent `404`; store unavailable `503`; read fa
 `COCRDUPC` (1,560 lines) → `app/cpy-bms/COCRDUP.CPY` (17 input fields).
 
 **Purpose.** Applies an edited card, but only if the record still matches what the caller was
-shown. **It mirrors the account-update pattern**, including the sealed precondition.
+shown. **It mirrors the account-update pattern**, including the body-carried precondition.
 
 ```http
 PUT /api/cards HTTP/1.1
 Authorization: Bearer <token>
-If-Match: "<snapshotToken from GET /api/cards/detail>"
 Content-Type: application/json
 ```
 
@@ -1885,11 +2156,23 @@ permitting the rewrite. The snapshot group is:
 
 The same `EXPIRAION` misspelling appears here and is preserved.
 
-> **The snapshot carries the card verification value**, `CCUP-OLD-CVV-CD` [`:L294`]. That is
-> decisive: a snapshot containing a CVV must never reach a client in readable form. So, as
-> with account update, the snapshot is **server-issued, sealed and carried in `If-Match`**,
-> obtained from [`GET /api/cards/detail`](#122-view-card), and **a request body carrying an
-> as-displayed snapshot group is refused with `400`** rather than ignored.
+> **The legacy snapshot carried the card verification value**, `CCUP-OLD-CVV-CD` [`:L294`].
+> This one does not, and the reason is worth stating precisely, because the obvious inference
+> from its absence is wrong. The value **is** stored — `card_cvv_cd CHAR(3) NOT NULL` at
+> `src/main/resources/db/migration/V1__create_schema.sql:741`, mapped on the entity and seeded
+> by `V3__seed_data.sql:744`. What is withheld is the **read path**: the entity field is
+> write-once with no getter of any visibility. And `app/cpy-bms/COCRDUP.CPY` declares no
+> verification field among its seventeen inputs, so the operator never typed one and no client
+> could echo one.
+>
+> Both operands of the `:L1503` predicate were therefore **server-side** — a display-time read
+> compared against a write-time re-read — so the only question it asked was whether the row
+> changed between them, and the `@Version` column answers exactly that, for every column of the
+> row. The predicate and the snapshot component are dropped **together**; neither may be
+> reinstated alone.
+>
+> As with account update, the snapshot is **projected by the read and echoed back in the
+> request body** as `oldDetails`, obtained from [`GET /api/cards/detail`](#122-view-card).
 
 **Card-specific case asymmetry.** The card comparison differs from the account comparison in
 a way worth stating, because it is the opposite shape. `9300-CHECK-CHANGE-IN-REC` opens with
@@ -1939,14 +2222,13 @@ same two values.
 **Identifiers are edited before the precondition is judged.** The source's
 `CCUP-DETAILS-NOT-FETCHED` arm runs `1210-EDIT-ACCOUNT` and then `1220-EDIT-CARD`
 [`app/cbl/COCRDUPC.cbl:L645-L661`] before anything is read, so a request naming no card is
-refused for naming no card. That order is preserved even when an `If-Match` is present: a
-request with an unusable identifier answers `400` naming the field — `'No input received'`
-when both are absent — rather than `412`. Answering `412` there would be a true statement
-about the token (a snapshot sealed against a card number cannot verify when there is no card
-number to seal against) and a misleading one about the request.
+refused for naming no card. That order is preserved even when an `oldDetails` group is
+present: a request with an unusable identifier answers `400` naming the field —
+`'No input received'` when both are absent — rather than `412`. Answering `412` there would
+be a misleading statement about the request, which never got as far as a comparison.
 
 **Response — `200 OK`.** The updated card in the same shape as
-[§12.2](#122-view-card), less the snapshot token and less the row reference: a successful
+[§12.2](#122-view-card), less the `oldDetails` group and less the row reference: a successful
 write consumes the precondition, so a caller intending a further update re-reads, and the
 re-read issues both afresh.
 
@@ -1975,8 +2257,8 @@ day — which is precisely why [`:L1471`] may write it into the rewrite image sa
 `COCRDSL.CPY` declares no `EXPDAYI` for the read map to publish
 ([§12.2](#122-view-card)).
 
-**The screen was the carrier of that value.** There is no screen here, so the sealed snapshot
-is the carrier instead. The consequence for a caller is simple: send the day or omit it, it
+**The screen was the carrier of that value.** There is no screen here, so the `oldDetails`
+group is the carrier instead. The consequence for a caller is simple: send the day or omit it, it
 makes no difference; to change a card's expiry, change the **month** and the **year**.
 
 **Side effects.** One card row is written, inside a transaction.
@@ -2029,16 +2311,29 @@ writes one dataset. The account operation has two, one per dataset
 | Outcome | Status | `errorCode` |
 |---|--:|---|
 | Field validation refused | `400` | `CARDDEMO-VALIDATION-REJECTED` |
-| Request body carried an as-displayed snapshot group | `400` | `CARDDEMO-VALIDATION-REJECTED` |
 | No identifier supplied — neither body identifiers nor `cardKey`, so `'No input received'` | `400` | `CARDDEMO-VALIDATION-REJECTED` |
 | `cardKey` supplied alongside a filter, or one that does not verify | `400` | `CARDDEMO-VALIDATION-REJECTED` |
 | Card or account absent | `404` | `CARDDEMO-RECORD-NOT-FOUND` |
-| `If-Match` absent, so no precondition was presented | `428` | `CARDDEMO-UPDATE-CONFLICT` |
+| `oldDetails` absent or hollow, so no precondition was presented | `428` | `CARDDEMO-UPDATE-CONFLICT` |
 | Presented snapshot does not verify — `Record changed by some one else. Please review` | `412` | `CARDDEMO-UPDATE-CONFLICT` |
-| `Could not lock record for update` | `423` | `CARDDEMO-UPDATE-CONFLICT` |
+| `Could not lock record for update` | `409` | `CARDDEMO-UPDATE-CONFLICT` |
 | `Update of record failed` | `409` | `CARDDEMO-UPDATE-CONFLICT` |
 | Store unavailable / read failure / abend | `503` / `502` / `500` | per [§8.2](#82-global-failure-and-status-mapping) |
 
+**There is no `423` on the card path.** An earlier revision of this table published `423` for
+the lock row by analogy with the account operation. That is withdrawn:
+`CardController.statusFor` [`CardController.java:1261`] answers `428` for
+`CHANGES_NOT_CONFIRMED`, `412` for `DATA_CHANGED_BEFORE_UPDATE`, and `409` for all three of
+`COULD_NOT_LOCK_ACCOUNT`, `COULD_NOT_LOCK_CUSTOMER` and `LOCKED_BUT_UPDATE_FAILED` — a single
+arm covering the three. An absent outcome also answers `409`. The two operations therefore map
+the **same** five outcomes onto **different** statuses, and that divergence is deliberate: the
+card operation writes one dataset, so it has one lock to report and no reason to distinguish a
+held-lock failure from a failed rewrite, whereas the account operation writes two and the
+source keeps its two lock conditions and its rewrite failure apart
+([§11.2.6](#1126-outcome-markers-and-status-mapping)).
+
+Match on `errorCode` plus the `outcome` member, never on the status alone, if your client
+handles both operations through one code path.
 `No change detected with respect to values fetched.` is **not** an error: the record already
 matched the submission, so nothing needed writing. It is a `200` carrying that literal, in
 `errorMessage`, because `WS-RETURN-MSG` is moved to `CCARD-ERROR-MSG`
@@ -2139,24 +2434,32 @@ Authorization: Bearer <token>
 Blank or absent is refused with `'Tran ID can NOT be empty...'`
 [`app/cbl/COTRN01C.cbl:L149`].
 
-**Response — `200 OK`.** The full detail projection:
+**Response — `200 OK`.** `TransactionResponse` declares **exactly 14 record components**, and
+the table below is that list. The card number is **masked**, exactly as on the card
+operations: an earlier revision published `CARDNUMI X(16)` as "Card number" without
+qualification, and that is withdrawn — no component of this response carries a readable
+primary account number.
 
-| Map field | PIC | Meaning |
-|---|---|---|
-| `TRNIDI` | `X(16)` | Transaction identifier |
-| `CARDNUMI` | `X(16)` | Card number |
-| `TTYPCDI` | `X(2)` | Type code |
-| `TCATCDI` | `X(4)` | Category code |
-| `TRNSRCI` | `X(10)` | Source |
-| `TDESCI` | **`X(60)`** | Description — the **full** width, unlike the list's `X(26)` |
-| `TRNAMTI` | `X(12)` | Amount |
-| `TORIGDTI` | `X(10)` | Originating date |
-| `TPROCDTI` | `X(10)` | Processing date |
-| `MIDI` | `X(9)` | Merchant identifier |
-| `MNAMEI` | `X(30)` | Merchant name |
-| `MCITYI` | `X(25)` | Merchant city |
-| `MZIPI` | `X(10)` | Merchant postal code |
-| `ERRMSGI` | `X(78)` | Error message |
+| JSON property | Map field | PIC | Meaning |
+|---|---|---|---|
+| `transactionId` | `TRNIDI` | `X(16)` | Transaction identifier |
+| `maskedCardNumber` | `CARDNUMI` | `X(16)` | Card number, **masked** by the same `ApiMasking.maskCardNumber` rule stated at [§12.2](#122-view-card) — twelve `*` then the last four digits, length preserved |
+| `typeCode` | `TTYPCDI` | `X(2)` | Type code |
+| `categoryCode` | `TCATCDI` | `X(4)` | Category code |
+| `source` | `TRNSRCI` | `X(10)` | Source |
+| `description` | `TDESCI` | **`X(60)`** | Description — the **full** width, unlike the list's `X(26)` |
+| `amount` | `TRNAMTI` | `X(12)` | Amount |
+| `originatingDate` | `TORIGDTI` | `X(10)` | Originating date |
+| `processingDate` | `TPROCDTI` | `X(10)` | Processing date |
+| `merchantId` | `MIDI` | `X(9)` | Merchant identifier |
+| `merchantName` | `MNAMEI` | `X(30)` | Merchant name |
+| `merchantCity` | `MCITYI` | `X(25)` | Merchant city |
+| `merchantZip` | `MZIPI` | `X(10)` | Merchant postal code |
+| `statusMessage` | `ERRMSGI` | `X(78)` | Error or status message |
+
+That is 14 rows. Note the last property's spelling: the component is `statusMessage`, not
+`errorMessage` — it carries an informational message as readily as a failure one, which is why
+it is not named for the failure case.
 
 **The amount is rendered on the legacy display mask** `+99999999.99` — mandatory sign,
 exactly eight integer digits, two decimals — per [§6.1](#61-the-amount-echo-mask). It is a
@@ -2467,28 +2770,62 @@ Content-Type: application/json
 
 #### 15.1.1 This endpoint accepts a job; it does not return a report
 
-The legacy program wrote an **eighteen-card, eighty-byte job deck** to the transient data
+The legacy program wrote a **seventeen-card, eighty-byte job deck** to the transient data
 queue `JOBS`, defined as
 `DEFINE TDQUEUE(JOBS) … TYPE(EXTRA) DDNAME(INREADER) TYPEFILE(OUTPUT) RECORDSIZE(80)
 RECORDFORMAT(FIXED) DISPOSITION(MOD)` [`app/csd/CARDDEMO.CSD:L499-L505`]. The submission
 loop iterated up to a thousand card images, terminating on `'/*EOF'`, spaces or low values —
 and **wrote the terminating card before exiting the loop** [`app/cbl/CORPT00C.cbl:L498-L508`].
 
-In the target that whole deck collapses into **one typed JSON message published to the SQS
-FIFO queue `carddemo-report-jobs`**, carrying the report name and the two dates; a listener
-maps it onto Spring Batch job parameters.
+**Seventeen, not eighteen.** An earlier revision of this paragraph said eighteen and is
+withdrawn. `JOB-DATA-1` [`app/cbl/CORPT00C.cbl:L82-L125`] declares fourteen literal
+`05 FILLER PIC X(80)` cards plus three composed ones — `FILLER-1` and `FILLER-2`, which inject
+the two `SYMNAMES` date parameters, and `FILLER-3`, which is the `DATEPARM` card carrying both
+dates. Fourteen plus three is seventeen. The thousand is unrelated: it is the `OCCURS 1000
+TIMES` bound on the `JOB-DATA-2 REDEFINES` view [`:L126-L127`] that the loop walks, of which
+only the first seventeen entries are ever populated.
+
+The sixth card is `//STEP10 EXEC PROC=TRANREPT` [`:L93-L94`], which is what the deck exists to
+start — so the deck launches **the transaction report job and nothing else**.
+
+In the target that whole deck collapses into **one typed JSON message published to an SQS FIFO
+queue**, carrying the report name and the two dates; a listener maps it onto Spring Batch job
+parameters and launches the same job the deck named.
+
+**The queue name has two spellings and both matter.** The logical name configured for the
+application is `carddemo-report-jobs` [`src/main/resources/application.yml:1451`], and the same
+value is the FIFO message group id [`:1455`]. The **physical
+queue is `carddemo-report-jobs.fifo`** — SQS requires the `.fifo` suffix on a FIFO queue — and
+that is the name the local profile and the compose topology provision and address
+[`src/main/resources/application-local.yml:635`, `docker-compose.yml:355`]. Address the physical name
+when you inspect the queue directly with the AWS CLI; a request for `carddemo-report-jobs`
+against LocalStack will not find it.
 
 > **The response is therefore an acceptance, not a report.** `202 Accepted` means *the job
 > was queued*, not *the report is ready*. No report body is ever returned by this endpoint,
 > and no report content is available from it.
 
-To correlate the submission with the resulting job run, a caller uses:
+**Correlating a submission with the job run it caused — what actually works.** An earlier
+revision of this section promised that the correlation identifier is "carried into the queue
+message and into every batch log record for the run", and that a `jobInstanceId` is available
+to the caller. **Both are withdrawn.** The identifier does reach the queue, as a bounded
+message header named by `CorrelationIdFilter.CORRELATION_ID_HEADER`, but
+`BatchConfig.ReportJobQueueListener` builds its job parameters from the report name, the two
+dates and the SQS **deduplication identifier** only: it neither reads that header nor restores
+it into the diagnostic context. No `jobInstanceId` is returned on the `202` either.
 
-* the **`correlationId`** — send `X-Correlation-Id` on the request, or read the value the
-  server generated back out of the response; it is carried into the queue message and into
-  every batch log record for the run, and
-* the **`jobInstanceId`**, once the listener has created the Spring Batch job instance; the
-  batch tier propagates it in its own logging context alongside the correlation identifier.
+So the correlation is a two-hop join rather than one identifier end to end:
+
+| Hop | Join key | Where to read it |
+|---|---|---|
+| HTTP request → publish | `correlationId` | Send `X-Correlation-Id`, or read it back from the response body and the response header. It appears on the submitting request's own log records and on the publish record |
+| publish → job launch | the SQS message deduplication identifier | The listener logs it against the launched job name and the Spring Batch execution id on every launch, refusal and failure arm |
+
+A caller therefore quotes its `correlationId` in a support request, and an operator follows it
+to the publish record and from there to the launch record by the deduplication identifier.
+Closing that gap — propagating the correlation identifier into the batch run's diagnostic
+context — is real work that has not been done, and it is recorded as such rather than implied
+to be in place.
 
 **Request body.**
 
@@ -2597,9 +2934,11 @@ service, then the confirmation gate, then the publish.
 | Declined at the confirmation gate, or a prompt is required | `200 OK` | **Nothing was published** |
 | Validation refused | `400` | Nothing was published |
 
-**Side effects.** On the accepted arm: **one message published to the SQS FIFO queue
-`carddemo-report-jobs`**. No business row is written by this operation. The report object
-itself is produced later, by the batch tier.
+**Side effects.** On the accepted arm: **one message published to the SQS FIFO queue whose
+logical name is `carddemo-report-jobs` and whose physical name is
+`carddemo-report-jobs.fifo`** ([§15.1.1](#1511-this-endpoint-accepts-a-job-it-does-not-return-a-report)).
+No business row is written by this operation. The report object itself is produced later, by
+the batch tier.
 
 **Enqueue failure.** The queue write lives in the paragraph `WIRTE-JOBSUB-TDQ` — **the
 paragraph name is misspelled in the source**, "WIRTE" for "WRITE", at
@@ -2908,7 +3247,7 @@ differs, no rewrite occurs** and the source answers
 `'Please modify to update ...'` [`:L239`] — a `200`, not an error, because nothing was
 wrong with the request.
 
-Note that **this operation needs no `If-Match` and no snapshot token.** The comparison here
+Note that **this operation needs no `oldDetails` group at all.** The comparison here
 is *submitted-versus-stored*, which is a change-detection test answerable from the request
 alone; it is not the *as-displayed-versus-stored* concurrency test that the account and card
 operations perform, so there is no snapshot to carry. The difference is in the source, not in
@@ -2967,8 +3306,9 @@ type and the source's message `'User <id> has been deleted ...'` [`:L318-L320`].
 
 This operation used to serialize all eleven map fields, so it was the only one of the
 seventeen that put the six chrome header fields on the wire — including `programName`, which
-is the `XCTL` operand (finding M-15). They are excluded now, exactly as
-[§4.2](#42-presentation-chrome-excluded-from-every-json-contract) states for every operation.
+is the `XCTL` operand (finding M-15). They are withheld from the response now, exactly as
+[§4.2](#42-presentation-chrome-is-accepted-on-request-and-absent-from-every-response) states
+for every response body on this API.
 The components remain on the record type, because the map declares eleven fields and the
 field contract is what that type exists to hold; what changed is only the body.
 
@@ -3044,11 +3384,11 @@ carried through from the server. Two distinct errors produce this:
   the conflict is unconditional.
 
 **Fix.** Do not build a snapshot. Call [`GET /api/accounts/{accountId}`](#111-view-account),
-take the `snapshotToken` from the body or the `ETag` from the response header, and send it
-back **verbatim** in `If-Match` on the `PUT`. Treat it as opaque: do not parse, reformat,
-truncate or re-encode it. Then add `?confirm=true`, without which the operation answers `428`
-and writes nothing. The same applies to `PUT /api/cards` with
-[`GET /api/cards/detail`](#122-view-card).
+take the `oldDetails` object from the response body, and send it back **verbatim** as the
+`oldDetails` member of the `PUT` body. Copy it whole: do not parse, reformat, re-order,
+re-case or reconstruct any member — the date of birth alone will defeat a rebuild. Then add
+`?confirm=true`, without which the operation answers `428` and writes nothing. The same
+applies to `PUT /api/cards` with [`GET /api/cards/detail`](#122-view-card).
 
 ### 17.2 A list returns 7 or 10 rows when more were requested
 
@@ -3315,8 +3655,8 @@ it.**
   `'MOVE OLD VALUES TO NON-DISPLAY FIELDS THAT WE ARE NOT ALLOWING USER TO CHANGE(FOR NOW)'`,
   and [`:L1285`] renders the field dark with `DFHBMDAR`. A terminal returns what was sent, so
   `CCUP-NEW-EXPDAY` at [`:L621`] can only ever be the old day.
-* **Status. Remediated.** The screen was the carrier of that value; statelessly the sealed
-  snapshot is. The submitted component is still accepted and still echoed, exactly as the
+* **Status. Remediated.** The screen was the carrier of that value; statelessly the
+  `oldDetails` group is. The submitted component is still accepted and still echoed, exactly as the
   source echoes `EXPDAYO`, and simply never reaches the rewrite image. Documented at
   [§12.3.1](#1231-the-expiry-day-is-not-a-changeable-field).
 * **Remediation.** Complete. The field was **not** removed from the request: `COCRDUP.CPY`
@@ -3378,8 +3718,11 @@ it.**
   comparing at [`:L223`]. The two never agree unless the stored value already equals its own
   upper-case form. Note that `app/csd/CARDDEMO.CSD` declares **no** `UCTRAN`, so the terminal
   did not fold the input either — the quirk is live in the source, not masked by the transaction
-  monitor. It goes unnoticed because all ten seeded passwords are the literal `PASSWORD`
-  [`app/jcl/DUSRSECJ.jcl`], which is already upper-case.
+  monitor. It goes unnoticed because all ten seeded credentials carry one fixed
+  password that is already wholly upper-case. **That value is not reproduced here** — it is at
+  [`app/jcl/DUSRSECJ.jcl:L34-L45`], in the inline `SYSUT1 DD *` stream, and quoting a working
+  credential in published documentation would make this page a place to look one up. It is
+  seeded only under the `local` and `test` profiles, and only as a BCrypt hash.
 * **Status. Preserved deliberately**, and now disclosed. Folding on the write, or refusing a
   lower-case password, would each change which credentials the system accepts, and parity is the
   contract. What is corrected is the silence: both write operations now carry the warning
@@ -3469,9 +3812,9 @@ response reported a page it had not served.**
   `COACTVWC`, `COUSR00C` and their siblings — and the delete-user confirmation serialized all
   eleven of its map fields, so it was the only one of the seventeen operations to publish
   `transactionName`, `title01`, `title02`, `currentDate`, `currentTime` and `programName`. Both
-  contradicted [§4.2](#42-presentation-chrome-excluded-from-every-json-contract), which states
-  the six chrome fields are excluded from every operation, and both handed a client the one
-  piece of state Transformation Rule 7 exists to remove.
+  contradicted [§4.2](#42-presentation-chrome-is-accepted-on-request-and-absent-from-every-response),
+  which states the six chrome fields are withheld from every response body, and both handed a
+  client the one piece of state Transformation Rule 7 exists to remove.
 * **Locator.** The option tables do declare a program name
   [`app/cpy/COMEN02Y.cpy:L91`, `app/cpy/COADM02Y.cpy:L48`] and `COUSR03.CPY` does declare
   eleven fields, so the components belong on the record types. What does not belong on the wire
@@ -3480,7 +3823,8 @@ response reported a page it had not served.**
   to "no equivalent — routing is URL-based" for exactly that reason.
 * **Status. Remediated.** The excluded members are suppressed from JSON only. Every component,
   its width check and its copybook citation stay on the record, so the field contract and the
-  460-field budget are untouched; the delete response is now the five members
+  441-field budget of [§4](#4-field-contract-provenance) are untouched; the delete response is
+  now the five members
   [§16.4](#164-delete-user) documents, and a menu response carries option-table data with no
   routing state. Navigate with the table in
   [§10.0](#100-preamble-not-an-operation-option-dispatch-does-not-survive-into-the-target).
@@ -3641,13 +3985,23 @@ blank one.**
 The following cannot be established from the sources available and are recorded as
 **Not available** with what would be needed, rather than guessed at.
 
+Two things are separated here that an earlier revision of this section ran together, and
+running them together is what made the section wrong. **The implementation is available and
+static evidence about it is available**; what is unavailable is a *specific* class of runtime
+evidence, namely a comparison against a captured run of the legacy system. Recording the
+former as unavailable understated the delivered state as badly as recording the latter as
+available would have overstated it.
+
 | Item | Status | What is needed |
 |---|---|---|
-| Any statement that this API's implementation is complete, that its tests pass, or that any coverage, latency or throughput figure has been achieved | **Not available — implementation/evidence not yet generated.** No such evidence exists, and none is claimed anywhere in this document | Execution of the validation gates and publication of their evidence in [validation-gates.md](validation-gates.md) |
-| Pass or fail status of any of the eight validation gates | **Not available — implementation/evidence not yet generated** | As above. Note that several gates additionally require a running container topology |
+| That the operations this document describes are implemented | **Available.** All 17 operations exist across the eight controllers, in a tree of 159 main sources holding 133 types. Reproduce with `find src/main/java -name '*.java' \| wc -l` and the operation census in [§2](#2-operation-inventory-why-there-are-exactly-17) | Nothing outstanding |
+| Any statement that this API's implementation is **complete** | **Not available, and it is a different kind of claim from the rows around it.** Passing tests evidence the behaviour the tests assert, not the absence of behaviour nobody wrote a test for, so no volume of green runs establishes completeness | A stakeholder-agreed definition of complete, which no artefact in this repository supplies |
+| That the test tiers covering them pass | **Available.** The recorded run, its exact command, its test counts and its merged line coverage against the enforced 0.80 floor are **owned by** [validation-gates.md](validation-gates.md) under [Gate 2](validation-gates.md#gate-2) and are cited from here rather than restated, so this page cannot drift from the ledger. The reports are written under `target/`, which is build output rather than a committed file, so the reading is **reproducible by that command rather than retained in the repository** | Nothing outstanding. To retain it, attach the `target/surefire-reports`, `target/failsafe-reports` and `target/site/jacoco` trees to a build record |
+| Field-by-field agreement between this API's output and a run of the legacy system | **Available against two independent in-repository expectations; a captured z/OS run is Not available.** An earlier revision of this row read *"No captured legacy baseline exists in this repository"*, and that is **withdrawn**: `src/test/resources/parity/gate1/` holds the frozen program's own captured output and `src/test/resources/expected/posttran/` holds a source-derived expectation, and the posting run is diffed against both. What remains outstanding is a run on the real runtime | A captured execution of the frozen COBOL on z/OS or an emulator, which would **corroborate** rather than replace either expectation. See [Gate 1](validation-gates.md#gate-1) |
+| Pass or fail status of each of the eight validation gates | **Available.** All eight are executed by `src/test/java/com/cardemo/e2e/GateVerificationTest.java`, which writes its census values to `target/gate-verification/gate-verification-summary.properties`. The per-gate standing is **owned by** [validation-gates.md](validation-gates.md), which is the single ledger for it; no verdict is restated here | Per-gate detail, including what closes each remaining absence, is in [validation-gates.md](validation-gates.md) |
 | Service-level objectives — target latency, throughput or availability per operation | **Not available.** The legacy system publishes no service-level objective anywhere in the corpus, so none may be invented | A stakeholder-agreed objective. Until then the performance gate records a **measured baseline**, not a target |
-| A `mkdocs build --strict` result for this page | **Available.** With this page registered in the `nav` and the documents it links to present, `mkdocs build --strict` completes with **zero warnings and zero errors** (MkDocs 1.6.1, `techdocs-core` 1.7.0, `mermaid2`). See [§18.5](#185-documentation-build-verification) for the two warning classes the build reports while this batch is still in progress | Nothing outstanding |
-| A REST contract for CICS transaction `CDV1` | **Not available, and correctly so.** Its program has no source anywhere in the repository ([§2](#2-operation-inventory-why-there-are-exactly-17)) | Nothing. There is nothing to translate, and no endpoint is invented for it |
+| A `mkdocs build --strict` result for this page | **Available, measured 6 August 2026.** `mkdocs build --strict` exits **0 with zero warnings and zero errors** against the real tree — MkDocs 1.6.1 with `techdocs-core` and `mermaid2` — with this page registered in the `nav` and every document it links to present. See [§18.5](#185-documentation-build-verification) | Nothing outstanding |
+| A REST contract for CICS transaction `CDV1` | **Not available, and correctly so.** Its program is named twice in the resource definitions — `app/csd/CARDDEMO.CSD:L211` and `:L390` — and has no source anywhere in the repository ([§2](#2-operation-inventory-why-there-are-exactly-17)) | Nothing. There is nothing to translate, and no endpoint is invented for it |
 | Interpretation of the `CRDSTP` row-type marker as a JSON value | **Not available.** It drove 3270 screen attributes, and no non-presentational meaning for it can be established from the source | Nothing. It is excluded as presentation chrome ([§12.1](#121-list-cards)) |
 
 **There are no open `TODO` items in this document.** Every gap above is an explicit
@@ -3661,23 +4015,52 @@ and `mermaid2`, with `pymdownx.superfences` registering the Mermaid custom fence
 than assumed to render.
 
 **Result: `mkdocs build --strict` completes with exit status 0, zero warnings and zero
-errors**, once this page is registered in the `nav` and the documents it links to are
-present. The rendered page carries 83 tables and 54 highlighted code blocks, every one
-of its 81 in-page anchors resolves to a heading identifier, and **no code block produces a
-syntax highlighting error token**.
+errors.** Both preconditions that qualified this statement have been met - this page is
+registered in the `nav`, and every document it links to is present - so the reading is now
+unconditional, measured with MkDocs 1.6.1 on Friday 7 August 2026. The rendered page carries
+That run publishes eight pages - `index.md`, `project-guide.md`,
+`technical-specifications.md`, this page, `architecture-before-after.md`,
+`onboarding-guide.md`, `validation-gates.md` and the static
+`executive-presentation.html` - and every internal link in every one of them resolves.
+Reproduce it with `mkdocs build --strict` from the repository root, MkDocs 1.6.1 with
+`techdocs-core` and `mermaid2`.
+121 tables and every one of its in-page anchors resolves to a heading identifier. *An earlier
+revision published 83 tables and 81 anchors; that count was taken before later sections were
+added and is withdrawn.*
 
-Two classes of warning are expected while this batch is still in progress, and both are
-resolved by documents outside this page:
+**Syntax-highlighting error tokens: 14, all in one block, and deliberately so.** An earlier
+revision of this section claimed zero, which was true when it was written and is **withdrawn**:
+the account-update example in [§11.2](#112-update-account) is fenced as an
+HTTP request and carries the placeholder `{ <the oldDetails object from GET
+/api/accounts/{accountId}, verbatim> }` in its body. That is not parseable JSON, by design -
+the field is an object the caller copies from the view response, and writing it as a quoted
+string would misstate its type while writing it out in full would bury the one thing the
+example exists to show. The highlighter therefore emits error tokens across the placeholder.
+They are cosmetic, confined to that single fence, and the honest reading is to publish the
+count rather than to change a correct example to make a metric look better.
 
-| Warning | Cause | Resolution |
+Two classes of warning were outstanding while this batch was in progress, both resolved by
+changes outside this page. **Both are now closed**, and they are kept here with their closure
+rather than deleted, so the reading above can be audited against what it replaced:
+
+| Condition | Why it mattered | State |
 |---|---|---|
-| `api-contracts.md` is not included in the `nav` configuration | The `nav` entry `API Contracts: api-contracts.md` is added by the `mkdocs.yml` update, which is a separate change | Lands with that update. **Until it does, this page does not publish at all** — see [§19](#19-contract-change-control) |
-| Links to `validation-gates.md`, `architecture-before-after.md`, `onboarding-guide.md` and `executive-presentation.html` have no target | Those four documents are created alongside this one and are not present yet | Lands with those documents. The link filenames are the ones the `nav` will carry, so they must not be changed to work around the warning |
+| `api-contracts.md` was not included in the `nav` configuration | The `nav` entry was added by the `mkdocs.yml` update, which was a separate change | **CLOSED, 7 August 2026.** `API Contracts: api-contracts.md` is in the `nav`, so this page publishes; and `validation.nav.omitted_files: warn` is set, so a future omission fails a strict build instead of passing at INFO level — see [§19](#19-contract-change-control) |
+| Links to `validation-gates.md`, `architecture-before-after.md`, `onboarding-guide.md` and `executive-presentation.html` had no target | **CLOSED, 7 August 2026.** All four documents now exist alongside this one, so all four links resolve and `mkdocs build --strict` exits 0 with **0 warnings** - down from 20, of which 4 were this page's | Nothing outstanding. The link filenames were always the ones the `nav` carries, which is exactly why they were correct while still broken and were not changed to work around the warning |
 
-Because `--strict` promotes warnings to errors, neither of the above may be left outstanding
-once the batch completes: a nav omission means the page silently never appears, and a dangling
-link means a reader cannot reach the document that owns the detail this page deliberately does
-not duplicate.
+Because `--strict` promotes warnings to errors, neither of the above could be left
+outstanding, and neither is: a nav omission means the page silently never appears, and a
+dangling link means a reader cannot reach the document that owns the detail this page
+deliberately does not duplicate. **One correction to the reasoning above, learned by
+measurement:** a nav omission was *not* in fact caught by `--strict`, because MkDocs reports
+it at INFO level by default. `mkdocs.yml` now sets `validation.nav.omitted_files: warn`,
+which is what makes that half detectable at all - verified by mutation, since removing the
+setting returns the same omission to a silent exit 0.
+
+One convention this page relies on and that is easy to break: a root-level document such as
+`../DECISION_LOG.md` is cited in a **code span** and never as a Markdown link, because MkDocs
+cannot resolve a link target outside `docs_dir` and `--strict` would fail the build. Links
+inside `docs/` are ordinary Markdown links.
 
 ---
 

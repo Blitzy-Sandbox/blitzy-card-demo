@@ -168,7 +168,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * B is satisfied on its own wording - it prohibits artefacts <em>without owners or tracking
  * reference</em>. For the two preserved defects this file pins, the misnamed success token and the
  * {@code :L122} group move, <strong>these assertions are that tracking reference</strong>, alongside
- * the entries and rows they are owed in the planned {@code DECISION_LOG.md} and
+ * the entries and rows they are owed in the {@code DECISION_LOG.md} and
  * {@code TRACEABILITY_MATRIX.md}.
  * <strong>No downstream agent may change the production code to make a test here read more
  * sensibly.</strong> The reading is supposed to be uncomfortable; the source is.

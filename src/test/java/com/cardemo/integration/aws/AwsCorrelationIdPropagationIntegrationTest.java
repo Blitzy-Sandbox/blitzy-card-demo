@@ -482,10 +482,13 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
     private static void assertCorrelationKeysAbsent(final String stage) {
         final Map<String, String> inScope = diagnosticContextSnapshot();
         assertThat(inScope)
-                .as("%s: the filter clears the correlation trio in a finally block. An entry surviving here "
-                        + "would leak one request's identity into the next request that runs on this pooled "
-                        + "thread, which is the failure the finally block exists to prevent", stage)
-                .doesNotContainKeys(MDC_KEY_CORRELATION_ID, MDC_KEY_TRACE_ID, MDC_KEY_SPAN_ID);
+                .as("%s: the filter clears the correlation trio, and the trace-flags octet finding M-03 added "
+                        + "beside it, in a finally block. An entry surviving here would leak one request's "
+                        + "identity into the next request that runs on this pooled thread, which is the failure "
+                        + "the finally block exists to prevent - and a surviving flags octet would go further, "
+                        + "describing the sampling of a span that had already ended", stage)
+                .doesNotContainKeys(MDC_KEY_CORRELATION_ID, MDC_KEY_TRACE_ID, MDC_KEY_SPAN_ID,
+                        CorrelationIdFilter.MDC_KEY_TRACE_FLAGS);
     }
 
     /**
@@ -1624,11 +1627,26 @@ class AwsCorrelationIdPropagationIntegrationTest extends AbstractAwsIntegrationT
                         .containsKey(CorrelationIdFilter.TRACE_PARENT_HEADER)
                         .doesNotContainKey("X-Trace-Id")
                         .doesNotContainKey("X-Span-Id");
-                assertThat(String.valueOf(
-                        delivered.orElseThrow().getHeaders().get(CorrelationIdFilter.TRACE_PARENT_HEADER)))
+                // Finding M-03, severity Medium. This assertion used to end the pattern at a literal -01, which
+                // pinned the defect rather than the contract: the flags octet was hard-coded to 01, and the
+                // test profile samples every trace, so the literal agreed with the code for the wrong reason
+                // and would have kept agreeing after the sampling probability was lowered. What belongs here
+                // is the wire GRAMMAR - either octet is well formed - with the decision itself asserted
+                // against the tracer that made it, below. The two decisions are exercised directly and
+                // deterministically by CorrelationIdFilterTest.SamplingDecisionPropagation, which can stub
+                // sampled() as FALSE; a real span in this profile is always sampled, so no assertion here
+                // could reach the unsampled arm.
+                final String traceParent = String.valueOf(
+                        delivered.orElseThrow().getHeaders().get(CorrelationIdFilter.TRACE_PARENT_HEADER));
+                assertThat(traceParent)
                         .as("version 00, a 32-character trace identifier, a 16-character parent identifier and "
-                                + "the sampled flag, lowercase hexadecimal throughout")
-                        .matches("00-[0-9a-f]{32}-[0-9a-f]{16}-01");
+                                + "a well-formed flags octet, lowercase hexadecimal throughout")
+                        .matches("00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]");
+                assertThat(traceParent)
+                        .as("and the octet states this run's real decision: the test profile sets "
+                                + "management.tracing.sampling.probability to 1.0, so the span behind this "
+                                + "publish is genuinely sampled and 01 is the truth rather than an assertion")
+                        .endsWith("-01");
 
                 assertThat(correlationIdsOf(captured))
                         .as("the production records emitted around the publish carry the same identifier, and "

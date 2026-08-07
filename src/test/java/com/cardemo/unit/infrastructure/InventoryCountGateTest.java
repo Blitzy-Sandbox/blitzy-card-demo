@@ -79,12 +79,21 @@ import org.springframework.web.bind.annotation.PutMapping;
  * These assertions are the report.
  *
  * <ul>
- *   <li><strong>636 seed rows.</strong> The headline was 586. The source-correct total is 626 fixture rows
- *       from {@code app/data/ASCII/**} plus the ten users inlined as {@code SYSUT1 DD *} data in
- *       {@code app/jcl/DUSRSECJ.jcl}, and the {@code transaction} table is deliberately empty because the
- *       legacy corpus ships no transaction fixture - {@code TRANSACT} is populated by the posting job, not by
- *       a seed. Counted here from the migration itself, and independently confirmed against a live
- *       PostgreSQL 16 database seeded by that migration.
+ *   <li><strong>636 seed rows, of which 626 are unconditional.</strong> The headline was 586. The
+ *       source-correct total is 626 fixture rows from {@code app/data/ASCII/**} plus the ten users inlined as
+ *       {@code SYSUT1 DD *} data in {@code app/jcl/DUSRSECJ.jcl}, and the {@code transaction} table is
+ *       deliberately empty because the legacy corpus ships no transaction fixture - {@code TRANSACT} is
+ *       populated by the posting job, not by a seed. Counted here from the migration itself, and independently
+ *       confirmed against a live PostgreSQL 16 database seeded by that migration.
+ *       <p><strong>636 is the TEXTUAL count, and the applied count is not always the same number.</strong>
+ *       The ten principals are the one gated statement in the migration: they carry a
+ *       {@code WHERE ${seeddemousers} = TRUE} clause, and the placeholder is {@code false} in the base and
+ *       production profiles and {@code true} in local and test. So the applied total is <strong>636 where the
+ *       gate is open and 626 where it is closed</strong>, and both are correct. What would be wrong is to
+ *       state either as unconditional. This class asserts the textual 636 because that is what the file
+ *       contains and what a checksum covers; {@code DemoUserSeedGateContractTest} owns the gate itself, and
+ *       {@link SeedRowCount#exactlyTenOfTheSixHundredAndThirtySixRowsAreGated()} below pins the split so the
+ *       two numbers can never drift apart silently.</li>
  *   <li><strong>17 data transfer objects.</strong> The plan's own table said 16 while its by-name
  *       enumeration listed 17. {@code SignOnResponse} is the payload the smaller count omitted, and it has
  *       no BMS symbolic map because CICS returned identity in the COMMAREA rather than on a screen.
@@ -251,6 +260,32 @@ final class InventoryCountGateTest {
     }
 
     /**
+     * Reads the seed migration as one string, for the whole-file checks that a line list cannot express.
+     *
+     * @return the raw text of {@code V3__seed_data.sql}
+     */
+    private static String readSeedMigration() {
+        return String.join("\n", lines("src/main/resources/db/migration/V3__seed_data.sql"));
+    }
+
+    /**
+     * Counts non-overlapping occurrences of a literal inside a text.
+     *
+     * @param text    the text to scan
+     * @param literal the literal to count; must not be empty
+     * @return the number of non-overlapping occurrences
+     */
+    private static int countOccurrences(final String text, final String literal) {
+        int count = 0;
+        int from = text.indexOf(literal);
+        while (from >= 0) {
+            count++;
+            from = text.indexOf(literal, from + literal.length());
+        }
+        return count;
+    }
+
+    /**
      * Counts the {@code VALUES} tuples the seed migration inserts, per table.
      *
      * @return table name to counted row count, in insertion order
@@ -322,6 +357,51 @@ final class InventoryCountGateTest {
             assertThat(counted.values().stream().mapToInt(Integer::intValue).sum())
                     .as("the corrected headline total")
                     .isEqualTo(EXPECTED_SEED_ROWS);
+        }
+
+        /**
+         * Pins the split between the unconditional rows and the gated ones, so the two applied totals stay
+         * reconcilable. The migration carries exactly one gated statement, it is the credential statement, and
+         * it holds exactly ten rows; everything else is unconditional. If a future edit gated a second
+         * statement or moved a row across the boundary, the arithmetic published in the migration header, in
+         * the object census, in the profiles and in the evidence documents would all become wrong at once -
+         * and this assertion is what fails first.
+         */
+        @Test
+        @DisplayName("exactly 10 of the 636 rows are gated, so applied is 636 open and 626 closed")
+        void exactlyTenOfTheSixHundredAndThirtySixRowsAreGated() {
+            final String migration = readSeedMigration();
+            assertThat(countOccurrences(migration, "WHERE ${seeddemousers} = TRUE;"))
+                    .as("one gate, in one WHERE clause, over one row source. "
+                            + "DemoUserSeedGateContractTest owns the gate's placement and its per-profile "
+                            + "values; what is pinned here is that ONE statement is conditional, because that "
+                            + "is what makes 636-minus-626 exactly ten")
+                    .isEqualTo(1);
+
+            final int gatedTableRows = countedRowsPerTable().getOrDefault("user_security", 0);
+            assertThat(gatedTableRows)
+                    .as("the gated statement is the credential statement, and it holds the ten principals of "
+                            + "app/jcl/DUSRSECJ.jcl:L35-L44")
+                    .isEqualTo(10);
+
+            final int total = countedRowsPerTable().values().stream().mapToInt(Integer::intValue).sum();
+            assertThat(total - gatedTableRows)
+                    .as("the unconditional subtotal: identical in every environment, and the only figure the "
+                            + "parity comparison rests on")
+                    .isEqualTo(626);
+            assertThat(total)
+                    .as("the applied total where the gate is open, which is the local and test profiles")
+                    .isEqualTo(636);
+
+            final int gateIndex = migration.indexOf("${seeddemousers}");
+            final int credentialInsertIndex = migration.indexOf("INSERT INTO user_security");
+            assertThat(credentialInsertIndex)
+                    .as("the credential statement must exist to be gated")
+                    .isNotNegative();
+            assertThat(gateIndex)
+                    .as("the gate must sit inside the credential statement, after its INSERT, so no "
+                            + "unconditional statement is affected by it")
+                    .isGreaterThan(credentialInsertIndex);
         }
 
         @Test
@@ -661,6 +741,530 @@ final class InventoryCountGateTest {
                     .noneMatch(line -> line.contains("{@code AdminController} is planned and")
                             || line.contains("{@code AdminController} is not.")
                             || line.contains("has no test class of"));
+        }
+
+        /**
+         * Holds the bootstrap document's <em>prose</em> counts to disk, which is the half that was unchecked.
+         *
+         * <p><strong>Why this was needed even though the group above exists.</strong> Every other test here
+         * asserts a figure that a human transcribed from this class's javadoc into a Java literal. That
+         * catches disk drifting away from the <em>intended</em> shape, and it caught nothing at all when the
+         * javadoc itself went stale: the census paragraph published {@code dto 26}, {@code jobs 3 / 6},
+         * {@code readers 6 / 7} and {@code observability 3} while disk held 29, 6, 7 and 4, and the same
+         * paragraph called the reader layer complete two sentences after stating it as six of seven. That is
+         * finding F-015, and it passed every gate in this class.
+         *
+         * <p>This test reads the figures out of the document and compares them to the directories, so the
+         * document and the tree cannot disagree without failing. It is deliberately keyed on the leaf name
+         * followed by its number, because that is the form the census uses and the form a future editor will
+         * reach for.
+         */
+        @Test
+        @DisplayName("F-015: the bootstrap document's own per-leaf figures equal the directories")
+        void theBootstrapDocumentProseMatchesDisk() {
+            final String document =
+                    String.join(" ", lines("src/main/java/com/cardemo/CardDemoApplication.java"));
+            final List<String[]> leaves = List.of(
+                    new String[] {"config", "src/main/java/com/cardemo/config"},
+                    new String[] {"security", "src/main/java/com/cardemo/security"},
+                    new String[] {"entity", "src/main/java/com/cardemo/model/entity"},
+                    new String[] {"key", "src/main/java/com/cardemo/model/key"},
+                    new String[] {"enums", "src/main/java/com/cardemo/model/enums"},
+                    new String[] {"dto", "src/main/java/com/cardemo/model/dto"},
+                    new String[] {"repository", "src/main/java/com/cardemo/repository"},
+                    new String[] {"controller", "src/main/java/com/cardemo/controller"},
+                    new String[] {"processors", "src/main/java/com/cardemo/batch/processors"},
+                    new String[] {"readers", "src/main/java/com/cardemo/batch/readers"},
+                    new String[] {"writers", "src/main/java/com/cardemo/batch/writers"},
+                    new String[] {"exception", "src/main/java/com/cardemo/exception"},
+                    new String[] {"observability", "src/main/java/com/cardemo/observability"});
+
+            for (final String[] leaf : leaves) {
+                final long measured = typesIn(leaf[1]);
+                // The leaf name, then any markup, then its number - and the number must be the measured one.
+                final Pattern published = Pattern.compile(
+                        "\\b" + leaf[0] + "\\}?\\s*(?:</strong>)?\\s*(?:<strong>)?\\s*(\\d+)");
+                final Matcher match = published.matcher(document);
+                assertThat(match.find())
+                        .as("the census paragraph must state a figure for the %s leaf, or this gate is "
+                                + "asserting nothing about it", leaf[0])
+                        .isTrue();
+                assertThat(Long.parseLong(match.group(1)))
+                        .as("the bootstrap document publishes %s for the %s leaf, but the directory holds "
+                                + "%d types. A hand-written census that the work has overtaken understates "
+                                + "what was delivered, which is the more damaging direction for an evidence "
+                                + "artefact to be wrong in - finding F-015",
+                                match.group(1), leaf[0], Long.valueOf(measured))
+                        .isEqualTo(measured);
+            }
+
+            assertThat(typesIn("src/main/java/com/cardemo/batch/jobs"))
+                    .as("the jobs leaf is stated separately because 'jobs' also appears in prose; disk is 6")
+                    .isEqualTo(6L);
+            assertThat(document)
+                    .as("and the census must publish that 6 rather than a present-of-target pair")
+                    .contains("jobs <strong>6</strong>")
+                    .doesNotContain("jobs <strong>3 / 6</strong>")
+                    .doesNotContain("readers <strong>6 / 7</strong>");
+        }
+
+        /**
+         * Forbids the withdrawn claim that no queue listener exists.
+         *
+         * <p>Three surfaces asserted it - this class's javadoc, {@code README.md} twice - each in the present
+         * tense and each measurably wrong once {@code BatchConfig.ReportJobQueueListener} was authored. The
+         * reproduction command those surfaces offered, a grep for the annotation, returns a match, so the
+         * claim was refutable by the very evidence it cited.
+         */
+        @Test
+        @DisplayName("F-015: no document claims the queue listener is absent, because it is not")
+        void noDocumentClaimsTheQueueListenerIsAbsent() {
+            assertThat(readWhole("src/main/java/com/cardemo/config/BatchConfig.java"))
+                    .as("the listener must exist for this gate to have a premise")
+                    .contains("@SqsListener")
+                    .contains("ReportJobQueueListener");
+
+            for (final String surface : List.of("src/main/java/com/cardemo/CardDemoApplication.java",
+                    "README.md")) {
+                assertThat(lines(surface))
+                        .as("%s must not state in the present tense that no listener exists; the withdrawal "
+                                + "may be described, but the claim may not be made - finding F-015", surface)
+                        .noneMatch(line -> line.contains("the listener is not.")
+                                || line.contains("is **not yet wired**")
+                                || line.contains("there is no\n`@SqsListener`")
+                                || line.contains("no `@SqsListener` in the main")
+                                || line.contains("an empty result confirms it"));
+            }
+        }
+
+        /** Reads one file whole, so a claim spanning a wrapped line can be matched. */
+        private String readWhole(final String relativePath) {
+            try {
+                return Files.readString(ROOT.resolve(relativePath), StandardCharsets.UTF_8);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read " + relativePath, cause);
+            }
+        }
+    }
+
+    /**
+     * Holds the timestamp-producer census at five, because it was published as three.
+     *
+     * <p><strong>Why an undercount is worth a gate.</strong> A census that is too small reads as an
+     * implementation gap where none exists, and the remedy it invites - "identify and implement the two
+     * missing producers" - would have added producers the corpus does not have in order to satisfy an
+     * arithmetic. The corpus has five, all five are implemented, and this group is what stops the census
+     * shrinking again.
+     *
+     * <p><strong>The two the earlier census missed, and why each is easy to miss.</strong> The DB2-format
+     * generator exists <em>twice</em>, as two separate paragraphs carrying the <em>same name</em> in two
+     * different programs, so a search that deduplicates by paragraph name collapses them into one. And the
+     * bill-payment program does not use {@code FUNCTION CURRENT-DATE} at all - it reads the CICS clock through
+     * {@code EXEC CICS ASKTIME} and formats it with {@code FORMATTIME} - so no search for the intrinsic finds
+     * it. It is a genuinely different producer rather than a fourth call site of the same one, and its output
+     * differs observably: a space at position 11 where the DB2 form carries a hyphen.
+     */
+    @Nested
+    @DisplayName("F-025: five timestamp producers, not three, and every one has a target")
+    final class TimestampProducerCensus {
+
+        /** Each producer: its source file, the paragraph or field that produces it, and its Java target. */
+        private static final List<String[]> PRODUCERS = List.of(
+                new String[] {"app/cbl/CBTRN02C.cbl", "Z-GET-DB2-FORMAT-TIMESTAMP",
+                    "src/main/java/com/cardemo/batch/processors/TransactionPostingProcessor.java",
+                    "getDb2FormatTimestamp"},
+                new String[] {"app/cbl/CBACT04C.cbl", "Z-GET-DB2-FORMAT-TIMESTAMP",
+                    "src/main/java/com/cardemo/batch/processors/InterestCalculationProcessor.java",
+                    "db2FormatTimestamp"},
+                new String[] {"app/cbl/COBIL00C.cbl", "GET-CURRENT-TIMESTAMP",
+                    "src/main/java/com/cardemo/service/billing/BillPaymentService.java",
+                    "getCurrentTimestamp"},
+                new String[] {"app/cpy/CSDAT01Y.cpy", "WS-CURDATE",
+                    "src/main/java/com/cardemo/service/menu/MainMenuService.java",
+                    "LocalDateTime.now(this.clock)"},
+                new String[] {"app/cpy/CSUTLDPY.cpy", "WS-CURRENT-DATE-YYYYMMDD",
+                    "src/main/java/com/cardemo/service/shared/DateValidationService.java",
+                    "LocalDate.now(clock)"});
+
+        @Test
+        @DisplayName("all five source producers exist in the frozen corpus")
+        void allFiveSourceProducersExist() {
+            for (final String[] producer : PRODUCERS) {
+                final Path source = ROOT.resolve(producer[0]);
+                assertThat(source)
+                        .as("%s must exist in the frozen corpus", producer[0])
+                        .isRegularFile();
+                assertThat(readWholeFile(source))
+                        .as("%s must declare %s, or this census is measuring the wrong artefact",
+                                producer[0], producer[1])
+                        .contains(producer[1]);
+            }
+            assertThat(PRODUCERS)
+                    .as("the census is five; an earlier revision published three, and the two it missed are "
+                            + "the second copy of the DB2 idiom and the CICS clock in the bill-payment program")
+                    .hasSize(5);
+        }
+
+        @Test
+        @DisplayName("every one of the five has a named Java target that exists")
+        void everyProducerHasANamedTarget() {
+            for (final String[] producer : PRODUCERS) {
+                final Path target = ROOT.resolve(producer[2]);
+                assertThat(target)
+                        .as("%s is the target for %s %s and must exist", producer[2], producer[0], producer[1])
+                        .isRegularFile();
+                assertThat(readWholeFile(target))
+                        .as("%s must contain %s, so the mapping is a fact about the tree rather than a claim "
+                                + "in prose", producer[2], producer[3])
+                        .contains(producer[3]);
+            }
+        }
+
+        @Test
+        @DisplayName("the two easily-missed producers are distinct from the DB2 form, not call sites of it")
+        void theTwoEasilyMissedProducersAreDistinct() {
+            final String billPayment = readWholeFile(ROOT.resolve("app/cbl/COBIL00C.cbl"));
+            assertThat(billPayment)
+                    .as("the bill-payment producer reads the CICS clock, which is why no FUNCTION "
+                            + "CURRENT-DATE search finds it")
+                    .contains("EXEC CICS ASKTIME")
+                    .contains("EXEC CICS FORMATTIME");
+
+            final String posting = readWholeFile(ROOT.resolve("app/cbl/CBTRN02C.cbl"));
+            final String interest = readWholeFile(ROOT.resolve("app/cbl/CBACT04C.cbl"));
+            assertThat(posting).contains("Z-GET-DB2-FORMAT-TIMESTAMP");
+            assertThat(interest)
+                    .as("the same paragraph NAME in a second program is a second producer, not a second call "
+                            + "site - which is exactly what a name-deduplicating census collapses")
+                    .contains("Z-GET-DB2-FORMAT-TIMESTAMP");
+        }
+
+        /** Reads one file whole as UTF-8. */
+        private String readWholeFile(final Path path) {
+            try {
+                return Files.readString(path, StandardCharsets.UTF_8);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read " + path, cause);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The sanctioned production inventory: the plan's schema minimum plus this repository's register
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * The plan's {@code CREATE} summary figure for each production area, in the plan's own row order.
+     *
+     * <p>These seventeen figures are transcribed from the summary table and sum to
+     * {@value #SCHEMA_PRODUCTION_TOTAL}. They are the contract's floor and are never adjusted to match the
+     * tree: when the tree holds more, the excess must appear in {@link #SANCTIONED_ADDITIONS} and be
+     * grounded in the register, which is what makes the divergence auditable rather than absorbed.</p>
+     */
+    private static final Map<String, Integer> SCHEMA_AREAS = schemaAreas();
+
+    /**
+     * The additions {@code DL-CR-06} sanctions, by area.
+     *
+     * <p>Four areas only. Every other area in {@link #SCHEMA_AREAS} carries a zero and is therefore held
+     * to the plan's figure exactly, so a file added anywhere else fails this gate.</p>
+     */
+    private static final Map<String, Integer> SANCTIONED_ADDITIONS = sanctionedAdditions();
+
+    /**
+     * Every production type the register admits beyond the plan's own enumeration, by relative path.
+     *
+     * <p>Naming them individually is the point: a count alone would let one sanctioned file be swapped for
+     * a different unsanctioned one without the arithmetic changing.</p>
+     */
+    private static final List<String> SANCTIONED_ADDITIONAL_TYPES = List.of(
+            "model/dto/AccountViewResponse.java",
+            "model/dto/AccountUpdateResponse.java",
+            "model/dto/CardResponse.java",
+            "model/dto/CardListResponse.java",
+            "model/dto/TransactionResponse.java",
+            "model/dto/TransactionListResponse.java",
+            "model/dto/BillPaymentResponse.java",
+            "model/dto/ReportSubmissionResponse.java",
+            "model/dto/UserCreateResponse.java",
+            "model/dto/UserUpdateResponse.java",
+            "model/dto/UserListResponse.java",
+            "model/dto/ApiMasking.java",
+            "security/SnapshotTokenService.java",
+            "observability/TemplatedUriObservationConvention.java");
+
+    /** The sum of the plan's seventeen summary figures. */
+    private static final int SCHEMA_PRODUCTION_TOTAL = 132;
+
+    /** The register identifier that sanctions the divergence. */
+    private static final String REGISTER_ENTRY = "DL-CR-06";
+
+    /**
+     * Builds the plan's per-area summary figures.
+     *
+     * @return area path relative to {@code src/main/java/com/cardemo}, mapped to the plan's figure;
+     *         the key {@code "package-info"} stands for the whole tree's package-documentation count
+     */
+    private static Map<String, Integer> schemaAreas() {
+        final Map<String, Integer> areas = new LinkedHashMap<>();
+        areas.put(".", 1);
+        areas.put("config", 6);
+        areas.put("security", 3);
+        areas.put("model/entity", 11);
+        areas.put("model/key", 3);
+        areas.put("model/enums", 4);
+        // 17, not 16. The plan publishes 16 as a WITHDRAWN figure: its rollup states that "the previous
+        // figures - 16 DTOs and 131 files - survived alongside a by-name enumeration of 17", and writes the
+        // corrected sum out term by term as 1+6+3+11+3+4+17+11+21+8+6+5+7+3+9+3+14 = 132. Transcribing 16
+        // here would hold the tree to a figure the plan itself retired, and would leave one of the twelve
+        // named additions below unaccounted for.
+        areas.put("model/dto", 17);
+        areas.put("repository", 11);
+        areas.put("service", 21);
+        areas.put("controller", 8);
+        areas.put("batch/jobs", 6);
+        areas.put("batch/processors", 5);
+        areas.put("batch/readers", 7);
+        areas.put("batch/writers", 3);
+        areas.put("exception", 9);
+        areas.put("observability", 3);
+        areas.put("package-info", 14);
+        return areas;
+    }
+
+    /**
+     * Builds the register's per-area additions, zero for every area held to the plan's figure.
+     *
+     * @return area key as in {@link #schemaAreas()}, mapped to the number of sanctioned additional files
+     */
+    private static Map<String, Integer> sanctionedAdditions() {
+        final Map<String, Integer> additions = new LinkedHashMap<>();
+        for (final String area : schemaAreas().keySet()) {
+            additions.put(area, Integer.valueOf(0));
+        }
+        // DL-CR-06 group (a) 11 controller response types + group (b) ApiMasking = 12, which is exactly
+        // 29 measured minus the plan's 17. The twelve are named individually below, so this figure and that
+        // list check each other: a thirteenth addition would have no name and a missing name would leave a
+        // gap in the arithmetic.
+        additions.put("model/dto", Integer.valueOf(12));
+        // DL-CR-06 group (c): all 24 class-bearing packages documented, plus the two structural containers.
+        additions.put("package-info", Integer.valueOf(12));
+        // DL-CR-06 group (d).
+        additions.put("security", Integer.valueOf(1));
+        additions.put("observability", Integer.valueOf(1));
+        return additions;
+    }
+
+    /**
+     * Counts the Java files an area holds.
+     *
+     * @param area area key as in {@link #schemaAreas()}
+     * @return the file count for that area, counting {@code package-info.java} only for the
+     *         {@code "package-info"} key and never for a class area
+     */
+    private static long filesIn(final String area) {
+        final Path base = ROOT.resolve("src/main/java/com/cardemo");
+        if ("package-info".equals(area)) {
+            try (Stream<Path> walk = Files.walk(base)) {
+                return walk.filter(path -> "package-info.java".equals(path.getFileName().toString()))
+                        .count();
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot walk " + base, cause);
+            }
+        }
+        final Path directory = ".".equals(area) ? base : base.resolve(area);
+        final boolean recurse = "service".equals(area);
+        try (Stream<Path> entries = recurse ? Files.walk(directory) : Files.list(directory)) {
+            return entries.filter(Files::isRegularFile)
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.endsWith(".java"))
+                    .filter(name -> !"package-info.java".equals(name))
+                    .count();
+        } catch (final IOException cause) {
+            throw new UncheckedIOException("Cannot list " + directory, cause);
+        }
+    }
+
+    /**
+     * Counts the {@code package-info.java} files at or beneath one package.
+     *
+     * @param area package path relative to {@code src/main/java/com/cardemo}
+     * @return the number of package documents in that subtree, the subtree's own document included
+     */
+    private static long countPackageDocsUnder(final String area) {
+        final Path base = ROOT.resolve("src/main/java/com/cardemo").resolve(area);
+        try (Stream<Path> walk = Files.walk(base)) {
+            return walk.filter(path -> "package-info.java".equals(path.getFileName().toString())).count();
+        } catch (final IOException cause) {
+            throw new UncheckedIOException("Cannot walk " + base, cause);
+        }
+    }
+
+    /**
+     * Supplies one case per production area.
+     *
+     * @return area key, the plan's figure and the register's addition for that area
+     */
+    private static Stream<Arguments> productionAreas() {
+        return SCHEMA_AREAS.entrySet().stream()
+                .map(entry -> Arguments.of(entry.getKey(), entry.getValue(),
+                        SANCTIONED_ADDITIONS.get(entry.getKey())));
+    }
+
+    /**
+     * The production inventory, asserted as the plan's minimum plus a named register rather than as a
+     * bare total.
+     *
+     * <p>A gate that pins one number for the whole tree fails for two indistinguishable reasons: a file
+     * was added without justification, or a file was added with justification and nobody updated the
+     * number. The first is a real defect and the second is bookkeeping, and a reviewer who cannot tell
+     * them apart eventually edits the number to make the build green &mdash; which is how the figure this
+     * class replaced went stale in the first place.</p>
+     *
+     * <p>So the arithmetic is stated in two halves. The plan's seventeen summary figures are the floor and
+     * are never edited. {@code DL-CR-06} carries the additions, each named and grounded. This gate proves
+     * the halves account for the tree exactly, area by area, and proves the register is still published
+     * and still names every file it admits. Adding an unsanctioned file therefore fails against a
+     * specific area with a specific number, and sanctioning it means writing down why.</p>
+     *
+     * <p>The bijection between packages and their documents is not re-asserted here; it belongs to
+     * {@code com.cardemo.unit.model.PackageDocumentationInventoryTest}, which owns it. This class asserts
+     * only the arithmetic against the plan and the integrity of the register.</p>
+     */
+    @Nested
+    @DisplayName("M-04: the production inventory is the plan's minimum plus a named register, not a figure")
+    final class SanctionedProductionInventory {
+
+        @Test
+        @DisplayName("the plan's seventeen summary figures really do sum to 132, so the floor is not invented")
+        void theSchemaFiguresSumToThePublishedTotal() {
+            assertThat(SCHEMA_AREAS).hasSize(17);
+            assertThat(SCHEMA_AREAS.values().stream().mapToInt(Integer::intValue).sum())
+                    .as("the plan's CREATE summary table has seventeen production rows; if this sum is not "
+                            + "132 the transcription above is wrong and every assertion below rests on it")
+                    .isEqualTo(SCHEMA_PRODUCTION_TOTAL);
+        }
+
+        @ParameterizedTest(name = "{0}: plan {1} + register {2}")
+        @MethodSource(
+                "com.cardemo.unit.infrastructure.InventoryCountGateTest#productionAreas")
+        @DisplayName("every area holds exactly the plan's figure plus its registered additions")
+        void everyAreaIsTheSchemaFigurePlusItsRegisteredAdditions(
+                final String area, final int planFigure, final int registeredAddition) {
+            assertThat(filesIn(area))
+                    .as("area %s: the plan's summary figure is %d and %s sanctions %d addition(s), so the "
+                            + "tree must hold exactly %d. A different count means either a file was added "
+                            + "without a register entry, or an entry was withdrawn without the file",
+                            area, Integer.valueOf(planFigure), REGISTER_ENTRY,
+                            Integer.valueOf(registeredAddition),
+                            Integer.valueOf(planFigure + registeredAddition))
+                    .isEqualTo((long) planFigure + registeredAddition);
+        }
+
+        @Test
+        @DisplayName("the whole-tree total is derived from the two halves, never asserted as a bare number")
+        void theTotalIsDerivedFromTheSchemaAndTheRegister() {
+            final long measured = SCHEMA_AREAS.keySet().stream().mapToLong(InventoryCountGateTest::filesIn)
+                    .sum();
+            final int additions = SANCTIONED_ADDITIONS.values().stream().mapToInt(Integer::intValue).sum();
+
+            assertThat(additions)
+                    .as("the four sanctioned groups of %s total 26 files; the register states that figure "
+                            + "and this is where it is checked", REGISTER_ENTRY)
+                    .isEqualTo(26);
+            assertThat(measured)
+                    .as("the tree must equal the plan's floor (%d) plus the register (%d). Both operands "
+                            + "are stated, so a failure names which half moved",
+                            Integer.valueOf(SCHEMA_PRODUCTION_TOTAL), Integer.valueOf(additions))
+                    .isEqualTo((long) SCHEMA_PRODUCTION_TOTAL + additions);
+        }
+
+        @Test
+        @DisplayName("every file the register admits exists, so no entry sanctions a phantom")
+        void everySanctionedAdditionalTypeExistsOnDisk() {
+            assertThat(SANCTIONED_ADDITIONAL_TYPES).hasSize(14);
+            for (final String relativePath : SANCTIONED_ADDITIONAL_TYPES) {
+                assertThat(ROOT.resolve("src/main/java/com/cardemo").resolve(relativePath))
+                        .as("%s admits %s; a register that names a file which is not there is worse than "
+                                + "no register, because it reads as accounted for", REGISTER_ENTRY,
+                                relativePath)
+                        .exists();
+            }
+        }
+
+        @Test
+        @DisplayName("the register is published and names every file and every group count it admits")
+        void theRegisterIsPublishedAndNamesEveryAddition() {
+            final String register = String.join("\n", lines("DECISION_LOG.md"));
+            assertThat(register)
+                    .as("the entry that sanctions the divergence must be present, or this gate is asserting "
+                            + "arithmetic against a ground that no longer exists")
+                    .contains("### " + REGISTER_ENTRY);
+
+            for (final String relativePath : SANCTIONED_ADDITIONAL_TYPES) {
+                final String simpleName = relativePath
+                        .substring(relativePath.lastIndexOf('/') + 1, relativePath.length() - ".java".length());
+                assertThat(register)
+                        .as("%s must name %s explicitly; a group count without the names lets one "
+                                + "sanctioned file be swapped for an unsanctioned one", REGISTER_ENTRY,
+                                simpleName)
+                        .contains(simpleName);
+            }
+
+            assertThat(register)
+                    .as("the entry must publish the same four group figures this gate holds the tree to")
+                    .contains("29 against 17 (**+12**)")
+                    .contains("26 against 14 (**+12**)")
+                    .contains("`security` 4 against 3 (**+1**)")
+                    .contains("`observability` 4 against 3 (**+1**)");
+        }
+
+        @Test
+        @DisplayName("the 12 extra package documents are confined to the service and batch leaves")
+        void theSurplusPackageDocumentationIsLocalisedToTheLayeredPackages() {
+            // The review reports the divergence per DIRECTORY, so it names `service` at 22/31 and `batch` at
+            // 23/26 as if each were its own surplus of classes. Neither is: both hold exactly the number of
+            // CLASSES the plan specifies, and their whole difference is package documentation. Asserting that
+            // here is what lets a reader who checks those two rows find the account rather than a gap.
+            assertThat(filesIn("service"))
+                    .as("21 service beans exactly as the plan specifies - 17 online programs plus the four "
+                            + "shared services - so the `service` directory's difference is not classes")
+                    .isEqualTo(21L);
+            assertThat(filesIn("batch/jobs") + filesIn("batch/processors")
+                            + filesIn("batch/readers") + filesIn("batch/writers"))
+                    .as("6 + 5 + 7 + 3 = 21 batch classes exactly as the plan specifies, so the `batch` "
+                            + "directory's difference is likewise not classes")
+                    .isEqualTo(21L);
+
+            final long serviceDocs = countPackageDocsUnder("service");
+            final long batchDocs = countPackageDocsUnder("batch");
+            assertThat(serviceDocs - 1L + (batchDocs - 2L))
+                    .as("the plan budgets 1 document for `service` and 2 for `batch`; the surplus is %d + %d "
+                            + "= 12, which is exactly DL-CR-06 group (c). If this stops summing to 12 the "
+                            + "surplus has spread to a package the register does not account for",
+                            Long.valueOf(serviceDocs - 1L), Long.valueOf(batchDocs - 2L))
+                    .isEqualTo(12L);
+            assertThat(filesIn("package-info") - serviceDocs - batchDocs)
+                    .as("the remaining 11 documents sit one per non-layered package, which is the plan's own "
+                            + "budget for them, so no third region contributes to the surplus")
+                    .isEqualTo(11L);
+        }
+
+        @Test
+        @DisplayName("no unsanctioned area silently carries an allowance, so the zeros are real constraints")
+        void everyUnsanctionedAreaIsHeldToThePlanExactly() {
+            final List<String> sanctioned = SANCTIONED_ADDITIONS.entrySet().stream()
+                    .filter(entry -> entry.getValue().intValue() != 0)
+                    .map(Map.Entry::getKey)
+                    .toList();
+            assertThat(sanctioned)
+                    .as("exactly four areas may diverge; if a fifth appears here it was added to the "
+                            + "allowance table without an entry in %s", REGISTER_ENTRY)
+                    .containsExactlyInAnyOrder("model/dto", "package-info", "security", "observability");
+
+            assertThat(SANCTIONED_ADDITIONS.keySet())
+                    .as("the allowance table must cover the plan's areas exactly, so no area escapes it")
+                    .containsExactlyInAnyOrderElementsOf(SCHEMA_AREAS.keySet());
         }
     }
 }

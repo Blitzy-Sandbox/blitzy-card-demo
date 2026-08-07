@@ -60,10 +60,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,8 +67,6 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
-import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
@@ -97,13 +91,8 @@ import software.amazon.awssdk.services.sns.model.ListTopicsRequest;
 import software.amazon.awssdk.services.sns.model.ListTopicsResponse;
 import software.amazon.awssdk.services.sns.model.Topic;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
-import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
-import software.amazon.awssdk.services.sqs.model.GetQueueAttributesResponse;
-import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
-import software.amazon.awssdk.services.sqs.model.GetQueueUrlResponse;
 import software.amazon.awssdk.services.sqs.model.Message;
 import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
-import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 
 /**
@@ -175,8 +164,14 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *       nothing drained the queue at all, which was true when written and is no longer. The bean below is a
  *       producer with a live consumer.</li>
  *   <li><strong>It derives no object keys.</strong> The generation-reference translation is specified here and
- *       implemented by the job classes, which bind the seven {@code carddemo.aws.s3.gdg-prefixes.*} entries
- *       directly, and by {@code com.cardemo.config.BatchConfig}, which centralises the step wiring.</li>
+ *       implemented by the job classes, which bind directly the six {@code carddemo.aws.s3.gdg-prefixes.*}
+ *       entries a Java job actually writes, and by {@code com.cardemo.config.BatchConfig}, which centralises
+ *       the step wiring. <strong>This class does bind all seven, for one purpose only</strong>: the startup
+ *       guard proves each base has a non-blank prefix that neither matches nor nests inside another, because
+ *       that invariant belongs to the layout of the versioned output bucket rather than to any single write.
+ *       The seventh, the category-balance backup base of {@code app/jcl/DEFGDGB.jcl:L43}, is produced by
+ *       {@code app/jcl/PRTCATBL.jcl} - which has no COBOL program - and by no Java job, yet its prefix must
+ *       still be reserved, or a base that IS written could be given one that collides with it.</li>
  *   <li><strong>It restates no configuration owned elsewhere</strong> - not the metrics scrape configuration,
  *       not the dashboard provisioning, not the actuator groups, not the Jackson settings, and not the bucket,
  *       queue or topic names themselves, which are declared once in {@code src/main/resources/application.yml}
@@ -259,10 +254,14 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * profile adds the developer defaults and the concrete resource names:
  *
  * <pre>{@code
- * set -a; . ./.env; set +a
- * docker compose up -d
- * SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
+ * ( set -a; . ./.env; set +a; docker compose up -d )
+ * ( set -a; . ./.env; set +a; SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run )
  * }</pre>
+ *
+ * <p>Each line is a subshell rather than a bare {@code set -a; . ./.env; set +a} followed by the commands: the
+ * parentheses confine the exported values to that subshell, so they are neither inherited by every later child
+ * of the interactive shell nor readable in {@code /proc/<pid>/environ} afterwards. The file itself must already
+ * be at mode {@code 0600} - verify with {@code stat -c '%a %n' .env} - before it holds a credential.
  *
  * <p>The three buckets, the FIFO queue and the topic are created by {@code localstack-init/init-aws.sh}, which
  * runs automatically when the emulator container reports ready and may be re-run safely at any time. The
@@ -680,6 +679,45 @@ public class AwsConfig {
     /** Missing-queue behaviour. Pinned {@code FAIL} by the base profile and defaulted {@code FAIL} here. */
     private static final String KEY_QUEUE_NOT_FOUND_STRATEGY = "spring.cloud.aws.sqs.queue-not-found-strategy";
 
+    /** Object-store prefix of the reject generation base, {@code app/jcl/DALYREJS.jcl:L24}-{@code :L28}. */
+    private static final String KEY_GDG_PREFIX_DALY_REJS = "carddemo.aws.s3.gdg-prefixes.daly-rejs";
+
+    /** Object-store prefix of the interest-transaction generation base, {@code app/jcl/DEFGDGB.jcl:L49}. */
+    private static final String KEY_GDG_PREFIX_SYSTRAN = "carddemo.aws.s3.gdg-prefixes.systran";
+
+    /**
+     * Object-store prefix of the category-balance backup base, {@code app/jcl/DEFGDGB.jcl:L43}. The one base
+     * no Java job writes; its legacy producer is {@code app/jcl/PRTCATBL.jcl}, which has no COBOL program.
+     */
+    private static final String KEY_GDG_PREFIX_TCATBALF_BKUP = "carddemo.aws.s3.gdg-prefixes.tcatbalf-bkup";
+
+    /** Object-store prefix of the 133-byte report generation base, {@code app/jcl/REPTFILE.jcl:L26}. */
+    private static final String KEY_GDG_PREFIX_TRANREPT = "carddemo.aws.s3.gdg-prefixes.tranrept";
+
+    /** Object-store prefix of the pre-report transaction backup base, {@code app/proc/TRANREPT.prc:L21}. */
+    private static final String KEY_GDG_PREFIX_TRANSACT_BKUP = "carddemo.aws.s3.gdg-prefixes.transact-bkup";
+
+    /** Object-store prefix of the combined-transaction base, {@code app/jcl/COMBTRAN.jcl:L41}. */
+    private static final String KEY_GDG_PREFIX_TRANSACT_COMBINED =
+            "carddemo.aws.s3.gdg-prefixes.transact-combined";
+
+    /** Object-store prefix of the daily-transaction generation base, {@code app/jcl/DEFGDGB.jcl:L31}. */
+    private static final String KEY_GDG_PREFIX_TRANSACT_DALY = "carddemo.aws.s3.gdg-prefixes.transact-daly";
+
+    /**
+     * The seven generation-base prefix keys, one per {@code 0GDG BASE} entry catalogued at
+     * {@code app/catlg/LISTCAT.txt} and defined across {@code app/jcl/DEFGDGB.jcl} and
+     * {@code app/jcl/DALYREJS.jcl}. Ordered alphabetically so a failure message reads predictably.
+     */
+    private static final List<String> KEYS_GDG_PREFIX = List.of(
+            KEY_GDG_PREFIX_DALY_REJS,
+            KEY_GDG_PREFIX_SYSTRAN,
+            KEY_GDG_PREFIX_TCATBALF_BKUP,
+            KEY_GDG_PREFIX_TRANREPT,
+            KEY_GDG_PREFIX_TRANSACT_BKUP,
+            KEY_GDG_PREFIX_TRANSACT_COMBINED,
+            KEY_GDG_PREFIX_TRANSACT_DALY);
+
     // =============================================================================================
     // Emulator-only binding. The keys below are read by the startup guard rather than injected,
     // because the guard has to run before any client bean exists and therefore before this class is
@@ -712,7 +750,7 @@ public class AwsConfig {
      * and therefore through this set.
      *
      * <p>It is spelled to be element-for-element identical to {@code ALLOWED_ENDPOINT_HOSTS} at
-     * {@code localstack-init/init-aws.sh:L700-L706}, so that the provisioning script and the application cannot
+     * {@code localstack-init/init-aws.sh}, so that the provisioning script and the application cannot
      * disagree about which endpoints exist. {@code carddemo-localstack} may carry a {@code CLONE_INDEX} suffix,
      * which is why that one form is matched by {@link #ALLOWED_COMPOSE_HOST_PATTERN} rather than by set
      * membership - exactly as the script matches it by {@code ALLOWED_ENDPOINT_HOST_PATTERN} rather than
@@ -768,8 +806,8 @@ public class AwsConfig {
      * {@link #normaliseEndpointHost(String)}, so the pattern itself needs no case insensitivity.
      *
      * <p>Built from {@value #APPROVED_ENDPOINT_HOST_PREFIX} so the compose name is spelled once in this file. The
-     * suffix is digits only, spelled exactly as {@code ALLOWED_ENDPOINT_HOST_PATTERN} at
-     * {@code localstack-init/init-aws.sh:L721} spells it, because a clone index is only ever a number. It was
+     * suffix is digits only, spelled exactly as {@code ALLOWED_ENDPOINT_HOST_PATTERN} in
+     * {@code localstack-init/init-aws.sh} spells it, because a clone index is only ever a number. It was
      * briefly wider - any one to sixteen alphanumeric characters - which admitted container names the
      * provisioning script refuses, and two guards over one variable that disagree about what exists are worse
      * than one. The narrower rule is the one that matches the script, so it is the one that survives.
@@ -827,9 +865,6 @@ public class AwsConfig {
      * happen inside the whole-call deadline rather than being cut off by it.
      */
     private static final int API_CALL_ATTEMPT_TIMEOUT_SECONDS = 10;
-
-    /** Deadline in seconds, {@value}, for the one-off startup verification of the queue's own attributes. */
-    private static final int QUEUE_VERIFICATION_TIMEOUT_SECONDS = 15;
 
     /**
      * Whole-call deadline in seconds, {@value}, for the notification client alone.
@@ -1188,10 +1223,77 @@ public class AwsConfig {
 
         requireStaticCredential(environment, KEY_ACCESS_KEY);
         requireStaticCredential(environment, KEY_SECRET_KEY);
+        requireDistinctGenerationPrefixes(environment);
 
         LOG.info("Cloud clients are bound to the emulator only: all three endpoint overrides resolve to an "
                 + "allowlisted local host and static credentials are configured, so the SDK's default "
                 + "credential provider chain is replaced and no request can reach a live AWS endpoint.");
+    }
+
+    /**
+     * Proves every one of the seven generation bases has its own non-blank, non-overlapping object-store
+     * prefix.
+     *
+     * <p><strong>Why this guard exists here rather than in the job classes.</strong> Each job binds the one
+     * prefix it writes, and that is correct for the write itself - but the invariant being protected is not a
+     * property of any single write. A generation base without a prefix has <em>no namespace of its own</em>, so
+     * its objects land inside another base's namespace, and two bases sharing or nesting a prefix have the
+     * same effect. That is a property of the layout of the whole versioned output bucket, so it is checked once
+     * for all seven, at startup, before any job bean is constructed.
+     *
+     * <p><strong>Why all seven and not six.</strong> {@value #KEY_GDG_PREFIX_TCATBALF_BKUP} is the one base no
+     * Java job writes: its legacy producer is {@code app/jcl/PRTCATBL.jcl}, three steps and no COBOL program,
+     * which REPROs the category-balance cluster into {@code TCATBALF.BKUP(+1)} at {@code :L29}-{@code :L39} and
+     * sorts that generation into {@code TCATBALF.REPT} at {@code :L43}-{@code :L63}. Excluding it from this
+     * check on the ground that nothing writes it would be exactly backwards: the base is provisioned in the
+     * object store by {@code localstack-init/init-aws.sh}, so its prefix must still be reserved, or a base that
+     * <em>is</em> written could be given a prefix that collides with it. Checking all seven is what makes the
+     * key a consumed key rather than an inert declaration.
+     *
+     * <p><strong>Nesting is refused, not just equality.</strong> Object keys are compared by prefix, so
+     * {@code gdg/transact} and {@code gdg/transact-bkup} are distinct strings that do not give distinct
+     * namespaces: a listing of the first returns the second's objects. The check therefore rejects a pair where
+     * either value is a prefix of the other.
+     *
+     * @param environment the environment to read; must not be {@code null}
+     * @throws IllegalStateException if any of the seven prefixes is absent or blank, or if two of them are
+     *                               equal or one nests inside another, aborting startup
+     */
+    private static void requireDistinctGenerationPrefixes(final Environment environment) {
+        final Map<String, String> prefixes = new LinkedHashMap<>();
+        for (final String key : KEYS_GDG_PREFIX) {
+            final String value = environment.getProperty(key);
+            if (value == null || value.isBlank()) {
+                throw new IllegalStateException(String.format(Locale.ROOT,
+                        "Property '%s' must name an object-store prefix for its generation base. A base "
+                                + "without a prefix has no namespace of its own, so its objects would land "
+                                + "inside another base's namespace. All %d generation prefixes of "
+                                + "app/jcl/DEFGDGB.jcl and app/jcl/DALYREJS.jcl must be configured.",
+                        key, KEYS_GDG_PREFIX.size()));
+            }
+            prefixes.put(key, value.strip());
+        }
+
+        for (final Map.Entry<String, String> left : prefixes.entrySet()) {
+            for (final Map.Entry<String, String> right : prefixes.entrySet()) {
+                if (left.getKey().equals(right.getKey())) {
+                    continue;
+                }
+                if (left.getValue().equals(right.getValue())
+                        || left.getValue().startsWith(right.getValue())) {
+                    throw new IllegalStateException(String.format(Locale.ROOT,
+                            "Properties '%s' and '%s' must name prefixes that neither match nor nest: '%s' "
+                                    + "overlaps '%s', and object keys are matched by prefix, so a listing of "
+                                    + "one base would return the other base's objects. Give each generation "
+                                    + "base its own prefix.",
+                            left.getKey(), right.getKey(), left.getValue(), right.getValue()));
+                }
+            }
+        }
+
+        LOG.info("All {} generation prefixes are configured and mutually non-overlapping, so each of the "
+                + "seven legacy generation bases has its own namespace in the versioned output bucket.",
+                KEYS_GDG_PREFIX.size());
     }
 
     /**
@@ -1295,6 +1397,60 @@ public class AwsConfig {
                 + "Set the endpoint and credential properties for the active profile - see .env.example and "
                 + "localstack-init/init-aws.sh, which applies the same allowlist - or disable the cloud "
                 + "integration entirely rather than pointing it at a live account.");
+    }
+
+    /**
+     * The single queue payload contract, shared by the publisher and by the listener container.
+     *
+     * <p><strong>Finding C-01, severity Critical, RESOLVED here.</strong> The library's own converter bean
+     * carries a payload <em>type</em> header - the constant is {@code JavaType} - which it writes on every
+     * outbound message whose payload is not already text, and resolves on every inbound message with
+     * {@link Class#forName(String)}. Two defects followed from that, and they compound.
+     *
+     * <p>The first was a broken contract. {@code com.cardemo.service.report.ReportSubmissionService} publishes
+     * a typed record, so the header was written; {@code com.cardemo.config.BatchConfig}'s listener declares a
+     * {@code String} payload and binds the JSON itself, so the header made the framework deserialise the body
+     * into the record <em>before</em> the listener was called and then hand a record where a string was
+     * required. The failure surfaced inside the framework's conversion step - above the listener's own
+     * poison-message handling - so the one message group this queue uses could not drain, and the report
+     * submission bridge that replaces {@code app/csd/CARDDEMO.CSD DEFINE TDQUEUE(JOBS)} was inert. Nothing
+     * caught it because the integration test receives with a raw client rather than through the listener.
+     *
+     * <p>The second was a security defect. The header is an ordinary message attribute, so it is caller
+     * supplied: any principal able to publish to the queue chose a class name that this application then
+     * loaded and instantiated, before any validation of the message ran. That is precisely the
+     * untrusted-input boundary Rule 1 Clause D governs.
+     *
+     * <p>The remedy is one contract applied at both ends rather than a rule at one end. The type header is
+     * <em>not written</em>, by {@link SqsMessagingMessageConverter#doNotSendPayloadTypeHeader()}, and it is
+     * <em>never read</em>, because the payload type mapper installed here returns {@code null} for every
+     * message. With no mapped type the converter delivers the body unchanged, so the listener receives exactly
+     * the bytes that were published and remains the only place that decides what they mean. A listener that
+     * declares a typed parameter still works - the framework supplies that type through the conversion
+     * context, which is declared by this application in its own source rather than chosen by a caller - so the
+     * mechanism removes caller control without removing the framework's.
+     *
+     * <p>Declaring this bean makes the library's own {@code @ConditionalOnMissingBean} converter back off, and
+     * because the same instance is injected into both {@link #sqsTemplate(SqsAsyncClient, ObjectProvider,
+     * MessagingMessageConverter)} and the library's listener container factory, the producer and the consumer
+     * cannot drift apart. The application object mapper is applied here for the same reason the publisher
+     * applies it: it carries the base profile's decimal, date and unknown-property settings, and a converter
+     * without it would bind the queue's JSON by different rules than the rest of the application.
+     *
+     * <p>Nothing here reaches the network, and no queue, topic or bucket is named.
+     *
+     * @param objectMapperProvider the application object mapper if one exists
+     * @return the converter both ends share, configured to neither write nor read a caller-selected payload
+     *         type
+     */
+    @Bean
+    public MessagingMessageConverter<Message> sqsMessagingMessageConverter(
+            final ObjectProvider<ObjectMapper> objectMapperProvider) {
+
+        final SqsMessagingMessageConverter converter = new SqsMessagingMessageConverter();
+        objectMapperProvider.ifAvailable(converter::setObjectMapper);
+        applyRawJsonPayloadContract(converter);
+        return converter;
     }
 
     /**
@@ -1404,6 +1560,11 @@ public class AwsConfig {
         // Reproduces the library's own conditional publisher: converter, object mapper and missing-queue
         // strategy. Dropping the strategy would revert it to creating an absent queue on first send.
         objectMapperProvider.ifAvailable(objectMapper -> applyObjectMapper(messageConverter, objectMapper));
+
+        // The raw-JSON contract is re-applied here as well as in the converter bean, because a deployment
+        // that contributes its own MessagingMessageConverter would otherwise reintroduce the payload type
+        // header on this publisher while the listener still reads text. See sqsMessagingMessageConverter.
+        applyRawJsonPayloadContract(messageConverter);
 
         return SqsTemplate.builder()
                 .sqsAsyncClient(sqsAsyncClient)
@@ -1610,66 +1771,32 @@ public class AwsConfig {
         return AwsConfig::applyNotificationPolicy;
     }
 
-    /**
-     * Verifies, once, that the provisioned report queue really is first-in-first-out - aborting the process when
-     * it is not - and reports, without aborting, whether it also deduplicates on message content.
-     *
-     * <p>The name check in the constructor proves the <em>configuration</em> is coherent. It cannot prove the
-     * queue is: a standard queue created under a {@code .fifo} name satisfies the name check and then silently
-     * drops the ordering guarantee that reproduces {@code DISPOSITION(MOD)}. Only the queue's own attributes
-     * settle it, and reading them needs a network call.
-     *
-     * <p><strong>Finding H-08, severity High, RESOLVED here.</strong> This runner used to require
-     * {@code ContentBasedDeduplication=true} and describe it as the mechanism reproducing the transient data
-     * queue. It is the opposite of that mechanism. {@code DEFINE TDQUEUE(JOBS) ... DISPOSITION(MOD)} in
-     * {@code app/csd/CARDDEMO.CSD} <em>appends</em>, and {@code app/cbl/CORPT00C.cbl:L515-L537} writes
-     * unconditionally with no idempotency key of any kind, so an operator who legitimately re-submitted the
-     * same period twice got two entries in the reader. Content-based deduplication hashes the body, so those
-     * two identical submissions - same report name, same start date, same end date - collapsed into one inside
-     * the five-minute deduplication window, and the second submission was accepted by the endpoint, reported as
-     * published, and then silently discarded by the queue. That is a behaviour change, and the loss is
-     * invisible from the caller's side.
-     *
-     * <p>What actually fixes it is the send path: {@code com.cardemo.service.report.ReportSubmissionService}
-     * supplies an explicit {@code MessageDeduplicationId} generated once per submission, and an explicit
-     * identifier takes precedence over the body hash. That was confirmed against the emulator rather than taken
-     * from documentation - two identical bodies sent with distinct explicit identifiers onto a queue still
-     * reporting {@code ContentBasedDeduplication=true} both arrived, while the same two bodies sent without one
-     * collapsed into a single message. The append parity therefore holds <em>whatever</em> the attribute says,
-     * which is why this runner no longer refuses to start over it. The identifier also buys the guard that
-     * matters in the other direction: a <em>transport</em> retry of one submission re-sends the same identifier
-     * and is collapsed, so the bounded retry strategy on the shared client cannot turn one submission into two.
-     *
-     * <p>The attribute is still expected to be {@code false}, as defence for any future producer that forgets an
-     * identifier, but that expectation is enforced where it can be acted on rather than merely asserted once:
-     * {@code localstack-init/init-aws.sh} creates the queue with it disabled and converges an existing queue
-     * onto that, and {@code com.cardemo.observability.HealthIndicators} re-reads it on every probe so drift is
-     * surfaced continuously. A single startup assertion could not have held that line anyway - unlike
-     * {@code FifoQueue}, which is immutable from creation, this attribute can be changed by any holder of the
-     * queue at any moment, so the check could be falsified immediately after passing while having taken down
-     * request paths that never publish a report at all.
-     *
-     * <p>That call deliberately does <strong>not</strong> happen during context refresh. This class's whole
-     * design keeps refresh free of network traffic, so that a bean is never broken by an emulator being down and
-     * so that no eager call can be made before the endpoint allow-list has been enforced. Running as an
-     * application runner puts the check immediately after refresh, where an exception ends
-     * {@code SpringApplication.run} with a non-zero exit: a startup failure, which is what a broken contract
-     * should be, rather than a warning nobody reads.
-     *
-     * <p>The queue address returned by {@code GetQueueUrl} is used to read the attributes and is then discarded:
-     * it embeds the account identifier and is never logged, never returned and never held in a field.
-     *
-     * <p>Side effects: two read-only calls, bounded by {@value #QUEUE_VERIFICATION_TIMEOUT_SECONDS} seconds
-     * each; one informational log line on success, preceded by one warning when content-based deduplication is
-     * found enabled. It provisions nothing and it changes nothing.
-     *
-     * @param sqsAsyncClient the client configured by the active profile; injected, never constructed
-     * @return the runner performing the one-off verification
-     */
-    @Bean
-    public ApplicationRunner cardDemoFifoQueueContractVerifier(final SqsAsyncClient sqsAsyncClient) {
-        return (final ApplicationArguments args) -> verifyFifoQueueContract(sqsAsyncClient, this.reportQueueName);
-    }
+    // =================================================================================================
+    // THE QUEUE'S OWN ATTRIBUTES ARE NOT VERIFIED FROM HERE, AND THAT IS THE CONTRACT.
+    //
+    // Finding CFG-001, severity High, RESOLVED here. This class used to declare an ApplicationRunner,
+    // cardDemoFifoQueueContractVerifier, which resolved the queue and read its attributes immediately after
+    // context refresh. It was network traffic performed as part of application startup, in the one class
+    // whose stated design keeps refresh free of it, and the AAP's contract for this class allows neither a
+    // runner nor any Java-side provisioning. The two mechanisms that own the check both predate it and both
+    // do more than it could:
+    //
+    //   * localstack-init/init-aws.sh CREATES the queue with FifoQueue true and ContentBasedDeduplication
+    //     false and converges an existing queue onto those attributes. It can act on a divergence; a startup
+    //     assertion could only report one.
+    //   * com.cardemo.observability.HealthIndicators re-reads FifoQueue and ContentBasedDeduplication on
+    //     EVERY readiness probe, through REQUIRED_QUEUE_ATTRIBUTE_VALUES, so drift is surfaced continuously
+    //     rather than once. A one-off check could be falsified microseconds after passing: FifoQueue is fixed
+    //     at creation, but ContentBasedDeduplication is mutable by any holder of the queue at any moment.
+    //
+    // What was genuinely lost is a startup refusal for a standard queue created under a .fifo name. That is
+    // now a readiness failure instead of a start failure, which is the better outcome for a single deployable
+    // that also serves seventeen HTTP endpoints: the process comes up, /actuator/health/readiness reports
+    // DOWN, and no traffic is routed to it - rather than the whole application, including every path that
+    // never publishes a report, refusing to exist because one piece of infrastructure it does not own is
+    // misconfigured. The constructor still refuses a name that is not the logical name plus the .fifo suffix,
+    // which is the half of the contract this class can settle without a network call.
+    // =================================================================================================
 
     /**
      * Applies the explicit deadlines and the bounded retry strategy to one client builder, preserving
@@ -1715,6 +1842,23 @@ public class AwsConfig {
     /**
      * Applies one pair of deadlines and the bounded retry mode, preserving everything already configured.
      *
+     * <p><strong>Finding I-01, informational, DOCUMENTED here.</strong> The retry mode selected below is a
+     * transport-level retry, and a transport-level retry of a request whose <em>response</em> was lost sends
+     * the same request again. For the object and queue clients that is invisible: an object write is keyed and
+     * idempotent, and a queue send carries an explicit deduplication identifier that makes the second attempt
+     * collapse into the first. <strong>Notification publishing has neither property.</strong> The notification
+     * interface offers no deduplication token on a standard topic, so a first publish that succeeded and then
+     * lost its response is retried and delivered twice, and a subscriber therefore observes <em>at least once</em>
+     * rather than exactly once.
+     *
+     * <p>That is stated here, and again on the publishing method, rather than removed. Removing retries from
+     * the notification client would trade a duplicate courtesy message for a lost one, and losing it is worse:
+     * the notification stands in for {@code // NOTIFY=&amp;SYSUID}, which the mainframe delivered on a
+     * best-effort basis and never deduplicated either. No application-level idempotency token is invented for
+     * it because the payload carries no identity a subscriber could key on - see the notification record - and
+     * inventing one would change what the notified party receives. A subscriber that must not act twice on one
+     * notification is expected to be idempotent, which is the ordinary contract of this interface.
+     *
      * @param builder the client builder the library is configuring; never {@code null}
      * @param apiCallTimeoutSeconds the whole-call deadline to impose
      * @param apiCallAttemptTimeoutSeconds the per-attempt deadline to impose
@@ -1731,102 +1875,6 @@ public class AwsConfig {
                 .retryStrategy(RetryMode.STANDARD)
                 .build();
         builder.overrideConfiguration(bounded);
-    }
-
-    /**
-     * Reads the queue's own attributes and fails when the first-in-first-out contract is not met.
-     *
-     * <p>Static and package-private-by-privacy: it takes everything it needs as arguments so that it holds no
-     * state and can be reasoned about on its own.
-     *
-     * @param sqsAsyncClient the queue client
-     * @param queueName      the validated physical queue name
-     * @throws IllegalStateException if the queue cannot be reached, does not exist, or reports attributes that
-     *                               contradict the message-group contract every send relies on
-     */
-    private static void verifyFifoQueueContract(final SqsAsyncClient sqsAsyncClient, final String queueName) {
-        final GetQueueUrlResponse located = awaitQueueCall(
-                sqsAsyncClient.getQueueUrl(GetQueueUrlRequest.builder().queueName(queueName).build()),
-                queueName, "resolve");
-
-        final GetQueueAttributesResponse attributes = awaitQueueCall(
-                sqsAsyncClient.getQueueAttributes(GetQueueAttributesRequest.builder()
-                        .queueUrl(located.queueUrl())
-                        .attributeNames(QueueAttributeName.FIFO_QUEUE,
-                                QueueAttributeName.CONTENT_BASED_DEDUPLICATION)
-                        .build()),
-                queueName, "read the attributes of");
-
-        final Map<QueueAttributeName, String> values = attributes.attributes();
-        requireQueueAttribute(queueName, values, QueueAttributeName.FIFO_QUEUE, true);
-
-        // Finding H-08, severity High. ContentBasedDeduplication is OBSERVED here and deliberately does not
-        // gate startup, for two independent reasons.
-        //
-        // First, it is not what carries the parity. Every send from ReportSubmissionService supplies its own
-        // MessageDeduplicationId, and an explicit identifier OVERRIDES the content hash even while the
-        // attribute is enabled - verified against the emulator, not inferred: two identical bodies sent with
-        // distinct explicit identifiers onto a queue reporting 'true' both arrived, where the same two bodies
-        // sent without one collapsed to a single message. The strictly sequential DISPOSITION(MOD) append of
-        // DEFINE TDQUEUE(JOBS) is therefore reproduced whatever this attribute says, so refusing to start
-        // would buy no parity that the send path does not already guarantee.
-        //
-        // Second, FifoQueue is fixed when the queue is created and can never change, which is what makes
-        // asserting it at startup meaningful. ContentBasedDeduplication is mutable by any holder of the queue
-        // at any moment, so a one-off startup assertion on it can be falsified microseconds after it passes:
-        // it would be a gate that promises an invariant it cannot hold, while taking the whole application
-        // down - including paths that never publish a report - over infrastructure state this process does not
-        // own. Enforcement belongs where it can act rather than merely assert: localstack-init/init-aws.sh
-        // provisions the attribute disabled and converges an existing queue onto it, and HealthIndicators
-        // re-reads it on every probe so live drift is reported continuously instead of once.
-        if (Boolean.parseBoolean(values.get(QueueAttributeName.CONTENT_BASED_DEDUPLICATION))) {
-            LOG.warn("Report queue {} reports {} enabled. Submissions stay correct because each one carries an "
-                            + "explicit deduplication identifier that overrides the content hash, so two "
-                            + "identical report requests are still both delivered; the attribute is "
-                            + "nevertheless expected to be disabled. Re-run localstack-init/init-aws.sh, "
-                            + "which converges an existing queue onto the intended attributes",
-                    queueName, QueueAttributeName.CONTENT_BASED_DEDUPLICATION);
-        }
-
-        LOG.info("Report queue {} verified as FIFO, so the fixed message group every report submission carries, "
-                        + "together with the explicit deduplication identifier each one supplies, reproduces "
-                        + "the strictly sequential append of DEFINE TDQUEUE(JOBS) and two identical "
-                        + "submissions are both delivered",
-                queueName);
-    }
-
-    /**
-     * Awaits one bounded queue call, cancelling it if the deadline passes so that no work is left running.
-     *
-     * @param <T>       the response type
-     * @param pending   the call in flight
-     * @param queueName the queue being verified, named in a failure message; it is a bare name and carries no
-     *                  account identifier
-     * @param operation what was being attempted, phrased to read inside the failure message
-     * @return the response
-     * @throws IllegalStateException if the call fails, times out or is interrupted
-     */
-    private static <T> T awaitQueueCall(final CompletableFuture<T> pending,
-            final String queueName, final String operation) {
-
-        try {
-            return pending.get(QUEUE_VERIFICATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (final TimeoutException deadlineExceeded) {
-            // Cancel rather than abandon: an uncancelled future keeps a connection and a callback alive for as
-            // long as the client's own deadline allows, which is work nobody is waiting for any more.
-            pending.cancel(true);
-            throw queueVerificationFailure(queueName, operation, "the call exceeded its "
-                    + QUEUE_VERIFICATION_TIMEOUT_SECONDS + "-second deadline", deadlineExceeded);
-        } catch (final InterruptedException interrupted) {
-            pending.cancel(true);
-            // Restore the flag before leaving, so the interruption is reported rather than absorbed.
-            Thread.currentThread().interrupt();
-            throw queueVerificationFailure(queueName, operation, "the calling thread was interrupted",
-                    interrupted);
-        } catch (final ExecutionException failed) {
-            throw queueVerificationFailure(queueName, operation,
-                    "the call failed with " + safeExceptionName(failed.getCause()), failed);
-        }
     }
 
     /**
@@ -1986,83 +2034,6 @@ public class AwsConfig {
     }
 
     /**
-     * Proves one queue attribute is present and carries the value the send path depends on.
-     *
-     * <p>The expected value stays a parameter rather than being fixed at {@code true} so that the assertion
-     * reads in whichever direction an attribute requires, but only one attribute is currently asserted through
-     * it: {@code FifoQueue}, which must be {@code true} for the ordering that reproduces the transient data
-     * queue. It is also the only attribute for which a startup assertion is sound, because it is fixed when the
-     * queue is created and cannot subsequently change.
-     *
-     * <p>{@code ContentBasedDeduplication} is deliberately <em>not</em> routed through here. It is mutable at
-     * any moment and it does not carry the parity - the explicit deduplication identifier on every send does -
-     * so {@link #verifyFifoQueueContract(SqsAsyncClient, String)} observes it and warns rather than refusing to
-     * start. Finding H-08, severity High, records the reasoning in full at that call site.
-     *
-     * <p>An <em>absent</em> attribute is treated as {@code false}, which is what the service itself means by
-     * omitting it, so an omitted {@code FifoQueue} correctly fails.
-     *
-     * @param queueName  the queue being verified
-     * @param values     the attributes the service returned
-     * @param attribute  the attribute to check
-     * @param expected   the value the send path requires
-     * @throws IllegalStateException if the attribute does not carry the expected value
-     */
-    private static void requireQueueAttribute(final String queueName,
-            final Map<QueueAttributeName, String> values, final QueueAttributeName attribute,
-            final boolean expected) {
-
-        // Keyed by the enum, never by attribute.toString(): the response map's key type IS the enum, so a
-        // string lookup silently misses every entry and would fail a perfectly compliant queue.
-        if (Boolean.parseBoolean(values.get(attribute)) != expected) {
-            throw queueVerificationFailure(queueName, "verify",
-                    "the queue reports attribute " + attribute + " as '" + values.get(attribute)
-                            + "' rather than '" + expected + "', so the fixed message group every report "
-                            + "submission carries would not reproduce the strictly sequential append of "
-                            + "DEFINE TDQUEUE(JOBS). Re-run localstack-init/init-aws.sh, which provisions the "
-                            + "queue correctly and converges an existing one onto these attributes",
-                    null);
-        }
-    }
-
-    /**
-     * Composes the queue-verification failure, naming the bare queue name and a curated reason.
-     *
-     * <p>The queue <em>address</em> is never named, because it embeds the account identifier, and the software
-     * development kit's own exception is attached as the cause rather than interpolated into the message, so its
-     * endpoint and request diagnostics do not reach a log through this text.
-     *
-     * @param queueName the bare queue name
-     * @param operation what was being attempted
-     * @param reason    the curated reason
-     * @param cause     the underlying failure, or {@code null} when there is none
-     * @return the exception for the caller to throw
-     */
-    private static IllegalStateException queueVerificationFailure(final String queueName, final String operation,
-            final String reason, final Throwable cause) {
-
-        final String message = String.format(Locale.ROOT,
-                "CardDemo could not %s report queue '%s' at startup because %s. Property '%s' names the queue; "
-                        + "localstack-init/init-aws.sh provisions it and is idempotent.",
-                operation, queueName, reason, KEY_REPORT_QUEUE);
-        return cause == null ? new IllegalStateException(message) : new IllegalStateException(message, cause);
-    }
-
-    /**
-     * Names a throwable's type without disclosing anything it carries.
-     *
-     * <p>A software development kit exception's message routinely holds the endpoint, the request identifier and
-     * occasionally the resource address, so the type is reported and the object itself is preserved as a cause
-     * rather than rendered into text.
-     *
-     * @param cause the throwable, possibly {@code null}
-     * @return the fully qualified type name, or a fixed placeholder when there is no cause
-     */
-    private static String safeExceptionName(final Throwable cause) {
-        return cause == null ? "no reported cause" : cause.getClass().getName();
-    }
-
-    /**
      * Applies the application object mapper to the message converter, reproducing the library's own behaviour:
      * the mapper is applied only to a converter that accepts one, and a converter contributed by another bean
      * is left untouched.
@@ -2078,6 +2049,30 @@ public class AwsConfig {
 
         if (messageConverter instanceof SqsMessagingMessageConverter sqsMessageConverter) {
             sqsMessageConverter.setObjectMapper(objectMapper);
+        }
+    }
+
+    /**
+     * Installs the raw-JSON payload contract on a converter: no payload type header written, and no
+     * caller-selected payload type ever resolved.
+     *
+     * <p>See {@link #sqsMessagingMessageConverter(ObjectProvider)} for the finding this closes and for why the
+     * contract has to hold at both ends of the queue rather than at one. This method exists separately so that
+     * the publisher can re-assert it over a converter contributed by another bean, which is the one way the two
+     * ends could otherwise still diverge.
+     *
+     * <p>Static, like every helper reachable from a bean method, so no overridable instance method is invoked
+     * during construction. A converter of another type is left untouched: the two settings are declared by the
+     * library's own abstract converter, and a bean that is not one cannot be configured through it.
+     *
+     * @param messageConverter the converter to constrain; never {@code null}
+     */
+    private static void applyRawJsonPayloadContract(
+            final MessagingMessageConverter<Message> messageConverter) {
+
+        if (messageConverter instanceof final SqsMessagingMessageConverter sqsMessageConverter) {
+            sqsMessageConverter.doNotSendPayloadTypeHeader();
+            sqsMessageConverter.setPayloadTypeMapper(message -> null);
         }
     }
 
@@ -2209,7 +2204,7 @@ public class AwsConfig {
      *       {@code http} safe here, transport security being deferred hardening under AAP 0.3.2;</li>
      *   <li>{@value #APPROVED_ENDPOINT_HOST_PREFIX} and its clone-suffixed forms, matched by
      *       {@link #ALLOWED_COMPOSE_HOST_PATTERN} so that the rule is character for character the one the
-     *       provisioning script applies at {@code localstack-init/init-aws.sh:L721}. The suffix is a hyphen
+     *       provisioning script applies in its {@code ALLOWED_ENDPOINT_HOST_PATTERN}. The suffix is a hyphen
      *       followed by digits and nothing else, because {@code CLONE_INDEX} is a number; an arbitrary
      *       suffix is refused, which is narrower than a prefix test and is the behaviour the script has.</li>
      * </ul>
@@ -2225,7 +2220,8 @@ public class AwsConfig {
      * <p><strong>A sub-domain of the emulator's loopback DNS name is deliberately not accepted</strong>, and
      * that refusal is the one place where this method is narrower than a reachability argument would make it.
      * Such a name does resolve to loopback, so it would have been easy to admit; the provisioning script
-     * records why it is not, at {@code localstack-init/init-aws.sh:L712-L720}, and the reason is measured
+     * records why it is not, in the comment above its own {@code ALLOWED_ENDPOINT_HOSTS}, and the reason is
+     * measured
      * rather than theoretical. Probing the virtual-hosted form passed readiness and then failed provisioning
      * at the queue stage, because a virtual-hosted object-storage name is not a general service edge - so the
      * value would be accepted here and then break at the second service that used it. Least privilege
@@ -2249,15 +2245,18 @@ public class AwsConfig {
      * {@code localstack-init/init-aws.sh} applies and no others.
      *
      * <p>Lower-casing, because DNS names are case-insensitive and the script lower-cases too at
-     * {@code localstack-init/init-aws.sh:L805-L808} - a line its own comment records as the one an upper-cased
+     * {@code localstack-init/init-aws.sh} inside {@code require_local_endpoint} - a step its own comment
+     * records as the one an upper-cased
      * live AWS host defeated in the denylist this replaced. And unwrapping the brackets of an IPv6 address
      * literal, because {@code URI.getHost()} keeps them while the script strips them at
-     * {@code localstack-init/init-aws.sh:L782-L784}; an allowlist obliged to carry both spellings of one address
+     * {@code localstack-init/init-aws.sh} in the same guard; an allowlist obliged to carry both spellings of
+     * one address
      * is an allowlist waiting to drift, and it had two.
      *
      * <p><strong>A trailing dot is deliberately not removed</strong>, which makes {@code http://localhost.:4566}
      * refused. That is not an oversight and not a narrowing for its own sake: the script refuses the
-     * fully-qualified spelling too, saying so in its own words at {@code localstack-init/init-aws.sh:L269-L272} -
+     * fully-qualified spelling too, saying so in its own words in the {@code AWS_ENDPOINT_URL} entry of its
+     * KEY CONFIGS AND DEFAULTS block -
      * "Nothing else, in any case, with or without a trailing dot". Removing the dot here would accept a value the
      * provisioner rejects, which is the same class of defect as accepting a host it rejects, only pointing the
      * other way. The spelling appears in no profile, no compose file and no setup instruction, so refusing it
@@ -2313,7 +2312,7 @@ public class AwsConfig {
      * <p>The value is <strong>parsed</strong> rather than pattern-matched, in the order a URL is actually
      * defined, and anything the parse cannot account for is refused. Every rejection is terminal: there is no
      * branch that accepts an unrecognised value. This mirrors {@code require_local_endpoint} at
-     * {@code localstack-init/init-aws.sh:723-828} check for check, because two guards over the same variable
+     * {@code localstack-init/init-aws.sh} check for check, because two guards over the same variable
      * that disagree about what is acceptable are worse than one:
      *
      * <ol>
@@ -2768,10 +2767,12 @@ public class AwsConfig {
      * that a request leaving this process can be joined to the log records and the span it came from.
      *
      * <p>This is the process-boundary half of what {@code com.cardemo.observability.CorrelationIdFilter} does at
-     * the request boundary. The filter is the direct replacement for {@code EIBTRNID}, the CICS transaction
-     * identifier that was the only per-request thread of identity the frozen corpus had; without this
-     * interceptor that thread stopped at the edge of the application and an object write or a queue publish
-     * carried no identity at all.
+     * the request boundary. Correlation identity is <strong>new capability, not a translation</strong>: the
+     * specification motivates the filter by analogy with {@code EIBTRNID}, but that field is CICS-supplied and
+     * occurs <strong>zero times under {@code app/}</strong>, so no legacy construct is being replaced here. What
+     * the frozen corpus actually carried per request is {@code EIBCALEN} and {@code EIBAID}, neither of which is
+     * an identity. Without this interceptor the identity this application mints at its own edge would stop
+     * there, and an object write or a queue publish would carry none at all.
      *
      * <p><strong>Finding M-07, severity Medium, RESOLVED here.</strong> The correlation header alone names an
      * identifier that only this repository knows how to read, so it correlated <em>logs</em> across the boundary

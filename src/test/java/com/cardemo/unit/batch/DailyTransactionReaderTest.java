@@ -70,10 +70,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.Mock;
 import org.mockito.Mockito;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.dao.QueryTimeoutException;
@@ -120,7 +125,7 @@ import org.springframework.data.domain.SliceImpl;
  *
  * <pre>
  * ./mvnw -B -ntp -Dtest=DailyTransactionReaderTest test
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ./mvnw -B -ntp clean verify
  * </pre>
  *
  * <h2>3. Key configuration and defaults</h2>
@@ -150,6 +155,8 @@ import org.springframework.data.domain.SliceImpl;
  *       correctly, which double-posts or skips rows on a restarted job.
  * </ul>
  */
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.STRICT_STUBS)
 @DisplayName("DailyTransactionReader: CBTRN02C's DALYTRAN read path")
 class DailyTransactionReaderTest {
 
@@ -161,6 +168,15 @@ class DailyTransactionReaderTest {
 
     /** The reader's own default object key, restated because the constant on it is private. */
     private static final String OBJECT_KEY = "dalytran/dailytran.txt";
+
+    /**
+     * The signing key the object-authenticity key is derived from, at least the thirty-two bytes the
+     * algorithm requires. A test literal, never a shipped default: finding M-11 forbids any committed key.
+     */
+    private static final String SIGNING_KEY = "daily-transaction-reader-test-signing-key-0123456789";
+
+    /** The writer identity the stubbed object claims, carried inside the authenticated manifest. */
+    private static final String WRITER = "carddemo-fixture-feed";
 
     /** The {@code repository} input selector. */
     private static final String SOURCE_REPOSITORY = "repository";
@@ -190,10 +206,10 @@ class DailyTransactionReaderTest {
     private static final String ORIGINATING_TIMESTAMP = "2022-06-10 19:27:53.000000";
 
     /** The staged relation, mocked: only {@code count} and the ordered finder are ever called. */
-    private DailyTransactionRepository repository;
+    @Mock private DailyTransactionRepository repository;
 
     /** The object store, mocked: only {@code objectExists} and {@code download} are ever called. */
-    private S3Operations objectStorage;
+    @Mock private S3Operations objectStorage;
 
     /** Captures the reader's own log events so the DISPLAY-parity lines can be asserted. */
     private ListAppender<ILoggingEvent> appender;
@@ -207,8 +223,6 @@ class DailyTransactionReaderTest {
     /** Builds the collaborators and attaches the log appender. */
     @BeforeEach
     void buildCollaboratorsAndCaptureLogs() {
-        repository = Mockito.mock(DailyTransactionRepository.class);
-        objectStorage = Mockito.mock(S3Operations.class);
         appender = new ListAppender<>();
         appender.start();
         logger = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(DailyTransactionReader.class);
@@ -233,7 +247,7 @@ class DailyTransactionReaderTest {
      */
     private DailyTransactionReader repositoryReader(final int pageSize) {
         return new DailyTransactionReader(repository, objectStorage, new FileStatusMapper(),
-                SOURCE_REPOSITORY, pageSize, "", OBJECT_KEY);
+                SOURCE_REPOSITORY, pageSize, "", OBJECT_KEY, SIGNING_KEY);
     }
 
     /**
@@ -243,27 +257,62 @@ class DailyTransactionReaderTest {
      */
     private DailyTransactionReader fixedWidthReader() {
         return new DailyTransactionReader(repository, objectStorage, new FileStatusMapper(),
-                SOURCE_FIXED_WIDTH, 100, INPUT_BUCKET, OBJECT_KEY);
+                SOURCE_FIXED_WIDTH, 100, INPUT_BUCKET, OBJECT_KEY, SIGNING_KEY);
     }
 
     /**
-     * Stubs the object store to serve the supplied 350-character images, newline separated.
+     * Stubs the object store to serve the supplied 350-character images concatenated with no separator.
+     *
+     * <p>Undelimited deliberately, and this helper used to append a newline after every image. That shape is
+     * not the dataset: {@code app/cbl/CBTRN02C.cbl:L66-L69} declares one fixed 350-character record group
+     * over the {@code ORGANIZATION IS SEQUENTIAL} file of {@code :L29-L32}, so the record boundary is the
+     * record length and the object carries no delimiter at all. Building the body the old way meant every
+     * case on this path exercised a tolerance the production reader no longer has, and none of them
+     * exercised the shape the reader actually receives.
      *
      * @param images the record images, each already exactly {@value #RECORD_LENGTH} characters
      */
     private void stubObject(final List<String> images) {
-        final StringBuilder body = new StringBuilder(images.size() * (RECORD_LENGTH + 1));
-        images.forEach(image -> body.append(image).append('\n'));
+        final StringBuilder body = new StringBuilder(images.size() * RECORD_LENGTH);
+        images.forEach(body::append);
         stubObjectBody(body.toString());
     }
 
     /**
-     * Stubs the object store to serve exactly the supplied body, terminators included.
+     * Stubs the object store to serve exactly the supplied body, byte for byte, separators included.
      *
      * @param body the object content, byte for byte
      */
     private void stubObjectBody(final String body) {
+        stubObjectBody(body, true, true);
+    }
+
+    /**
+     * Stubs the object store to serve exactly the supplied body, with control over its authenticity envelope.
+     *
+     * <p>Finding M-11: every {@code fixed-width} test reaches the reader through here, so the envelope is
+     * built in ONE place and every existing test is authenticated by construction rather than by each test
+     * remembering to sign. The two flags exist so the refusal paths can be exercised without a second stub.
+     *
+     * @param body the object content, byte for byte
+     * @param signed whether the object carries a valid code for its own manifest
+     * @param digestMatches whether the declared content digest is the digest of {@code body}
+     */
+    private void stubObjectBody(final String body, final boolean signed, final boolean digestMatches) {
         final S3Resource resource = Mockito.mock(S3Resource.class);
+        final byte[] content = body.getBytes(StandardCharsets.ISO_8859_1);
+        final String declaredDigest = digestMatches
+                ? sha256HexOf(content)
+                : sha256HexOf("a different body of the same declared length".getBytes(StandardCharsets.UTF_8));
+        Mockito.when(resource.contentLength()).thenReturn(Long.valueOf(content.length));
+        Mockito.when(resource.metadata()).thenReturn(java.util.Map.of(
+                DailyTransactionReader.InputObjectEnvelope.METADATA_WRITER, WRITER,
+                DailyTransactionReader.InputObjectEnvelope.METADATA_CONTENT_SHA256, declaredDigest,
+                DailyTransactionReader.InputObjectEnvelope.METADATA_SIGNATURE,
+                signed
+                        ? DailyTransactionReader.InputObjectEnvelope.sign(INPUT_BUCKET, OBJECT_KEY,
+                                content.length, WRITER, declaredDigest, SIGNING_KEY)
+                        : "v1=00"));
         Mockito.when(objectStorage.objectExists(INPUT_BUCKET, OBJECT_KEY)).thenReturn(Boolean.TRUE);
         Mockito.when(objectStorage.download(INPUT_BUCKET, OBJECT_KEY)).thenReturn(resource);
         try {
@@ -274,6 +323,20 @@ class DailyTransactionReaderTest {
         } catch (final IOException impossible) {
             throw new IllegalStateException("stubbing getInputStream cannot perform I/O", impossible);
         }
+    }
+
+    /**
+     * Renders the SHA-256 of content the way the producer contract requires: lowercase hexadecimal.
+     *
+     * <p>Uses the published contract rather than a second implementation, because a test that reimplemented
+     * the rendering would prove only that the two implementations agreed with each other.
+     *
+     * @param content the bytes to digest
+     * @return the rendering, never {@code null}
+     */
+    private static String sha256HexOf(final byte[] content) {
+        return DailyTransactionReader.InputObjectEnvelope.hexadecimal(
+                DailyTransactionReader.InputObjectEnvelope.newDigest().digest(content));
     }
 
     /**
@@ -640,25 +703,49 @@ class DailyTransactionReaderTest {
         }
 
         @Test
-        @DisplayName("records separated by a carriage return and line feed decode the same way")
-        void carriageReturnTerminatorsAreConsumed() {
+        @DisplayName("a carriage return or line feed between records is refused, not consumed")
+        void aRecordSeparatorIsRefused() {
             final String first = imageWithAmount("0000005047G");
             final String second = imageWithAmount("0000009190}");
             stubObjectBody(first + "\r\n" + second + "\r\n");
             final DailyTransactionReader reader = fixedWidthReader();
             reader.open(new ExecutionContext());
 
-            final List<DailyTransaction> produced = drain(reader);
-            reader.close();
+            final DataIntegrityException refusal =
+                    catchThrowableOfType(DataIntegrityException.class, reader::read);
 
-            assertThat(produced).hasSize(2);
-            assertThat(produced.get(0).getAmount()).isEqualByComparingTo(new BigDecimal("504.77"));
-            assertThat(produced.get(1).getAmount()).isEqualByComparingTo(new BigDecimal("-919.00"));
+            assertThat(refusal).isNotNull();
+            // Tolerating the separator was the defect. app/cbl/CBTRN02C.cbl:L66-L69 declares one fixed
+            // 350-character record group with no delimiter, so a separator can only mean the object was not
+            // written by this application or was truncated in transfer - and consuming it made corrupt
+            // geometry indistinguishable from valid input, because every record after the first stray byte
+            // would be decoded as though it were still aligned.
+            assertThat(refusal.getMessage())
+                    .contains("separator")
+                    .contains("0x0D")
+                    .contains("CBTRN02C");
         }
 
         @Test
-        @DisplayName("an object with no terminator at all still yields its records")
-        void aTerminatorlessObjectStillDecodes() {
+        @DisplayName("a line feed after the last record is refused too, so a trailing newline cannot pass")
+        void aTrailingLineFeedIsRefused() {
+            stubObjectBody(imageWithAmount("0000005047G") + "\n");
+            final DailyTransactionReader reader = fixedWidthReader();
+            reader.open(new ExecutionContext());
+
+            final DataIntegrityException refusal =
+                    catchThrowableOfType(DataIntegrityException.class, reader::read);
+
+            assertThat(refusal).isNotNull();
+            // 351 bytes is not a whole multiple of 350. The rule is enforced by construction rather than by
+            // a length probe: a separator after a whole record is refused here, and a short final read is
+            // refused as a truncated record, so no object of a non-multiple length can be consumed silently.
+            assertThat(refusal.getMessage()).contains("separator").contains("0x0A");
+        }
+
+        @Test
+        @DisplayName("an undelimited object yields its records, which is the RECFM=FB shape")
+        void anUndelimitedObjectDecodes() {
             stubObjectBody(imageWithAmount("0000005047G") + imageWithAmount("0000000678H"));
             final DailyTransactionReader reader = fixedWidthReader();
             reader.open(new ExecutionContext());
@@ -666,9 +753,11 @@ class DailyTransactionReaderTest {
             final List<DailyTransaction> produced = drain(reader);
             reader.close();
 
-            // The mainframe dataset is RECFM=FB with no delimiter, so a terminatorless object is the
-            // faithful shape and must not depend on a newline being present.
+            // The mainframe dataset carries no delimiter, so this is the only shape the fixed-width path
+            // accepts, and the object length is exactly twice the record length.
             assertThat(produced).hasSize(2);
+            assertThat(produced.get(0).getAmount()).isEqualByComparingTo(new BigDecimal("504.77"));
+            assertThat(produced.get(1).getAmount()).isEqualByComparingTo(new BigDecimal("67.88"));
         }
     }
 
@@ -777,7 +866,7 @@ class DailyTransactionReaderTest {
         @DisplayName("the selector is case-insensitive and accepts a hyphen or an underscore")
         void theSelectorIsCaseInsensitive(final String configured) {
             assertThat(new DailyTransactionReader(repository, objectStorage, new FileStatusMapper(),
-                    configured, 100, INPUT_BUCKET, OBJECT_KEY))
+                    configured, 100, INPUT_BUCKET, OBJECT_KEY, SIGNING_KEY))
                     .as("both branches are reachable, so neither is dead code")
                     .isNotNull();
         }
@@ -787,7 +876,7 @@ class DailyTransactionReaderTest {
         void anUnknownSelectorIsRefusedAtConstruction() {
             assertThatIllegalArgumentException().isThrownBy(() -> new DailyTransactionReader(
                     repository, objectStorage, new FileStatusMapper(), "vsam", 100, INPUT_BUCKET,
-                    OBJECT_KEY))
+                    OBJECT_KEY, SIGNING_KEY))
                     .withMessageContaining("repository")
                     .withMessageContaining("fixed-width");
         }
@@ -797,7 +886,7 @@ class DailyTransactionReaderTest {
         void theFixedWidthPathRequiresABucket() {
             assertThatIllegalArgumentException().isThrownBy(() -> new DailyTransactionReader(
                     repository, objectStorage, new FileStatusMapper(), SOURCE_FIXED_WIDTH, 100, "  ",
-                    OBJECT_KEY))
+                    OBJECT_KEY, SIGNING_KEY))
                     .withMessageContaining("carddemo.aws.s3.batch-input-bucket");
         }
     }
@@ -956,6 +1045,54 @@ class DailyTransactionReaderTest {
                     .hasSize(2);
             assertThat(reader.getRecordsRead()).isEqualTo(2L);
         }
+
+        @Test
+        @DisplayName("open() tolerates a null context, so the reader is drivable without a step")
+        void openToleratesANullContext() {
+            stubRelation(List.of());
+            final DailyTransactionReader reader = repositoryReader(100);
+
+            reader.open(null);
+
+            assertThat(reader.read())
+                    .as("a test or a diagnostic harness may drive the reader without a step, and refusing a "
+                            + "null context would make that impossible for no gain. The null branch at "
+                            + "DailyTransactionReader:992 is a handled case rather than a guarded "
+                            + "assumption, and it is distinct from update(null): open() decides whether to "
+                            + "restore a checkpoint, update() decides whether to write one, and exercising "
+                            + "the second says nothing about the first")
+                    .isNull();
+            reader.close();
+            assertThat(reader.getRecordsRead())
+                    .as("and the cold start really happened: no checkpoint was restored from nowhere")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("a failed open() leaves the reader closed, so a later read reports the wiring error")
+        void aFailedOpenLeavesTheReaderClosed() {
+            Mockito.when(objectStorage.objectExists(INPUT_BUCKET, OBJECT_KEY)).thenReturn(Boolean.FALSE);
+            final DailyTransactionReader reader = fixedWidthReader();
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .as("an absent object is FILE STATUS '35' and abends, which is the precondition for "
+                            + "this test rather than its subject")
+                    .isThrownBy(() -> reader.open(new ExecutionContext()));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .as("""
+                            The open failed, so the reader must still be CLOSED - and a read against a \
+                            closed reader reports the wiring error rather than end of file. Answering null \
+                            here would be the damaging outcome: a step whose open() abended would look like \
+                            a step whose input was legitimately empty, and the run would report success \
+                            having posted nothing. The state is asserted through the observable read \
+                            because fileOpen is private, which is the correct level to assert it at.""")
+                    .isThrownBy(reader::read)
+                    .withMessageContaining("read() called before open(ExecutionContext)");
+            assertThat(reader.getRecordsRead())
+                    .as("and nothing was counted as read")
+                    .isZero();
+        }
     }
 
     /** The whole 300-row fixture, decoded end to end. */
@@ -1106,15 +1243,15 @@ class DailyTransactionReaderTest {
         void everyCollaboratorIsGuarded() {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new DailyTransactionReader(null, objectStorage,
-                            new FileStatusMapper(), SOURCE_REPOSITORY, 100, "", OBJECT_KEY))
+                            new FileStatusMapper(), SOURCE_REPOSITORY, 100, "", OBJECT_KEY, SIGNING_KEY))
                     .withMessageContaining("dailyTransactionRepository");
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new DailyTransactionReader(repository, null,
-                            new FileStatusMapper(), SOURCE_REPOSITORY, 100, "", OBJECT_KEY))
+                            new FileStatusMapper(), SOURCE_REPOSITORY, 100, "", OBJECT_KEY, SIGNING_KEY))
                     .withMessageContaining("objectStorage");
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new DailyTransactionReader(repository, objectStorage, null,
-                            SOURCE_REPOSITORY, 100, "", OBJECT_KEY))
+                            SOURCE_REPOSITORY, 100, "", OBJECT_KEY, SIGNING_KEY))
                     .withMessageContaining("fileStatusMapper");
         }
 
@@ -1124,7 +1261,7 @@ class DailyTransactionReaderTest {
         void aNonPositivePageSizeIsRefused(final int pageSize) {
             assertThatIllegalArgumentException().isThrownBy(() -> new DailyTransactionReader(
                     repository, objectStorage, new FileStatusMapper(), SOURCE_REPOSITORY, pageSize, "",
-                    OBJECT_KEY));
+                    OBJECT_KEY, SIGNING_KEY));
         }
 
         @Test
@@ -1132,7 +1269,7 @@ class DailyTransactionReaderTest {
         void aBlankObjectKeyIsRefused() {
             assertThatIllegalArgumentException().isThrownBy(() -> new DailyTransactionReader(
                     repository, objectStorage, new FileStatusMapper(), SOURCE_FIXED_WIDTH, 100,
-                    INPUT_BUCKET, "   "));
+                    INPUT_BUCKET, "   ", SIGNING_KEY));
         }
 
         @Test
@@ -1181,15 +1318,362 @@ class DailyTransactionReaderTest {
     void theStubServesAFreshStreamPerDownload() throws IOException {
         stubObject(List.of(imageWithAmount("0000005047G")));
 
-        final InputStream first = objectStorage.download(INPUT_BUCKET, OBJECT_KEY).getInputStream();
+        final S3Resource downloaded = objectStorage.download(INPUT_BUCKET, OBJECT_KEY);
+        final InputStream first = downloaded.getInputStream();
         final InputStream second = objectStorage.download(INPUT_BUCKET, OBJECT_KEY).getInputStream();
 
+        // The envelope the helper establishes is asserted here too, and not only the stream. The reader's
+        // open() reads the declared length and the three metadata entries of finding M-11 before it reads a
+        // byte of body, so a harness that stubbed them and never exercised them would be describing a
+        // precondition it had not proved - which strict stubs reports as an unnecessary stubbing rather than
+        // letting it pass quietly.
+        assertThat(downloaded.contentLength())
+                .as("the declared length the envelope is computed over")
+                .isEqualTo(RECORD_LENGTH);
+        assertThat(downloaded.metadata())
+                .as("and the three entries the envelope carries, so the helper is fully exercised")
+                .containsKeys(DailyTransactionReader.InputObjectEnvelope.METADATA_WRITER,
+                        DailyTransactionReader.InputObjectEnvelope.METADATA_CONTENT_SHA256,
+                        DailyTransactionReader.InputObjectEnvelope.METADATA_SIGNATURE);
+
+        assertThat(objectStorage.objectExists(INPUT_BUCKET, OBJECT_KEY))
+                .as("the helper establishes the whole precondition the reader's open() checks - the object "
+                        + "exists AND downloads - so both halves are asserted here rather than one. Strict "
+                        + "stubs is what makes that omission visible: a half-exercised helper reports as an "
+                        + "unnecessary stubbing rather than passing quietly")
+                .isTrue();
         assertThat(first).isNotSameAs(second);
-        assertThat(first.readAllBytes()).hasSize(RECORD_LENGTH + 1);
+        assertThat(first.readAllBytes())
+                .as("one image, undelimited: the stubbed body is exactly one record and carries no separator")
+                .hasSize(RECORD_LENGTH);
         assertThat(second.readAllBytes())
                 .as("a shared stream would make the reusable-instance test above pass for the wrong reason")
-                .hasSize(RECORD_LENGTH + 1);
+                .hasSize(RECORD_LENGTH);
         first.close();
         second.close();
+    }
+
+    /**
+     * Stubs an input object with an arbitrary envelope, so a refusal path can be exercised precisely.
+     *
+     * @param body the object content, byte for byte
+     * @param metadata the user metadata to serve, exactly as given
+     * @param declaredLength the content length the store reports, which need not match {@code body}
+     * @return the stubbed object, so a test can assert what was and was not asked of it
+     */
+    private S3Resource stubObjectWithEnvelope(final String body, final java.util.Map<String, String> metadata,
+            final long declaredLength) {
+
+        final S3Resource resource = Mockito.mock(S3Resource.class);
+        Mockito.lenient().when(resource.contentLength()).thenReturn(Long.valueOf(declaredLength));
+        Mockito.lenient().when(resource.metadata()).thenReturn(metadata);
+        Mockito.when(objectStorage.objectExists(INPUT_BUCKET, OBJECT_KEY)).thenReturn(Boolean.TRUE);
+        Mockito.when(objectStorage.download(INPUT_BUCKET, OBJECT_KEY)).thenReturn(resource);
+        try {
+            Mockito.lenient().when(resource.getInputStream()).thenAnswer(invocation ->
+                    new ByteArrayInputStream(body.getBytes(StandardCharsets.ISO_8859_1)));
+        } catch (final IOException impossible) {
+            throw new IllegalStateException("stubbing getInputStream cannot perform I/O", impossible);
+        }
+        return resource;
+    }
+
+    /**
+     * Builds a complete, valid envelope for a body, then applies one substitution to it.
+     *
+     * @param body the object content the envelope describes
+     * @param member the metadata member to replace, or {@code null} to leave the envelope intact
+     * @param replacement the value to put in its place
+     * @return the metadata map to serve
+     */
+    private static java.util.Map<String, String> envelopeFor(final String body, final String member,
+            final String replacement) {
+
+        final byte[] content = body.getBytes(StandardCharsets.ISO_8859_1);
+        final String digest = sha256HexOf(content);
+        final java.util.Map<String, String> envelope = new java.util.LinkedHashMap<>();
+        envelope.put(DailyTransactionReader.InputObjectEnvelope.METADATA_WRITER, WRITER);
+        envelope.put(DailyTransactionReader.InputObjectEnvelope.METADATA_CONTENT_SHA256, digest);
+        envelope.put(DailyTransactionReader.InputObjectEnvelope.METADATA_SIGNATURE,
+                DailyTransactionReader.InputObjectEnvelope.sign(INPUT_BUCKET, OBJECT_KEY, content.length,
+                        WRITER, digest, SIGNING_KEY));
+        if (member != null) {
+            envelope.put(member, replacement);
+        }
+        return java.util.Map.copyOf(envelope);
+    }
+
+    /**
+     * Finding M-11: the external input object is authenticated before a record is parsed.
+     *
+     * <p>Every test here asserts <em>two</em> things, because either alone would be satisfiable by a broken
+     * implementation: that the refusal happened, and that <b>no content was consumed</b>. A control that
+     * refuses only after the records have been read and posted is not a control.
+     */
+    @Nested
+    @DisplayName("8. M-11: the input object is refused unless it is vouched for")
+    class InputObjectAuthenticity {
+
+        /**
+         * Creates the authenticity group.
+         *
+         * <p>Declared explicitly because the enclosing class declares its own constructors.
+         */
+        InputObjectAuthenticity() {
+            // Intentionally empty; each test stubs the envelope it needs.
+        }
+
+        @Test
+        @DisplayName("a validly vouched-for object is read, and the log names the writer, never the key")
+        void aVouchedForObjectIsRead() {
+            stubObject(List.of(imageWithAmount("0000005047G")));
+            final DailyTransactionReader reader = fixedWidthReader();
+
+            reader.open(new ExecutionContext());
+            final List<DailyTransaction> produced = drain(reader);
+            reader.close();
+
+            assertThat(produced).hasSize(1);
+            assertThat(loggedMessages())
+                    .anyMatch(message -> message.contains("authenticity verified")
+                            && message.contains(WRITER)
+                            && !message.contains(OBJECT_KEY));
+        }
+
+        @Test
+        @DisplayName("an object carrying no envelope at all is refused, and nothing is read")
+        void anUnsignedObjectIsRefused() {
+            final S3Resource resource = stubObjectWithEnvelope(imageWithAmount("0000005047G") + "\n",
+                    java.util.Map.of(), RECORD_LENGTH + 1L);
+            final DailyTransactionReader reader = fixedWidthReader();
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> reader.open(new ExecutionContext()))
+                    .satisfies(refusal -> assertThat(refusal.getAbendReason())
+                            .isEqualTo("DALYTRAN INPUT NOT AUTHENTIC"));
+
+            verifyNothingWasRead(resource);
+        }
+
+        @Test
+        @DisplayName("a forged code is refused before the content is even read")
+        void aForgedCodeIsRefused() {
+            final String body = imageWithAmount("0000005047G") + "\n";
+            final S3Resource resource = stubObjectWithEnvelope(body,
+                    envelopeFor(body, DailyTransactionReader.InputObjectEnvelope.METADATA_SIGNATURE,
+                            "v1=" + "ab".repeat(32)),
+                    body.length());
+            final DailyTransactionReader reader = fixedWidthReader();
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> reader.open(new ExecutionContext()));
+
+            verifyNothingWasRead(resource);
+        }
+
+        @ParameterizedTest
+        @CsvSource({
+            "v2=00,a version this implementation does not produce",
+            "00,no version prefix at all",
+            "v1=,an empty code",
+            "v1=ABCDEF,uppercase hexadecimal",
+            "v1=abc,an odd number of digits",
+        })
+        @DisplayName("a malformed code is refused, whatever way it is malformed")
+        void aMalformedCodeIsRefused(final String presented, final String description) {
+            final String body = imageWithAmount("0000005047G") + "\n";
+            final S3Resource resource = stubObjectWithEnvelope(body,
+                    envelopeFor(body, DailyTransactionReader.InputObjectEnvelope.METADATA_SIGNATURE,
+                            presented),
+                    body.length());
+            final DailyTransactionReader reader = fixedWidthReader();
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .as(description)
+                    .isThrownBy(() -> reader.open(new ExecutionContext()));
+
+            verifyNothingWasRead(resource);
+        }
+
+        @Test
+        @DisplayName("a valid envelope copied onto a different body of the same length is refused")
+        void aBodySubstitutionUnderAValidEnvelopeIsRefused() {
+            // The failure mode a signature check ALONE would accept: the manifest is genuinely signed, the
+            // declared length still matches, and only the bytes are somebody else's. This is why the digest
+            // pass exists.
+            stubObjectBody(imageWithAmount("0000005047G") + "\n", true, false);
+            final DailyTransactionReader reader = fixedWidthReader();
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> reader.open(new ExecutionContext()))
+                    .satisfies(refusal -> assertThat(refusal.getAbendReason())
+                            .isEqualTo("DALYTRAN INPUT NOT AUTHENTIC"));
+
+            assertThat(drainIsUnreachable(reader)).isTrue();
+        }
+
+        @Test
+        @DisplayName("a declared length that disagrees with the content is refused")
+        void aLengthDisagreementIsRefused() {
+            final String body = imageWithAmount("0000005047G") + "\n";
+            // Signed for a length the body does not have, so the manifest verifies against its own claim and
+            // the measured pass is what catches the truncation.
+            final byte[] content = body.getBytes(StandardCharsets.ISO_8859_1);
+            final String digest = sha256HexOf(content);
+            final long lie = content.length + 1L;
+            stubObjectWithEnvelope(body, java.util.Map.of(
+                    DailyTransactionReader.InputObjectEnvelope.METADATA_WRITER, WRITER,
+                    DailyTransactionReader.InputObjectEnvelope.METADATA_CONTENT_SHA256, digest,
+                    DailyTransactionReader.InputObjectEnvelope.METADATA_SIGNATURE,
+                    DailyTransactionReader.InputObjectEnvelope.sign(INPUT_BUCKET, OBJECT_KEY, lie, WRITER,
+                            digest, SIGNING_KEY)), lie);
+            final DailyTransactionReader reader = fixedWidthReader();
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> reader.open(new ExecutionContext()));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+            "carddemo\nforged log line",
+            "",
+            "0123456789012345678901234567890123456789012345678901234567890123456789",
+        })
+        @DisplayName("an unusable writer identity is refused, so it can never reach a log line")
+        void anUnusableWriterIsRefused(final String writer) {
+            final String body = imageWithAmount("0000005047G") + "\n";
+            final byte[] content = body.getBytes(StandardCharsets.ISO_8859_1);
+            final String digest = sha256HexOf(content);
+            final java.util.Map<String, String> envelope = new java.util.LinkedHashMap<>();
+            envelope.put(DailyTransactionReader.InputObjectEnvelope.METADATA_WRITER, writer);
+            envelope.put(DailyTransactionReader.InputObjectEnvelope.METADATA_CONTENT_SHA256, digest);
+            envelope.put(DailyTransactionReader.InputObjectEnvelope.METADATA_SIGNATURE,
+                    DailyTransactionReader.InputObjectEnvelope.sign(INPUT_BUCKET, OBJECT_KEY, content.length,
+                            writer, digest, SIGNING_KEY));
+            final S3Resource resource = stubObjectWithEnvelope(body, envelope, content.length);
+            final DailyTransactionReader reader = fixedWidthReader();
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> reader.open(new ExecutionContext()));
+
+            verifyNothingWasRead(resource);
+        }
+
+        @Test
+        @DisplayName("the refusal names the dataset and the bucket, and never the key, writer or digest")
+        void theRefusalDisclosesNothing() {
+            final String body = imageWithAmount("0000005047G") + "\n";
+            stubObjectWithEnvelope(body, java.util.Map.of(), body.length());
+            final DailyTransactionReader reader = fixedWidthReader();
+
+            final FatalProcessingException refusal = catchThrowableOfType(FatalProcessingException.class,
+                    () -> reader.open(new ExecutionContext()));
+
+            assertThat(refusal).isNotNull();
+            assertThat(refusal.getAbendCode())
+                    .as("the abend payload of app/cpy/CSMSG02Y.cpy, unchanged for this refusal")
+                    .isEqualTo("999");
+            assertThat(refusal.getMessage())
+                    .contains("DALYTRAN")
+                    .contains(INPUT_BUCKET)
+                    .doesNotContain(OBJECT_KEY)
+                    .doesNotContain(WRITER);
+        }
+
+        @Test
+        @DisplayName("an object validly signed for another location does not verify here")
+        void aSignatureIsBoundToItsBucketAndKey() {
+            // Binding bucket and key into the manifest is what stops a stale, genuinely signed generation
+            // being copied over today's input and accepted.
+            final String body = imageWithAmount("0000005047G") + "\n";
+            final byte[] content = body.getBytes(StandardCharsets.ISO_8859_1);
+            final String digest = sha256HexOf(content);
+            stubObjectWithEnvelope(body, java.util.Map.of(
+                    DailyTransactionReader.InputObjectEnvelope.METADATA_WRITER, WRITER,
+                    DailyTransactionReader.InputObjectEnvelope.METADATA_CONTENT_SHA256, digest,
+                    DailyTransactionReader.InputObjectEnvelope.METADATA_SIGNATURE,
+                    DailyTransactionReader.InputObjectEnvelope.sign(INPUT_BUCKET,
+                            "dalytran/2000-01-01/dailytran.txt", content.length, WRITER, digest,
+                            SIGNING_KEY)), content.length);
+            final DailyTransactionReader reader = fixedWidthReader();
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> reader.open(new ExecutionContext()));
+        }
+
+        @Test
+        @DisplayName("the code matches the documented producer recipe, computed independently here")
+        void theCodeMatchesTheDocumentedRecipe() throws Exception {
+            // Computed with javax.crypto directly rather than through the contract, so this test pins the
+            // RECIPE - the derivation label, the two-step key derivation and the six-line canonical manifest -
+            // instead of merely agreeing with the implementation about itself. A producer outside this
+            // repository has only the documentation, so the documentation is what has to be true.
+            final String body = imageWithAmount("0000005047G") + "\n";
+            final byte[] content = body.getBytes(StandardCharsets.ISO_8859_1);
+            final String digest = sha256HexOf(content);
+            final String label = DailyTransactionReader.InputObjectEnvelope.KEY_DERIVATION_LABEL;
+            final String manifest = label + '\n' + INPUT_BUCKET + '\n' + OBJECT_KEY + '\n'
+                    + content.length + '\n' + WRITER + '\n' + digest;
+
+            final javax.crypto.Mac derivation = javax.crypto.Mac.getInstance("HmacSHA256");
+            derivation.init(new javax.crypto.spec.SecretKeySpec(
+                    SIGNING_KEY.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            final byte[] purposeKey = derivation.doFinal(label.getBytes(StandardCharsets.UTF_8));
+            final javax.crypto.Mac code = javax.crypto.Mac.getInstance("HmacSHA256");
+            code.init(new javax.crypto.spec.SecretKeySpec(purposeKey, "HmacSHA256"));
+            final String expected = "v1=" + DailyTransactionReader.InputObjectEnvelope.hexadecimal(
+                    code.doFinal(manifest.getBytes(StandardCharsets.UTF_8)));
+
+            assertThat(DailyTransactionReader.InputObjectEnvelope.sign(INPUT_BUCKET, OBJECT_KEY,
+                    content.length, WRITER, digest, SIGNING_KEY))
+                    .isEqualTo(expected);
+        }
+
+        @Test
+        @DisplayName("the object path cannot be selected without the key the envelope is derived from")
+        void theObjectPathRequiresTheSigningKey() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new DailyTransactionReader(repository, objectStorage,
+                            new FileStatusMapper(), SOURCE_FIXED_WIDTH, 100, INPUT_BUCKET, OBJECT_KEY, "  "))
+                    .withMessageContaining("carddemo.security.jwt.signing-key")
+                    .withMessageContaining("no unverified mode");
+        }
+
+        @Test
+        @DisplayName("the repository path needs no key, because it reads nothing external")
+        void theRepositoryPathNeedsNoKey() {
+            assertThat(new DailyTransactionReader(repository, objectStorage, new FileStatusMapper(),
+                    SOURCE_REPOSITORY, 100, "", OBJECT_KEY, ""))
+                    .as("both branches must stay reachable; requiring a key here would be a false prerequisite")
+                    .isNotNull();
+        }
+
+        /**
+         * Asserts that a refusal happened before any content was consumed.
+         *
+         * @param resource the stubbed object the reader was pointed at
+         */
+        private void verifyNothingWasRead(final S3Resource resource) {
+            try {
+                Mockito.verify(resource, Mockito.never()).getInputStream();
+            } catch (final IOException impossible) {
+                throw new IllegalStateException("verifying a stub cannot perform I/O", impossible);
+            }
+        }
+
+        /**
+         * Reports whether the reader refuses to hand out a record after a failed open.
+         *
+         * @param reader the reader whose open was refused
+         * @return true when reading is refused rather than silently returning records
+         */
+        private boolean drainIsUnreachable(final DailyTransactionReader reader) {
+            try {
+                reader.read();
+                return false;
+            } catch (final IllegalStateException refused) {
+                return true;
+            }
+        }
     }
 }

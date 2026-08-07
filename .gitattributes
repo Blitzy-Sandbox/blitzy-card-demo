@@ -183,6 +183,34 @@ src/test/resources/**/*.txt  text eol=lf
 # ---- exactly as the eol rule above does, so it cannot reach app/.
 src/test/resources/**/*.txt  whitespace=-blank-at-eol
 
+# ---- The Gate 1 parity ORACLE: the captured output of the frozen
+# ---- app/cbl/CBTRN02C.cbl, one fixed-width record per LF-delimited line. The
+# ---- widths are load-bearing in exactly the way the fixtures above are, and
+# ---- more sharply, because a comparison is made against them character by
+# ---- character: DALYREJS.expected is 38 lines of 430, TRANSACT.expected 262 of
+# ---- 304, ACCTDATA.expected 50 of 300 and TCATBALF.expected 100 of 50. A clone
+# ---- made with core.autocrlf=true would add one CR per record, and the loader
+# ---- checks each line against the width its provenance record declares, so the
+# ---- run would fail on every artefact at once with a width message rather than
+# ---- a cause - which is a bad way to learn about a checkout setting.
+# ----
+# ---- The trailing-space exemption is needed for the same reason as above and
+# ---- one more besides: the 76-character reject description of
+# ---- app/cbl/CBTRN02C.cbl:L182 is space-padded to width and is compared
+# ---- INCLUDING that padding, so stripping it would not merely shift an offset,
+# ---- it would change a value the oracle asserts. Only blank-at-eol is unset;
+# ---- cr-at-eol stays in force, so a genuine CR is still an error.
+src/test/resources/**/*.expected  text eol=lf
+src/test/resources/**/*.expected  whitespace=-blank-at-eol
+
+# ---- The COBOL load and dump utilities of the Gate 1 derivation harness. They
+# ---- are fixed-format source whose code begins in column 8, so a CR injected
+# ---- into the sequence area would not be a cosmetic difference: cobc would read
+# ---- it as source text and the compile would fail. These are the only .cbl
+# ---- files outside the frozen corpus, and the pattern is path-scoped so it can
+# ---- never reach app/cbl.
+src/test/resources/**/*.cbl  text eol=lf
+
 # ==================================================================
 # FROZEN LEGACY CORPUS - LAST BLOCK, SO IT OVERRIDES EVERY RULE ABOVE
 #

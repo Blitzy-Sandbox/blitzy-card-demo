@@ -757,7 +757,7 @@ public class UserListService {
      * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} immediately restores
      * {@code CDEMO-CU00-NEXT-PAGE-FLG} from the communication area. It survives only on the
      * {@code EIBCALEN = 0} path, which transfers away at once. Reproduced verbatim - assign, then overwrite
-     * from the request - rather than deleted, and owed an entry in the planned DECISION_LOG.md. Severity: Low.
+     * from the request - rather than deleted, and owed an entry in the DECISION_LOG.md. Severity: Low.
      *
      * @param commAreaPresent {@code false} models {@code EIBCALEN = 0} at {@code :110}
      * @param reenter         {@code false} models the first-display arm at {@code :115-119}, {@code true} the
@@ -852,12 +852,12 @@ public class UserListService {
      * <p><strong>Retained parity artefact.</strong> The {@code WHEN OTHER} arm at {@code :211-215} sets the
      * message and the cursor but <em>not</em> {@code WS-ERR-FLG}, so an invalid selector still falls through
      * to {@code PROCESS-PAGE-FORWARD} and the list is re-sent with the advisory attached. Preserved; do not
-     * add an early exit. Severity: Low. Owed an entry in the planned DECISION_LOG.md.
+     * add an early exit. Severity: Low. Owed an entry in the DECISION_LOG.md.
      *
      * <p><strong>Retained parity artefact.</strong> {@code IF NOT ERR-FLG-ON MOVE SPACE TO USRIDINO} at
      * {@code :231-233} runs <em>after</em> {@code PROCESS-PAGE-FORWARD} has already sent the screen at {@code :330},
      * and duplicates the clearing that {@code :328} performed before that send, so it has no observable effect.
-     * Reproduced as an explicit intentional no-op. Severity: Low. Owed an entry in the planned DECISION_LOG.md.
+     * Reproduced as an explicit intentional no-op. Severity: Low. Owed an entry in the DECISION_LOG.md.
      *
      * @param work the per-invocation work area, mutated in place exactly as the source mutates
      *             working-storage and the shared map
@@ -994,7 +994,7 @@ public class UserListService {
      * {@code READNEXT} ends the file at once and the response carries
      * {@code 'You have reached the bottom of the page...'}. The combination is reachable only from a
      * malformed request, because the source sets {@code USRID-LAST} whenever a page fills and reports
-     * {@code NEXT-PAGE-NO} whenever it does not. Severity: Low; owed an entry in the planned DECISION_LOG.md.
+     * {@code NEXT-PAGE-NO} whenever it does not. Severity: Low; owed an entry in the DECISION_LOG.md.
      *
      * <p>The bottom-boundary response is distinguishable from {@code READNEXT}'s
      * {@code 'You have reached the bottom of the page...'} at {@code :637} by the absence of any read: this
@@ -1052,7 +1052,7 @@ public class UserListService {
      *
      * <p><strong>Retained parity artefact.</strong> {@code MOVE SPACE TO USRIDINO} at {@code :328} clears the
      * identifier field immediately before the send, which is why {@code PROCESS-ENTER-KEY}'s later clearing
-     * at {@code :231-233} is a no-op. Both are kept. Severity: Low; owed an entry in the planned DECISION_LOG.md.
+     * at {@code :231-233} is a no-op. Both are kept. Severity: Low; owed an entry in the DECISION_LOG.md.
      *
      * @param work the per-invocation work area; {@code work.startKey}, {@code work.startPastEnd} and
      *             {@code work.startOrdinal} must already describe the browse position
@@ -1134,7 +1134,7 @@ public class UserListService {
      * <p><strong>Retained parity artefact.</strong> Unlike the forward path there is no
      * {@code MOVE SPACE TO USRIDINO} before the send, so a backward page echoes the identifier field back
      * while a forward page blanks it. The asymmetry is the behaviour; do not normalise it. Severity: Low;
-     * owed an entry in the planned DECISION_LOG.md.
+     * owed an entry in the DECISION_LOG.md.
      *
      * <p><strong>Reachability note.</strong> If the backward loop reaches the front of the file before it
      * fills every slot, the low-numbered slots stay blank and the page displays with gaps at the top. That
@@ -1208,7 +1208,7 @@ public class UserListService {
      * modelling of an {@code OCCURS} table rather than a consolidation of distinct logic: every arm performs
      * the identical four moves, and the two index-specific extras are reproduced as explicit index tests.
      * The {@code WHEN OTHER CONTINUE} arm at {@code :439-440} is retained below as an intentional no-op and
-     * owed an entry in the planned DECISION_LOG.md; it is reachable only if {@code WS-IDX} leaves the table, which
+     * owed an entry in the DECISION_LOG.md; it is reachable only if {@code WS-IDX} leaves the table, which
      * the loop bounds prevent. Severity: Low.
      *
      * @param work the per-invocation work area; {@code work.currentRecord} holds the record just read and
@@ -1255,7 +1255,7 @@ public class UserListService {
      * <p><strong>Mechanism substitution.</strong> As with {@code POPULATE-USER-DATA}, the ten-arm
      * {@code EVALUATE WS-IDX} addresses one {@code OCCURS} table and is modelled by index. The
      * {@code WHEN OTHER CONTINUE} arm at {@code :499-500} is retained below as an intentional no-op and
-     * owed an entry in the planned DECISION_LOG.md. Severity: Low.
+     * owed an entry in the DECISION_LOG.md. Severity: Low.
      *
      * @param work the per-invocation work area; {@code work.idx} selects the row
      */
@@ -1285,7 +1285,7 @@ public class UserListService {
      * {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA)} at {@code :514-517}.
      * Routing is URL-based in the target and nothing is retained across a request, so the four collapse into
      * recording that control was transferred and to where. The label is nonetheless mapped one-to-one, as an
-     * intentional no-op with respect to state, and is owed an entry in the planned DECISION_LOG.md. Severity: Low.
+     * intentional no-op with respect to state, and is owed an entry in the DECISION_LOG.md. Severity: Low.
      *
      * @param work the per-invocation work area; {@code work.navigationTarget} already holds the caller's
      *             intended target, or is unset when the caller had none
@@ -1313,7 +1313,7 @@ public class UserListService {
      * {@code IF SEND-ERASE-YES} decision inert - so the choice is recorded on the response instead of being
      * discarded, which keeps the {@code SET SEND-ERASE-NO} assignments at {@code :253} and {@code :275}
      * observable and testable. The commented-out option is retained in place, not deleted. Severity: Low;
-     * owed an entry in the planned DECISION_LOG.md.
+     * owed an entry in the DECISION_LOG.md.
      *
      * <p>The source can send more than once in a single turn - the {@code NOTFND} arm of {@code STARTBR}
      * sends and then falls through to the page logic, which sends again. The send count is recorded so that
@@ -1346,7 +1346,7 @@ public class UserListService {
      * <p><strong>Retained parity artefact.</strong> The command captures {@code RESP(WS-RESP-CD)} and
      * {@code RESP2(WS-REAS-CD)} at {@code :554-555} and then <em>never examines either</em> - there is no
      * {@code EVALUATE} after this command, unlike every other I/O paragraph in the program. The capture is
-     * reproduced, unexamined, rather than dropped. Severity: Low; owed an entry in the planned DECISION_LOG.md.
+     * reproduced, unexamined, rather than dropped. Severity: Low; owed an entry in the DECISION_LOG.md.
      *
      * <p>Note that the submitted selection flags are stored but the submitted row data is stored too, because
      * {@code INITIALIZE-USER-DATA} clears the four data fields while deliberately leaving the selectors
@@ -1399,7 +1399,7 @@ public class UserListService {
      *
      * <p><strong>Citation correction.</strong> The plan's general note on the BMS layer records
      * {@code CURTIME} as {@code X(9)}. The symbolic map and {@code CSDAT01Y.cpy} both say {@code X(8)}, and
-     * the source governs, so this method emits eight characters. Severity: Low; owed an entry in the planned
+     * the source governs, so this method emits eight characters. Severity: Low; owed an entry in the
      * DECISION_LOG.md.
      *
      * @param work the per-invocation work area to stamp
@@ -1427,7 +1427,7 @@ public class UserListService {
      * enabled: a supplied key must name a record that exists, and a key that names nothing takes the
      * {@code NOTFND} arm. The two sentinel keys the callers supply are handled as the callers mean them -
      * {@code LOW-VALUES} positions before the first record, {@code HIGH-VALUES} positions past the last.
-     * Severity: Low; owed an entry in the planned DECISION_LOG.md.
+     * Severity: Low; owed an entry in the DECISION_LOG.md.
      *
      * <p><strong>Retained parity artefact.</strong> The {@code NOTFND} arm opens with a bare
      * {@code CONTINUE} at {@code :601} before its real body, which is a no-op the compiler discards. It is
@@ -1592,7 +1592,7 @@ public class UserListService {
      * browse to release: JPA pagination subsumes the whole command. The label is nonetheless mapped
      * one-to-one, and it is given the one job that remains - discarding the page window, so that a later
      * browse in the same request cannot serve a stale row and so that the rows become collectable as soon as
-     * the source would have released them. Owed an entry in the planned DECISION_LOG.md. Severity: Low.
+     * the source would have released them. Owed an entry in the DECISION_LOG.md. Severity: Low.
      *
      * @param work the per-invocation work area whose page window is released
      */
@@ -1944,7 +1944,7 @@ public class UserListService {
      * {@code ON SIZE ERROR}, so COBOL discards the high-order digit and eight nines become zero. The
      * truncation is reproduced rather than replaced by a cap or an exception, because inventing either would
      * invent a policy the source does not have. Reaching it requires a hundred million pages. Severity: Low;
-     * owed an entry in the planned DECISION_LOG.md.
+     * owed an entry in the DECISION_LOG.md.
      *
      * @param pageNumber the current page number
      * @return the incremented page number, wrapping to zero past eight digits
@@ -2138,7 +2138,7 @@ public class UserListService {
      * <p><strong>Not modelled.</strong> {@code WS-REC-COUNT} at {@code app/cbl/COUSR00C.cbl:52} is declared and never
      * referenced anywhere in the program, and {@code WS-USER-DATA} at {@code :56-64} is a ten-occurrence work table
      * the program never reads or writes - {@code POPULATE-USER-DATA} projects straight onto the map instead. Both are
-     * dead in the source rather than dead here; they are owed entries in the planned DECISION_LOG.md instead of being
+     * dead in the source rather than dead here; they are owed entries in the DECISION_LOG.md instead of being
      * carried as fields that nothing would touch, which would be dead code in the target. Severity: Low.
      */
     private static final class ScreenWorkArea {

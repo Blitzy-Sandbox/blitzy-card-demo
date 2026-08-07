@@ -235,7 +235,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * the mandate to preserve control flow one to one genuinely collide. Parity governs, and the standard is
  * satisfied by its own wording: what it bars is dead code and deferred work carrying <em>no owner or
  * tracking reference</em>. This constant carries both. It is cited to its exact source lines here and on
- * the constant itself, owed a named-decision entry in the planned {@code DECISION_LOG.md}, and owed a row in
+ * the constant itself, owed a named-decision entry in the {@code DECISION_LOG.md}, and owed a row in
  * {@code TRACEABILITY_MATRIX.md} among the {@code CBTRN02C} fidelity hot spots. It is tracked, justified
  * and reviewable - a documented faithful reproduction of a reachable but unconsumed assignment in the
  * system of record, not abandoned residue.

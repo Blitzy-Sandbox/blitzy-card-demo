@@ -373,14 +373,35 @@ class TransactionWriterTest {
         }
 
         @Test
-        @DisplayName("a blank object prefix is refused, naming its own property")
+        @DisplayName("a blank object prefix is refused, naming its own property and the hazard")
         void aBlankPrefixIsRefused() {
+            // Finding m-02 moved the prefix grammar into com.cardemo.batch.GenerationPrefixContract, so the
+            // wording of this diagnostic is that class's rather than this one's. The assertion holds the
+            // CONTRACT - the property is named and the reason is given - instead of the exact sentence, which
+            // is what it should always have held: a message this test spells out in full can only be changed
+            // by editing the test, and that makes an improvement to a diagnostic look like a regression.
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new TransactionWriter(repository, objectStorage, new FileStatusMapper(),
                             metricsConfig, BUCKET, "  ",
                             TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
-                    .withMessage("carddemo.aws.s3.transaction-object-prefix must be configured with a "
-                            + "non-blank value");
+                    .withMessageStartingWith("carddemo.aws.s3.transaction-object-prefix")
+                    .withMessageContaining("must not be blank")
+                    .withMessageContaining("bucket root");
+        }
+
+        @Test
+        @DisplayName("finding m-02: a malformed object prefix is refused by the SHARED grammar, so this "
+                + "writer cannot drift from the five other object-key consumers")
+        void aMalformedPrefixIsRefusedByTheSharedGrammar() {
+            for (final String malformed : java.util.List.of(
+                    "transact/", "/transact", "transact//mirror", "transact/../mirror", " transact")) {
+                assertThatExceptionOfType(IllegalArgumentException.class)
+                        .as("'%s' must be refused rather than silently rewritten", malformed)
+                        .isThrownBy(() -> new TransactionWriter(repository, objectStorage,
+                                new FileStatusMapper(), metricsConfig, BUCKET, malformed,
+                                TransactionWriter.DEFAULT_MAX_INDEXED_OBJECT_KEYS))
+                        .withMessageStartingWith("carddemo.aws.s3.transaction-object-prefix");
+            }
         }
     }
 
@@ -749,6 +770,114 @@ class TransactionWriterTest {
     @Nested
     @DisplayName("5. BLOCKER: the insert, and the duplicate identifier the source's idiom makes reachable")
     class Persistence {
+
+        /**
+         * The outbox entry is recorded before the rows, so a surviving entry proves the rows exist.
+         *
+         * <p>Purpose: assert the first half of finding M-07. The object is uploaded after the chunk
+         * transaction commits, which is the only ordering that cannot publish an object describing rows that
+         * were rolled back - but it leaves the mirror problem, that a failed upload strands durable rows with
+         * no object and nothing to notice it. The repair is an outbox entry committed with the rows, and this
+         * case pins that it is written into the step execution context, which the framework persists inside
+         * the chunk transaction.
+         */
+        @Test
+        @DisplayName("M-07: the chunk records what it owes the store, in the context the framework commits "
+                + "with the rows")
+        void theChunkRecordsWhatItOwesTheStore() throws Exception {
+            writer.write(chunk(posted(), posted("0000000000000002", "1.00")));
+
+            // Cleared on the success path, because the object now exists - so the entry is asserted through
+            // the ordering that produced it rather than through a leftover.
+            assertThat(stepExecution.getExecutionContext()
+                            .getString(TransactionWriter.PENDING_OBJECT_KEY_ENTRY, ""))
+                    .as("a completed emission owes the store nothing, so the entry is gone")
+                    .isEmpty();
+
+            // And on the failure path the entry survives, naming exactly what is owed.
+            Mockito.doThrow(new IllegalStateException("the bucket is unreachable"))
+                    .when(objectStorage).upload(Mockito.anyString(), Mockito.anyString(), Mockito.any(),
+                            Mockito.any(ObjectMetadata.class));
+            assertThatExceptionOfType(RuntimeException.class)
+                    .isThrownBy(() -> writer.write(chunk(posted("0000000000000003", "2.00"))));
+
+            assertThat(stepExecution.getExecutionContext()
+                            .getString(TransactionWriter.PENDING_OBJECT_KEY_ENTRY, ""))
+                    .as("the rows committed and the object did not, so the entry remains as the record of it")
+                    .isNotEmpty();
+            assertThat(stepExecution.getExecutionContext()
+                            .getString(TransactionWriter.PENDING_IDENTIFIERS_ENTRY, ""))
+                    .as("and it names the identifiers the object must be rebuilt from")
+                    .isEqualTo("0000000000000003");
+        }
+
+        /**
+         * A restart settles the outstanding emission by re-deriving it from the committed rows.
+         *
+         * <p>Purpose: assert the second half of finding M-07. What is being checked is not merely that
+         * something is re-uploaded, but that the bytes come from the <em>relation</em> - so the mirror cannot
+         * disagree with what the database holds - and that the key is the one the entry named, which makes the
+         * repeat idempotent.
+         */
+        @Test
+        @DisplayName("M-07: a restart settles an outstanding emission from the committed rows, at the key the "
+                + "entry named")
+        void aRestartSettlesTheOutstandingEmissionFromTheRows() {
+            final Transaction committed = posted("0000000000000009", "12.34");
+            Mockito.when(repository.findById("0000000000000009"))
+                    .thenReturn(java.util.Optional.of(committed));
+
+            final StepExecution restarted = stepExecution(JOB_INSTANCE_ID);
+            restarted.getExecutionContext()
+                    .putString(TransactionWriter.PENDING_OBJECT_KEY_ENTRY, "transact/pending/object.dat");
+            restarted.getExecutionContext()
+                    .putString(TransactionWriter.PENDING_IDENTIFIERS_ENTRY, "0000000000000009");
+
+            writer.beforeStep(restarted);
+
+            final ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+            Mockito.verify(objectStorage).upload(Mockito.anyString(), keys.capture(),
+                    Mockito.any(), Mockito.any(ObjectMetadata.class));
+            assertThat(keys.getValue())
+                    .as("the same key the entry named, so settling an already-settled entry rewrites "
+                            + "identical bytes rather than creating a second object")
+                    .isEqualTo("transact/pending/object.dat");
+            Mockito.verify(repository).findById("0000000000000009");
+            assertThat(restarted.getExecutionContext()
+                            .getString(TransactionWriter.PENDING_OBJECT_KEY_ENTRY, ""))
+                    .as("and the entry is cleared once the store holds the object")
+                    .isEmpty();
+        }
+
+        /**
+         * An entry naming a row that is not there is discarded rather than emitted.
+         *
+         * <p>Purpose: this is the case that keeps the reconciliation sound. If the chunk's rows were rolled
+         * back after all, honouring the entry would create an object describing transactions that do not
+         * exist - which is the very orphan the post-commit ordering exists to prevent. Getting this wrong
+         * would turn a safety mechanism into the defect it was built to remove.
+         */
+        @Test
+        @DisplayName("M-07: an outstanding entry whose rows are absent is discarded, never emitted")
+        void anEntryWhoseRowsAreAbsentIsDiscarded() {
+            Mockito.when(repository.findById(Mockito.anyString())).thenReturn(java.util.Optional.empty());
+
+            final StepExecution restarted = stepExecution(JOB_INSTANCE_ID);
+            restarted.getExecutionContext()
+                    .putString(TransactionWriter.PENDING_OBJECT_KEY_ENTRY, "transact/pending/object.dat");
+            restarted.getExecutionContext()
+                    .putString(TransactionWriter.PENDING_IDENTIFIERS_ENTRY, "0000000000000009");
+
+            writer.beforeStep(restarted);
+
+            Mockito.verify(objectStorage, Mockito.never()).upload(Mockito.anyString(), Mockito.anyString(),
+                    Mockito.any(), Mockito.any(ObjectMetadata.class));
+            assertThat(restarted.getExecutionContext()
+                            .getString(TransactionWriter.PENDING_OBJECT_KEY_ENTRY, ""))
+                    .as("the entry is discarded, so it cannot be retried forever against rows that will "
+                            + "never appear")
+                    .isEmpty();
+        }
 
         @Test
         @DisplayName("the chunk is inserted exactly once, with every item")
@@ -1227,9 +1356,11 @@ class TransactionWriterTest {
         @Test
         @DisplayName("application.yml declares the property at the same value, so it is operable")
         void theShippedProfileDeclaresTheBound() throws Exception {
-            // The reason max-transactions-per-run is declared in the profile too: a key that is read at
-            // runtime but appears in no profile is invisible to whoever operates the job. Asserted against
-            // the file so deleting the declaration fails a test rather than silently hiding the knob.
+            // The reason it is declared at all: a key that is read at runtime but appears in no profile is
+            // invisible to whoever operates the job. Asserted against the file so deleting the declaration
+            // fails a test rather than silently hiding the knob. Note what this key is NOT - it bounds a
+            // diagnostic manifest and truncates it, where the statement processor's removed record ceilings
+            // refused whole runs (finding BAT-002).
             String profile = java.nio.file.Files.readString(
                     java.nio.file.Path.of("src/main/resources/application.yml"),
                     StandardCharsets.UTF_8);

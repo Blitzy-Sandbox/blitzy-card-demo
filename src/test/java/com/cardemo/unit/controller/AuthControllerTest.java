@@ -117,7 +117,7 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <pre>
  * ./mvnw -B -ntp -Dtest=AuthControllerTest test
- * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * ./mvnw -B -ntp clean verify
  * </pre>
  *
  * <h2>3. Key configuration and defaults</h2>

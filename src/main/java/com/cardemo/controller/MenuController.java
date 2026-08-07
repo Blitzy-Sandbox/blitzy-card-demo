@@ -363,7 +363,10 @@ public class MenuController {
 
     /**
      * The CSD transaction identifier of the main menu, {@code DEFINE TRANSACTION(CM00)} at
-     * {@code app/csd/CARDDEMO.CSD:L399}. Logged as the diagnostic counterpart of {@code EIBTRNID}.
+     * {@code app/csd/CARDDEMO.CSD:L399}. Logged as the diagnostic counterpart of the CICS transaction
+     * identifier - the {@code EIBTRNID} field of the exec interface block, which is <strong>supplied by the
+     * monitor and has zero occurrences in the frozen corpus</strong>, so it is named as a construct rather
+     * than cited to a locator that does not exist.
      */
     private static final String MAIN_MENU_TRANSACTION_ID = "CM00";
 

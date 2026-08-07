@@ -344,12 +344,16 @@ import jakarta.validation.constraints.Size;
  * <p><strong>Build and verification.</strong> The class compiles under {@code -Xlint:all -Werror} with
  * {@code failOnWarning}, so a raw type, an unchecked cast or a deprecated call fails the build. Two
  * prohibitions are <em>not</em> enforced by {@code javac} and are stated here so they are not mistaken for
- * compiler gates. <strong>Documentation well-formedness is not a Maven gate:</strong> {@code pom.xml}
- * declares no {@code maven-javadoc-plugin} and no {@code -Xdoclint}, so an unbalanced tag in this comment
- * fails no Maven phase. It is instead enforced by the explicit, repository-owned doclint command published
- * once in {@code docs/technical-specifications.md} under the dated checkpoint section, which runs over the
- * whole {@code src/main/java} and {@code src/test/java} trees rather than over one file, so a defect
- * elsewhere cannot hide behind a narrow invocation. <strong>An unused-import check is
+ * compiler gates. <strong>Documentation well-formedness is a Maven gate, but not a compiler one:</strong>
+ * {@code javac} sees only {@code dangling-doc-comments}, so an unbalanced tag in this comment passes
+ * compilation - and then fails {@code verify}, because {@code pom.xml} binds
+ * {@code maven-javadoc-plugin} there as the execution {@code doclint-gate}, running
+ * {@code javadoc-no-fork} with {@code doclint} set to {@code all} and {@code failOnWarnings} true over the
+ * whole {@code src/main/java} tree. An earlier revision of this paragraph said {@code pom.xml} declared no
+ * {@code maven-javadoc-plugin} and no {@code -Xdoclint} and that an unbalanced tag failed no Maven phase;
+ * that is no longer accurate and is withdrawn. The explicit repository-owned doclint command published in
+ * {@code docs/technical-specifications.md} remains useful because it also covers
+ * {@code src/test/java}, which the bound execution does not. <strong>An unused-import check is
  * {@code Not available}:</strong> {@code javac} 25.0.3 publishes no {@code unused} lint key at all - as
  * {@code javac --help-lint} shows - and no Checkstyle or Error Prone analyser is in the pinned dependency
  * set, so {@code -Werror} cannot catch an unused import; the same is true of malformed Javadoc, of which
@@ -457,10 +461,10 @@ import jakarta.validation.constraints.Size;
  *       neither regime has to reconstruct what the other would have destroyed.
  *       Deriving rather than duplicating is what keeps the two readings from
  *       disagreeing; see the High-severity overlay finding above. The root
- *       {@code DECISION_LOG.md} the plan nominates for such findings is <strong>not
- *       available</strong> &mdash; it has not been authored &mdash; so this docstring and the
- *       specification's section 0.2.2.1 corrections table carry the finding at Medium, and no
- *       document is created in this package.</li>
+ *       {@code DECISION_LOG.md} the plan nominates for such findings is <strong>authored
+ *       at the repository root</strong>; an earlier revision recorded it as not available and that
+ *       record is withdrawn. This docstring and the specification's section 0.2.2.1 corrections
+ *       table carry the finding at Medium, and no document is created in this package.</li>
  *   <li><strong>Medium, closed &mdash; the input-field census was
  *       overstated.</strong> Prior-generation plan prose reported 460 input fields
  *       across the seventeen symbolic maps and 36 for the account-view map; the

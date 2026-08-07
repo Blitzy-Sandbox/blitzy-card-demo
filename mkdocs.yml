@@ -3,11 +3,26 @@ site_name: 'blitzy-card-demo'
 # `backstage.io/techdocs-ref: dir:.`), so every document under docs/ must
 # be listed here exactly once: an omitted page is built but never linked,
 # and MkDocs reports that at INFO level only, so `mkdocs build --strict`
-# still exits 0 and the page silently becomes undiscoverable. Verify with:
-#   mkdocs build --strict 2>&1 | grep -c 'not included in the' (expect 0).
+# still exits 0 - an omission that produces no error and no output at all,
+# the one failure mode with no symptom - and the page silently becomes
+# undiscoverable. The `validation` block at the foot of this file is what
+# raises that notice to a warning, which --strict then promotes to a failure;
+# it is the only automatic detection this silent-failure path has, so do not
+# remove it.
+# This is not hypothetical. api-contracts.md, architecture-before-after.md and
+# validation-gates.md were each on disk but unpublished for exactly this reason
+# before they were added above. Verify with: mkdocs build --strict (expect 0
+# warnings), which the validation block below is what makes meaningful.
 # DECISION_LOG.md and TRACEABILITY_MATRIX.md are deliberately absent: they
 # are root evidence artifacts outside docs_dir, linked from README.md, and
 # a `../` entry would not resolve here. Do not add or duplicate them.
+#
+# executive-presentation.html is intentionally NOT a Markdown page. MkDocs
+# copies it to the site root byte-identically and never parses or rewrites
+# it, which is what lets it stay a single self-contained file with no
+# external script, style, font or image dependency of any kind. Because
+# nothing rewrites them for it, its own links target the PUBLISHED directory
+# URLs (`validation-gates/` and so on) rather than the source file names.
 nav:
   - Home: index.md
   - Project Guide: project-guide.md
@@ -33,3 +48,32 @@ markdown_extensions:
         - name: mermaid
           class: mermaid
           format: !!python/name:mermaid2.fence_mermaid_custom
+
+# Detection for the silent-failure path described at the nav block above.
+#
+# MkDocs defaults validation.nav.omitted_files to info, and --strict acts on
+# warnings, so before this block an omitted page passed a strict build in
+# silence - warning-free, not merely error-free. Raising it to warn is what
+# makes `mkdocs build --strict` fail on the omission rather than only on a
+# broken link. The remaining settings close the same class of gap from the
+# other side: a nav entry or an in-page link naming a file or an anchor that
+# does not exist. Note that MkDocs resolves links only inside docs_dir, so
+# `](../README.md)` is reported as a target "not found among documentation
+# files" and then published dead - repository-root files are therefore NAMED
+# as paths in these documents, never linked.
+#
+# The key must stay spelled exactly `validation:` at column zero: MkDocs reads
+# the policy only under that name, so renaming it disables the whole block
+# just as effectively as deleting it.
+#
+# Verify with: mkdocs build --strict --site-dir <path outside the repository>
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    absolute_links: warn
+    unrecognized_links: warn
+    anchors: warn

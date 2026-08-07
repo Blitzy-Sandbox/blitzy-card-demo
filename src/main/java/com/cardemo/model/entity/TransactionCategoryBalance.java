@@ -203,16 +203,17 @@ import jakarta.persistence.Table;
  * {@code OUTREC} then edits that field as {@code EDIT=(TTTTTTTTT.TT)}, nine integer digits and two decimals,
  * which is the third independent statement of the same precision.
  *
- * <p><b>The job's own report step has no Java analogue in this branch, and that is a recorded decision rather
- * than an omission.</b> {@code PRTCATBL.jcl} is three steps and no COBOL program: {@code DELDEF} pre-deletes
- * the output with {@code IEFBR14}, {@code STEP05R} unloads the cluster to a {@code TCATBALF.BKUP(+1)}
- * generation at {@code LRECL=50} through the shared {@code REPROC} procedure, and {@code STEP10R} sorts by the
- * composite key and emits a 40-byte edited line. Nothing in it reads or writes any field this entity does not
- * already declare, so it authorises the mapping above and adds no behaviour: a Java step for it would need a
- * job, a reader and a writer that the plan does not list for this cluster, and inventing them would put three
- * files outside the authored inventory in order to reproduce a print utility. What it does contribute is the
- * corroboration above and one generation base, {@code TCATBALF.BKUP}, which is already one of the seven
- * catalogued bases the object-storage layout covers.
+ * <p><b>The job's own report step is implemented, in
+ * {@link com.cardemo.batch.jobs.TransactionReportJob}.</b> {@code PRTCATBL.jcl} is three steps and no COBOL
+ * program: {@code DELDEF} pre-deletes the output with {@code IEFBR14}, {@code STEP05R} unloads the cluster to
+ * a {@code TCATBALF.BKUP(+1)} generation at {@code LRECL=50} through the shared {@code REPROC} procedure, and
+ * {@code STEP10R} sorts by the composite key and emits a 40-byte edited line. An earlier revision recorded a
+ * decision that it had no Java analogue, on the ground that a job, a reader and a writer outside the authored
+ * inventory would be needed. That was withdrawn as finding M-05: no new file was needed, because the member's
+ * shape - back up, sort, print - is the shape of the report job already, so it is one gated step there and
+ * {@code TCATBALF.BKUP} now has a real producer and a real consumer rather than a declared prefix nothing
+ * writes. Nothing in the member reads or writes any field this entity does not already declare, so it also
+ * authorises the mapping above and independently corroborates the offsets and the precision.
  *
  * <h2>The balance is NUMERIC(11,2), never NUMERIC(12,2)</h2>
  *

@@ -38,12 +38,15 @@ import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
@@ -1434,16 +1437,192 @@ public class StatementWriter
             // account identifier as a key segment - which its own contract says must never reach a log. Its type
             // is the classification an operator needs, and the throwable itself is preserved as the cause of the
             // exception raised immediately below, so the root cause survives in full and nothing is swallowed.
+            //
+            // Finding m-03, severity Minor. Not logging it here was never the whole defence, because the cause
+            // travels: the framework logs a failed step's exception itself, and Spring Batch writes the rendered
+            // stack of that same throwable into BATCH_STEP_EXECUTION.EXIT_MESSAGE, which no appender rule can
+            // reach. The cause handed on is therefore sanitised - see sanitizedCause, which preserves the type,
+            // the text and the stack trace and removes only a statement key's account digits, and which returns
+            // the original instance untouched when it names no key at all.
+            Throwable reportable = sanitizedCause(cause);
             LOG.error("{} (cause: {})", message, cause.getClass().getName());
             throw this.fileStatusMapper
-                    .toException(STORAGE_FAILURE_STATUS, logicalFileName, OPERATION_WRITE, cause)
+                    .toException(STORAGE_FAILURE_STATUS, logicalFileName, OPERATION_WRITE, reportable)
                     .orElseGet(() -> new FileAccessException(
                             message,
                             FileStatus.renderIoStatus04ForDiagnostics(STORAGE_FAILURE_STATUS),
                             logicalFileName,
                             OPERATION_WRITE,
-                            cause));
+                            reportable));
         }
+    }
+
+    // =====================================================================================================
+    // Finding m-03, severity Minor: the object-key boundary. Declared here, next to their only callers,
+    // rather than in the constant block above, because two of the three derive from KEY_ROOT,
+    // KEY_ACCOUNT_SEGMENT and ACCOUNT_ID_DIGITS and a static initialiser may not reference a constant
+    // declared later in the file.
+    // =====================================================================================================
+
+    /**
+     * The account segment of a composed statement key, with the segment label captured and the digits not.
+     *
+     * <p>Anchored on the whole literal {@code statements/account=} rather than on {@code account=} alone, and
+     * bounded at {@value #ACCOUNT_ID_DIGITS} digits, which is the exact width
+     * {@link #requireAccountIdSegment(String)} admits. Both choices keep this a <em>key</em> rule rather than
+     * a digit rule: a bare {@code accountId=00000000011} in a batch diagnostic does not match it, and neither
+     * does an eleven-digit segment of any other object key.
+     */
+    private static final Pattern STATEMENT_KEY_ACCOUNT_SEGMENT = Pattern.compile(
+            "(" + Pattern.quote(KEY_ROOT + KEY_SEPARATOR + KEY_ACCOUNT_SEGMENT) + ")"
+                    + "\\d{1," + ACCOUNT_ID_DIGITS + "}");
+
+    /**
+     * What replaces the account digits of a statement key in text that may be logged or propagated.
+     *
+     * <p>The same literal the masking configuration substitutes, so one vocabulary appears whichever layer
+     * acted. Public because the guard test asserts the two agree.
+     */
+    public static final String ACCOUNT_SEGMENT_REDACTION = "[REDACTED_ACCOUNT]";
+
+    /**
+     * Deepest cause chain this class inspects or rebuilds.
+     *
+     * <p>Bounded because a chain can be cyclic and because an unbounded walk in a failure path is a second
+     * failure. Sixteen is far beyond any chain the AWS SDK, Hibernate or Spring Batch produce, so the bound
+     * is a safety net rather than a policy.
+     */
+    private static final int MAX_CAUSE_DEPTH = 16;
+
+    /**
+     * Removes the account digits from every statement key occurring in a piece of text.
+     *
+     * <p><b>Finding m-03, severity Minor, RESOLVED.</b> A statement key is
+     * {@code statements/account=<11 digits>/month=<uuuu-MM>/generation=<19 digits>/statement=<19 digits>/}
+     * plus the object name, so the key <em>is</em> an account-and-month disclosure wherever it is rendered.
+     * This class already never names a key in a message or a log line, but an object-store failure carries
+     * the bucket, the key and often the request URL inside <em>its own</em> message, and that throwable used
+     * to be preserved as the cause verbatim - so the key reached every sink that renders a cause, including
+     * the framework's own step-failure logging and the {@code EXIT_MESSAGE} column of the batch metadata,
+     * which no log-appender rule can reach.
+     *
+     * <p>Only the account digits are replaced. The root, the month, the generation, the statement ordinal and
+     * the object name all survive, because those are what make a failed object findable and none of them
+     * identifies a customer. This is deliberately narrower than masking the account identifier everywhere:
+     * {@code ACCT-ID} is the control-break key of {@code app/cbl/CBACT04C.cbl:L194} and the reported key of
+     * the 133-byte report line, batch diagnostics publish it as a labelled field on purpose, and Gate 1
+     * compares those lines against the legacy baseline. Masking the label form would break parity to protect
+     * a value the deliverable itself carries; masking the <em>key</em> form costs nothing.
+     *
+     * @param text any text about to be logged or placed in an exception message; may be {@code null}
+     * @return the same text with each statement key's account digits replaced by
+     *     {@value #ACCOUNT_SEGMENT_REDACTION}, or {@code null} when {@code text} was {@code null}
+     */
+    public static String withoutStatementKeyAccount(final String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        return STATEMENT_KEY_ACCOUNT_SEGMENT.matcher(text)
+                .replaceAll("$1" + Matcher.quoteReplacement(ACCOUNT_SEGMENT_REDACTION));
+    }
+
+    /**
+     * Returns a cause that carries the same diagnosis without carrying a statement key.
+     *
+     * <p><b>Nothing is swallowed, and Rule 1 clause B is satisfied rather than traded away.</b> What a
+     * handler needs from a cause is its classification, its text and where it was raised. All three survive:
+     * the surrogate's message opens with the original's fully qualified class name, continues with the
+     * original's message after {@link #withoutStatementKeyAccount(String)} has run over it, and carries the
+     * original's stack trace unchanged - a stack frame is a class, a method and a line, so it cannot hold a
+     * key. Every element of the chain is rebuilt the same way, so a key three causes down is removed too.
+     *
+     * <p><b>The original throwable is returned unchanged when it carries no key.</b> That is the common case -
+     * a timeout, a connection reset, a bucket that does not exist - and preserving the instance preserves its
+     * <em>type</em>, so a caller may still test {@code instanceof} or read a status code from it. The type is
+     * given up only on the one path where keeping it would mean keeping the disclosure, and even there the
+     * type name is preserved as text.
+     *
+     * <p>Suppressed throwables are deliberately not carried onto the surrogate: a suppressed exception from
+     * the same failed request is key-bearing for exactly the same reason as the primary one, and it adds no
+     * classification the primary does not already give.
+     *
+     * @param cause the throwable an object-store call raised, or {@code null} when the status was synthesised
+     *     without one
+     * @return {@code cause} itself when no statement key appears anywhere in its chain, a sanitised
+     *     reconstruction when one does, and {@code null} when {@code cause} was {@code null}
+     */
+    public static Throwable sanitizedCause(final Throwable cause) {
+        if (cause == null || !carriesStatementKeyAccount(cause)) {
+            return cause;
+        }
+        final List<Throwable> chain = new ArrayList<>();
+        Throwable current = cause;
+        while (current != null && chain.size() < MAX_CAUSE_DEPTH && !containsIdentical(chain, current)) {
+            chain.add(current);
+            current = current.getCause();
+        }
+        Throwable sanitized = null;
+        for (int index = chain.size() - 1; index >= 0; index--) {
+            final Throwable element = chain.get(index);
+            final SanitizedCause surrogate = new SanitizedCause(describeSanitized(element), sanitized);
+            surrogate.setStackTrace(element.getStackTrace());
+            sanitized = surrogate;
+        }
+        return sanitized;
+    }
+
+    /**
+     * Reports whether any throwable in a chain names a statement key in its message.
+     *
+     * @param top the throwable to inspect, never {@code null}
+     * @return true when at least one message in the chain carries a statement key's account segment
+     */
+    private static boolean carriesStatementKeyAccount(final Throwable top) {
+        final List<Throwable> seen = new ArrayList<>();
+        Throwable current = top;
+        while (current != null && seen.size() < MAX_CAUSE_DEPTH && !containsIdentical(seen, current)) {
+            seen.add(current);
+            final String message = current.getMessage();
+            if (message != null && STATEMENT_KEY_ACCOUNT_SEGMENT.matcher(message).find()) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * Renders one throwable as the surrogate's message: its type, then its sanitised text.
+     *
+     * @param element the throwable being reconstructed, never {@code null}
+     * @return the type name alone when the throwable carried no message, otherwise the type name, a colon
+     *     and the sanitised message
+     */
+    private static String describeSanitized(final Throwable element) {
+        final String message = element.getMessage();
+        return message == null
+                ? element.getClass().getName()
+                : element.getClass().getName() + ": " + withoutStatementKeyAccount(message);
+    }
+
+    /**
+     * Reports whether a list already holds this exact instance, by identity rather than by equality.
+     *
+     * <p>{@link Throwable} does not override {@code equals}, so {@link List#contains(Object)} would already
+     * compare by identity - but that is a property of a class this method does not own, and a cycle guard
+     * that silently depends on it would stop guarding if it ever changed.
+     *
+     * @param seen the throwables already walked, never {@code null}
+     * @param candidate the throwable being considered, never {@code null}
+     * @return true when the very same instance has already been walked
+     */
+    private static boolean containsIdentical(final List<Throwable> seen, final Throwable candidate) {
+        for (final Throwable element : seen) {
+            if (element == candidate) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1491,5 +1670,35 @@ public class StatementWriter
      */
     public List<Integer> recordWidths() {
         return List.of(Integer.valueOf(TEXT_RECORD_LENGTH), Integer.valueOf(HTML_RECORD_LENGTH));
+    }
+
+    /**
+     * A cause that has had statement keys removed from its text, standing in for one that had them.
+     *
+     * <p>Produced only by {@link StatementWriter#sanitizedCause(Throwable)} and only when the throwable it
+     * replaces genuinely named a key; see that method for why the substitution preserves the diagnosis. The
+     * message it carries always begins with the fully qualified name of the type it stands for, so a reader
+     * of a log line or of a batch {@code EXIT_MESSAGE} sees the classification the original would have given.
+     *
+     * <p>It is a nested type deliberately, on the precedent this package already sets: the package holds
+     * exactly three source files, the class census is a contract, and a nested type adds no file. It is
+     * {@code public} because it appears as the cause of exceptions that leave this class, so a handler must
+     * be able to name it.
+     */
+    public static final class SanitizedCause extends RuntimeException {
+
+        /** Fixed serialization identity, on the contract the exception hierarchy describes. */
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * Builds one element of a sanitised chain.
+         *
+         * @param description the type name of the throwable being stood in for, followed by its sanitised
+         *     message when it had one; must not be {@code null}
+         * @param cause the already-sanitised next element of the chain, or {@code null} at the root
+         */
+        SanitizedCause(final String description, final Throwable cause) {
+            super(description, cause);
+        }
     }
 }

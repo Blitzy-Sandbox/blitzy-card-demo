@@ -159,7 +159,8 @@ class CardReaderTest {
      * @return the row the store would serve
      */
     private static Card row(final long sequence) {
-        // No card verification argument: the entity declares no such field and the schema no such column.
+        // No card verification argument here: the field is modelled and seeded but write-once and
+        // accessor-less, so no read path exists for a reader to exercise.
         return new Card(String.format(java.util.Locale.ROOT, "%016d", 4111111111111110L + sequence),
                 11L, "007", "IMMANUEL KESSLER", "2025-05-20", "Y");
     }

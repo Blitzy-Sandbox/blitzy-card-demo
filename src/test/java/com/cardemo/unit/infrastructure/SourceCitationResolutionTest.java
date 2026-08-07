@@ -50,6 +50,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -67,11 +68,17 @@ import org.junit.jupiter.api.Test;
  * the fully qualified form. A hand search found the three; this test found eight more of the same casing
  * error that the hand search had missed, which is the argument for holding it mechanically.
  *
- * <p>Exactly one path is exempt, and its exemption is itself asserted. {@code app/data/ASCII/usrsec.txt}
- * does not exist and is cited precisely to say so: the ten seeded users are inline {@code SYSUT1 DD *} data
- * in {@code app/jcl/DUSRSECJ.jcl} rather than a fixture, and three places state that absence explicitly.
- * {@link #theOneNonResolvingPathIsOnlyEverCitedAsAbsent()} requires every one of those mentions to carry a
- * negation, so the exemption cannot be borrowed to hide a genuinely broken citation.
+ * <p>Two exemptions exist, both narrow and both asserted. The first is unconditional:
+ * {@code app/data/ASCII/usrsec.txt} does not exist and is cited precisely to say so - the ten seeded users are
+ * inline {@code SYSUT1 DD *} data in {@code app/jcl/DUSRSECJ.jcl} rather than a fixture, and three places
+ * state that absence explicitly. {@link #theOneNonResolvingPathIsOnlyEverCitedAsAbsent()} requires every one
+ * of those mentions to carry a negation, so it cannot be borrowed to hide a genuinely broken citation.
+ *
+ * <p>The second is CONDITIONAL and does nothing in a clone: citations under {@code app/data/EBCDIC} are
+ * passed over only when that whole directory is absent, which happens exclusively inside a Docker build
+ * context that pruned the out-of-scope codepage datasets. With the directory present - here, and in CI - every
+ * one of those citations is resolved strictly. {@link #theEbcdicExemptionIsNarrowAndSelfLimiting()} holds that
+ * shape, and the reasoning is recorded on {@link #PRUNABLE_TREE}.
  *
  * <h2>Why the line number is checked too</h2>
  *
@@ -165,6 +172,29 @@ final class SourceCitationResolutionTest {
      * record that, so the name appears while the file does not.
      */
     private static final String DELIBERATELY_ABSENT = "app/data/ASCII/usrsec.txt";
+
+    /**
+     * The one subtree whose citations are resolved only when the subtree itself is present.
+     *
+     * <p>{@code app/data/EBCDIC} holds twelve fixed-width {@code .PS} datasets kept as byte-level codepage
+     * reference. The AAP puts them out of scope: nothing transcodes them and no build step parses them. They
+     * are consequently the one part of the corpus a Docker build context legitimately prunes - and
+     * {@code .dockerignore} prunes it, because 204 KB of material no stage reads has no business crossing to
+     * the daemon.
+     *
+     * <p>That pruning collided with this test. The Dockerfile runs the unit tier inside the builder stage,
+     * where the subtree is absent, so thirteen citations naming it - two concrete {@code .PS} datasets and
+     * eleven references to the directory - read as "cited but does not resolve" and failed the image build on
+     * a defect that existed only in the build context. Withdrawing the exclusion made the build green by
+     * admitting out-of-scope data into the context, which fixed the symptom by widening the scope.
+     *
+     * <p>The exemption below is keyed on the DIRECTORY, not on the individual files: when
+     * {@code app/data/EBCDIC} is present - in a clone, in CI, in a developer's build - every citation under it
+     * must resolve exactly like any other, so a mistyped dataset name is still caught. Only when the whole
+     * subtree is absent, which happens exclusively inside a pruned build context, are those citations passed
+     * over. {@link #theEbcdicExemptionIsNarrowAndSelfLimiting()} holds that shape.
+     */
+    private static final String PRUNABLE_TREE = "app/data/EBCDIC";
 
     /** Words that mark a citation as a statement of absence rather than a reference. */
     private static final List<String> NEGATIONS =
@@ -363,10 +393,16 @@ final class SourceCitationResolutionTest {
                                 + "occurrences were measured across the tree")
                 .hasSizeGreaterThan(5_000);
 
+        final boolean prunableTreePresent = Files.isDirectory(ROOT.resolve(PRUNABLE_TREE));
         final Set<String> unresolved = new TreeSet<>();
         final List<String> locations = new ArrayList<>();
         for (final Reference reference : references) {
             if (DELIBERATELY_ABSENT.equals(reference.citation())) {
+                continue;
+            }
+            // Passed over ONLY when the whole subtree is absent, which happens exclusively inside a build
+            // context that pruned it. Where the subtree exists, these citations are checked like any other.
+            if (!prunableTreePresent && reference.citation().startsWith(PRUNABLE_TREE)) {
                 continue;
             }
             if (!Files.exists(ROOT.resolve(reference.citation()))) {
@@ -489,6 +525,60 @@ final class SourceCitationResolutionTest {
     }
 
     @Test
+    @DisplayName("the prunable-subtree exemption is narrow, and inert wherever the subtree is present")
+    void theEbcdicExemptionIsNarrowAndSelfLimiting() {
+        assertThat(PRUNABLE_TREE)
+                .as("""
+                    the exemption stays scoped to the one out-of-scope subtree, whichever context this runs \
+                    in. Widening this prefix - to app/data, or app/ - would silence citation failures across \
+                    material the migration actually derives from.""")
+                .isEqualTo("app/data/EBCDIC");
+
+        final List<Reference> citations = allReferences().stream()
+                .filter(reference -> reference.citation().startsWith(PRUNABLE_TREE))
+                .toList();
+        assertThat(citations)
+                .as("""
+                    the exemption must protect something real: these are the citations that failed the image \
+                    build when .dockerignore pruned the subtree. If none is left, delete PRUNABLE_TREE and \
+                    the branch that reads it rather than keeping a rule with nothing behind it.""")
+                .isNotEmpty();
+
+        final Set<String> cited = new TreeSet<>();
+        final Set<String> broken = new TreeSet<>();
+        final List<String> occurrences = new ArrayList<>();
+        for (final Reference reference : citations) {
+            cited.add(reference.citation());
+            if (!Files.exists(ROOT.resolve(reference.citation()))) {
+                broken.add(reference.citation());
+                occurrences.add(reference.toString());
+            }
+        }
+
+        // This test runs in BOTH contexts and must be meaningful in each, which is the whole point of an
+        // exemption keyed on the directory: where the subtree exists the exemption is inert and strictness is
+        // asserted; where it does not, the exemption is doing its job and the absence must be TOTAL rather
+        // than partial - a subtree missing some of its files is a damaged corpus, not a pruned context.
+        if (Files.isDirectory(ROOT.resolve(PRUNABLE_TREE))) {
+            assertThat(broken)
+                    .as("""
+                        with the subtree on disk - a clone, CI, a developer build - every citation under it \
+                        resolves like any other. The exemption is keyed on the DIRECTORY being absent, never \
+                        on a file being absent, so it cannot be borrowed to carry a mistyped dataset name. \
+                        Occurrences: %s""", occurrences)
+                    .isEmpty();
+        } else {
+            assertThat(broken)
+                    .as("""
+                        the subtree is absent, so this is a pruned build context and the exemption is what \
+                        keeps the citation gate honest here. Every DISTINCT path cited under the subtree must \
+                        be unresolvable: if some resolve and some do not, the subtree was partially removed \
+                        rather than pruned, and that is a damaged corpus which no exemption should hide.""")
+                    .containsExactlyInAnyOrderElementsOf(cited);
+        }
+    }
+
+    @Test
     @DisplayName("the corpus is cited across all of its directories, so no whole class of evidence is missing")
     void everyCorpusDirectoryIsCited() {
         final Set<String> citedRoots = new LinkedHashSet<>();
@@ -513,5 +603,170 @@ final class SourceCitationResolutionTest {
                         "app/csd",
                         "app/catlg",
                         "app/data");
+    }
+
+    /**
+     * The complement of this class's main rule: the files that are NOT frozen may not be cited by line.
+     *
+     * <p>An {@code app/...} line locator is safe forever because the corpus is frozen - that is why the rest
+     * of this class merely checks such locators resolve. A locator into a file this project edits is the
+     * opposite: it is correct only until the next edit to the file it points INTO, and nothing about editing
+     * that file surfaces the citations elsewhere that have just been invalidated.
+     *
+     * <p>That is not hypothetical. A sweep found 53 line locators into these five files across nine sources,
+     * and essentially every one had rotted: locators aimed at the resource-name declarations of
+     * {@code localstack-init/init-aws.sh} landed in the prose above them, several {@code .env.example}
+     * locators landed on blank lines or in an unrelated section, most {@code docker-compose.yml} locators
+     * landed in the usage-example header, and the {@code Dockerfile} health-check locators landed in a
+     * comment about a JVM option. Each had been accurate when written. Renumbering them all would have
+     * re-armed the same trap, so each became a SYMBOL citation instead - a variable name, a shell function,
+     * a YAML path or a Dockerfile instruction - which survives an edit to the file it names.
+     *
+     * <p>This is a citation-FORM rule, not a resolution rule, because form is the only thing that can be
+     * checked cheaply and kept true: any line number resolves, so a resolution check would have passed on
+     * every one of the rotted locators above.
+     */
+    @Nested
+    @DisplayName("No mutable file is cited by line number, because such a locator rots on the next edit")
+    final class MutableTargets {
+
+        /**
+         * The files this project edits and whose line numbers therefore cannot be cited.
+         *
+         * <p>Each is named by its file name alone, so a citation is caught however it spells the path:
+         * with or without the directory, and with or without the {@code L} prefix on the number. The
+         * forbidden form is deliberately not spelled out as a literal example anywhere in this file - doing
+         * so made the rule fail on its own documentation, which is the one offender it must not report.
+         */
+        private final List<String> mutableTargets = List.of(
+                ".env.example", "docker-compose.yml", "init-aws.sh", "build.yml", "Dockerfile");
+
+        /**
+         * Matches a line locator attached to any of the mutable file names.
+         *
+         * @return the compiled pattern
+         */
+        private Pattern locatorPattern() {
+            final String alternatives = mutableTargets.stream()
+                    .map(Pattern::quote)
+                    .reduce((left, right) -> left + "|" + right)
+                    .orElseThrow();
+            return Pattern.compile("(" + alternatives + "):L?\\d+(-L?\\d+)?");
+        }
+
+        @Test
+        @DisplayName("no source cites one of the five mutable configuration files by line")
+        void noMutableFileIsCitedByLine() {
+            final Pattern locator = locatorPattern();
+            final List<String> offenders = new ArrayList<>();
+
+            for (final Path file : SCANNED) {
+                final String relative = ROOT.relativize(file).toString();
+                final List<String> content = readLines(file);
+                for (int index = 0; index < content.size(); index++) {
+                    final Matcher matcher = locator.matcher(content.get(index));
+                    while (matcher.find()) {
+                        offenders.add(relative + ":" + (index + 1) + " -> " + matcher.group());
+                    }
+                }
+            }
+
+            assertThat(offenders)
+                    .as("""
+                            Each entry is a line locator into a file this project edits. Cite a SYMBOL                             instead - the variable name, shell function, YAML path or Dockerfile                             instruction - because that survives an edit to the file it names, and a line                             number does not. Line locators remain correct, and remain checked, for                             app/... alone, which is frozen.""")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the five files are still cited by name, so the rule was not satisfied by silence")
+        void theMutableFilesAreStillCitedBySymbol() {
+            for (final String target : mutableTargets) {
+                long mentions = 0;
+                for (final Path file : SCANNED) {
+                    if (file.getFileName().toString().equals(target)) {
+                        continue;
+                    }
+                    mentions += readLines(file).stream().filter(line -> line.contains(target)).count();
+                }
+                assertThat(mentions)
+                        .as("""
+                                %s is cited by no other file at all. The rule above is satisfied by                                 deleting every citation as easily as by converting it, so this asserts the                                 evidence is still there - converted, not removed.""", target)
+                        .isGreaterThan(2);
+            }
+        }
+
+        @Test
+        @DisplayName("every symbol the citations name resolves in the file it names")
+        void everyCitedSymbolResolves() {
+            // The replacement for a line locator is only better if it is CHECKED. Each row carries four
+            // fields: the citing file, the target file, the symbol AS CITED in prose, and the symbol AS
+            // DECLARED in the target. The two spellings are separate on purpose. Prose says
+            // `readonly REPORT_QUEUE`, and searching the target for that alone would still match after a
+            // rename to `readonly REPORT_QUEUE_V2` - a mutation test renamed one symbol exactly that way and
+            // the check passed, which is why the declaration form carries its `=` or `()` and is matched in
+            // full. A rename in either direction now fails: the declaration must exist in the target, and
+            // the citing file must still make the citation, so the table cannot rot while quietly passing.
+            final List<String[]> citations = List.of(
+                    new String[] {"src/main/resources/application.yml", "localstack-init/init-aws.sh",
+                                  "readonly INPUT_BUCKET", "readonly INPUT_BUCKET="},
+                    new String[] {"src/main/resources/application.yml", "localstack-init/init-aws.sh",
+                                  "readonly REPORT_QUEUE", "readonly REPORT_QUEUE="},
+                    new String[] {"src/main/resources/application.yml", "localstack-init/init-aws.sh",
+                                  "readonly QUEUE_LOGICAL", "readonly QUEUE_LOGICAL="},
+                    new String[] {"src/main/resources/application.yml", "localstack-init/init-aws.sh",
+                                  "readonly NOTIFICATION_TOPIC", "readonly NOTIFICATION_TOPIC="},
+                    new String[] {"src/main/resources/application.yml", "localstack-init/init-aws.sh",
+                                  "enable_and_verify_versioning", "enable_and_verify_versioning() {"},
+                    new String[] {"src/main/resources/application-local.yml", "localstack-init/init-aws.sh",
+                                  "readonly REGION", "readonly REGION="},
+                    new String[] {"src/main/resources/application-local.yml", "localstack-init/init-aws.sh",
+                                  "require_local_endpoint", "require_local_endpoint() {"},
+                    new String[] {"src/main/resources/application-local.yml", "localstack-init/init-aws.sh",
+                                  "validate_endpoint_port", "validate_endpoint_port() {"},
+                    new String[] {"src/main/resources/application-local.yml", "docker-compose.yml",
+                                  "x-carddemo-aws-context", "x-carddemo-aws-context:"},
+                    new String[] {"src/main/java/com/cardemo/config/AwsConfig.java",
+                                  "localstack-init/init-aws.sh", "ALLOWED_ENDPOINT_HOSTS",
+                                  "readonly ALLOWED_ENDPOINT_HOSTS="},
+                    new String[] {"src/main/java/com/cardemo/config/AwsConfig.java",
+                                  "localstack-init/init-aws.sh", "ALLOWED_ENDPOINT_HOST_PATTERN",
+                                  "readonly ALLOWED_ENDPOINT_HOST_PATTERN="},
+                    new String[] {"src/main/java/com/cardemo/observability/HealthIndicators.java",
+                                  "Dockerfile", "HEALTHCHECK", "HEALTHCHECK --"});
+
+            final List<String> offenders = new ArrayList<>();
+            for (final String[] citation : citations) {
+                final String citing = citation[0];
+                final String target = citation[1];
+                final String cited = citation[2];
+                final String declaration = citation[3];
+
+                if (readLines(ROOT.resolve(target)).stream().noneMatch(line -> line.contains(declaration))) {
+                    offenders.add(target + " no longer declares [" + declaration + "], cited by " + citing);
+                }
+                if (readLines(ROOT.resolve(citing)).stream().noneMatch(line -> line.contains(cited))) {
+                    offenders.add(citing + " no longer cites [" + cited + "]; drop this row instead");
+                }
+            }
+
+            assertThat(offenders)
+                    .as("""
+                            A symbol citation is only an improvement on a line locator while it still                             resolves. Either the target renamed the symbol - update both - or the citation                             was reworded, in which case this table should lose the row.""")
+                    .isEmpty();
+        }
+
+        /**
+         * Reads one scanned file into lines.
+         *
+         * @param file the file to read
+         * @return its lines, never {@code null}
+         */
+        private List<String> readLines(final Path file) {
+            try {
+                return Files.readAllLines(file, StandardCharsets.UTF_8);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot read " + file, cause);
+            }
+        }
     }
 }
