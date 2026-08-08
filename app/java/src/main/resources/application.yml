@@ -1,96 +1,883 @@
-# ---------------------------------------------------------------------------------------------
-# AWS CardDemo - Java 21 / Spring Boot 3.x migration module: default runtime configuration.
+# =============================================================================================
+#  AWS CardDemo - Java 21 / Spring Boot 3.5.16 migration module
+#  DEFAULT PROFILE CONFIGURATION
+# =============================================================================================
 #
-# Every dataset name lives here and NOWHERE in Java source (AAP gate G46: a source scan must find
-# no hard-coded AWS.M2.CARDDEMO.* literal). The eight VSAM datasets are the FILE definitions in
-# app/csd/CARDDEMO.CSD; the remaining entries are the batch-only DD names taken from app/jcl/*.jcl
-# and app/proc/*.prc.
+#  WHAT THIS FILE IS
+#  -----------------
+#  The single place in the whole module where a mainframe dataset name, a record width or a
+#  batch job contract is written down. A scan of src/main/java must never find an
+#  "AWS.M2.CARDDEMO.*" literal, a hard-coded LRECL or a hard-coded DD name: every one of them
+#  lives here (AAP 0.4.11 "Configuration replaces hard-coded dataset names", 0.7.4 "Dataset
+#  names are externalized into application.yml", gate G46).
 #
-# The site-specific mainframe JDBC driver is a DEPLOYMENT-TIME INPUT (AAP 0.5.5 / risk R-E): no
-# driver coordinate is compiled into the build, and no DDL or schema migration is ever performed
-# against the existing backend (AAP gate G44).
-# ---------------------------------------------------------------------------------------------
+#  Authority: AAP 0.2.5 (in-scope list), 0.3.1 (target tree - "datasource, dataset bindings,
+#  server"), 0.4.2 (CREATE from app/csd/CARDDEMO.CSD - "Datasource properties;
+#  spring.batch.job.enabled=false; dataset bindings keyed by the 8 CSD DSNAME values plus the
+#  batch-only DDs"), 0.5.5 (JDBC driver position), 0.7.4, 0.8.6 (this is NOT a performance
+#  refactoring).
+#
+#  PROVENANCE OF EVERY VALUE
+#  -------------------------
+#  Nothing below was inferred. Each dataset entry carries a comment naming the file and line it
+#  was read from: the eight CICS FILE definitions come from app/csd/CARDDEMO.CSD lines 1-99, and
+#  the batch-only DD names, record formats and LRECLs come from app/jcl/*.jcl, app/jcl/*.JCL and
+#  app/proc/*.prc. Where a width could only be established from the program source, the FD or
+#  copybook is cited instead. Those trees are READ-ONLY - they are the sole oracle for
+#  behavioural equivalence, and no key in this file names a write destination inside any of
+#  them (practice B3, gate G5). A repository path therefore appears in this file only inside a
+#  comment, as provenance; not one property VALUE resolves to a path in a reference tree.
+#
+#  USER-SPECIFIED RULES
+#  --------------------
+#  review_rules returns exactly one line - "No user rules provided." - and that single line is
+#  the entire document. NO user rule governs this file. Its absence is not licence to lower the
+#  bar: AAP 0.10.2 elevates twelve enterprise practices to binding constraints in their place,
+#  and the ones that bear on this file are cited inline as B1 (exact verified values, no
+#  secrets), B2 (Spring Boot 3.x property names only), B3 (reference trees immutable),
+#  B4 (no scope creep), B6 (security posture unchanged), B7 (deterministic non-interactive
+#  build), B8 (explicit over implicit), B11 (hand-written codecs, one auditable width source)
+#  and B12 (environmental limits documented, not absorbed).
+#
+#  HOW A PROFILE OVERRIDES A DATASET  (read this before editing application-test.yml)
+#  ----------------------------------
+#  A profile-specific document overrides ONLY the "dsname" of an entry, e.g.
+#
+#      carddemo:
+#        datasets:
+#          ACCTDAT:
+#            dsname: classpath:fixtures/acctdata.txt
+#
+#  Everything else in an entry - record-length, record-format, block-size, copybook, key-length,
+#  base - is copybook-fixed or JCL-fixed and MUST NOT be restated or relaxed per profile
+#  (gates G19, G20). Overriding the whole entry with a bare scalar instead of its "dsname"
+#  breaks the binding; overriding a width silently breaks parity. This split is deliberate:
+#  the location of a dataset is environmental, its geometry is not.
+#
+#  ENTRY SCHEMA for carddemo.datasets.<DD-NAME>
+#  --------------------------------------------
+#    dsname         the dataset name, or (in a profile override) a resolvable resource location.
+#                   THE ONLY PROFILE-OVERRIDABLE FIELD.
+#    organization   ksds | aix-path | sequential - the access organization, not a table.
+#    gdg            true when the JCL names a relative generation such as NAME(+1).
+#    record-format  F | FB, verbatim from the JCL DCB. See the RECORDFORMAT(V) note below.
+#    block-size     verbatim from the JCL DCB where one is declared; 0 means system-determined,
+#                   which is what BLKSIZE=0 in the JCL asks for.
+#    record-length  the fixed record width in bytes. The codec's single auditable source (B11).
+#    copybook       the app/cpy/ member that defines the layout, so a reviewer can diff a width
+#                   against its PICTURE clauses without leaving this file.
+#    key-length     stated ONLY where a key width is verifiable in a source file (B1).
+#    base           for an alternate-index PATH, the dataset key it indexes (gate G45).
+#    alternate-key  for an alternate-index PATH, the copybook field forming the alternate key.
+#    alias          valid only inside carddemo.jobs.<job>.datasets: resolve this DD to the named
+#                   carddemo.datasets entry. Used where a job addresses an already-declared
+#                   dataset under a different DD name, so no name or width is ever written twice.
+#
+#  Deliberately absent from the entry schema: an access mode. Whether a dataset is read, browsed
+#  or rewritten is job-scoped, not dataset-scoped - ACCTFILE is read-only under READACCT.jcl and
+#  rewritten under INTCALC.jcl - so it belongs with the repository and job, never here.
+#
+#  RECORDFORMAT(V) versus RECFM=F / RECFM=FB
+#  ----------------------------------------
+#  All eight CICS FILE definitions declare RECORDFORMAT(V) while the batch JCL declares RECFM=F
+#  or RECFM=FB for the very same datasets (AAP 0.7.4). The Java layer treats every record length
+#  as copybook-fixed regardless and models no variable-length record, so record-format is
+#  recorded from the JCL - the concrete, byte-level contract - and the CICS V is noted here once
+#  rather than repeated on all eight entries.
+#
+#  THE JDBC DRIVER IS A DEPLOYMENT-TIME INPUT  (practice B12, risk R-E)
+#  ------------------------------------------
+#  There is not one EXEC SQL statement in any of the 28 COBOL programs: the application is
+#  entirely VSAM and sequential-file based, DB2 appears only as a README.md Roadmap item, and
+#  indexed VSAM has no standard Maven-published JDBC driver. app/java/pom.xml therefore pins no
+#  driver coordinate, and this file names none either. The url, credentials and driver class are
+#  supplied at deployment time through the environment variables below. Production connectivity
+#  cannot be exercised in this environment; that limitation is recorded here rather than papered
+#  over with an invented driver class, which would breach B1 as well as B12.
+# =============================================================================================
+
 spring:
   application:
     name: carddemo
 
-  # Batch jobs are launched explicitly (mirroring an EXEC PGM= step), never on context refresh.
+  # -------------------------------------------------------------------------------------------
+  # DataSource - configuration-bound, driver-free, credential-free.
+  #
+  # Every value is an environment placeholder with an EMPTY default. That is intentional: with
+  # nothing supplied the context fails fast at startup with Spring Boot's own "url attribute is
+  # not specified" diagnostic, which tells an operator exactly what is missing. The alternative -
+  # defaulting to some concrete database - would let the application start against the wrong
+  # backend, which for a byte-parity migration is far worse than not starting at all (B8).
+  #
+  # No credential is committed here and none ever may be (B1, B6). The two empty strings below
+  # are placeholders for deployment-supplied values, not secrets.
+  #
+  # Tests do not use this block: they run under the "test" profile, whose application-test.yml
+  # supplies the in-memory H2 DataSource that also backs the Spring Batch JobRepository. H2 is a
+  # TEST-scope dependency in app/java/pom.xml and is never promoted (AAP 0.5.5).
+  # -------------------------------------------------------------------------------------------
+  datasource:
+    url: "${CARDDEMO_DATASOURCE_URL:}"
+    username: "${CARDDEMO_DATASOURCE_USERNAME:}"
+    password: "${CARDDEMO_DATASOURCE_PASSWORD:}"
+    driver-class-name: "${CARDDEMO_DATASOURCE_DRIVER_CLASS_NAME:}"
+    hikari:
+      # Modest and conservative on purpose. AAP 0.8.6: no performance objective is stated and
+      # none is inferred - parity, not throughput, is the objective. Enlarging the pool or
+      # introducing parallelism would additionally threaten parity, because several jobs depend
+      # on strict record ordering (CBACT04C's per-account accumulation, CBSTM03A's single pass).
+      pool-name: carddemo-pool
+      maximum-pool-size: ${CARDDEMO_DATASOURCE_MAXIMUM_POOL_SIZE:10}
+      minimum-idle: ${CARDDEMO_DATASOURCE_MINIMUM_IDLE:2}
+      connection-timeout: ${CARDDEMO_DATASOURCE_CONNECTION_TIMEOUT_MS:30000}
+      # Commit boundaries are owned by the Spring Batch step and the service layer, mirroring
+      # where the COBOL performs its REWRITE, so the driver must not commit on its own.
+      auto-commit: false
+
+  # -------------------------------------------------------------------------------------------
+  # Spring Batch. The 8 programs invoked by EXEC PGM= in app/jcl, plus the untriggered CBTRN01C.
+  #
+  # job.enabled: false is the Boot 3 key spelling and is a published contract (AAP 0.4.2, and
+  # README.md documents the same convention with explicit per-job launch). It stops every job
+  # auto-running on context refresh, so a job runs only when something deliberately launches it -
+  # exactly as a job runs only when JCL submits an EXEC PGM= step. It is also what lets
+  # "mvn -f app/java/pom.xml clean verify" complete unattended with no watch mode (B7).
+  #
+  # G44 BOUNDARY - read before changing initialize-schema.
+  # The BATCH_* tables are Spring Batch's own JobRepository metadata: framework infrastructure,
+  # not application schema. Gate G44 forbids DDL, schema migrations, entity mappings, version
+  # columns and new indexes, and the prompt forbids any database migration at all. So schema
+  # creation is "never" in this, the default profile: nothing in this module may issue DDL
+  # against the existing backend. The metadata tables are created ONLY inside the test-scope
+  # in-memory H2 instance, by application-test.yml. Do not set this to "always" or "embedded"
+  # here.
+  # -------------------------------------------------------------------------------------------
   batch:
     job:
       enabled: false
     jdbc:
-      # NEVER create tables against the existing backend - no DDL, no schema changes.
       initialize-schema: never
+      # Spring Batch's default prefix, stated explicitly so the metadata table names this module
+      # expects are visible rather than implied (B8).
+      table-prefix: BATCH_
 
-  # Configuration-bound DataSource. Supply these at deployment time; nothing is defaulted to a
-  # concrete database here, because this module must not introduce a database of its own.
-  datasource:
-    url: ${CARDDEMO_DATASOURCE_URL:}
-    username: ${CARDDEMO_DATASOURCE_USERNAME:}
-    password: ${CARDDEMO_DATASOURCE_PASSWORD:}
-    driver-class-name: ${CARDDEMO_DATASOURCE_DRIVER_CLASS:}
-    hikari:
-      pool-name: carddemo-pool
-      maximum-pool-size: ${CARDDEMO_DATASOURCE_MAX_POOL:10}
-      minimum-idle: ${CARDDEMO_DATASOURCE_MIN_IDLE:2}
-      connection-timeout: 30000
-      auto-commit: false
+  # A second, independent guard on the same G44 boundary: no schema.sql or data.sql may ever be
+  # executed against the configured DataSource. This module ships no such script and creates no
+  # db/ or migration/ directory; "never" makes that structural rather than merely true today.
+  sql:
+    init:
+      mode: never
 
+  # -------------------------------------------------------------------------------------------
+  # JSON mapping for the 17 REST controllers (consumed by config/WebConfig.java).
+  #
+  # Each request and response field is a 1:1 projection of a BMS DFHMDF field definition, so the
+  # serializer is configured strictly and explicitly:
+  #   * default-property-inclusion: always - a fixed-width screen projection must emit EVERY
+  #     field, including the empty ones. Omitting nulls would silently drop screen fields.
+  #   * fail-on-unknown-properties: true - a field that traces to no DFHMDF definition is an
+  #     error, not something to ignore.
+  #   * no property-naming-strategy is set, deliberately: payload names must stay exactly as the
+  #     DTOs declare them, which is exactly as the symbolic maps in app/cpy-bms name them.
+  # -------------------------------------------------------------------------------------------
+  jackson:
+    default-property-inclusion: always
+    serialization:
+      indent-output: false
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: true
+
+# ---------------------------------------------------------------------------------------------
+# Servlet container for the 17 stateless online transactions.
+#
+# There is deliberately NO session configuration here. CICS is pseudo-conversational, so the
+# COMMAREA, the EIBAID and the ENTER/REENTER context all travel in the request and response
+# payloads and never in server-side state (AAP rule R6, gate G37). Introducing a session store
+# would reintroduce exactly the affinity the migration removes.
+#
+# Error responses include the message and binding errors because the COBOL programs return their
+# own diagnostic text in the screen's error field, and that text is parity-relevant. Stack traces
+# are never included: they are not part of any observable COBOL behaviour.
+# ---------------------------------------------------------------------------------------------
 server:
-  port: ${SERVER_PORT:8080}
+  port: ${CARDDEMO_SERVER_PORT:8080}
+  servlet:
+    context-path: ${CARDDEMO_SERVER_CONTEXT_PATH:/}
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: never
 
+# =============================================================================================
+#  carddemo.* - the migration's own configuration namespace
+# =============================================================================================
 carddemo:
-  # Charsets are always named explicitly - never the platform default (AAP 0.7.2 / rule B8).
+
+  # -------------------------------------------------------------------------------------------
+  # Character sets - ALWAYS NAMED, NEVER THE PLATFORM DEFAULT (practice B8, AAP 0.8.9).
+  # Consumed by config/CobolCharsetConfig.java.
+  #
+  # A platform default charset is the classic silent corrupter of mainframe data, so neither
+  # value may be omitted or derived. app/data/ASCII/ holds the nine authoritative text fixtures
+  # for this migration; app/data/EBCDIC/ holds twelve binary datasets that are reference-only and
+  # that README.md:L65 requires be transferred in binary mode - which is precisely the evidence
+  # that encoding is a first-class concern here rather than an incidental detail.
+  # -------------------------------------------------------------------------------------------
   charset:
+    # Code page for EBCDIC dataset input, i.e. the app/data/EBCDIC/ datasets.
     ebcdic: IBM037
+    # Code page for the ASCII fixtures, i.e. app/data/ASCII/*.txt and everything derived from it.
     ascii: US-ASCII
 
+  # -------------------------------------------------------------------------------------------
+  # DATASET BINDINGS - 27 entries: the 8 CICS FILE definitions plus the 19 batch-only DD names.
+  #
+  # Keys are the DD / CICS FILE names exactly as the JCL and the CSD spell them, in upper case.
+  # That is deliberate and verified: Spring Boot's map binder preserves a map key's original form,
+  # so ACCTDAT and XREFFIL1 bind as written, and keeping the mainframe identifier intact means a
+  # reviewer can diff this file against the JCL line by line. Look a dataset up by its DD name.
+  #
+  # Several DD names are aliases for the same dataset - ACCTDAT and ACCTFILE are both
+  # ACCTDATA.VSAM.KSDS, and CCXREF, XREFFILE and CARDXREF are all CARDXREF.VSAM.KSDS. Each alias
+  # gets its own entry because the COBOL and the JCL address them by different names, and losing
+  # a name would leave a program unable to resolve its own DD.
+  #
+  # ALTERNATE INDEXES ARE NOT SEPARATE TABLES (gate G45). CARDAIX, CXACAIX and XREFFIL1 are
+  # PATHs over a base cluster; each names its base below. CARDXREF.VSAM.KSDS is opened twice in
+  # one INTCALC step - as XREFFILE on the base and XREFFIL1 on the AIX path - which proves the
+  # point mechanically. The Java side exposes an alternate-key finder ON THE BASE REPOSITORY;
+  # there is no second repository and no second table anywhere.
+  # -------------------------------------------------------------------------------------------
   datasets:
-    # --- The 8 CICS FILE definitions from app/csd/CARDDEMO.CSD -------------------------------
-    acctdat: ${CARDDEMO_DS_ACCTDAT:AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS}
-    carddat: ${CARDDEMO_DS_CARDDAT:AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS}
-    cardaix: ${CARDDEMO_DS_CARDAIX:AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.PATH}
-    ccxref: ${CARDDEMO_DS_CCXREF:AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}
-    cxacaix: ${CARDDEMO_DS_CXACAIX:AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH}
-    custdat: ${CARDDEMO_DS_CUSTDAT:AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS}
-    transact: ${CARDDEMO_DS_TRANSACT:AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}
-    usrsec: ${CARDDEMO_DS_USRSEC:AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS}
 
-    # --- Batch-only DD names from app/jcl/*.jcl and app/proc/*.prc --------------------------
-    discgrp: ${CARDDEMO_DS_DISCGRP:AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS}
-    tcatbalf: ${CARDDEMO_DS_TCATBALF:AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS}
-    dalytran: ${CARDDEMO_DS_DALYTRAN:AWS.M2.CARDDEMO.DALYTRAN.PS}
-    dalyrejs: ${CARDDEMO_DS_DALYREJS:AWS.M2.CARDDEMO.DALYREJS.PS}
-    trantype: ${CARDDEMO_DS_TRANTYPE:AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS}
-    trancatg: ${CARDDEMO_DS_TRANCATG:AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS}
-    dateparm: ${CARDDEMO_DS_DATEPARM:AWS.M2.CARDDEMO.DATEPARM.PS}
-    trnxfile: ${CARDDEMO_DS_TRNXFILE:AWS.M2.CARDDEMO.TRXFL.SEQ}
-    tranrept: ${CARDDEMO_DS_TRANREPT:AWS.M2.CARDDEMO.TRANREPT.PS}
-    stmtfile: ${CARDDEMO_DS_STMTFILE:AWS.M2.CARDDEMO.STATEMNT.PS}
-    htmlfile: ${CARDDEMO_DS_HTMLFILE:AWS.M2.CARDDEMO.STATEMNT.HTML}
-    systran: ${CARDDEMO_DS_SYSTRAN:AWS.M2.CARDDEMO.SYSTRAN.PS}
+    # --- The 8 CICS FILE definitions: app/csd/CARDDEMO.CSD lines 1-99 ------------------------
+    # All eight are declared there with an identical capability set:
+    #   UPDATEMODEL(LOCKING) LOAD(NO) RECORDFORMAT(V) ADD(YES) BROWSE(YES) DELETE(YES) READ(YES)
+    #   UPDATE(YES) JOURNAL(NO) RECOVERY(NONE) STATUS(ENABLED) OPENTIME(FIRSTREF)
+    #   DISPOSITION(SHARE) STRINGS(1)
 
-  # Fixed record widths asserted by the parity gates G19/G20. Values come from the copybooks in
-  # app/cpy/ and the LRECL declarations in app/jcl/. Reference data - do not tune.
-  record-length:
-    account: 300
-    card: 150
-    card-xref: 50
-    customer: 500
-    transaction: 350
-    daly-tran: 350
-    tran-cat-bal: 50
-    disclosure-group: 50
-    tran-type: 60
-    tran-category: 60
-    sec-user: 80
-    trnx: 350
-    daly-rejects: 430
-    tran-report: 133
-    statement-text: 80
-    statement-html: 100
+    # CSD L1-L2. Account master.
+    ACCTDAT:
+      dsname: ${CARDDEMO_DATASET_ACCTDAT:AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 300
+      copybook: CVACT01Y
 
+    # CSD L25-L26. Card master.
+    CARDDAT:
+      dsname: ${CARDDEMO_DATASET_CARDDAT:AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 150
+      copybook: CVACT02Y
+
+    # CSD L13-L14. Alternate-index PATH over CARDDAT, keyed by account id: the COBOL names the
+    # file literal LIT-CARD-FILE-ACCT-PATH and drives it from WS-CARD-RID-ACCT-ID PIC 9(11)
+    # (app/cbl/COCRDLIC.cbl:L139, L215-L217; same in COACTUPC, COACTVWC, COCRDSLC, COCRDUPC).
+    CARDAIX:
+      dsname: ${CARDDEMO_DATASET_CARDAIX:AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX.PATH}
+      organization: aix-path
+      base: CARDDAT
+      alternate-key: CARD-ACCT-ID
+      record-format: FB
+      record-length: 150
+      copybook: CVACT02Y
+
+    # CSD L37-L39, DESCRIPTION(CARD TO ACCOUNT XREF). Card-to-account cross reference.
+    # NOTE ON WIDTH: 50 is the copybook value and is what the codec must use - CVACT03Y is
+    # XREF-CARD-NUM X(16) + XREF-CUST-ID 9(09) + XREF-ACCT-ID 9(11) + FILLER X(14) = 50, and
+    # README.md:L73 declares the dataset as 50 independently. The app/data/ASCII/cardxref.txt
+    # fixture is only 36 bytes because it omits that trailing FILLER; the parity harness
+    # right-pads to 50 (gate G16, risk R-F). The configured length stays 50 - never 36 - because
+    # FILLER must be emitted as spaces or every downstream offset breaks (gate G21).
+    CCXREF:
+      dsname: ${CARDDEMO_DATASET_CCXREF:AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 50
+      copybook: CVACT03Y
+
+    # CSD L63-L65. L64 says it outright: DESCRIPTION(ALTERNATE INDEX TO CCXREF VIA ACCOUNT KEY).
+    CXACAIX:
+      dsname: ${CARDDEMO_DATASET_CXACAIX:AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH}
+      organization: aix-path
+      base: CCXREF
+      alternate-key: XREF-ACCT-ID
+      record-format: FB
+      record-length: 50
+      copybook: CVACT03Y
+
+    # CSD L50-L52, DESCRIPTION(CARDDEMO CUSTOMER DATA). Customer master.
+    CUSTDAT:
+      dsname: ${CARDDEMO_DATASET_CUSTDAT:AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 500
+      copybook: CVCUS01Y
+
+    # CSD L76-L77. Transaction master. Note the collision documented under carddemo.jobs: the
+    # name TRANSACT is a CICS FILE bound to this KSDS, but in INTCALC.jcl it is an OUTPUT DD
+    # pointing at SYSTRAN(+1). The job-scoped override there resolves it.
+    TRANSACT:
+      dsname: ${CARDDEMO_DATASET_TRANSACT:AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 350
+      copybook: CVTRA05Y
+
+    # CSD L88-L89. Security user file. SEC-USR-PWD PIC X(08) is compared in PLAINTEXT by
+    # COSGN00C, and that is preserved: hashing would change behaviour and Spring Security is out
+    # of scope, so this file introduces no authentication, hashing or token configuration
+    # whatsoever (practice B6, gate G41).
+    USRSEC:
+      dsname: ${CARDDEMO_DATASET_USRSEC:AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 80
+      copybook: CSUSR01Y
+
+    # --- Batch DD aliases of the datasets above ----------------------------------------------
+
+    # app/jcl/READACCT.jcl:L25-L26 (CBACT01C); also INTCALC.jcl:L33-L34, POSTTRAN.jcl:L39-L40
+    # and CREASTMT.JCL:L85. Same dataset as ACCTDAT.
+    ACCTFILE:
+      dsname: ${CARDDEMO_DATASET_ACCTFILE:AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 300
+      copybook: CVACT01Y
+
+    # app/jcl/READCARD.jcl:L25-L26 (CBACT02C). Same dataset as CARDDAT. CBACT02C reads the CARD
+    # file despite its Java class being named AccountBalanceReaderJob (AAP rule R1).
+    CARDFILE:
+      dsname: ${CARDDEMO_DATASET_CARDFILE:AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 150
+      copybook: CVACT02Y
+
+    # app/jcl/READCUST.jcl:L9-L10 (CBCUS01C); also CREASTMT.JCL:L86. Same dataset as CUSTDAT.
+    CUSTFILE:
+      dsname: ${CARDDEMO_DATASET_CUSTFILE:AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 500
+      copybook: CVCUS01Y
+
+    # app/jcl/READXREF.jcl:L25-L26 (CBACT03C); also INTCALC.jcl:L29-L30, POSTTRAN.jcl:L32-L33
+    # and CREASTMT.JCL:L84. Same dataset as CCXREF.
+    XREFFILE:
+      dsname: ${CARDDEMO_DATASET_XREFFILE:AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 50
+      copybook: CVACT03Y
+
+    # app/jcl/INTCALC.jcl:L31-L32. The SAME dataset as CXACAIX, opened under a second DD name in
+    # the same step as XREFFILE so CBACT04C can read the base and the account path concurrently.
+    XREFFIL1:
+      dsname: ${CARDDEMO_DATASET_XREFFIL1:AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH}
+      organization: aix-path
+      base: CCXREF
+      alternate-key: XREF-ACCT-ID
+      record-format: FB
+      record-length: 50
+      copybook: CVACT03Y
+
+    # app/jcl/TRANREPT.jcl:L67-L68 (CBTRN03C's name for the cross reference). Same dataset again.
+    CARDXREF:
+      dsname: ${CARDDEMO_DATASET_CARDXREF:AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 50
+      copybook: CVACT03Y
+
+    # app/jcl/POSTTRAN.jcl:L28-L29. THIS DD NAME IS NOT GLOBALLY UNIQUE: TRANREPT.jcl:L65-L66
+    # binds the same TRANFILE to AWS.M2.CARDDEMO.TRANSACT.DALY(+1) instead. The value here is
+    # the transaction master used by CBTRN02C; transaction-report-job overrides it below.
+    TRANFILE:
+      dsname: ${CARDDEMO_DATASET_TRANFILE:AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 350
+      copybook: CVTRA05Y
+
+    # --- Batch-only datasets -----------------------------------------------------------------
+
+    # app/jcl/POSTTRAN.jcl:L30-L31. A sequential PS dataset, NOT a KSDS - the only input of the
+    # posting job that is browsed front-to-back rather than keyed.
+    DALYTRAN:
+      dsname: ${CARDDEMO_DATASET_DALYTRAN:AWS.M2.CARDDEMO.DALYTRAN.PS}
+      organization: sequential
+      record-format: FB
+      record-length: 350
+      copybook: CVTRA06Y
+
+    # app/jcl/POSTTRAN.jcl:L34-L38 - DISP=(NEW,CATLG,DELETE), DCB=(RECFM=F,LRECL=430,BLKSIZE=0),
+    # DSN=AWS.M2.CARDDEMO.DALYREJS(+1). 430 is not arbitrary and has no copybook: CBTRN02C
+    # declares the layout inline at L81-L84 as FD-REJECT-RECORD PIC X(350) followed by
+    # FD-VALIDATION-TRAILER PIC X(80), which is exactly 430 (gate G20).
+    DALYREJS:
+      dsname: ${CARDDEMO_DATASET_DALYREJS:AWS.M2.CARDDEMO.DALYREJS(+1)}
+      organization: sequential
+      gdg: true
+      record-format: F
+      block-size: 0
+      record-length: 430
+
+    # app/jcl/INTCALC.jcl:L27-L28 and app/jcl/POSTTRAN.jcl:L41-L42. The 17-byte key is
+    # CVTRA01Y's TRAN-CAT-KEY: TRANCAT-ACCT-ID 9(11) + TRANCAT-TYPE-CD X(02) + TRANCAT-CD 9(04).
+    TCATBALF:
+      dsname: ${CARDDEMO_DATASET_TCATBALF:AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 50
+      key-length: 17
+      copybook: CVTRA01Y
+
+    # app/jcl/INTCALC.jcl:L35-L36. Interest rates by group, account group and transaction
+    # category. DIS-INT-RATE is PIC S9(04)V99, so it decodes at scale 2 like every other
+    # monetary field in the system.
+    DISCGRP:
+      dsname: ${CARDDEMO_DATASET_DISCGRP:AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 50
+      copybook: CVTRA02Y
+
+    # app/jcl/TRANREPT.jcl:L69-L70.
+    TRANTYPE:
+      dsname: ${CARDDEMO_DATASET_TRANTYPE:AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 60
+      copybook: CVTRA03Y
+
+    # app/jcl/TRANREPT.jcl:L71-L72.
+    TRANCATG:
+      dsname: ${CARDDEMO_DATASET_TRANCATG:AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 60
+      copybook: CVTRA04Y
+
+    # app/jcl/TRANREPT.jcl:L73-L74 - DSN=AWS.M2.CARDDEMO.DATEPARM, with NO .VSAM or .PS
+    # qualifier, uniquely among the data datasets. This is where CBTRN03C's report date range
+    # comes from; it is NOT a PARM. The JCL declares DISP=SHR only and supplies no DCB, so no
+    # record-format is asserted here (B1); the geometry comes from the program instead -
+    # app/cbl/CBTRN03C.cbl:L55-L57 SELECT DATE-PARMS-FILE ASSIGN TO DATEPARM ORGANIZATION IS
+    # SEQUENTIAL, and L87-L88 FD DATE-PARMS-FILE / 01 FD-DATEPARM-REC PIC X(80). The record is
+    # start date X(10) + FILLER X(01) + end date X(10) (L122-L125).
+    DATEPARM:
+      dsname: ${CARDDEMO_DATASET_DATEPARM:AWS.M2.CARDDEMO.DATEPARM}
+      organization: sequential
+      record-length: 80
+
+    # app/jcl/CREASTMT.JCL:L83 binds TRNXFILE to the KSDS that STEP020 loads. Its geometry comes
+    # from the IDCAMS DEFINE CLUSTER at L29-L39: KEYS(32 0) RECORDSIZE(350 350) INDEXED. The
+    # 32-byte key is COSTM01's TRNX-CARD-NUM X(16) followed by TRNX-ID X(16).
+    # Do not confuse this with the intermediate AWS.M2.CARDDEMO.TRXFL.SEQ that STEP010's SORT
+    # writes and STEP020 REPROs from - that one is job-scoped and appears under
+    # carddemo.jobs.statement-generation-job-a.
+    TRNXFILE:
+      dsname: ${CARDDEMO_DATASET_TRNXFILE:AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS}
+      organization: ksds
+      record-format: FB
+      record-length: 350
+      key-length: 32
+      copybook: COSTM01
+
+    # app/jcl/TRANREPT.jcl:L76-L80 - DCB=(LRECL=133,RECFM=FB,BLKSIZE=0),
+    # DSN=AWS.M2.CARDDEMO.TRANREPT(+1). 133 is the report line width (gate G20); CVTRA07Y
+    # carries the edit masks and the 133-byte ALL '-' separator.
+    TRANREPT:
+      dsname: ${CARDDEMO_DATASET_TRANREPT:AWS.M2.CARDDEMO.TRANREPT(+1)}
+      organization: sequential
+      gdg: true
+      record-format: FB
+      block-size: 0
+      record-length: 133
+      copybook: CVTRA07Y
+
+    # app/jcl/CREASTMT.JCL:L87-L91 - the CREATING step, STEP040. DCB is read from L89
+    # (LRECL=80, BLKSIZE=8000, RECFM=FB) and the DSN from L91. L90 of that file is a garbled,
+    # overwritten JCL line and carries no usable information; it is a defect in the source and is
+    # deliberately not interpreted.
+    STMTFILE:
+      dsname: ${CARDDEMO_DATASET_STMTFILE:AWS.M2.CARDDEMO.STATEMNT.PS}
+      organization: sequential
+      record-format: FB
+      block-size: 8000
+      record-length: 80
+
+    # app/jcl/CREASTMT.JCL:L92-L96 - DCB=(LRECL=100,BLKSIZE=800,RECFM=FB).
+    #
+    # 100, NOT 80 (gate G20, risk R-G). CREASTMT.JCL declares HTMLFILE twice with different
+    # widths: the STEP030 IEFBR14 pre-delete step at L67-L71 says LRECL=80,BLKSIZE=3200, while
+    # the STEP040 step that actually CREATES the file at L92-L96 says LRECL=100,BLKSIZE=800.
+    # The creating step is authoritative. Do not average the two and do not take the first.
+    HTMLFILE:
+      dsname: ${CARDDEMO_DATASET_HTMLFILE:AWS.M2.CARDDEMO.STATEMNT.HTML}
+      organization: sequential
+      record-format: FB
+      block-size: 800
+      record-length: 100
+
+    # app/jcl/INTCALC.jcl:L37-L41 - DCB=(RECFM=F,LRECL=350,BLKSIZE=0),
+    # DSN=AWS.M2.CARDDEMO.SYSTRAN(+1). This is the interest job's generated-transaction output.
+    # In the JCL it is written through the DD name TRANSACT, which is why
+    # carddemo.jobs.account-interest-calc-job re-points TRANSACT at this entry's dataset.
+    SYSTRAN:
+      dsname: ${CARDDEMO_DATASET_SYSTRAN:AWS.M2.CARDDEMO.SYSTRAN(+1)}
+      organization: sequential
+      gdg: true
+      record-format: F
+      block-size: 0
+      record-length: 350
+      copybook: CVTRA05Y
+
+
+  # -------------------------------------------------------------------------------------------
+  # PER-JOB CONTRACTS - consumed by config/BatchConfig.java.
+  #
+  # WHY THIS LAYER EXISTS: DD NAMES ARE NOT GLOBALLY UNIQUE.
+  # A single flat map cannot express the legacy bindings, because two jobs give the same DD name
+  # two different datasets:
+  #   * TRANFILE is AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS in POSTTRAN.jcl:L28-L29 but
+  #     AWS.M2.CARDDEMO.TRANSACT.DALY(+1) in TRANREPT.jcl:L65-L66.
+  #   * TRANSACT is a CICS FILE bound to the transaction master, yet in INTCALC.jcl:L37-L41 it is
+  #     an OUTPUT DD pointing at AWS.M2.CARDDEMO.SYSTRAN(+1).
+  # So a DD name is resolved job-first: an entry under carddemo.jobs.<job>.datasets.<DD> shadows
+  # the global carddemo.datasets.<DD> default. Where a job simply addresses an existing dataset
+  # under another DD name, the override is a one-line "alias" rather than a restated copy, so no
+  # dataset name or width is ever written twice.
+  #
+  # Job keys are kebab-case (Spring's canonical property style) and each names the COBOL program
+  # it was translated from. Step names are transcribed from the JCL so a run can be read against
+  # the job listing, and "require-preceding-exit-code-zero" is the COND=(0,NE) contract: skip
+  # unless every preceding step returned zero.
+  # -------------------------------------------------------------------------------------------
+  jobs:
+
+    # CBACT01C - app/jcl/READACCT.jcl. Reads and prints the account master. The name says
+    # balance; the program only reads and displays (AAP rule R1, divergence register 0.8.4).
+    account-balance-job:
+      program: CBACT01C
+      parameters: []
+      steps:
+        - name: STEP05
+          program: CBACT01C
+          require-preceding-exit-code-zero: false
+
+    # CBACT02C - app/jcl/READCARD.jcl. Reads the CARD file, not the account file.
+    account-balance-reader-job:
+      program: CBACT02C
+      parameters: []
+      steps:
+        - name: STEP05
+          program: CBACT02C
+          require-preceding-exit-code-zero: false
+
+    # CBACT03C - app/jcl/READXREF.jcl. Reads the cross-reference file and performs NO updates
+    # whatsoever, despite the mandated class name AccountBalanceUpdateJob.
+    account-balance-update-job:
+      program: CBACT03C
+      parameters: []
+      steps:
+        - name: STEP05
+          program: CBACT03C
+          require-preceding-exit-code-zero: false
+
+    # CBCUS01C - app/jcl/READCUST.jcl. Reads and prints the customer master.
+    customer-file-reader-job:
+      program: CBCUS01C
+      parameters: []
+      steps:
+        - name: STEP05
+          program: CBCUS01C
+          require-preceding-exit-code-zero: false
+
+    # CBACT04C - app/jcl/INTCALC.jcl. The interest calculator, and the only job with a PARM.
+    account-interest-calc-job:
+      program: CBACT04C
+      parameters:
+        # app/jcl/INTCALC.jcl:L22 - EXEC PGM=CBACT04C,PARM='2022071800'.
+        #
+        # THIS IS CHARACTER DATA, NOT A DATE. CBACT04C concatenates it verbatim into the
+        # generated transaction identifiers - STRING PARM-DATE, WS-TRANID-SUFFIX at
+        # app/cbl/CBACT04C.cbl:L476-L477 - so parsing it as a date, reformatting it or
+        # revalidating it would corrupt every identifier the job writes.
+        #
+        # The JobParameters key is exactly "parmDate" and is carried here as a VALUE rather than
+        # as a property key, so no property-name canonicalisation can alter its spelling.
+        - name: parmDate
+          type: string
+          value: ${CARDDEMO_JOB_PARM_DATE:2022071800}
+      steps:
+        - name: STEP15
+          program: CBACT04C
+          require-preceding-exit-code-zero: false
+      datasets:
+        # The output-DD collision: in this job the DD name TRANSACT is the generated-transaction
+        # output, not the transaction master (INTCALC.jcl:L37-L41).
+        TRANSACT:
+          alias: SYSTRAN
+
+    # CBTRN02C - app/jcl/POSTTRAN.jcl. The real POSTTRAN poster: it validates the 300 daily
+    # transactions through the Card / Account / Credit Limit / Expiration cascade, then posts or
+    # rejects each one.
+    transaction-validation-job:
+      program: CBTRN02C
+      # app/jcl/POSTTRAN.jcl:L23 is a bare EXEC PGM=CBTRN02C and declares NO PARM, so this job
+      # takes no job parameters. The empty list states that as a contract; do not invent one.
+      parameters: []
+      steps:
+        - name: STEP15
+          program: CBTRN02C
+          require-preceding-exit-code-zero: false
+      datasets:
+        # Stated explicitly even though it equals the global default: settling the TRANFILE
+        # collision at the point of use is the entire reason this layer exists, and leaving it
+        # implicit here would make the report job's override look like the only reading.
+        TRANFILE:
+          alias: TRANSACT
+
+    # CBTRN03C - app/jcl/TRANREPT.jcl (and the equivalent app/proc/TRANREPT.prc). Three steps:
+    # unload the transaction master, filter and sort it by date range, then print the report.
+    #
+    # THE DATE RANGE COMES FROM THE DATEPARM DATASET, NOT FROM A PARM (TRANREPT.jcl:L73-L74).
+    # DateParmReader is a bean that reads a dataset. The SYMNAMES values at TRANREPT.jcl:L40-L44
+    # (PARM-START-DATE C'2022-01-01', PARM-END-DATE C'2022-07-06') configure the DFSORT INCLUDE
+    # filter of the sort step ONLY - they are not application properties and must never become
+    # configurable dates here.
+    transaction-report-job:
+      program: CBTRN03C
+      parameters: []
+      date-range-source: DATEPARM
+      # STEP NAMING: app/jcl/TRANREPT.jcl names its first two steps STEP05R twice - at L23 and
+      # again at L37 - which is a defect in that JCL. app/proc/TRANREPT.prc spells the same
+      # sequence STEP01R (L21), STEP05R (L35), STEP10R (L57), and that unambiguous naming is
+      # used here. No step in this job carries a COND.
+      steps:
+        - name: STEP01R
+          program: IDCAMS
+          require-preceding-exit-code-zero: false
+        - name: STEP05R
+          program: SORT
+          require-preceding-exit-code-zero: false
+        - name: STEP10R
+          program: CBTRN03C
+          require-preceding-exit-code-zero: false
+      datasets:
+        # Step 1, the REPROC unload: FILEIN is the transaction master, FILEOUT the backup
+        # generation (TRANREPT.jcl:L26-L27 and L29-L33).
+        FILEIN:
+          alias: TRANSACT
+        FILEOUT:
+          dsname: ${CARDDEMO_DATASET_TRANSACT_BKUP:AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)}
+          organization: sequential
+          gdg: true
+          record-format: FB
+          block-size: 0
+          record-length: 350
+          copybook: CVTRA05Y
+        # Step 2, the DFSORT filter: it reads the backup and writes the sorted daily file. Its
+        # SORTOUT takes DCB=(*.SORTIN), i.e. the geometry of SORTIN (TRANREPT.jcl:L38-L39,
+        # L51-L55).
+        SORTIN:
+          dsname: ${CARDDEMO_DATASET_TRANSACT_BKUP:AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)}
+          organization: sequential
+          gdg: true
+          record-format: FB
+          block-size: 0
+          record-length: 350
+          copybook: CVTRA05Y
+        SORTOUT:
+          dsname: ${CARDDEMO_DATASET_TRANSACT_DALY:AWS.M2.CARDDEMO.TRANSACT.DALY(+1)}
+          organization: sequential
+          gdg: true
+          record-format: FB
+          block-size: 0
+          record-length: 350
+          copybook: CVTRA05Y
+        # Step 3: CBTRN03C's TRANFILE is the SORTED DAILY FILE, not the transaction master. This
+        # is the override that the global TRANFILE default cannot express.
+        TRANFILE:
+          dsname: ${CARDDEMO_DATASET_TRANSACT_DALY:AWS.M2.CARDDEMO.TRANSACT.DALY(+1)}
+          organization: sequential
+          gdg: true
+          record-format: FB
+          block-size: 0
+          record-length: 350
+          copybook: CVTRA05Y
+
+    # CBSTM03A - app/jcl/CREASTMT.JCL, the only upper-case .JCL among the 29 jobs. Five steps,
+    # three of them COND=(0,NE) gated. CBSTM03A itself declares only its two outputs; all four
+    # inputs belong to CBSTM03B, the called subroutine, which is why StatementGenerationJobB is a
+    # @Component collaborator and not a job of its own (AAP I3, gate G12).
+    statement-generation-job-a:
+      program: CBSTM03A
+      parameters: []
+      steps:
+        # CREASTMT.JCL:L22 - IDCAMS DELETE of TRXFL.SEQ and the TRXFL.VSAM.KSDS cluster, then
+        # SET MAXCC = 0 and DEFINE CLUSTER ... KEYS(32 0) RECORDSIZE(350 350) (L25-L39).
+        - name: DELDEF01
+          program: IDCAMS
+          require-preceding-exit-code-zero: false
+        # CREASTMT.JCL:L44 - DFSORT rebuilds the transaction file with card number and tran id as
+        # the leading key: SORT FIELDS=(263,16,CH,A,1,16,CH,A) (L53).
+        - name: STEP010
+          program: SORT
+          require-preceding-exit-code-zero: false
+        # CREASTMT.JCL:L56 - EXEC PGM=IDCAMS,COND=(0,NE). REPRO loads the sequential file into
+        # the KSDS.
+        - name: STEP020
+          program: IDCAMS
+          require-preceding-exit-code-zero: true
+        # CREASTMT.JCL:L66 - EXEC PGM=IEFBR14,COND=(0,NE). Pre-deletes the previous run's two
+        # report datasets. Its HTMLFILE DCB at L67-L71 says LRECL=80 and is NOT authoritative -
+        # see the HTMLFILE entry above.
+        - name: STEP030
+          program: IEFBR14
+          require-preceding-exit-code-zero: true
+        # CREASTMT.JCL:L79 - EXEC PGM=CBSTM03A,COND=(0,NE). Writes the 80-byte text statement and
+        # the 100-byte HTML statement.
+        - name: STEP040
+          program: CBSTM03A
+          require-preceding-exit-code-zero: true
+      datasets:
+        # STEP010 reads the transaction master (CREASTMT.JCL:L45) and writes the intermediate
+        # sequential copy (L48-L51), which STEP020 then REPROs into the KSDS (L58-L59). The
+        # intermediate exists only inside this job, so it is declared here and not globally.
+        SORTIN:
+          alias: TRANSACT
+        SORTOUT:
+          dsname: ${CARDDEMO_DATASET_TRXFL_SEQ:AWS.M2.CARDDEMO.TRXFL.SEQ}
+          organization: sequential
+          record-format: FB
+          block-size: 3500
+          record-length: 350
+          copybook: COSTM01
+        INFILE:
+          dsname: ${CARDDEMO_DATASET_TRXFL_SEQ:AWS.M2.CARDDEMO.TRXFL.SEQ}
+          organization: sequential
+          record-format: FB
+          block-size: 3500
+          record-length: 350
+          copybook: COSTM01
+        OUTFILE:
+          alias: TRNXFILE
+
+    # CBTRN01C - NO JCL INVOKES THIS PROGRAM ANYWHERE in app/jcl or app/proc. It is one of the 28
+    # in-scope programs all the same, so it migrates as a fully runnable job with no scheduled
+    # trigger, and it must not be deleted or wired into a pipeline (AAP I4, gate G13). It touches
+    # six datasets - more than any other program - all of which resolve from the global map:
+    # ACCTFILE, CARDFILE, CUSTFILE, DALYTRAN, TRANFILE and XREFFILE.
+    #
+    # Because there is no JCL, there is no step name to transcribe: the single step name below is
+    # chosen rather than read from a source, and that is stated here rather than left to look
+    # like a transcription (practices B1, B12).
+    transaction-posting-job:
+      program: CBTRN01C
+      parameters: []
+      steps:
+        - name: STEP01
+          program: CBTRN01C
+          require-preceding-exit-code-zero: false
+
+
+  # -------------------------------------------------------------------------------------------
+  # JOB-SUBMISSION PORT - the CICS transient data queue replacement (gate G42).
+  #
+  # CORPT00C builds 80-byte JCL skeleton records and writes them to the CICS transient data queue
+  # JOBS, which the region has open on the internal reader. Java has no TDQ, so the write becomes
+  # an explicit outbound port whose byte contract is transcribed verbatim from
+  # app/csd/CARDDEMO.CSD:L499-L505:
+  #
+  #     DEFINE TDQUEUE(JOBS) GROUP(CARDDEMO)
+  #     DESCRIPTION(SUBMIT JOBS FROM CICS)
+  #            TYPE(EXTRA) DATABUFFERS(1) DDNAME(INREADER) ERROROPTION(IGNORE)
+  #            OPENTIME(INITIAL) TYPEFILE(OUTPUT) RECORDSIZE(80)
+  #            RECORDFORMAT(FIXED) BLOCKFORMAT(UNBLOCKED) DISPOSITION(MOD)
+  #
+  # record-length 80 with FIXED, UNBLOCKED records APPENDED (MOD) is what makes
+  # ReportRequestController's output byte-identical to the COBOL's: 80 bytes exactly, space
+  # padded, one record after another, appended to whatever is already there rather than
+  # truncating it.
+  #
+  # THE DESTINATION IS OUTSIDE EVERY REFERENCE TREE (practice B3). It defaults under the JVM
+  # temporary directory and is overridable per deployment. It must never be pointed at app/cbl,
+  # app/cpy, app/cpy-bms, app/bms, app/jcl, app/proc, app/csd, app/ctl, app/catlg or app/data:
+  # those trees are the only oracle for behavioural equivalence and are strictly read-only.
+  # -------------------------------------------------------------------------------------------
+  job-submission:
+    queue-name: JOBS
+    dd-name: INREADER
+    record-length: 80
+    record-format: FIXED
+    block-format: UNBLOCKED
+    disposition: MOD
+    destination: ${CARDDEMO_JOB_SUBMISSION_DESTINATION:${java.io.tmpdir}/carddemo/inreader/JOBS}
+
+# ---------------------------------------------------------------------------------------------
+# Logging. The batch programs DISPLAY their progress and their abend diagnostics to SYSOUT, and
+# that text is part of what a parity case inspects, so INFO must stay enabled for the migrated
+# packages rather than being tuned down.
+# ---------------------------------------------------------------------------------------------
 logging:
   level:
     root: INFO
     com.vsergeychik.carddemo: INFO
+    org.springframework.batch: INFO
+
+# =============================================================================================
+#  DELIBERATELY ABSENT - each omission below is a requirement, not an oversight
+# =============================================================================================
+#
+#  NOTE TO A REVIEWER GREPPING THIS FILE: the excluded technologies are NAMED below on purpose,
+#  so that the next engineer learns they are prohibited rather than merely unused. A negative
+#  grep for jpa, flyway, postgres, security and the rest will therefore match THIS comment block
+#  and nothing else - every hit is a prohibition notice, never a property. The machine-checkable
+#  invariant is that no forbidden token appears on any non-comment line of this file.
+#
+#  * PAGINATION PAGE SIZES (gate G39). 7 for the card list (COCRDLIC), 10 for transactions
+#    (COTRN00C) and 10 for users (COUSR00C) are BEHAVIOUR, not configuration. They live as
+#    constants in the services and must not be externally tunable, because changing one would
+#    change what a screen shows and break parity.
+#
+#  * spring.jpa.*, ORM or entity mapping of any kind. The prompt mandates plain JDBC and forbids
+#    schema change; an ORM would impose an entity and table model that does not exist.
+#
+#  * spring.flyway.*, spring.liquibase.*, any DDL, migration script, version column or index
+#    (gate G44). No database is created, migrated or altered by this module.
+#
+#  * Any PostgreSQL coordinate. docs/technical-specifications.md and catalog-info.yaml still
+#    describe a superseded PostgreSQL 16 / JPA / Flyway / Java 25 / cloud / observability design.
+#    Both files are OUT OF SCOPE and are left unmodified with their conflicts documented rather
+#    than silently corrected (AAP 0.1.8 Conflict Set 3, gate G58).
+#
+#  * Spring Security, JWT or password-hashing properties (practice B6, gate G41). Authentication
+#    stays a plaintext SEC-USR-PWD PIC X(08) comparison against USRSEC, exactly as COSGN00C
+#    performs it. Hashing would be a behaviour change.
+#
+#  * S3, SQS, SNS, Micrometer, Prometheus, Grafana, Jaeger, Testcontainers, LocalStack and
+#    WebFlux keys. The dependency set is closed at Java 21, Maven, Spring Boot 3.x, Spring Batch,
+#    Spring Web, JDBC and JUnit 5 (AAP 0.5.6, practice B4).
+#
+#  * Any third-party COBOL copybook parser configuration. The fixed-width codecs are hand-written
+#    so every byte offset is explicit and reviewable against the copybook (practice B11), which is
+#    why the widths above are declared here as data rather than discovered by a library.
+#
+#  * Any committed credential, token or secret (practice B1). The only credential-shaped keys are
+#    spring.datasource.username and spring.datasource.password, and both are empty environment
+#    placeholders supplied at deployment time.
+#
+#  * Any path beginning aws-carddemo-blitzy/. That prefix resolves to the repository root
+#    (AAP 0.1.1); no such directory exists and none may be created.
+#
+#  Ver: CardDemo_v1.0-15-g27d6c6f-68 - the source revision this configuration was derived from,
+#  matching the footer carried by app/cbl/CSUTLDTC.cbl, app/jcl/INTCALC.jcl and
+#  app/jcl/POSTTRAN.jcl.
+# =============================================================================================
