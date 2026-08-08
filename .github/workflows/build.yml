@@ -204,7 +204,8 @@
 #     distributionSha256Sum still pins the .zip - so the hashes cannot match
 #     and it reports a possibly compromised distribution for what is only a
 #     missing tool.
-#     What THIS launcher does, at mvnw:99-105, :374-395 and :696-703: it never
+#     What THIS launcher does, in mvnw's DELIBERATE DIVERGENCES block, its
+#     extract_zip function and its distributionUrl guard: it never
 #     retargets. The URL must end in apache-maven-<version>-bin.zip or the
 #     launcher refuses it outright, and when unzip is absent it expands the
 #     same zip with the JDK jar tool - which every runner has, since a JDK is
@@ -1307,7 +1308,7 @@ jobs:
           # what the committed launcher does rather than what the upstream one
           # does. Without unzip the upstream launcher retargets the URL at a
           # .tar.gz and then fails the zip checksum claiming a possibly
-          # compromised distribution. That is upstream only: mvnw:99-105 records
+          # compromised distribution. That is upstream only: mvnw's DELIBERATE DIVERGENCES block records
           # the divergence, :374-395 expands the pinned zip with the JDK jar tool
           # when unzip is missing, and :696-703 refuses any URL that is not
           # apache-maven-<version>-bin.zip.

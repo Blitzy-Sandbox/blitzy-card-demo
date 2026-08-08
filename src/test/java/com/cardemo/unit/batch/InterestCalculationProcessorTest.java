@@ -2096,10 +2096,11 @@ class InterestCalculationProcessorTest {
          * <p><b>It is preserved verbatim and deliberately not repaired.</b> The literal is part of the
          * observable output the parity comparison is measured against, so correcting it to
          * {@code 'ERROR OPENING DISCLOSURE GROUP FILE'} would register as a diff. Severity <b>Low</b> - an
-         * operator reading the line is pointed at the wrong dataset, and nothing else - owed an
-         * entry in the {@code DECISION_LOG.md} as its tracking reference, which is what keeps
-         * it a documented
-         * reproduction rather than untracked residue under Rule 1 clause B.
+         * operator reading the line is pointed at the wrong dataset, and nothing else - and it is held as
+         * {@code DL-PP-13} in {@code DECISION_LOG.md}, whose register of reproduced low-severity behaviours is
+         * open by construction and whose tracking reference is the declaration itself: the COBOL locator, the
+         * reason the behaviour looks wrong, and the statement that it is preserved are all above. That is what
+         * keeps it a documented reproduction rather than untracked residue under Rule 1 clause B.
          *
          * <p>Both halves of "preserved verbatim" are asserted, and each against the artefact that carries
          * it. The defect is established from the frozen corpus, which cannot change; the preservation is

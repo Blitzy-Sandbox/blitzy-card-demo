@@ -228,7 +228,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@code Integer} over {@code NUMERIC(4)} fails where {@code INTEGER} passes. Because
  *       {@code ddl-auto} is {@code validate} in every profile, the symptom is a refused context start
  *       rather than a runtime fault. Instead: pair each Java type with the type code it validates
- *       against and let the migration own the SQL. {@code V1__create_schema.sql:L967-L978} declares
+ *       against and let the migration own the SQL. {@code V1__create_schema.sql}'s
+ *       {@code CREATE TABLE transaction_category_balance} declares
  *       {@code acct_id BIGINT NOT NULL}, {@code tran_type_cd VARCHAR(2) NOT NULL} and
  *       {@code tran_cat_cd INTEGER NOT NULL}, closed by
  *       {@code CONSTRAINT pk_transaction_category_balance PRIMARY KEY (acct_id, tran_type_cd,
@@ -657,7 +658,8 @@ class TransactionCategoryBalanceIdTest {
             final String migration = Files.readString(V1_MIGRATION, StandardCharsets.UTF_8);
 
             assertThat(migration)
-                    .as("measured at src/main/resources/db/migration/V1__create_schema.sql:L977-L978. The "
+                    .as("measured on the pk_transaction_category_balance constraint of "
+                            + "src/main/resources/db/migration/V1__create_schema.sql. The "
                             + "physical order is owned by the migration, never by provider generated DDL, "
                             + "because only the migration can put the account id first")
                     .contains("CONSTRAINT pk_transaction_category_balance")
@@ -1429,7 +1431,8 @@ class TransactionCategoryBalanceIdTest {
                     .isEqualTo("tran_cat_cd");
 
             assertThat(Files.readString(V1_MIGRATION, StandardCharsets.UTF_8))
-                    .as("measured at src/main/resources/db/migration/V1__create_schema.sql:L992-L993, whose "
+                    .as("measured on the fk08_tcatbal_category constraint of "
+                            + "src/main/resources/db/migration/V1__create_schema.sql, whose "
                             + "own cited evidence is app/cbl/CBTRN02C.cbl:L470-L471. The trailing two "
                             + "components of this 17 byte key REFERENCE the row that the 6 byte key "
                             + "identifies. Reference is not identity, so the recurrence is a relationship "

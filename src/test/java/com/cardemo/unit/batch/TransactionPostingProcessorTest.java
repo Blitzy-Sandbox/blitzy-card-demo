@@ -467,7 +467,7 @@ class TransactionPostingProcessorTest {
      * Constructs the processor under test through its single public constructor.
      *
      * <p><b>Called directly, never reflectively.</b> {@link TransactionPostingProcessor} declares
-     * exactly one constructor, at {@code TransactionPostingProcessor.java:L673}, it is {@code public}, and
+     * exactly one constructor, in {@code TransactionPostingProcessor.java}, it is {@code public}, and
      * its own Javadoc states that the clock arrives through "this same constructor" for exactly this
      * purpose - the clock seam is part of the public contract precisely so that a test need not subvert
      * anything to use it. The direct call below costs nothing and buys the property that
@@ -688,13 +688,13 @@ class TransactionPostingProcessorTest {
         @Test
         @DisplayName("TransactionPostingProcessor declares exactly one constructor, and it is public")
         void exactlyOneConstructorIsDeclaredAndItIsPublic() {
-            // TransactionPostingProcessor.java:L673 declares exactly one constructor and it is public, so no
+            // TransactionPostingProcessor declares exactly one constructor and it is public, so no
             // reflection is needed to reach it and no caller can be handed a differently configured
             // instance. Asserted so that it cannot silently regress. If a
             // clock-defaulting sibling is ever added, this test fails and says why - which is the point,
             // because such a sibling would let a caller silently acquire the wall clock.
             assertThat(TransactionPostingProcessor.class.getDeclaredConstructors())
-                    .as("TransactionPostingProcessor.java:L673 is the only constructor, so the container "
+                    .as("TransactionPostingProcessor declares one constructor only, so the container "
                             + "performs implicit constructor injection and a test needs no reflection to "
                             + "supply a fixed clock")
                     .singleElement()

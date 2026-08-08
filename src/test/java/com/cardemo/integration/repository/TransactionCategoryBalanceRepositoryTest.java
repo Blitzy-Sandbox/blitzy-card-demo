@@ -251,7 +251,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *       {@code NUMERIC(6,2)} ({@code DIS-INT-RATE}). Using 12,2 here is forbidden, and it
  *       is checked below against the live catalogue rather than asserted from the migration text.</li>
  *   <li><strong>Character width policy.</strong> {@code tran_type_cd} is
- *       <strong>{@code VARCHAR(2)}, not {@code CHAR(2)}</strong> - {@code V1__create_schema.sql:971}, with
+ *       <strong>{@code VARCHAR(2)}, not {@code CHAR(2)}</strong> - the {@code tran_type_cd} column of
+ *       {@code V1__create_schema.sql}, with
  *       the reason recorded at {@code :433-437}: the embedded key component is plain text with no pinned
  *       type code. This <em>corrects</em> the working note that described the column as {@code CHAR(2)} and
  *       asked for a blank-pad policy; the honest policy is its opposite and is stated once here for the
@@ -1281,7 +1282,8 @@ class TransactionCategoryBalanceRepositoryTest extends AbstractRepositoryIntegra
                     characterMetadataSql, "transaction_category_balance", "tran_type_cd");
 
             assertThat(column.get("data_type"))
-                    .as("V1__create_schema.sql:971 declares VARCHAR(2) and not CHAR(2), for the reason "
+                    .as("V1__create_schema.sql declares tran_type_cd VARCHAR(2) and not CHAR(2), for "
+                            + "the reason "
                             + "recorded at V1:433-437; there is therefore no blank padding in either direction")
                     .isEqualTo("character varying");
             assertThat(column.get("character_maximum_length"))

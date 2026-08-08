@@ -428,8 +428,8 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      * <p><strong>The seed value.</strong> The first window is requested with any value strictly below every
      * legal key. {@code CUST-ID} is {@code PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L5} - unsigned display,
      * so its least legal value is zero, which {@code com.cardemo.model.entity.Customer} enforces as its
-     * minimum - and the column is {@code NUMERIC(9) NOT NULL} at
-     * {@code src/main/resources/db/migration/V1__create_schema.sql:609}. Any negative seed is therefore
+     * minimum - and the column is declared {@code cust_id                   NUMERIC(9) NOT NULL} in
+     * {@code src/main/resources/db/migration/V1__create_schema.sql}. Any negative seed is therefore
      * provably below the whole key space; the reader passes {@code -1}.
      *
      * <p>The {@code Pageable} supplies the window size only. Its page number must be zero, because the

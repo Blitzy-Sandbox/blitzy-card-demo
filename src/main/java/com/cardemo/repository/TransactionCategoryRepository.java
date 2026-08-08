@@ -155,7 +155,7 @@ import org.springframework.stereotype.Repository;
  * mapping, and the specification's wording for this interface does not.</b> The specification
  * describes the primary key as {@code tran_type_cd CHAR(2)} with {@code tran_cat_cd NUMERIC(4)}.
  * The committed identifier class maps plain Jakarta Persistence types and records its own Medium
- * finding to precisely this point at {@code TransactionCategoryId.java:L156-L166}: Hibernate's
+ * finding to precisely this point, in {@code TransactionCategoryId.java}: Hibernate's
  * schema validator compares JDBC type codes and not merely column names, a {@code String} declared
  * with a length of 2 is {@code VARCHAR(2)}, an {@code Integer} is {@code INTEGER}, and a provider
  * specific annotation would be needed to map {@code CHAR} — which that class deliberately declines

@@ -464,7 +464,8 @@ spring:
   # AAP 0.3.2 places live AWS accounts and real credentials OUT OF SCOPE: all
   # AWS interaction is against the emulator, zero live credentials appear in any
   # file, and NO CODE PATH MAY REACH A REAL AWS ENDPOINT. AAP 0.8.4 restates it,
-  # and pom.xml:578-579 records the same boundary for the dependency set.
+  # and pom.xml records the same boundary for the dependency set, in the comment
+  # stating that every client targets a LocalStack endpoint override.
   #
   # An absent endpoint override is therefore NOT a neutral setting here. It is
   # the one setting that silently produces live routing, because the SDK's

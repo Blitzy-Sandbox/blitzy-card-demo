@@ -138,7 +138,8 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  * <p>{@code AXRKP} is <strong>zero-based</strong> while record-byte prose is <strong>one-based</strong>, so
  * offsets are written throughout as "AXRKP 25 (zero-based) = record byte 26 (one-based)" and never
  * abbreviated to a bare number. The two are consistent twice over: the catalogue's {@code AXRKP 25}, and the
- * copybook arithmetic that puts {@code XREF-ACCT-ID} at bytes 26-36. {@code V1__create_schema.sql:800} states
+ * copybook arithmetic that puts {@code XREF-ACCT-ID} at bytes 26-36. The
+ * {@code CREATE TABLE card_cross_reference} statement of {@code V1__create_schema.sql} states
  * the same equivalence in its own comment.
  *
  * <p><strong>The two account-id alternate keys sit at different offsets and must never be conflated:</strong>
@@ -177,7 +178,7 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  *
  * <h3>Two foreign keys, and the third that deliberately does not exist</h3>
  *
- * <p>{@code V1__create_schema.sql:808-817} declares {@code fk02_xref_customer}
+ * <p>{@code V1__create_schema.sql} declares {@code fk02_xref_customer}
  * ({@code xref_cust_id -> customer.cust_id}) and {@code fk03_xref_account}
  * ({@code xref_acct_id -> account.acct_id}): two of the migration's exactly ten foreign keys, and the only
  * pair on one table. <strong>There is no foreign key from {@code xref_card_num} to {@code card.card_num}</strong>,
@@ -376,7 +377,8 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  *
  * <ul>
  *   <li><strong>The anchor row's expected values are derived, not written down.</strong> The fixture's columns
- *       17-25 read {@code 000000050} and {@code V3__seed_data.sql:837} seeds {@code (<key>, 50, 50)}.
+ *       17-25 read {@code 000000050} and {@code V3__seed_data.sql}'s {@code card_cross_reference}
+ *       insert seeds {@code (<key>, 50, 50)}.
  *       {@link SeedAndMapping#theFirstSeededRecordRoundTripsThroughItsKey()} <em>derives</em> both expected
  *       values from the frozen fixture and then pins them, so the assertion cannot silently drift and the
  *       value is machine-checked rather than asserted from prose.</li>
@@ -393,7 +395,7 @@ import com.cardemo.repository.CardCrossReferenceRepository;
  *       claim. That is stronger evidence than a list finder's cardinality would have been, because it tests
  *       the database rather than the query method.</li>
  *   <li><strong>The index name asserted is the one the migration emits.</strong>
- *       {@code V2__create_indexes.sql:434} creates
+ *       {@code V2__create_indexes.sql} creates
  *       <strong>{@code idx_card_cross_reference_acct_id}</strong>, and the migration governs.</li>
  *   <li><strong>The return-code rule is cited at its verified locator.</strong> Return code 4 is set at
  *       {@code CBTRN02C.cbl:229-231}, and that locator is used throughout.</li>
@@ -660,7 +662,8 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
         @DisplayName("the seed loaded exactly the fifty records the fixture and the catalogue agree on")
         void theSeedLoadedExactlyFiftyRecords() {
             assertThat(repository.count())
-                    .as("V3__seed_data.sql:834-838 loads app/data/ASCII/cardxref.txt, whose 1,850 bytes are "
+                    .as("V3__seed_data.sql's card_cross_reference insert loads "
+                            + "app/data/ASCII/cardxref.txt, whose 1,850 bytes are "
                             + "50 records x 36 columns plus a line feed each; app/catlg/LISTCAT.txt:408 "
                             + "reports REC-TOTAL 50 for the cluster and :490 the same for the AIX")
                     .isEqualTo(50L);
@@ -677,12 +680,13 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
             // expectation is derived at all: the nine-digit field is easy to read eight digits wide.
             assertThat(customerIdOf(firstRecord))
                     .as("XREF-CUST-ID at app/cpy/CVACT03Y.cpy:6, record bytes 17-25; fixture columns 17-25 "
-                            + "read 000000050 and V3__seed_data.sql:837 seeds 50, so all nine digits have to "
+                            + "read 000000050 and V3__seed_data.sql seeds 50, so all nine digits have to "
                             + "be decoded")
                     .isEqualTo(50L);
             assertThat(accountIdOf(firstRecord))
                     .as("XREF-ACCT-ID at app/cpy/CVACT03Y.cpy:7, record bytes 26-36, which is zero-based "
-                            + "AXRKP 25 per app/catlg/LISTCAT.txt:486 and V1__create_schema.sql:800")
+                            + "AXRKP 25 per app/catlg/LISTCAT.txt:486 and the xref_acct_id comment of "
+                            + "V1__create_schema.sql")
                     .isEqualTo(50L);
 
             Optional<CardCrossReference> stored = repository.findById(baseKeyOf(firstRecord));
@@ -824,7 +828,8 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
                     """, String.class, "card_cross_reference");
 
             assertThat(columns)
-                    .as("V1__create_schema.sql:795-802 names the columns after the copybook fields of "
+                    .as("V1__create_schema.sql's CREATE TABLE card_cross_reference names the columns "
+                            + "after the copybook fields of "
                             + "app/cpy/CVACT03Y.cpy:5-7, in copybook order")
                     .containsExactly("xref_card_num", "xref_cust_id", "xref_acct_id");
             assertThat(columns)
@@ -887,7 +892,7 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
                     """, Boolean.class, "card_cross_reference", "idx_card_cross_reference_acct_id");
 
             assertThat(unique.size())
-                    .as("V2__create_indexes.sql:434-435 creates idx_card_cross_reference_acct_id USING btree "
+                    .as("V2__create_indexes.sql creates idx_card_cross_reference_acct_id USING btree "
                             + "(xref_acct_id), and that emitted name is the one this assertion pins")
                     .isEqualTo(1);
             assertThat(unique.get(0))
@@ -1001,7 +1006,8 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
                     """, "card_cross_reference");
 
             assertThat(foreignKeys.stream().map(row -> row.get("conname")).toList())
-                    .as("V1__create_schema.sql:808-809 and :816-817 - two of the migration's exactly ten "
+                    .as("fk02_xref_customer and fk03_xref_account in V1__create_schema.sql - two of the "
+                            + "migration's exactly ten "
                             + "foreign keys, and the only pair carried by one table")
                     .containsExactly("fk02_xref_customer", "fk03_xref_account");
             assertThat(foreignKeys.stream().map(row -> row.get("attname")).toList())
@@ -1031,7 +1037,8 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
                     .isNotNull();
             assertThat(causeChainMentions(thrown, "fk02_xref_customer"))
                     .as("the violated constraint is named in the cause chain, per "
-                            + "V1__create_schema.sql:808-809. Matched to a boolean because the driver's "
+                            + "fk02_xref_customer in V1__create_schema.sql. Matched to a boolean because "
+                            + "the driver's "
                             + "detail line quotes column values")
                     .isTrue();
         }
@@ -1057,7 +1064,7 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
                     .isNotNull();
             assertThat(causeChainMentions(thrown, "fk03_xref_account"))
                     .as("the violated constraint is named in the cause chain, per "
-                            + "V1__create_schema.sql:816-817")
+                            + "fk03_xref_account in V1__create_schema.sql")
                     .isTrue();
         }
 
@@ -1114,7 +1121,7 @@ class CardCrossReferenceRepositoryTest extends AbstractRepositoryIntegrationTest
                     .isNotNull();
             assertThat(causeChainMentions(thrown, "pk_card_cross_reference"))
                     .as("the violated constraint is named in the cause chain, per "
-                            + "V1__create_schema.sql:803")
+                            + "pk_card_cross_reference in V1__create_schema.sql")
                     .isTrue();
         }
 

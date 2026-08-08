@@ -124,10 +124,12 @@ import org.springframework.data.domain.SliceImpl;
  *
  * <p>Build with {@code ./mvnw -B -ntp clean compile} and run this class with
  * {@code ./mvnw -B -ntp test -Dtest=TransactionListServiceTest}. This is a <strong>Surefire</strong>
- * tier. Verified against the root {@code pom.xml} at {@code pom.xml:876-893}, Surefire 3.5.4 includes
+ * tier. Verified against the {@code maven-surefire-plugin} declaration of the root
+ * {@code pom.xml}, where Surefire 3.5.4 includes
  * {@code **}{@code /*Test.java} and {@code **}{@code /*Tests.java} and excludes
  * {@code **}{@code /integration/**} and {@code **}{@code /e2e/**}, while Failsafe 3.5.4 at
- * {@code pom.xml:916-931} includes only the two excluded trees. This class sits under
+ * that file's {@code maven-failsafe-plugin} declaration includes only the two excluded trees.
+ * This class sits under
  * {@code src/test/java/com/cardemo/unit/service}, outside both excluded trees, and its simple name
  * ends in {@code Test}, so Surefire collects it - confirmed empirically by
  * {@code target/surefire-reports/TEST-com.cardemo.unit.service.TransactionListServiceTest.xml}. The

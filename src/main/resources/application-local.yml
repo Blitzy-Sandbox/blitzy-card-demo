@@ -333,9 +333,9 @@
 #     bind a property namespace that no profile declares", namely carddemo.s3.*
 #     against the declared carddemo.aws.s3.*. The three
 #     writers bind the declared namespace:
-#     RejectWriter.java:616 and TransactionWriter.java:585 read
-#     carddemo.aws.s3.batch-output-bucket, TransactionWriter.java:590 reads
-#     carddemo.aws.s3.transaction-object-prefix and StatementWriter.java:923
+#     RejectWriter.java and TransactionWriter.java read
+#     carddemo.aws.s3.batch-output-bucket, TransactionWriter.java also reads
+#     carddemo.aws.s3.transaction-object-prefix and StatementWriter.java
 #     reads carddemo.aws.s3.statements-bucket.
 #     Command used to re-verify:
 #       grep -rn 'carddemo\.s3\.' src/main/java   ->  no matches
@@ -812,7 +812,8 @@ logging:
 #
 #   yamllint 1.38.0, no auto-fix. Against a configuration matching this
 #   repository's own .editorconfig - which sets max_line_length = 120
-#   for *.yml at .editorconfig:62-63 - this file exits 0 with no finding,
+#   for *.yml under .editorconfig's [*.{xml,yml,yaml,json,sql,sh,properties,html}]
+#   section - this file exits 0 with no finding,
 #   and so does application.yml under the identical configuration.
 #   Against yamllint's STOCK defaults it reports four items, all of which
 #   are the stock defaults disagreeing with this repository rather than

@@ -88,7 +88,8 @@ import com.cardemo.service.menu.MainMenuService;
  * </table>
  *
  * <p>Each operation renders one menu as JSON. Neither dispatches a selected option:
- * {@code docs/technical-specifications.md:1177} records this file's contract as "Menu retrieval;
+ * The {@code MenuController.java} row of {@code docs/technical-specifications.md}'s controller
+ * transformation table records this file's contract as "Menu retrieval;
  * option dispatch replaced by URL navigation", so the two {@code EXEC CICS XCTL PROGRAM(...)} sites
  * at {@code app/cbl/COMEN01C.cbl:L153} and {@code app/cbl/COADM01C.cbl:L143} become URL-based
  * navigation performed by the client. There is deliberately no dispatch endpoint, no option-selection

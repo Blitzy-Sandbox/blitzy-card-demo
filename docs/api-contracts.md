@@ -122,8 +122,8 @@ STATUS(ENABLED)` [`:L390`].
 
 It is a dangling legacy definition with nothing to translate. **No route, no endpoint and
 no placeholder is published for it**, and none should be requested. Independent
-corroboration: the *Online* application-inventory table at `README.md:L213-L231` lists
-exactly 17 rows and contains no row for that transaction.
+corroboration: the *Online* application-inventory table under `README.md`'s
+`#### **Online**` heading lists exactly 17 rows and contains no row for that transaction.
 
 So: **17 sourced screen programs + 1 orphan CSD definition = the 18 CSD entries.**
 
@@ -308,10 +308,10 @@ The contract has two halves, and they differ:
   fields — it transcribes the twenty input fields of `app/cpy-bms/COMEN01.CPY` and
   `app/cpy-bms/COADM01.CPY` as a field contract. **It is never serialized.** The two menu
   operations return `MenuResponse<MainMenuOption>` and `MenuResponse<AdminMenuOption>`
-  [`MenuController.java:607`, `:691`], whose serialized members are exactly `menuType`,
+  [`MenuController.java`], whose serialized members are exactly `menuType`,
   `options` and `optionCount`; no code path anywhere places a `MenuScreen` in a response
   body. The option records additionally suppress `programName` with
-  `@JsonIgnoreProperties("programName")` [`MenuResponse.java:413`, `:466`], so the one piece
+  `@JsonIgnoreProperties("programName")` on both option records [`MenuResponse.java`], so the one piece
   of legacy dispatch state the map carries never reaches a client either.
 
   Verify with
@@ -1918,7 +1918,7 @@ single conflict status would lose information the legacy screen displayed, so th
 apart:
 
 The statuses below are the ones `AccountController.statusFor` actually returns
-[`AccountController.java:1465`], read off the `switch` rather than inferred. **Two rows are easy
+[`AccountController.java`], read off the `switch` rather than inferred. **Two rows are easy
 to get wrong by analogy and are worth checking against the `switch`**: the customer-lock outcome
 answers `409`, not `423`, and the locked-but-update-failed outcome answers `500`, not `409`.
 Either mistake sends a client's retry logic down the wrong branch — a `500` in particular is not
@@ -1951,7 +1951,8 @@ does, and it is why it is published.
 
 **`CHANGES_NOT_CONFIRMED` carries an empty literal**, not the `Changes validated.Press F5 to
 save` text it is easily attributed. The enum constant's message is
-the empty string [`ConcurrentUpdateException.java:96`]; the `Press F5` caption is what the
+the empty string, on the `CHANGES_NOT_CONFIRMED` constant of
+[`ConcurrentUpdateException.java`]; the `Press F5` caption is what the
 legacy screen painted on the *successful* validation turn, which in REST terms is the request
 the client is being asked to repeat with `confirm` asserted.
 
@@ -2239,8 +2240,8 @@ array**, not a `404`: an empty browse is end-of-data, which is a control outcome
 ### 12.2 View card
 
 **Legacy source.** CSD transaction `CCDL` [`app/csd/CARDDEMO.CSD:L347`] → program
-`COCRDSLC` (887 lines) → `app/cpy-bms/COCRDSL.CPY` (15 input fields). `README.md:L216`
-labels this transaction **"Credit Card View"**.
+`COCRDSLC` (887 lines) → `app/cpy-bms/COCRDSL.CPY` (15 input fields). The `CCDL` row of
+`README.md`'s *Online* inventory table labels this transaction **"Credit Card View"**.
 
 **Purpose.** Returns one card. It is also **the only way to obtain the sealed snapshot**
 that [§12.3](#123-update-card) requires as its update precondition.
@@ -2382,9 +2383,9 @@ The same `EXPIRAION` misspelling appears here and is preserved.
 
 > **The legacy snapshot carried the card verification value**, `CCUP-OLD-CVV-CD` [`:L294`].
 > This one does not, and the reason is worth stating precisely, because the obvious inference
-> from its absence is wrong. The value **is** stored — `card_cvv_cd CHAR(3) NOT NULL` at
-> `src/main/resources/db/migration/V1__create_schema.sql:741`, mapped on the entity and seeded
-> by `V3__seed_data.sql:744`. What is withheld is the **read path**: the entity field is
+> from its absence is wrong. The value **is** stored — the `card_cvv_cd CHAR(3) NOT NULL`
+> column of `src/main/resources/db/migration/V1__create_schema.sql`, mapped on the entity and seeded
+> by `V3__seed_data.sql`'s `card` insert. What is withheld is the **read path**: the entity field is
 > write-once with no getter of any visibility. And `app/cpy-bms/COCRDUP.CPY` declares no
 > verification field among its seventeen inputs, so the operator never typed one and no client
 > could echo one.
@@ -2565,7 +2566,7 @@ writes one dataset. The account operation has two, one per dataset
 | Store unavailable / read failure / abend | `503` / `502` / `500` | per [§8.2](#82-global-failure-and-status-mapping) |
 
 **There is no `423` on the card path**, however natural the analogy with the account operation
-looks. `CardController.statusFor` [`CardController.java:1261`] answers `428` for
+looks. `CardController.statusFor` [`CardController.java`] answers `428` for
 `CHANGES_NOT_CONFIRMED`, `412` for `DATA_CHANGED_BEFORE_UPDATE`, and `409` for all three of
 `COULD_NOT_LOCK_ACCOUNT`, `COULD_NOT_LOCK_CUSTOMER` and `LOCKED_BUT_UPDATE_FAILED` — a single
 arm covering the three. An absent outcome also answers `409`. The two operations therefore map
@@ -3072,8 +3073,8 @@ Base path `/api/reports`.
 ### 15.1 Submit transaction report
 
 **Legacy source.** CSD transaction `CR00` [`app/csd/CARDDEMO.CSD:L409`] → program
-`CORPT00C` (649 lines) → `app/cpy-bms/CORPT00.CPY` (17 input fields). `README.md:L221`
-labels this transaction **"Transaction Reports"**.
+`CORPT00C` (649 lines) → `app/cpy-bms/CORPT00.CPY` (17 input fields). The `CR00` row of
+`README.md`'s *Online* inventory table labels this transaction **"Transaction Reports"**.
 
 **Purpose.** Submits a transaction-report job for **asynchronous** batch processing.
 
@@ -3109,11 +3110,13 @@ queue**, carrying the report name and the two dates; a listener maps it onto Spr
 parameters and launches the same job the deck named.
 
 **The queue name has two spellings and both matter.** The logical name configured for the
-application is `carddemo-report-jobs` [`src/main/resources/application.yml:1451`], and the same
-value is the FIFO message group id [`:1455`]. The **physical
+application is `carddemo-report-jobs`, the `report-queue-logical-name` key of
+[`src/main/resources/application.yml`], and the same value is the FIFO message group id under
+that file's `report-message-group-id` key. The **physical
 queue is `carddemo-report-jobs.fifo`** — SQS requires the `.fifo` suffix on a FIFO queue — and
-that is the name the local profile and the compose topology provision and address
-[`src/main/resources/application-local.yml:635`, `docker-compose.yml:355`]. Address the physical name
+that is the name the local profile and the compose topology provision and address, under the
+`report-queue` key of [`src/main/resources/application-local.yml`] and the
+`CARDDEMO_SQS_REPORT_QUEUE` variable of [`docker-compose.yml`]. Address the physical name
 when you inspect the queue directly with the AWS CLI; a request for `carddemo-report-jobs`
 against LocalStack will not find it.
 

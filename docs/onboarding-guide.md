@@ -205,8 +205,9 @@ repository-wide are the two CSD definitions themselves
 operation and no placeholder is published for it, and none should be added.**
 
 So: **17 sourced screen programs + 1 orphan CSD definition = the 18 CSD entries, which
-yields 17 REST operations.** Independent corroboration: the *Online* inventory table at
-[`README.md:L213-L231`] lists exactly 17 rows and contains no row for that transaction.
+yields 17 REST operations.** Independent corroboration: the *Online* inventory table under
+`README.md`'s `#### **Online**` heading lists exactly 17 rows and contains no row for that
+transaction.
 
 Three further programs are absent from the CSD for good reasons, which is worth knowing
 before you go looking: `CSUTLDTC` is a statically-called date utility rather than a
@@ -368,7 +369,7 @@ pass** &mdash; a complete `verify` includes the scan.
 
 | Gate in the build | Tool and version | Where the evidence lands |
 |---|---|---|
-| **Warnings are errors** | `maven-compiler-plugin` **3.14.1** with `-Xlint:all` and `-Werror` [`pom.xml:L1232-L1233`] | Compiler output |
+| **Warnings are errors** | `maven-compiler-plugin` **3.14.1** with the `<arg>-Xlint:all</arg>`, `<arg>-Werror</arg>` and `<failOnWarning>` settings of `pom.xml` | Compiler output |
 | **Undocumented public surface is an error** | `maven-javadoc-plugin` **3.11.2** with `doclint` at `all` and `failOnWarnings` | Javadoc output |
 | **Toolchain floor** | `maven-enforcer-plugin` **3.5.0**, Java `[25,)` and Maven `[3.9.11,)` | Enforcer output |
 | **Unit tier** | `maven-surefire-plugin` **3.5.4** | `target/surefire-reports/` |
@@ -518,8 +519,8 @@ single stage. The date parameters correspond to the legacy job parameters at
 **The report path is queue-driven.** `POST /api/reports` publishes a job-submission message
 to the FIFO queue, which is the direct replacement for `EXEC CICS WRITEQ TD QUEUE('JOBS')` in
 `CORPT00C`. A listener drains that queue and launches the job, replacing the JES2 internal
-reader: there is exactly one `@SqsListener` in the tree, `drainReportJobQueue` at
-[`src/main/java/com/cardemo/config/BatchConfig.java:L1231`], made idempotent through the
+reader: there is exactly one `@SqsListener` in the tree, `drainReportJobQueue` in
+[`src/main/java/com/cardemo/config/BatchConfig.java`], made idempotent through the
 message deduplication identifier. (A remark in `../README.md` that no listener
 exists predates it; see finding `L-3` in [§13](#13-findings-severity-classified).)
 
@@ -782,7 +783,7 @@ validation:
 ```
 
 **`mkdocs.yml` declares that block** &mdash; `validation.nav.omitted_files: warn` at
-[`mkdocs.yml:L98`] &mdash; so a strict build fails on an omitted page rather than reporting it at
+in [`mkdocs.yml`] &mdash; so a strict build fails on an omitted page rather than reporting it at
 INFO level. That closes High finding `H-5`; the setting must not be removed, because without it
 the only reliable detection is a human reading the `nav`. **Add the `nav` entry in the same
 change that adds the page.**
@@ -1213,7 +1214,7 @@ you will hit them.
 | Build resolves an unexpected Testcontainers **1.x** version | The parent's own bill of materials won the resolution ordering | **Set the version property**; do not import a second bill of materials to try to outrank it |
 | `./mvnw` fails with a toolchain error | The Enforcer floor rejected the JDK or Maven version &mdash; it asserts Java `[25,)` and Maven `[3.9.11,)` | Provision **JDK 25** and let the wrapper supply Maven 3.9.11, or use the pinned-container path in [§5.2](#52-building-when-the-host-has-no-jdk). **Do not lower the floor** |
 | `java` or `mvn` **not found** | A host without a provisioned JDK and Maven; both are present on the host of [§3.2](#32-a-dated-reading-of-the-authoring-host) | Use the **pinned-container build path** ([§5.2](#52-building-when-the-host-has-no-jdk)); it needs only the container runtime, which is available |
-| Compilation fails on a **warning** | `-Xlint:all -Werror` is configured in `maven-compiler-plugin` 3.14.1 [`pom.xml:L1232-L1233`] &mdash; this is intentional | **Fix the cause.** Do not add a blanket suppression at class or package scope; a narrowly scoped one with a justifying comment is acceptable |
+| Compilation fails on a **warning** | `<arg>-Xlint:all</arg>`, `<arg>-Werror</arg>` and `<failOnWarning>` are configured on `maven-compiler-plugin` 3.14.1 in `pom.xml` &mdash; this is intentional | **Fix the cause.** Do not add a blanket suppression at class or package scope; a narrowly scoped one with a justifying comment is acceptable |
 | Build fails on **Javadoc** | The `doclint` gate runs at `all` with `failOnWarnings`, so undocumented public surface fails | Document the public member: purpose, parameters, return, side effects and error modes |
 | **Coverage gate** fails | JaCoCo's minimum is **0.80 LINE** | Open **`target/site/jacoco/index.html`**, find the uncovered branches and test them. Do not lower the threshold |
 | **OWASP scan** reports a finding at CVSS 7.0 or above &mdash; the range CVSS labels HIGH and CRITICAL, which are external ratings rather than this project's Blocker / High / Medium / Low bands | dependency-check fails at CVSS 7.0 or above | Open **`target/dependency-check-report.html`**. **Do not suppress silently** &mdash; record the finding with its severity and remediation, and treat a suppression as a decision needing an entry in `../DECISION_LOG.md` |
@@ -1226,7 +1227,7 @@ you will hit them.
 | **Flyway** fails on startup | A prior schema exists, or migrations were applied out of order, or a checksum changed because a migration file was edited after being applied | For a local database, reset the volume and re-apply from clean: `docker compose down -v` then `docker compose up -d --wait`. **Never edit an already-applied migration** &mdash; add a new one |
 | Integration tests fail on **missing S3 buckets or the FIFO queue** | LocalStack initialisation had not completed when the test ran | Wait for health (`docker compose up -d --wait`) and re-run. **The init script is idempotent**, so re-running the stack converges rather than failing |
 | `/actuator/prometheus` returns **401** | `METRICS_SCRAPE_USERNAME` and `METRICS_SCRAPE_PASSWORD` are not both non-blank. **This is intended behaviour, not a fault** | Set both. A bearer token will not work here &mdash; that path has its own filter chain and principal ([§5.3](#53-running-the-full-topology)) |
-| A published report message is not drained | The queue listener is `drainReportJobQueue` at [`src/main/java/com/cardemo/config/BatchConfig.java:L1231`]; if it is not running, check the queue name property resolves and the stack is healthy | Confirm `carddemo-report-jobs` exists in LocalStack and the profile activated the listener |
+| A published report message is not drained | The queue listener is `drainReportJobQueue` in [`src/main/java/com/cardemo/config/BatchConfig.java`]; if it is not running, check the queue name property resolves and the stack is healthy | Confirm `carddemo-report-jobs` exists in LocalStack and the profile activated the listener |
 
 ### Behaviour that looks like a Java bug
 
@@ -1544,7 +1545,7 @@ register &mdash; **it is referenced here, not duplicated.**
 | `H-2` | No production profile existed in a prior implementation | [`docs/project-guide.md:L51`] | **Closed by this work** &mdash; `application-prod.yml`, every secret externalised |
 | `H-3` | No continuous-integration workflow existed in a prior implementation | [`docs/project-guide.md:L49`] | **Closed by this work** &mdash; `.github/workflows/`, pinned to the enforced toolchain |
 | `H-4` | The vulnerability scan was never executed in a prior implementation | [`docs/project-guide.md:L50`] | **Closed by this work** &mdash; bound to `verify`, with a skip reported honestly when taken |
-| `H-5` | A page omitted from the `mkdocs.yml` `nav` silently never publishes, and on a default configuration **a strict build does not catch it either**, because the omission is reported at INFO level | `mkdocs.yml` `nav`; [`catalog-info.yaml:L22`] | **Closed by this work** &mdash; `validation.nav.omitted_files: warn` at [`mkdocs.yml:L98`] makes a strict build fail on it; still add the `nav` entry in the same change as the page ([§7.5](#75-documentation-rendering)) |
+| `H-5` | A page omitted from the `mkdocs.yml` `nav` silently never publishes, and on a default configuration **a strict build does not catch it either**, because the omission is reported at INFO level | `mkdocs.yml` `nav`; [`catalog-info.yaml:L22`] | **Closed by this work** &mdash; `validation.nav.omitted_files: warn` in [`mkdocs.yml`] makes a strict build fail on it; still add the `nav` entry in the same change as the page ([§7.5](#75-documentation-rendering)) |
 | `H-6` | **Absent host JDK and Maven** blocks a host-native `./mvnw` entirely | [§3.2](#32-a-dated-reading-of-the-authoring-host) | Provision JDK 25 and let the wrapper supply Maven 3.9.11, **or** use the pinned-container build path, which needs only the container runtime. **Both are present on the host of that reading** |
 
 ### Medium
@@ -1565,7 +1566,7 @@ register &mdash; **it is referenced here, not duplicated.**
 |---|---|---|---|
 | `L-1` | A batch job misspells its own job name | [`app/jcl/OPENFIL.jcl:L1`] | Report it. **Preserved, not corrected** &mdash; the corpus is frozen |
 | `L-2` | The service-catalogue entry carries four inaccurate metadata declarations: the component type at [`catalog-info.yaml:L35`], the owning system at [`:L38`], the tag set at [`:L7-L18`] and a documentation link at [`:L31`] | `catalog-info.yaml` | Correct them in **separate work**. **Explicitly out of scope here**, because that file must remain unchanged by this migration ([§11.13](#1113-do-not-modify-existing-repository-files-beyond-the-three-permitted)) |
-| `L-3` | A remark in `../README.md` states that no queue listener exists in `src/main/java`. **Verified stale**: exactly one is present | `drainReportJobQueue` at [`src/main/java/com/cardemo/config/BatchConfig.java:L1231`]; confirm with `grep -rn "@SqsListener" src/main/java`, which finds one declaration plus comment references | Refresh the remark when `README.md` is next revised. Cosmetic &mdash; it understates what is implemented rather than overstating it, so it cannot cause a wrong change |
+| `L-3` | A remark in `../README.md` states that no queue listener exists in `src/main/java`. **Verified stale**: exactly one is present | `drainReportJobQueue` in [`src/main/java/com/cardemo/config/BatchConfig.java`]; confirm with `grep -rn "@SqsListener" src/main/java`, which finds one declaration plus comment references | Refresh the remark when `README.md` is next revised. Cosmetic &mdash; it understates what is implemented rather than overstating it, so it cannot cause a wrong change |
 
 ---
 

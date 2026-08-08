@@ -184,8 +184,9 @@ import jakarta.validation.constraints.Size;
  * reinterprets it through the redefining alias {@code CARD-CVV-CD-N PIC 9(03)} ({@code :107-109}) on the
  * way to {@code CARD-UPDATE-CVV-CD PIC 9(03)} ({@code :317}) - destroying the stored value on every
  * successful update. That path is <strong>not</strong> reproduced and no component exists for it. The value
- * is stored here - {@code card_cvv_cd CHAR(3) NOT NULL} at {@code V1__create_schema.sql:741}, mapped on
- * {@link com.cardemo.model.entity.Card} and seeded at {@code V3__seed_data.sql:744} - so this is a labelled
+ * is stored here - {@code card_cvv_cd CHAR(3) NOT NULL} in {@code V1__create_schema.sql}, mapped on
+ * {@link com.cardemo.model.entity.Card} and seeded by {@code V3__seed_data.sql}'s {@code card} insert -
+ * so this is a labelled
  * deviation and not an absence: reproducing the two {@code MOVE}s would overwrite live authentication data
  * with spaces, which Rule 1 Clause D forbids, and the entity's field is write-once with no getter, so there
  * is no read path to obtain the operand through either. No component is declared here for the same reason
@@ -609,10 +610,12 @@ public record CardUpdateRequest(
             String cardNumber,
 
             // 10 CCUP-xxx-CVV-CD  PIC X(3)   app/cbl/COCRDUPC.cbl:294 / :306 - DELIBERATELY ABSENT.
-            //    The value IS persisted: V1__create_schema.sql:741 declares card_cvv_cd CHAR(3) NOT NULL,
-            //    com.cardemo.model.entity.Card maps it and V3__seed_data.sql:744 seeds it. What is
+            //    The value IS persisted: V1__create_schema.sql declares card_cvv_cd CHAR(3) NOT NULL,
+            //    com.cardemo.model.entity.Card maps it and V3__seed_data.sql's card insert seeds it.
+            //    What is
             //    withheld is the READ path - the entity field is write-once with no getter of any
-            //    visibility, recorded at V1__create_schema.sql:694 - so no snapshot can be projected
+            //    visibility, recorded in the card_cvv_cd IS DECLARED comment of
+            //    V1__create_schema.sql - so no snapshot can be projected
             //    from it. And app/cpy-bms/COCRDUP.CPY declares no CVV field, so the operator never typed
             //    one and no caller could echo one: no symbolic-map contract is lost by omitting it.
             //    Accepting one over the wire would be a retention problem one hop earlier, and a

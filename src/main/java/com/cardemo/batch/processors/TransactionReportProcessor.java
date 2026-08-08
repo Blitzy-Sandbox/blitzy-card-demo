@@ -238,13 +238,19 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>Findings carried by this translation</h2>
  *
- * <p>Classified per clause F2 and destined for the {@code DECISION_LOG.md}. Every finding that alters an
- * emitted report record is reproduced rather than repaired: parity is the contract, and clause B1 forbids
+ * <p>Classified per clause F2, and each one names the register entry that holds it: {@code DL-LD-11} and
+ * {@code DL-LD-10} in {@code DECISION_LOG.md} for the end of data double count and the
+ * {@code Account Total} line it suppresses, {@code DL-LD-12} for the {@code NEXT SENTENCE} divergence,
+ * {@code DL-LD-05} for the label over a card number break, {@code DL-LD-03} for the procedure name
+ * mismatch, {@code DL-PP-13} for the truncating description moves, and boundaries (5) to (8) of
+ * {@code DL-DV-10} for the four departures - the empty stream contribution, the isolated and masked
+ * diagnostics, the refused lookup status and the zero value sign. Every finding that alters an emitted
+ * report record is reproduced rather than repaired: parity is the contract, and clause B1 forbids
  * <em>untracked</em> dead or defective code rather than forbidding the faithful reproduction of a tracked
- * defect. <strong>Exactly one finding is deliberately not reproduced</strong> - the unexamined
- * {@code FILE STATUS} of the third entry below. It is the sole case where reproducing the source would
- * emit a plausible looking but silently wrong report instead of failing, so the safe direction is taken
- * and labelled a deviation rather than parity.
+ * defect. <strong>Exactly one determinate source behaviour is deliberately not reproduced</strong> - the
+ * unexamined {@code FILE STATUS} of the third entry below. It is the sole case where reproducing a
+ * behaviour the source actually defines would emit a plausible looking but silently wrong report instead
+ * of failing, so the safe direction is taken and labelled a deviation rather than parity.
  *
  * <ol>
  *   <li><strong>High - end of data double count.</strong> The last record's amount is added to the page
@@ -1382,7 +1388,9 @@ public class TransactionReportProcessor
      * group never gets an {@code Account Total} line at all</strong>. No flush is added and the addition is not
      * deduplicated. Remediation, for whoever later chooses parity break over parity: move the {@code ADD} inside the
      * record branch and perform a final account total block before the closing page total. Do not apply it while Gate
-     * 1 compares against the legacy baseline. Destined for the {@code DECISION_LOG.md}.
+     * 1 compares against the legacy baseline. Held as {@code DL-LD-11} in {@code DECISION_LOG.md}, with the
+     * suppressed final {@code Account Total} line held as {@code DL-LD-10}, and the same two appear as
+     * defect rows {@code D-9} and {@code D-8} of {@code docs/validation-gates.md}.
      *
      * <p><strong>Finding, Medium severity - the uninitialised amount on an empty stream.</strong> If no
      * record was ever read, the source reaches {@code :L198-L201} with {@code TRAN-AMT} never assigned.
@@ -1392,7 +1400,9 @@ public class TransactionReportProcessor
      * reproduced, so it is <em>defined</em> here as a zero contribution: the closing totals are emitted
      * and read zero. Note what still holds - the header block is driven by the first record at
      * {@code :L275-L280}, so an empty stream yields these three closing lines and <strong>no
-     * headers</strong>. Destined for the {@code DECISION_LOG.md}.
+     * headers</strong>. Held as boundary (5) of {@code DL-DV-10} in {@code DECISION_LOG.md}: an undefined
+     * COBOL result has no Java meaning to reproduce, so it is defined here and labelled rather than
+     * presented as parity.
      *
      * <p><strong>Side effects.</strong> Advances the page and account totals, the grand total and the line
      * counter by two. Performs no lookup and writes nothing to any file.
@@ -1581,7 +1591,8 @@ public class TransactionReportProcessor
      * paragraphs", and that silently truncating a report is a worse failure than filtering a record the upstream sort
      * should already have removed. Remediation, if literal fidelity is ever required: signal the step to stop by
      * throwing from the reader rather than filtering here, and accept that the closing totals are then not emitted.
-     * Destined for the {@code DECISION_LOG.md}.
+     * Held as {@code DL-LD-12} in {@code DECISION_LOG.md}, and as defect row {@code D-10} of
+     * {@code docs/validation-gates.md}.
      *
      * <p>The length guard is clause A2 and B2 work, not source behaviour: {@code TRAN-PROC-TS} is
      * {@code PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L17} and a fixed width field is always at least ten
@@ -1623,7 +1634,8 @@ public class TransactionReportProcessor
      * because a DEBUG level on the class logger is a configuration choice an operator can flip whereas
      * {@value #PARITY_LOGGER_NAME} is {@code OFF} in every shipped profile. The report <em>body</em> keeps
      * whatever the layout requires - that is the deliverable, not a log - and no card number or amount is
-     * written to the application log by any path in this class. Destined for the {@code DECISION_LOG.md}.
+     * written to the application log by any path in this class. Held as boundary (6) of {@code DL-DV-10} in
+     * {@code DECISION_LOG.md}, where the three layers and the two alternatives they displace are recorded.
      *
      * @param item the transaction being reported, already known to be non-{@code null}.
      */
@@ -1762,7 +1774,8 @@ public class TransactionReportProcessor
      * an account group, and a multi card account produces one "Account Total" line per card. Both halves
      * are preserved: the break stays on the card number and the label still reads {@code Account Total}.
      * Remediation, should the label ever be corrected: change the literal only, never the break key, since
-     * the break key determines which records are grouped. Destined for the {@code DECISION_LOG.md}.
+     * the break key determines which records are grouped. Held as {@code DL-LD-05} in
+     * {@code DECISION_LOG.md}, and as quirk row {@code Q-2} of {@code docs/validation-gates.md}.
      *
      * <p>This is one of the three paragraphs whose label begins {@code 1120-}; the others are
      * {@link #writeHeaders(List)} at {@code :L324} and
@@ -1912,7 +1925,10 @@ public class TransactionReportProcessor
      * <p>Neither is widened and neither is elided with an ellipsis: the column widths are fixed by the 133 byte
      * layout, so any other choice would move every field to its right. Remediation, if the descriptions ever need to
      * be complete: widen the report line, which is a change to the record length and therefore to the DD statement at
-     * {@code app/proc/TRANREPT.prc:L76}. Destined for the {@code DECISION_LOG.md}.
+     * {@code app/proc/TRANREPT.prc:L76}. Held as {@code DL-PP-13} in {@code DECISION_LOG.md}, whose register
+     * of reproduced low-severity behaviours is open by construction and whose tracking reference is this
+     * declaration: the COBOL locator, the reason the behaviour looks wrong, and the statement that it is
+     * reproduced rather than repaired are all above.
      *
      * <p>Two further moves change representation rather than width. {@code :L364} moves
      * {@code XREF-ACCT-ID PIC 9(11)} into {@code TRAN-REPORT-ACCOUNT-ID PIC X(11)}, which renders eleven
@@ -2433,8 +2449,8 @@ public class TransactionReportProcessor
      * swallowing an exception outright; AAP transformation rule 12 requires a typed exception on
      * <strong>every</strong> I/O path; and a report silently built from a stale buffer is precisely the class of
      * corruption the parity gates exist to detect rather than to enshrine. Abending is the safe direction, and unlike
-     * the source it cannot produce a plausible-looking wrong report. Destined for the {@code DECISION_LOG.md}
-     * as a labelled deviation, not as parity.
+     * the source it cannot produce a plausible-looking wrong report. Held as boundary (7) of
+     * {@code DL-DV-10} in {@code DECISION_LOG.md} - a labelled deviation, not parity.
      *
      * <p><strong>Why the fatal type and not a file-status translation.</strong> The authoritative status
      * map ends with "anything else - fatal, abend 999, return code 12", and a persistence failure here
@@ -2651,7 +2667,8 @@ public class TransactionReportProcessor
      * suppression region, and it is flagged rather than assumed because the two readings differ in exactly
      * one observable character. Remediation, should the Gate 1 baseline show a blank: return
      * {@value #EDITED_AMOUNT_WIDTH} spaces for both masks, a one line change in the zero branch below.
-     * Destined for the {@code DECISION_LOG.md}.
+     * Held as boundary (8) of {@code DL-DV-10} in {@code DECISION_LOG.md}, which records that same reversal
+     * as the action a legacy baseline showing a blank would justify.
      *
      * <p><strong>High order truncation.</strong> The mask holds {@value #AMOUNT_INTEGER_DIGITS} integer
      * digits, which is exactly the domain of {@code PIC S9(09)V99}, so a single transaction amount always
@@ -3076,7 +3093,8 @@ public class TransactionReportProcessor
      * log stream that is aggregated and searchable, so the two log sites mask while the report body -
      * which is the legitimate, access controlled output - continues to carry card derived data in full. The
      * divergence is confined to log text and is invisible to the Gate 1 comparison, which reads report
-     * records. Destined for the {@code DECISION_LOG.md}.
+     * records. Held as boundary (6) of {@code DL-DV-10} in {@code DECISION_LOG.md}, together with the
+     * amount redaction and the logger isolation that travel with it.
      *
      * <p>The value is passed through {@link #logSafe(String)} first, so a masked value cannot smuggle a
      * control character either, and trailing spaces from the sixteen character fixed width key are stripped

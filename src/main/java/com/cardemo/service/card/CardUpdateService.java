@@ -81,9 +81,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to build, run and test</h2>
  * <p>Java 25 and Maven 3.9.11, driven through the repository wrapper. Source and target level come
- * from {@code maven.compiler.release} 25 in {@code pom.xml:276}; the compiler runs with
- * {@code -Xlint:all}, {@code -Werror} and {@code failOnWarning} ({@code pom.xml:861-864}), so any
- * warning in this file fails the build.</p>
+ * from the {@code maven.compiler.release} property of {@code pom.xml}, set to 25; the compiler runs
+ * with that file's {@code <arg>-Xlint:all</arg>}, {@code <arg>-Werror</arg>} and
+ * {@code <failOnWarning>} settings, so any warning in this file fails the build.</p>
  * <pre>
  * ./mvnw -B -ntp clean compile
  * ( set -a; . ./.env; set +a; ./mvnw -B -ntp test )
@@ -92,8 +92,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * parentheses confine the exported values to that one command rather than leaving every later child of the
  * shell inheriting them, and the file must already be at mode {@code 0600}.</p>
  * <p>Unit tests for this bean live in {@code src/test/java/com/cardemo/unit/service/} and are owned
- * by a different agent; this file creates none. The JaCoCo gate is a merged 80% LINE floor
- * ({@code pom.xml:443}, {@code :1047-1049}) and no exclusion is added for this class. Nothing here
+ * by a different agent; this file creates none. The JaCoCo gate is a merged 80% LINE floor - the
+ * {@code jacoco.line.coverage.minimum} property of {@code pom.xml} and the {@code <haltOnFailure>}
+ * {@code <limit>} it feeds - and no exclusion is added for this class. Nothing here
  * performs hidden I/O, holds static mutable state, or captures a clock or identifier statically, so
  * every branch is reachable from the injected {@code CardRepository} and {@code java.time.Clock}.</p>
  *
@@ -214,11 +215,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       that read - confirms, and {@code app/cpy-bms/COCRDUP.CPY} carries no verification-value field
  *       among its seventeen inputs, so the screen cannot supply one. The legacy rewrite therefore wrote
  *       three spaces over the stored card verification value on every successful update.
- *       <p><strong>The value is stored here.</strong> {@code V1__create_schema.sql:741} declares
+ *       <p><strong>The value is stored here.</strong> {@code V1__create_schema.sql} declares
  *       {@code card_cvv_cd CHAR(3) NOT NULL}, {@link com.cardemo.model.entity.Card} maps it, and
- *       {@code V3__seed_data.sql:744} loads it. What is withheld is the <em>read path</em>, not the
+ *       {@code V3__seed_data.sql}'s {@code card} insert loads it. What is withheld is the
+ *       <em>read path</em>, not the
  *       column: the entity field is write-once with no getter of any visibility, which
- *       {@code V1__create_schema.sql:694} records as the resolution of a High-severity finding. Both
+ *       {@code V1__create_schema.sql} records, in its {@code card_cvv_cd IS DECLARED} comment, as
+ *       the resolution of a High-severity finding. Both
  *       {@code MOVE}s at {@code :1464-1465} are therefore deliberately absent, because reproducing them
  *       would overwrite live authentication data with spaces - indefensible under Rule 1 Clause D - and
  *       because there is no read path by which their operand could be obtained in the first place. This is
@@ -3145,7 +3148,8 @@ public class CardUpdateService {
             // :1354 MOVE CARD-CVV-CD TO CCUP-OLD-CVV-CD - NOT REPRODUCED. The value IS stored, on
             //       com.cardemo.model.entity.Card, but it is write-once with no getter of any
             //       visibility, so there is no read path to snapshot it through - see
-            //       V1__create_schema.sql:694. Both operands of :1503 were server-side, so the only
+            //       the card_cvv_cd IS DECLARED comment of V1__create_schema.sql. Both operands of
+            //       :1503 were server-side, so the only
             //       question that predicate asked was whether the row changed between the display read
             //       and the write read, and @Version answers that for every column. The predicate is
             //       dropped together with this snapshot component, never one without the other.
@@ -3299,8 +3303,8 @@ public class CardUpdateService {
      *
      * <p><strong>The two card-verification {@code MOVE}s at {@code :1464-1465} have no counterpart
      * here, and the reason is a legacy defect rather than a missing column.</strong> The verification value
-     * <em>is</em> retained by this system: {@code card_cvv_cd CHAR(3) NOT NULL} is declared at
-     * {@code src/main/resources/db/migration/V1__create_schema.sql:741}, {@link com.cardemo.model.entity.Card}
+     * <em>is</em> retained by this system: {@code card_cvv_cd          CHAR(3)     NOT NULL} is declared in
+     * {@code src/main/resources/db/migration/V1__create_schema.sql}, {@link com.cardemo.model.entity.Card}
      * maps it, and {@code V3__seed_data.sql} seeds a real value for every fixture row. What it has no
      * counterpart <em>for</em> is the source's write. {@code CCUP-NEW-CVV-CD} is declared at {@code :306},
      * left as {@code SPACES} by {@code INITIALIZE CCUP-NEW-DETAILS} at {@code :586}, and <strong>never
@@ -3404,8 +3408,9 @@ public class CardUpdateService {
         // INITIALIZE CCUP-NEW-DETAILS at :586 left in CCUP-NEW-CVV-CD, since that field is DECLARED at
         // :306 and READ at :1464 but NEVER ASSIGNED anywhere in the program. Reproducing them would
         // overwrite live authentication data with spaces on every successful update, which Rule 1
-        // Clause D forbids. The column exists (V1__create_schema.sql:741 card_cvv_cd CHAR(3) NOT NULL),
-        // the entity maps it and V3__seed_data.sql:744 seeds it; what is withheld is the read path, so
+        // Clause D forbids. The column exists (card_cvv_cd CHAR(3) NOT NULL in V1__create_schema.sql),
+        // the entity maps it and V3__seed_data.sql's card insert seeds it; what is withheld is the read
+        // path, so
         // these MOVEs have no operand to read and no sanctioned reason to write. Labelled deviation:
         // a successful update here leaves the stored value intact where the source destroyed it.
         // :1466 MOVE CCUP-NEW-CRDNAME TO CARD-UPDATE-EMBOSSED-NAME
@@ -3524,7 +3529,8 @@ public class CardUpdateService {
         // :1507 AND CARD-EXPIRAION-DATE(9:2) EQUAL TO CCUP-OLD-EXPDAY
         // :1508 AND CARD-ACTIVE-STATUS EQUAL TO CCUP-OLD-CRDSTCD
         // :1503 has no counterpart, and not because the value is absent: card_cvv_cd is declared at
-        //       V1__create_schema.sql:741, mapped on the entity and seeded at V3__seed_data.sql:744.
+        //       card_cvv_cd in V1__create_schema.sql, mapped on the entity and seeded by
+        //       V3__seed_data.sql's card insert.
         //       It has no READ path - the entity field is write-once with no getter - so neither the
         //       record work area nor the snapshot can carry it. Both of the source's operands were
         //       server-side (a display-time read and a write-time re-read), so the predicate asked only
@@ -5362,8 +5368,9 @@ public class CardUpdateService {
          * <p>There is no card verification component, because {@link CardUpdateRequest.CardDetails}
          * declares none. The legacy group carries it at {@code :294} and {@code 9300} compares it at
          * {@code :1503}. The value is stored here - {@code card_cvv_cd CHAR(3) NOT NULL} at
-         * {@code V1__create_schema.sql:741}, mapped on the entity and seeded at
-         * {@code V3__seed_data.sql:744} - but the read path is withheld rather than the column, so it
+         * the {@code card_cvv_cd} column of {@code V1__create_schema.sql}, mapped on the entity and
+         * seeded by {@code V3__seed_data.sql}'s {@code card} insert - but the read path is withheld
+         * rather than the column, so it
          * cannot be projected into a snapshot, and no symbolic map declares a field a caller could echo.
          * Exposing a caller-visible component would be a retention problem one hop earlier and a Rule 1
          * Clause D violation; the concurrency question {@code :1503} asked is answered by

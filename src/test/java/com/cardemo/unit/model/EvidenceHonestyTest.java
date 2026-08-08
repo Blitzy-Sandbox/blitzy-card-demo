@@ -97,6 +97,11 @@ import org.junit.jupiter.api.Test;
  *   <li><strong>A failure from the stale-absence group</strong> is the opposite case: prose says an artefact
  *       is absent, and it is now present. Re-measure and withdraw the claim explicitly rather than deleting
  *       the sentence, so the correction is visible to the next reader.</li>
+ *   <li><strong>A failure from the register-obligation group</strong> means a comment describes a delivered
+ *       register as still owing something - "owed an entry in", "owed to the", "destined for", "pending",
+ *       "to be recorded in". That is the same falsehood the absence group catches, one synonym further on:
+ *       it sends a reader looking for an unwritten justification when the entry is on disk. The remedy is
+ *       identical - name the identifier of the entry that holds the site, and author one if none fits.</li>
  *   <li><strong>Withdrawal wording is always permitted.</strong> A sentence that quotes a former claim in
  *       order to retract it necessarily contains the forbidden phrasing, so any sentence carrying a
  *       withdrawal marker such as "earlier revision", "withdrawn" or "re-measured" is exempt. That is what
@@ -159,6 +164,50 @@ class EvidenceHonestyTest {
                     + "|neither\\s+(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)\\}?"
                     + "\\s+nor\\s+(?:\\{@code\\s+)?"
                     + "(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)\\}?\\s+exists",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * The two evidence registers, described as still owing an entry when both hold the entry already.
+     *
+     * <p><strong>Why this is a sibling of {@link #REGISTER_ABSENCE} and not another alternative inside it.</strong>
+     * That pattern carries a specific meaning - it is the <em>reversed absence</em> rule, guarding against a
+     * comment calling a delivered register planned, absent or unavailable - and
+     * {@link TheGuardDiscriminates#eachPatternMatchesAnOffenderAndSparesTheRewording()} deliberately asserts
+     * that {@code "Owed an entry in DECISION_LOG.md, authored at the root."} is <strong>not</strong> one of its
+     * offences, because at the time that spelling was the honest rewording an absence claim was corrected
+     * <em>to</em>. Folding the obligation phrasings into that alternation would have inverted a documented
+     * decision inside the pattern that records it. The obligation form was retired separately and later, so it
+     * gets its own rule, its own failure message and its own discrimination assertions, and the two rules can
+     * be read against each other rather than one silently absorbing the other.
+     *
+     * <p><strong>What went wrong that this exists to stop.</strong> The obligation convention was swept from
+     * the tree with {@code grep -rni 'owed an entr'}, and the sweep believed itself complete. Nineteen sites
+     * survived it in four other spellings - {@code owed to the}, {@code destined for the}, and two that wrap
+     * across a Javadoc line break so no single-line match can see them at all. The stem that was grepped for
+     * is the one spelling the retirement happened to notice; a rule keyed on the <em>shape</em> of the claim
+     * rather than on one of its phrasings is what closes that class rather than one instance of it.
+     *
+     * <p><strong>Why each alternative is bounded the way it is.</strong> The {@code owed}-family alternatives
+     * carry {@code \b} on both sides for a reason that is easy to miss and expensive to get wrong: the
+     * substring {@code owed to} sits inside <em>allowed to</em>, which this tree uses in hundreds of assertion
+     * messages, and a boundary-free pattern reports every one of them. The {@code destined for} alternative
+     * requires a register name <em>immediately</em> after it, so the tree's legitimate uses - a value destined
+     * for a log, a segment destined for an object key - are outside it by construction rather than by
+     * exemption. The remaining alternatives use the same lazy {@code [^.;]} bound as
+     * {@link #REGISTER_ABSENCE}, so a genuine "pending" in one sentence cannot be paired with a register named
+     * in the next.
+     */
+    private static final Pattern REGISTER_OBLIGATION = Pattern.compile(
+            "\\b(?:owe|owes|owed|owing)\\b[^.;]{0,60}?(?:entry|entries|reference|record|row)[^.;]{0,60}?"
+                    + "(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)"
+                    + "|\\b(?:owe|owes|owed|owing)\\b\\s+to\\s+(?:the\\s+)?"
+                    + "(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)"
+                    + "|\\bdestined\\s+for\\s+(?:the\\s+)?"
+                    + "(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)"
+                    + "|\\b(?:pending|awaiting|due\\s+to\\s+be)\\b[^.;]{0,60}?"
+                    + "(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)"
+                    + "|\\b(?:to|will|would)\\s+be\\s+(?:recorded|logged|registered|added|carried)\\b"
+                    + "[^.;]{0,60}?(?:\\{@code\\s+)?(?:DECISION_LOG\\.md|TRACEABILITY_MATRIX\\.md)",
             Pattern.CASE_INSENSITIVE);
 
     /**
@@ -482,6 +531,19 @@ class EvidenceHonestyTest {
         }
 
         @Test
+        @DisplayName("no comment describes either authored register as still owing an entry it already holds")
+        void neitherRegisterIsDescribedAsOwingAnEntry() {
+            assertThat(offendersIncludingLiterals(REGISTER_OBLIGATION))
+                    .as("both registers are authored and both hold their entries, so calling one owed, "
+                            + "destined for, pending or to-be-recorded sends a reader looking for an "
+                            + "unwritten justification instead of at the entry that carries it. Name the "
+                            + "identifier that holds this site - \"held as DL-PP-13 in DECISION_LOG.md\" - "
+                            + "and author an entry if none fits; writing that one is owed is the form this "
+                            + "rule closes")
+                    .isEmpty();
+        }
+
+        @Test
         @DisplayName("the phrase-listing exemption is earned, so it cannot be inherited by a file that claims")
         void thePhraseListingExemptionIsEarned() {
             for (final String exempt : PHRASE_LISTING_SOURCES) {
@@ -653,7 +715,10 @@ class EvidenceHonestyTest {
                     .isTrue();
             assertThat(REGISTER_ABSENCE
                     .matcher("Owed an entry in {@code DECISION_LOG.md}, authored at the root.").find())
-                    .as("the honest rewording must survive, or the fix could not be written")
+                    .as("this rule is about absence only, so a sentence that asserts the register IS authored "
+                            + "is outside it however the rest of the sentence reads. The obligation half of "
+                            + "this same spelling is caught by REGISTER_OBLIGATION instead, which is why the "
+                            + "two rules are siblings rather than one alternation")
                     .isFalse();
             assertThat(REGISTER_ABSENCE
                     .matcher("It is recorded in {@code DECISION_LOG.md}.").find())
@@ -673,6 +738,58 @@ class EvidenceHonestyTest {
                     .matcher("Gate 1's baseline is not available; {@code DECISION_LOG.md} states why.").find())
                     .as("the bound must stop at a sentence break, so a genuine unavailability in one clause "
                             + "cannot be paired with a register named in the next")
+                    .isFalse();
+
+            assertThat(REGISTER_OBLIGATION
+                    .matcher("Owed an entry in {@code DECISION_LOG.md}, authored at the root.").find())
+                    .as("the spelling the absence rule spares must still be an offence HERE, or retiring the "
+                            + "obligation convention would have left its commonest form unguarded")
+                    .isTrue();
+            assertThat(REGISTER_OBLIGATION
+                    .matcher("Retained one for one with a reference owed to the DECISION_LOG.md.").find())
+                    .as("the unbacktick-ed 'owed to the' spelling must be caught; it is one of the four that "
+                            + "survived a sweep keyed on the stem 'owed an entr'")
+                    .isTrue();
+            assertThat(REGISTER_OBLIGATION
+                    .matcher("Destined for the {@code DECISION_LOG.md}.").find())
+                    .as("'destined for' must be caught; no test in this tree mentioned the word before this "
+                            + "rule existed, which is how ten sites of it survived")
+                    .isTrue();
+            assertThat(REGISTER_OBLIGATION
+                    .matcher("The severity is pending an entry in {@code DECISION_LOG.md}.").find())
+                    .as("'pending' must be caught, because it understates delivered evidence exactly as "
+                            + "'owed' does")
+                    .isTrue();
+            assertThat(REGISTER_OBLIGATION
+                    .matcher("The tradeoff is to be recorded in {@code TRACEABILITY_MATRIX.md}.").find())
+                    .as("the future-tense form must be caught, and against either register")
+                    .isTrue();
+            assertThat(REGISTER_OBLIGATION
+                    .matcher("Held as {@code DL-PP-13} in {@code DECISION_LOG.md}.").find())
+                    .as("the sanctioned rewording must survive, or the remedy this rule demands could not be "
+                            + "written")
+                    .isFalse();
+            assertThat(REGISTER_OBLIGATION
+                    .matcher("It is recorded in {@code DECISION_LOG.md}.").find())
+                    .as("a present-tense claim of record is TRUE and must not be an offence of this rule "
+                            + "either")
+                    .isFalse();
+            assertThat(REGISTER_OBLIGATION
+                    .matcher("A caller is allowed to read {@code DECISION_LOG.md}.").find())
+                    .as("the substring 'owed to' inside 'allowed to' must NOT match; this tree uses "
+                            + "'allowed to' in hundreds of assertion messages, and a boundary-free pattern "
+                            + "would report every one of them")
+                    .isFalse();
+            assertThat(REGISTER_OBLIGATION
+                    .matcher("The masked value is destined for a log, not for {@code DECISION_LOG.md}.").find())
+                    .as("'destined for a log' must NOT match: the alternative requires a register name "
+                            + "immediately after the phrase, so the tree's legitimate uses are outside the "
+                            + "rule by construction rather than by exemption")
+                    .isFalse();
+            assertThat(REGISTER_OBLIGATION
+                    .matcher("Gate 1's baseline is pending; {@code DECISION_LOG.md} states why.").find())
+                    .as("the bound must stop at a sentence break here too, so a genuine pending item in one "
+                            + "clause cannot be paired with a register named in the next")
                     .isFalse();
 
             assertThat(STALE_ABSENCE.matcher("{@code V3__seed_data.sql} is not available.").find()).isTrue();

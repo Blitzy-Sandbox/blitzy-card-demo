@@ -4250,7 +4250,7 @@ class GateVerificationTest {
         final List<String> rejects = PostingParityOracle.readCommittedExpectation("rejects.txt");
         assertThat(rejects.stream().map(String::length).distinct().toList())
                 .as("every committed reject row must be exactly %d characters. A row of any other width means "
-                        + "the file has been reflowed or its trailing spaces stripped - .gitattributes:184 "
+                        + "the file has been reflowed or its trailing spaces stripped - .gitattributes "
                         + "sets whitespace=-blank-at-eol and .editorconfig pins trim_trailing_whitespace to "
                         + "false for this path precisely to prevent that", RejectCode.REJECT_RECORD_LENGTH)
                 .containsExactly(Integer.valueOf(RejectCode.REJECT_RECORD_LENGTH));

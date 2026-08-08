@@ -595,7 +595,8 @@ CREATE INDEX idx_transaction_proc_ts
 -- other table name appears anywhere in this file's statements.
 --
 -- The quoting of "transaction" is double-quoted lowercase, byte for
--- byte as V1__create_schema.sql:L1034 writes it. PostgreSQL lists
+-- byte as V1__create_schema.sql writes it in CREATE TABLE "transaction".
+-- PostgreSQL lists
 -- TRANSACTION as a non-reserved key word, so the bare form would also
 -- parse, and both forms resolve to the same relation - but the two
 -- migrations must not disagree about the spelling of a table name, so

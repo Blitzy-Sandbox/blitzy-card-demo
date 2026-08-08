@@ -236,22 +236,24 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       neither branch is dead.</li>
  *   <li>{@code carddemo.batch.daily-transaction-reader.page-size} - rows per database round trip on
  *       the {@code repository} path, defaulting to {@value #DEFAULT_PAGE_SIZE}, matching the four
- *       sibling readers declared at {@code src/main/resources/application.yml:1219-1226}. A fetch
- *       size, not a pagination contract.</li>
+ *       sibling readers declared under the {@code account-reader}, {@code card-reader},
+ *       {@code card-cross-reference-reader} and {@code customer-reader} keys of
+ *       {@code src/main/resources/application.yml}. A fetch size, not a pagination contract.</li>
  *   <li>{@code carddemo.batch.daily-transaction-reader.object-key} - the object holding the
  *       350-byte image on the {@code fixed-width} path, defaulting to
  *       {@value #DEFAULT_OBJECT_KEY}. The whole key is configurable, so the date-partitioned prefix
  *       of the target design is expressed by configuring a fuller key and needs no code change.</li>
- *   <li>{@code carddemo.aws.s3.batch-input-bucket} - the input bucket, declared at
- *       {@code src/main/resources/application.yml:1064} as
- *       {@code ${CARDDEMO_S3_BATCH_INPUT_BUCKET}} and provisioned by
+ *   <li>{@code carddemo.aws.s3.batch-input-bucket} - the input bucket, declared once in
+ *       {@code src/main/resources/application.yml} as
+ *       {@code batch-input-bucket: ${CARDDEMO_S3_BATCH_INPUT_BUCKET}} and provisioned by
  *       {@code localstack-init/init-aws.sh}. Bound here with an empty default and required non-blank
  *       <b>only</b> when the {@code fixed-width} path is selected, so the default path carries no
  *       cloud prerequisite.</li>
  *   <li>Record geometry is <b>not</b> configuration. 350 is a compile-time constant, as
- *       {@code src/main/resources/application.yml:1284-1300} records for every fixed-width length in
- *       the tree: a settable byte contract would let a deployment break parity by editing a
- *       profile.</li>
+ *       {@code src/main/resources/application.yml}'s
+ *       {@code FIXED-WIDTH RECORD GEOMETRY IS DELIBERATELY NOT CONFIGURATION} block records for
+ *       every fixed-width length in the tree: a settable byte contract would let a deployment
+ *       break parity by editing a profile.</li>
  *   <li>The charset is fixed in code at {@code ISO-8859-1} and passed explicitly at every decode
  *       site; no platform default, locale or time zone is ever consulted.</li>
  *   <li>{@code carddemo.security.jwt.signing-key} - the material the input object's authenticity key is
@@ -442,8 +444,9 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * {@code carddemo.batch.daily-transaction-reader.page-size} is absent.
      * <p>
      * 100 is the value the four sibling readers use and the value
-     * {@code src/main/resources/application.yml:1219-1226} declares for each of them, so the fifth
-     * reader does not introduce a second convention. It comfortably exceeds nothing in particular: the
+     * {@code src/main/resources/application.yml} declares under each of {@code account-reader},
+     * {@code card-reader}, {@code card-cross-reference-reader} and {@code customer-reader}, so the
+     * fifth reader does not introduce a second convention. It comfortably exceeds nothing in particular: the
      * 300-row Gate 1 fixture takes three round trips at this size, which is deliberate, because a
      * single-round-trip fixture would never exercise the slice-refill boundary.
      */
@@ -454,7 +457,7 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * {@code carddemo.batch.daily-transaction-reader.object-key} is absent.
      * <p>
      * The prefix segment is the lower-cased DD name, matching the {@code gdg/...} prefix style of
-     * {@code src/main/resources/application.yml:1091-1113}, and the object name is the fixture's
+     * {@code src/main/resources/application.yml}'s {@code gdg-prefixes} block, and the object name is the fixture's
      * actual spelling. {@code localstack-init/init-aws.sh} documents the input bucket as
      * &quot;DALYTRAN staging, LRECL 350, seeded from app/data/ASCII/dailytran.txt&quot; and records
      * that the fixture is spelled {@code dailytran.txt} and never {@code dalytran.txt}.
@@ -552,8 +555,8 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
     private static final String ABENDING_PROGRAM_MESSAGE = "ABENDING PROGRAM";
 
     // Record geometry, app/cpy/CVTRA06Y.cpy:L2 and :L5-L18. Compile-time constants, deliberately not
-    // configuration: src/main/resources/application.yml:1284-1300 records why a byte contract must not
-    // be settable. Offsets are ONE-BASED and INCLUSIVE, matching the copybook and the citations, and
+    // configuration: the FIXED-WIDTH RECORD GEOMETRY IS DELIBERATELY NOT CONFIGURATION block of
+    // src/main/resources/application.yml records why a byte contract must not be settable. Offsets are ONE-BASED and INCLUSIVE, matching the copybook and the citations, and
     // are converted to Java's zero-based half-open form in exactly one place, in fixedWidthField.
 
     /**
@@ -2427,8 +2430,8 @@ public class DailyTransactionReader implements ItemStreamReader<DailyTransaction
      * path must carry no cloud prerequisite, because assuming one would be exactly the
      * environment-specific assumption Rule 1 clause C2 rules out.
      * <p>
-     * The key itself is declared once, at {@code src/main/resources/application.yml:1064}, as
-     * {@code ${CARDDEMO_S3_BATCH_INPUT_BUCKET}} with no literal default, so in any context that loads
+     * The key itself is declared once, in {@code src/main/resources/application.yml}, as
+     * {@code batch-input-bucket: ${CARDDEMO_S3_BATCH_INPUT_BUCKET}} with no literal default, so in any context that loads
      * that file an absent environment variable already fails the refresh. The empty default here can
      * therefore only take effect in a context that deliberately omits the key, such as a unit test.
      *

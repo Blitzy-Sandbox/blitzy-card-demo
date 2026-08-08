@@ -485,8 +485,9 @@ public class AdminMenuService {
      * The default at {@code :L162-L164} is retained one for one. {@code LOW-VALUES} is a field of binary zeros and
      * {@code SPACES} a field of blanks - the two ways a fixed-width field expresses "unset" - so the Java test covers
      * {@code null}, empty and all-blank, which are their counterparts. The transfer at {@code :L165-L167} has no
-     * counterpart: the resolved name is returned and the client navigates. Retained rather than consolidated into its
-     * callers, with a reference owed to the DECISION_LOG.md.
+     * counterpart: the resolved name is returned and the client navigates. Retained rather than consolidated into
+     * its callers, and held as {@code DL-CR-01} in {@code DECISION_LOG.md}, the entry that resolves no-dead-code
+     * against one-for-one control-flow fidelity in favour of keeping the paragraph map complete.
      *
      * @param requestedProgram the requested target, standing in for {@code CDEMO-TO-PROGRAM}.
      * @return the requested program when it carries a value, otherwise {@link #SIGN_ON_PROGRAM}
@@ -508,8 +509,9 @@ public class AdminMenuService {
      * {@code :L177} becomes {@link AdminMenuView#message()}. The BMS {@code SEND} at {@code :L179-L184} has no
      * counterpart: the map and mapset names address a 3270 screen that is not reimplemented, and the controller
      * serialises the returned view instead. {@code ERASE} clears the physical screen before painting, which a
-     * stateless response does implicitly by carrying the whole payload. Retained one for one with a reference owed to
-     * the DECISION_LOG.md.
+     * stateless response does implicitly by carrying the whole payload. Retained one for one, and held as
+     * {@code DL-CR-01} in {@code DECISION_LOG.md}, the entry that keeps a construct whose deletion would break the
+     * paragraph map.
      *
      * @param message the message to carry, either empty or one of the two source literals
      * @return the assembled view, never {@code null}

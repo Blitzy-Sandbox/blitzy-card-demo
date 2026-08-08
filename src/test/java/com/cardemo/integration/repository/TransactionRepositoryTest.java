@@ -601,7 +601,7 @@ final class TransactionRepositoryTest extends AbstractRepositoryIntegrationTest 
                     """, String.class, relationName, "tran_id");
 
             assertThat(defaults)
-                    .as("V1__create_schema.sql:1055 declares tran_id CHAR(16) NOT NULL, so the catalogue "
+                    .as("V1__create_schema.sql declares tran_id CHAR(16) NOT NULL, so the catalogue "
                             + "must return exactly one row for it")
                     .hasSize(1);
             assertThat(defaults.getFirst())

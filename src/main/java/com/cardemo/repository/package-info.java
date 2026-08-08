@@ -486,8 +486,11 @@
  *       never {@code equals()}, because {@code BigDecimal.equals} distinguishes {@code 1.0} from {@code 1.00}.</li>
  *   <li><strong>HikariCP connection-pool tuning is explicitly out of scope.</strong> No pool size, timeout, fetch
  *       size or query hint is set by or for this package, and none may be added without a cited justification. This
- *       is not an oversight: it is recorded as residual risk owed to the {@code DECISION_LOG.md} and
- *       {@code docs/validation-gates.md}, which is the honest discharge of Rule 1 Clause A's "Performance: avoid
+ *       is not an oversight: it is held as {@code DL-RR-02} in {@code DECISION_LOG.md}, which names
+ *       connection-pool tuning among eight deferred hardening items and states why - six of the eight would have
+ *       to be sized against a measured workload that does not exist - and it is carried in
+ *       {@code docs/validation-gates.md} as deferred hardening. That is the honest discharge of Rule 1 Clause A's
+ *       "Performance: avoid
  *       obvious inefficiencies; justify tradeoffs only when needed" — the legacy system publishes no service-level
  *       objective, so there is no target to tune towards and inventing one would be fabrication.</li>
  *   <li><strong>No secrets, here or anywhere near here.</strong> The JWT signing key resolves from the environment
@@ -546,8 +549,10 @@
  *       primary-key constraint surface it as {@code com.cardemo.exception.DuplicateRecordException} and let the
  *       caller retry at the business level. Do <strong>not</strong> add a database sequence, a
  *       {@code @GeneratedValue} strategy, a retry loop inside the repository or an upsert: every one of those changes
- *       the generated identifier values and breaks the parity baseline the migration is measured against. Owed an
- *       entry in the {@code DECISION_LOG.md}. <strong>Severity: Medium (accepted,
+ *       the generated identifier values and breaks the parity baseline the migration is measured against. Held as
+ *       {@code DL-PP-04} in {@code DECISION_LOG.md}, which rejects the database-sequence alternative on the ground
+ *       that it would change every generated value, with the operational exposure carried separately as
+ *       {@code DL-RR-04}. <strong>Severity: Medium (accepted,
  *       documented).</strong></p></li>
  *   <li><p><strong>Symptom: the first transaction inserted into an empty table receives identifier 0, or the insert
  *       fails.</strong> Cause: the empty result of the top-one descending query was not defaulted.

@@ -1065,7 +1065,7 @@ public class BatchConfig {
      * {@code @Value} argument is resolved when this bean is created, unconditionally, whether or not the
      * value is ever used - and the URL is used only on the two-role branch. That eagerness broke every
      * Testcontainers-backed context. Those profiles configure no {@code spring.flyway.user}, so the URL is
-     * irrelevant to them, but {@code application.yml:581} declares
+     * irrelevant to them, but {@code application.yml} declares
      * {@code spring.datasource.url: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT:5432}/${POSTGRES_DB}}
      * with <b>no default for {@code POSTGRES_HOST}</b>, and a Testcontainers datasource is contributed as a
      * {@code ConnectionDetails} bean rather than by overriding that property. Resolving the fallback chain
@@ -1163,7 +1163,8 @@ public class BatchConfig {
      * <p>The role is tested <b>before</b> the URL is read, and that order is load-bearing rather than
      * incidental. A single-role profile defines no {@code spring.flyway.user}, so it returns here without
      * ever touching {@code spring.datasource.url} - which under Testcontainers still holds the unresolvable
-     * {@code ${POSTGRES_HOST}} template from {@code application.yml:581}. Reading the URL first, as an
+     * {@code ${POSTGRES_HOST}} template that {@code application.yml}'s {@code spring.datasource.url}
+     * carries. Reading the URL first, as an
      * eagerly resolved {@code @Value} argument once did, failed those contexts on a value this branch
      * discards.
      *

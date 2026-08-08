@@ -985,12 +985,12 @@ final class TransactionAddRequestTest {
         void transactionPrecisionIsItsOwnTier() {
             // The three tiers are declared explicitly in the schema migration, which is present in this
             // checkout and is the evidence for the column types named here:
-            //   tran_amt      NUMERIC(11,2)  src/main/resources/db/migration/V1__create_schema.sql:1069
-            //   acct_curr_bal NUMERIC(12,2)  src/main/resources/db/migration/V1__create_schema.sql:521
-            //   dis_int_rate  NUMERIC(6,2)   src/main/resources/db/migration/V1__create_schema.sql:891
+            //   tran_amt      NUMERIC(11,2)  src/main/resources/db/migration/V1__create_schema.sql
+            //   acct_curr_bal NUMERIC(12,2)  src/main/resources/db/migration/V1__create_schema.sql
+            //   dis_int_rate  NUMERIC(6,2)   src/main/resources/db/migration/V1__create_schema.sql
             // They derive from S9(09)V99, S9(10)V99 and S9(04)V99 respectively. This class asserts the
             // constant the payload publishes rather than reading the migration, so that the unit tier stays
-            // free of a resource dependency; the migration lines are cited as the corroborating source.
+            // free of a resource dependency; the migration columns are cited as the corroborating source.
             assertThat(TransactionAddRequest.AMOUNT_PRECISION)
                     .as("TRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA05Y.cpy:10 is eleven characters")
                     .isEqualTo(11);

@@ -235,8 +235,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>
  * The Java analogue of that path is
  * {@link CardCrossReferenceRepository#findFirstByAccountIdOrderByCardNumberAsc(Long)} over the non-unique
- * index {@code idx_card_cross_reference_acct_id}, created by
- * {@code src/main/resources/db/migration/V2__create_indexes.sql:L422-L423}. <b>Neither is used here.</b>
+ * index {@code idx_card_cross_reference_acct_id}, created by the
+ * {@code CREATE INDEX idx_card_cross_reference_acct_id} statement of
+ * {@code src/main/resources/db/migration/V2__create_indexes.sql}. <b>Neither is used here.</b>
  * {@code CBACT03C} browses the <em>base</em> cluster sequentially, and calling the account finder from this
  * class would misattribute its source.
  *

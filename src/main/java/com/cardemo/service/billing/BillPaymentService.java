@@ -237,8 +237,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <h2>6. Preserved-defect and parity-artefact register</h2>
  *
  * <p>Each of the following is a faithful reproduction of something the system of record does. None is an oversight of
- * this migration, none may be deleted to satisfy a linter, and every one carries a tracking reference owed to the
- * {@code DECISION_LOG.md}. Rule 1 Clause B forbids <em>untracked</em> dead code and work items without an
+ * this migration, none may be deleted to satisfy a linter, and every one names the register entry in
+ * {@code DECISION_LOG.md} that holds it: {@code DL-PP-13} for {@code P1}, {@code P2}, {@code P4}, {@code P5} and
+ * {@code P6}, the low-severity source behaviours reproduced verbatim rather than normalised, whose register is open
+ * by construction and whose tracking reference is the declaration that reproduces each one; {@code DL-CR-01} for
+ * {@code P3}, retained so the paragraph map stays complete; and {@code DL-PP-04} with {@code DL-RR-04} for
+ * {@code P7}. Rule 1 Clause B forbids <em>untracked</em> dead code and work items without an
  * owner or tracking reference; a tracked, cited, justified parity artefact satisfies it.</p>
  *
  * <ul>

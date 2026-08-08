@@ -1854,7 +1854,8 @@ public class InterestCalculationProcessor
      *
      * <p><em>What is redacted and what is not.</em> The financial value is redacted; the three key fields
      * are not. That split is deliberate and matches the project's documented position:
-     * {@code src/main/resources/logback-spring.xml:731-736} lists a bare account-identifier line among the
+     * rule {@code R1} of {@code src/main/resources/logback-spring.xml} lists a bare
+     * {@code accountId/TRAN-AMT} line among the
      * benign look-alikes that must <em>not</em> be over-redacted, and the value layer there masks card
      * numbers, CVVs, government identifiers, dates of birth, telephone numbers, names and addresses -
      * never an account identifier. The identifier is also the control-break key of

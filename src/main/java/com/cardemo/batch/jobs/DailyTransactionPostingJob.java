@@ -890,26 +890,29 @@ public class DailyTransactionPostingJob {
 
     /**
      * Identifier property of {@link com.cardemo.model.entity.Customer}, the sort key of the
-     * {@code CUSTFILE} probe. Declared at {@code src/main/java/com/cardemo/model/entity/Customer.java:L519}.
+     * {@code CUSTFILE} probe. Declared as {@code private Long customerId} in
+     * {@code src/main/java/com/cardemo/model/entity/Customer.java}.
      */
     private static final String SORT_CUSTOMER_ID = "customerId";
 
     /**
      * Identifier property of {@link CardCrossReference}, the sort key of the {@code XREFFILE} probe.
-     * Declared at {@code src/main/java/com/cardemo/model/entity/CardCrossReference.java:L325}, and the same
+     * Declared as {@code private String cardNumber} in
+     * {@code src/main/java/com/cardemo/model/entity/CardCrossReference.java}, and the same
      * 16-character card number the alternate index {@code CXACAIX} is keyed on.
      */
     private static final String SORT_CARD_NUMBER = "cardNumber";
 
     /**
-     * Identifier property of {@link Account}, the sort key of the {@code ACCTFILE} probe. Declared at
-     * {@code src/main/java/com/cardemo/model/entity/Account.java:L403}.
+     * Identifier property of {@link Account}, the sort key of the {@code ACCTFILE} probe. Declared as
+     * {@code private Long accountId} in {@code src/main/java/com/cardemo/model/entity/Account.java}.
      */
     private static final String SORT_ACCOUNT_ID = "accountId";
 
     /**
-     * Identifier property of {@link Transaction}, the sort key of the {@code TRANFILE} probe. Declared at
-     * {@code src/main/java/com/cardemo/model/entity/Transaction.java:L582}.
+     * Identifier property of {@link Transaction}, the sort key of the {@code TRANFILE} probe. Declared as
+     * {@code private String transactionId} in
+     * {@code src/main/java/com/cardemo/model/entity/Transaction.java}.
      */
     private static final String SORT_TRANSACTION_ID = "transactionId";
 
@@ -2482,10 +2485,11 @@ public class DailyTransactionPostingJob {
      * <p>Closes a real gap rather than duplicating an existing count. {@code WS-TRANSACTION-COUNT} is
      * incremented at {@code app/cbl/CBTRN02C.cbl:L206}, <em>before</em> validation runs at {@code :L210}, so
      * the legacy figure is posted plus rejected. On this side
-     * {@code src/main/java/com/cardemo/batch/writers/TransactionWriter.java:L882} calls
-     * {@code countRecordsProcessed} with the size of the posted list only, and
-     * {@code src/main/java/com/cardemo/batch/writers/RejectWriter.java:L1574} calls
-     * {@code countRecordRejected} but <strong>not</strong> {@code countRecordsProcessed} - verified by
+     * {@code src/main/java/com/cardemo/batch/writers/TransactionWriter.java} calls
+     * {@code metrics.countRecordsProcessed(reported)} with the size of the posted list only, and
+     * {@code src/main/java/com/cardemo/batch/writers/RejectWriter.java} calls
+     * {@code this.metricsConfig.countRecordRejected(rejectCode)} but <strong>not</strong>
+     * {@code countRecordsProcessed} - verified by
      * reading both files. Rejected records were therefore absent from the meter, leaving it disagreeing with
      * the {@value #MSG_TRANSACTIONS_PROCESSED} literal this class emits. Adding exactly the rejects here
      * makes the two agree and <strong>cannot</strong> count a record twice, because no other class on the
@@ -2533,8 +2537,8 @@ public class DailyTransactionPostingJob {
      * <p>Sorts ascending on the entity's identifier property so the probe is deterministic rather than
      * dependent on whatever row order the store happens to return. Rule 1 clause A puts determinism ahead of
      * cleverness, and the sibling job in this package establishes the convention - see
-     * {@code src/main/java/com/cardemo/batch/jobs/InterestCalculationJob.java:L1408}-{@code :L1411}, whose
-     * probe page request likewise carries a {@code Sort} - so clause C's instruction not to fight the
+     * {@code openProbePageRequest} in {@code src/main/java/com/cardemo/batch/jobs/InterestCalculationJob.java},
+     * whose probe page request likewise carries a {@code Sort} - so clause C's instruction not to fight the
      * existing style points the same way. The four repositories reached this way expose no unconditional
      * ordered {@code findAll} variant, and adding one is out of this file's scope, so the ordering is
      * supplied through the {@link org.springframework.data.domain.Pageable} instead.

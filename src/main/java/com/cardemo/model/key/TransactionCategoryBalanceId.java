@@ -381,9 +381,9 @@ public class TransactionCategoryBalanceId implements Serializable {
      * <p>Present because JPA requires a no argument constructor on an embeddable so that the provider
      * can instantiate the type before populating it reflectively.
      *
-     * <p>It is {@code protected} rather than {@code public}, matching {@code TransactionCategoryId()} at
-     * {@code TransactionCategoryId.java:L316} and {@code DisclosureGroupId()} at
-     * {@code DisclosureGroupId.java:L281}, because an instance with three {@code null} components satisfies
+     * <p>It is {@code protected} rather than {@code public}, matching the no-argument
+     * {@code TransactionCategoryId()} of {@code TransactionCategoryId.java} and the no-argument
+     * {@code DisclosureGroupId()} of {@code DisclosureGroupId.java}, because an instance with three {@code null} components satisfies
      * none of the invariants {@link #TransactionCategoryBalanceId(Long, String, Integer)} enforces while
      * being indistinguishable from a real key at the type level. Leaving it {@code public} would offer a
      * silent route around that validation, and no caller under {@code src/} needs it. Hibernate is

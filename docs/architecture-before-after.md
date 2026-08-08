@@ -126,7 +126,8 @@ rather than quietly absorbed.
 **Diagrams.** Every diagram is a Mermaid fenced block. `mkdocs.yml` declares the `mermaid2`
 plugin alongside `techdocs-core` and registers `mermaid` as a `pymdownx.superfences` custom
 fence, so the blocks render as diagrams rather than as highlighted source
-[`mkdocs.yml:L6-L21`], and `catalog-info.yaml` publishes this directory through Backstage
+(the `plugins` and `markdown_extensions` blocks of [`mkdocs.yml`]), and `catalog-info.yaml`
+publishes this directory through Backstage
 TechDocs [`catalog-info.yaml:L22`]. No raster image, asset file, external diagramming
 service or CDN is used, and none was added.
 
@@ -469,7 +470,8 @@ legacy definition with nothing to translate.
 
 So the arithmetic is: **17 sourced screen programs + 1 orphan CSD definition = 18 CSD entries
 → 17 REST routes.** Independent corroboration comes from the repository's own inventory: the
-*Online* table at `README.md:L215-L231` lists exactly 17 rows and contains no `CDV1` row.
+*Online* table under `README.md`'s `#### **Online**` heading lists exactly 17 rows and
+contains no `CDV1` row.
 **No route, endpoint or placeholder is published for that transaction, and none should be
 inferred from any diagram on this page.**
 
@@ -843,10 +845,10 @@ properties of it are true of some operations and not of all, so both are stated 
 than left to be read off the diagram.
 
 * **The success status is not always `200`.** Thirteen of the seventeen operations answer
-  `200 OK`. **Three answer `201 Created`** — add user [`AdminController.java:1140`], bill
-  payment [`BillingController.java:802`] and add transaction
-  [`TransactionController.java:1230`] — and **one answers `202 Accepted`**, report submission
-  [`ReportController.java:817`], because it accepts a job rather than returning a result. A
+  `200 OK`. **Three answer `201 Created`** — add user [`AdminController.java`], bill
+  payment [`BillingController.java`] and add transaction
+  [`TransactionController.java`] — and **one answers `202 Accepted`**, report submission
+  [`ReportController.java`], because it accepts a job rather than returning a result. A
   client that treats anything other than `200` as a failure breaks on four of the seventeen.
 * **The service does not increment a counter or record a span.** The earlier revision drew a
   `Service bean → Observability` step on the generic path. **Exactly one of the 21 service

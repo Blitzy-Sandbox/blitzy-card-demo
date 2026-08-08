@@ -226,9 +226,11 @@ import org.springframework.transaction.annotation.Transactional;
  * <h2>6. Artefacts retained by the parity mandate</h2>
  *
  * <p>Four artefacts would read as dead or defective code in isolation. Each is a faithful reproduction of the system
- * of record, each is asserted here so the reproduction is provable rather than asserted, and each carries its
- * tracking reference owed to the {@code DECISION_LOG.md} with a paragraph row in
- * {@code TRACEABILITY_MATRIX.md}. None is abandoned residue.</p>
+ * of record, each is asserted here so the reproduction is provable rather than asserted, and each names the register
+ * entry that holds it in {@code DECISION_LOG.md} alongside its paragraph row in {@code TRACEABILITY_MATRIX.md}:
+ * {@code DL-CR-01} for the two constructs retained so the paragraph and field maps stay complete,
+ * {@code DL-PP-13} for the preserved cursor reposition, and {@code DL-PP-04} with {@code DL-RR-04} for the
+ * retained identifier race. None is abandoned residue.</p>
  *
  * <ul>
  *   <li><strong>{@code ENDBR-TRANSACT-FILE} at {@code :501}</strong> has no Java counterpart once the browse

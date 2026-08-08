@@ -119,7 +119,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code app/cbl/COTRN02C.cbl:473} and then performs {@code PROCESS-ENTER-KEY} at {@code :495}, which
  *       performs {@code VALIDATE-INPUT-KEY-FIELDS} again at {@code :166}. The redundant read is source
  *       behaviour and is not optimised away; the efficiency clause is discharged by this written
- *       justification and the entry owed to the {@code DECISION_LOG.md}, not by deduplicating. Remediation:
+ *       justification and by {@code DL-PP-13} in {@code DECISION_LOG.md}, whose register of reproduced
+ *       low-severity behaviours is open by construction and whose tracking reference is the declaration that
+ *       reproduces each one, not by deduplicating. Remediation:
  *       revisit only if PF5 prefill latency becomes a measured problem; the repeat is a single indexed lookup.</li>
  *   <li><b>Medium — two distinct numeric parsers are used deliberately.</b> {@code FUNCTION NUMVAL} parses
  *       the account identifier at {@code app/cbl/COTRN02C.cbl:204} and the card number at {@code :218};

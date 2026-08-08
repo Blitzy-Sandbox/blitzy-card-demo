@@ -41,9 +41,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
@@ -625,64 +628,191 @@ final class SourceCitationResolutionTest {
      * <p>This is a citation-FORM rule, not a resolution rule, because form is the only thing that can be
      * checked cheaply and kept true: any line number resolves, so a resolution check would have passed on
      * every one of the rotted locators above.
+     *
+     * <h2>Why the rule now covers every mutable target rather than five named files</h2>
+     *
+     * <p>The rule was originally written for the five configuration files a sweep had found rotted, and it
+     * held for exactly those five. A later review then found the identical defect one directory over: twelve
+     * locators into {@code src/...} Java sources, cited from {@code DECISION_LOG.md}, every one of which had
+     * drifted onto the Javadoc prose above the construct it named, the worst by 108 lines. A census run
+     * across the whole tree found 110 line locators into files this project authors, and 45 of them were
+     * provably pointing at something other than what their sentence claimed - the same failure, the same
+     * cause, and invisible for the same reason: the five-file list was an enumeration where the underlying
+     * property is universal.
+     *
+     * <p>So the list is gone. A locator is an offence when the path it names resolves to a file this
+     * project authors, whatever that file is, and a citation of the frozen corpus is the only line locator
+     * that remains admissible. Renumbering the 45 was considered and rejected for the second time, on the
+     * same ground as the first: a corrected number is correct until the next edit, and it was correct when
+     * it was written too. The census is recorded with this reasoning in {@code DECISION_LOG.md}.
+     *
+     * <p>One exemption exists and it is narrow. A fixture under {@code src/test/resources} is a
+     * byte-for-byte copy of a frozen fixture under {@code app/data/ASCII}, so an ordinal into it names a
+     * DATA RECORD rather than a source line and is exactly as stable as a locator into the corpus itself.
+     * {@link #theFixtureExemptionRestsOnByteIdentity()} asserts that premise rather than assuming it, so the
+     * exemption cannot be borrowed by a fixture that has diverged from its original.
      */
     @Nested
     @DisplayName("No mutable file is cited by line number, because such a locator rots on the next edit")
     final class MutableTargets {
 
         /**
-         * The files this project edits and whose line numbers therefore cannot be cited.
+         * Repository trees whose files are frozen, so a line locator into them stays correct permanently.
          *
-         * <p>Each is named by its file name alone, so a citation is caught however it spells the path:
-         * with or without the directory, and with or without the {@code L} prefix on the number. The
-         * forbidden form is deliberately not spelled out as a literal example anywhere in this file - doing
-         * so made the rule fail on its own documentation, which is the one offender it must not report.
+         * <p>{@code app/} is the corpus, and the rest of this class resolves its locators rather than
+         * refusing them. {@code diagrams/} and {@code samples/} are frozen by the same scope decision, and
+         * the repository-integrity job asserts all three byte-for-byte on every run.
          */
-        private final List<String> mutableTargets = List.of(
-                ".env.example", "docker-compose.yml", "init-aws.sh", "build.yml", "Dockerfile");
+        private final List<String> frozenTrees = List.of("app/", "diagrams/", "samples/");
 
         /**
-         * Matches a line locator attached to any of the mutable file names.
+         * Individually frozen files, which are cited by line in several places and legitimately so.
          *
-         * @return the compiled pattern
+         * <p>{@code project-guide.md} is prior-run evidence, {@code index.md} the documentation entry point
+         * and {@code catalog-info.yaml} the component registration; none is edited by this project, and the
+         * repository-integrity job asserts as much.
          */
-        private Pattern locatorPattern() {
-            final String alternatives = mutableTargets.stream()
-                    .map(Pattern::quote)
-                    .reduce((left, right) -> left + "|" + right)
-                    .orElseThrow();
-            return Pattern.compile("(" + alternatives + "):L?\\d+(-L?\\d+)?");
+        private final List<String> frozenFiles =
+                List.of("docs/project-guide.md", "docs/index.md", "catalog-info.yaml", "CONTRIBUTING.md",
+                        "CODE_OF_CONDUCT.md", "LICENSE", "NOTICE");
+
+        /**
+         * The one exempt tree: test fixtures that are byte-for-byte copies of frozen fixtures.
+         *
+         * <p>An ordinal into one of these names a record of the frozen dataset, not a line of a file this
+         * project maintains. The premise is asserted by {@link #theFixtureExemptionRestsOnByteIdentity()}.
+         */
+        private final String exemptFixtureTree = "src/test/resources/";
+
+        /**
+         * Matches a repository-relative path, or a bare file name, carrying a line locator.
+         *
+         * <p>Group 1 is the cited path as written. The path may be spelled in full or by file name alone,
+         * and the number may carry the {@code L} prefix or not, because the tree uses every one of those
+         * spellings. The forbidden form is deliberately never written out as a literal example anywhere in
+         * this file: doing so made the rule fail on its own documentation, which is the one offender it must
+         * not report.
+         */
+        private static final Pattern ANY_LOCATOR = Pattern.compile(
+                "(?<![\\w/.$-])((?:[A-Za-z0-9_.$-]+/)*[A-Za-z0-9_.$-]*[A-Za-z0-9_]"
+                        + "(?:\\.[A-Za-z0-9]{1,12})?):L?\\d+(?:-L?\\d+)?");
+
+        /**
+         * Resolves a cited path to a repository file this project authors, or to nothing.
+         *
+         * <p>A bare file name is resolved by searching the authored trees for that name, because the tree
+         * cites {@code V1__create_schema.sql} and {@code MenuController.java} without their directories as
+         * often as with them. Anything frozen, exempt or unresolvable answers empty, so the rule reports
+         * only what it can prove is a locator into a file an edit here can move.
+         *
+         * @param cited the path exactly as the citation spells it
+         * @return the repository-relative path of the authored file, or empty
+         */
+        private Optional<String> authoredTarget(final String cited) {
+            if (frozenTrees.stream().anyMatch(cited::startsWith)
+                    || frozenFiles.contains(cited)
+                    || cited.startsWith(exemptFixtureTree)) {
+                return Optional.empty();
+            }
+            if (Files.isRegularFile(ROOT.resolve(cited))) {
+                return Optional.of(cited);
+            }
+            if (cited.contains("/")) {
+                return Optional.empty();
+            }
+            return authoredFilesByName().getOrDefault(cited, List.of()).stream().findFirst();
         }
 
         @Test
-        @DisplayName("no source cites one of the five mutable configuration files by line")
+        @DisplayName("no source cites a file this project authors by line number, whatever the file")
         void noMutableFileIsCitedByLine() {
-            final Pattern locator = locatorPattern();
             final List<String> offenders = new ArrayList<>();
 
-            for (final Path file : SCANNED) {
+            for (final Path file : scannedForForm()) {
                 final String relative = ROOT.relativize(file).toString();
                 final List<String> content = readLines(file);
                 for (int index = 0; index < content.size(); index++) {
-                    final Matcher matcher = locator.matcher(content.get(index));
+                    final Matcher matcher = ANY_LOCATOR.matcher(content.get(index));
                     while (matcher.find()) {
-                        offenders.add(relative + ":" + (index + 1) + " -> " + matcher.group());
+                        final int line = index + 1;
+                        authoredTarget(matcher.group(1)).ifPresent(target ->
+                                offenders.add(relative + ":" + line + " -> " + matcher.group()
+                                        + " (resolves to " + target + ")"));
                     }
                 }
             }
 
             assertThat(offenders)
                     .as("""
-                            Each entry is a line locator into a file this project edits. Cite a SYMBOL                             instead - the variable name, shell function, YAML path or Dockerfile                             instruction - because that survives an edit to the file it names, and a line                             number does not. Line locators remain correct, and remain checked, for                             app/... alone, which is frozen.""")
+                            Each entry is a line locator into a file this project authors. Cite a SYMBOL \
+                            instead - the method, field, column, property, variable, shell function, YAML \
+                            path, Dockerfile instruction or quoted heading - because that survives an edit \
+                            to the file it names, and a line number does not. Line locators remain correct, \
+                            and remain checked, for the frozen trees alone.""")
                     .isEmpty();
         }
 
         @Test
-        @DisplayName("the five files are still cited by name, so the rule was not satisfied by silence")
+        @DisplayName("the fixture exemption rests on byte identity with the frozen original, not on trust")
+        void theFixtureExemptionRestsOnByteIdentity() {
+            final List<String> divergent = new ArrayList<>();
+            final Path fixtures = ROOT.resolve(exemptFixtureTree);
+
+            try (Stream<Path> walk = Files.walk(fixtures)) {
+                final List<Path> copies = walk.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(".txt"))
+                        .sorted()
+                        .toList();
+                for (final Path copy : copies) {
+                    final Path original = ROOT.resolve("app/data/ASCII").resolve(copy.getFileName());
+                    if (!Files.isRegularFile(original)) {
+                        continue;
+                    }
+                    if (Files.mismatch(copy, original) != -1L) {
+                        divergent.add(ROOT.relativize(copy).toString());
+                    }
+                }
+                assertThat(copies)
+                        .as("the exempt tree must actually hold fixtures, or the exemption is vacuous")
+                        .isNotEmpty();
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot walk " + fixtures, cause);
+            }
+
+            assertThat(divergent)
+                    .as("""
+                            An ordinal into a test fixture is exempt from the form rule because the fixture \
+                            is a byte-for-byte copy of a frozen dataset, so the ordinal names a record of \
+                            that dataset rather than a line of a file this project maintains. A fixture that \
+                            has diverged from its original cannot carry that exemption: either restore the \
+                            copy, or convert the citations that point into it.""")
+                    .isEmpty();
+        }
+
+        /**
+         * Files whose citations were converted from a locator to a symbol, asserted still to be cited.
+         *
+         * <p>The form rule above is satisfied by deleting a citation exactly as well as by converting it, so
+         * this roster names the files the conversion touched and requires each to still be referenced. The
+         * five original entries are the configuration files of the first sweep; the rest are the targets the
+         * second census converted, and they are named rather than derived so that removing the last citation
+         * of one is a failure instead of a silence.
+         */
+        private final List<String> convertedTargets = List.of(
+                ".env.example", "docker-compose.yml", "init-aws.sh", "build.yml", "Dockerfile",
+                "pom.xml", "README.md", "mkdocs.yml", "mvnw", ".editorconfig", ".gitattributes",
+                ".gitignore", "V1__create_schema.sql", "V2__create_indexes.sql", "V3__seed_data.sql",
+                "application.yml", "application-local.yml", "logback-spring.xml",
+                "AccountUpdateService.java", "InterestCalculationProcessor.java",
+                "StatementProcessor.java", "BatchConfig.java", "BillingController.java",
+                "technical-specifications.md");
+
+        @Test
+        @DisplayName("every converted file is still cited by name, so the rule was not satisfied by silence")
         void theMutableFilesAreStillCitedBySymbol() {
-            for (final String target : mutableTargets) {
+            for (final String target : convertedTargets) {
                 long mentions = 0;
-                for (final Path file : SCANNED) {
+                for (final Path file : scannedForForm()) {
                     if (file.getFileName().toString().equals(target)) {
                         continue;
                     }
@@ -732,7 +862,158 @@ final class SourceCitationResolutionTest {
                                   "localstack-init/init-aws.sh", "ALLOWED_ENDPOINT_HOST_PATTERN",
                                   "readonly ALLOWED_ENDPOINT_HOST_PATTERN="},
                     new String[] {"src/main/java/com/cardemo/observability/HealthIndicators.java",
-                                  "Dockerfile", "HEALTHCHECK", "HEALTHCHECK --"});
+                                  "Dockerfile", "HEALTHCHECK", "HEALTHCHECK --"},
+                    // Rows below were added when the form rule widened from five files to every authored
+                    // target. Each replaced a locator that had drifted onto the Javadoc, comment or prose
+                    // block above the construct its sentence named; the census and the reasoning are in
+                    // DECISION_LOG.md. Java declarations carry their modifiers and opening parenthesis, SQL
+                    // columns and constraints their type or clause, and Maven properties their element
+                    // brackets, so a rename in the target fails the row rather than passing on a prefix.
+                    new String[] {"DECISION_LOG.md",
+                                  "src/main/java/com/cardemo/service/account/AccountUpdateService.java",
+                                  "private void writeProcessing9600(",
+                                  "private void writeProcessing9600("},
+                    new String[] {"DECISION_LOG.md",
+                                  "src/main/java/com/cardemo/service/account/AccountUpdateService.java",
+                                  "private void writeProcessing9600Exit(",
+                                  "private void writeProcessing9600Exit("},
+                    new String[] {"DECISION_LOG.md",
+                                  "src/main/java/com/cardemo/service/account/AccountUpdateService.java",
+                                  "private void checkChangeInRecord9700(",
+                                  "private void checkChangeInRecord9700("},
+                    new String[] {"DECISION_LOG.md",
+                                  "src/main/java/com/cardemo/service/account/AccountUpdateService.java",
+                                  "@Transactional(rollbackFor = Exception.class)",
+                                  "@Transactional(rollbackFor = Exception.class)"},
+                    new String[] {"DECISION_LOG.md",
+                                  "src/main/java/com/cardemo/service/account/AccountUpdateService.java",
+                                  "@Transactional(readOnly = true)", "@Transactional(readOnly = true)"},
+                    new String[] {"DECISION_LOG.md",
+                                  "src/main/java/com/cardemo/batch/processors/InterestCalculationProcessor.java",
+                                  "private void computeFees(", "private void computeFees("},
+                    new String[] {"DECISION_LOG.md",
+                                  "src/main/java/com/cardemo/batch/processors/StatementProcessor.java",
+                                  "public void initialise(", "public void initialise("},
+                    new String[] {"DECISION_LOG.md", "pom.xml",
+                                  "dependency-check-maven.version",
+                                  "<dependency-check-maven.version>"},
+                    new String[] {"DECISION_LOG.md",
+                                  "src/main/resources/db/migration/V1__create_schema.sql",
+                                  "cust_fico_credit_score    CHAR(3)    NOT NULL",
+                                  "cust_fico_credit_score    CHAR(3)    NOT NULL"},
+                    new String[] {"docs/onboarding-guide.md",
+                                  "src/main/java/com/cardemo/config/BatchConfig.java",
+                                  "drainReportJobQueue", "public void drainReportJobQueue("},
+                    new String[] {"docs/onboarding-guide.md", "mkdocs.yml",
+                                  "validation.nav.omitted_files: warn", "omitted_files: warn"},
+                    new String[] {"docs/onboarding-guide.md", "pom.xml",
+                                  "<arg>-Xlint:all</arg>", "<arg>-Xlint:all</arg>"},
+                    new String[] {"docs/validation-gates.md", "pom.xml",
+                                  "owasp.failBuildOnCVSS", "<owasp.failBuildOnCVSS>"},
+                    new String[] {"docs/validation-gates.md", "pom.xml",
+                                  "<arg>-Werror</arg>", "<arg>-Werror</arg>"},
+                    new String[] {"docs/validation-gates.md", ".gitignore", "/target/", "/target/"},
+                    new String[] {"docs/technical-specifications.md", "pom.xml",
+                                  "spring-framework.version", "<spring-framework.version>"},
+                    new String[] {"docs/technical-specifications.md", "pom.xml",
+                                  "testcontainers.version", "<testcontainers.version>"},
+                    new String[] {"docs/technical-specifications.md", "README.md",
+                                  "## Running full batch", "## Running full batch"},
+                    new String[] {"docs/api-contracts.md", "src/main/resources/application.yml",
+                                  "report-queue-logical-name", "report-queue-logical-name:"},
+                    new String[] {"docs/api-contracts.md", "src/main/resources/application-local.yml",
+                                  "report-queue", "report-queue:"},
+                    new String[] {"docs/api-contracts.md", "docker-compose.yml",
+                                  "CARDDEMO_SQS_REPORT_QUEUE", "CARDDEMO_SQS_REPORT_QUEUE:"},
+                    new String[] {"docs/architecture-before-after.md", "mkdocs.yml",
+                                  "markdown_extensions", "markdown_extensions:"},
+                    new String[] {"src/main/java/com/cardemo/config/SecurityConfig.java",
+                                  "src/main/java/com/cardemo/controller/BillingController.java",
+                                  "BASE_PATH", "String BASE_PATH ="},
+                    new String[] {"src/main/java/com/cardemo/controller/MenuController.java",
+                                  "docs/technical-specifications.md",
+                                  "docs/technical-specifications.md", "`MenuController.java` | CREATE"},
+                    new String[] {"src/main/java/com/cardemo/batch/jobs/DailyTransactionPostingJob.java",
+                                  "src/main/java/com/cardemo/model/entity/Account.java",
+                                  "private Long accountId", "private Long accountId;"},
+                    new String[] {"src/main/java/com/cardemo/batch/jobs/DailyTransactionPostingJob.java",
+                                  "src/main/java/com/cardemo/model/entity/Transaction.java",
+                                  "private String transactionId", "private String transactionId;"},
+                    new String[] {"src/main/java/com/cardemo/batch/jobs/DailyTransactionPostingJob.java",
+                                  "src/main/java/com/cardemo/batch/writers/TransactionWriter.java",
+                                  "metrics.countRecordsProcessed(reported)",
+                                  "metrics.countRecordsProcessed(reported);"},
+                    new String[] {"src/main/java/com/cardemo/batch/jobs/DailyTransactionPostingJob.java",
+                                  "src/main/java/com/cardemo/batch/writers/RejectWriter.java",
+                                  "this.metricsConfig.countRecordRejected(rejectCode)",
+                                  "this.metricsConfig.countRecordRejected(rejectCode);"},
+                    new String[] {"src/main/java/com/cardemo/batch/jobs/DailyTransactionPostingJob.java",
+                                  "src/main/java/com/cardemo/batch/jobs/InterestCalculationJob.java",
+                                  "openProbePageRequest",
+                                  "private static PageRequest openProbePageRequest("},
+                    new String[] {"src/main/java/com/cardemo/batch/readers/DailyTransactionReader.java",
+                                  "src/main/resources/application.yml",
+                                  "batch-input-bucket: ${CARDDEMO_S3_BATCH_INPUT_BUCKET}",
+                                  "batch-input-bucket: ${CARDDEMO_S3_BATCH_INPUT_BUCKET}"},
+                    new String[] {"src/main/java/com/cardemo/batch/readers/DailyTransactionReader.java",
+                                  "src/main/resources/application.yml",
+                                  "gdg-prefixes", "gdg-prefixes:"},
+                    new String[] {"src/main/java/com/cardemo/batch/readers/CardCrossReferenceReader.java",
+                                  "src/main/resources/db/migration/V2__create_indexes.sql",
+                                  "CREATE INDEX idx_card_cross_reference_acct_id",
+                                  "CREATE INDEX idx_card_cross_reference_acct_id"},
+                    new String[] {"src/main/java/com/cardemo/repository/AccountRepository.java",
+                                  "src/main/resources/db/migration/V1__create_schema.sql",
+                                  "acct_id                 NUMERIC(11)   NOT NULL",
+                                  "acct_id                 NUMERIC(11)   NOT NULL"},
+                    new String[] {"src/main/java/com/cardemo/repository/CustomerRepository.java",
+                                  "src/main/resources/db/migration/V1__create_schema.sql",
+                                  "cust_id                   NUMERIC(9) NOT NULL",
+                                  "cust_id                   NUMERIC(9) NOT NULL"},
+                    new String[] {"src/main/java/com/cardemo/service/card/CardUpdateService.java",
+                                  "pom.xml", "maven.compiler.release",
+                                  "<maven.compiler.release>"},
+                    new String[] {"src/main/java/com/cardemo/service/card/CardUpdateService.java",
+                                  "pom.xml", "jacoco.line.coverage.minimum",
+                                  "<jacoco.line.coverage.minimum>"},
+                    new String[] {"src/main/java/com/cardemo/service/card/CardUpdateService.java",
+                                  "src/main/resources/db/migration/V1__create_schema.sql",
+                                  "card_cvv_cd          CHAR(3)     NOT NULL",
+                                  "card_cvv_cd          CHAR(3)     NOT NULL"},
+                    new String[] {"src/main/java/com/cardemo/service/transaction/TransactionDetailService.java",
+                                  "src/main/resources/logback-spring.xml",
+                                  "rule R1 of logback-spring.xml", "R1."},
+                    new String[] {"src/test/java/com/cardemo/unit/service/TransactionListServiceTest.java",
+                                  "pom.xml", "maven-surefire-plugin",
+                                  "<artifactId>maven-surefire-plugin</artifactId>"},
+                    new String[] {"src/test/java/com/cardemo/unit/service/TransactionListServiceTest.java",
+                                  "pom.xml", "maven-failsafe-plugin",
+                                  "<artifactId>maven-failsafe-plugin</artifactId>"},
+                    new String[] {"src/test/java/com/cardemo/unit/infrastructure/ImportHygieneTest.java",
+                                  ".editorconfig", "end_of_line = lf", "end_of_line = lf"},
+                    new String[] {"src/test/java/com/cardemo/e2e/GateVerificationTest.java",
+                                  ".gitattributes", "whitespace=-blank-at-eol",
+                                  "whitespace=-blank-at-eol"},
+                    new String[] {"src/test/java/com/cardemo/unit/batch/TransactionPostingProcessorTest.java",
+                                  "src/main/java/com/cardemo/batch/processors/TransactionPostingProcessor.java",
+                                  "TransactionPostingProcessor declares exactly one constructor",
+                                  "public TransactionPostingProcessor("},
+                    new String[] {"src/test/java/com/cardemo/integration/repository/"
+                                          + "CardCrossReferenceRepositoryTest.java",
+                                  "src/main/resources/db/migration/V1__create_schema.sql",
+                                  "CREATE TABLE card_cross_reference",
+                                  "CREATE TABLE card_cross_reference ("},
+                    new String[] {"src/test/java/com/cardemo/integration/repository/"
+                                          + "CardCrossReferenceRepositoryTest.java",
+                                  "src/main/resources/db/migration/V1__create_schema.sql",
+                                  "fk03_xref_account", "CONSTRAINT fk03_xref_account"},
+                    new String[] {"src/test/java/com/cardemo/integration/repository/"
+                                          + "TransactionCategoryBalanceRepositoryTest.java",
+                                  "src/main/resources/db/migration/V1__create_schema.sql",
+                                  "tran_type_cd VARCHAR(2)", "tran_type_cd  VARCHAR(2)"},
+                    new String[] {"src/test/java/com/cardemo/unit/model/TransactionCategoryBalanceIdTest.java",
+                                  "src/main/resources/db/migration/V1__create_schema.sql",
+                                  "fk08_tcatbal_category", "CONSTRAINT fk08_tcatbal_category"});
 
             final List<String> offenders = new ArrayList<>();
             for (final String[] citation : citations) {
@@ -768,5 +1049,87 @@ final class SourceCitationResolutionTest {
                 throw new UncheckedIOException("Cannot read " + file, cause);
             }
         }
+    }
+
+    /**
+     * Every text file that may CITE, for the citation-form rule.
+     *
+     * <p>Deliberately wider than {@link #SCANNED}, and the two are kept apart rather than merged. The
+     * app-citation tests above resolve a path and a line against the frozen corpus; this rule inspects the
+     * FORM of a citation into a file this project authors. Widening {@code SCANNED} would have changed the
+     * population of the first set of tests as a side effect of fixing the second, which is how one gate's
+     * remedy silently becomes another gate's regression. The form rule therefore adds the documentation tree
+     * and the two root evidence registers - which is precisely where the drifted locators a review found
+     * were written - plus the root files that carry citations of their own.
+     *
+     * @return the files to scan for citation form, in a stable order
+     */
+    private static List<Path> scannedForForm() {
+        final Set<Path> files = new LinkedHashSet<>(SCANNED);
+        final Path documentation = ROOT.resolve("docs");
+        if (Files.isDirectory(documentation)) {
+            try (Stream<Path> walk = Files.walk(documentation)) {
+                walk.filter(Files::isRegularFile)
+                        .filter(path -> {
+                            final String name = path.getFileName().toString();
+                            return name.endsWith(".md") || name.endsWith(".html");
+                        })
+                        .sorted()
+                        .forEach(files::add);
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot walk " + documentation, cause);
+            }
+        }
+        for (final String root : List.of("DECISION_LOG.md", "TRACEABILITY_MATRIX.md", "README.md",
+                "mkdocs.yml", "owasp-suppressions.xml", "mvnw", ".gitignore", ".gitattributes",
+                ".editorconfig", ".dockerignore", ".mvn/wrapper/maven-wrapper.properties")) {
+            final Path path = ROOT.resolve(root);
+            if (Files.isRegularFile(path)) {
+                files.add(path);
+            }
+        }
+        return List.copyOf(files);
+    }
+
+    /**
+     * Index of every file this project authors, keyed on its bare file name.
+     *
+     * <p>Built because the tree cites {@code V1__create_schema.sql} and {@code MenuController.java} without
+     * their directories at least as often as with them, and a rule that only understood full paths would
+     * have missed exactly half of the locators the census found. A name that occurs in more than one place
+     * still resolves, to the first match in sorted order, which is enough: the rule needs to know only
+     * whether an authored file is being cited by line, never which copy.
+     *
+     * @return authored files by bare name, never {@code null}
+     */
+    private static Map<String, List<String>> authoredFilesByName() {
+        final Map<String, List<String>> index = new LinkedHashMap<>();
+        for (final String tree : List.of("src", "docs", "observability", "localstack-init", ".github",
+                ".mvn")) {
+            final Path base = ROOT.resolve(tree);
+            if (!Files.isDirectory(base)) {
+                continue;
+            }
+            try (Stream<Path> walk = Files.walk(base)) {
+                walk.filter(Files::isRegularFile).sorted().forEach(path -> {
+                    final String relative = ROOT.relativize(path).toString();
+                    if (!relative.startsWith("src/test/resources/")) {
+                        index.computeIfAbsent(path.getFileName().toString(), key -> new ArrayList<>())
+                                .add(relative);
+                    }
+                });
+            } catch (final IOException cause) {
+                throw new UncheckedIOException("Cannot walk " + base, cause);
+            }
+        }
+        for (final String root : List.of("pom.xml", "README.md", "mkdocs.yml", "docker-compose.yml",
+                "Dockerfile", "DECISION_LOG.md", "TRACEABILITY_MATRIX.md", "owasp-suppressions.xml",
+                "mvnw", "mvnw.cmd", ".gitignore", ".gitattributes", ".editorconfig", ".dockerignore",
+                ".env.example")) {
+            if (Files.isRegularFile(ROOT.resolve(root))) {
+                index.computeIfAbsent(root, key -> new ArrayList<>()).add(root);
+            }
+        }
+        return index;
     }
 }

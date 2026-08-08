@@ -187,6 +187,26 @@ replay_pid*
 # Process-id file written by Spring Boot's ApplicationPidFileWriter.
 *.pid
 
+# The embedded servlet container's base directory. With server.tomcat.basedir
+# unset, Tomcat falls back to <working directory>/tomcat.<port>, so a test
+# that binds a random port leaves tomcat.0 and a local run on 8080 leaves
+# tomcat.8080. It sits beside the sources rather than under target/, so a
+# `clean` does not remove it and /target/ does not cover it.
+#
+# Two properties of this rule are deliberate. It is ANCHORED, for the same
+# reason /logs/ is: a nested tomcat.<port> would belong to whatever produced
+# it, not to the build. And it is DIRECTORY-ONLY, so a source file that ever
+# legitimately carries that name stays visible.
+#
+# It is ignored rather than suppressed - the container is not repointed at a
+# temporary base directory - because doing so would change delivered server
+# configuration to settle a working-tree hygiene question, and because the
+# directory is harmless where it lands. That is the same treatment /logs/ and
+# *.pid get, and the opposite of the compose rule above, which prevents the
+# write instead: a bind mount is configuration this repository owns, whereas
+# the container's base directory is a runtime default it does not.
+/tomcat.*/
+
 # Local scratch: platform screenshots and recordings, and the ad-hoc
 # validation scripts that must never reach a commit.
 /blitzy/

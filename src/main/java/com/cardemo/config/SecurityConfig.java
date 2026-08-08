@@ -645,7 +645,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       {@code POST /api/auth/signon} asserted at
  *       {@code src/test/java/com/cardemo/unit/config/SecurityConfigTest.java}, on the namespace convention
  *       the tree states of itself in
- *       {@code src/main/java/com/cardemo/controller/BillingController.java:309}, so no rule needed moving.
+ *       the {@code BASE_PATH} declaration of
+ *       {@code src/main/java/com/cardemo/controller/BillingController.java}, so no rule needed moving.
  *       The endpoint arithmetic is now read end to end from the mappings rather than partly assumed: the
  *       eight controllers publish two, four, one, one, three, two, one and three routes, which is exactly the
  *       seventeen the resource definitions declare - eighteen transactions less {@code CDV1}, whose

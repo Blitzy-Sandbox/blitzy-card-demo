@@ -965,7 +965,7 @@ public class TransactionDetailService {
             // a single lookup, which makes the masked card number no protection at all. Both values are
             // replaced by fixed-width placeholders of their declared widths. The transaction identifier, the
             // type and category codes, the source and the two dates are kept: they are reference and key
-            // data, they are what this event exists to confirm, and logback-spring.xml:731-736 records that
+            // data, they are what this event exists to confirm, and rule R1 of logback-spring.xml records that
             // the value masks deliberately leave identifier-shaped lines alone rather than over-redact them.
             // Debug alone was not sufficient - debug is enabled during exactly the incident investigations
             // in which logs are read most widely - so the guard is kept as a volume control and is no longer

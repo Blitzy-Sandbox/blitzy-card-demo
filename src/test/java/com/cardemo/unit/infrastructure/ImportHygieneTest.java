@@ -399,7 +399,7 @@ final class ImportHygieneTest {
     @Test
     @DisplayName("every source ends in exactly one LF, with no CRLF, no tab and no trailing whitespace")
     void everySourceHasTheShapeEditorconfigDeclares() {
-        // Finding STYLE-001, severity Low. .editorconfig:49-51 declares end_of_line = lf,
+        // Finding STYLE-001, severity Low. .editorconfig declares end_of_line = lf,
         // insert_final_newline = true and trim_trailing_whitespace = true for [*], and no [*.java] section
         // relaxes any of the three - but a declaration an editor honours is not a rule the build enforces, and
         // one file had already lost its terminating newline. A missing final LF is not cosmetic: it makes the
@@ -437,7 +437,8 @@ final class ImportHygieneTest {
 
         assertThat(violations)
                 .as("""
-                    .editorconfig:49-51 declares these three for every file in the repository, and no \
+                    .editorconfig declares these three under [*], for every file in the repository, \
+                    and no \
                     [*.java] section relaxes them. A violation is fixed in the file, never by widening \
                     this assertion.""")
                 .isEmpty();

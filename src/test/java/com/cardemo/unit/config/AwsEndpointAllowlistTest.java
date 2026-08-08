@@ -13,8 +13,8 @@
  *               no credential block.
  * Source      : Agent Action Plan sections 0.3.2 and 0.8.4 - live AWS
  *               accounts and real credentials are out of scope and no code
- *               path may reach a real AWS endpoint; pom.xml:578-579 states
- *               that every client targets a LocalStack endpoint override.
+ *               path may reach a real AWS endpoint; pom.xml states that
+ *               every client targets a LocalStack endpoint override.
  *               Guard under test: config/AwsConfig.java
  *               requireEmulatorEndpoints / requireApprovedEndpoint.
  * ******************************************************************
