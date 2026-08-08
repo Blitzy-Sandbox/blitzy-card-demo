@@ -33,7 +33,11 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextInitializer;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.core.env.SystemEnvironmentPropertySource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.util.PlaceholderResolutionException;
@@ -192,6 +196,28 @@ class CobolCharsetConfigTest {
     private static final String UNSUPPORTED_BUT_LEGAL_NAME = "IBM037-DOES-NOT-EXIST";
 
     /**
+     * What makes a "shipped default profile" slice actually read {@code application.yml} alone.
+     *
+     * <p>An {@link ApplicationContextRunner} builds its environment on top of the surrounding JVM's
+     * system properties and process environment. So a build invoked as
+     * {@code mvn test -Dspring.profiles.active=test}, or run by a CI executor that exports
+     * {@code SPRING_PROFILES_ACTIVE=test} - a common convention - activates the {@code test} profile
+     * <em>inside</em> a runner that was meant to see one document. {@code application-test.yml} then
+     * loads on top of it and wins, and {@link TheShippedConfigurationDocuments} reports the fixture
+     * profile's {@code US-ASCII} as the default document's active code page - which is precisely the
+     * misreading that group exists to prevent.
+     *
+     * <p>Stating the key with an empty value closes it: {@code withPropertyValues} installs the value
+     * as the first property source, ahead of both {@code systemProperties} and
+     * {@code systemEnvironment}, and an empty value means no active profile at all. Clearing the
+     * system property instead was measured and rejected - it neutralises the {@code -D} form and leaves
+     * the environment-variable form leaking. Nothing global is mutated, so no slice can perturb
+     * another (practice B7). Only the default-profile arms need it; an arm that names a profile has
+     * already stated what it wants and outranks the inherited value by the same rule.
+     */
+    private static final String NO_EXTERNALLY_ACTIVATED_PROFILE = "spring.profiles.active=";
+
+    /**
      * The first 60 bytes of {@code app/data/EBCDIC/AWS.M2.CARDDEMO.ACCTDATA.PS} as they read under
      * {@code IBM037}, identical to the first 60 characters of
      * {@code app/data/ASCII/acctdata.txt}. Spans, per {@code app/cpy/CVACT01Y.cpy}:
@@ -312,6 +338,67 @@ class CobolCharsetConfigTest {
                 CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY + "=" + CONFIGURED_EBCDIC_NAME,
                 CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=" + CONFIGURED_ASCII_NAME,
                 CobolCharsetConfig.DATASET_CHARSET_PROPERTY + "=" + CONFIGURED_ASCII_NAME);
+    }
+
+    /**
+     * A slice over the shipped <em>default</em> document: the real {@code application.yml} read
+     * through {@link ConfigDataApplicationContextInitializer}, with nothing supplied inline except
+     * {@value #NO_EXTERNALLY_ACTIVATED_PROFILE}, for the reason set out on that constant.
+     *
+     * @return a runner whose only property source is {@code application.yml}
+     */
+    private ApplicationContextRunner shippedDefaultProfile() {
+        // No inherited environment to reproduce: the runner's own environment is the subject here.
+        return shippedDefaultProfile(context -> { });
+    }
+
+    /**
+     * The same slice, with an inherited environment installed before the configuration documents are
+     * read.
+     *
+     * <p>This overload exists so
+     * {@link TheShippedConfigurationDocuments#anExternallyActivatedProfileCannotChangeTheActiveCodePage()}
+     * can exercise <em>this</em> runner rather than a copy of it - a copy would let someone delete
+     * {@value #NO_EXTERNALLY_ACTIVATED_PROFILE} above and leave that assertion green. The initializer
+     * is registered <strong>first</strong>, ahead of {@link ConfigDataApplicationContextInitializer},
+     * because profile activation is resolved when the documents are loaded: a property source
+     * installed after that point cannot change which document was chosen, so an assertion built that
+     * way would pass whether or not the fix were present.
+     *
+     * @param inheritedEnvironment installs whatever the surrounding process is imagined to have
+     *                             supplied; a no-op for ordinary use
+     * @return a runner whose only configuration document is {@code application.yml}
+     */
+    private ApplicationContextRunner shippedDefaultProfile(
+            ApplicationContextInitializer<ConfigurableApplicationContext> inheritedEnvironment) {
+        return new ApplicationContextRunner()
+                .withInitializer(inheritedEnvironment)
+                .withInitializer(new ConfigDataApplicationContextInitializer())
+                .withUserConfiguration(CobolCharsetConfig.class)
+                .withPropertyValues(NO_EXTERNALLY_ACTIVATED_PROFILE);
+    }
+
+    /**
+     * An initializer that reproduces {@code SPRING_PROFILES_ACTIVE=<profile>} in the process
+     * environment, at the precedence position the real variable occupies.
+     *
+     * <p>Java cannot set its own environment variables, so the variable is reproduced as a
+     * {@link SystemEnvironmentPropertySource} - the source type that performs the
+     * {@code SPRING_PROFILES_ACTIVE} to {@code spring.profiles.active} relaxed-name mapping - inserted
+     * immediately above {@code systemProperties}. That position is what makes the assertion
+     * discriminating: it outranks every configuration document, so an arm that never states its
+     * profile follows it, while it still loses to the inline value an arm that <em>does</em> state its
+     * profile installs. The inherited sources stay in place rather than being replaced.
+     *
+     * @param profile the profile the imagined executor exported
+     * @return an initializer installing that variable
+     */
+    private static ApplicationContextInitializer<ConfigurableApplicationContext>
+            processEnvironmentActivating(String profile) {
+        return context -> context.getEnvironment().getPropertySources().addBefore(
+                StandardEnvironment.SYSTEM_PROPERTIES_PROPERTY_SOURCE_NAME,
+                new SystemEnvironmentPropertySource("simulatedProcessEnvironment",
+                        Map.of("SPRING_PROFILES_ACTIVE", profile)));
     }
 
     /**
@@ -818,9 +905,7 @@ class CobolCharsetConfigTest {
         @DisplayName("application.yml selects IBM037, because its bindings address the mainframe "
                 + "datasets")
         void theDefaultProfileSelectsTheEbcdicCodePage() {
-            new ApplicationContextRunner()
-                    .withInitializer(new ConfigDataApplicationContextInitializer())
-                    .withUserConfiguration(CobolCharsetConfig.class)
+            shippedDefaultProfile()
                     .run(context -> {
                         assertThat(context).hasNotFailed();
                         assertThat(context.getBean(
@@ -868,9 +953,7 @@ class CobolCharsetConfigTest {
             // "dataset" - which of them is in use - follows the datasets a profile is bound to.
             List<String> defaultProfile = new ArrayList<>();
             List<String> testProfile = new ArrayList<>();
-            new ApplicationContextRunner()
-                    .withInitializer(new ConfigDataApplicationContextInitializer())
-                    .withUserConfiguration(CobolCharsetConfig.class)
+            shippedDefaultProfile()
                     .run(context -> defaultProfile.addAll(resolvedCodePageNames(context)));
             new ApplicationContextRunner()
                     .withInitializer(new ConfigDataApplicationContextInitializer())
@@ -884,6 +967,45 @@ class CobolCharsetConfigTest {
             assertThat(testProfile)
                     .containsExactly(CONFIGURED_EBCDIC_NAME, CONFIGURED_ASCII_NAME,
                             CONFIGURED_ASCII_NAME);
+        }
+
+        /**
+         * Which code page this group reads is decided by the document under test, never by the process
+         * that happened to start the build.
+         *
+         * <p>The two assertions above are only worth their weight if the default arm really does read
+         * {@code application.yml} alone. It does not do so by default: a runner inherits the JVM's
+         * system properties and the process environment, so a build started as
+         * {@code mvn test -Dspring.profiles.active=test}, or by an executor exporting
+         * {@code SPRING_PROFILES_ACTIVE=test}, would load {@code application-test.yml} inside the
+         * default arm and make it report {@code US-ASCII} - the exact misreading this group exists to
+         * catch, arriving from the harness instead of from the configuration.
+         *
+         * <p>Both routes are reproduced, because they are neutralised by different precedence rules and
+         * closing one does not close the other: a JVM system property, as {@code -D} supplies, set for
+         * the duration of the run and restored afterwards; and a process environment variable, as a CI
+         * executor supplies.
+         */
+        @Test
+        @DisplayName("an externally activated profile cannot change the active code page, by system "
+                + "property or by environment variable")
+        void anExternallyActivatedProfileCannotChangeTheActiveCodePage() {
+            List<ApplicationContextRunner> underAnInheritedProfile = List.of(
+                    shippedDefaultProfile().withSystemProperties("spring.profiles.active=test"),
+                    shippedDefaultProfile(processEnvironmentActivating("test")));
+
+            for (ApplicationContextRunner runner : underAnInheritedProfile) {
+                runner.run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getEnvironment().getActiveProfiles())
+                            .as("the default arm must resolve no active profile at all")
+                            .isEmpty();
+                    assertThat(resolvedCodePageNames(context))
+                            .as("the shipped default document's three code pages, unchanged")
+                            .containsExactly(CONFIGURED_EBCDIC_NAME, CONFIGURED_ASCII_NAME,
+                                    CONFIGURED_EBCDIC_NAME);
+                });
+            }
         }
 
         /**

@@ -26,7 +26,11 @@ import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.boot.context.properties.ConfigurationPropertiesBindException;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.ApplicationContextInitializer;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.core.env.SystemEnvironmentPropertySource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 
@@ -214,6 +218,33 @@ class DataSourceConfigTest {
     private static final String RECORD_IMAGE_FORM_PROPERTY =
             RecordImageForm.FORM_PROPERTY + "=CHARACTER";
 
+    /**
+     * What makes a "shipped default profile" slice actually mean the default profile.
+     *
+     * <p>A slice below that asks for the default profile is asking to see {@code application.yml}
+     * <em>alone</em>. It does not get that for free. An {@link ApplicationContextRunner} builds its
+     * environment on top of the surrounding JVM's system properties and process environment, so a
+     * build invoked as {@code mvn test -Dspring.profiles.active=test}, or by a CI executor that
+     * exports {@code SPRING_PROFILES_ACTIVE=test} - a common convention - activates the {@code test}
+     * profile <em>inside</em> the runner. {@code application-test.yml} then loads on top of the
+     * document under test and its values win, and every assertion about a default-profile value
+     * reads a test-profile value instead: {@code carddemo-test-pool} for the pool name,
+     * {@code CARDDEMO.TEST.*} for every dataset location, {@code always} for the batch initialiser,
+     * and a URL where the shipped document deliberately supplies none.
+     *
+     * <p>Stating the key with an empty value is what closes that: {@code withPropertyValues} installs
+     * it as the first property source in the environment, ahead of both {@code systemProperties} and
+     * {@code systemEnvironment}, and an empty value means no active profile at all. The alternative -
+     * clearing the system property for the duration of the run - was measured and rejected: it fixes
+     * the {@code -D} form and leaves the environment-variable form leaking, so it closes half the
+     * hole. Nothing global is mutated either way, so these slices stay independent of each other and
+     * of run order (practice B7).
+     *
+     * <p>Only the default-profile arms need this. An arm that names a profile has already said what it
+     * wants and outranks the inherited value by the same precedence rule.
+     */
+    private static final String NO_EXTERNALLY_ACTIVATED_PROFILE = "spring.profiles.active=";
+
     /** JUnit factory for the twenty-seven configured DD names. */
     static Stream<String> allDatasetKeys() {
         return ALL_DATASET_KEYS.stream();
@@ -227,12 +258,67 @@ class DataSourceConfigTest {
     /**
      * A slice over the shipped default profile: the real {@code application.yml} is the property
      * source, with only the URL supplied inline so that a pool can be built.
+     *
+     * <p>{@value #NO_EXTERNALLY_ACTIVATED_PROFILE} is supplied for the reason set out on that
+     * constant - it is what makes this slice read {@code application.yml} alone whatever the
+     * surrounding JVM was told about profiles.
+     *
+     * @return a runner over the shipped default document, with a buildable URL
      */
     private ApplicationContextRunner shippedDefaultProfile() {
+        // No inherited environment to reproduce: the runner's own environment is the subject here.
+        return shippedDefaultProfile(context -> { });
+    }
+
+    /**
+     * The same slice, with an inherited environment installed before the configuration documents are
+     * read.
+     *
+     * <p>This overload exists so the hermeticity assertion in
+     * {@link DataSourceAndJdbcTemplateWiring#anExternallyActivatedProfileCannotReachTheDefaultSlice()}
+     * can exercise <em>this</em> runner rather than a copy of it. A copy would let someone delete
+     * {@value #NO_EXTERNALLY_ACTIVATED_PROFILE} from the helper above and leave that assertion green,
+     * which is the one thing a regression guard must not permit. The initializer is registered
+     * <strong>first</strong>, before {@link ConfigDataApplicationContextInitializer}, because profile
+     * activation is resolved when the documents are loaded - a property source installed after that
+     * point cannot influence which document was chosen, and an assertion built that way would pass
+     * whether or not the fix were present.
+     *
+     * @param inheritedEnvironment installs whatever the surrounding process is imagined to have
+     *                             supplied; a no-op for ordinary use
+     * @return a runner over the shipped default document, with a buildable URL
+     */
+    private ApplicationContextRunner shippedDefaultProfile(
+            ApplicationContextInitializer<ConfigurableApplicationContext> inheritedEnvironment) {
         return new ApplicationContextRunner()
+                .withInitializer(inheritedEnvironment)
                 .withInitializer(new ConfigDataApplicationContextInitializer())
                 .withUserConfiguration(DataSourceConfig.class)
-                .withPropertyValues(IN_MEMORY_URL_PROPERTY);
+                .withPropertyValues(IN_MEMORY_URL_PROPERTY, NO_EXTERNALLY_ACTIVATED_PROFILE);
+    }
+
+    /**
+     * An initializer that reproduces {@code SPRING_PROFILES_ACTIVE=<profile>} in the process
+     * environment, at the precedence position the real variable occupies.
+     *
+     * <p>Java cannot set its own environment variables, so the variable is reproduced as a
+     * {@link SystemEnvironmentPropertySource} - the source type that performs the
+     * {@code SPRING_PROFILES_ACTIVE} to {@code spring.profiles.active} relaxed-name mapping - inserted
+     * immediately above {@code systemProperties}. That is the position that makes the assertion
+     * discriminating: it outranks every configuration document, so an arm that does not state its
+     * profile would follow it, while it still loses to the inline value an arm that <em>does</em> state
+     * its profile installs. The inherited sources are left in place rather than replaced, so nothing
+     * else the runner needs disappears.
+     *
+     * @param profile the profile the imagined executor exported
+     * @return an initializer installing that variable
+     */
+    private static ApplicationContextInitializer<ConfigurableApplicationContext>
+            processEnvironmentActivating(String profile) {
+        return context -> context.getEnvironment().getPropertySources().addBefore(
+                StandardEnvironment.SYSTEM_PROPERTIES_PROPERTY_SOURCE_NAME,
+                new SystemEnvironmentPropertySource("simulatedProcessEnvironment",
+                        Map.of("SPRING_PROFILES_ACTIVE", profile)));
     }
 
     /**
@@ -1178,15 +1264,65 @@ class DataSourceConfigTest {
         @DisplayName("the shipped default profile on its own cannot build a pool either: its URL is "
                 + "an environment placeholder with an empty default, by design")
         void theShippedDefaultProfileAloneCannotBuildAPool() {
+            // Built inline rather than through shippedDefaultProfile(), because the whole assertion is
+            // that NO url is available - the helper supplies one. The profile key is stated for the
+            // same reason the helper states it: under an inherited spring.profiles.active=test this
+            // context would pick up the test profile's own url and start, and the assertion would
+            // report a defect in the shipped document that is not there.
             new ApplicationContextRunner()
                     .withInitializer(new ConfigDataApplicationContextInitializer())
                     .withUserConfiguration(DataSourceConfig.class)
+                    .withPropertyValues(NO_EXTERNALLY_ACTIVATED_PROFILE)
                     .run(context -> {
                         assertThat(context).hasFailed();
                         assertThat(context.getStartupFailure()).rootCause()
                                 .isInstanceOf(IllegalStateException.class)
                                 .hasMessageContaining("spring.datasource.url");
                     });
+        }
+
+        /**
+         * The default-profile slice reads the shipped default document whatever the surrounding
+         * process says about profiles.
+         *
+         * <p>Every assertion in this file that names a default-profile value - the pool's name, the
+         * mainframe dataset locations, the batch initialiser's {@code never}, the refusal to build a
+         * pool without a URL - depends on {@link #shippedDefaultProfile()} loading
+         * {@code application.yml} and nothing else. That dependency is invisible until something
+         * activates a profile from outside the test, at which point those assertions quietly start
+         * reading {@code application-test.yml} and reporting its values as the shipped document's.
+         *
+         * <p>Both routes by which that happens are reproduced here, because they are neutralised by
+         * different precedence rules and a fix for one is not a fix for the other: a JVM system
+         * property, as {@code mvn test -Dspring.profiles.active=test} supplies (set for the duration of
+         * the run and restored afterwards), and a process environment variable, as a CI executor
+         * exporting {@code SPRING_PROFILES_ACTIVE=test} supplies.
+         */
+        @Test
+        @DisplayName("an externally activated profile cannot reach the default-profile slice, by "
+                + "system property or by environment variable")
+        void anExternallyActivatedProfileCannotReachTheDefaultSlice() {
+            List<ApplicationContextRunner> underAnInheritedProfile = List.of(
+                    shippedDefaultProfile().withSystemProperties("spring.profiles.active=test"),
+                    shippedDefaultProfile(processEnvironmentActivating("test")));
+
+            for (ApplicationContextRunner runner : underAnInheritedProfile) {
+                runner.run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getEnvironment().getActiveProfiles())
+                            .as("the slice must resolve no active profile at all")
+                            .isEmpty();
+                    assertThat(((HikariDataSource) context.getBean(DataSource.class)).getPoolName())
+                            .as("the shipped default pool name, not the test profile's")
+                            .isEqualTo("carddemo-pool");
+                    assertThat(context.getBean(DatasetBindings.class).binding("ACCTDAT").dsname())
+                            .as("the shipped default dataset location, not the fixture profile's")
+                            .doesNotStartWith("CARDDEMO.TEST.");
+                    assertThat(context.getEnvironment()
+                            .getProperty("spring.batch.jdbc.initialize-schema"))
+                            .isEqualTo("never");
+                });
+            }
         }
 
         @Test

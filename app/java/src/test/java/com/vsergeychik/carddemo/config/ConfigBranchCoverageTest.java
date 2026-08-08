@@ -49,8 +49,12 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.env.RandomValuePropertySource;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.ApplicationContextInitializer;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.core.env.SystemEnvironmentPropertySource;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpInputMessage;
@@ -120,6 +124,61 @@ class ConfigBranchCoverageTest {
      * property several of these assertions turn on.
      */
     private static final String LOCATION = "SENTINEL.CATALOGUE.ENTRY";
+
+    /**
+     * What makes a {@code "default"} arm of the two {@code runnerFor} helpers below actually read
+     * {@code application.yml} alone.
+     *
+     * <p>An {@link ApplicationContextRunner} builds its environment on top of the surrounding JVM's
+     * system properties and process environment. A build invoked as
+     * {@code mvn test -Dspring.profiles.active=test}, or run by a CI executor that exports
+     * {@code SPRING_PROFILES_ACTIVE=test} - a common convention - therefore activates the {@code test}
+     * profile <em>inside</em> a runner that asked for no profile: {@code application-test.yml} loads on
+     * top of the document under test and its values win. Two things then go wrong at once. The
+     * {@code default}/{@code test} parameterised pairs in {@link TheShippedConfigurationDocuments}
+     * become the same document twice, so the default document stops being tested at all and nothing
+     * fails to say so; and
+     * {@link TheConfigurationPackageWiresUp#theDefaultProfileRefusesToStartWithoutAUrl()} starts
+     * instead of refusing, because it finds the test profile's own URL.
+     *
+     * <p>Stating the key with an empty value closes both: {@code withPropertyValues} installs it as the
+     * first property source, ahead of {@code systemProperties} and {@code systemEnvironment}, and an
+     * empty value means no active profile. Clearing the system property instead was measured and
+     * rejected - it neutralises the {@code -D} form and leaves the environment-variable form leaking.
+     * Nothing global is mutated, so no slice perturbs another (practice B7).
+     */
+    private static final String NO_ACTIVE_PROFILE = "";
+
+    /** The key both {@code runnerFor} helpers state, whichever profile an arm asks for. */
+    private static final String ACTIVE_PROFILE_PROPERTY = "spring.profiles.active=";
+
+    /** The name an arm passes to {@code runnerFor} to ask for the base document on its own. */
+    private static final String DEFAULT_PROFILE = "default";
+
+    /**
+     * An initializer that reproduces {@code SPRING_PROFILES_ACTIVE=<profile>} in the process
+     * environment, at the precedence position the real variable occupies.
+     *
+     * <p>Java cannot set its own environment variables, so the variable is reproduced as a
+     * {@link SystemEnvironmentPropertySource} - the source type that performs the
+     * {@code SPRING_PROFILES_ACTIVE} to {@code spring.profiles.active} relaxed-name mapping - inserted
+     * immediately above {@code systemProperties}. That position is what makes an assertion built on it
+     * discriminating: it outranks every configuration document, so an arm that never states its profile
+     * follows it, while it still loses to the inline value an arm that <em>does</em> state its profile
+     * installs. Both {@code runnerFor} helpers register it ahead of
+     * {@link ConfigDataApplicationContextInitializer}, because profile activation is resolved when the
+     * documents load and a source installed after that cannot change which document was chosen.
+     *
+     * @param profile the profile the imagined executor exported
+     * @return an initializer installing that variable
+     */
+    private static ApplicationContextInitializer<ConfigurableApplicationContext>
+            processEnvironmentActivating(String profile) {
+        return context -> context.getEnvironment().getPropertySources().addBefore(
+                StandardEnvironment.SYSTEM_PROPERTIES_PROPERTY_SOURCE_NAME,
+                new SystemEnvironmentPropertySource("simulatedProcessEnvironment",
+                        Map.of("SPRING_PROFILES_ACTIVE", profile)));
+    }
 
     @Nested
     @DisplayName("CobolCharsetConfig.resolve - never substitutes the platform default")
@@ -1015,6 +1074,52 @@ class ConfigBranchCoverageTest {
         }
 
         /**
+         * The {@code default} arm reads the default document, whatever the surrounding process says.
+         *
+         * <p>The two parameterised assertions above claim to validate <em>both</em> shipped documents.
+         * They only do so while the {@code default} arm sees {@code application.yml} alone, and a runner
+         * does not get that for free - it inherits the JVM's system properties and the process
+         * environment. Under {@code -Dspring.profiles.active=test}, or an executor exporting
+         * {@code SPRING_PROFILES_ACTIVE=test}, the {@code default} arm would load the fixture profile
+         * too and both parameterised cases would validate the same document, twice, with nothing failing
+         * to report the loss of coverage. That silence is what makes this assertion worth its lines.
+         *
+         * <p>The dataset location is the probe because it is the component the two documents most
+         * plainly disagree about: {@code application.yml} names the mainframe cluster, and
+         * {@code application-test.yml} repoints all twenty-seven entries under a
+         * {@code CARDDEMO.TEST} qualifier. Both leak routes are reproduced, since they are neutralised
+         * by different precedence rules.
+         */
+        @Test
+        @DisplayName("the default arm reads the default document under an externally activated "
+                + "profile, by system property or by environment variable")
+        void theDefaultArmReadsTheDefaultDocumentUnderAnExternallyActivatedProfile() {
+            List<String> observed = new ArrayList<>();
+            runnerFor(DEFAULT_PROFILE).run(context -> observed.add(
+                    context.getBean(DatasetBindings.class).binding("ACCTDAT").dsname()));
+            runnerFor(DEFAULT_PROFILE)
+                    .withSystemProperties("spring.profiles.active=test")
+                    .run(context -> observed.add(
+                            context.getBean(DatasetBindings.class).binding("ACCTDAT").dsname()));
+            runnerFor(DEFAULT_PROFILE, processEnvironmentActivating("test"))
+                    .run(context -> observed.add(
+                            context.getBean(DatasetBindings.class).binding("ACCTDAT").dsname()));
+
+            assertThat(observed).hasSize(3);
+            assertThat(observed)
+                    .as("one document, one location, whatever the process was told")
+                    .containsOnly(observed.get(0));
+            assertThat(observed.get(0))
+                    .as("the shipped default location, not the fixture profile's")
+                    .doesNotStartWith("CARDDEMO.TEST.");
+            // And the two documents really do differ here, which is what makes the check above a
+            // check rather than a tautology.
+            runnerFor("test").run(context -> assertThat(
+                    context.getBean(DatasetBindings.class).binding("ACCTDAT").dsname())
+                    .startsWith("CARDDEMO.TEST."));
+        }
+
+        /**
          * Builds a runner over the real {@code application.yml}, optionally activating a profile.
          *
          * <p>{@link RandomValuePropertySource} is installed because the test profile's datasource URL
@@ -1028,17 +1133,42 @@ class ConfigBranchCoverageTest {
          * @return the configured runner
          */
         private ApplicationContextRunner runnerFor(String profile) {
-            ApplicationContextRunner runner = new ApplicationContextRunner()
+            // No inherited environment to reproduce: the runner's own environment is the subject.
+            return runnerFor(profile, context -> { });
+        }
+
+        /**
+         * The same runner, with an inherited environment installed before the documents are read.
+         *
+         * <p>Both arms state {@value ConfigBranchCoverageTest#ACTIVE_PROFILE_PROPERTY} - the
+         * {@code default} arm by stating that there is no profile - for the reason set out on
+         * {@link ConfigBranchCoverageTest#NO_ACTIVE_PROFILE}. Saying it rather than omitting it is what
+         * keeps the {@code default}/{@code test} pairs above two documents instead of one document
+         * twice.
+         *
+         * <p>The overload exists so
+         * {@link #theDefaultArmReadsTheDefaultDocumentUnderAnExternallyActivatedProfile()} exercises
+         * <em>this</em> runner rather than a copy: a copy would let someone drop the property here and
+         * leave that assertion green.
+         *
+         * @param profile              {@code "default"} for the base document alone, otherwise the
+         *                             profile to activate on top of it
+         * @param inheritedEnvironment installs whatever the surrounding process is imagined to have
+         *                             supplied; a no-op for ordinary use
+         * @return the configured runner
+         */
+        private ApplicationContextRunner runnerFor(String profile,
+                ApplicationContextInitializer<ConfigurableApplicationContext> inheritedEnvironment) {
+            return new ApplicationContextRunner()
+                    .withInitializer(inheritedEnvironment)
                     .withInitializer(new ConfigDataApplicationContextInitializer())
                     .withInitializer(context -> RandomValuePropertySource
                             .addToEnvironment(context.getEnvironment()))
                     .withConfiguration(AutoConfigurations.of(
                             PropertyPlaceholderAutoConfiguration.class))
-                    .withUserConfiguration(ShippedCatalogues.class);
-            if (!"default".equals(profile)) {
-                runner = runner.withPropertyValues("spring.profiles.active=" + profile);
-            }
-            return runner;
+                    .withUserConfiguration(ShippedCatalogues.class)
+                    .withPropertyValues(ACTIVE_PROFILE_PROPERTY
+                            + (DEFAULT_PROFILE.equals(profile) ? NO_ACTIVE_PROFILE : profile));
         }
 
         /**
@@ -1654,18 +1784,43 @@ class ConfigBranchCoverageTest {
          * @return the configured runner
          */
         private ApplicationContextRunner runnerFor(String profile) {
-            ApplicationContextRunner runner = new ApplicationContextRunner()
+            // No inherited environment to reproduce: the runner's own environment is the subject.
+            return runnerFor(profile, context -> { });
+        }
+
+        /**
+         * The same runner, with an inherited environment installed before the documents are read.
+         *
+         * <p>Both arms state {@value ConfigBranchCoverageTest#ACTIVE_PROFILE_PROPERTY} - the
+         * {@code default} arm by stating that there is no profile - for the reason set out on
+         * {@link ConfigBranchCoverageTest#NO_ACTIVE_PROFILE}. Without it the default arm inherits
+         * whatever profile the surrounding build was given, finds the fixture profile's own URL, and
+         * starts: the assertion below would then report that the shipped default
+         * document supplies a URL, which is the opposite of what it is there to establish.
+         *
+         * <p>The overload exists so
+         * {@link #theDefaultArmStillRefusesToStartUnderAnExternallyActivatedProfile()} exercises
+         * <em>this</em> runner rather than a copy.
+         *
+         * @param profile              {@code "default"} for the base document alone, otherwise the
+         *                             profile to activate
+         * @param inheritedEnvironment installs whatever the surrounding process is imagined to have
+         *                             supplied; a no-op for ordinary use
+         * @return the configured runner
+         */
+        private ApplicationContextRunner runnerFor(String profile,
+                ApplicationContextInitializer<ConfigurableApplicationContext> inheritedEnvironment) {
+            return new ApplicationContextRunner()
+                    .withInitializer(inheritedEnvironment)
                     .withInitializer(new ConfigDataApplicationContextInitializer())
                     .withInitializer(context -> RandomValuePropertySource
                             .addToEnvironment(context.getEnvironment()))
                     .withConfiguration(AutoConfigurations.of(
                             PropertyPlaceholderAutoConfiguration.class))
                     .withUserConfiguration(CobolCharsetConfig.class, DataSourceConfig.class,
-                            BatchConfig.class, WebConfig.class);
-            if (!"default".equals(profile)) {
-                runner = runner.withPropertyValues("spring.profiles.active=" + profile);
-            }
-            return runner;
+                            BatchConfig.class, WebConfig.class)
+                    .withPropertyValues(ACTIVE_PROFILE_PROPERTY
+                            + (DEFAULT_PROFILE.equals(profile) ? NO_ACTIVE_PROFILE : profile));
         }
 
         @Test
@@ -1675,9 +1830,35 @@ class ConfigBranchCoverageTest {
             // and sequential files, and the URL is supplied at deployment. Refusing is the designed
             // outcome, and it must refuse rather than fall back to the H2 driver on the test
             // classpath.
-            runnerFor("default").run(context -> assertThat(context).getFailure()
+            runnerFor(DEFAULT_PROFILE).run(context -> assertThat(context).getFailure()
                     .rootCause()
                     .hasMessageContaining("spring.datasource.url"));
+        }
+
+        /**
+         * The refusal above is a property of the shipped document, not of the machine that ran the
+         * build.
+         *
+         * <p>It is the assertion in this file most exposed to an inherited profile: the fixture profile
+         * supplies a URL of its own, so a {@code default} arm that quietly loaded it would start
+         * cleanly, this assertion would fail, and the failure would read as though
+         * {@code application.yml} had grown a URL - a defect reported against the configuration when
+         * the configuration is correct and the harness is not. Both leak routes are reproduced, because
+         * they are neutralised by different precedence rules.
+         */
+        @Test
+        @DisplayName("the default arm still refuses to start under an externally activated profile, "
+                + "by system property or by environment variable")
+        void theDefaultArmStillRefusesToStartUnderAnExternallyActivatedProfile() {
+            List<ApplicationContextRunner> underAnInheritedProfile = List.of(
+                    runnerFor(DEFAULT_PROFILE).withSystemProperties("spring.profiles.active=test"),
+                    runnerFor(DEFAULT_PROFILE, processEnvironmentActivating("test")));
+
+            for (ApplicationContextRunner runner : underAnInheritedProfile) {
+                runner.run(context -> assertThat(context).getFailure()
+                        .rootCause()
+                        .hasMessageContaining("spring.datasource.url"));
+            }
         }
 
         @Test
