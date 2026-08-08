@@ -237,9 +237,14 @@ class FixedWidthCodecMoveAsymmetryTest {
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> CODEC.movePic9("", 4))
                     .withMessageContaining("empty value");
+            // The position is named so the caller can find the offending character; the character
+            // itself is not echoed, because the values flowing through these spans are card numbers
+            // and account identifiers and this message is one an error boundary could publish.
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> CODEC.movePic9("12A4", 4))
-                    .withMessageContaining("character 3 is 'A'");
+                    .withMessageContaining("character 3 is not a digit")
+                    .withMessageNotContaining("'A'")
+                    .withMessageNotContaining("12A4");
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> CODEC.movePic9("12 4", 4))
                     .withMessageContaining("only the digits 0 to 9");
@@ -723,7 +728,9 @@ class FixedWidthCodecMoveAsymmetryTest {
         void absentNamesKeepTheirInitialisedContent() {
             byte[] record = CODEC.serialise(LAYOUT, new LinkedHashMap<>());
 
-            assertThat(new String(record, ASCII)).isEqualTo("    " + "0000" + "00000");
+            // The signed span's default is zoned zeros with a positive-zero overpunch in its trailing
+            // byte, which is the only representation of a zero-valued signed field the datasets carry.
+            assertThat(new String(record, ASCII)).isEqualTo("    " + "0000" + "0000{");
         }
 
         @Test
@@ -874,7 +881,7 @@ class FixedWidthCodecMoveAsymmetryTest {
         @Test
         @DisplayName("a record initialised by the codec is in the layout's declared initial state")
         void newRecordIsInitialised() {
-            assertThat(new String(newRecord().toByteArray(), ASCII)).isEqualTo("    000000000");
+            assertThat(new String(newRecord().toByteArray(), ASCII)).isEqualTo("    00000000{");
         }
     }
 

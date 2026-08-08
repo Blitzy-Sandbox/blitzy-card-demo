@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.statement.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
@@ -172,7 +173,7 @@ class TrnxRecordTest {
         record.writeTrnxSource(FIXTURE_SOURCE);
         record.writeTrnxDesc(FIXTURE_DESC);
         record.writeTrnxAmt(new BigDecimal("504.77"));
-        record.writeTrnxMerchantId(800000000L);
+        record.writeTrnxMerchantId(800000000);
         record.writeTrnxMerchantName(FIXTURE_MERCHANT_NAME);
         record.writeTrnxMerchantCity(FIXTURE_MERCHANT_CITY);
         record.writeTrnxMerchantZip(FIXTURE_MERCHANT_ZIP);
@@ -360,13 +361,17 @@ class TrnxRecordTest {
 
         @ParameterizedTest(name = "under {0}")
         @ValueSource(strings = {"US-ASCII", "IBM037"})
-        @DisplayName("numeric spans initialise to zeros and character spans to spaces, per COBOL INITIALIZE")
+        @DisplayName("unsigned spans initialise to zeros, a signed span to a signed zero, text to spaces")
         void initialisationFollowsCobolConvention(String charsetName) {
             TrnxRecord record = TrnxRecord.newRecord(Charset.forName(charsetName));
 
             assertThat(record.readRawImage(TrnxRecord.TRNX_CAT_CD)).isEqualTo("0000");
             assertThat(record.readRawImage(TrnxRecord.TRNX_MERCHANT_ID)).isEqualTo("000000000");
-            assertThat(record.readTrnxAmtImage()).isEqualTo("00000000000");
+            assertThat(record.readTrnxAmtImage())
+                    .as("TRNX-AMT is S9(09)V99, so its zero carries a positive-zero overpunch in the "
+                            + "trailing byte - the form every signed field in app/data/ASCII is "
+                            + "stored in - and the image is still exactly 11 characters")
+                    .isEqualTo("0000000000{");
             assertThat(record.readTrnxCardNum()).isEqualTo(" ".repeat(16));
             assertThat(record.readFiller()).isEqualTo(" ".repeat(20));
         }
@@ -793,7 +798,7 @@ class TrnxRecordTest {
             assertThat(target.readTrnxSource()).isEqualTo(picX(FIXTURE_SOURCE, 10));
             assertThat(target.readTrnxDesc()).isEqualTo(picX(FIXTURE_DESC, 100));
             assertThat(target.readTrnxAmt()).isEqualByComparingTo("504.77");
-            assertThat(target.readTrnxMerchantId()).isEqualTo(800000000L);
+            assertThat(target.readTrnxMerchantId()).isEqualTo(800000000);
             assertThat(target.readTrnxMerchantName()).isEqualTo(picX(FIXTURE_MERCHANT_NAME, 50));
             assertThat(target.readTrnxMerchantCity()).isEqualTo(picX(FIXTURE_MERCHANT_CITY, 50));
             assertThat(target.readTrnxMerchantZip()).isEqualTo(picX(FIXTURE_MERCHANT_ZIP, 10));
@@ -944,7 +949,7 @@ class TrnxRecordTest {
             assertThat(record.readTrnxDesc()).isEqualTo(picX(FIXTURE_DESC, 100));
             assertThat(record.readTrnxAmtImage()).isEqualTo(FIXTURE_AMT_IMAGE);
             assertThat(record.readTrnxAmt()).isEqualByComparingTo("504.77");
-            assertThat(record.readTrnxMerchantId()).isEqualTo(800000000L);
+            assertThat(record.readTrnxMerchantId()).isEqualTo(800000000);
             assertThat(record.readTrnxMerchantName()).isEqualTo(picX(FIXTURE_MERCHANT_NAME, 50));
             assertThat(record.readTrnxMerchantCity()).isEqualTo(picX(FIXTURE_MERCHANT_CITY, 50));
             assertThat(record.readTrnxMerchantZip()).isEqualTo(picX(FIXTURE_MERCHANT_ZIP, 10));
@@ -1084,11 +1089,11 @@ class TrnxRecordTest {
         void merchantIdUsesTheFullNineDigitRange() {
             TrnxRecord record = TrnxRecord.newRecord(ASCII);
 
-            record.writeTrnxMerchantId(999999999L);
-            assertThat(record.readTrnxMerchantId()).isEqualTo(999999999L);
+            record.writeTrnxMerchantId(999999999);
+            assertThat(record.readTrnxMerchantId()).isEqualTo(999999999);
             assertThat(record.readRawImage(TrnxRecord.TRNX_MERCHANT_ID)).isEqualTo("999999999");
 
-            record.writeTrnxMerchantId(7L);
+            record.writeTrnxMerchantId(7);
             assertThat(record.readRawImage(TrnxRecord.TRNX_MERCHANT_ID)).isEqualTo("000000007");
         }
 
@@ -1101,7 +1106,7 @@ class TrnxRecordTest {
                     .isThrownBy(() -> record.writeTrnxCatCd(-1))
                     .withMessageContaining("PIC 9");
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> record.writeTrnxMerchantId(-1L))
+                    .isThrownBy(() -> record.writeTrnxMerchantId(-1))
                     .withMessageContaining("PIC 9");
         }
 
@@ -1181,7 +1186,7 @@ class TrnxRecordTest {
                 assertThat(reread.readTrnxSource()).isEqualTo(picX(FIXTURE_SOURCE, 10));
                 assertThat(reread.readTrnxDesc()).isEqualTo(picX(FIXTURE_DESC, 100));
                 assertThat(reread.readTrnxAmt()).isEqualByComparingTo("504.77");
-                assertThat(reread.readTrnxMerchantId()).isEqualTo(800000000L);
+                assertThat(reread.readTrnxMerchantId()).isEqualTo(800000000);
                 assertThat(reread.readTrnxMerchantName()).isEqualTo(picX(FIXTURE_MERCHANT_NAME, 50));
                 assertThat(reread.readTrnxMerchantCity()).isEqualTo(picX(FIXTURE_MERCHANT_CITY, 50));
                 assertThat(reread.readTrnxMerchantZip()).isEqualTo(picX(FIXTURE_MERCHANT_ZIP, 10));
@@ -1261,11 +1266,17 @@ class TrnxRecordTest {
         void toStringNamesTheKeyAmountAndCodePage() {
             TrnxRecord record = populated(ASCII);
 
+            // The transaction identifier and the code page identify the record; the card number is
+            // masked to its last four characters and the amount is withheld with its width.
             assertThat(record.toString())
                     .startsWith("TrnxRecord[")
-                    .contains(FIXTURE_CARD_NUM)
+                    .as("the statement files carry a PAN; it must not reach a log line (CWE-532)")
+                    .doesNotContain(FIXTURE_CARD_NUM)
+                    .contains("*".repeat(FIXTURE_CARD_NUM.length() - 4)
+                            + FIXTURE_CARD_NUM.substring(FIXTURE_CARD_NUM.length() - 4))
                     .contains(FIXTURE_TRAN_ID)
-                    .contains(FIXTURE_AMT_IMAGE)
+                    .doesNotContain(FIXTURE_AMT_IMAGE)
+                    .contains(DiagnosticText.OMITTED + ":" + FIXTURE_AMT_IMAGE.length())
                     .contains("US-ASCII")
                     .endsWith("]");
         }

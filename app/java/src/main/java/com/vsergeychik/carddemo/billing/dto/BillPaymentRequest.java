@@ -1,6 +1,9 @@
 package com.vsergeychik.carddemo.billing.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -156,9 +159,12 @@ import jakarta.validation.constraints.Size;
  * CICS is pseudo-conversational. {@code COBIL00C} runs to completion for every keystroke and
  * survives only through what it hands back on {@code EXEC CICS RETURN TRANSID(WS-TRANID)
  * COMMAREA(CARDDEMO-COMMAREA)} at lines 146-149. This migration preserves that shape exactly, so
- * all three pieces of conversation state are members of this payload:
- * {@link #getNavigationContext()} for the communication area, {@link #getAid()} for the attention
- * identifier and {@link #getPgmContext()} for the enter-versus-re-enter context.
+ * all three pieces of conversation state travel in this payload. Two of them are members of their
+ * own - {@link #getNavigationContext()} for the communication area and {@link #getAid()} for the
+ * attention identifier - and the third, the enter-versus-re-enter context, travels
+ * <em>inside</em> the communication area as {@code CDEMO-PGM-CONTEXT}, where the copybook declares
+ * it. {@link #getPgmContext()} reads it through from there and is not a wire member itself; there is
+ * deliberately no second copy of it on this class.
  *
  * <p>Nothing here is server-side state. This type is deliberately free of {@code HttpSession},
  * {@code @SessionAttributes}, any server-side cache and any static holder - a static holder would be
@@ -166,9 +172,9 @@ import jakarta.validation.constraints.Size;
  *
  * <h2>Why this is a plain mutable class with hand-written accessors</h2>
  *
- * A {@code record} was considered and rejected. This type carries nineteen members, and the unit
+ * A {@code record} was considered and rejected. This type carries eighteen members, and the unit
  * tests plus the twenty declarative parity cases for {@code COBIL00C} construct
- * <em>partially populated</em> instances constantly - a nineteen-component canonical constructor
+ * <em>partially populated</em> instances constantly - an eighteen-component canonical constructor
  * makes that painful and brittle, while a no-argument constructor plus setters makes it a single
  * line per field. Jackson also binds a no-argument bean with no {@code @JsonCreator} ceremony. The
  * accessors are written out by hand rather than generated so that each member's correspondence to
@@ -209,15 +215,24 @@ import jakarta.validation.constraints.Size;
  * {@link #getActIdIn()}: the 3270 screen shows the account identifier in the clear at
  * {@code (6,21)}, and this is a like-for-like migration.
  *
- * <h2>Validation: two constraints, and deliberately no presence constraint</h2>
+ * <h2>Validation: ten width constraints, and deliberately no presence constraint</h2>
  *
- * Only {@code ACTIDIN} and {@code CONFIRM} are declared {@code UNPROT} in the mapset, so only those
- * two can be typed into at a terminal; the other eight are {@code ASKIP} and CICS never reports an
- * inbound length for them. Accordingly {@link #getActIdIn()} carries
- * {@code @Size(max = }{@value #ACT_ID_IN_LENGTH}{@code )} and {@link #getConfirm()} carries
- * {@code @Size(max = }{@value #CONFIRM_LENGTH}{@code )}, and the remaining eight carry no constraint
- * annotation at all. Their widths are still explicit: each is a named length constant, cited in that
- * member's documentation.
+ * Every one of the ten map members carries {@code @Size(max = <its declared width>)} and nothing
+ * else, the width being the {@code PICTURE} clause of its {@code xxxI} item in
+ * {@code app/cpy-bms/COBIL00.CPY} - 4, 40, 8, 8, 40, 8, 11, 14, 1 and 78 in declaration order. The
+ * symbolic-map {@code PICTURE} clause is a hard <em>source</em> width: a 3270 {@code RECEIVE MAP}
+ * cannot deliver more bytes than the {@code DFHMDF} declares, so an over-width value did not come
+ * from the screen and is a protocol error. It is refused at the boundary rather than silently
+ * shortened, which would fabricate a value the terminal never sent and would then be written into a
+ * parity image as though the screen had produced it.
+ *
+ * <p>The guard is not confined to the two typeable fields. Only {@code ACTIDIN} and {@code CONFIRM}
+ * are declared {@code UNPROT} in the mapset, so only those two can be typed into at a terminal and
+ * the other eight are {@code ASKIP} - but this is a pseudo-conversational protocol in which the
+ * client echoes the whole payload back, so all ten arrive from the network and all ten are bounded.
+ * Two of them, {@link #getCurBal()} and {@link #getErrMsg()}, are moreover inbound echo only and
+ * still bounded: being ignored downstream is not a reason to accept bytes the screen field cannot
+ * hold.
  *
  * <p><strong>No presence constraint of any kind is declared on any member.</strong> A blank
  * field is not a protocol error in this program, it is an ordinary outcome that produces a message:
@@ -515,6 +530,18 @@ public final class BillPaymentRequest {
     // Every member stays independently nullable. COBOL distinguishes LOW-VALUES from SPACES and the
     // program tests for both separately, so JSON null, the empty string and an all-blank string are
     // three distinct inbound states that must survive binding unchanged.
+    //
+    // WIDTH POLICY, applied uniformly to all ten. Each member carries @Size(max = <its width>) and
+    // nothing else, because the symbolic-map PICTURE clause is a hard source width: a 3270 RECEIVE
+    // MAP can never deliver more bytes than the DFHMDF declares, so an over-width value did not come
+    // from the screen and is a protocol error rather than a failed edit. It is refused at the boundary
+    // instead of being silently shortened, which would fabricate a value the terminal never sent.
+    //
+    // No member carries @NotNull, @NotBlank or a min. That is deliberate and it is load-bearing:
+    // app/cbl/COBIL00C.cbl tests SPACES and LOW-VALUES as ordinary reachable paths - line 159 for the
+    // account identifier and line 180 for the confirmation - so a presence rule would delete a branch
+    // of the program rather than protect it. Short and absent values arrive unaltered; padding to the
+    // declared width happens only in the explicit fixed-width conversion, never during binding.
     // =================================================================================================
 
     /**
@@ -525,8 +552,10 @@ public final class BillPaymentRequest {
      * <p>Populated by the program from {@code WS-TRANID} at {@code app/cbl/COBIL00C.cbl:325}, so its
      * value on a well-formed screen is {@value #TRANSACTION_ID}. Display only:
      * {@code ASKIP} means the terminal cannot place the cursor in it, so nothing a user does can
-     * change it. Width {@value #TRN_NAME_LENGTH}.
+     * change it. Width {@value #TRN_NAME_LENGTH}, constrained with
+     * {@code @Size(max = }{@value #TRN_NAME_LENGTH}{@code )} and nothing more.
      */
+    @Size(max = TRN_NAME_LENGTH)
     private String trnName;
 
     /**
@@ -535,8 +564,10 @@ public final class BillPaymentRequest {
      * YELLOW.
      *
      * <p>Populated by the program from {@code CCDA-TITLE01} of {@code app/cpy/COTTL01Y.cpy} at
-     * {@code app/cbl/COBIL00C.cbl:323}. Display only. Width {@value #TITLE01_LENGTH}.
+     * {@code app/cbl/COBIL00C.cbl:323}. Display only. Width {@value #TITLE01_LENGTH}, constrained
+     * with {@code @Size(max = }{@value #TITLE01_LENGTH}{@code )} and nothing more.
      */
+    @Size(max = TITLE01_LENGTH)
     private String title01;
 
     /**
@@ -548,8 +579,12 @@ public final class BillPaymentRequest {
      * <p>Built by {@code POPULATE-HEADER-INFO} from {@code FUNCTION CURRENT-DATE} at
      * {@code app/cbl/COBIL00C.cbl:321} and moved in as {@code mm/dd/yy} at line 332 - note that
      * line 330 takes only the last two characters of the year, {@code WS-CURDATE-YEAR(3:2)}. Display
-     * only. Width {@value #CUR_DATE_LENGTH}.
+     * only. Width {@value #CUR_DATE_LENGTH}, constrained with
+     * {@code @Size(max = }{@value #CUR_DATE_LENGTH}{@code )} and nothing more - the constraint is a
+     * width guard, not a format check, so a partial or differently shaped date still binds and the
+     * program's own editing remains the only judge of it.
      */
+    @Size(max = CUR_DATE_LENGTH)
     private String curDate;
 
     /**
@@ -559,8 +594,10 @@ public final class BillPaymentRequest {
      *
      * <p>Populated by the program from {@code WS-PGMNAME} at {@code app/cbl/COBIL00C.cbl:326}, so its
      * value on a well-formed screen is {@value #PROGRAM_NAME}. Display only. Width
-     * {@value #PGM_NAME_LENGTH}.
+     * {@value #PGM_NAME_LENGTH}, constrained with
+     * {@code @Size(max = }{@value #PGM_NAME_LENGTH}{@code )} and nothing more.
      */
+    @Size(max = PGM_NAME_LENGTH)
     private String pgmName;
 
     /**
@@ -569,8 +606,10 @@ public final class BillPaymentRequest {
      * YELLOW.
      *
      * <p>Populated by the program from {@code CCDA-TITLE02} of {@code app/cpy/COTTL01Y.cpy} at
-     * {@code app/cbl/COBIL00C.cbl:324}. Display only. Width {@value #TITLE02_LENGTH}.
+     * {@code app/cbl/COBIL00C.cbl:324}. Display only. Width {@value #TITLE02_LENGTH}, constrained
+     * with {@code @Size(max = }{@value #TITLE02_LENGTH}{@code )} and nothing more.
      */
+    @Size(max = TITLE02_LENGTH)
     private String title02;
 
     /**
@@ -580,8 +619,11 @@ public final class BillPaymentRequest {
      * {@code INITIAL='hh:mm:ss'}.
      *
      * <p>Built by {@code POPULATE-HEADER-INFO} at {@code app/cbl/COBIL00C.cbl:334-338}. Display only.
-     * Width {@value #CUR_TIME_LENGTH}.
+     * Width {@value #CUR_TIME_LENGTH}, constrained with
+     * {@code @Size(max = }{@value #CUR_TIME_LENGTH}{@code )} and nothing more - a width guard, not a
+     * format check.
      */
+    @Size(max = CUR_TIME_LENGTH)
     private String curTime;
 
     /**
@@ -589,7 +631,7 @@ public final class BillPaymentRequest {
      * the user types</strong>, at {@code (6,21)} beside the {@code 'Enter Acct ID:'} literal.
      * {@code app/bms/COBIL00.bms:85-89} declares it {@code FSET,IC,NORM,UNPROT} in GREEN with
      * {@code HILIGHT=UNDERLINE} - {@code UNPROT} makes it writable and {@code IC} places the initial
-     * cursor here, which is why it is one of only two members that carry a validation constraint.
+     * cursor here, which is why it is one of only two members a terminal user can actually type into.
      *
      * <p>This is the primary input of the screen. {@code app/cbl/COBIL00C.cbl:170-171} moves it into
      * both {@code ACCT-ID} and {@code XREF-ACCT-ID} to drive the account read and the card
@@ -628,8 +670,13 @@ public final class BillPaymentRequest {
      * {@code INITIALIZE-ALL-FIELDS} at line 564 - and never read. {@code BillPaymentService} ignores
      * whatever arrives here; it recomputes the balance from the account record. The member exists
      * because the contract is a 1:1 projection of all ten screen fields. Width
-     * {@value #CUR_BAL_LENGTH}.
+     * {@value #CUR_BAL_LENGTH}, constrained with
+     * {@code @Size(max = }{@value #CUR_BAL_LENGTH}{@code )} and nothing more. Being echo only does
+     * not exempt the member from the width guard: an over-width value here is still a value the
+     * terminal could not have produced, and refusing it at the boundary keeps the fourteen-byte mask
+     * the only shape this member can ever hold.
      */
+    @Size(max = CUR_BAL_LENGTH)
     private String curBal;
 
     /**
@@ -638,7 +685,7 @@ public final class BillPaymentRequest {
      * {@code 'Do you want to pay your balance now. Please confirm: '} literal and before the
      * {@code '(Y/N)'} hint at {@code (15,63)}. {@code app/bms/COBIL00.bms:115-119} declares it
      * {@code FSET,NORM,UNPROT} in GREEN with {@code HILIGHT=UNDERLINE}, so it is the second and last
-     * writable field and the second to carry a validation constraint.
+     * writable field on the screen.
      *
      * <p>{@code app/cbl/COBIL00C.cbl:173-191} evaluates it in strict order, and all five arms
      * matter: {@code 'Y'} or {@code 'y'} sets the pay flag and reads the account; {@code 'N'} or
@@ -673,7 +720,12 @@ public final class BillPaymentRequest {
      * line 293 discards the two right-most bytes of every message. The screen field is the narrower
      * of the two and it governs. This is recorded rather than resolved - widening the field or the
      * message would change what the screen shows.
+     *
+     * <p>Constrained with {@code @Size(max = }{@value #ERR_MSG_LENGTH}{@code )} and nothing more, at
+     * 78 rather than 80. Accepting 80 here would accept two bytes the screen field cannot hold and
+     * would quietly contradict the truncation the program performs.
      */
+    @Size(max = ERR_MSG_LENGTH)
     private String errMsg;
 
     // =================================================================================================
@@ -729,33 +781,23 @@ public final class BillPaymentRequest {
      */
     private String aid;
 
-    /**
-     * The enter-versus-re-enter context: the wire-level projection of
-     * {@code CDEMO-PGM-CONTEXT PIC 9(01)}, declared at {@code app/cpy/COCOM01Y.cpy:29} with
-     * {@code 88 CDEMO-PGM-ENTER VALUE 0} and {@code 88 CDEMO-PGM-REENTER VALUE 1} at lines 30-31.
-     * Use {@link NavigationContext#PGM_CONTEXT_ENTER} and
-     * {@link NavigationContext#PGM_CONTEXT_REENTER} rather than the bare literals 0 and 1.
-     *
-     * <p>This is the single most consequential branch in the program.
-     * {@code app/cbl/COBIL00C.cbl:112} tests {@code IF NOT CDEMO-PGM-REENTER}: on first entry it
-     * flips the context to re-enter, blanks the whole output map with
-     * {@code MOVE LOW-VALUES TO COBIL0AO} at line 114, positions the cursor and paints the screen; on
-     * re-entry it instead receives the screen and dispatches on the attention identifier. Both paths
-     * must be exercisable, so the context has to be an explicit part of the request rather than
-     * something the server remembers.
-     *
-     * <p><strong>Authority.</strong> {@link NavigationContext#pgmContext()} remains the byte-level
-     * authority for the {@value NavigationContext#COMMAREA_LENGTH}-byte parity image - it is the field
-     * that gets written into the communication area and compared byte for byte. This member is the
-     * wire-level projection the controller reads. {@code BillPaymentController} is responsible for
-     * keeping the two consistent and must never let them diverge: the projection is a convenience for
-     * the transport, not a second source of truth.
-     *
-     * <p>No predicate over this member is offered here. A test such as
-     * {@code context == PGM_CONTEXT_REENTER} is a decision, and decisions belong to the controller and
-     * the service where the tests that must cover them live.
-     */
-    private int pgmContext;
+    // -------------------------------------------------------------------------------------------------
+    // There is deliberately NO pgmContext member here.
+    //
+    // The enter-versus-re-enter context is CDEMO-PGM-CONTEXT PIC 9(01), declared at
+    // app/cpy/COCOM01Y.cpy:29 INSIDE 01 CARDDEMO-COMMAREA, and app/cbl/COBIL00C.cbl:64-72 appends
+    // exactly six items to that area - TRNID-FIRST, TRNID-LAST, PAGE-NUM, NEXT-PAGE-FLG, TRN-SEL-FLG
+    // and TRN-SELECTED. It declares no second program-context field, so the screen contract has no
+    // second one to project. It lives in NavigationContext and nowhere else, and getPgmContext()
+    // below reads through to it.
+    //
+    // A separate int on this class would have been a second home for one COBOL field: two wire
+    // members that must agree, with nothing able to make them agree, and a client free to send
+    // pgmContext=1 alongside a communication area holding 0. Which one then decides the branch at
+    // line 112 is undefined, and the byte-level parity image can only be built from one of them.
+    // Renaming it or documenting one as "the projection" would not have helped - both would still be
+    // ordinary JSON properties on the same payload. The duplicate is removed rather than annotated.
+    // -------------------------------------------------------------------------------------------------
 
     // =================================================================================================
     // THE SIX CDEMO-CB00-INFO MEMBERS, flat on this class, from app/cbl/COBIL00C.cbl:64-72.
@@ -1142,35 +1184,55 @@ public final class BillPaymentRequest {
     }
 
     /**
-     * Returns the enter-versus-re-enter context: {@value NavigationContext#PGM_CONTEXT_ENTER} on first
-     * entry, {@value NavigationContext#PGM_CONTEXT_REENTER} on re-entry.
+     * Returns the enter-versus-re-enter context by reading through to the communication area:
+     * {@value NavigationContext#PGM_CONTEXT_ENTER} on first entry,
+     * {@value NavigationContext#PGM_CONTEXT_REENTER} on re-entry.
      *
-     * <p>Compare against {@link NavigationContext#PGM_CONTEXT_ENTER} and
-     * {@link NavigationContext#PGM_CONTEXT_REENTER} rather than against bare literals. The comparison
-     * itself is the caller's, matching {@code IF NOT CDEMO-PGM-REENTER} at
-     * {@code app/cbl/COBIL00C.cbl:112}.
+     * <p>This is a <strong>read-through convenience, not a member</strong>. It is
+     * {@link com.fasterxml.jackson.annotation.JsonIgnore ignored} by the mapper, so it neither
+     * serialises nor accepts a value, and there is no matching setter: the way to set this context is
+     * to set it on {@link #getNavigationContext() the communication area}, which is the only place
+     * {@code CDEMO-PGM-CONTEXT} exists. That keeps one COBOL field to one wire member and leaves the
+     * {@value NavigationContext#COMMAREA_LENGTH}-byte parity image with a single unambiguous source.
      *
-     * @return the program context, 0 or 1 in normal use and any other value only where a client sent
-     *         one
+     * <p>This is the single most consequential branch in the program.
+     * {@code app/cbl/COBIL00C.cbl:112} tests {@code IF NOT CDEMO-PGM-REENTER}: on first entry it
+     * flips the context to re-enter, blanks the whole output map with
+     * {@code MOVE LOW-VALUES TO COBIL0AO} at line 114, positions the cursor and paints the screen; on
+     * re-entry it instead receives the screen and dispatches on the attention identifier. Both paths
+     * stay exercisable from the payload, because the context travels in the communication area the
+     * payload carries - not in anything the server remembers.
+     *
+     * <p>Compare the result against {@link NavigationContext#PGM_CONTEXT_ENTER} and
+     * {@link NavigationContext#PGM_CONTEXT_REENTER} rather than against bare literals, or use
+     * {@link NavigationContext#isEnter()} and {@link NavigationContext#isReenter()} on the carrier
+     * itself. The decision is the caller's; no predicate over it is offered here, because a test such
+     * as {@code context == PGM_CONTEXT_REENTER} is a decision and decisions belong to the controller
+     * and the service where the tests that must cover them live.
+     *
+     * <p><strong>When the communication area is absent</strong> - the cold start the program detects
+     * as {@code EIBCALEN = 0} at line 107 - this returns
+     * {@value NavigationContext#PGM_CONTEXT_ENTER}, which is the arm an area that was never
+     * initialised takes. The value is not observable in that path in the COBOL either: line 108 moves
+     * {@code 'COSGN00C'} into {@code CDEMO-TO-PROGRAM} and line 109 returns to the sign-on screen
+     * without ever reaching the test at line 112. A caller that must distinguish an absent area from a
+     * present one holding {@value NavigationContext#PGM_CONTEXT_ENTER} tests
+     * {@link #getNavigationContext()} for {@code null}; no second discriminator is declared here,
+     * since adding one would reintroduce exactly the duplication this accessor exists to remove.
+     *
+     * @return the program context read from the communication area,
+     *         {@value NavigationContext#PGM_CONTEXT_ENTER} where the request carries none, and any
+     *         other digit only where a client sent one - {@code CDEMO-PGM-CONTEXT} is a
+     *         {@code PIC 9(01)} item over which the source declares two condition names rather than an
+     *         enumeration, so a third value is possible in the COBOL and remains possible here, with
+     *         both condition names simply false for it
      */
+    @JsonIgnore
     public int getPgmContext() {
-        return pgmContext;
-    }
-
-    /**
-     * Sets the enter-versus-re-enter context.
-     *
-     * <p>Accepts the value as given, including values outside 0 and 1. {@code CDEMO-PGM-CONTEXT} is a
-     * {@code PIC 9(01)} item over which the source declares two condition names rather than an
-     * enumeration, so a third value is possible in the COBOL and remains possible here; the two
-     * condition names are simply both false for it, exactly as the source behaves.
-     *
-     * @param pgmContext the program context, normally
-     *                   {@value NavigationContext#PGM_CONTEXT_ENTER} or
-     *                   {@value NavigationContext#PGM_CONTEXT_REENTER}
-     */
-    public void setPgmContext(int pgmContext) {
-        this.pgmContext = pgmContext;
+        NavigationContext carriedContext = this.navigationContext;
+        return carriedContext == null
+                ? NavigationContext.PGM_CONTEXT_ENTER
+                : carriedContext.pgmContext();
     }
 
     // =================================================================================================
@@ -1274,8 +1336,11 @@ public final class BillPaymentRequest {
      * {@code DFHMDF} definition, and a client echoing the payload back - which is exactly how this
      * pseudo-conversational protocol works - would be rejected, because a read-only property has no
      * matching setter to bind to. Dropping the prefix keeps the published property set to the
-     * nineteen real members without needing a mapper annotation to suppress anything. Verified: the
-     * serialized body contains {@code nextPageFlg} and no {@code nextPageYes}.
+     * eighteen real members without this method needing an annotation to suppress it. Verified: the
+     * serialized body contains {@code nextPageFlg} and no {@code nextPageYes}. {@link #getPgmContext()}
+     * is the one accessor that does need {@code @JsonIgnore}, because {@code get}-prefixed accessors
+     * cannot avoid detection by naming; it is annotated there rather than renamed, since the read-through
+     * name is the one callers expect.
      *
      * @return {@code true} where the flag is {@value #NEXT_PAGE_YES}
      */
@@ -1350,11 +1415,16 @@ public final class BillPaymentRequest {
     /**
      * Returns a diagnostic rendering of every member, for test failure messages and log lines.
      *
-     * <p>Nothing is masked. {@link #getActIdIn()} appears in the clear because the 3270 screen shows
-     * it in the clear at {@code (6,21)} under {@code ATTRB=(FSET,IC,NORM,UNPROT)} with no
+     * <p>No screen field is masked. {@link #getActIdIn()} appears in the clear because the 3270
+     * screen shows it in the clear at {@code (6,21)} under {@code ATTRB=(FSET,IC,NORM,UNPROT)} with no
      * {@code DRK} attribute, and this migration neither weakens nor strengthens the posture it
      * inherited. This screen has no password field, so there is nothing on it that the source treats
      * as secret.
+     *
+     * <p>The communication area is the one exception, and it is not this method's doing:
+     * {@code navigationContext=} interpolates {@link NavigationContext#toString()}, which redacts the
+     * carried identity and identifier fields it holds. That masking belongs to the carrier, is applied
+     * consistently wherever the carrier is rendered, and is not repeated or undone here.
      *
      * <p>Built by straight concatenation, which keeps the method free of any decision point. The
      * output is a diagnostic aid and not a wire format: the JSON body is produced by the module's
@@ -1371,13 +1441,12 @@ public final class BillPaymentRequest {
                 + ", pgmName=" + pgmName
                 + ", title02=" + title02
                 + ", curTime=" + curTime
-                + ", actIdIn=" + actIdIn
+                + ", actIdIn=" + SensitiveDiagnostics.maskIdentifier(actIdIn)
                 + ", curBal=" + curBal
                 + ", confirm=" + confirm
                 + ", errMsg=" + errMsg
                 + ", navigationContext=" + navigationContext
                 + ", aid=" + aid
-                + ", pgmContext=" + pgmContext
                 + ", trnIdFirst=" + trnIdFirst
                 + ", trnIdLast=" + trnIdLast
                 + ", pageNum=" + pageNum

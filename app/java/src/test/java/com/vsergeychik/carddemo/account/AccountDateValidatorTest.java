@@ -8,12 +8,14 @@ import com.vsergeychik.carddemo.account.AccountDateValidator.EditDateState;
 import com.vsergeychik.carddemo.account.AccountDateValidator.EditFlag;
 import com.vsergeychik.carddemo.account.AccountDateValidator.InputFlag;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.util.DateUtilityJob;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,9 +31,17 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.stereotype.Component;
 
 /**
@@ -173,6 +183,23 @@ class AccountDateValidatorTest {
      * @param fieldName the value of {@code WS-EDIT-VARIABLE-NAME}
      * @return the prepared state
      */
+    /**
+     * Runs {@code editDateLe} over one known-good date on a given validator instance.
+     *
+     * <p>Used by the wiring tests, which need two independently constructed validators to be driven
+     * identically so that only their code page differs.
+     *
+     * @param subject the validator to drive
+     * @return the state after the call, holding the filled eighty-byte area
+     */
+    private static EditDateState stateAfterEditDateLe(AccountDateValidator subject) {
+        EditDateState state = subject.newState();
+        state.setEditVariableName("Open Date");
+        state.setEditDateCcyymmdd("20220719");
+        subject.editDateLe(state);
+        return state;
+    }
+
     private EditDateState given(String date, String fieldName) {
         EditDateState state = validator.newState();
         state.setEditVariableName(fieldName);
@@ -1579,14 +1606,28 @@ class AccountDateValidatorTest {
             assertThat(Modifier.isFinal(AccountDateValidator.class.getModifiers()))
                     .as("nothing subclasses a translation of a copybook")
                     .isTrue();
-            assertThat(AccountDateValidator.class.getConstructor(DateUtilityJob.class)
-                    .isAnnotationPresent(Autowired.class))
-                    .as("with three constructors and no no-argument candidate, the container needs "
-                            + "one to be marked")
-                    .isTrue();
             assertThat(AccountDateValidator.class.getConstructors())
-                    .as("exactly three, and only one of them annotated")
-                    .hasSize(3);
+                    .as("four, and only one of them annotated")
+                    .hasSize(4);
+            assertThat(AccountDateValidator.class.getConstructors())
+                    .filteredOn(candidate -> candidate.isAnnotationPresent(Autowired.class))
+                    .as("with four constructors and no no-argument candidate, the container needs "
+                            + "exactly one to be marked")
+                    .singleElement()
+                    .satisfies(annotated -> {
+                        // The marked one must be the Charset form. The DateUtilityJob-only form builds
+                        // a US-ASCII codec, so if the marker ever migrated back to it the container
+                        // would silently stop honouring carddemo.charset.dataset - which is the whole
+                        // defect this asserts against.
+                        assertThat(annotated.getParameterTypes())
+                                .containsExactly(Charset.class, DateUtilityJob.class);
+                        assertThat(annotated.getParameters()[0].getAnnotation(Qualifier.class))
+                                .as("three Charset beans exist and none is primary, so the "
+                                        + "injection point must name one")
+                                .isNotNull()
+                                .extracting(Qualifier::value)
+                                .isEqualTo(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME);
+                    });
         }
 
         @Test
@@ -1633,7 +1674,14 @@ class AccountDateValidatorTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> new AccountDateValidator(null));
             assertThatNullPointerException()
-                    .isThrownBy(() -> new AccountDateValidator(null, new DateUtilityJob()));
+                    .isThrownBy(() -> new AccountDateValidator((FixedWidthCodec) null,
+                            new DateUtilityJob()));
+            // The container's constructor takes a Charset, so a bare null is ambiguous between the two
+            // two-argument forms and each null path is asserted on its own. The Charset form refuses
+            // before it can build a codec, naming why the injection point is qualified.
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new AccountDateValidator((Charset) null, new DateUtilityJob()))
+                    .withMessageContaining("selected by qualifier");
             assertThatNullPointerException()
                     .isThrownBy(() -> new AccountDateValidator(
                             new FixedWidthCodec(StandardCharsets.US_ASCII), null))
@@ -1877,6 +1925,112 @@ class AccountDateValidatorTest {
         @Override
         public DateValidationResult validateDate(String lsDate, String lsDateFormat) {
             return rejection;
+        }
+    }
+
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("container wiring - the date-edit work areas follow the CONFIGURED code page")
+    class ContainerWiring {
+
+        /** The EBCDIC code page a deployment whose datasets are EBCDIC selects. */
+        private static final String EBCDIC_NAME = "IBM037";
+
+        /** The ASCII code page the shipped configuration names. */
+        private static final String ASCII_NAME = "US-ASCII";
+
+        /**
+         * A context slice carrying the charset configuration, {@code CSUTLDTC} and this validator.
+         *
+         * <p>{@link ApplicationContextRunner} rather than {@code @SpringBootTest}, because what is under
+         * test is which constructor the container selects and what it passes it - which needs the real
+         * bean-definition machinery and none of the rest of the graph.
+         *
+         * @param datasetCharsetName the value for {@code carddemo.charset.dataset}
+         * @return a runner ready to run one assertion
+         */
+        private ApplicationContextRunner containerWith(String datasetCharsetName) {
+            return new ApplicationContextRunner()
+                    .withConfiguration(AutoConfigurations.of(
+                            PropertyPlaceholderAutoConfiguration.class))
+                    .withUserConfiguration(CobolCharsetConfig.class, DateUtilityJob.class,
+                            AccountDateValidator.class)
+                    .withPropertyValues(
+                            CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY + "=" + EBCDIC_NAME,
+                            CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=" + ASCII_NAME,
+                            CobolCharsetConfig.DATASET_CHARSET_PROPERTY + "=" + datasetCharsetName);
+        }
+
+        @Test
+        @DisplayName("under IBM037 the eighty-byte work area holds IBM037 bytes, not ASCII ones")
+        void underIbm037TheWorkAreaHoldsEbcdicBytes() {
+            containerWith(EBCDIC_NAME).run(context -> {
+                AccountDateValidator wired = context.getBean(AccountDateValidator.class);
+                EditDateState state = wired.newState();
+                state.setEditVariableName("Open Date");
+                state.setEditDateCcyymmdd("20220719");
+
+                wired.editDateLe(state);
+
+                // WS-DATE-VALIDATION-RESULT and CSUTLDTC's WS-MESSAGE are one eighty-byte area declared
+                // twice, so the whole chain - validator area, injected codec and the CSUTLDTC result it
+                // accepts - has to agree on the code page. The bytes are asserted rather than the
+                // decoded string, because the string reads the same either way and so proves nothing.
+                byte[] area = state.dateValidationResultBytes();
+                Charset ebcdic = Charset.forName(EBCDIC_NAME);
+
+                assertThat(area).hasSize(AccountDateValidator.WS_DATE_VALIDATION_RESULT_LENGTH);
+                assertThat(java.util.Arrays.copyOfRange(area, 4, 15))
+                        .isEqualTo("Mesg Code: ".getBytes(ebcdic))
+                        .isNotEqualTo("Mesg Code: ".getBytes(StandardCharsets.US_ASCII));
+                assertThat(java.util.Arrays.copyOfRange(area, 20, 35))
+                        .as("WS-RESULT carries the CEEDAYS verdict text through the same code page")
+                        .isEqualTo("Date is valid  ".getBytes(ebcdic));
+                assertThat(java.util.Arrays.copyOfRange(area, 0, 4))
+                        .as("WS-SEVERITY PIC 9(4) zero is x'F0' four times in IBM037")
+                        .containsExactly((byte) 0xF0, (byte) 0xF0, (byte) 0xF0, (byte) 0xF0);
+
+                // And the character views still read correctly, which is what proves the code page was
+                // applied consistently rather than the bytes merely being different.
+                assertThat(state.wsSeverity()).isEqualTo("0000");
+                assertThat(state.wsResult()).isEqualTo("Date is valid  ");
+            });
+        }
+
+        @Test
+        @DisplayName("under US-ASCII it matches byte for byte what this suite's own validator produces")
+        void underAsciiItMatchesTheSuitesValidator() {
+            containerWith(ASCII_NAME).run(context -> {
+                AccountDateValidator wired = context.getBean(AccountDateValidator.class);
+                EditDateState wiredState = wired.newState();
+                wiredState.setEditVariableName("Open Date");
+                wiredState.setEditDateCcyymmdd("20220719");
+                wired.editDateLe(wiredState);
+
+                EditDateState localState = given("20220719", "Open Date");
+                validator.editDateLe(localState);
+
+                assertThat(wiredState.dateValidationResultBytes())
+                        .isEqualTo(localState.dateValidationResultBytes());
+            });
+        }
+
+        @Test
+        @DisplayName("the injected code page reaches newState(), so state and validator never disagree")
+        void theInjectedCodePageReachesNewState() {
+            containerWith(EBCDIC_NAME).run(context -> {
+                AccountDateValidator wired = context.getBean(AccountDateValidator.class);
+                EditDateState state = wired.newState();
+                state.setEditVariableName("Open Date");
+
+                // EDIT-VARIABLE-NAME is a PIC X field of the work area, so its stored bytes are the
+                // shortest proof that newState() shares the validator's injected code page rather than
+                // building a codec of its own.
+                assertThat(java.util.Arrays.copyOfRange(state.dateValidationResultBytes(), 4, 6))
+                        .as("the area is initialised through the injected codec")
+                        .isEqualTo("Me".getBytes(Charset.forName(EBCDIC_NAME)));
+            });
         }
     }
 }

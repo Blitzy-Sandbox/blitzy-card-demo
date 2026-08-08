@@ -203,12 +203,22 @@ import java.util.Objects;
  * <h2>Statelessness: the conversation travels in the payload</h2>
  *
  * CICS is pseudo-conversational, and this migration preserves that shape exactly rather than
- * reintroducing a server-side conversation. The communication area is carried as
- * {@link #navigationContext()}, a payload member, so the enter-versus-re-enter context and the
- * carried identifiers arrive with the request and leave with the response. This type is
- * deliberately free of {@code HttpSession}, {@code @SessionAttributes}, {@code @SessionScope},
- * {@code ThreadLocal}, any server-side cache and any static mutable holder - a static holder would
- * be a session by another name and would additionally break request isolation.
+ * reintroducing a server-side conversation. The conversation is exactly three things, and all three
+ * are payload members here:
+ *
+ * <ul>
+ *   <li>the communication area, as {@link #navigationContext()}, carrying the enter-versus-re-enter
+ *       context and the identifiers the previous screen passed on;</li>
+ *   <li>the key the operator pressed, as {@link #aid()} - the {@code EIBAID} that line 183
+ *       evaluates, without which two of this program's three arms could not be selected at all;</li>
+ *   <li>the seventeen screen field values themselves.</li>
+ * </ul>
+ *
+ * <p>The first two are the only members that are not {@code DFHMDF} fields, and they are the two
+ * mandated exceptions to that rule. This type is deliberately free of {@code HttpSession},
+ * {@code @SessionAttributes}, {@code @SessionScope}, {@code ThreadLocal}, any server-side cache and
+ * any static mutable holder - a static holder would be a session by another name and would
+ * additionally break request isolation.
  *
  * <p>{@code CORPT00C} has <strong>no</strong> communication-area extension. Line 138 is
  * {@code COPY COCOM01Y.} and line 140 goes straight to {@code COPY CORPT00.}; there is no
@@ -268,6 +278,12 @@ import java.util.Objects;
  * @param navigationContext {@code 01 CARDDEMO-COMMAREA} of {@code app/cpy/COCOM01Y.cpy}, exactly
  *                  {@value NavigationContext#COMMAREA_LENGTH} bytes, or {@code null} when no
  *                  communication area was passed - the {@code EIBCALEN = 0} cold start of line 172
+ * @param aid       the resolved {@code EIBAID} key indication as a token, at most
+ *                  {@value #AID_LENGTH} characters - {@code 'ENTER'} or {@code 'PFK03'} for the two
+ *                  arms this screen acts on, anything else being the {@code WHEN OTHER} arm.
+ *                  <strong>Not a map field</strong>: the second of the two mandated exceptions, and
+ *                  absent from the symbolic-map image. {@code null} becomes spaces, which is the
+ *                  no-key-resolved state
  */
 public record ReportRequestRequest(
         @Size(max = TRNNAME_LENGTH, message = "TRNNAMEI is declared PIC X(4)") String trnname,
@@ -287,7 +303,8 @@ public record ReportRequestRequest(
         @Size(max = EDTYYYY_LENGTH, message = "EDTYYYYI is declared PIC X(4)") String edtyyyy,
         @Size(max = CONFIRM_LENGTH, message = "CONFIRMI is declared PIC X(1)") String confirm,
         @Size(max = ERRMSG_LENGTH, message = "ERRMSGI is declared PIC X(78)") String errmsg,
-        NavigationContext navigationContext) {
+        NavigationContext navigationContext,
+        @Size(max = AID_LENGTH, message = "EIBAID is carried as a PIC X(5) token") String aid) {
 
     // =================================================================================================
     // Identity of the screen this payload projects. Every literal is verbatim: the mapset and map
@@ -412,6 +429,39 @@ public record ReportRequestRequest(
 
     /** {@code ERRMSGI PIC X(78)}; {@code ERRMSG DFHMDF LENGTH=78} at {@code CORPT00.bms:218-221}. */
     public static final int ERRMSG_LENGTH = 78;
+
+    /**
+     * Characters in the {@code EIBAID} token carried by {@link #aid()}: five.
+     *
+     * <p><strong>Not a screen field.</strong> It is absent from {@link ScreenField}, from
+     * {@link #FIELD_COUNT}, from {@link #PAYLOAD_WIDTH_TOTAL} and from the
+     * {@value #SYMBOLIC_MAP_LENGTH}-byte image, because {@code EIBAID} is not part of
+     * {@code 01 CORPT0AI} at all - CICS reports it in the exec interface block, alongside the map
+     * rather than inside it. It is one of the two mandated exceptions to the one-member-per-
+     * {@code DFHMDF} rule, the other being {@link #navigationContext()}.
+     *
+     * <p>It has to be here because {@code app/cbl/CORPT00C.cbl:183-195} branches on it and on nothing
+     * else: {@code EVALUATE EIBAID} with {@code WHEN DFHENTER} performing {@code PROCESS-ENTER-KEY},
+     * {@code WHEN DFHPF3} moving {@code 'COMEN01C'} into {@code CDEMO-TO-PROGRAM} and returning to the
+     * previous screen, and {@code WHEN OTHER} raising {@code CCDA-MSG-INVALID-KEY}. With no member for
+     * the key there is no way for a caller to select any of the three, so two of this program's arms
+     * would be unreachable through the API and the invalid-key message unprovokable. A server-side
+     * record of the last key pressed is the one thing rule R6 forbids, so the key travels in the
+     * payload.
+     *
+     * <p>The width is the module's convention rather than this program's copybook - {@code CORPT00C}
+     * copies neither {@code CVCRD01Y} nor {@code CSSTRPFY} and tests the raw {@code EIBAID} byte
+     * inline. Five characters matches {@code 10 CCARD-AID PIC X(5)} of {@code app/cpy/CVCRD01Y.cpy}
+     * and the width {@code common.PfKeyResolver.AID_TOKEN_LENGTH} publishes. The two tokens this
+     * screen acts on are {@code ENTER} and {@code PFK03}; anything else, this one included when it
+     * arrives as spaces, is the {@code WHEN OTHER} arm. Note that
+     * {@code common.PfKeyResolver.AidKey#token()} space-pads the shorter mnemonics to this width, so a
+     * caller must not trim what it produces.
+     */
+    public static final int AID_LENGTH = 5;
+
+    /** Name of the pseudo-conversational key indication, the CICS {@code EIBAID} field. */
+    public static final String AID_FIELD = "EIBAID";
 
     /**
      * The seventeen declared widths added up: {@value #PAYLOAD_WIDTH_TOTAL}. Written as a sum of the
@@ -914,8 +964,15 @@ public record ReportRequestRequest(
      * {@code app/cbl/CORPT00C.cbl:172}, which the program distinguishes from a communication area
      * that merely happens to be initialised. Collapsing the two would erase a real branch.
      *
+     * <p>{@code aid} is held to the same two rules as the screen fields - {@code null} becomes spaces,
+     * an over-long token is refused - even though it is not a screen field. Spaces is the honest
+     * no-key-resolved state, and an unrecognised or blank token is exactly what
+     * {@code app/cbl/CORPT00C.cbl:190} answers with {@code WHEN OTHER}, so nothing is lost by filling
+     * it in.
+     *
      * @throws IllegalArgumentException if any screen field is longer than its declared
-     *                                  {@code PIC X(n)}
+     *                                  {@code PIC X(n)}, or if {@code aid} is longer than
+     *                                  {@value #AID_LENGTH} characters
      */
     public ReportRequestRequest {
         trnname = normalise(trnname, ScreenField.TRNNAME);
@@ -935,6 +992,28 @@ public record ReportRequestRequest(
         edtyyyy = normalise(edtyyyy, ScreenField.EDTYYYY);
         confirm = normalise(confirm, ScreenField.CONFIRM);
         errmsg = normalise(errmsg, ScreenField.ERRMSG);
+        aid = normaliseAid(aid);
+    }
+
+    /**
+     * Applies the two field rules to the {@code EIBAID} token, which has no {@link ScreenField} to
+     * carry its width because it is not part of {@code 01 CORPT0AI}.
+     *
+     * @param value the token offered, {@code null} meaning no key has been resolved
+     * @return the token unchanged, or {@value #AID_LENGTH} spaces when it was {@code null}
+     * @throws IllegalArgumentException if longer than {@value #AID_LENGTH} characters
+     */
+    private static String normaliseAid(String value) {
+        if (value == null) {
+            return SPACE.repeat(AID_LENGTH);
+        }
+        if (value.length() > AID_LENGTH) {
+            throw new IllegalArgumentException(AID_FIELD + " is carried as a PIC X(" + AID_LENGTH
+                    + ") token, matching common.PfKeyResolver.AID_TOKEN_LENGTH, but was given "
+                    + value.length() + " character(s). AidKey.token() already space-pads to that "
+                    + "width, so a resolved token never overflows it");
+        }
+        return value;
     }
 
     /**
@@ -980,18 +1059,23 @@ public record ReportRequestRequest(
         for (ScreenField field : ScreenField.values()) {
             values.add(fillCharacter.repeat(field.declaredLength()));
         }
-        return fromFieldValues(values, NavigationContext.empty());
+        // The AID is filled with spaces in both the SPACES and the LOW-VALUES shape, because it is not
+        // part of 01 CORPT0AI: MOVE LOW-VALUES TO CORPT0AO at CORPT00C.cbl:179 reaches the map and
+        // nothing outside it, and no key has been pressed on a screen that has only just been painted.
+        return fromFieldValues(values, NavigationContext.empty(), SPACE.repeat(AID_LENGTH));
     }
 
     /**
-     * Rebuilds a request from seventeen values in {@link ScreenField} declaration order.
+     * Rebuilds a request from seventeen values in {@link ScreenField} declaration order, plus the two
+     * members that are not screen fields.
      *
      * <p>Positional, because a record's canonical constructor is positional; the ordering contract is
      * {@link ScreenField#ordinal()} and is shared with {@link #fieldValues()}, so the two cannot
      * drift apart.
      */
     private static ReportRequestRequest fromFieldValues(List<String> values,
-                                                        NavigationContext context) {
+                                                        NavigationContext context,
+                                                        String aid) {
         return new ReportRequestRequest(values.get(ScreenField.TRNNAME.ordinal()),
                 values.get(ScreenField.TITLE01.ordinal()),
                 values.get(ScreenField.CURDATE.ordinal()),
@@ -1009,7 +1093,8 @@ public record ReportRequestRequest(
                 values.get(ScreenField.EDTYYYY.ordinal()),
                 values.get(ScreenField.CONFIRM.ordinal()),
                 values.get(ScreenField.ERRMSG.ordinal()),
-                context);
+                context,
+                aid);
     }
 
     // =================================================================================================
@@ -1064,7 +1149,7 @@ public record ReportRequestRequest(
                 + SYMBOLIC_MAP_INPUT_GROUP);
         List<String> next = new ArrayList<>(fieldValues());
         next.set(field.ordinal(), normalise(value, field));
-        return fromFieldValues(next, navigationContext);
+        return fromFieldValues(next, navigationContext, aid);
     }
 
     // =================================================================================================
@@ -1263,7 +1348,7 @@ public record ReportRequestRequest(
      * @return a new request
      */
     public ReportRequestRequest withNavigationContext(NavigationContext newNavigationContext) {
-        return fromFieldValues(fieldValues(), newNavigationContext);
+        return fromFieldValues(fieldValues(), newNavigationContext, aid);
     }
 
     /**
@@ -1274,7 +1359,24 @@ public record ReportRequestRequest(
      * @return a new request whose {@link #navigationContext()} is {@code null}
      */
     public ReportRequestRequest withoutNavigationContext() {
-        return fromFieldValues(fieldValues(), null);
+        return fromFieldValues(fieldValues(), null, aid);
+    }
+
+    /**
+     * A copy carrying a new resolved {@code EIBAID} token - the key the operator pressed, which
+     * {@code app/cbl/CORPT00C.cbl:183} evaluates.
+     *
+     * <p>Pass the token {@code common.PfKeyResolver.AidKey#token()} produces, already space-padded to
+     * {@value #AID_LENGTH}. The two tokens this screen acts on are {@code 'ENTER'} and
+     * {@code 'PFK03'}; every other value, spaces included, is the {@code WHEN OTHER} arm and its
+     * {@code CCDA-MSG-INVALID-KEY} message.
+     *
+     * @param newAid the resolved key token; {@code null} becomes spaces, meaning no key resolved
+     * @return a new request, never {@code null}
+     * @throws IllegalArgumentException if longer than {@value #AID_LENGTH} characters
+     */
+    public ReportRequestRequest withAid(String newAid) {
+        return fromFieldValues(fieldValues(), navigationContext, normaliseAid(newAid));
     }
 
     // =================================================================================================
@@ -1444,11 +1546,13 @@ public record ReportRequestRequest(
      * byte-identical: rendering the result reproduces the image it was read from, because nothing was
      * silently dropped on the way in.
      *
-     * <p>The result carries <strong>no communication area</strong>. That is not an omission: the
-     * communication area is not part of the map image - CICS passes it separately, through
-     * {@code DFHCOMMAREA} - so the honest reading of a map image alone is {@code EIBCALEN = 0}. Pair
-     * the result with {@link #withNavigationContext(NavigationContext)} when the area is known. The
-     * metadata spans are likewise not consulted here; read them with
+     * <p>The result carries <strong>no communication area</strong> and <strong>no resolved key</strong>.
+     * Neither is an omission: neither is part of the map image. CICS passes the communication area
+     * separately through {@code DFHCOMMAREA}, and reports {@code EIBAID} in the exec interface block,
+     * so the honest reading of a map image alone is {@code EIBCALEN = 0} with no key resolved - which
+     * is {@code null} for the one and {@value #AID_LENGTH} spaces for the other. Pair the result with
+     * {@link #withNavigationContext(NavigationContext)} and {@link #withAid(String)} when either is
+     * known. The metadata spans are likewise not consulted here; read them with
      * {@link #metadataFrom(FixedWidthCodec, byte[])}.
      *
      * @param codec the fixed-width codec, carrying the code page explicitly
@@ -1469,7 +1573,7 @@ public record ReportRequestRequest(
         for (ScreenField field : ScreenField.values()) {
             values.add(codec.readPicX(record, field.inputSpan()));
         }
-        return fromFieldValues(values, null);
+        return fromFieldValues(values, null, SPACE.repeat(AID_LENGTH));
     }
 
     /**

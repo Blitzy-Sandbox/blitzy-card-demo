@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.statement;
 
+import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
@@ -9,14 +10,19 @@ import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 import java.nio.charset.Charset;
+import java.sql.DatabaseMetaData;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementSetter;
 import org.springframework.stereotype.Component;
 
 /**
@@ -459,18 +465,51 @@ public final class StatementHtmlWriter {
     public static final String PERMANENT_ERROR_STATUS = "30";
 
     /**
-     * The characters a configured dataset name may contain if it is to be interpolated into the
-     * default sink's statement.
+     * The module's logger, for the one diagnostic this class emits that no return value can carry:
+     * that the driver could not be asked for its identifier quote character.
+     *
+     * <p>{@code commons-logging}, which reaches SLF4J through {@code spring-jcl} on the Spring Boot
+     * classpath, so no logging dependency is added.
+     */
+    private static final Log LOG = LogFactory.getLog(StatementHtmlWriter.class);
+
+    /**
+     * The characters a configured dataset name may contain if it is to be named in the default
+     * sink's statement.
      *
      * <p>Upper and lower case letters, digits, and the punctuation a mainframe dataset name and a
      * relative generation actually use: {@code . _ $ @ # - ( ) +}. Everything else - whitespace,
-     * quotation marks, semicolons, comment markers, path separators - is refused. A path separator
-     * being refused is deliberate and useful: the fixture-backed {@code test} profile binds
-     * {@code HTMLFILE} to a filesystem location, so asking for the default sink under that profile
-     * fails with a diagnostic telling the caller to inject a sink instead, which is what every test
-     * and the parity harness do anyway.
+     * quotation marks, semicolons, comment markers, path separators, control characters - is refused.
+     * A path separator being refused is deliberate and useful: the fixture-backed {@code test}
+     * profile binds {@code HTMLFILE} to a filesystem location, so asking for the default sink under
+     * that profile fails with a diagnostic telling the caller to inject a sink instead, which is what
+     * every test and the parity harness do anyway.
+     *
+     * <p><strong>This allowlist is defence in depth, not the barrier that makes the statement safe.
+     * </strong> Three of the characters it admits - {@code (}, {@code )} and {@code -} - are
+     * structural in SQL, and {@code -} twice over is a line-comment marker, so a name admitted here
+     * could once have changed what the statement means. It cannot now: the name is rendered as a
+     * single delimited identifier by {@link #insertStatement(String, String)}, inside which every one
+     * of these characters is ordinary text. The allowlist is retained because the three of them are
+     * genuinely needed - {@code TEST.M2-A_B$C@D#E.SEQ(+1)} is a legitimate generation-qualified
+     * binding - and because narrowing the input a second, independent way costs nothing.
      */
     private static final String DSNAME_ALLOWED_PUNCTUATION = "._$@#-()+";
+
+    /**
+     * The SQL-standard delimited-identifier quote character, used when the driver does not report one
+     * of its own.
+     *
+     * <p>{@link java.sql.DatabaseMetaData#getIdentifierQuoteString()} is the authority, and
+     * {@link #resolveIdentifierQuote(JdbcTemplate)} asks it first. This is the fallback for the two
+     * cases where the answer is unusable: the driver cannot be reached to be asked, or it reports the
+     * single space that the JDBC contract defines as "quoting not supported". Falling back to the
+     * standard form rather than emitting an undelimited name is the safe direction, and it is also the
+     * only one that can work: a mainframe dataset name contains periods, and an undelimited period is
+     * a qualifier separator, so a driver that truly cannot quote an identifier could not address one
+     * of these datasets by name at all.
+     */
+    private static final String ANSI_IDENTIFIER_QUOTE = "\"";
 
     /**
      * The text preceding the dataset identifier in the default sink's statement.
@@ -1299,11 +1338,19 @@ public final class StatementHtmlWriter {
      * forbidden to create.
      *
      * <p>The dataset identifier comes wholly from configuration, so <strong>no mainframe dataset-name
-     * literal appears in this Java file</strong> (gate G46). Because a SQL identifier cannot be
-     * supplied as a bind parameter, the configured name is interpolated - and is therefore validated
-     * first, character by character, against a strict allowlist. Anything outside that allowlist,
-     * including whitespace, quotation marks, semicolons and comment markers, is refused with a
-     * diagnostic naming the offending character.
+     * literal appears in this Java file</strong> (gate G46). Because a SQL identifier cannot be supplied
+     * as a bind parameter, the configured name necessarily reaches the statement text - and is therefore
+     * required to be a well-formed z/OS dataset name first, by
+     * {@link DatasetRelation#requireDatasetName(String)}, and then rendered by that same class's single
+     * delimited-identifier renderer. Whitespace, quotation marks, semicolons, comment markers and path
+     * separators are all outside that grammar, so none of them can reach the statement; see
+     * {@link StatementHtmlWriter#requireAddressableDataset(String)} for why a grammar rather than a list
+     * of forbidden characters.
+     *
+     * <p>The statement itself is composed by {@link DatasetRelation#insertRecordImage()}, which is also
+     * what the sibling {@link StatementTextWriter} issues for its own dataset. The two statements are
+     * therefore character-for-character identical apart from the dataset they name - which is the only
+     * way both can be correct against one deployment driver whose syntax neither writer can test here.
      *
      * <p>The bytes are bound as {@code byte[]}, not as a {@code String}. They are already the final
      * 100-byte image, encoded once in this module using the injected dataset charset, and binding
@@ -1338,8 +1385,20 @@ public final class StatementHtmlWriter {
         /** The single parameterised statement, assembled once from the validated dataset name. */
         private final String insertStatement;
 
-        /** The dataset name this sink writes to, as configuration supplied it. */
+        /**
+         * The dataset name this sink writes to, as configuration supplied it and as the z/OS
+         * dataset-name grammar accepted it.
+         */
         private final String dsname;
+
+        /**
+         * The quote character the dataset name is delimited with in {@link #insertStatement}.
+         *
+         * <p>Retained so {@link #identifierQuote()} can report it: which form the statement carries
+         * depends on the driver, and a deployment confirming its statement needs to see which one it
+         * got.
+         */
+        private final String identifierQuote;
 
         /**
          * The most recent write failure, or {@code null} when none has occurred.
@@ -1351,17 +1410,42 @@ public final class StatementHtmlWriter {
         private DataAccessException lastFailure;
 
         /**
+         * Composes this sink's single statement over an already-validated dataset name.
+         *
+         * <p>The driver is asked for its identifier quote character once here - once per sink, and so
+         * once per statement run - rather than on every record. When it reports the SQL-standard quote,
+         * or reports none, or cannot be reached, the statement is the one
+         * {@link DatasetRelation#insertRecordImage()} composes, so the delimited form is the module's
+         * single identifier rendering and is identical to the sibling plain-text writer's. Only a driver
+         * that names a different quote character moves composition to
+         * {@link StatementHtmlWriter#insertStatement(String, String)}, which delimits the same
+         * already-validated name with the character that driver asked for. Either way the name reaching
+         * the renderer has passed the one dataset-name grammar, and the statement carries exactly one
+         * identifier and one positional parameter.
+         *
          * @param jdbcTemplate the module-wide template
-         * @param dsname       the validated dataset name from the {@code HTMLFILE} binding
+         * @param relation     the {@code HTMLFILE} dataset as {@link DatasetRelation} sees it: its name
+         *                     already checked against the z/OS dataset-name grammar, and its statement
+         *                     text composed by the same renderer the sibling plain-text writer uses
          */
-        private JdbcHtmlRecordSink(final JdbcTemplate jdbcTemplate, final String dsname) {
+        private JdbcHtmlRecordSink(final JdbcTemplate jdbcTemplate, final DatasetRelation relation) {
             this.jdbcTemplate = jdbcTemplate;
-            this.dsname = dsname;
-            this.insertStatement = INSERT_STATEMENT_PREFIX + dsname + INSERT_STATEMENT_SUFFIX;
+            this.dsname = relation.dsname();
+            this.identifierQuote = resolveIdentifierQuote(jdbcTemplate);
+            this.insertStatement = ANSI_IDENTIFIER_QUOTE.equals(this.identifierQuote)
+                    ? relation.insertRecordImage()
+                    : StatementHtmlWriter.insertStatement(this.dsname, this.identifierQuote);
         }
 
         /**
          * Writes one record.
+         *
+         * <p>The image is bound with {@link java.sql.PreparedStatement#setBytes(int, byte[])}
+         * explicitly, not handed to the driver as an untyped argument. The two are not the same
+         * request: an untyped argument leaves the driver to choose a type for a {@code byte[]}, and the
+         * sibling plain-text writer - same deployment, same driver, same shape of statement - binds it
+         * as bytes. A record that is already the final 100-byte image in the injected code page must
+         * arrive as those bytes, so both writers ask for that in the same words (practice B8, rule R5).
          *
          * @param record exactly {@link StatementHtmlWriter#RECORD_LENGTH} bytes
          * @return {@link FileStatus#OK} when the statement succeeded, otherwise
@@ -1369,8 +1453,10 @@ public final class StatementHtmlWriter {
          */
         @Override
         public String write(final byte[] record) {
+            final PreparedStatementSetter binder = parameters ->
+                    parameters.setBytes(DatasetRelation.RECORD_IMAGE_COLUMN_INDEX, record);
             try {
-                this.jdbcTemplate.update(this.insertStatement, (Object) record);
+                this.jdbcTemplate.update(this.insertStatement, binder);
                 this.lastFailure = null;
                 return FileStatus.OK;
             } catch (DataAccessException failure) {
@@ -1382,7 +1468,7 @@ public final class StatementHtmlWriter {
         /**
          * The dataset name this sink writes to.
          *
-         * @return the configured name, verbatim; never {@code null}
+         * @return the configured name, verbatim and unchanged by validation; never {@code null}
          */
         public String dsname() {
             return this.dsname;
@@ -1392,10 +1478,22 @@ public final class StatementHtmlWriter {
          * The statement this sink issues, exposed so a deployment can confirm what its driver will
          * receive without having to run the job.
          *
-         * @return the single parameterised statement; never {@code null}
+         * @return the single parameterised statement, whose only identifier is the delimited dataset
+         *         name and whose only value is a positional parameter; never {@code null}
          */
         public String insertStatement() {
             return this.insertStatement;
+        }
+
+        /**
+         * The quote character the dataset name is delimited with in {@link #insertStatement()}.
+         *
+         * @return the driver's own {@code getIdentifierQuoteString()} when it reported a usable one,
+         *         otherwise {@value StatementHtmlWriter#ANSI_IDENTIFIER_QUOTE}; never {@code null} and
+         *         never blank
+         */
+        public String identifierQuote() {
+            return this.identifierQuote;
         }
 
         /**
@@ -1538,15 +1636,21 @@ public final class StatementHtmlWriter {
      * <p>Called by {@link #open()}. Call it directly only to decorate it - for example to tee records
      * to a second destination - since the sink is otherwise supplied to {@link #open(HtmlRecordSink)}.
      *
+     * <p>The driver is asked for its identifier quote character here, once per sink and so once per
+     * statement run, rather than on every record. A driver that cannot be reached is not an error at
+     * this point - the statement is composed with the SQL-standard quote and the write itself will
+     * report the connection failure as {@value #PERMANENT_ERROR_STATUS} through the guard chain that
+     * exists for it.
+     *
      * @return a fresh per-execution {@link JdbcHtmlRecordSink}
-     * @throws IllegalStateException if the configured dataset name is empty or contains a character
-     *                               that cannot safely be interpolated into a SQL identifier -
-     *                               which includes the filesystem locations the {@code test} profile
-     *                               binds, and in that case the caller should inject its own sink
+     * @throws IllegalStateException if the configured dataset name is empty, or is not a well-formed
+     *                               z/OS dataset name - which includes the filesystem locations the
+     *                               {@code test} profile binds, and in that case the caller should
+     *                               inject its own sink
      */
     public JdbcHtmlRecordSink defaultSink() {
-        return new JdbcHtmlRecordSink(this.jdbcTemplate, requireInterpolatableDsname(
-                this.binding.dsname()));
+        return new JdbcHtmlRecordSink(this.jdbcTemplate,
+                requireAddressableDataset(this.binding.dsname()));
     }
 
     /**
@@ -1649,10 +1753,12 @@ public final class StatementHtmlWriter {
      * Supplying the identifier as the eleven-character image is therefore the caller's job, and
      * {@code StatementGenerationJobA} has it in that form already.
      *
-     * <p>The two {@code FILLER}s are re-initialised from {@link #HTML_L11_LAYOUT} on every call, so
-     * the group is always exactly {@code '<h3>Statement for Account Number: '} + the identifier +
-     * {@code '</h3>'} regardless of what the previous call left behind. The 59-byte group is then
-     * right-space padded to 100 by the {@code WRITE ... FROM}.
+     * <p>The group is returned to its declared state on every call, so it is always exactly
+     * {@code '<h3>Statement for Account Number: '} + the identifier + {@code '</h3>'} regardless of
+     * what the previous call left behind. That is written as the two operations it is: an
+     * {@code INITIALIZE ... WITH FILLER}, which blanks all three spans including the two
+     * {@code FILLER}s, followed by re-applying the {@code FILLER}s' declared {@code VALUE} literals.
+     * The 59-byte group is then right-space padded to 100 by the {@code WRITE ... FROM}.
      *
      * @param file      the open handle
      * @param accountId the {@code ACCT-ID} image; right-truncated to
@@ -1667,7 +1773,10 @@ public final class StatementHtmlWriter {
         requireOpen(file, "write the HTML-L11 account heading");
         Objects.requireNonNull(accountId, "An ACCT-ID image is required for L11-ACCT; move an empty "
                 + "string to blank it explicitly");
-        file.accountHeadingLine.initialise(HTML_L11_LAYOUT);
+        file.accountHeadingLine.initialize(HTML_L11_LAYOUT,
+                FixedWidthRecord.FillerHandling.WITH_FILLER,
+                FixedWidthRecord.ValueHandling.CATEGORY_DEFAULTS);
+        file.accountHeadingLine.loadDeclaredValues(HTML_L11_LAYOUT);
         this.codec.writePicX(file.accountHeadingLine, L11_ACCT_SPAN, accountId);
         return writeFrom(file, file.accountHeadingLine);
     }
@@ -2131,46 +2240,148 @@ public final class StatementHtmlWriter {
     }
 
     /**
-     * Verifies that a configured dataset name is safe to interpolate into a SQL identifier position.
+     * Resolves a configured dataset name into the relation the default sink writes to, refusing
+     * anything that is not a dataset name.
      *
-     * <p>A SQL identifier cannot be supplied as a bind parameter, so the configured name has to be
-     * interpolated - and is therefore checked character by character against
-     * {@link #DSNAME_ALLOWED_PUNCTUATION} plus letters and digits. Whitespace, quotation marks,
-     * semicolons, comment markers and path separators are all outside that set and are refused, with
-     * the offending character and its position named.
+     * <p>A SQL identifier cannot be supplied as a bind parameter, so a configured - therefore
+     * externally controlled - name necessarily reaches the statement text itself. The check that
+     * precedes it is a <strong>grammar</strong>, not an allowlist:
+     * {@link DatasetRelation#requireDatasetName(String)} requires dot-separated qualifiers of one to
+     * eight characters each, each beginning with a letter or one of {@code # @ $} and continuing with
+     * those, digits or a hyphen, at most 44 characters overall, with an optional relative generation
+     * suffix such as {@code (+1)}.
      *
-     * <p>Refusing a path separator is a feature rather than a limitation. The fixture-backed
-     * {@code test} profile binds {@code HTMLFILE} to a filesystem location, so a caller that asks
-     * for the default sink under that profile is told, precisely, to inject a sink instead - which is
-     * what every unit test and the parity harness do.
+     * <p>That distinction is the whole point of this method. A character allowlist answers "which
+     * punctuation did somebody think of" and is only ever as complete as its author's imagination; a
+     * grammar answers "which names does z/OS actually permit", and everything else - whitespace,
+     * quotation marks, semicolons, comment markers, path separators, and whatever punctuation SQL finds
+     * significant next - falls outside it without having to be enumerated. The previous allowlist here
+     * admitted parentheses and repeated hyphens anywhere in a name while its own documentation claimed
+     * comment markers were refused.
+     *
+     * <p>Refusing a filesystem location is a feature rather than a limitation. The fixture-backed
+     * {@code test} profile binds {@code HTMLFILE} to one, so a caller that asks for the default sink
+     * under that profile is told, precisely, to inject a sink instead - which is what every unit test
+     * and the parity harness do. It is also why this check lives here rather than in the constructor:
+     * the application context must still start under that profile (gate G3).
      *
      * @param dsname the configured dataset name
-     * @return {@code dsname}, unchanged
-     * @throws IllegalStateException if {@code dsname} is {@code null}, blank, or contains a character
-     *                               outside the allowed set
+     * @return the relation, carrying the accepted name and this writer's {@link #RECORD_LENGTH}
+     * @throws IllegalStateException if {@code dsname} is {@code null}, empty, or is not a well-formed
+     *                               z/OS dataset name; the grammar's own diagnostic, which names the
+     *                               offending position, is attached as the cause
      */
-    private static String requireInterpolatableDsname(final String dsname) {
+    private static DatasetRelation requireAddressableDataset(final String dsname) {
         if (dsname == null || dsname.isEmpty()) {
             throw new IllegalStateException("carddemo.datasets." + HTMLFILE_DD_NAME
                     + ".dsname is not configured, so no default sink can be built. Configure the "
                     + "dataset name, or open the file with an explicit sink through "
                     + "open(HtmlRecordSink).");
         }
-        for (int index = 0; index < dsname.length(); index++) {
-            final char character = dsname.charAt(index);
-            final boolean allowed = Character.isLetterOrDigit(character)
-                    || DSNAME_ALLOWED_PUNCTUATION.indexOf(character) >= 0;
-            if (!allowed) {
-                throw new IllegalStateException("carddemo.datasets." + HTMLFILE_DD_NAME
-                        + ".dsname contains '" + character + "' at position " + index
-                        + ", which cannot be interpolated into a SQL identifier. Only letters, "
-                        + "digits and " + DSNAME_ALLOWED_PUNCTUATION + " are accepted. A filesystem "
-                        + "location - which the fixture-backed 'test' profile binds - is refused "
-                        + "here on purpose: open the file with an explicit sink through "
-                        + "open(HtmlRecordSink) instead, exactly as the unit tests and the parity "
-                        + "harness do.");
-            }
+        try {
+            return DatasetRelation.of(dsname, RECORD_LENGTH);
+        } catch (IllegalArgumentException notADatasetName) {
+            throw new IllegalStateException("carddemo.datasets." + HTMLFILE_DD_NAME
+                    + ".dsname cannot be addressed as a dataset, so no default sink can be built. A "
+                    + "filesystem location - which the fixture-backed 'test' profile binds - is one of "
+                    + "the things this refuses, on purpose: open the file with an explicit sink through "
+                    + "open(HtmlRecordSink) instead, exactly as the unit tests and the parity harness "
+                    + "do. The dataset-name grammar's own verdict is attached.", notADatasetName);
         }
-        return dsname;
+    }
+
+    /**
+     * Composes the default sink's statement, naming the dataset as one delimited SQL identifier.
+     *
+     * <p>This is the whole of the statement's structure, in one expression: a fixed verb, one
+     * delimited identifier, and one positional parameter. The name is wrapped in
+     * {@code identifierQuote} and every occurrence of that quote <em>inside</em> the name is repeated,
+     * which is how the SQL standard escapes a delimiter within a delimited identifier. A configured
+     * value therefore contributes exactly one identifier and cannot contribute a second token: the
+     * characters that would otherwise be structural - {@code (}, {@code )}, {@code --}, {@code ;} -
+     * are ordinary text inside the delimiters, and the one character that could close the identifier
+     * early is doubled. {@link #requireInterpolatableDsname(String)} has already refused most of them
+     * independently.
+     *
+     * <p>Package-private rather than private so the quoting can be asserted directly, for any quote
+     * character a driver might report, without standing up a database.
+     *
+     * @param dsname          the validated dataset name
+     * @param identifierQuote the quote character to delimit it with; must be non-{@code null} and
+     *                        non-blank, which {@link #normaliseIdentifierQuote(String)} guarantees
+     * @return the single parameterised statement
+     * @throws NullPointerException     if either argument is {@code null}
+     * @throws IllegalArgumentException if {@code identifierQuote} is blank, which would leave the
+     *                                  identifier undelimited
+     */
+    static String insertStatement(final String dsname, final String identifierQuote) {
+        Objects.requireNonNull(dsname, "A dataset name is required to address " + HTMLFILE_DD_NAME
+                + "; it is declared as carddemo.datasets." + HTMLFILE_DD_NAME + ".dsname");
+        Objects.requireNonNull(identifierQuote,
+                "An identifier quote character is required; normaliseIdentifierQuote(String) "
+                        + "substitutes the SQL-standard one when a driver reports none");
+        if (identifierQuote.isBlank()) {
+            throw new IllegalArgumentException("An identifier quote character cannot be blank: "
+                    + "delimiting with blanks would leave " + HTMLFILE_DD_NAME + "'s dataset name "
+                    + "undelimited, and an undelimited period is a qualifier separator. Pass the "
+                    + "result of normaliseIdentifierQuote(String), which substitutes the "
+                    + "SQL-standard quote in exactly this case.");
+        }
+        return INSERT_STATEMENT_PREFIX + identifierQuote
+                + dsname.replace(identifierQuote, identifierQuote + identifierQuote)
+                + identifierQuote + INSERT_STATEMENT_SUFFIX;
+    }
+
+    /**
+     * Reduces what a driver reports as its identifier quote to something usable.
+     *
+     * <p>{@link java.sql.DatabaseMetaData#getIdentifierQuoteString()} is contracted to return a single
+     * space when the driver does not support quoting identifiers, and a driver that has not been
+     * reached reports nothing at all. Both answers are unusable for delimiting, and both become
+     * {@value #ANSI_IDENTIFIER_QUOTE} here - the reasoning is on that constant.
+     *
+     * <p>Package-private so both arms can be asserted without a driver.
+     *
+     * @param reported what the driver reported, or {@code null} if it was not reached
+     * @return {@code reported} when it is usable, otherwise {@value #ANSI_IDENTIFIER_QUOTE}; never
+     *         {@code null} and never blank
+     */
+    static String normaliseIdentifierQuote(final String reported) {
+        if (reported == null || reported.isBlank()) {
+            return ANSI_IDENTIFIER_QUOTE;
+        }
+        return reported;
+    }
+
+    /**
+     * Asks the driver for its identifier quote character.
+     *
+     * <p>Read-only metadata, one borrowed connection, no statement issued and no row transferred. A
+     * failure to reach the driver is deliberately not propagated: it is not this method's news to
+     * break. The statement is composed with the SQL-standard quote instead, and the first
+     * {@link JdbcHtmlRecordSink#write(byte[])} reports the connection failure as
+     * {@value #PERMANENT_ERROR_STATUS} - the {@code WHEN OTHER} arm {@code CBSTM03A} already branches
+     * on - with the {@link DataAccessException} itself retained on
+     * {@link JdbcHtmlRecordSink#lastFailure()}. Turning it into an exception here would move a dataset
+     * condition the COBOL has a guard for into a place the COBOL has none.
+     *
+     * @param jdbcTemplate the module-wide template
+     * @return the driver's quote character, or {@value #ANSI_IDENTIFIER_QUOTE} when it reported none or
+     *         could not be asked; never {@code null} and never blank
+     */
+    private static String resolveIdentifierQuote(final JdbcTemplate jdbcTemplate) {
+        try {
+            return normaliseIdentifierQuote(jdbcTemplate.execute(
+                    (ConnectionCallback<String>) connection -> {
+                        final DatabaseMetaData metaData = connection.getMetaData();
+                        return metaData == null ? null : metaData.getIdentifierQuoteString();
+                    }));
+        } catch (DataAccessException unreachable) {
+            LOG.warn("Could not ask the driver behind " + HTMLFILE_DD_NAME + " for its identifier "
+                    + "quote character; composing the INSERT with the SQL-standard quote. The write "
+                    + "itself will report this condition as FILE STATUS " + PERMANENT_ERROR_STATUS
+                    + ".", unreachable);
+            return ANSI_IDENTIFIER_QUOTE;
+        }
     }
 }

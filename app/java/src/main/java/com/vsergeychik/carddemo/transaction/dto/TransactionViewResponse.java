@@ -1,7 +1,9 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
@@ -2452,7 +2454,8 @@ public final class TransactionViewResponse {
                 .append(PROGRAM_ID).append(' ').append(MAPSET_NAME).append('.').append(MAP_NAME);
         for (ScreenField field : ScreenField.values()) {
             text.append(", ").append(field.outputItemName()).append("='")
-                    .append(getOutputItem(field)).append('\'');
+                    .append(SensitiveDiagnostics.render(disclosureOf(field), getOutputItem(field)))
+                    .append('\'');
         }
         text.append(", nextProgram='").append(nextProgram)
                 .append("', nextMapset='").append(nextMapset)
@@ -2461,4 +2464,24 @@ public final class TransactionViewResponse {
                 .append(']');
         return text.toString();
     }
+
+    /**
+     * How much of each screen field a diagnostic rendering may disclose.
+     *
+     * <p>Named per field rather than pattern-matched, because a symbolic map is a closed set taken
+     * straight from {@code app/cpy-bms/} and can therefore be enumerated exactly. Anything not named here
+     * is screen furniture - a title, a date, a status code, a message - and renders as stored, which is
+     * what a parity failure has to be read from.
+     *
+     * @param field the screen field
+     * @return its classification, never {@code null}
+     */
+    private static SensitiveDiagnostics.Disclosure disclosureOf(ScreenField field) {
+        return switch (field) {
+            case ACTIDIN -> SensitiveDiagnostics.Disclosure.IDENTIFIER;
+            case CARDNIN -> SensitiveDiagnostics.Disclosure.PAN;
+            default -> SensitiveDiagnostics.Disclosure.PLAIN;
+        };
+    }
+
 }

@@ -12,8 +12,11 @@ import java.nio.charset.Charset;
 import java.nio.charset.IllegalCharsetNameException;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.UnsupportedCharsetException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
@@ -27,7 +30,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -156,8 +161,8 @@ import org.springframework.util.PlaceholderResolutionException;
  * dependency added - every type imported above already arrives with
  * {@code spring-boot-starter-test}, and {@code app/java/pom.xml} is untouched), B3 (the read-only
  * reference trees are never opened, only transcribed from), B4 (no configuration file is created
- * under the test tree; properties are supplied inline, because a second
- * {@code application-test.yml} would shadow the real one through classpath ordering), B7
+ * for these tests; properties are supplied inline so each assertion states the exact environment it
+ * needs, rather than depending on whatever the profile happens to declare), B7
  * (deterministic and non-interactive), B8, B9 and B11 (plain {@link Charset} and
  * {@link StandardCharsets} only, no third-party encoding helper).
  */
@@ -274,9 +279,10 @@ class CobolCharsetConfigTest {
      * placeholder resolution.
      *
      * <p>A new runner per call, never a shared field, so no test can observe another's context
-     * (practice B9). Properties are supplied inline for the reason set out in the class javadoc: a
-     * second {@code application-test.yml} under the test tree would shadow the real one through
-     * classpath ordering between {@code target/test-classes} and {@code target/classes}.
+     * (practice B9). Properties are supplied inline for the reason set out in the class javadoc: each
+     * assertion then states the exact environment it needs and cannot be perturbed by a change to the
+     * {@code test} profile, which since the credential relocation lives at
+     * {@code src/test/resources/application-test.yml}.
      *
      * @param properties {@code key=value} pairs to place in the context's {@code Environment}
      * @return a runner ready to {@code run} a single assertion
@@ -289,16 +295,23 @@ class CobolCharsetConfigTest {
     }
 
     /**
-     * A runner configured exactly as {@code application.yml} configures the application: both
-     * required code-page keys present, and {@code carddemo.charset.dataset} left unset so its
-     * nested placeholder default applies.
+     * A runner configured exactly as {@code application-test.yml} configures the application: all
+     * three required code-page keys present, with the active dataset key naming the ASCII code page
+     * because the fixture-backed profile binds every dataset to a text fixture.
+     *
+     * <p>All three are supplied because all three are required - none carries a default. The active
+     * key in particular is stated here rather than omitted, which is the whole point of it having no
+     * default: a runner that could start without saying which code page the data layer reads is a
+     * runner that could not have caught the defect where production silently read EBCDIC datasets as
+     * ASCII.
      *
      * @return a runner whose context is expected to start cleanly
      */
     private ApplicationContextRunner runnerWithBothCodePagesConfigured() {
         return runnerWith(
                 CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY + "=" + CONFIGURED_EBCDIC_NAME,
-                CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=" + CONFIGURED_ASCII_NAME);
+                CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=" + CONFIGURED_ASCII_NAME,
+                CobolCharsetConfig.DATASET_CHARSET_PROPERTY + "=" + CONFIGURED_ASCII_NAME);
     }
 
     /**
@@ -477,34 +490,57 @@ class CobolCharsetConfigTest {
             assertThat(first).isEqualTo(second).isSameAs(second);
         }
 
-        @ParameterizedTest(name = "the syntactically illegal name [{0}] is rejected by the JDK")
-        @ValueSource(strings = { "", " ", "   ", "IBM 037", "bogus!", "US_ASCII/1", "${key}" })
-        @DisplayName("a syntactically illegal name is rejected before the helper's own condition")
-        void aSyntacticallyIllegalNameIsRejectedBeforeTheHelpersOwnCondition(String illegalName) {
-            // DOCUMENTED PASS-THROUGH, NOT A SEPARATE BRANCH. The helper contains exactly one
-            // condition; Charset.isSupported raises IllegalCharsetNameException for a name built
-            // from characters outside the legal set before that condition is ever reached. Wrapping
-            // it would add a branch no configuration error could reach - a missing key fails earlier
-            // during placeholder resolution, naming the key - and therefore a branch that could
-            // never be covered. The JDK's own message already quotes the offending name.
-            assertThatExceptionOfType(IllegalCharsetNameException.class)
+        @ParameterizedTest(name = "the blank name [{0}] is rejected naming the property key")
+        @ValueSource(strings = { "", " ", "   ", "\t" })
+        @DisplayName("a blank name is rejected in its own right, naming the key that was blanked")
+        void aBlankNameIsRejectedNamingTheKey(String blankName) {
+            // A blank value is a configuration error with a specific cause - somebody emptied a key -
+            // and the diagnostic has to say which one. Left to the JDK this raised a bare
+            // IllegalCharsetNameException quoting only the empty name, which tells an operator
+            // nothing about where to look. Whitespace-only is treated identically to empty: a code
+            // page name made of spaces is not a choice of code page.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> CobolCharsetConfig.resolve(
+                            blankName, CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY))
+                    .withMessageContaining(CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY)
+                    .withMessageContaining("required and is never defaulted")
+                    .withMessageContaining("platform default charset is never substituted");
+        }
+
+        @ParameterizedTest(name = "the syntactically illegal name [{0}] is wrapped, naming the key")
+        @ValueSource(strings = { "IBM 037", "bogus!", "US_ASCII/1", "${key}" })
+        @DisplayName("a syntactically illegal name is wrapped in one configuration error")
+        void aSyntacticallyIllegalNameIsWrappedInOneConfigurationError(String illegalName) {
+            // Charset.isSupported raises IllegalCharsetNameException for a name built from characters
+            // outside the legal set. That exception quotes the name but not the key, so it is caught
+            // and re-reported as the same IllegalStateException every other rejection uses - one
+            // exception type for every way a charset can be unusable, always naming the key and the
+            // rejected value. The original is retained as the cause rather than discarded.
+            // "${key}" is in the set deliberately: an unresolved placeholder arriving as literal text
+            // is a real configuration mistake, and the message points at that specific cause.
+            assertThatIllegalStateException()
                     .isThrownBy(() -> CobolCharsetConfig.resolve(
                             illegalName, CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY))
-                    .satisfies(thrown ->
-                            assertThat(thrown.getCharsetName()).isEqualTo(illegalName));
+                    .withMessageContaining(illegalName)
+                    .withMessageContaining(CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY)
+                    .withMessageContaining("not a syntactically legal charset name")
+                    .withCauseInstanceOf(IllegalCharsetNameException.class);
         }
 
         @Test
-        @DisplayName("a null name is rejected by the JDK as a plain illegal argument")
-        void aNullNameIsRejectedByTheJdk() {
-            // Also a pass-through. Note that IllegalCharsetNameException is itself an
-            // IllegalArgumentException, so the assertion is narrowed explicitly rather than left to
-            // accept either: null takes the "Null charset name" path, not the illegal-name path.
-            assertThatExceptionOfType(IllegalArgumentException.class)
+        @DisplayName("a null name is rejected as a configuration error, not as a raw JDK argument "
+                + "failure")
+        void aNullNameIsRejectedAsAConfigurationError() {
+            // Null cannot arrive from configuration - a missing key fails earlier, during placeholder
+            // resolution - but it can arrive from a direct call, and there is no reason for that to
+            // produce a different exception type or a message without the key in it. The blank guard
+            // covers null and blank in one test, which is also why no NullPointerException can escape
+            // this method.
+            assertThatIllegalStateException()
                     .isThrownBy(() -> CobolCharsetConfig.resolve(
                             null, CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY))
-                    .withMessage("Null charset name")
-                    .isNotInstanceOf(IllegalCharsetNameException.class);
+                    .withMessageContaining(CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY)
+                    .withMessageContaining("required and is never defaulted");
         }
 
         @Test
@@ -598,24 +634,62 @@ class CobolCharsetConfigTest {
         }
 
         @Test
-        @DisplayName("the active dataset charset defaults to the ASCII code page when unset")
-        void theActiveDatasetCharsetDefaultsToTheAsciiCodePageWhenUnset() {
-            // carddemo.charset.dataset is absent from application.yml and application-test.yml by
-            // design; the default arrives through the nested placeholder ${carddemo.charset.ascii},
-            // so the ASCII code page is written down exactly once and cannot drift. The nine text
-            // fixtures under app/data/ASCII are authoritative for this migration, which is why the
-            // ASCII page - not the EBCDIC one - is the active default.
-            runnerWithBothCodePagesConfigured().run(context -> {
-                Charset dataset = context.getBean(
-                        CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class);
-                Charset ascii = context.getBean(
-                        CobolCharsetConfig.ASCII_CHARSET_BEAN_NAME, Charset.class);
+        @DisplayName("the active dataset charset has NO default - omitting the key fails the context")
+        void theActiveDatasetCharsetHasNoDefault() {
+            // THE REGRESSION GUARD FOR THE DEFECT THIS KEY EXISTS TO PREVENT. This bean decides how
+            // every dataset byte in the module is interpreted, and it previously defaulted to the
+            // ASCII code page through a nested placeholder. The consequence was invisible and severe:
+            // application.yml's bindings address the mainframe datasets, which arrive as raw EBCDIC
+            // bytes, so a deployment that never stated its code page started cleanly and then decoded
+            // every record as ASCII - 300 plausible-looking bytes of nonsense per account record, no
+            // exception, no log line. Requiring the key converts that into a startup failure naming
+            // it, which is the only safe outcome for a migration judged on byte-level parity.
+            runnerWith(
+                    CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY + "=" + CONFIGURED_EBCDIC_NAME,
+                    CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=" + CONFIGURED_ASCII_NAME)
+                    .run(context -> {
+                        assertThat(context).hasFailed();
+                        assertThat(context).getFailure()
+                                .rootCause()
+                                .isInstanceOf(PlaceholderResolutionException.class)
+                                .hasMessageContaining("Could not resolve placeholder")
+                                .hasMessageContaining(
+                                        CobolCharsetConfig.DATASET_CHARSET_PROPERTY);
+                    });
+        }
 
-                assertThat(dataset.name()).isEqualTo("US-ASCII");
-                assertThat(dataset)
-                        .as("left unset, both beans resolve the same name and are one instance")
-                        .isSameAs(ascii);
-            });
+        @Test
+        @DisplayName("the active bean follows its own key, not the ASCII key, in both directions")
+        void theActiveBeanFollowsItsOwnKeyInBothDirections() {
+            // The two beans are distinct even where a profile gives them the same name, so that
+            // moving the data layer's code page never drags the fixture-reading code with it. Both
+            // profiles are exercised here: the fixture-backed one, where the active key names the
+            // ASCII page, and the shipped default one, where it names the EBCDIC page.
+            runnerWith(
+                    CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY + "=" + CONFIGURED_EBCDIC_NAME,
+                    CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=" + CONFIGURED_ASCII_NAME,
+                    CobolCharsetConfig.DATASET_CHARSET_PROPERTY + "=" + CONFIGURED_ASCII_NAME)
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBean(
+                                CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class).name())
+                                .isEqualTo("US-ASCII");
+                    });
+
+            runnerWith(
+                    CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY + "=" + CONFIGURED_EBCDIC_NAME,
+                    CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=" + CONFIGURED_ASCII_NAME,
+                    CobolCharsetConfig.DATASET_CHARSET_PROPERTY + "=" + CONFIGURED_EBCDIC_NAME)
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBean(
+                                CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class).name())
+                                .isEqualTo("IBM037");
+                        assertThat(context.getBean(
+                                CobolCharsetConfig.ASCII_CHARSET_BEAN_NAME, Charset.class).name())
+                                .as("the fixture code page must not move with the active one")
+                                .isEqualTo("US-ASCII");
+                    });
         }
 
         @Test
@@ -722,6 +796,114 @@ class CobolCharsetConfigTest {
     }
 
     /**
+     * What the two <em>shipped</em> configuration documents actually select.
+     *
+     * <p>Every other group in this file supplies properties inline, which proves the class behaves
+     * correctly for a given configuration but says nothing about the configuration this module
+     * ships. That gap is exactly where the defect this group guards against lived: the class
+     * defaulted its active code page to ASCII, neither document stated the key, and so a deployment
+     * whose bindings addressed the EBCDIC mainframe datasets decoded every record as ASCII - no
+     * exception, no log line, just 300 plausible-looking bytes of nonsense per account record.
+     *
+     * <p>These two assertions therefore read the real {@code application.yml} and
+     * {@code application-test.yml} through {@link ConfigDataApplicationContextInitializer}, exactly
+     * as the application does, and hold each document to the code page its own dataset bindings
+     * require. Correct Java with a silent document is not a fix; both halves have to be true.
+     */
+    @Nested
+    @DisplayName("the shipped documents - each profile names the code page its datasets need")
+    class TheShippedConfigurationDocuments {
+
+        @Test
+        @DisplayName("application.yml selects IBM037, because its bindings address the mainframe "
+                + "datasets")
+        void theDefaultProfileSelectsTheEbcdicCodePage() {
+            new ApplicationContextRunner()
+                    .withInitializer(new ConfigDataApplicationContextInitializer())
+                    .withUserConfiguration(CobolCharsetConfig.class)
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBean(
+                                CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class).name())
+                                .as("the active code page of the shipped default profile")
+                                .isEqualTo(CONFIGURED_EBCDIC_NAME);
+                        assertThat(context.getBean(
+                                CobolCharsetConfig.EBCDIC_CHARSET_BEAN_NAME, Charset.class).name())
+                                .isEqualTo(CONFIGURED_EBCDIC_NAME);
+                        assertThat(context.getBean(
+                                CobolCharsetConfig.ASCII_CHARSET_BEAN_NAME, Charset.class).name())
+                                .as("the fixture code page stays declared and stays ASCII")
+                                .isEqualTo(CONFIGURED_ASCII_NAME);
+                    });
+        }
+
+        @Test
+        @DisplayName("application-test.yml selects US-ASCII, because its bindings address the nine "
+                + "fixtures")
+        void theTestProfileSelectsTheAsciiCodePage() {
+            new ApplicationContextRunner()
+                    .withInitializer(new ConfigDataApplicationContextInitializer())
+                    .withUserConfiguration(CobolCharsetConfig.class)
+                    .withPropertyValues("spring.profiles.active=test")
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBean(
+                                CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME, Charset.class).name())
+                                .as("the active code page of the shipped test profile")
+                                .isEqualTo(CONFIGURED_ASCII_NAME);
+                        assertThat(context.getBean(
+                                CobolCharsetConfig.EBCDIC_CHARSET_BEAN_NAME, Charset.class).name())
+                                .as("both code pages stay declared under every profile")
+                                .isEqualTo(CONFIGURED_EBCDIC_NAME);
+                    });
+        }
+
+        @Test
+        @DisplayName("the two documents disagree about the active key and agree about everything "
+                + "else")
+        void theTwoDocumentsDisagreeOnlyAboutWhichCodePageIsActive() {
+            // The precise guarantee, stated as an assertion rather than a comment: "ebcdic" and
+            // "ascii" name what the two code pages ARE and must never differ between profiles,
+            // because an encoding is a parity concern rather than an environmental one. Only
+            // "dataset" - which of them is in use - follows the datasets a profile is bound to.
+            List<String> defaultProfile = new ArrayList<>();
+            List<String> testProfile = new ArrayList<>();
+            new ApplicationContextRunner()
+                    .withInitializer(new ConfigDataApplicationContextInitializer())
+                    .withUserConfiguration(CobolCharsetConfig.class)
+                    .run(context -> defaultProfile.addAll(resolvedCodePageNames(context)));
+            new ApplicationContextRunner()
+                    .withInitializer(new ConfigDataApplicationContextInitializer())
+                    .withUserConfiguration(CobolCharsetConfig.class)
+                    .withPropertyValues("spring.profiles.active=test")
+                    .run(context -> testProfile.addAll(resolvedCodePageNames(context)));
+
+            assertThat(defaultProfile)
+                    .containsExactly(CONFIGURED_EBCDIC_NAME, CONFIGURED_ASCII_NAME,
+                            CONFIGURED_EBCDIC_NAME);
+            assertThat(testProfile)
+                    .containsExactly(CONFIGURED_EBCDIC_NAME, CONFIGURED_ASCII_NAME,
+                            CONFIGURED_ASCII_NAME);
+        }
+
+        /**
+         * The three published code-page names, in EBCDIC, ASCII, active order.
+         *
+         * @param context a started context carrying the three charset beans
+         * @return their canonical charset names
+         */
+        private List<String> resolvedCodePageNames(ApplicationContext context) {
+            return Stream.of(
+                            CobolCharsetConfig.EBCDIC_CHARSET_BEAN_NAME,
+                            CobolCharsetConfig.ASCII_CHARSET_BEAN_NAME,
+                            CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME)
+                    .map(beanName -> context.getBean(beanName, Charset.class).name())
+                    .toList();
+        }
+    }
+
+
+    /**
      * The configuration keys, their exact spellings, and what happens when one is missing or blank.
      *
      * <p>An application that silently decodes mainframe records with the wrong code page is worse
@@ -748,14 +930,15 @@ class CobolCharsetConfigTest {
         }
 
         @Test
-        @DisplayName("the two required keys carry no default and the active key defaults to ASCII")
-        void theTwoRequiredKeysCarryNoDefaultAndTheActiveKeyDefaultsToAscii()
+        @DisplayName("all three keys carry no default at all - every expression is a bare placeholder")
+        void allThreeKeysCarryNoDefault()
                 throws NoSuchMethodException {
             // Read straight off the constructor's @Value expressions, so the "a required key is
-            // never defaulted" guarantee is checked mechanically rather than trusted. The third
-            // expression is the nested placeholder that supplies the default in the property
-            // resolver rather than in a Java conditional - which is why this class has only one
-            // branch to cover at all.
+            // never defaulted" guarantee is checked mechanically rather than trusted. Every one of
+            // the three is a BARE placeholder: no ":" separator, therefore no default, therefore no
+            // way for a missing key to be papered over. The third expression matters most - it once
+            // carried a nested ${carddemo.charset.ascii} default, which is exactly how production
+            // came to read EBCDIC datasets as ASCII without failing.
             Constructor<?> constructor = CobolCharsetConfig.class
                     .getDeclaredConstructor(String.class, String.class, String.class);
 
@@ -770,18 +953,24 @@ class CobolCharsetConfigTest {
             assertThat(expressions).containsExactly(
                     "${carddemo.charset.ebcdic}",
                     "${carddemo.charset.ascii}",
-                    "${carddemo.charset.dataset:${carddemo.charset.ascii}}");
+                    "${carddemo.charset.dataset}");
+            assertThat(expressions)
+                    .as("a ':' anywhere in one of these expressions would be a default, and a "
+                            + "default is how a missing code page reaches production unnoticed")
+                    .allSatisfy(expression -> assertThat(expression).doesNotContain(":"));
         }
 
         @ParameterizedTest(name = "removing {0} fails the context naming that key")
         @CsvSource({
-            "carddemo.charset.ebcdic, carddemo.charset.ascii=US-ASCII",
-            "carddemo.charset.ascii,  carddemo.charset.ebcdic=IBM037",
+            "carddemo.charset.ebcdic, carddemo.charset.ascii=US-ASCII,   carddemo.charset.dataset=US-ASCII",
+            "carddemo.charset.ascii,  carddemo.charset.ebcdic=IBM037,    carddemo.charset.dataset=IBM037",
+            "carddemo.charset.dataset, carddemo.charset.ebcdic=IBM037,   carddemo.charset.ascii=US-ASCII",
         })
-        @DisplayName("removing either required key fails the context with Spring's own diagnostic")
-        void removingEitherRequiredKeyFailsTheContext(
-                String omittedKey, String theOtherKeyAsProperty) {
-            runnerWith(theOtherKeyAsProperty).run(context -> {
+        @DisplayName("removing any of the three required keys fails the context with Spring's own "
+                + "diagnostic")
+        void removingAnyRequiredKeyFailsTheContext(
+                String omittedKey, String firstRemainingKey, String secondRemainingKey) {
+            runnerWith(firstRemainingKey, secondRemainingKey).run(context -> {
                 assertThat(context).hasFailed();
                 assertThat(context).getFailure()
                         .rootCause()
@@ -791,21 +980,36 @@ class CobolCharsetConfigTest {
             });
         }
 
-        @Test
-        @DisplayName("a blank value is not treated as absence - it is rejected as a charset name")
-        void aBlankValueIsNotTreatedAsAbsence() {
+        @ParameterizedTest(name = "blanking {0} fails the context naming that key")
+        @CsvSource({
+            "carddemo.charset.ebcdic",
+            "carddemo.charset.ascii",
+            "carddemo.charset.dataset",
+        })
+        @DisplayName("a blank value is not treated as absence - it is rejected naming its own key")
+        void aBlankValueIsNotTreatedAsAbsence(String blankedKey) {
             // Blanking a key out must not quietly stand in for a code page. There is no default to
-            // fall back to, so the empty string travels all the way to the resolver and the JDK
-            // rejects it as a syntactically illegal charset name. The context does not start, which
-            // is the correct outcome.
-            runnerWith(
-                    CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY + "=",
-                    CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=" + CONFIGURED_ASCII_NAME)
+            // fall back to, so the empty string travels all the way to the resolver - and the
+            // resolver rejects it in its own right rather than letting the JDK raise a bare
+            // IllegalCharsetNameException that quotes only the empty name. The difference is the
+            // whole value of the diagnostic: an operator needs to know WHICH key was blanked, and
+            // only this module knows that.
+            Map<String, String> properties = new LinkedHashMap<>(Map.of(
+                    CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY, CONFIGURED_EBCDIC_NAME,
+                    CobolCharsetConfig.ASCII_CHARSET_PROPERTY, CONFIGURED_ASCII_NAME,
+                    CobolCharsetConfig.DATASET_CHARSET_PROPERTY, CONFIGURED_ASCII_NAME));
+            properties.put(blankedKey, "");
+
+            runnerWith(properties.entrySet().stream()
+                    .map(entry -> entry.getKey() + "=" + entry.getValue())
+                    .toArray(String[]::new))
                     .run(context -> {
                         assertThat(context).hasFailed();
                         assertThat(context).getFailure()
                                 .rootCause()
-                                .isInstanceOf(IllegalCharsetNameException.class);
+                                .isInstanceOf(IllegalStateException.class)
+                                .hasMessageContaining(blankedKey)
+                                .hasMessageContaining("required and is never defaulted");
                     });
         }
     }
@@ -996,18 +1200,32 @@ class CobolCharsetConfigTest {
         }
 
         @Test
-        @DisplayName("its declared methods are exactly the three bean factories and the resolver")
+        @DisplayName("its declared methods are exactly the three bean factories, the resolver and "
+                + "the message opener")
         void itsDeclaredMethodsAreExactlyTheThreeBeanFactoriesAndTheResolver() {
             // Pins the member surface so a fourth bean, a static accessor or an I/O helper cannot
             // appear unnoticed. The class performs no I/O at all: it turns configured names into
             // Charset instances, and locating datasets belongs to the repositories.
+            //
+            // "rejected" is private and pure: it opens all three of the resolver's failure messages
+            // with the property key and the rejected value. It exists precisely so that no arm can
+            // be the one that forgets to name the key, which is the single most useful thing a
+            // charset diagnostic carries. It is asserted to be private below, so it adds nothing to
+            // the published surface this test exists to police.
             assertThat(declaredMethodsOfConfiguration())
                     .extracting(Method::getName)
                     .containsExactlyInAnyOrder(
                             "carddemoEbcdicCharset",
                             "carddemoAsciiCharset",
                             "carddemoDatasetCharset",
-                            "resolve");
+                            "resolve",
+                            "rejected");
+            assertThat(declaredMethodsOfConfiguration())
+                    .filteredOn(method -> "rejected".equals(method.getName()))
+                    .singleElement()
+                    .satisfies(method -> assertThat(Modifier.isPrivate(method.getModifiers()))
+                            .as("the message opener is an internal detail, not published API")
+                            .isTrue());
         }
 
         @Test

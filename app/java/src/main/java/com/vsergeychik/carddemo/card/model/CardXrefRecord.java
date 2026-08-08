@@ -1,9 +1,11 @@
 package com.vsergeychik.carddemo.card.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 import java.nio.charset.Charset;
 import java.util.Objects;
@@ -303,11 +305,11 @@ public final class CardXrefRecord {
         Objects.requireNonNull(xrefCardNum, "XREF-CARD-NUM is required; it is PIC X(16), so pass an "
                 + "empty string to denote SPACES rather than null");
         if (xrefCardNum.length() > XREF_CARD_NUM_LENGTH) {
-            throw new IllegalArgumentException("XREF-CARD-NUM '" + xrefCardNum + "' is "
-                    + xrefCardNum.length() + " character(s) but the picture is PIC X("
-                    + XREF_CARD_NUM_LENGTH + "). A COBOL MOVE would truncate this on the right; if "
-                    + "that is the intended semantic, apply FixedWidthCodec.movePicX(value, "
-                    + XREF_CARD_NUM_LENGTH + ") at the call site so the truncation is visible there");
+            throw new IllegalArgumentException("XREF-CARD-NUM was given " + xrefCardNum.length()
+                    + " character(s) but the picture is PIC X(" + XREF_CARD_NUM_LENGTH + "). A COBOL "
+                    + "MOVE would truncate this on the right; if that is the intended semantic, apply "
+                    + "FixedWidthCodec.movePicX(value, " + XREF_CARD_NUM_LENGTH + ") at the call site "
+                    + "so the truncation is visible there");
         }
         requireStorable(xrefCustId, XREF_CUST_ID_MAX_VALUE, XREF_CUST_ID_NAME, XREF_CUST_ID_LENGTH);
         requireStorable(xrefAcctId, XREF_ACCT_ID_MAX_VALUE, XREF_ACCT_ID_NAME, XREF_ACCT_ID_LENGTH);
@@ -334,11 +336,11 @@ public final class CardXrefRecord {
     private static void requireStorable(long value, long maximum, String field, int digits) {
         if (value < 0) {
             throw new IllegalArgumentException(field + " is PIC 9(" + digits + "), an unsigned "
-                    + "picture with no sign position, so it cannot hold " + value);
+                    + "picture with no sign position, so it cannot hold a negative value");
         }
         if (value > maximum) {
-            throw new IllegalArgumentException(field + " value " + value + " needs more than "
-                    + digits + " digit(s) and does not fit PIC 9(" + digits + "); the largest "
+            throw new IllegalArgumentException(field + " was given a value needing more than "
+                    + digits + " digit(s), which does not fit PIC 9(" + digits + "); the largest "
                     + "storable value is " + maximum);
         }
     }
@@ -612,20 +614,29 @@ public final class CardXrefRecord {
 
     /**
      * A diagnostic rendering that names each field with its copybook name, so a failing assertion
-     * reads in the vocabulary of {@code CVACT03Y} rather than of Java. The card number is quoted so
-     * that its trailing padding, if any, is visible.
+     * reads in the vocabulary of {@code CVACT03Y} rather than of Java, and that withholds the values
+     * themselves per {@link SensitiveDiagnostics}.
+     *
+     * <p>All three of this record's fields are sensitive and there is nothing else in it: the
+     * cross-reference exists precisely to link a card number to a customer and an account, so rendering
+     * it in full published the association it was built to hold. Each is masked to its last four
+     * characters at full stored width, which is enough to correlate two log lines about the same record
+     * and not enough to reconstruct any of them.
      *
      * <p>This is a diagnostic only and is never the record's wire form: the
-     * {@value #RECORD_LENGTH}-byte image comes from {@link #encode(Charset)}.
+     * {@value #RECORD_LENGTH}-byte image comes from {@link #encode(Charset)}, which returns real bytes
+     * because a caller asked for them by name.
      *
-     * @return a single-line description of this record
+     * @return a single-line description of this record, safe to log
      */
     @Override
     public String toString() {
         return "CARD-XREF-RECORD["
-                + XREF_CARD_NUM_NAME + "='" + xrefCardNum + '\''
-                + ", " + XREF_CUST_ID_NAME + '=' + xrefCustId
-                + ", " + XREF_ACCT_ID_NAME + '=' + xrefAcctId
+                + XREF_CARD_NUM_NAME + "='" + SensitiveDiagnostics.maskPan(xrefCardNum) + '\''
+                + ", " + XREF_CUST_ID_NAME + '='
+                + SensitiveDiagnostics.maskIdentifier(xrefCustId, XREF_CUST_ID_LENGTH)
+                + ", " + XREF_ACCT_ID_NAME + '='
+                + SensitiveDiagnostics.maskIdentifier(xrefAcctId, XREF_ACCT_ID_LENGTH)
                 + ']';
     }
 }

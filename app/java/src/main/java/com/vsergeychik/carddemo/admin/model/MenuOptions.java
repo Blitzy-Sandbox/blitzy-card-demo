@@ -12,6 +12,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Objects;
 
 /**
@@ -76,11 +77,13 @@ import java.util.Objects;
  *       sibling admin menu's equivalent stops at ten.</li>
  * </ol>
  *
- * Slots 11 and 12 are therefore <strong>present but empty</strong>, and are never trimmed away.
- * Their content is the initialised state of storage the copybook declares no {@code VALUE} for:
- * option number 0 with the zero-filled image {@code "00"}, a name of
- * {@value #OPT_NAME_LENGTH} spaces, a program name of {@value #OPT_PGMNAME_LENGTH} spaces and a
- * user-type column of {@value #OPT_USRTYPE_LENGTH} space. See {@link MenuOption#unvalued()}.
+ * Slots 11 and 12 are therefore <strong>present as slots and absent as entries</strong>, and are never
+ * trimmed away. What they contain at run time is not something this copybook determines: they carry no
+ * {@code VALUE} clause, and they lie past the very end of the group the overlay redefines, so IBM
+ * Enterprise COBOL's rule - storage is initialised from applicable {@code VALUE} clauses - reaches them
+ * with nothing to apply. This class therefore reports them as absent rather than asserting a
+ * zero-and-blanks entry, which is what it used to do and what nothing in the copybook supports. See
+ * {@link #isSpecified(int)} and {@link #unspecifiedTailSpan()}.
  *
  * <h2>The REDEFINES overlay is LARGER than the storage it redefines - documented, not corrected</h2>
  *
@@ -343,6 +346,15 @@ public final class MenuOptions {
     public static final int ACTIVE_OPTION_COUNT = 10;
 
     /**
+     * The first subscript the copybook declares no {@code VALUE} for:
+     * {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE}.
+     *
+     * <p>Named so that the boundary between the storage this copybook determines and the storage it
+     * does not is stated once, as a constant, rather than written out as "11" wherever it is needed.
+     */
+    public static final int SPECIFIED_OPTION_COUNT_PLUS_ONE = ACTIVE_OPTION_COUNT + 1;
+
+    /**
      * The lowest legal COBOL subscript: {@value #FIRST_SUBSCRIPT}. Published so that a caller
      * iterating the table never writes a bare {@code 1} and never accidentally starts at Java's 0.
      */
@@ -387,6 +399,15 @@ public final class MenuOptions {
      */
     public static final int GROUP_LENGTH = MENU_OPT_COUNT_LENGTH + TABLE_LENGTH;
 
+    /**
+     * The suffix that names the unspecified tail descriptor: {@value #UNSPECIFIED_TAIL_SUFFIX}.
+     *
+     * <p>A suffix rather than a copybook name, because the copybook has no name for this region - it is
+     * the part of the {@code OCCURS} overlay that reaches past the group it redefines. Naming it after
+     * the overlay makes the relationship legible without implying the copybook declared it.
+     */
+    public static final String UNSPECIFIED_TAIL_SUFFIX = "-UNSPECIFIED-TAIL";
+
     /** {@code CDEMO-MENU-OPT-NUM} - offset {@value #OPT_NUM_OFFSET} within an entry. */
     public static final int OPT_NUM_OFFSET = 0;
 
@@ -400,17 +421,21 @@ public final class MenuOptions {
     public static final int OPT_USRTYPE_OFFSET = OPT_PGMNAME_OFFSET + OPT_PGMNAME_LENGTH;
 
     /**
-     * The option number an unvalued slot reads back as. {@code CDEMO-MENU-OPT-NUM} is
-     * {@code PIC 9(02)}, so storage the copybook declares no {@code VALUE} for initialises to the
-     * zero-filled image {@code "00"}, which decodes to {@value #UNVALUED_OPT_NUM}. No populated entry
-     * carries this number - they run {@value #FIRST_SUBSCRIPT} to {@value #ACTIVE_OPTION_COUNT} - so
-     * it identifies an empty slot exactly. See {@link MenuOption#unvalued()}.
+     * The lowest value {@code CDEMO-MENU-OPT-NUM PIC 9(02)} can hold: {@value #MIN_OPT_NUM}.
+     *
+     * <p>It is a range bound and nothing more. It is deliberately <strong>not</strong> "the number an
+     * unvalued slot reads back as": the copybook declares no {@code VALUE} for slots
+     * {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} and {@value #TABLE_SIZE}, and those slots lie beyond
+     * the {@value #POPULATED_DATA_LENGTH} bytes of {@code CDEMO-MENU-OPTIONS-DATA} that the overlay
+     * redefines, so what they contain at run time is not something this copybook, or this class, can
+     * state. Asserting {@code "00"} there would be inventing a fact. See
+     * {@link #isSpecified(int)}.
      */
-    public static final int UNVALUED_OPT_NUM = 0;
+    public static final int MIN_OPT_NUM = 0;
 
     /**
      * The highest value {@code CDEMO-MENU-OPT-NUM PIC 9(02)} can hold: {@value #MAX_OPT_NUM}. Two
-     * digits of unsigned zoned display, so the range is {@value #UNVALUED_OPT_NUM} to
+     * digits of unsigned zoned display, so the range is {@value #MIN_OPT_NUM} to
      * {@value #MAX_OPT_NUM} inclusive. The same {@code PIC 9(02)} range applies to the program's own
      * {@code WS-OPTION} at {@code app/cbl/COMEN01C.cbl:46}, which is why a subscript far outside the
      * table is reachable at all.
@@ -464,8 +489,8 @@ public final class MenuOptions {
      * copybook literals and a short one is a transcription error, not data. The strings are handed
      * back exactly as stored - untrimmed, fully padded.
      *
-     * @param menuOptNum      {@code CDEMO-MENU-OPT-NUM} as a number, {@value #UNVALUED_OPT_NUM} to
-     *                        {@value #MAX_OPT_NUM}; {@value #UNVALUED_OPT_NUM} for an unvalued slot
+     * @param menuOptNum      {@code CDEMO-MENU-OPT-NUM} as a number, {@value #MIN_OPT_NUM} to
+     *                        {@value #MAX_OPT_NUM} - the whole range {@code PIC 9(02)} admits
      * @param menuOptNumImage {@code CDEMO-MENU-OPT-NUM} as its raw {@value #OPT_NUM_LENGTH}-byte
      *                        zero-filled zoned image, which must decode to {@code menuOptNum}
      * @param menuOptName     {@code CDEMO-MENU-OPT-NAME}, exactly {@value #OPT_NAME_LENGTH}
@@ -473,9 +498,9 @@ public final class MenuOptions {
      * @param menuOptPgmName  {@code CDEMO-MENU-OPT-PGMNAME}, exactly {@value #OPT_PGMNAME_LENGTH}
      *                        characters, right-space-padded and never trimmed
      * @param menuOptUsrType  {@code CDEMO-MENU-OPT-USRTYPE}, exactly {@value #OPT_USRTYPE_LENGTH}
-     *                        character. All ten populated entries carry {@code "U"}; an unvalued slot
-     *                        carries a space. Interpreting this column is the consuming service's
-     *                        decision, not this type's
+     *                        character. All ten entries the copybook values carry {@code "U"}.
+     *                        Interpreting this column is the consuming service's decision, not this
+     *                        type's
      */
     public record MenuOption(int menuOptNum,
                              String menuOptNumImage,
@@ -489,16 +514,16 @@ public final class MenuOptions {
          *
          * @throws NullPointerException     if any string component is {@code null}
          * @throws IllegalArgumentException if {@code menuOptNum} is outside
-         *                                  {@value #UNVALUED_OPT_NUM} to {@value #MAX_OPT_NUM}, if
+         *                                  {@value #MIN_OPT_NUM} to {@value #MAX_OPT_NUM}, if
          *                                  any string component is not exactly its declared width, if
          *                                  {@code menuOptNumImage} is not all digits, or if
          *                                  {@code menuOptNumImage} does not decode to
          *                                  {@code menuOptNum}
          */
         public MenuOption {
-            if (menuOptNum < UNVALUED_OPT_NUM || menuOptNum > MAX_OPT_NUM) {
+            if (menuOptNum < MIN_OPT_NUM || menuOptNum > MAX_OPT_NUM) {
                 throw new IllegalArgumentException("CDEMO-MENU-OPT-NUM is " + menuOptNum
-                        + "; the copybook declares it PIC 9(02), so it holds " + UNVALUED_OPT_NUM
+                        + "; the copybook declares it PIC 9(02), so it holds " + MIN_OPT_NUM
                         + " to " + MAX_OPT_NUM + " inclusive");
             }
             requireExactWidth(menuOptNumImage, OPT_NUM_LENGTH, CDEMO_MENU_OPT_NUM);
@@ -523,7 +548,7 @@ public final class MenuOptions {
          * left-zero-filling. Passing text longer than its declared width is rejected rather than
          * truncated, because every caller of this factory is transcribing a copybook literal.
          *
-         * @param menuOptNum     {@code CDEMO-MENU-OPT-NUM}, {@value #UNVALUED_OPT_NUM} to
+         * @param menuOptNum     {@code CDEMO-MENU-OPT-NUM}, {@value #MIN_OPT_NUM} to
          *                       {@value #MAX_OPT_NUM}
          * @param menuOptName    {@code CDEMO-MENU-OPT-NAME}, at most {@value #OPT_NAME_LENGTH}
          *                       characters; padded to exactly that width
@@ -545,24 +570,6 @@ public final class MenuOptions {
                     picXImage(menuOptName, OPT_NAME_LENGTH, CDEMO_MENU_OPT_NAME),
                     picXImage(menuOptPgmName, OPT_PGMNAME_LENGTH, CDEMO_MENU_OPT_PGMNAME),
                     picXImage(menuOptUsrType, OPT_USRTYPE_LENGTH, CDEMO_MENU_OPT_USRTYPE));
-        }
-
-        /**
-         * Whether this is one of the slots the copybook declares no {@code VALUE} for - slots 11 and
-         * 12 of the {@value #TABLE_SIZE}-element table, which exist because the
-         * {@value #TABLE_LENGTH}-byte {@code CDEMO-MENU-OPTIONS} overlay is wider than the
-         * {@value #POPULATED_DATA_LENGTH} bytes of {@code CDEMO-MENU-OPTIONS-DATA} it redefines.
-         *
-         * <p>This reports a property of the copybook's storage, not a business rule: an unvalued slot
-         * is present, addressable and returned like any other, and is never trimmed out of the table.
-         * The test is exact rather than heuristic, because {@code CDEMO-MENU-OPT-NUM} is
-         * {@code PIC 9(02)} and so reads back {@value #UNVALUED_OPT_NUM} from unvalued storage, while
-         * every populated entry carries {@value #FIRST_SUBSCRIPT} to {@value #ACTIVE_OPTION_COUNT}.
-         *
-         * @return {@code true} when {@link #menuOptNum()} is {@value #UNVALUED_OPT_NUM}
-         */
-        public boolean unvalued() {
-            return menuOptNum == UNVALUED_OPT_NUM;
         }
 
         private static void requireExactWidth(String value, int declaredWidth, String cobolName) {
@@ -603,35 +610,45 @@ public final class MenuOptions {
 
     /**
      * All {@value #TABLE_SIZE} slots of {@code CDEMO-MENU-OPT OCCURS 12 TIMES}, in subscript order,
-     * with slots 11 and 12 present and empty.
+     * with slots {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} and {@value #TABLE_SIZE} <strong>absent
+     * rather than empty</strong>.
+     *
+     * <p>An {@link Optional} rather than a zero-and-blanks entry, because those two slots have no
+     * content this copybook determines and an entry claiming option number 0 with blank text would be
+     * a fact invented here. Absence is the accurate answer, and it is the one shape a caller cannot
+     * read a fabricated value out of by accident.
      */
-    private static final List<MenuOption> OPTIONS = List.of(
+    private static final List<Optional<MenuOption>> OPTIONS = List.of(
             //             num  CDEMO-MENU-OPT-NAME     PGMNAME       USRTYPE   copybook lines
-            MenuOption.of(1, "Account View", "COACTVWC", "U"),        // L25-L29
-            MenuOption.of(2, "Account Update", "COACTUPC", "U"),      // L31-L35
-            MenuOption.of(3, "Credit Card List", "COCRDLIC", "U"),    // L37-L41
-            MenuOption.of(4, "Credit Card View", "COCRDSLC", "U"),    // L43-L47
-            MenuOption.of(5, "Credit Card Update", "COCRDUPC", "U"),  // L49-L53
-            MenuOption.of(6, "Transaction List", "COTRN00C", "U"),    // L55-L59
+            specified(1, "Account View", "COACTVWC", "U"),        // L25-L29
+            specified(2, "Account Update", "COACTUPC", "U"),      // L31-L35
+            specified(3, "Credit Card List", "COCRDLIC", "U"),    // L37-L41
+            specified(4, "Credit Card View", "COCRDSLC", "U"),    // L43-L47
+            specified(5, "Credit Card Update", "COCRDUPC", "U"),  // L49-L53
+            specified(6, "Transaction List", "COTRN00C", "U"),    // L55-L59
             // Options 7 and 8 pair 'Transaction View' with COTRN01C and 'Transaction Add' with
             // COTRN02C. That is what the copybook says, and it is transcribed exactly as it stands.
             // The pairing is the source of the documented view/add naming inversion elsewhere in this
             // migration and must not be "corrected" here.
-            MenuOption.of(7, "Transaction View", "COTRN01C", "U"),    // L61-L65
+            specified(7, "Transaction View", "COTRN01C", "U"),    // L61-L65
             // Option 8's name comes from the LIVE line 70 only. Line 69 immediately above it -
             // *        'Transaction Add (Admin Only)       '.
             // is commented out (asterisk in column 7) and is an abandoned earlier wording. It is
             // recorded here so nobody restores it, and nothing is inferred from it: the live user-type
             // column on line 72 is 'U', not 'A'. See the class documentation.
-            MenuOption.of(8, "Transaction Add", "COTRN02C", "U"),     // L67-L68, L70-L72
-            MenuOption.of(9, "Transaction Reports", "CORPT00C", "U"), // L74-L78
-            MenuOption.of(10, "Bill Payment", "COBIL00C", "U"),       // L80-L84
+            specified(8, "Transaction Add", "COTRN02C", "U"),     // L67-L68, L70-L72
+            specified(9, "Transaction Reports", "CORPT00C", "U"), // L74-L78
+            specified(10, "Bill Payment", "COBIL00C", "U"),       // L80-L84
             // Slots 11 and 12 carry no copybook VALUE. They exist because the CDEMO-MENU-OPTIONS
             // overlay on line 87 is 552 bytes over the 460 bytes of CDEMO-MENU-OPTIONS-DATA that it
-            // redefines, so they are the initialised state of storage nothing was ever moved into:
-            // a zero-filled PIC 9(02) and space-filled PIC X columns. They are kept, never trimmed.
-            unvaluedOption(),
-            unvaluedOption());
+            // redefines - so they are storage NOTHING WAS EVER MOVED INTO, lying past the end of the
+            // group being redefined, and what a compiler and a run-time actually leave there is not
+            // determined by this copybook. They are kept as slots and never trimmed, because the table
+            // really is twelve elements wide and a subscript of 11 or 12 really is reachable; but they
+            // are absent rather than valued, because "zero-filled PIC 9(02) and space-filled PIC X"
+            // was a fact this file used to state and the copybook never does.
+            unspecified(),
+            unspecified());
 
     /**
      * The {@code CDEMO-MENU-OPTIONS-DATA} view: the {@value #ACTIVE_OPTION_COUNT} entries the
@@ -639,8 +656,13 @@ public final class MenuOptions {
      * {@value #POPULATED_DATA_LENGTH} bytes of the same backing storage {@link #OPTIONS} projects in
      * full.
      */
-    private static final List<MenuOption> ACTIVE_OPTIONS =
-            List.copyOf(OPTIONS.subList(0, ACTIVE_OPTION_COUNT));
+    private static final List<MenuOption> ACTIVE_OPTIONS = OPTIONS.subList(0, ACTIVE_OPTION_COUNT)
+            .stream()
+            .map(slot -> slot.orElseThrow(() -> new IllegalStateException(
+                    "Every one of the first " + ACTIVE_OPTION_COUNT + " slots of "
+                            + CDEMO_MENU_OPTIONS + " carries a copybook VALUE, so none may be absent; "
+                            + "this class is mis-transcribed if one is")))
+            .toList();
 
     // =================================================================================================
     // Descriptors. Declared once, immutable, and re-proved at class initialisation by RecordLayout's
@@ -672,6 +694,16 @@ public final class MenuOptions {
      */
     private static final FieldSpan TABLE_SPAN = FieldSpan.redefining(
             CDEMO_MENU_OPTIONS, TABLE_OFFSET, TABLE_LENGTH, PictureKind.ALPHANUMERIC);
+
+    /**
+     * The unspecified tail as a descriptor: the bytes of slots
+     * {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} through {@value #TABLE_SIZE}. Declared as a
+     * {@code FILLER}-kind overlay with no initial value, which is the honest shape for storage the
+     * copybook neither values nor accounts for. Exposed by {@link #unspecifiedTailSpan()}.
+     */
+    private static final FieldSpan UNSPECIFIED_TAIL_SPAN = FieldSpan.redefining(
+            CDEMO_MENU_OPTIONS + UNSPECIFIED_TAIL_SUFFIX, TABLE_OFFSET + POPULATED_DATA_LENGTH,
+            TABLE_LENGTH - POPULATED_DATA_LENGTH, PictureKind.FILLER);
 
     /**
      * The complete, self-checking layout of {@code 01 CARDDEMO-MAIN-MENU-OPTIONS}:
@@ -708,16 +740,24 @@ public final class MenuOptions {
 
     /**
      * The {@code CDEMO-MENU-OPTIONS} table view: all {@value #TABLE_SIZE} slots in subscript order,
-     * <strong>zero-based</strong> as a Java list, with slots 11 and 12 present and
-     * {@linkplain MenuOption#unvalued() unvalued}.
+     * <strong>zero-based</strong> as a Java list, with slots
+     * {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} and {@value #TABLE_SIZE} <strong>empty</strong>.
+     *
+     * <p>Empty means exactly that: the copybook gives those two slots no {@code VALUE} and they sit
+     * past the end of the group the {@code OCCURS} overlay redefines, so there is no entry to report
+     * and none is invented. A caller that walks all twelve slots must decide what to do about an absent
+     * one, which is the point - the previous shape handed back option number 0 with blank text and let
+     * that be mistaken for data.
      *
      * <p>The list is unmodifiable and its elements are immutable, so nothing a caller does can alter
      * the table. To address a slot by its COBOL subscript, use {@link #optionBySubscript(int)} rather
-     * than subtracting one here.
+     * than subtracting one here; for the {@value #ACTIVE_OPTION_COUNT} slots that do carry values, use
+     * {@link #activeOptions()} and avoid the question altogether.
      *
-     * @return an unmodifiable list of exactly {@value #TABLE_SIZE} entries
+     * @return an unmodifiable list of exactly {@value #TABLE_SIZE} slots, of which the first
+     *         {@value #ACTIVE_OPTION_COUNT} are present
      */
-    public static List<MenuOption> options() {
+    public static List<Optional<MenuOption>> options() {
         return OPTIONS;
     }
 
@@ -742,7 +782,7 @@ public final class MenuOptions {
      *
      * <p>An out-of-range subscript is <strong>rejected, never clamped</strong>. That is deliberate and
      * load-bearing: the user-type filter at {@code app/cbl/COMEN01C.cbl:136-143} is not guarded by the
-     * program's error flag, and {@code WS-OPTION PIC 9(02)} holds {@value #UNVALUED_OPT_NUM} to
+     * program's error flag, and {@code WS-OPTION PIC 9(02)} holds {@value #MIN_OPT_NUM} to
      * {@value #MAX_OPT_NUM}, so the legacy program can reach this access with a subscript far outside
      * the table after a failed numeric validation. Bounding the access is the consuming service's
      * decision; silently substituting slot 1 or slot {@value #TABLE_SIZE} here would hide the very
@@ -750,13 +790,36 @@ public final class MenuOptions {
      *
      * @param cobolSubscript the one-based subscript, {@value #FIRST_SUBSCRIPT} to
      *                       {@value #TABLE_SIZE} inclusive
-     * @return the addressed entry, which may be {@linkplain MenuOption#unvalued() unvalued}
+     * @return the addressed entry, or empty for subscript
+     *         {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} or {@value #TABLE_SIZE}, which the copybook
+     *         gives no {@code VALUE}
      * @throws IndexOutOfBoundsException if {@code cobolSubscript} is below {@value #FIRST_SUBSCRIPT}
      *                                   or above {@value #TABLE_SIZE}
      */
-    public static MenuOption optionBySubscript(int cobolSubscript) {
+    public static Optional<MenuOption> optionBySubscript(int cobolSubscript) {
         requireSubscript(cobolSubscript);
         return OPTIONS.get(cobolSubscript - FIRST_SUBSCRIPT);
+    }
+
+    /**
+     * Whether the copybook determines the content of a slot.
+     *
+     * <p>True for subscripts {@value #FIRST_SUBSCRIPT} to {@value #ACTIVE_OPTION_COUNT}, which carry
+     * {@code VALUE} clauses; false for {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} and
+     * {@value #TABLE_SIZE}, which do not. Offered as a question a caller can ask <em>before</em>
+     * addressing a slot, so that a subscript arriving from
+     * {@code app/cbl/COMEN01C.cbl}'s {@code WS-OPTION} can be classified without an
+     * {@link Optional} round trip.
+     *
+     * @param cobolSubscript the one-based subscript, {@value #FIRST_SUBSCRIPT} to
+     *                       {@value #TABLE_SIZE} inclusive
+     * @return {@code true} when the copybook declares a {@code VALUE} for that slot
+     * @throws IndexOutOfBoundsException if {@code cobolSubscript} is below {@value #FIRST_SUBSCRIPT}
+     *                                   or above {@value #TABLE_SIZE}
+     */
+    public static boolean isSpecified(int cobolSubscript) {
+        requireSubscript(cobolSubscript);
+        return cobolSubscript <= ACTIVE_OPTION_COUNT;
     }
 
     /**
@@ -930,7 +993,15 @@ public final class MenuOptions {
         FixedWidthRecord area = codec.newRecord(GROUP_LAYOUT);
         codec.writePic9(area, MENU_OPT_COUNT_SPAN, menuOptCountImage());
         for (int subscript = FIRST_SUBSCRIPT; subscript <= TABLE_SIZE; subscript++) {
-            MenuOption option = OPTIONS.get(subscript - FIRST_SUBSCRIPT);
+            Optional<MenuOption> slot = OPTIONS.get(subscript - FIRST_SUBSCRIPT);
+            if (slot.isEmpty()) {
+                // Nothing is written for a slot the copybook gives no VALUE. Its bytes are whatever
+                // newRecord left there for a span with no declared literal, and that padding is this
+                // module's own choice of a deterministic image - it is not, and must not be read as, a
+                // statement about what the legacy program's storage holds. See unspecifiedTailSpan().
+                continue;
+            }
+            MenuOption option = slot.get();
             List<FieldSpan> spans = entryFieldSpans(subscript);
             codec.writePic9(area, spans.get(NUM_SUBFIELD), option.menuOptNumImage());
             codec.writePicX(area, spans.get(NAME_SUBFIELD), option.menuOptName());
@@ -942,8 +1013,10 @@ public final class MenuOptions {
 
     /**
      * The {@value #GROUP_LENGTH}-byte image produced by initialising a record from
-     * {@link #GROUP_LAYOUT} alone - that is, from the copybook's {@code VALUE} clauses and the pad byte
-     * of each unvalued span, with no entry ever consulted.
+     * {@link #GROUP_LAYOUT} alone - that is, from the copybook's {@code VALUE} clauses and, for a span
+     * that has none, this module's own pad byte, with no entry ever consulted. The pad is determinism
+     * this class chooses so that its output is reproducible; for the tail it is not a claim about what
+     * the legacy program's storage holds. See {@link #unspecifiedTailSpan()}.
      *
      * <p>This is the copybook's declared initial state, and it is the independent half of the
      * cross-check described on {@link #encode(Charset)}. The two paths differ in more than plumbing:
@@ -978,20 +1051,49 @@ public final class MenuOptions {
      *                                  if a decoded column is not valid for its declared
      *                                  {@code PICTURE}
      */
-    public static List<MenuOption> decode(byte[] image, Charset charset) {
+    public static List<Optional<MenuOption>> decode(byte[] image, Charset charset) {
         FixedWidthCodec codec = new FixedWidthCodec(charset);
         FixedWidthRecord area = codec.wrap(image, GROUP_LAYOUT);
-        List<MenuOption> decoded = new ArrayList<>(TABLE_SIZE);
+        List<Optional<MenuOption>> decoded = new ArrayList<>(TABLE_SIZE);
         for (int subscript = FIRST_SUBSCRIPT; subscript <= TABLE_SIZE; subscript++) {
+            if (!isSpecified(subscript)) {
+                // The tail is read as BYTES, never as an entry. Two reasons, and both matter. It cannot
+                // be attributed to the copybook's table, because the copybook assigns it nothing; and
+                // it need not be well formed at all - real storage may hold anything there, including
+                // bytes that are not digits, which decodePic9AsInt would reject and thereby fail a
+                // decode of a perfectly valid image. Those bytes remain fully available through
+                // fieldImages(byte[], Charset) and unspecifiedTailSpan(), which is where a caller that
+                // genuinely wants them should look.
+                decoded.add(Optional.empty());
+                continue;
+            }
             List<FieldSpan> spans = entryFieldSpans(subscript);
             String numImage = codec.readPicX(area, spans.get(NUM_SUBFIELD));
-            decoded.add(new MenuOption(codec.decodePic9AsInt(numImage),
+            decoded.add(Optional.of(new MenuOption(codec.decodePic9AsInt(numImage),
                     numImage,
                     codec.readPicX(area, spans.get(NAME_SUBFIELD)),
                     codec.readPicX(area, spans.get(PGMNAME_SUBFIELD)),
-                    codec.readPicX(area, spans.get(USRTYPE_SUBFIELD))));
+                    codec.readPicX(area, spans.get(USRTYPE_SUBFIELD)))));
         }
         return List.copyOf(decoded);
+    }
+
+    /**
+     * The span of the table the copybook determines nothing about: slots
+     * {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} through {@value #TABLE_SIZE}, as opaque storage.
+     *
+     * <p>{@value #TABLE_LENGTH} bytes of {@code CDEMO-MENU-OPTIONS} overlay
+     * {@value #POPULATED_DATA_LENGTH} bytes of {@code CDEMO-MENU-OPTIONS-DATA}, and this descriptor
+     * names the difference. Its {@code PICTURE} kind is deliberately {@code FILLER} and it carries no
+     * initial value: it is a region of bytes whose meaning is not this copybook's to give, offered so
+     * that a caller wanting to inspect or compare it - a parity case exercising an out-of-range option
+     * subscript, for instance - reads the real bytes rather than trusting a synthesized entry.
+     *
+     * @return the descriptor for the unspecified tail, {@value #TABLE_SIZE} minus
+     *         {@value #ACTIVE_OPTION_COUNT} entries wide
+     */
+    public static FieldSpan unspecifiedTailSpan() {
+        return UNSPECIFIED_TAIL_SPAN;
     }
 
     /**
@@ -1058,8 +1160,7 @@ public final class MenuOptions {
 
     /**
      * Applies the {@code PIC 9(n)} width rule to an option number: left-zero-fill to exactly
-     * {@code declaredWidth}, so 1 becomes {@code "01"}, 10 becomes {@code "10"} and the unvalued 0
-     * becomes {@code "00"}.
+     * {@code declaredWidth}, so 1 becomes {@code "01"} and 10 becomes {@code "10"}.
      *
      * <p>A negative value and a value needing more digits than the picture allows are both rejected.
      * {@code PIC 9(02)} is unsigned and has no sign position, and a value too wide for it is a
@@ -1091,12 +1192,34 @@ public final class MenuOptions {
     }
 
     /**
-     * One of the two slots the copybook declares no {@code VALUE} for: option number
-     * {@value #UNVALUED_OPT_NUM} with the image {@code "00"}, and space-filled text columns. This is
-     * the initialised state of real, addressable storage, and it is kept rather than trimmed away.
+     * A slot the copybook declares a {@code VALUE} for.
+     *
+     * @param menuOptNum     {@code CDEMO-MENU-OPT-NUM}
+     * @param menuOptName    {@code CDEMO-MENU-OPT-NAME}, padded to its declared width
+     * @param menuOptPgmName {@code CDEMO-MENU-OPT-PGMNAME}, padded to its declared width
+     * @param menuOptUsrType {@code CDEMO-MENU-OPT-USRTYPE}
+     * @return the entry, present
      */
-    private static MenuOption unvaluedOption() {
-        return MenuOption.of(UNVALUED_OPT_NUM, "", "", "");
+    private static Optional<MenuOption> specified(int menuOptNum,
+                                                  String menuOptName,
+                                                  String menuOptPgmName,
+                                                  String menuOptUsrType) {
+        return Optional.of(MenuOption.of(menuOptNum, menuOptName, menuOptPgmName, menuOptUsrType));
+    }
+
+    /**
+     * A slot the copybook declares no {@code VALUE} for, and about which nothing is therefore claimed.
+     *
+     * <p>This replaced a factory that built an entry carrying option number 0 and blank text. That
+     * entry was indistinguishable from real data and was not derived from anything: IBM Enterprise
+     * COBOL initialises storage from applicable {@code VALUE} clauses, and storage with none - here,
+     * storage beyond the very end of the group being redefined - is not documented to receive any
+     * particular content.
+     *
+     * @return an empty slot
+     */
+    private static Optional<MenuOption> unspecified() {
+        return Optional.empty();
     }
 
     /**
@@ -1111,20 +1234,21 @@ public final class MenuOptions {
         List<FieldSpan> spans = new ArrayList<>();
         spans.add(MENU_OPT_COUNT_SPAN);
         for (int subscript = FIRST_SUBSCRIPT; subscript <= OPTIONS.size(); subscript++) {
-            MenuOption option = OPTIONS.get(subscript - FIRST_SUBSCRIPT);
+            Optional<MenuOption> slot = OPTIONS.get(subscript - FIRST_SUBSCRIPT);
             int base = FixedWidthRecord.occursElementOffsetOneBased(TABLE_OFFSET, ENTRY_LENGTH,
                     OPTIONS.size(), subscript);
-            // A slot the copybook values contributes its literal; an unvalued slot contributes none,
-            // and so initialises to its kind's pad byte - zeros for PIC 9(02), spaces for PIC X.
-            boolean valued = !option.unvalued();
+            // A slot the copybook values contributes its literal. A slot it does not contributes NONE -
+            // the descriptor carries a null initial value, which is what "the copybook says nothing
+            // about these bytes" looks like in a layout. What newRecord then pads them with is this
+            // module's determinism and not a claim about the legacy program's storage.
             spans.add(fillerSpan(base + OPT_NUM_OFFSET, OPT_NUM_LENGTH, PictureKind.UNSIGNED_NUMERIC,
-                    valued ? Integer.toString(option.menuOptNum()) : null));
+                    slot.map(option -> Integer.toString(option.menuOptNum())).orElse(null)));
             spans.add(fillerSpan(base + OPT_NAME_OFFSET, OPT_NAME_LENGTH, PictureKind.FILLER,
-                    valued ? option.menuOptName() : null));
+                    slot.map(MenuOption::menuOptName).orElse(null)));
             spans.add(fillerSpan(base + OPT_PGMNAME_OFFSET, OPT_PGMNAME_LENGTH, PictureKind.FILLER,
-                    valued ? option.menuOptPgmName() : null));
+                    slot.map(MenuOption::menuOptPgmName).orElse(null)));
             spans.add(fillerSpan(base + OPT_USRTYPE_OFFSET, OPT_USRTYPE_LENGTH, PictureKind.FILLER,
-                    valued ? option.menuOptUsrType() : null));
+                    slot.map(MenuOption::menuOptUsrType).orElse(null)));
         }
         // The REDEFINES pair, declared last so both overlays fall inside storage already accounted for.
         spans.add(POPULATED_DATA_SPAN);

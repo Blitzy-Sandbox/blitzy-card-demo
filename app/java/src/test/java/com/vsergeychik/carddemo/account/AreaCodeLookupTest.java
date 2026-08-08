@@ -1,12 +1,13 @@
 package com.vsergeychik.carddemo.account;
 
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -72,10 +73,29 @@ import org.springframework.stereotype.Component;
 class AreaCodeLookupTest {
 
     /**
-     * The copybook this class translates, relative to the repository root. It is the parity oracle
-     * and is read-only: these tests read it and never write it.
+     * The copybook this class translates, named as it lives in the repository. Used only in failure
+     * text, so a mismatch reports the file a reader should open rather than the classpath location
+     * the test actually read.
      */
     private static final String COPYBOOK_PATH = "app/cpy/CSLKPCDY.cpy";
+
+    /**
+     * Where the oracle is read from: the <strong>test classpath</strong>, not the filesystem.
+     *
+     * <p>{@code pom.xml} declares a second {@code <testResource>} that copies
+     * {@code app/cpy/CSLKPCDY.cpy} into {@code target/test-classes/cobol-oracle/} at build time, so
+     * the copybook arrives here as an immutable classpath resource. That matters for correctness,
+     * not neatness. This suite previously located the copybook by walking upward from the process
+     * working directory, which made a perfectly correct transcription fail whenever the working
+     * directory was not the Maven module directory - a differently nested checkout, a clone inside
+     * another clone, or an IDE launched from the repository root - so the suite was reporting on the
+     * runner's filesystem layout rather than on {@link AreaCodeLookup}. A classpath resource has no
+     * working directory and no parent to walk, so the lookup is hermetic.
+     *
+     * <p>Reading rather than writing keeps practice B3 intact: {@code app/cpy} is the read-only
+     * parity oracle, the build copies the member out of it, and nothing here can write back.
+     */
+    private static final String COPYBOOK_RESOURCE = "/cobol-oracle/CSLKPCDY.cpy";
 
     /** A COBOL alphanumeric literal. Every literal in this copybook is single-quoted. */
     private static final Pattern COPYBOOK_LITERAL = Pattern.compile("'([^']*)'");
@@ -184,39 +204,39 @@ class AreaCodeLookupTest {
         return line.length() >= 7 && line.charAt(6) == '*';
     }
 
-    /** Every line of the copybook, 0-based, so copybook line <em>n</em> is element <em>n</em>-1. */
+    /**
+     * Every line of the copybook, 0-based, so copybook line <em>n</em> is element <em>n</em>-1.
+     *
+     * <p>Read from the test classpath through {@link #COPYBOOK_RESOURCE}, so the result depends on
+     * nothing but the build output. No filesystem path is constructed, no directory is walked and
+     * the process working directory is never consulted.
+     */
     private List<String> copybookLines() {
-        Path copybook = copybookPath();
-        try {
+        try (InputStream oracle = AreaCodeLookupTest.class.getResourceAsStream(COPYBOOK_RESOURCE)) {
+            if (oracle == null) {
+                throw new IllegalStateException("The parity oracle " + COPYBOOK_RESOURCE
+                        + " is absent from the test classpath. It is " + COPYBOOK_PATH
+                        + ", copied there by the second <testResource> in app/java/pom.xml, and this "
+                        + "suite proves the transcription against the copybook itself rather than "
+                        + "against a copy of it - so its absence is a build configuration failure and "
+                        + "not a reason to skip the check.");
+            }
             // The copybook is pure ASCII, so US-ASCII reads it exactly; the charset is named rather
             // than defaulted, as every encoding decision in this module is.
-            return Files.readAllLines(copybook, StandardCharsets.US_ASCII);
-        } catch (IOException cause) {
-            throw new UncheckedIOException("Cannot read the parity oracle " + copybook, cause);
-        }
-    }
-
-    /**
-     * Locates {@code app/cpy/CSLKPCDY.cpy} by walking up from the working directory.
-     *
-     * <p>Surefire runs with the Maven module directory as its working directory, so the walk is two
-     * levels; resolving it rather than hard-coding {@code ../..} keeps the suite runnable from the
-     * repository root and from an IDE as well. The nearest ancestor wins, so a checkout nested inside
-     * another cannot be read by mistake.
-     */
-    private Path copybookPath() {
-        Path candidate = Path.of("").toAbsolutePath();
-        while (candidate != null) {
-            Path copybook = candidate.resolve(COPYBOOK_PATH);
-            if (Files.isRegularFile(copybook)) {
-                return copybook;
+            try (BufferedReader reader =
+                         new BufferedReader(new InputStreamReader(oracle, StandardCharsets.US_ASCII))) {
+                List<String> lines = new ArrayList<>();
+                String line = reader.readLine();
+                while (line != null) {
+                    lines.add(line);
+                    line = reader.readLine();
+                }
+                return lines;
             }
-            candidate = candidate.getParent();
+        } catch (IOException cause) {
+            throw new UncheckedIOException("Cannot read the parity oracle " + COPYBOOK_RESOURCE
+                    + " (" + COPYBOOK_PATH + ") from the test classpath", cause);
         }
-        throw new IllegalStateException("Could not find " + COPYBOOK_PATH + " at or above "
-                + Path.of("").toAbsolutePath() + ". It is the parity oracle for AreaCodeLookup and "
-                + "is a read-only reference file, so it must be present: this suite proves the "
-                + "transcription against the copybook itself rather than against a copy of it.");
     }
 
     /**

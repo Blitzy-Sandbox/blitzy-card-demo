@@ -499,7 +499,8 @@ public final class DisclosureGroupRecord {
         Objects.requireNonNull(charset, "A charset is required: a row image is characters and the "
                 + "record is bytes, so the code page that maps between them must be stated "
                 + "explicitly and is never derived from the platform");
-        return decode(image.getBytes(charset), charset);
+        return decode(FixedWidthRecord.encodeText(image, charset, "a DIS-GROUP-RECORD image"),
+                charset);
     }
 
     /**

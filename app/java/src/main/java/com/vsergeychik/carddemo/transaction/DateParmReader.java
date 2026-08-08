@@ -1,5 +1,7 @@
 package com.vsergeychik.carddemo.transaction;
 
+import com.vsergeychik.carddemo.common.DatasetRelation;
+import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
@@ -11,17 +13,19 @@ import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 
 import java.nio.charset.Charset;
-import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
-import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Component;
 
@@ -206,6 +210,20 @@ import org.springframework.stereotype.Component;
  * A failure in either lands on a non-{@code '00'} status, which is the same guard the COBOL already
  * has for an I/O failure, so the program's branch structure is preserved whichever way it fails.
  *
+ * <p>What is <em>not</em> a deployment-time input is <strong>which</strong> guard a failure lands on.
+ * {@code CBTRN03C} has two: {@code 0500-DATEPARM-OPEN} at {@code L466-L482} displays
+ * {@code 'ERROR OPENING DATE PARM FILE'} and {@code 0550-DATEPARM-READ} at {@code L220-L243} displays
+ * {@code 'ERROR READING DATE PARM FILE'}. {@link #open()} therefore resolves this dataset read-only
+ * rather than merely establishing that a connection can be obtained, so an absent {@code DATEPARM}
+ * relation fails at the open - where the COBOL fails - instead of being reported as a successful open
+ * followed by a read error with the wrong message.
+ *
+ * <p>Every reported failure also writes a diagnostic naming the operation, the DD name, the dataset and
+ * the rendered status, carrying the translated cause where there is one. The status remains the whole of
+ * what the <em>caller</em> receives, exactly as the COBOL keeps nothing but {@code DATEPARM-STATUS}; the
+ * cause is not discarded, because a two-character status names no reason. No record value is ever
+ * logged - this record holds the report's date range and its trailing {@code FILLER} verbatim.
+ *
  * <h2>Statuses model I/O outcomes; exceptions model contract violations</h2>
  * <p>The two are kept apart on purpose. An I/O outcome the COBOL enumerates - success, end of file,
  * or anything else - is reported as a status, because the caller's guard chain is built to branch on
@@ -244,6 +262,18 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class DateParmReader {
+
+    /**
+     * Logger for the diagnostics this reader emits when an operation fails.
+     *
+     * <p>{@code static final} and a reference to an immutable logger, so it introduces no shared mutable
+     * state. It exists because what travels back to the caller is deliberately coarse - a two-character
+     * file status, exactly as {@code DATEPARM-STATUS} is - and a discarded cause would leave a
+     * production failure with nothing to diagnose it from. Only the operation, the DD name, the dataset
+     * name and the rendered status are written; never a record value, because this record holds the
+     * report's date range and the surrounding {@code FILLER} verbatim.
+     */
+    private static final Log LOG = LogFactory.getLog(DateParmReader.class);
 
     /**
      * The DD name under which the report date range is catalogued: {@code DATEPARM}.
@@ -329,7 +359,7 @@ public class DateParmReader {
      * exactly the kind gate G46 exists to prevent. See the residual risk R-E discussion on this
      * class.
      */
-    public static final int RECORD_IMAGE_COLUMN_INDEX = 1;
+    public static final int RECORD_IMAGE_COLUMN_INDEX = DatasetRelation.RECORD_IMAGE_COLUMN_INDEX;
 
     /**
      * The {@code APPL-RESULT} value the COBOL moves for the {@code WHEN OTHER} arm: {@code 12}
@@ -369,6 +399,12 @@ public class DateParmReader {
     public static final String PERMANENT_ERROR_STATUS = "9" + PERMANENT_ERROR_FEEDBACK_CODE;
 
     /**
+     * A predicate that is false on every row, so the relation can be resolved and described without any
+     * of it being transferred. Two literals compared, which every SQL dialect accepts.
+     */
+    private static final String NEVER_TRUE_PREDICATE = "1 = 0";
+
+    /**
      * The module's single {@link JdbcTemplate}, constructor-injected. The only collaborator that
      * touches the backend, and the seam a unit test replaces.
      */
@@ -381,17 +417,14 @@ public class DateParmReader {
     private final FixedWidthCodec codec;
 
     /**
-     * The resolved dataset name, taken verbatim from the {@link DatasetBinding} for {@link #DD_NAME}.
-     * Configuration is its only source; no part of it is written in Java (gate G46).
+     * The dataset as this module reaches it: the validated name, its delimited rendering, and the
+     * statements composed over it.
+     *
+     * <p>The module's one data-access contract, shared with every repository, so that how a configured
+     * dataset name becomes a SQL identifier is decided in a single place rather than once per class.
      */
-    private final String datasetName;
+    private final DatasetRelation relation;
 
-    /**
-     * The one statement this class issues: a row read over {@link #datasetName}. Composed once, at
-     * construction, from the resolved binding - so it is not rebuilt per call and cannot vary between
-     * calls.
-     */
-    private final String selectRecordSql;
 
     /**
      * The 80-byte record layout, self-checked at construction (gate G21). Deeply immutable: a record
@@ -464,8 +497,8 @@ public class DateParmReader {
                     + "disagreement is rejected here. Correct carddemo.datasets." + DD_NAME
                     + ".record-length to " + RECORD_LENGTH + ".");
         }
-        this.datasetName = requireUsableDatasetName(binding.dsname());
-        this.selectRecordSql = "SELECT * FROM " + asDelimitedIdentifier(this.datasetName);
+        this.relation = DatasetRelation.of(requireUsableDatasetName(binding.dsname()), RECORD_LENGTH);
+
 
         this.startDateSpan =
                 FieldSpan.alphanumeric(START_DATE_FIELD, START_DATE_OFFSET, START_DATE_LENGTH);
@@ -490,7 +523,7 @@ public class DateParmReader {
      * @return the configured dataset name for {@link #DD_NAME}; never {@code null} and never blank
      */
     public String datasetName() {
-        return datasetName;
+        return relation.dsname();
     }
 
     // =================================================================================================
@@ -514,19 +547,28 @@ public class DateParmReader {
      *
      * <p><strong>What "open" means against a configuration-bound driver, precisely.</strong> There is
      * no persistent handle to acquire: the shared template borrows and returns a connection per
-     * operation. So the check performed here is the strongest one that is both dataset-independent and
-     * free of any SQL dialect - that a connection can be obtained and can describe itself. It proves
-     * the backend is reachable, which is the failure an {@code OPEN INPUT} most often reports. It does
-     * <em>not</em> prove the dataset itself is available; a driver that can only establish that at
-     * first fetch will report it through {@link #read()} instead. Both paths yield a non-{@code '00'}
-     * status and both reach the same COBOL guard, so the program's branch structure is preserved
-     * whichever way the failure surfaces. This is part of residual risk R-E, documented on this class.
+     * operation. So the check performed here is a <em>describe of the dataset</em> - a statement that
+     * names it and returns no row - which is dialect-free, transfers nothing, and fails when the dataset
+     * is absent or unreachable. That is genuinely what an {@code OPEN INPUT} reports, and it is stronger
+     * than merely proving a connection can be obtained: a connection-only check succeeds against a
+     * reachable backend that has no such dataset, and would then hand the job an end-of-file it should
+     * have seen as a failed open. Residual risk R-E still applies to the driver itself, which this build
+     * cannot exercise.
      *
-     * @return {@link FileStatus#OK} when the dataset can be read, otherwise
+     * <p><strong>Why the dataset and not just the connection.</strong> {@code CBTRN03C} distinguishes an
+     * open failure from a read failure: {@code 0500-DATEPARM-OPEN} at {@code L466-L482} displays
+     * {@code 'ERROR OPENING DATE PARM FILE'}, while {@code 0550-DATEPARM-READ} at {@code L220-L243}
+     * displays {@code 'ERROR READING DATE PARM FILE'} - two paragraphs, two messages, two branches. A
+     * probe that only established that a connection could be obtained let an <em>absent</em>
+     * {@code DATEPARM} relation report a successful open and then surface on the read path, so the job
+     * emitted the wrong message and took the wrong branch. Resolving the relation here puts the failure
+     * where the COBOL puts it.
+     *
+     * @return {@link FileStatus#OK} when the dataset is addressable, otherwise
      *         {@link #PERMANENT_ERROR_STATUS}; never {@code null}, always two characters
      */
     public String open() {
-        return probeDatasetAvailability();
+        return probeDatasetAvailability("OPEN INPUT");
     }
 
     /**
@@ -537,45 +579,83 @@ public class DateParmReader {
      * {@code DISPLAY 'ERROR CLOSING DATE PARM FILE'} line at {@code L616} and the abend.
      *
      * <p>Nothing is buffered and nothing is held between calls, so there is no flush to fail and no
-     * handle to release. The one close-time failure this reader can genuinely detect is that the
-     * backend is no longer reachable, which is the analogue of the file system reporting a problem
-     * when the dataset is de-allocated - so the same probe as {@link #open()} is used, which also
-     * keeps both of the COBOL's symmetric guards reachable rather than leaving one dead.
+     * handle to release. The one close-time failure this reader can genuinely detect is that the dataset
+     * is no longer describable, which is the analogue of the file system reporting a problem when the
+     * dataset is de-allocated - so the same probe as {@link #open()} is used, which also keeps both of
+     * the COBOL's symmetric guards reachable rather than leaving one dead.
      *
-     * @return {@link FileStatus#OK} when the backend is still reachable, otherwise
+     * @return {@link FileStatus#OK} when the dataset is still describable, otherwise
      *         {@link #PERMANENT_ERROR_STATUS}; never {@code null}, always two characters
      */
     public String close() {
-        return probeDatasetAvailability();
+        return probeDatasetAvailability("CLOSE");
     }
 
     /**
-     * The shared open/close probe: obtain a connection and confirm it can describe itself.
+     * The shared open/close probe: describe the dataset and confirm it presents a record-image column.
      *
-     * <p>Read-only and dialect-free. Requesting the connection's own metadata is supported by every
-     * JDBC driver and touches no dataset, which is what makes it usable against a driver this build
-     * cannot exercise. A driver that answers with no metadata at all is treated as unusable rather
-     * than as success: with the driver a deployment-time input, reporting success on an unusable
-     * connection would hand the job a range it never actually read.
+     * <p>The COBOL verb is passed in rather than inferred, because the two callers are the two
+     * symmetric guards {@code CBTRN03C} keeps distinct - {@code 0500-DATEPARM-OPEN} and
+     * {@code 9500-DATEPARM-CLOSE} - and an operator reading a refusal needs to know which one failed.
      *
+     * <p>Read-only and dialect-free - the predicate is false on every row, which every dialect accepts -
+     * so it costs one round trip and transfers nothing. A backend that describes the dataset with no
+     * column at the record-image position is treated as unusable rather than as success: with the driver
+     * a deployment-time input, reporting success on a relation this reader cannot read would hand the job
+     * a range it never actually read.
+     *
+     * <p>The extractor deliberately never calls {@code next()}: there are no rows by construction, and
+     * asking for the metadata is enough to prove the relation resolved. A driver that answers with no
+     * metadata at all is treated as unusable rather than as success - with the driver a deployment-time
+     * input, reporting success on an unusable answer would hand the job a range it never actually read.
+     *
+     * @param verb the COBOL verb being reproduced, for the diagnostic
      * @return {@link FileStatus#OK} or {@link #PERMANENT_ERROR_STATUS}
      */
-    private String probeDatasetAvailability() {
-        ConnectionCallback<String> probe = connection -> {
-            DatabaseMetaData metaData = connection.getMetaData();
-            return metaData == null ? PERMANENT_ERROR_STATUS : FileStatus.OK;
+    private String probeDatasetAvailability(String cobolOperation) {
+        // A describe of the dataset, not a test of the connection. The predicate is false on every row,
+        // so nothing is transferred - but the statement names the dataset, so an absent or unreachable
+        // dataset fails here, which is exactly what a COBOL OPEN reports and what a connection-only
+        // check cannot see.
+        ResultSetExtractor<String> describe = resultSet -> {
+            ResultSetMetaData metaData = resultSet.getMetaData();
+            return metaData == null || metaData.getColumnCount() < RECORD_IMAGE_COLUMN_INDEX
+                    ? PERMANENT_ERROR_STATUS
+                    : FileStatus.OK;
         };
         try {
-            String status = jdbcTemplate.execute(probe);
+            String status = jdbcTemplate.query(relation.describeStatement(), describe);
             // A template that yields no status at all has told us nothing, and "nothing" is not
-            // success. Reported as a permanent error, exactly as an unusable connection is.
+            // success. Reported as a permanent error, exactly as an unusable dataset is.
             return status == null ? PERMANENT_ERROR_STATUS : status;
         } catch (DataAccessException translated) {
-            // Every SQLException the driver raises arrives here already translated. The COBOL keeps no
-            // more detail than the status either - it displays the rendered status and abends - so the
-            // status is the whole of what is reported, and the cause is left for the driver's own log.
+            // The COBOL keeps no more than the status - it displays the rendered status and abends - so
+            // the status is the whole of what is *returned*. What the backend said is not thrown away
+            // with it: an operator reading the abend needs to know whether the dataset was missing, the
+            // credentials were refused or the backend was unreachable, and only the driver knows that.
+            logRefusal(translated, cobolOperation + " the " + DD_NAME + " dataset (a describe of the "
+                    + "configured relation, which is what distinguishes an absent dataset from an "
+                    + "unreadable record)");
             return PERMANENT_ERROR_STATUS;
         }
+    }
+
+    /**
+     * Logs a backend refusal with the driver's own diagnosis and returns it.
+     *
+     * <p>Logged: what was attempted and the {@code SQLSTATE}, vendor code and exception type the driver
+     * reported. Not logged: the record image - the date-parameter record is innocuous, but the rule is
+     * the module's and is applied uniformly rather than judged per dataset.
+     *
+     * @param refusal the exception raised
+     * @param attempt what was being attempted, phrased to complete "Could not ..."
+     * @return the diagnostic read out of {@code refusal}
+     */
+    private static BackendDiagnostic logRefusal(Throwable refusal, String attempt) {
+        BackendDiagnostic diagnostic = BackendDiagnostic.of(refusal);
+        LOG.error("Could not " + attempt + " - " + diagnostic.describe() + "; reporting file status "
+                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", refusal);
+        return diagnostic;
     }
 
     // =================================================================================================
@@ -622,11 +702,13 @@ public class DateParmReader {
         List<String> rows;
         try {
             RowMapper<String> recordImageMapper = this::mapRecordImage;
-            rows = jdbcTemplate.query(selectRecordSql, recordImageMapper);
+            rows = jdbcTemplate.query(relation.selectAll(), recordImageMapper);
         } catch (DataAccessException translated) {
             // WHEN OTHER. An I/O failure, reported as a status so the caller's own guard chain decides
-            // what to do about it - which, in CBTRN03C, is to display and abend.
-            return ReadResult.other(PERMANENT_ERROR_STATUS);
+            // what to do about it - which, in CBTRN03C, is to display and abend - and carrying the
+            // backend's own diagnosis so that abend can be traced to a cause.
+            return ReadResult.other(PERMANENT_ERROR_STATUS,
+                    logRefusal(translated, "read the " + DD_NAME + " dataset"));
         }
         if (rows == null || rows.isEmpty()) {
             // WHEN '10'. AT END with no record read: the empty-dataset case, which leaves the report
@@ -637,7 +719,11 @@ public class DateParmReader {
         if (recordImage == null) {
             // A row whose record image is absent is not a readable 80-byte record. It is an I/O-level
             // defect rather than an end of file - there IS a record, it just cannot be read - so it is
-            // reported on the WHEN OTHER arm and not mistaken for an empty dataset.
+            // reported on the WHEN OTHER arm and not mistaken for an empty dataset. No backend refusal
+            // occurred, so there is no diagnostic to carry.
+            LOG.error("The " + DD_NAME + " dataset presented a row with no record image at column "
+                    + "position " + RECORD_IMAGE_COLUMN_INDEX + "; reporting file status "
+                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
             return ReadResult.other(PERMANENT_ERROR_STATUS);
         }
         // WHEN '00'.
@@ -684,7 +770,7 @@ public class DateParmReader {
     public DateParm decode(String recordImage) {
         Objects.requireNonNull(recordImage, "A record image is required to decode the " + DD_NAME
                 + " record; an absent record is an end-of-file outcome, not a decodable image");
-        return decode(recordImage.getBytes(codec.charset()));
+        return decode(codec.encodeImage(recordImage, "a " + DD_NAME + " record image"));
     }
 
     /**
@@ -734,7 +820,23 @@ public class DateParmReader {
      * @return the row-reading statement over the configured dataset
      */
     String selectRecordSql() {
-        return selectRecordSql;
+        return relation.selectAll();
+    }
+
+    /**
+     * The statement that describes the dataset without transferring a row - what {@link #open()} and
+     * {@link #close()} issue.
+     *
+     * <p>This is also the dataset-scoped, zero-row probe an {@code OPEN INPUT} reduces to, exposed so
+     * the composed SQL can be asserted without a backend: the predicate is false on every row, so the
+     * driver still has to resolve the relation and describe it while none of it crosses the wire. It is
+     * composed by {@link DatasetRelation}, from the configured name, so no dataset name is written in
+     * Java (gate G46).
+     *
+     * @return the describe statement over the configured dataset
+     */
+    String describeStatement() {
+        return relation.describeStatement();
     }
 
     /**
@@ -773,37 +875,9 @@ public class DateParmReader {
                     + ".dsname; this reader composes its statement from configuration alone and "
                     + "hard-codes no dataset name.");
         }
-        for (int index = 0; index < candidate.length(); index++) {
-            if (Character.isISOControl(candidate.charAt(index))) {
-                throw new IllegalStateException("The dataset name configured at carddemo.datasets."
-                        + DD_NAME + ".dsname contains a control character at position " + index
-                        + "; a dataset name cannot contain one, and it would corrupt the composed "
-                        + "statement. Correct the configured value.");
-            }
-        }
-        return candidate;
-    }
-
-    /**
-     * Renders a dataset name as a single SQL delimited identifier.
-     *
-     * <p>A mainframe dataset name contains periods, and an unquoted period is a name separator in SQL,
-     * so the name has to be delimited or it would be parsed as a chain of qualifiers. Any embedded
-     * quote character is repeated, which is how the SQL standard escapes one inside a delimited
-     * identifier; together with the control-character rejection in
-     * {@link #requireUsableDatasetName(String)} that leaves no way for a configured value to terminate
-     * the identifier early.
-     *
-     * <p>How a given driver catalogues a dataset is a deployment-time input - residual risk R-E on this
-     * class - and this is the one place it is expressed, so a site that needs a different form changes
-     * a binding rather than this class.
-     *
-     * @param name the validated dataset name
-     * @return the name as a delimited identifier
-     */
-    private static String asDelimitedIdentifier(String name) {
-        String quote = "\"";
-        return quote + name.replace(quote, quote + quote) + quote;
+        // The grammar - what a z/OS dataset name may contain - lives in DatasetRelation, so it is
+        // stated once for the whole module rather than restated, and diverging, in each class.
+        return DatasetRelation.requireDatasetName(candidate);
     }
 
     /**
@@ -909,8 +983,14 @@ public class DateParmReader {
      * @param outcome  its classification: {@link Outcome#OK}, {@link Outcome#END_OF_FILE} or
      *                 {@link Outcome#OTHER}
      * @param dateParm the decoded range, present exactly when {@code outcome} is {@link Outcome#OK}
+     * @param diagnostic what the backend reported when it refused, present only on a
+     *                 {@link Outcome#OTHER} arm the driver described - so the abend that follows can be
+     *                 traced to a cause rather than to a status this class composed
      */
-    public record ReadResult(String status, Outcome outcome, Optional<DateParm> dateParm) {
+    public record ReadResult(String status,
+                             Outcome outcome,
+                             Optional<DateParm> dateParm,
+                             Optional<BackendDiagnostic> diagnostic) {
 
         /**
          * Enforces every invariant of the three-armed ladder at construction.
@@ -928,6 +1008,8 @@ public class DateParmReader {
                     + "absent");
             Objects.requireNonNull(dateParm, "A read result carries an empty range rather than a null "
                     + "one, so no null escapes the type");
+            Objects.requireNonNull(diagnostic, "A read result carries an empty diagnostic rather than a "
+                    + "null one, so no null escapes the type");
             if (status.length() != FileStatus.STATUS_LENGTH) {
                 throw new IllegalArgumentException("A file status is exactly "
                         + FileStatus.STATUS_LENGTH + " characters, as DATEPARM-STATUS is declared at "
@@ -969,7 +1051,7 @@ public class DateParmReader {
          */
         public static ReadResult found(DateParm dateParm) {
             Objects.requireNonNull(dateParm, "A successful read carries the decoded date range");
-            return new ReadResult(FileStatus.OK, Outcome.OK, Optional.of(dateParm));
+            return new ReadResult(FileStatus.OK, Outcome.OK, Optional.of(dateParm), Optional.empty());
         }
 
         /**
@@ -983,7 +1065,8 @@ public class DateParmReader {
          * @return a result carrying status {@link FileStatus#END_OF_FILE} and no range
          */
         public static ReadResult endOfFile() {
-            return new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, Optional.empty());
+            return new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, Optional.empty(),
+                    Optional.empty());
         }
 
         /**
@@ -999,7 +1082,26 @@ public class DateParmReader {
          *                                  of the two statuses the {@code EVALUATE} names explicitly
          */
         public static ReadResult other(String status) {
-            return new ReadResult(status, Outcome.OTHER, Optional.empty());
+            return new ReadResult(status, Outcome.OTHER, Optional.empty(), Optional.empty());
+        }
+
+        /**
+         * The {@code WHEN OTHER} arm, carrying what the backend actually said about the refusal.
+         *
+         * <p>The status is what the caller branches on, because that is the quantity the COBOL guard
+         * chain tests. The diagnostic is what makes the abend that follows diagnosable: a permanent-error
+         * status says something went wrong and nothing about what, whereas the driver's {@code SQLSTATE}
+         * distinguishes an unreachable backend from a missing dataset from a rejected credential.
+         *
+         * @param status     the permanent-error file status
+         * @param diagnostic what the backend reported
+         * @return the outcome
+         * @throws NullPointerException if {@code diagnostic} is {@code null}
+         */
+        public static ReadResult other(String status, BackendDiagnostic diagnostic) {
+            Objects.requireNonNull(diagnostic, "A diagnostic is required by this factory; use "
+                    + "other(String) where there is no backend refusal to report");
+            return new ReadResult(status, Outcome.OTHER, Optional.empty(), Optional.of(diagnostic));
         }
 
         /**

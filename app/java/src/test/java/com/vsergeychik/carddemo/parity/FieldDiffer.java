@@ -7,8 +7,12 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.parity.ParityCase.EmittedMessage;
 import com.vsergeychik.carddemo.parity.ParityCase.ExpectedRecord;
-import com.vsergeychik.carddemo.parity.ParityCase.Normalisation;
+import com.vsergeychik.carddemo.parity.ParityCase.ExpectedResponse;
+import com.vsergeychik.carddemo.parity.ParityCase.Redaction;
+import com.vsergeychik.carddemo.parity.ParityCase.ScreenSend;
+import com.vsergeychik.carddemo.parity.ParityCase.Termination;
 import java.math.BigDecimal;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
@@ -21,6 +25,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * The deterministic judge of this migration: it compares one {@link ParityCase}'s expectations
@@ -38,24 +43,51 @@ import java.util.Set;
  * <em>by construction</em> rather than by convention. For the same reason nothing is delegated to a
  * whole-document assertion library.
  *
- * <h2>Baseline provenance - statically derived, never executed</h2>
- * <p>The expectation side of every comparison this class performs is <strong>statically
- * derived</strong>. Expected values are produced by structured reading of each COBOL paragraph,
- * cross-checked against the copybook byte layouts in {@code app/cpy}, the {@code DD}, {@code PARM}
- * and {@code LRECL} contracts in {@code app/jcl} and {@code app/proc}, the {@code DFHMDF} field
- * definitions in {@code app/bms}, and the nine real ASCII fixtures in {@code app/data/ASCII}. They
- * are <strong>never captured from, recorded against or replayed from an execution of the legacy
- * COBOL</strong>, because executing it is empirically impossible in this environment: there is no
- * z/OS or CICS runtime, the available COBOL compiler reports its indexed file handler as disabled,
- * no Language Environment {@code CEE*} services exist, three IBM-supplied copybooks are absent from
- * the repository, and one copybook carries literal TAB characters that break parsing outright.
+ * <h2>Four channels, compared independently</h2>
+ * <p>A case declares four separate kinds of expectation and this class judges each on its own terms,
+ * because collapsing any two of them lets a real difference hide behind a satisfied one:
+ * <ol>
+ *   <li><strong>Ordered writes.</strong> {@link ParityCase#expectedWrites()} against
+ *       {@link Fingerprint#writes()}. Write order is behaviour, and a write the case did not expect
+ *       is a difference even if every expected write is also present.</li>
+ *   <li><strong>Final state.</strong> {@link ParityCase#expectedFinalState()} against
+ *       {@link Fingerprint#finalState()}. For a rejection path this is the seeded pre-state,
+ *       unchanged - which is how such a case asserts that nothing was written.</li>
+ *   <li><strong>The online response.</strong> {@link ParityCase#expectedResponse()} against
+ *       {@link Fingerprint#response()}: every screen send's BMS payload and attribute metadata, the
+ *       navigation context, the cursor field and the termination. Several online paths write no
+ *       dataset at all, so without this channel they would have nothing asserted about them.</li>
+ *   <li><strong>The return code and the emitted lines.</strong> Each line compared on its declared
+ *       channel, so an 80-byte working-storage message is never mistaken for the 78-byte screen
+ *       field it is truncated into.</li>
+ * </ol>
  *
- * <p>Only the <em>provenance</em> of the expected values is substituted. Twenty cases per program,
- * field-for-field diffing, the diff-count-equals-zero gate per module and the branch-coverage bar are
- * all preserved. Because that nonetheless modifies a stated success criterion it is escalated for
- * explicit user confirmation rather than absorbed silently, and it is the reason this class never
- * "helps" a comparison along: a statically derived expectation could encode a misreading of the
- * COBOL, so every difference is reported and none is smoothed away.
+ * <h2>Completeness: what the unit did NOT do is checked too</h2>
+ * <p>Every comparison here is a <strong>set</strong> comparison, not a lookup. For each of the two
+ * record channels the observed datasets are compared against the expected datasets and the observed
+ * row indices against the expected row indices, in both directions. An unexpected dataset, an
+ * unexpected row at <em>any</em> index, and every observed write when the case expects none are all
+ * differences. A judge that only walked the expectations would report clean on a unit that wrote to a
+ * dataset nobody mentioned, wrote an extra row below the highest expected index, or wrote everything
+ * while the case expected nothing - three false-pass modes that a parity gate cannot afford.
+ *
+ * <h2>Raw bytes are authoritative</h2>
+ * <p>For a signed zoned field the expectation is <em>canonicalised to bytes</em> and then compared as
+ * bytes. Numeric decoding is used to explain a difference, never to excuse one. Two images that
+ * decode to the same {@link BigDecimal} can still be different bytes on disk - in a twelve-character
+ * {@code S9(10)V99} span the unsigned form {@code "000000019400"} and the positive-overpunch form
+ * <code>"00000001940&#123;"</code> both mean 194.00 - and since COBOL writes the overpunch form when
+ * it stores into a signed {@code DISPLAY} item, the unsigned one is a real difference in what reached
+ * the dataset. Reporting it is the whole point of a byte-level parity gate.
+ *
+ * <h2>Nothing is padded here</h2>
+ * <p>This class performs <strong>no width normalisation whatsoever</strong>. The two recorded
+ * fixture-to-copybook deviations are repaired once, at seed time, by
+ * {@link ParityCase.Normalisation} - which is their single owner, and which has to be the seeding side
+ * because a short row cannot be decoded at all. A width disagreement reaching a comparison is
+ * therefore always a difference: either the unit built a record of the wrong size, or the case wrote
+ * an expectation at the wrong width. Padding it away here would have made those two indistinguishable
+ * from a correctly seeded run, and would have let a case that forgot its normalisation pass anyway.
  *
  * <h2>Comparison semantics, per PICTURE category</h2>
  * <p>The category comes from the {@link FieldSpan} descriptor, so the rule applied to a field is the
@@ -76,14 +108,15 @@ import java.util.Set;
  *   </tr>
  *   <tr>
  *     <td>{@link PictureKind#SIGNED_SCALED} - {@code PIC S9(p)V99}</td>
- *     <td>Images equal means equal. Otherwise both sides are decoded through
- *         {@link FixedWidthCodec#decodeSignedScaled(String, int)} - which reads the zoned
- *         {@code DISPLAY} digits and the <strong>sign overpunch in the trailing byte</strong> - and
- *         compared as {@link BigDecimal} at {@link CobolDecimal#MONETARY_SCALE} through
- *         {@link CobolDecimal#store(BigDecimal, int)}, whose rounding is
- *         {@link CobolDecimal#COBOL_ROUNDING}. That is truncation toward zero, because
- *         {@code ROUNDED} appears zero times in all 28 programs; no half-rounding and no directional
- *         mode is ever used on a monetary path.</td>
+ *     <td>Exact equality of the <strong>stored bytes</strong>. An expectation written as a zoned
+ *         image of the span's declared width is compared verbatim; an expectation written as a
+ *         decimal literal is first encoded to the canonical image the picture implies, through
+ *         {@link FixedWidthCodec#encodeSignedZoned}, the same operation the implementation writes
+ *         the field with, at {@link CobolDecimal#MONETARY_SCALE} and with
+ *         {@link CobolDecimal#COBOL_ROUNDING} - truncation toward zero, because {@code ROUNDED}
+ *         appears zero times in all 28 programs. The observed side is never normalised, and the
+ *         decoded quantities appear in the <em>explanation</em> of a difference rather than in the
+ *         decision to report one.</td>
  *   </tr>
  *   <tr>
  *     <td>{@link PictureKind#FILLER} and report edit masks</td>
@@ -93,27 +126,16 @@ import java.util.Set;
  *   </tr>
  * </table>
  *
- * <p>The signed case is worth stating concretely, because it is the one place where text comparison
- * would be actively wrong. The first row of {@code app/data/ASCII/acctdata.txt} opens
- * <code>00000000001Y00000001940&#123;</code>, where <code>00000001940&#123;</code> is
- * {@code ACCT-CURR-BAL PIC S9(10)V99}: that trailing <code>&#123;</code> encodes a positive digit
- * zero. {@code A} is a positive 1, and <code>&#125;</code> and {@code J} through {@code R} are the
- * negative forms. Those bytes are never compared as text.
- *
- * <p><strong>And the arithmetic of that field repays being spelled out, because it is easy to get
+ * <p><strong>The arithmetic of a signed span repays being spelled out, because it is easy to get
  * wrong by one factor of ten.</strong> {@code PIC S9(10)V99} occupies exactly twelve character
  * positions - ten integer digits and two fraction digits - and the sign consumes <em>no position of
  * its own</em>, which is the only reading under which {@code app/cpy/CVACT01Y.cpy} sums to its
- * documented {@code RECLN 300}. So the twelve characters
- * <code>00000001940&#123;</code> carry the digits {@code 000000019400}, whose first ten digits are
- * the integer part {@code 0000000194} and whose last two are the fraction {@code 00}: the value is
- * <strong>194.00</strong>. Reading the trailing byte as a separate sign character would leave eleven
- * digits and yield 1940.00, and that is exactly the slip to avoid - it is also what
- * {@code encodeSignedScaled(194.00, 10, 2)} produces, verified by round trip against these fixture
- * bytes. The neighbouring fields of the same row read the same way:
- * <code>00000020200&#123;</code> is 2020.00 and <code>00000010200&#123;</code> is 1020.00. Nothing in
- * this class performs that arithmetic itself - it is delegated in full to the codec, which is
- * precisely why the differ cannot acquire an off-by-a-factor-of-ten of its own.
+ * documented {@code RECLN 300}. So the twelve characters <code>00000001940&#123;</code> carry the
+ * digits {@code 000000019400}, whose first ten are the integer part {@code 0000000194} and whose last
+ * two are the fraction {@code 00}: the value is <strong>194.00</strong>. Reading the trailing byte as
+ * a separate sign character would leave eleven digits and yield 1940.00, and that is exactly the slip
+ * to avoid. Nothing in this class performs that arithmetic itself - it is delegated in full to the
+ * codec, which is precisely why the differ cannot acquire an off-by-a-factor-of-ten of its own.
  *
  * <h2>Total record width is checked on every record</h2>
  * <p>Before a single field of a record is compared, the record's total width is verified against its
@@ -128,18 +150,6 @@ import java.util.Set;
  * {@code DCB=(LRECL=100,BLKSIZE=800)} in {@code STEP040}, the step that actually creates it. The
  * creating step is authoritative, so 100 wins and 80 is the losing declaration.
  *
- * <h2>Exactly two normalisations exist, and this class owns both</h2>
- * <p>Two shipped datasets are narrower than the copybook describing them, in both cases because a
- * trailing span is simply absent from the data, and both are repaired here by right-padding with
- * spaces before comparison. A normalisation fires only when the case
- * {@linkplain ParityCase#normalisations() declares it}, only when the row's measured width equals
- * that normalisation's {@linkplain Normalisation#sourceWidth() source width} and the layout's
- * declared length equals its {@linkplain Normalisation#targetWidth() target width}, and it is
- * <strong>named in the rendered output whenever it fires</strong> so a reviewer can see it did. No
- * third normalisation may be added: the other seven fixtures match their copybooks exactly, and a
- * width mismatch that is not one of these two is a defect in the codec or in the expectation, not a
- * licence to pad it away.
- *
  * <h2>Field names are the COBOL names, verbatim</h2>
  * <p>{@code ACCT-EXPIRAION-DATE} is misspelled in {@code app/cpy/CVACT01Y.cpy} and is compared
  * misspelled; {@code CUSTREC}'s {@code CUST-DOB-YYYYMMDD} stays distinct from {@code CVCUS01Y}'s
@@ -148,34 +158,26 @@ import java.util.Set;
  * {@code FILLER-3} and so on in copybook declaration order, because a JSON object cannot hold a
  * duplicate key.
  *
+ * <h2>A diagnostic never discloses a credential span</h2>
+ * <p>The legacy design compares {@code SEC-USR-PWD PIC X(08)} in plaintext and this migration
+ * preserves that, so the parity contract carries those eight bytes. A failure report exists to show
+ * bytes, which makes it the one place they would reliably escape into a build log or a CI artefact.
+ * Every value this class renders therefore goes through {@link Redaction}, which masks the named
+ * password fields and the credential <em>span</em> inside a whole-record image. Comparison is
+ * unaffected: the raw values are compared byte for byte, so a wrong password is still a difference and
+ * is still reported - as a difference in a redacted field, which is all a reviewer needs.
+ *
  * <h2>Determinism, statelessness and the closed dependency set</h2>
  * <p>There is no mutable state here, static or otherwise: the only field is an immutable,
  * constructor-injected {@link FixedWidthCodec}, and every call to
  * {@link #compare(ParityCase, Fingerprint)} builds and returns a fresh {@link DiffResult}. Diff order
- * is fully determined - datasets and rows in the expectation's declared order, fields in copybook
- * declaration order - so no traversal ever depends on a hash-ordered collection and running the same
- * comparison twice produces byte-identical output. Decoding goes through the hand-written,
- * offset-explicit {@link FixedWidthCodec} and {@link FixedWidthRecord}; no third-party copybook
- * parser is involved, no annotation processor generates any accessor here, and every
- * {@link Charset} is named by the caller and never taken from the platform.
- *
- * <h2>All auxiliary types live in this file</h2>
- * <p>{@link DiffKind}, {@link Diff}, {@link DatasetOutput}, {@link Fingerprint} and
- * {@link DiffResult} are nested here deliberately. This package contains exactly three support types
- * - {@code ParityCase}, {@code FieldDiffer} and {@code ParityHarness} - beside the 28 per-program
- * test classes, and promoting a nested type to its own file would add a file the plan does not name.
- * {@link Fingerprint} in particular belongs <em>here</em> rather than to the harness that populates
- * it: the differ is the consumer, so the differ declares the shape it needs, and the harness is free
- * to assemble it from a batch job's writes, a service's return value or a controller's response
- * without this class knowing which.
- *
- * <h2>No user-specified rules govern this file</h2>
- * <p>{@code review_rules} reports that no user rules were provided for this project. Their absence is
- * not treated as permission to lower the bar; the binding standard applied here is the enterprise
- * practice set the plan lays down - verified dependency versions only, reference inputs never
- * written, no silent scope creep, deterministic non-interactive execution, explicit over implicit at
- * every boundary, no static mutable state, hand-written reviewable codecs, and environmental limits
- * documented rather than absorbed.
+ * is fully determined - channels in a fixed order, datasets and rows in the expectation's declared
+ * order then the observation's, fields in copybook declaration order - so no traversal ever depends on
+ * a hash-ordered collection and running the same comparison twice produces byte-identical output.
+ * Decoding goes through the hand-written, offset-explicit {@link FixedWidthCodec} and
+ * {@link FixedWidthRecord}; no third-party copybook parser is involved, no annotation processor
+ * generates any accessor here, and every {@link Charset} is named by the caller and never taken from
+ * the platform.
  *
  * @see ParityCase
  * @see FixedWidthCodec
@@ -201,18 +203,24 @@ public final class FieldDiffer {
      *
      * <p>Angle brackets guarantee this can never collide with a real dataset binding key: those are
      * validated as one to eight upper-case alphanumerics beginning with a letter, so no legitimate
-     * key can contain a bracket. The same holds for the two constants below.
+     * key can contain a bracket. The same holds for the other pseudo-scopes below.
      */
     private static final String RETURN_CODE_SCOPE = "<return-code>";
 
     /** The pseudo-dataset an emitted-message difference is reported against. */
     private static final String MESSAGES_SCOPE = "<messages>";
 
+    /** The pseudo-dataset an online-response difference is reported against. */
+    private static final String RESPONSE_SCOPE = "<response>";
+
     /**
      * The pseudo-field a whole-record difference is reported against - a width mismatch, a missing
      * record or an extra record, none of which belongs to any single field.
      */
     private static final String RECORD_SCOPE_FIELD = "<record>";
+
+    /** The pseudo-field an unexpected whole dataset is reported against. */
+    private static final String DATASET_SCOPE_FIELD = "<dataset>";
 
     /**
      * How the {@link DiffKind#RETURN_CODE_MISMATCH} entry names its subject, so a rendered line reads
@@ -222,6 +230,15 @@ public final class FieldDiffer {
 
     /** How a message difference names its subject, mirroring the COBOL verb that emits it. */
     private static final String MESSAGE_FIELD = "DISPLAY";
+
+    /** How a send-count difference names its subject. */
+    private static final String SEND_COUNT_FIELD = "SEND-MAP-COUNT";
+
+    /** The channel name used when reporting a difference among the ordered writes. */
+    private static final String WRITES_CHANNEL = "writes";
+
+    /** The channel name used when reporting a difference in the final dataset state. */
+    private static final String FINAL_STATE_CHANNEL = "final state";
 
     /**
      * The immutable, hand-written codec every decode in this class goes through. Constructor-injected
@@ -274,10 +291,10 @@ public final class FieldDiffer {
      *
      * <p>The traversal is, in order:
      * <ol>
-     *   <li>every {@link ExpectedRecord} in the case's declared order - width check first, then the
-     *       fields the expectation pins, then any whole-record image it pins;</li>
-     *   <li>extra observed rows, per dataset in the order the datasets first appear among the
-     *       expectations and by ascending row index within each;</li>
+     *   <li>the ordered writes - each expectation in declared order, then every observed write the
+     *       case did not expect;</li>
+     *   <li>the final dataset state - the same two passes;</li>
+     *   <li>the online response - navigation, the send sequence, the cursor and the termination;</li>
      *   <li>the return code;</li>
      *   <li>the emitted messages - the count first, then each position in ascending order.</li>
      * </ol>
@@ -292,8 +309,7 @@ public final class FieldDiffer {
      *
      * @param parityCase the case whose expectations are authoritative; never {@code null}
      * @param fingerprint what the unit under test actually produced; never {@code null}
-     * @return a fresh result carrying every difference in traversal order, plus a note for every
-     *     normalisation that fired
+     * @return a fresh result carrying every difference in traversal order
      * @throws NullPointerException if either argument is {@code null}
      */
     public DiffResult compare(ParityCase parityCase, Fingerprint fingerprint) {
@@ -304,27 +320,53 @@ public final class FieldDiffer {
             + "use Fingerprint.ofReturnCode(int) rather than passing null");
 
         List<Diff> diffs = new ArrayList<>();
-        Set<String> notes = new LinkedHashSet<>();
 
-        // Highest expected row index per dataset, in first-appearance order. Built during the record
-        // pass and consumed by the extra-record pass, so the two stay consistent by construction.
-        Map<String, Integer> highestExpectedRow = new LinkedHashMap<>();
-
-        for (ExpectedRecord expectation : parityCase.expectedRecords()) {
-            highestExpectedRow.merge(expectation.dataset(), expectation.rowIndex(), Math::max);
-            compareExpectedRecord(parityCase, fingerprint, expectation, diffs, notes);
-        }
-
-        reportExtraRecords(fingerprint, highestExpectedRow, diffs);
+        compareChannel(parityCase.expectedWrites(), fingerprint.writes(), WRITES_CHANNEL,
+            parityCase.normalisations(), diffs);
+        compareChannel(parityCase.expectedFinalState(), fingerprint.finalState(),
+            FINAL_STATE_CHANNEL, parityCase.normalisations(), diffs);
+        compareResponse(parityCase.expectedResponse(), fingerprint.response(), diffs);
         compareReturnCode(parityCase, fingerprint, diffs);
         compareMessages(parityCase, fingerprint, diffs);
 
-        return new DiffResult(parityCase.program(), parityCase.caseId(), diffs, notes);
+        return new DiffResult(parityCase.program(), parityCase.caseId(), diffs);
     }
 
     // ===============================================================================================
-    // Record-level comparison.
+    // Record channels. Each is compared as a complete SET, in both directions.
     // ===============================================================================================
+
+    /**
+     * Compares one record channel: every expectation, then every observation the case did not expect.
+     *
+     * <p>The second pass is what makes the comparison complete, and it is the half a lookup-based
+     * judge omits. Three false-pass modes live there and all three are closed here: a dataset the
+     * case never mentions, a row at an index no expectation reaches - <em>including</em> an index
+     * below the highest expected one, which a "beyond the last expected row" check would sail past -
+     * and the degenerate case of a unit that wrote a great deal while the expectations were empty.
+     *
+     * @param expectations the case's expectations for this channel, in declared order
+     * @param observed     what the unit produced on this channel, keyed by dataset
+     * @param channel      the channel name, quoted so a difference says which one it belongs to
+     * @param diffs        the accumulator every difference is appended to, in traversal order
+     */
+    private void compareChannel(List<ExpectedRecord> expectations,
+                                Map<String, DatasetOutput> observed,
+                                String channel,
+                                List<ParityCase.DatasetNormalisation> normalisations,
+                                List<Diff> diffs) {
+        // Expected row indices per dataset, in first-appearance order, built during the first pass
+        // and consumed by the second so the two cannot disagree.
+        Map<String, Set<Integer>> expectedRows = new LinkedHashMap<>();
+
+        for (ExpectedRecord expectation : expectations) {
+            expectedRows.computeIfAbsent(expectation.dataset(), key -> new LinkedHashSet<>())
+                .add(expectation.rowIndex());
+            compareExpectedRecord(observed, expectation, channel, normalisations, diffs);
+        }
+
+        reportUnexpectedOutput(observed, expectedRows, channel, diffs);
+    }
 
     /**
      * Compares one expectation against the observed record it addresses.
@@ -335,56 +377,139 @@ public final class FieldDiffer {
      * because once the total width is wrong every offset after the missing span addresses the wrong
      * bytes and the resulting field differences would be noise obscuring the single real finding.
      *
-     * @param parityCase  the case, consulted for the normalisations it declares
-     * @param fingerprint what the unit produced, searched for the addressed dataset and row
+     * @param observed    what the unit produced on this channel, searched for the addressed dataset
      * @param expectation the single expectation being evaluated
+     * @param channel     the channel name, quoted in the failure text
      * @param diffs       the accumulator every difference is appended to, in traversal order
-     * @param notes       the accumulator a fired normalisation records itself in; a set, so fifty
-     *                    padded rows of one dataset produce one note rather than fifty
      */
-    private void compareExpectedRecord(ParityCase parityCase,
-                                       Fingerprint fingerprint,
+    private void compareExpectedRecord(Map<String, DatasetOutput> observed,
                                        ExpectedRecord expectation,
-                                       List<Diff> diffs,
-                                       Set<String> notes) {
+                                       String channel,
+                                       List<ParityCase.DatasetNormalisation> normalisations,
+                                       List<Diff> diffs) {
         String dataset = expectation.dataset();
         int rowIndex = expectation.rowIndex();
 
-        Optional<DatasetOutput> located = fingerprint.find(dataset);
-        if (located.isEmpty()) {
-            diffs.add(missingRecord(dataset, rowIndex, expectation,
-                "the unit wrote no record at all to dataset " + dataset + "; the fingerprint carries "
-                    + describeDatasetKeys(fingerprint)));
+        DatasetOutput output = observed.get(dataset);
+        if (output == null) {
+            diffs.add(missingRecord(dataset, rowIndex, expectation, channel,
+                "the unit wrote no record at all to dataset " + dataset + " on the " + channel
+                    + " channel: the fingerprint carries " + describeDatasetKeys(observed)));
             return;
         }
 
-        DatasetOutput output = located.get();
         if (!output.hasRow(rowIndex)) {
-            diffs.add(missingRecord(dataset, rowIndex, expectation,
+            diffs.add(missingRecord(dataset, rowIndex, expectation, channel,
                 "dataset " + dataset + " holds " + output.rowCount() + " row(s), so there is no row "
                     + "at 0-based index " + rowIndex));
             return;
         }
 
         RecordLayout layout = output.layout();
-        byte[] observed = output.row(rowIndex);
-        if (!reconcileWidth(parityCase, dataset, "observed record", observed.length,
-            layout.recordLength(), notes)) {
-            diffs.add(widthMismatch(dataset, rowIndex, layout, observed.length,
-                "the observed record is " + observed.length + " byte(s) wide but "
+        byte[] observedRow = output.row(rowIndex);
+        if (observedRow.length != layout.recordLength()) {
+            diffs.add(widthMismatch(dataset, rowIndex, layout, observedRow.length, channel,
+                "the observed record is " + observedRow.length + " byte(s) wide but "
                     + describeLayout(layout) + " declares " + layout.recordLength()
-                    + ". A record short by exactly one span almost always means a FILLER was omitted, "
-                    + "which shifts every offset after it" + describeAvailableNormalisations(parityCase)));
+                    + ". A record short by exactly one span almost always means a FILLER was "
+                    + "omitted, which shifts every offset after it - and a FILLER the copybook "
+                    + "declares must not be padded away, because its bytes are part of the record "
+                    + "the COBOL writes. Note that nothing is padded at comparison time: "
+                    + describeNormalisations(normalisations, dataset)
+                    + ", and the two recorded fixture-to-copybook deviations are repaired once at "
+                    + "SEED time by ParityCase.Normalisation, so a width disagreement here is a "
+                    + "genuine difference and not a missing declaration."));
             return;
         }
 
-        FixedWidthRecord record = codec.wrap(widen(observed, layout.recordLength()), layout);
+        FixedWidthRecord record = codec.wrap(observedRow, layout);
         Map<String, FieldSpan> addressable = addressableSpans(layout);
 
-        Set<String> comparedFields = compareNamedFields(expectation, layout, addressable, record,
-            diffs);
-        compareRecordImage(parityCase, expectation, layout, addressable, record, comparedFields,
-            diffs, notes);
+        Set<String> comparedFields =
+            compareNamedFields(expectation, layout, addressable, record, channel, diffs);
+        compareRecordImage(expectation, layout, addressable, record, comparedFields, channel, diffs);
+    }
+
+    /**
+     * Reports every observed dataset and row the case did not expect on this channel.
+     *
+     * <p>Two passes, in a fixed order: first the datasets the case addresses - reporting each row it
+     * never accounted for - and then the datasets it never mentions at all. Within each pass the
+     * observed datasets are visited in the order the fingerprint declared them and rows in ascending
+     * index, so this adds nothing hash-ordered to the traversal and the rendered order is stable
+     * whatever order the unit happened to open its outputs in.
+     *
+     * <p>The two passes report at different granularities, deliberately. An unaccounted row inside a
+     * dataset the case is about is reported per row, because each one is a separate thing the unit
+     * wrote that the case has no answer for. A dataset the case never mentions is reported once, with
+     * its row count, because "the unit touched an output this case is not about" is one defect no
+     * matter how many rows followed - enumerating them would make the diff count a function of the
+     * unit's output volume rather than of the number of things wrong.
+     *
+     * @param observed     what the unit produced on this channel
+     * @param expectedRows the row indices each dataset's expectations addressed
+     * @param channel      the channel name, quoted in the failure text
+     * @param diffs        the accumulator every difference is appended to
+     */
+    private void reportUnexpectedOutput(Map<String, DatasetOutput> observed,
+                                        Map<String, Set<Integer>> expectedRows,
+                                        String channel,
+                                        List<Diff> diffs) {
+        // Pass one: datasets the case DOES address, reporting each row it never accounted for. These
+        // come first so a rendered failure reads outwards - what went wrong inside the datasets the
+        // case is about, and only then which datasets it was never about at all.
+        for (Map.Entry<String, DatasetOutput> entry : observed.entrySet()) {
+            String dataset = entry.getKey();
+            DatasetOutput output = entry.getValue();
+            Set<Integer> expected = expectedRows.get(dataset);
+            if (expected == null) {
+                continue;
+            }
+
+            for (int rowIndex = 0; rowIndex < output.rowCount(); rowIndex++) {
+                if (expected.contains(rowIndex)) {
+                    continue;
+                }
+                byte[] extra = output.row(rowIndex);
+                diffs.add(new Diff(dataset, rowIndex, RECORD_SCOPE_FIELD, Diff.NOT_APPLICABLE,
+                    extra.length, null, Redaction.maskRecordImage(dataset, imageOf(extra)),
+                    DiffKind.EXTRA_RECORD,
+                    "the unit wrote " + output.rowCount() + " row(s) to dataset " + dataset
+                        + " but the case expects " + expected.size() + ": the " + channel + " row at "
+                        + "0-based index " + rowIndex + " is one no expectation addresses. The case "
+                        + "addresses row(s) " + new TreeSet<>(expected) + " of that dataset. Extra "
+                        + "output is a parity failure in its own right, and it is reported wherever "
+                        + "the row sits, not only beyond the highest expected index, because an extra "
+                        + "row inserted among the expected ones is exactly as wrong and considerably "
+                        + "easier to miss."));
+            }
+        }
+
+        // Pass two: datasets the case never mentions at all. One finding each, carrying the row count,
+        // because "the unit touched a dataset this case is not about" is a single defect however many
+        // rows it wrote - the same principle that makes a missing record one difference rather than one
+        // per pinned field. The count is stated in the message and carried in the observed side, so
+        // nothing about the scale of the violation is lost by not enumerating the rows. Crucially the
+        // pass is driven by what the unit produced rather than by the expectation keys, which is what
+        // lets it see a dataset that was opened and written to with no expectation to look it up from -
+        // including one holding zero rows, the single shape a row-driven scan can never reach.
+        for (Map.Entry<String, DatasetOutput> entry : observed.entrySet()) {
+            String dataset = entry.getKey();
+            DatasetOutput output = entry.getValue();
+            if (expectedRows.containsKey(dataset)) {
+                continue;
+            }
+            diffs.add(new Diff(dataset, Diff.NOT_APPLICABLE, DATASET_SCOPE_FIELD,
+                Diff.NOT_APPLICABLE, Diff.NOT_APPLICABLE, null,
+                output.rowCount() + " row(s)", DiffKind.EXTRA_DATASET,
+                "the unit produced " + output.rowCount() + " row(s) on the " + channel
+                    + " channel for dataset " + dataset + ", which the case expects nothing from. "
+                    + "Touching a dataset the case does not mention is a parity failure in its own "
+                    + "right: the expected datasets on this channel are "
+                    + describeExpectedDatasets(expectedRows)
+                    + ". An empty expectation is a positive assertion that nothing was produced, "
+                    + "not an absence of interest."));
+        }
     }
 
     /**
@@ -405,6 +530,7 @@ public final class FieldDiffer {
      * @param addressable every span keyed by the name an expectation addresses it by, in copybook
      *                    order - which is what makes this pass copybook-ordered
      * @param record      the decoded observed record
+     * @param channel     the channel name, quoted in the failure text
      * @param diffs       the accumulator every difference is appended to
      * @return the set of field names actually compared, so the whole-record pass that follows does not
      *     report the same span twice
@@ -413,6 +539,7 @@ public final class FieldDiffer {
                                            RecordLayout layout,
                                            Map<String, FieldSpan> addressable,
                                            FixedWidthRecord record,
+                                           String channel,
                                            List<Diff> diffs) {
         Map<String, String> expectedFields = expectation.fields();
         Set<String> compared = new LinkedHashSet<>();
@@ -428,7 +555,7 @@ public final class FieldDiffer {
             }
             compared.add(fieldName);
             compareField(expectation, fieldName, span.getValue(), expectedFields.get(fieldName),
-                record, diffs);
+                record, channel, diffs);
         }
 
         // Pass two: whatever the expectation named that pass one did not reach. Every span the layout
@@ -440,15 +567,16 @@ public final class FieldDiffer {
                 continue;
             }
             diffs.add(new Diff(expectation.dataset(), expectation.rowIndex(), fieldName,
-                Diff.NOT_APPLICABLE, Diff.NOT_APPLICABLE, entry.getValue(), null,
+                Diff.NOT_APPLICABLE, Diff.NOT_APPLICABLE,
+                Redaction.maskFieldValue(fieldName, entry.getValue()), null,
                 DiffKind.FIELD_ABSENT_IN_FINGERPRINT,
-                "the expectation pins '" + fieldName + "' but " + describeLayout(layout)
-                    + " declares no such span, so nothing was decoded for it. Field names are the "
-                    + "copybook's own, verbatim and case-sensitive - the misspelled "
-                    + "ACCT-EXPIRAION-DATE is spelled that way on purpose - and a record's several "
-                    + "FILLER spans are addressed as FILLER, FILLER" + FILLER_ORDINAL_SEPARATOR
-                    + "2 and so on in declaration order. Addressable here: "
-                    + String.join(", ", addressable.keySet())));
+                "the " + channel + " expectation pins '" + fieldName + "' but "
+                    + describeLayout(layout) + " declares no such span, so nothing was decoded for "
+                    + "it. Field names are the copybook's own, verbatim and case-sensitive - the "
+                    + "misspelled ACCT-EXPIRAION-DATE is spelled that way on purpose - and a "
+                    + "record's several FILLER spans are addressed as FILLER, FILLER"
+                    + FILLER_ORDINAL_SEPARATOR + "2 and so on in declaration order. Addressable "
+                    + "here: " + String.join(", ", addressable.keySet())));
         }
         return compared;
     }
@@ -466,25 +594,25 @@ public final class FieldDiffer {
      *
      * <p>Spans already pinned individually by the same expectation are skipped, so a field that is
      * wrong in both {@code fields} and {@code expectedBytes} counts once rather than twice and the
-     * diff count stays a count of distinct findings.
+     * diff count stays a count of distinct findings. That skip is only safe because the field pass
+     * compares bytes: a pass that could accept a byte-different field as numerically equal would
+     * suppress the image's own finding as well, and both halves of that defect are closed together.
      *
-     * @param parityCase     the case, consulted for the normalisations it declares
      * @param expectation    the expectation whose {@code expectedBytes} is being evaluated
      * @param layout         the record's layout
      * @param addressable    every span keyed by its addressing name, in copybook order
      * @param record         the decoded observed record
      * @param comparedFields the names the field pass already reported on, which are skipped here
+     * @param channel        the channel name, quoted in the failure text
      * @param diffs          the accumulator every difference is appended to
-     * @param notes          the accumulator a fired normalisation records itself in
      */
-    private void compareRecordImage(ParityCase parityCase,
-                                    ExpectedRecord expectation,
+    private void compareRecordImage(ExpectedRecord expectation,
                                     RecordLayout layout,
                                     Map<String, FieldSpan> addressable,
                                     FixedWidthRecord record,
                                     Set<String> comparedFields,
-                                    List<Diff> diffs,
-                                    Set<String> notes) {
+                                    String channel,
+                                    List<Diff> diffs) {
         String expectedImage = expectation.expectedBytes();
         if (expectedImage == null) {
             return;
@@ -495,18 +623,19 @@ public final class FieldDiffer {
         // Encoded with the codec's own charset, never a platform default, because the width that has
         // to match the layout is a width in bytes and not in characters.
         byte[] expectedBytes = expectedImage.getBytes(codec.charset());
-        if (!reconcileWidth(parityCase, dataset, "expected record image", expectedBytes.length,
-            layout.recordLength(), notes)) {
-            diffs.add(widthMismatch(dataset, rowIndex, layout, expectedBytes.length,
+        if (expectedBytes.length != layout.recordLength()) {
+            diffs.add(widthMismatch(dataset, rowIndex, layout, expectedBytes.length, channel,
                 "the expected record image is " + expectedBytes.length + " byte(s) wide but "
                     + describeLayout(layout) + " declares " + layout.recordLength()
                     + ". The expectation itself is the wrong width here, so it cannot be compared "
-                    + "against a correctly built record" + describeAvailableNormalisations(parityCase)));
+                    + "against a correctly built record. Write it out to the full declared width: "
+                    + "the two recorded fixture-to-copybook deviations are repaired at SEED time by "
+                    + "ParityCase.Normalisation and never at comparison time, so an expectation is "
+                    + "always stated at the copybook's width."));
             return;
         }
 
-        FixedWidthRecord expected =
-            codec.wrap(widen(expectedBytes, layout.recordLength()), layout);
+        FixedWidthRecord expected = codec.wrap(expectedBytes, layout);
         for (Map.Entry<String, FieldSpan> entry : addressable.entrySet()) {
             String fieldName = entry.getKey();
             if (comparedFields.contains(fieldName)) {
@@ -518,17 +647,19 @@ public final class FieldDiffer {
                 // report the same bytes twice.
                 continue;
             }
-            compareField(expectation, fieldName, span, expected.readSpan(span), record, diffs);
+            compareField(expectation, fieldName, span, expected.readSpan(span), record, channel,
+                diffs);
         }
     }
 
 
     // ===============================================================================================
-    // Field-level comparison. One difference per field, always.
+    // Field-level comparison. One difference per field, always, and always on bytes.
     // ===============================================================================================
 
     /**
-     * Compares one field, choosing the rule from the span's declared PICTURE category.
+     * Compares one field. The comparison is of characters in every category; the category only
+     * decides how an expectation is <em>canonicalised</em> first and how a difference is explained.
      *
      * <p>The actual value is read through {@link FixedWidthRecord#readSpan(FieldSpan)}, which is
      * documented as <strong>untrimmed</strong>. That is the whole point. A COBOL {@code PIC X} field
@@ -542,8 +673,9 @@ public final class FieldDiffer {
      * @param fieldName     the name the expectation addressed the span by, which may be a
      *                      {@code FILLER} ordinal name rather than a copybook name
      * @param span          the descriptor supplying the offset, the width and the PICTURE category
-     * @param expectedValue the expected value exactly as the case carries it, never re-formatted
+     * @param expectedValue the expected value exactly as the case carries it
      * @param record        the decoded observed record
+     * @param channel       the channel name, quoted in the failure text
      * @param diffs         the accumulator a difference is appended to
      */
     private void compareField(ExpectedRecord expectation,
@@ -551,49 +683,65 @@ public final class FieldDiffer {
                               FieldSpan span,
                               String expectedValue,
                               FixedWidthRecord record,
+                              String channel,
                               List<Diff> diffs) {
         String actual = record.readSpan(span);
         if (span.kind() == PictureKind.SIGNED_SCALED) {
-            compareSignedScaled(expectation, fieldName, span, expectedValue, actual, diffs);
+            compareSignedScaled(expectation, fieldName, span, expectedValue, actual, channel, diffs);
             return;
         }
         if (expectedValue.equals(actual)) {
             return;
         }
-        diffs.add(new Diff(expectation.dataset(), expectation.rowIndex(), fieldName, span.offset(),
-            span.length(), expectedValue, actual, DiffKind.VALUE_MISMATCH,
-            textMismatchExplanation(span, expectedValue, actual)));
+        diffs.add(valueMismatch(expectation, fieldName, span, expectedValue, actual,
+            textMismatchExplanation(span, expectedValue, actual, channel)));
     }
 
     /**
-     * Compares a {@code PIC S9(p)V(s)} field, numerically rather than as text.
+     * Compares a {@code PIC S9(p)V(s)} field by its <strong>stored bytes</strong>, with the numeric
+     * reading used only to explain a difference.
      *
-     * <p>Identical images are identical values, so that case short-circuits before any decoding
-     * happens - which also means a field pinned by its raw image compares correctly whatever its
-     * declared scale. Otherwise both sides are decoded and compared as {@link BigDecimal}, because
-     * two different images can denote the same value: in a twelve-character {@code S9(10)V99} span the
-     * unsigned zoned form {@code "000000019400"} and the positive-overpunch form
-     * <code>"00000001940&#123;"</code> both mean 194.00, and reporting a difference between them
-     * would be wrong.
-     *
-     * <p>The expected side is accepted in either of two shapes, which is what lets a fixture author
-     * write whichever is clearer at the time:
+     * <h2>Why bytes and not values</h2>
+     * <p>The gate this class computes is byte-for-byte parity with what the COBOL writes, so the
+     * question a signed field poses is "are these the same stored bytes", not "are these the same
+     * quantity". The two questions have different answers, and the difference is not academic:
      * <ul>
-     *   <li>a <strong>zoned image</strong> of exactly the span's declared width, decoded through the
-     *       codec's overpunch reader - so <code>"00000001940&#123;"</code> is read as 194.00, ten
-     *       integer digits then two fraction digits, the sign occupying no position of its own;</li>
-     *   <li>a plain <strong>decimal literal</strong> such as {@code "194.00"} or {@code "-919.00"},
-     *       stored at the field's scale. Surrounding whitespace is tolerated on a literal only, never
-     *       inside a record image.</li>
+     *   <li>the unsigned zone-F image {@code "000000019400"} and the positive-overpunch image
+     *       <code>"00000001940&#123;"</code> both <em>denote</em> 194.00, but only one of them is what
+     *       a COBOL program storing into {@code PIC S9(10)V99} produces, and the fixtures settle
+     *       which: {@code app/data/ASCII/acctdata.txt} holds 250 <code>&#123;</code> and no
+     *       bare-digit trailing byte in any signed field;</li>
+     *   <li><code>"0000000000&#125;"</code> and <code>"0000000000&#123;"</code> both <em>denote</em>
+     *       zero, and a {@link BigDecimal} cannot even hold the distinction, yet they are eleven
+     *       bytes against eleven different bytes.</li>
      * </ul>
+     * A numeric comparison declares both of those pairs equal, which means a Java unit that wrote the
+     * wrong zone, or lost the sign of a zero, would pass the gate that exists to catch exactly that.
+     * So the comparison is on bytes, and the decoded values appear in the <em>explanation</em> of a
+     * difference rather than in the decision to report one.
+     *
+     * <h2>What an expectation may say</h2>
+     * <p>Both shapes a fixture author may write are still accepted, and each has an exact meaning:
+     * <ul>
+     *   <li>a <strong>zoned image</strong> of exactly the span's declared width is taken as the bytes
+     *       themselves and compared verbatim. This is how an expectation pins an unusual stored form
+     *       on purpose - the unsigned zone-F rendering of a field written by a program that treated
+     *       the picture as unsigned, for instance;</li>
+     *   <li>a plain <strong>decimal literal</strong> such as {@code "194.00"}, {@code "-919.00"} or
+     *       {@code "-0.00"} is <em>encoded</em> to the canonical image the picture implies, through
+     *       the same codec the implementation writes with, and that image is compared. So a literal
+     *       states a value and gets the one stored form a COBOL store produces for it - including
+     *       <code>"0000000000&#125;"</code> for a negative zero, which is why the literal reader
+     *       honours a leading minus even when every digit is zero.</li>
+     * </ul>
+     * Nothing is normalised on the observed side. Whatever the unit wrote is what is compared.
      *
      * <p>The scale is {@link CobolDecimal#MONETARY_SCALE}. A {@link FieldSpan} carries {@code p + s}
      * as one width and no separate scale, and the evidence says that is sufficient: every signed
      * decimal PICTURE in this codebase is {@code V99} - the only three forms present are
      * {@code S9(10)V99}, {@code S9(09)V99} and {@code S9(9)V99} - so scale 2 is not an assumption
-     * about a field, it is the measured property of every field of this kind. Should a scaleless
-     * signed span ever be declared, the image-equality short-circuit above still compares it exactly,
-     * and pinning it by raw image is the correct way to express such an expectation.
+     * about a field, it is the measured property of every field of this kind. A scaleless signed
+     * span, should one ever be declared, is still compared exactly by pinning it as a raw image.
      *
      * @param expectation   the expectation this field belongs to
      * @param fieldName     the name the expectation addressed the span by
@@ -601,6 +749,7 @@ public final class FieldDiffer {
      * @param expectedValue the expectation, either a zoned image of the span's width or a decimal
      *                      literal
      * @param actual        the span's observed characters, untrimmed, sign overpunch intact
+     * @param channel       the channel name, quoted in the failure text
      * @param diffs         the accumulator a difference is appended to
      */
     private void compareSignedScaled(ExpectedRecord expectation,
@@ -608,75 +757,223 @@ public final class FieldDiffer {
                                      FieldSpan span,
                                      String expectedValue,
                                      String actual,
+                                     String channel,
                                      List<Diff> diffs) {
         if (expectedValue.equals(actual)) {
             return;
         }
 
         int scale = CobolDecimal.MONETARY_SCALE;
-        BigDecimal actualValue;
+        FixedWidthCodec.SignedZoned actualValue;
         try {
-            actualValue = codec.decodeSignedScaled(actual, scale);
+            actualValue = codec.decodeSignedZoned(actual, scale);
         } catch (IllegalArgumentException undecodable) {
+            // The observed side is not a signed zoned image at all. That is a more specific finding
+            // than "wrong value" - the field is corrupt rather than merely incorrect - so it is
+            // reported as its own kind.
             diffs.add(new Diff(expectation.dataset(), expectation.rowIndex(), fieldName, span.offset(),
-                span.length(), expectedValue, actual, DiffKind.UNDECODABLE_FIELD,
-                "the observed bytes are not a valid signed zoned DISPLAY image for "
-                    + span.describe() + ", so no value could be read from them. " + signHint(actual)
-                    + " The codec reports: " + undecodable.getMessage()));
+                span.length(), Redaction.maskFieldValue(fieldName, expectedValue),
+                Redaction.maskFieldValue(fieldName, actual), DiffKind.UNDECODABLE_FIELD,
+                "the observed bytes are not a valid signed zoned DISPLAY image for " + span.describe()
+                    + " on the " + channel + " channel, so no value can be read from them at all. "
+                    + signHint(actual) + " The codec reports: " + undecodable.getMessage()));
             return;
         }
 
-        BigDecimal expectedNumber;
+        String expectedImage;
         try {
-            expectedNumber = interpretSignedExpectation(expectedValue, span, scale);
+            expectedImage = canonicalSignedImage(expectedValue, span, scale);
         } catch (IllegalArgumentException | ArithmeticException malformed) {
             diffs.add(new Diff(expectation.dataset(), expectation.rowIndex(), fieldName, span.offset(),
-                span.length(), expectedValue, actual, DiffKind.MALFORMED_EXPECTATION,
-                "the expectation for " + span.describe() + " is neither a zoned image of the span's "
-                    + span.length() + " declared character(s) nor a decimal literal, so it cannot be "
-                    + "compared. Write either the raw image - for example "
-                    + "\"00000001940{\", whose trailing '{' is a positive-zero overpunch and which "
-                    + "denotes 194.00 in a twelve-character S9(10)V99 span - or a decimal literal "
-                    + "such as \"194.00\". Rejected because: " + malformed.getMessage()));
+                span.length(), Redaction.maskFieldValue(fieldName, expectedValue),
+                Redaction.maskFieldValue(fieldName, actual), DiffKind.MALFORMED_EXPECTATION,
+                "the " + channel + " expectation for " + span.describe() + " is neither a zoned "
+                    + "image of the span's " + span.length() + " declared character(s) nor a "
+                    + "decimal literal that can be encoded into one, so it cannot be compared. "
+                    + "Write either the raw image - for example \"00000001940{\", whose trailing "
+                    + "'{' is a positive-zero overpunch and which denotes 194.00 in a "
+                    + "twelve-character S9(10)V99 span - or a decimal literal such as "
+                    + "\"194.00\". Rejected because: " + malformed.getMessage()));
             return;
         }
 
-        if (expectedNumber.compareTo(actualValue) == 0) {
+        if (expectedImage.equals(actual)) {
             return;
         }
-        diffs.add(new Diff(expectation.dataset(), expectation.rowIndex(), fieldName, span.offset(),
-            span.length(), expectedValue, actual, DiffKind.VALUE_MISMATCH,
-            "signed zoned " + span.describe() + " differs numerically: expected "
-                + expectedNumber.toPlainString() + ", decoded " + actualValue.toPlainString()
-                + " at scale " + scale + " with rounding " + CobolDecimal.COBOL_ROUNDING
-                + " (truncation toward zero, because ROUNDED appears zero times in all 28 programs). "
-                + signHint(actual)));
+        diffs.add(valueMismatch(expectation, fieldName, span, expectedImage, actual,
+            signedMismatchExplanation(span, expectedValue, expectedImage, actual, actualValue, scale,
+                channel)));
     }
 
     /**
-     * Reads a signed-field expectation as a number, preferring the zoned-image reading when the
-     * expectation is exactly as wide as the span.
+     * Reduces a signed-field expectation to the exact bytes it stands for.
      *
-     * <p>Preferring the image is the right precedence: within a span of {@code n} characters, an
-     * {@code n}-character all-digit expectation <em>is</em> that span's image, and the value it denotes
-     * is the one the picture says it denotes. Only when the image reading is impossible - because the
-     * width differs, or because the text carries a decimal point or a leading sign that no zoned image
-     * can - does the literal reading apply.
+     * <p>An expectation that is already a valid zoned image of the span's declared width <em>is</em>
+     * the bytes, and is returned untouched - that is how a fixture pins a specific stored form.
+     * Anything else is read as a decimal literal and encoded to the canonical image the picture
+     * implies, through {@link FixedWidthCodec#encodeSignedZoned}, which is the same operation the
+     * implementation writes the field with. The literal reader is
+     * {@link FixedWidthCodec.SignedZoned#ofLiteral(String)} rather than a bare {@link BigDecimal},
+     * so an expectation of {@code "-0.00"} encodes to a negative zero instead of quietly becoming a
+     * positive one.
      *
-     * @throws IllegalArgumentException if the value is neither a valid zoned image of the span's width
-     *     nor a parseable decimal literal
+     * @param value the expectation exactly as the case carries it
+     * @param span  the descriptor supplying the {@code p + s} width
+     * @param scale the field's declared scale
+     * @return the bytes the expectation stands for, as characters
+     * @throws IllegalArgumentException if the value is neither a valid zoned image of the span's
+     *     width nor a parseable decimal literal
      */
-    private BigDecimal interpretSignedExpectation(String value, FieldSpan span, int scale) {
+    private String canonicalSignedImage(String value, FieldSpan span, int scale) {
         if (value.length() == span.length()) {
             try {
-                return codec.decodeSignedScaled(value, scale);
+                codec.decodeSignedZoned(value, scale);
+                return value;
             } catch (IllegalArgumentException notAZonedImage) {
                 // Same width but not a zoned image - a literal such as "0000001940.00" for instance.
                 // Fall through to the literal reading rather than rejecting a legitimate expectation.
-                return CobolDecimal.store(new BigDecimal(value.strip()), scale);
+                return canonicalImageOfLiteral(value, span, scale);
             }
         }
-        return CobolDecimal.store(new BigDecimal(value.strip()), scale);
+        return canonicalImageOfLiteral(value, span, scale);
+    }
+
+    /** Encodes a decimal literal to the one stored image a COBOL store into this span produces. */
+    private String canonicalImageOfLiteral(String value, FieldSpan span, int scale) {
+        return codec.encodeSignedZoned(FixedWidthCodec.SignedZoned.ofLiteral(value),
+            span.length() - scale, scale);
+    }
+
+    /**
+     * Explains a signed-field difference in bytes, and says plainly when the two sides agree on the
+     * value but disagree on how it is stored.
+     *
+     * <p>That case is the one a reader is most likely to mistake for a false positive, so it is
+     * named explicitly along with the two stored forms that produce it: an unsigned zone-F rendering
+     * where the signed form is expected, and a negative zero against a positive zero. Both are real
+     * parity failures - the bytes the unit wrote are not the bytes the COBOL writes - and neither is
+     * visible to a comparison of values.
+     *
+     * <p>The wording is deliberately redundant, and that is not an accident of drafting. A signed
+     * difference is reported to a reader who has to decide, from this sentence alone, whether the unit
+     * wrote the wrong number or the wrong encoding of the right number, so the message names it both
+     * ways: the quantities are stated, the two images are stated, and the conclusion - value agrees,
+     * representation does not; or the values differ as well as the bytes - is stated in words as well.
+     * The one phrase that is never emitted when the quantities differ is "right value but the wrong
+     * bytes", because that would be false.
+     *
+     * <p>Both shapes of expectation reach this method already reduced to bytes by
+     * {@link #canonicalSignedImage(String, FieldSpan, int)}: a full-width zoned image is its own bytes,
+     * and a decimal literal is encoded to the one image a COBOL store of that literal produces. There
+     * is deliberately no numeric-equality escape for the literal shape. Allowing one would mean a case
+     * pinning {@code "194.00"} accepted the unsigned {@code "000000019400"} rendering, and a case
+     * pinning {@code "-0.00"} accepted a positive zero - which are precisely the two byte differences
+     * the signed codec exists to preserve, so the judge would be blind to the defects it is here to
+     * catch.
+     */
+    private String signedMismatchExplanation(FieldSpan span,
+                                             String expectedValue,
+                                             String expectedImage,
+                                             String actual,
+                                             FixedWidthCodec.SignedZoned actualValue,
+                                             int scale,
+                                             String channel) {
+        StringBuilder text = new StringBuilder("signed zoned ")
+            .append(span.describe())
+            .append(" differs in its stored bytes on the ")
+            .append(channel)
+            .append(" channel: expected ")
+            .append(quoted(expectedImage));
+        if (!expectedImage.equals(expectedValue)) {
+            text.append(" (the canonical image of the literal ").append(quoted(expectedValue))
+                .append(')');
+        }
+        text.append(", observed ").append(quoted(actual)).append('.');
+
+        FixedWidthCodec.SignedZoned expectedNumber = null;
+        try {
+            expectedNumber = codec.decodeSignedZoned(expectedImage, scale);
+        } catch (IllegalArgumentException undecodable) {
+            text.append(" The expected image cannot itself be decoded, which means the expectation is "
+                + "malformed: ").append(undecodable.getMessage());
+        }
+        if (expectedNumber != null) {
+            boolean sameQuantity =
+                expectedNumber.signedValue().compareTo(actualValue.signedValue()) == 0;
+            if (sameQuantity) {
+                text.append(" Both images denote ")
+                    .append(expectedNumber.signedValue().toPlainString())
+                    .append(", so this is a difference in stored FORM, not in quantity: the VALUE "
+                        + "agrees but the REPRESENTATION does not - the record holds the right value "
+                        + "but the wrong bytes, which is still a parity failure, because the gate is "
+                        + "byte-for-byte.");
+                if (expectedNumber.negative() != actualValue.negative()) {
+                    text.append(" Specifically the two differ in SIGN while agreeing on every digit: "
+                        + "they carry the opposite overpunch of a zero - one a negative zero, the "
+                        + "other a positive zero - a distinction a BigDecimal cannot hold at all.");
+                } else {
+                    text.append(" The usual cause is an unsigned zone-F rendering - a plain digit in "
+                        + "the trailing byte - where the signed overpunch form is expected.");
+                }
+                text.append(" A signed zoned field carries its sign as an overpunch in the trailing "
+                    + "character, so one value has several encodings, and the parity contract is the "
+                    + "record's bytes rather than the number they happen to denote. Emit the encoding "
+                    + "the COBOL emits.");
+            } else {
+                text.append(" They also denote different quantities, so this differs numerically: "
+                        + "expected ")
+                    .append(expectedNumber.signedValue().toPlainString())
+                    .append(", decoded ")
+                    .append(actualValue.signedValue().toPlainString())
+                    .append(" - the values differ as well as the bytes: expected image ")
+                    .append(quoted(expectedImage))
+                    .append(" denoting ")
+                    .append(signedRendering(expectedNumber))
+                    .append(", observed ")
+                    .append(quoted(actual))
+                    .append(" denoting ")
+                    .append(signedRendering(actualValue))
+                    .append(", at scale ").append(scale).append(" with rounding ")
+                    .append(CobolDecimal.COBOL_ROUNDING)
+                    .append(" (truncation toward zero, because ROUNDED appears zero times in all 28 "
+                        + "programs).");
+            }
+        }
+        return text.append(' ').append(signHint(actual)).toString();
+    }
+
+    /** Renders a decoded quantity, naming a negative zero rather than printing it as a plain zero. */
+    private static String signedRendering(FixedWidthCodec.SignedZoned value) {
+        return value.negativeZero()
+            ? "a negative zero"
+            : value.signedValue().toPlainString();
+    }
+
+    /** Quotes an image so leading and trailing spaces in it are visible in a message. */
+    private static String quoted(String image) {
+        return "\"" + image + "\"";
+    }
+
+    /**
+     * Builds a value difference, masking both sides when the field is a credential.
+     *
+     * @param expectation the expectation the field belongs to
+     * @param fieldName   the field name
+     * @param span        the span, for its offset and width
+     * @param expected    the expected value, already canonicalised where that applies
+     * @param actual      the observed value
+     * @param explanation prose a reviewer can act on
+     * @return the difference
+     */
+    private static Diff valueMismatch(ExpectedRecord expectation,
+                                      String fieldName,
+                                      FieldSpan span,
+                                      String expected,
+                                      String actual,
+                                      String explanation) {
+        return new Diff(expectation.dataset(), expectation.rowIndex(), fieldName, span.offset(),
+            span.length(), Redaction.maskFieldValue(fieldName, expected),
+            Redaction.maskFieldValue(fieldName, actual), DiffKind.VALUE_MISMATCH, explanation);
     }
 
     /**
@@ -689,11 +986,16 @@ public final class FieldDiffer {
      * {@code PIC 9} field is compared as its zero-filled image, so leading zeros are significant and
      * {@code "1940"} is not {@code "00001940"}.
      */
-    private static String textMismatchExplanation(FieldSpan span, String expected, String actual) {
+    private static String textMismatchExplanation(FieldSpan span,
+                                                  String expected,
+                                                  String actual,
+                                                  String channel) {
         StringBuilder text = new StringBuilder(describeKind(span.kind()))
             .append(' ')
             .append(span.describe())
-            .append(" differs.");
+            .append(" differs on the ")
+            .append(channel)
+            .append(" channel.");
         if (expected.length() != span.length()) {
             text.append(" Note the expectation is ")
                 .append(expected.length())
@@ -740,6 +1042,13 @@ public final class FieldDiffer {
      * <p>The classification is derived from the byte and from the decoded sign rather than from a
      * copy of the overpunch tables kept here: duplicating them would create a second source of truth
      * for sign semantics, and the codec is the first.
+     *
+     * <p>Every caller passes the <em>observed</em> image, and every caller has just named it as such in
+     * the sentence before, so the hint says "the trailing byte" rather than repeating "observed" a
+     * second time in one breath.
+     *
+     * @param image the observed bytes whose trailing sign position is to be named
+     * @return one sentence naming the trailing byte and the sign it carries
      */
     private String signHint(String image) {
         if (image.isEmpty()) {
@@ -751,8 +1060,13 @@ public final class FieldDiffer {
             return rendered + " is a plain digit: the unsigned zoned form, read as positive.";
         }
         try {
-            BigDecimal decoded = codec.decodeSignedScaled(image, CobolDecimal.MONETARY_SCALE);
-            return rendered + (decoded.signum() < 0
+            // Read the SIGN, not the sign of a decoded BigDecimal: a BigDecimal has no negative
+            // zero, so decoding "0000000000}" and asking signum() would report a negative-zero
+            // overpunch as positive - in a hint whose whole job is to say which overpunch is
+            // present.
+            FixedWidthCodec.SignedZoned decoded =
+                codec.decodeSignedZoned(image, CobolDecimal.MONETARY_SCALE);
+            return rendered + (decoded.negative()
                 ? " is a NEGATIVE sign overpunch."
                 : " is a POSITIVE sign overpunch.");
         } catch (IllegalArgumentException notAnOverpunch) {
@@ -763,135 +1077,212 @@ public final class FieldDiffer {
 
 
     // ===============================================================================================
-    // The two normalisations, and only these two.
+    // The online response channel.
     // ===============================================================================================
 
     /**
-     * Decides whether a measured width may be reconciled with a layout's declared width, and records
-     * a note when a normalisation supplies the shortfall.
+     * Compares the online response field by field, or reports its unexpected presence or absence.
      *
-     * <p>Two shipped datasets in this repository are narrower than the copybook that describes them,
-     * and this method is the single place either shortfall is made up:
-     * <ul>
-     *   <li><strong>{@code cardxref} 36 to 50.</strong> The rows of
-     *       {@code app/data/ASCII/cardxref.txt} measure exactly 36 characters - for example
-     *       {@code 050002445376574000000005000000000050}, which is {@code XREF-CARD-NUM PIC X(16)}
-     *       plus {@code XREF-CUST-ID PIC 9(09)} plus {@code XREF-ACCT-ID PIC 9(11)}. Its copybook
-     *       {@code app/cpy/CVACT03Y.cpy} declares a trailing {@code FILLER PIC X(14)} the fixture
-     *       omits, so 14 spaces are supplied to reach the declared 50.</li>
-     *   <li><strong>{@code USRSEC} 57 to 80.</strong> The ten in-stream rows of
-     *       {@code app/jcl/DUSRSECJ.jcl} measure exactly 57 characters - {@code SEC-USR-ID PIC X(08)}
-     *       plus {@code SEC-USR-FNAME PIC X(20)} plus {@code SEC-USR-LNAME PIC X(20)} plus
-     *       {@code SEC-USR-PWD PIC X(08)} plus {@code SEC-USR-TYPE PIC X(01)} - while the very same
-     *       job writes them to {@code DCB=(LRECL=80,RECFM=FB,DSORG=PS)} and then defines the cluster
-     *       with {@code KEYS(8,0) RECORDSIZE(80,80)}. {@code app/cpy/CSUSR01Y.cpy}'s trailing
-     *       {@code SEC-USR-FILLER PIC X(23)} is absent from the literal data, so 23 spaces are
-     *       supplied to reach 80. The ten seeded rows are {@code ADMIN001} to {@code ADMIN005} of type
-     *       {@code A} and {@code USER0001} to {@code USER0005} of type {@code U}. Their
-     *       {@code SEC-USR-PWD} span holds the self-evidently non-secret literal word
-     *       {@code PASSWORD} - it is demonstration seed data committed to this repository in
-     *       {@code app/jcl/DUSRSECJ.jcl}, carries no credential value, and is quoted here only
-     *       because the parity contract is byte-level and the span's content is part of it.</li>
-     * </ul>
+     * <p>This channel exists because an online program's observable behaviour is mostly its response.
+     * Of the seventeen translated programs several paths write no dataset at all - the no-commarea
+     * guard, an empty-field rejection, an invalid key - and before this channel existed every one of
+     * them could have returned the wrong next program, the wrong screen text, the wrong colour or the
+     * wrong cursor and still produced a diff count of zero.
      *
-     * <p>Three conditions must all hold before a pad is applied, and they are what keeps this from
-     * becoming a general-purpose escape hatch: the case must <em>declare</em> the normalisation, the
-     * measured width must equal that normalisation's source width, and the layout's declared length
-     * must equal its target width. The decision is therefore driven entirely off
-     * {@link ParityCase#normalisations()} and never off a dataset-name comparison, so a case cannot
-     * accidentally acquire a pad by touching a similarly-named dataset. Padding is delegated to
-     * {@link FixedWidthCodec#padToDeclaredWidth(byte[], int)}, which pads on the right with the code
-     * page's own space byte and <strong>rejects an over-long row rather than truncating it</strong> -
-     * a row wider than its copybook means the layout and the data disagree, and discarding the excess
-     * would let that disagreement through as plausible-looking output.
-     *
-     * <p>The other seven fixtures match their copybooks exactly - {@code acctdata} 300, {@code carddata}
-     * 150, {@code custdata} 500, {@code dailytran} 350, {@code discgrp} 50, {@code tcatbal} 50,
-     * {@code trancatg} 60 and {@code trantype} 60, every one re-measured - so no third normalisation
-     * exists and none may be added. A width mismatch that is not one of these two is a difference.
-     *
-     * @param parityCase    the case, the sole source of which normalisations are permitted here
-     * @param dataset       the dataset binding key, quoted in the note
-     * @param subject       which side is being reconciled - the observed record or the expected
-     *                      record image - so a note says plainly which one was padded
-     * @param measuredWidth the width actually measured, in bytes
-     * @param declaredWidth the layout's declared record length, in bytes
-     * @param notes         the accumulator a fired normalisation records itself in
-     * @return {@code true} when the widths already agree or a declared normalisation covers the
-     *     shortfall; {@code false} when the caller must report
-     *     {@link DiffKind#RECORD_WIDTH_MISMATCH}
+     * @param expected the case's expectation, or {@code null} for a batch case
+     * @param observed what the unit returned, or {@code null} when it returned nothing
+     * @param diffs    the accumulator every difference is appended to
      */
-    private boolean reconcileWidth(ParityCase parityCase,
-                                   String dataset,
-                                   String subject,
-                                   int measuredWidth,
-                                   int declaredWidth,
-                                   Set<String> notes) {
-        if (measuredWidth == declaredWidth) {
-            return true;
+    private void compareResponse(ExpectedResponse expected,
+                                 ObservedResponse observed,
+                                 List<Diff> diffs) {
+        if (expected == null && observed == null) {
+            return;
         }
-        for (Normalisation normalisation : parityCase.normalisations()) {
-            if (normalisation.sourceWidth() == measuredWidth
-                && normalisation.targetWidth() == declaredWidth) {
-                notes.add("Applied " + normalisation + " to the " + subject + " of dataset " + dataset
-                    + ": right-padded " + normalisation.sourceWidth() + " to "
-                    + normalisation.targetWidth() + " with " + normalisation.padWidth()
-                    + " space(s), supplying " + normalisation.copybook() + "'s "
-                    + normalisation.absentSpan() + " which the source data omits.");
-                return true;
-            }
+        if (expected == null) {
+            diffs.add(responseDiff("<whole>", null, observed.toString(),
+                DiffKind.RESPONSE_MISMATCH,
+                "the unit returned an online response but the case expects none. A batch case has no "
+                    + "screen, so a response here means the harness invoked something other than the "
+                    + "unit the case names."));
+            return;
         }
-        return false;
+        if (observed == null) {
+            diffs.add(responseDiff("<whole>", expected.toString(), null,
+                DiffKind.RESPONSE_MISMATCH,
+                "the case expects an online response but the unit returned none. Every path through "
+                    + "an online program produces one - even the no-commarea guard, which produces a "
+                    + "response carrying nothing but the next program and the navigation context."));
+            return;
+        }
+
+        compareResponseScalar("nextProgram", expected.nextProgram(), observed.nextProgram(),
+            "the target of EXEC CICS XCTL PROGRAM(...), which becomes a response field in a "
+                + "stateless translation because the client resolves the navigation", diffs);
+        compareResponseScalar("nextMapset", expected.nextMapset(), observed.nextMapset(),
+            "the mapset the response names, carried in CDEMO-LAST-MAPSET", diffs);
+        compareResponseScalar("nextMap", expected.nextMap(), observed.nextMap(),
+            "the map the response names, carried in CDEMO-LAST-MAP", diffs);
+        compareResponseScalar("cursorField", expected.cursorField(), observed.cursorField(),
+            "the symbolic-map length item that received MOVE -1, which is how COBOL positions the "
+                + "cursor - so a different field here means the cursor landed somewhere else", diffs);
+        compareResponseScalar("termination", nameOf(expected.termination()),
+            nameOf(observed.termination()),
+            "how the transaction ended. XCTL transfers control and never returns, so the EXEC CICS "
+                + "RETURN that follows it in the source is not reached; the two are not "
+                + "interchangeable", diffs);
+
+        compareNavigation(expected.navigation(), observed.navigation(), diffs);
+        compareSends(expected.sends(), observed.sends(), diffs);
     }
 
     /**
-     * Widens a row to a declared width when it is short, through the codec's own normaliser.
-     *
-     * <p>Only ever called after {@link #reconcileWidth} has authorised the widening, so a row reaching
-     * here is either already the right width or is covered by a declared normalisation.
+     * Compares one scalar response field, treating absent and present as distinct.
      */
-    private byte[] widen(byte[] row, int declaredWidth) {
-        return row.length == declaredWidth ? row : codec.padToDeclaredWidth(row, declaredWidth);
+    private static void compareResponseScalar(String fieldName,
+                                              String expected,
+                                              String actual,
+                                              String meaning,
+                                              List<Diff> diffs) {
+        if (Objects.equals(expected, actual)) {
+            return;
+        }
+        diffs.add(responseDiff(fieldName, expected, actual, DiffKind.RESPONSE_MISMATCH,
+            "response field '" + fieldName + "' differs. It carries " + meaning + '.'));
     }
 
-    // ===============================================================================================
-    // Extra records, return code and emitted messages.
-    // ===============================================================================================
-
     /**
-     * Reports every observed row that lies beyond the highest row a dataset's expectations reach.
+     * Compares the navigation context in both directions, so an unexpected field is reported too.
      *
-     * <p>Only datasets the case actually declares expectations for are examined, and one difference is
-     * emitted per extra row. A unit that wrote four records where three were expected has produced one
-     * record too many and that is a parity failure on its own terms - the record does not have to be
-     * wrong in some field to be wrong.
-     *
-     * <p>Datasets are visited in the order they first appear among the expectations and rows in
-     * ascending index, so this pass adds nothing hash-ordered to the traversal.
+     * <p>This is where statelessness is actually asserted (rule R6): the conversation state travels
+     * in the payload, which is the only reason it is comparable at all. A translation that kept it in
+     * a server-side session would have nothing here to compare.
      */
-    private void reportExtraRecords(Fingerprint fingerprint,
-                                    Map<String, Integer> highestExpectedRow,
-                                    List<Diff> diffs) {
-        for (Map.Entry<String, Integer> entry : highestExpectedRow.entrySet()) {
-            String dataset = entry.getKey();
-            Optional<DatasetOutput> located = fingerprint.find(dataset);
-            if (located.isEmpty()) {
+    private static void compareNavigation(Map<String, String> expected,
+                                          Map<String, String> actual,
+                                          List<Diff> diffs) {
+        for (Map.Entry<String, String> entry : expected.entrySet()) {
+            String field = entry.getKey();
+            String actualValue = actual.get(field);
+            if (Objects.equals(entry.getValue(), actualValue)) {
                 continue;
             }
-            DatasetOutput output = located.get();
-            int expectedRowCount = entry.getValue() + 1;
-            for (int rowIndex = expectedRowCount; rowIndex < output.rowCount(); rowIndex++) {
-                byte[] extra = output.row(rowIndex);
-                diffs.add(new Diff(dataset, rowIndex, RECORD_SCOPE_FIELD, Diff.NOT_APPLICABLE,
-                    extra.length, null, imageOf(extra),
-                    DiffKind.EXTRA_RECORD,
-                    "the unit wrote " + output.rowCount() + " row(s) to dataset " + dataset
-                        + " but the case expects " + expectedRowCount
-                        + ", so the row at 0-based index " + rowIndex + " is unexpected. Extra output "
-                        + "is a parity failure in its own right and counts toward the diff count."));
+            diffs.add(responseDiff("navigation." + field, entry.getValue(), actualValue,
+                actual.containsKey(field)
+                    ? DiffKind.RESPONSE_MISMATCH
+                    : DiffKind.FIELD_ABSENT_IN_FINGERPRINT,
+                "the CARDDEMO-COMMAREA field " + field + " differs in the returned navigation "
+                    + "context. Conversation state travels in the payload rather than in a "
+                    + "server-side session, so every one of these fields is part of the observable "
+                    + "response. Present in the response: " + actual.keySet()));
+        }
+        for (Map.Entry<String, String> entry : actual.entrySet()) {
+            String field = entry.getKey();
+            if (expected.containsKey(field)) {
+                continue;
             }
+            diffs.add(responseDiff("navigation." + field, null, entry.getValue(),
+                DiffKind.RESPONSE_MISMATCH,
+                "the response carries the CARDDEMO-COMMAREA field " + field + ", which the case does "
+                    + "not pin. A commarea field the case says nothing about is a field nobody has "
+                    + "checked, and the commarea is carried forward into the next transaction."));
         }
     }
+
+    /**
+     * Compares the ordered sequence of screen sends: the count first, then each send's payload and
+     * attribute metadata.
+     *
+     * <p>The count is behaviour in its own right. Several {@code COUSR02C} paths perform
+     * {@code SEND-USRUPD-SCREEN} more than once in a single invocation - an inherited quirk of the
+     * program rather than a translation artefact - so a translation that sent once where the COBOL
+     * sends twice has changed what the terminal saw, and that must fail.
+     */
+    private static void compareSends(List<ScreenSend> expected,
+                                     List<ObservedSend> actual,
+                                     List<Diff> diffs) {
+        if (expected.size() != actual.size()) {
+            diffs.add(new Diff(RESPONSE_SCOPE, Diff.NOT_APPLICABLE, SEND_COUNT_FIELD,
+                Diff.NOT_APPLICABLE, Diff.NOT_APPLICABLE, Integer.toString(expected.size()),
+                Integer.toString(actual.size()), DiffKind.SEND_COUNT_MISMATCH,
+                "the case expects " + expected.size() + " screen send(s) but the unit performed "
+                    + actual.size() + ". The send count is behaviour: several paths through these "
+                    + "programs send the same map more than once in one invocation, and a "
+                    + "translation that collapsed them would have changed what the terminal saw."));
+        }
+
+        int shared = Math.min(expected.size(), actual.size());
+        for (int index = 0; index < shared; index++) {
+            compareOneSend(index, expected.get(index), actual.get(index), diffs);
+        }
+    }
+
+    /** Compares one send's payload fields and attribute metadata, in both directions. */
+    private static void compareOneSend(int index,
+                                       ScreenSend expected,
+                                       ObservedSend actual,
+                                       List<Diff> diffs) {
+        String prefix = "sends[" + index + "].";
+        compareSendMap(prefix + "fields.", expected.fields(), actual.fields(),
+            "a symbolic-map output field of this send", diffs);
+        compareSendMap(prefix + "attributes.", expected.attributes(), actual.attributes(),
+            "an attribute item of this send - the colour, protection or highlight byte the program "
+                + "moved, named by its DFHBMSCA or DFHATTR mnemonic. Colour is not decoration: it is "
+                + "how the program distinguishes an error from a prompt from a confirmation", diffs);
+    }
+
+    /** Compares one map of a send, reporting a missing, differing or unexpected entry. */
+    private static void compareSendMap(String prefix,
+                                       Map<String, String> expected,
+                                       Map<String, String> actual,
+                                       String meaning,
+                                       List<Diff> diffs) {
+        for (Map.Entry<String, String> entry : expected.entrySet()) {
+            String field = entry.getKey();
+            String actualValue = actual.get(field);
+            if (Objects.equals(entry.getValue(), actualValue)) {
+                continue;
+            }
+            diffs.add(responseDiff(prefix + field,
+                Redaction.maskFieldValue(field, entry.getValue()),
+                Redaction.maskFieldValue(field, actualValue),
+                actual.containsKey(field)
+                    ? DiffKind.RESPONSE_MISMATCH
+                    : DiffKind.FIELD_ABSENT_IN_FINGERPRINT,
+                field + " is " + meaning + ", and it differs. Present in this send: "
+                    + actual.keySet()));
+        }
+        for (Map.Entry<String, String> entry : actual.entrySet()) {
+            String field = entry.getKey();
+            if (expected.containsKey(field)) {
+                continue;
+            }
+            diffs.add(responseDiff(prefix + field, null,
+                Redaction.maskFieldValue(field, entry.getValue()), DiffKind.RESPONSE_MISMATCH,
+                "the send carries " + field + ", which the case does not pin. " + meaning
+                    + ", so an unpinned one is a field nobody has checked."));
+        }
+    }
+
+    /** Builds a response-channel difference. */
+    private static Diff responseDiff(String fieldName,
+                                     String expected,
+                                     String actual,
+                                     DiffKind kind,
+                                     String explanation) {
+        return new Diff(RESPONSE_SCOPE, Diff.NOT_APPLICABLE, fieldName, Diff.NOT_APPLICABLE,
+            Diff.NOT_APPLICABLE, expected, actual, kind, explanation);
+    }
+
+    /** Renders an enum constant, or {@code null} when it is absent, without a null-check at the call. */
+    private static String nameOf(Enum<?> constant) {
+        return constant == null ? null : constant.name();
+    }
+
+
+    // ===============================================================================================
+    // Return code and emitted messages.
+    // ===============================================================================================
 
     /**
      * Compares the COBOL {@code RETURN-CODE} the case expects against the one observed.
@@ -921,21 +1312,28 @@ public final class FieldDiffer {
     }
 
     /**
-     * Compares the emitted lines positionally and byte-exactly.
+     * Compares the emitted lines positionally, on their declared channels.
      *
      * <p>Both a count difference and every positional difference are reported: the count says the unit
      * emitted the wrong number of lines, and the positional entries say which lines are wrong, and a
      * reviewer needs both. The common prefix is still compared when the counts differ, because a run
      * that emitted one line too few usually has something to say about the lines it did emit.
      *
-     * <p>Comparison is exact. Where a line comes from a shared renderer the expectation must match that
-     * renderer's output character for character - {@link FileStatus#toDisplayLine(String)} emits
-     * {@code "FILE STATUS IS: NNNN0000"} for status {@code "00"}, where the {@code NNNN} is genuinely
-     * part of the COBOL literal and not a placeholder awaiting substitution.
+     * <p>The channel is compared before the text, and a channel difference is reported as its own kind.
+     * Three related things travel through this list - a {@code DISPLAY} line, the 80-byte
+     * {@code WS-MESSAGE} working-storage field, and the 78-byte {@code ERRMSGO} screen field that
+     * {@code MOVE WS-MESSAGE TO ERRMSGO} truncates it into - and comparing an 80-byte expectation
+     * against a 78-byte observation as though they were the same thing is how a two-byte truncation
+     * defect goes unnoticed.
+     *
+     * <p>Text comparison is exact. Where a line comes from a shared renderer the expectation must
+     * match that renderer's output character for character - {@link FileStatus#toDisplayLine(String)}
+     * emits {@code "FILE STATUS IS: NNNN0000"} for status {@code "00"}, where the {@code NNNN} is
+     * genuinely part of the COBOL literal and not a placeholder awaiting substitution.
      */
     private void compareMessages(ParityCase parityCase, Fingerprint fingerprint, List<Diff> diffs) {
-        List<String> expected = parityCase.expectedMessages();
-        List<String> actual = fingerprint.messages();
+        List<EmittedMessage> expected = parityCase.expectedMessages();
+        List<EmittedMessage> actual = fingerprint.messages();
 
         if (expected.size() != actual.size()) {
             diffs.add(new Diff(MESSAGES_SCOPE, Diff.NOT_APPLICABLE, MESSAGE_FIELD,
@@ -943,21 +1341,36 @@ public final class FieldDiffer {
                 Integer.toString(actual.size()), DiffKind.MESSAGE_COUNT_MISMATCH,
                 "the case expects " + expected.size() + " emitted line(s) but the unit emitted "
                     + actual.size() + ". Emission order and count are both part of the expectation; "
-                    + "an empty string is a legitimate expectation, because a COBOL DISPLAY of a "
-                    + "blank line emits one."));
+                    + "an empty string on the DISPLAY_LINE channel is a legitimate expectation, "
+                    + "because a COBOL DISPLAY of a blank line emits one."));
         }
 
         int shared = Math.min(expected.size(), actual.size());
         for (int position = 0; position < shared; position++) {
-            String expectedLine = expected.get(position);
-            String actualLine = actual.get(position);
-            if (expectedLine.equals(actualLine)) {
+            EmittedMessage expectedLine = expected.get(position);
+            EmittedMessage actualLine = actual.get(position);
+
+            if (expectedLine.channel() != actualLine.channel()) {
+                diffs.add(new Diff(MESSAGES_SCOPE, position, MESSAGE_FIELD, Diff.NOT_APPLICABLE,
+                    Diff.NOT_APPLICABLE, expectedLine.channel().name(), actualLine.channel().name(),
+                    DiffKind.MESSAGE_CHANNEL_MISMATCH,
+                    "emitted line " + position + " arrived on the " + actualLine.channel()
+                        + " channel where the case expects " + expectedLine.channel()
+                        + ". The channels have different widths - " + expectedLine.channel()
+                        + " because " + expectedLine.channel().declaration() + " - so comparing "
+                        + "across them would let the 80-to-78 truncation of MOVE WS-MESSAGE TO "
+                        + "ERRMSGO pass unnoticed."));
+                continue;
+            }
+            if (expectedLine.text().equals(actualLine.text())) {
                 continue;
             }
             diffs.add(new Diff(MESSAGES_SCOPE, position, MESSAGE_FIELD, Diff.NOT_APPLICABLE,
-                expectedLine.length(), expectedLine, actualLine, DiffKind.MESSAGE_MISMATCH,
-                "emitted line " + position + " differs byte-exactly." + fileStatusHint(expectedLine,
-                    actualLine)));
+                expectedLine.text().length(), Redaction.maskIfSensitiveText(expectedLine.text()),
+                Redaction.maskIfSensitiveText(actualLine.text()), DiffKind.MESSAGE_MISMATCH,
+                "emitted line " + position + " differs byte-exactly on the "
+                    + expectedLine.channel() + " channel."
+                    + fileStatusHint(expectedLine.text(), actualLine.text())));
         }
     }
 
@@ -1029,23 +1442,25 @@ public final class FieldDiffer {
     }
 
     /**
-     * Builds the single difference that stands for a record the unit never wrote.
+     * Builds the single difference that stands for a record the unit never produced.
      *
      * @param dataset     the dataset binding key the expectation addressed
      * @param rowIndex    the 0-based row index it addressed
      * @param expectation the expectation, summarised into the {@code expected} side
+     * @param channel     the channel name, quoted in the failure text
      * @param reason      why no record was found, phrased to complete a sentence
      * @return the difference
      */
     private static Diff missingRecord(String dataset,
                                       int rowIndex,
                                       ExpectedRecord expectation,
+                                      String channel,
                                       String reason) {
         return new Diff(dataset, rowIndex, RECORD_SCOPE_FIELD, Diff.NOT_APPLICABLE,
             Diff.NOT_APPLICABLE, summariseExpectation(expectation), null, DiffKind.MISSING_RECORD,
-            "no record was found to compare against: " + reason
+            "no " + channel + " record was found to compare against: " + reason
                 + ". This counts as one difference for the record rather than one per field, because "
-                + "the fields of a record that was never written are not independently wrong - they "
+                + "the fields of a record that was never produced are not independently wrong - they "
                 + "are collectively absent.");
     }
 
@@ -1056,6 +1471,7 @@ public final class FieldDiffer {
      * @param rowIndex      the 0-based row index
      * @param layout        the layout whose declared length was not met
      * @param measuredWidth the width actually measured, in bytes
+     * @param channel       the channel name, quoted in the failure text
      * @param reason        which side disagreed and by how much
      * @return the difference
      */
@@ -1063,24 +1479,25 @@ public final class FieldDiffer {
                                       int rowIndex,
                                       RecordLayout layout,
                                       int measuredWidth,
+                                      String channel,
                                       String reason) {
         return new Diff(dataset, rowIndex, RECORD_SCOPE_FIELD, 0, layout.recordLength(),
             Integer.toString(layout.recordLength()), Integer.toString(measuredWidth),
             DiffKind.RECORD_WIDTH_MISMATCH,
-            "total record width disagrees with the layout: " + reason
-                + ". Field comparison is skipped for this record, because once the total width is "
+            "total " + channel + " record width disagrees with the layout: " + reason
+                + " Field comparison is skipped for this record, because once the total width is "
                 + "wrong every offset past the missing span addresses the wrong bytes and the field "
                 + "differences that follow would be noise hiding this one real finding.");
     }
 
     /**
      * Summarises what an expectation pinned, for the {@code expected} side of a record-level
-     * difference: the whole record image where the case pins one, and the list of field names it pins
-     * otherwise.
+     * difference: the whole record image where the case pins one - with any credential span masked -
+     * and the list of field names it pins otherwise.
      */
     private static String summariseExpectation(ExpectedRecord expectation) {
         if (expectation.expectedBytes() != null) {
-            return expectation.expectedBytes();
+            return Redaction.maskRecordImage(expectation.dataset(), expectation.expectedBytes());
         }
         return "{" + String.join(", ", expectation.fields().keySet()) + "}";
     }
@@ -1092,47 +1509,46 @@ public final class FieldDiffer {
             + layout.recordLength() + ")";
     }
 
-    /** Lists the dataset keys a fingerprint actually carries, so a missing dataset is diagnosable. */
-    private static String describeDatasetKeys(Fingerprint fingerprint) {
-        List<String> keys = new ArrayList<>();
-        for (DatasetOutput output : fingerprint.outputs()) {
-            keys.add(output.dataset());
-        }
-        return keys.isEmpty() ? "no output dataset at all" : "output dataset(s) "
-            + String.join(", ", keys);
+    /** Lists the dataset keys a channel actually carries, so a missing dataset is diagnosable. */
+    private static String describeDatasetKeys(Map<String, DatasetOutput> observed) {
+        return observed.isEmpty()
+            ? "no dataset at all on this channel, so there is no output dataset at all to look in"
+            : "dataset(s) " + String.join(", ", observed.keySet());
     }
 
     /**
-     * States which normalisations the case declares, so a width failure says plainly whether a pad was
-     * even available - and, when one was, that it did not cover this width pair.
+     * States what the case declared for a dataset, so a width difference can say plainly whether a
+     * normalisation was in play at all.
+     *
+     * <p>A reader meeting a width mismatch has exactly two hypotheses: the unit wrote the wrong number
+     * of bytes, or the case forgot to declare the pad that repairs a known fixture-to-copybook
+     * deviation. Naming the declarations settles which, and naming them from the case rather than
+     * asserting a general truth means the sentence is still correct when a case has declared a pad for
+     * some other dataset.
+     *
+     * @param normalisations every normalisation the case declares
+     * @param dataset        the dataset whose record disagreed on width
+     * @return a clause naming the declarations that bind to this dataset, or their absence
      */
-    private static String describeAvailableNormalisations(ParityCase parityCase) {
-        List<Normalisation> declared = parityCase.normalisations();
-        if (declared.isEmpty()) {
-            return ". The case declares no normalisation. Only two exist - "
-                + Normalisation.CARDXREF_FILLER_PAD_36_TO_50 + " and "
-                + Normalisation.USRSEC_FILLER_PAD_57_TO_80
-                + " - and if neither applies then this width is a genuine difference and must not be "
-                + "padded away";
-        }
-        StringBuilder text = new StringBuilder(". The case declares ");
-        for (int index = 0; index < declared.size(); index++) {
-            Normalisation normalisation = declared.get(index);
-            if (index > 0) {
-                text.append(" and ");
+    private static String describeNormalisations(
+            List<ParityCase.DatasetNormalisation> normalisations, String dataset) {
+        List<String> bound = new ArrayList<>();
+        for (ParityCase.DatasetNormalisation normalisation : normalisations) {
+            if (normalisation.dataset().equals(dataset)) {
+                bound.add(normalisation.kind().name());
             }
-            text.append(normalisation)
-                .append(" (")
-                .append(normalisation.sourceWidth())
-                .append(" to ")
-                .append(normalisation.targetWidth())
-                .append(", supplying ")
-                .append(normalisation.copybook())
-                .append("'s absent ")
-                .append(normalisation.absentSpan())
-                .append(')');
         }
-        return text.append(", which does not cover this width pair").toString();
+        if (bound.isEmpty()) {
+            return "The case declares no normalisation for dataset " + dataset;
+        }
+        return "The case declares " + String.join(", ", bound) + " for dataset " + dataset
+            + ", which is applied when the dataset is seeded and not here";
+    }
+
+    /** Lists the datasets a channel's expectations address, for an extra-dataset difference. */
+    private static String describeExpectedDatasets(Map<String, Set<Integer>> expectedRows) {
+        return expectedRows.isEmpty() ? "none at all"
+            : String.join(", ", expectedRows.keySet());
     }
 
     /** Names a PICTURE category in the words the copybook uses. */
@@ -1162,7 +1578,8 @@ public final class FieldDiffer {
 
     // ===============================================================================================
     // Rendering. Invisible bytes are made visible, because a byte a reviewer cannot see is a byte
-    // they cannot diagnose.
+    // they cannot diagnose - and a credential span is masked, because a byte a reviewer can see is a
+    // byte a build log can keep.
     // ===============================================================================================
 
     /**
@@ -1173,6 +1590,10 @@ public final class FieldDiffer {
      * any ordinary failure message, and they are the single most common cause of a comparison that
      * looks correct and is not - so they are reported as a count that cannot be overlooked instead of
      * as whitespace that can.
+     *
+     * <p>Whatever reaches here has already been masked where masking applies: the callers pass values
+     * through {@link Redaction}, so this method renders faithfully and makes no policy decision of its
+     * own.
      */
     private static String describeValue(String value) {
         if (value == null) {
@@ -1261,31 +1682,43 @@ public final class FieldDiffer {
         VALUE_MISMATCH,
 
         /**
-         * An expectation addresses a record the unit never wrote - either the dataset carries no rows
-         * at all, or it carries fewer than the expectation's 0-based row index requires.
+         * An expectation addresses a record the unit never produced on that channel - either the
+         * dataset carries no rows at all, or it carries fewer than the expectation's 0-based row index
+         * requires.
          */
         MISSING_RECORD,
 
         /**
-         * The unit wrote a row beyond the highest row index any expectation for that dataset reaches.
-         * Writing one record too many is a parity failure on its own terms; the extra record does not
-         * have to be wrong in a field to be wrong.
+         * The unit produced a row at an index no expectation for that dataset addresses. Reported
+         * wherever the row sits, including below the highest expected index: writing one record too
+         * many is a parity failure on its own terms, and the extra record does not have to be wrong in
+         * a field to be wrong.
          */
         EXTRA_RECORD,
+
+        /**
+         * The unit touched a dataset the case expects nothing from. A separate kind from
+         * {@link #EXTRA_RECORD} because it is a different defect: not one row too many, but a whole
+         * dataset the case never mentioned - which is exactly what a judge that only walked the
+         * expectations could never see.
+         */
+        EXTRA_DATASET,
 
         /**
          * A record's total width disagrees with its layout's declared length. This is the check that
          * catches an omitted {@code FILLER}: a record short by exactly one span shifts every byte
          * offset after it, and reporting that once against the record is far more useful than reporting
-         * it as a cascade of field differences.
+         * it as a cascade of field differences. Since nothing is padded at comparison time, this kind
+         * always means a real width disagreement.
          */
         RECORD_WIDTH_MISMATCH,
 
         /**
-         * An expectation names a field the layout does not declare, so nothing was decoded to compare
-         * it against. Usually a misspelling - and worth remembering that the copybook's own spellings
-         * are authoritative, {@code ACCT-EXPIRAION-DATE} included - or a {@code FILLER} addressed by an
-         * ordinal the convention does not produce.
+         * An expectation names a field the layout does not declare, or a response field the unit did
+         * not return, so nothing was produced to compare it against. Usually a misspelling - and worth
+         * remembering that the copybook's own spellings are authoritative,
+         * {@code ACCT-EXPIRAION-DATE} included - or a {@code FILLER} addressed by an ordinal the
+         * convention does not produce.
          */
         FIELD_ABSENT_IN_FINGERPRINT,
 
@@ -1304,11 +1737,34 @@ public final class FieldDiffer {
          */
         MALFORMED_EXPECTATION,
 
+        /**
+         * An online response field differs, is absent, or is present when nothing was expected. This
+         * covers the next program an {@code XCTL} resolves to, the navigation context carried in the
+         * payload, a screen send's BMS payload or attribute metadata, the cursor field and the
+         * termination.
+         */
+        RESPONSE_MISMATCH,
+
+        /**
+         * The unit performed a different number of screen sends than the case expects. Its own kind
+         * because the count is behaviour: several paths through these programs legitimately send the
+         * same map twice in one invocation.
+         */
+        SEND_COUNT_MISMATCH,
+
         /** The COBOL {@code RETURN-CODE}, and therefore the batch exit status, differs. */
         RETURN_CODE_MISMATCH,
 
         /** An emitted line differs from the line expected at that position, byte-exactly. */
         MESSAGE_MISMATCH,
+
+        /**
+         * An emitted line arrived on a different channel from the one expected - a variable-width
+         * {@code DISPLAY} where an 80-byte working-storage message was expected, or the 78-byte screen
+         * field where the 80-byte field was. The widths differ, so the channel has to match before the
+         * text can mean anything.
+         */
+        MESSAGE_CHANNEL_MISMATCH,
 
         /** The unit emitted a different number of lines than the case expects. */
         MESSAGE_COUNT_MISMATCH
@@ -1318,19 +1774,19 @@ public final class FieldDiffer {
      * One difference, located precisely enough to act on without re-deriving anything by hand.
      *
      * @param dataset the dataset binding key the difference belongs to, or one of the bracketed
-     *     pseudo-scopes for a return-code or message difference. Bracketed names cannot collide with a
-     *     real binding key, which is validated as one to eight upper-case alphanumerics
+     *     pseudo-scopes for a return-code, message or response difference. Bracketed names cannot
+     *     collide with a real binding key, which is validated as one to eight upper-case alphanumerics
      * @param rowIndex the 0-based row index within that dataset, the 0-based position within the
      *     emitted lines for a message difference, or {@link #NOT_APPLICABLE}
-     * @param fieldName the COBOL field name verbatim, a {@code FILLER} ordinal name, or a bracketed
-     *     pseudo-field for a record-level difference
+     * @param fieldName the COBOL field name verbatim, a {@code FILLER} ordinal name, a response field
+     *     path, or a bracketed pseudo-field for a record-level or dataset-level difference
      * @param offset the field's declared 0-based byte offset within the record, or
      *     {@link #NOT_APPLICABLE}
      * @param length the field's declared width in bytes, or {@link #NOT_APPLICABLE}
-     * @param expected what the case expects, verbatim and never re-formatted; {@code null} only where
-     *     nothing was expected, as for an extra record
-     * @param actual what the unit produced, verbatim and never re-formatted; {@code null} only where
-     *     nothing was produced, as for a missing record
+     * @param expected what the case expects, with any credential span already masked; {@code null}
+     *     only where nothing was expected, as for an extra record
+     * @param actual what the unit produced, with any credential span already masked; {@code null} only
+     *     where nothing was produced, as for a missing record
      * @param kind which kind of difference this is; never {@code null}
      * @param explanation prose a reviewer can act on, naming the rule that was violated and, where
      *     there is one, the remedy
@@ -1438,7 +1894,7 @@ public final class FieldDiffer {
     }
 
     /**
-     * The rows one dataset actually received, together with the layout that describes them.
+     * The rows one dataset carried on one channel, together with the layout that describes them.
      *
      * <p>Rows are held as <strong>bytes</strong> because bytes are what a repository writes and bytes
      * are what parity is about; a row that is the wrong width is still perfectly representable here,
@@ -1458,7 +1914,7 @@ public final class FieldDiffer {
         /** The layout describing every row, transcribed from the dataset's copybook. */
         private final RecordLayout layout;
 
-        /** The rows in write order; each element is privately owned and never handed out. */
+        /** The rows in order; each element is privately owned and never handed out. */
         private final List<byte[]> rows;
 
         /** Copies every row so the instance owns its bytes outright. */
@@ -1470,8 +1926,8 @@ public final class FieldDiffer {
                 byte[] row = rows.get(index);
                 if (row == null) {
                     throw new IllegalArgumentException("DatasetOutput row " + index + " of dataset "
-                        + dataset + " is null; a row the unit did not write must be absent from the "
-                        + "list rather than present as a hole in the write order");
+                        + dataset + " is null; a row the unit did not produce must be absent from the "
+                        + "list rather than present as a hole in the order");
                 }
                 copies.add(row.clone());
             }
@@ -1483,7 +1939,7 @@ public final class FieldDiffer {
          *
          * @param dataset the dataset binding key; never blank
          * @param layout the layout describing the rows; never {@code null}
-         * @param rows the rows in write order; never {@code null} and never containing {@code null},
+         * @param rows the rows in order; never {@code null} and never containing {@code null},
          *     though it may be empty for a dataset the unit opened and did not write to
          * @return the captured output
          * @throws NullPointerException if {@code dataset}, {@code layout} or {@code rows} is
@@ -1493,7 +1949,7 @@ public final class FieldDiffer {
         public static DatasetOutput of(String dataset, RecordLayout layout, List<byte[]> rows) {
             return new DatasetOutput(requireDatasetKey(dataset), requireLayout(layout, dataset),
                 Objects.requireNonNull(rows, "DatasetOutput rows are required; pass an empty list for "
-                    + "a dataset the unit wrote nothing to"));
+                    + "a dataset the unit produced nothing for"));
         }
 
         /**
@@ -1505,8 +1961,7 @@ public final class FieldDiffer {
          *
          * @param dataset the dataset binding key; never blank
          * @param layout the layout describing the rows; never {@code null}
-         * @param images the row images in write order; never {@code null} and never containing
-         *     {@code null}
+         * @param images the row images in order; never {@code null} and never containing {@code null}
          * @param charset the code page to encode the images with; never {@code null}
          * @return the captured output
          * @throws NullPointerException if any argument is {@code null}
@@ -1517,7 +1972,7 @@ public final class FieldDiffer {
                                             List<String> images,
                                             Charset charset) {
             Objects.requireNonNull(images, "DatasetOutput row images are required; pass an empty list "
-                + "for a dataset the unit wrote nothing to");
+                + "for a dataset the unit produced nothing for");
             Objects.requireNonNull(charset, "A charset is required to encode row images and is never "
                 + "defaulted: a space is 0x40 under IBM037 and 0x20 under US-ASCII, so the code page "
                 + "changes the bytes");
@@ -1526,8 +1981,8 @@ public final class FieldDiffer {
                 String image = images.get(index);
                 if (image == null) {
                     throw new IllegalArgumentException("DatasetOutput row image " + index
-                        + " of dataset " + dataset + " is null; a row the unit did not write must be "
-                        + "absent from the list rather than present as a hole in the write order");
+                        + " of dataset " + dataset + " is null; a row the unit did not produce must be "
+                        + "absent from the list rather than present as a hole in the order");
                 }
                 encoded.add(image.getBytes(charset));
             }
@@ -1535,8 +1990,8 @@ public final class FieldDiffer {
         }
 
         /**
-         * Captures a dataset the unit wrote nothing to, which is how a case proves a rejection path
-         * wrote no record at all.
+         * Captures a dataset the unit produced nothing for, which is how a fingerprint states that a
+         * dataset was opened and left alone.
          *
          * @param dataset the dataset binding key; never blank
          * @param layout the layout that would have described the rows; never {@code null}
@@ -1565,7 +2020,7 @@ public final class FieldDiffer {
         }
 
         /**
-         * How many rows the unit wrote.
+         * How many rows this channel carries for the dataset.
          *
          * @return the row count, never negative
          */
@@ -1577,7 +2032,7 @@ public final class FieldDiffer {
          * Whether a 0-based row index addresses a row that exists.
          *
          * @param rowIndex the 0-based index
-         * @return {@code true} when the index is within the written rows
+         * @return {@code true} when the index is within the captured rows
          */
         public boolean hasRow(int rowIndex) {
             return rowIndex >= 0 && rowIndex < rows.size();
@@ -1588,7 +2043,7 @@ public final class FieldDiffer {
          *
          * @param rowIndex the 0-based index
          * @return a fresh copy of the row, so a caller cannot mutate the captured fingerprint
-         * @throws IndexOutOfBoundsException if the index addresses no written row
+         * @throws IndexOutOfBoundsException if the index addresses no captured row
          */
         public byte[] row(int rowIndex) {
             if (!hasRow(rowIndex)) {
@@ -1599,7 +2054,8 @@ public final class FieldDiffer {
         }
 
         /**
-         * A short description naming the dataset, its row count and its declared record length.
+         * A short description naming the dataset, its row count and its declared record length. No row
+         * content, because a {@code USRSEC} row carries a credential span.
          *
          * @return the description, never {@code null}
          */
@@ -1628,8 +2084,110 @@ public final class FieldDiffer {
     }
 
     /**
-     * Everything one run of a unit under test observably produced: the records it wrote, the
-     * {@code RETURN-CODE} it set and the lines it emitted, in emission order.
+     * One screen send as it was actually observed: the BMS payload it carried and the attribute
+     * metadata it set.
+     *
+     * <p>The observation mirror of {@link ScreenSend}, and deliberately a separate type: the
+     * expectation is validated at load time against the symbolic-map naming rules, whereas an
+     * observation is whatever the unit produced and must be representable even when it is wrong. A
+     * shared type would have to relax the expectation's validation to hold a defective observation,
+     * which is the wrong trade.
+     *
+     * @param fields the {@code xxxO} output items the send carried, keyed by symbolic-map name
+     * @param attributes the attribute items the send set, keyed by symbolic-map name and valued with
+     *     the {@code DFHBMSCA} or {@code DFHATTR} mnemonic
+     */
+    public record ObservedSend(Map<String, String> fields, Map<String, String> attributes) {
+
+        /**
+         * Freezes both maps so an observation cannot change after capture.
+         *
+         * @throws NullPointerException if either map is {@code null}
+         */
+        public ObservedSend {
+            fields = Collections.unmodifiableMap(new LinkedHashMap<>(
+                Objects.requireNonNull(fields, "ObservedSend fields are required; pass an empty map "
+                    + "for a send that carried none")));
+            attributes = Collections.unmodifiableMap(new LinkedHashMap<>(
+                Objects.requireNonNull(attributes, "ObservedSend attributes are required; pass an "
+                    + "empty map for a send that set none")));
+        }
+
+        /**
+         * Captures a send that carried payload fields and set no attribute.
+         *
+         * @param fields the {@code xxxO} items keyed by symbolic-map name
+         * @return the observation
+         */
+        public static ObservedSend ofFields(Map<String, String> fields) {
+            return new ObservedSend(fields, Map.of());
+        }
+
+        /**
+         * Renders the send without printing a field value, because {@code PASSWDO} is one of them.
+         *
+         * @return the shape of this send
+         */
+        @Override
+        public String toString() {
+            return "ObservedSend[fields=" + fields.keySet() + ", attributes=" + attributes + ']';
+        }
+    }
+
+    /**
+     * The online response as it was actually observed.
+     *
+     * <p>The observation mirror of {@link ExpectedResponse}, and a separate type for the same reason
+     * {@link ObservedSend} is: an observation has to be representable even when it is wrong, so it
+     * carries no validation of its own beyond freezing.
+     *
+     * @param nextProgram the program the response named as the next target, or {@code null}
+     * @param nextMapset the mapset the response named, or {@code null}
+     * @param nextMap the map the response named, or {@code null}
+     * @param navigation the {@code CARDDEMO-COMMAREA} field values the response carried
+     * @param sends every screen send in order
+     * @param cursorField the symbolic-map length item that received the cursor, or {@code null}
+     * @param termination how the transaction ended, or {@code null} when the unit did not say
+     */
+    public record ObservedResponse(String nextProgram,
+                                   String nextMapset,
+                                   String nextMap,
+                                   Map<String, String> navigation,
+                                   List<ObservedSend> sends,
+                                   String cursorField,
+                                   Termination termination) {
+
+        /**
+         * Freezes the collections so an observation cannot change after capture.
+         *
+         * @throws NullPointerException if {@code navigation} or {@code sends} is {@code null}
+         */
+        public ObservedResponse {
+            navigation = Collections.unmodifiableMap(new LinkedHashMap<>(
+                Objects.requireNonNull(navigation, "ObservedResponse navigation is required; pass an "
+                    + "empty map for a response carrying no commarea field")));
+            sends = List.copyOf(Objects.requireNonNull(sends, "ObservedResponse sends are required; "
+                + "pass an empty list for a path that sends no map"));
+        }
+
+        /**
+         * Renders the response without printing a screen field value.
+         *
+         * @return the shape of this response
+         */
+        @Override
+        public String toString() {
+            return "ObservedResponse[nextProgram=" + nextProgram + ", nextMapset=" + nextMapset
+                + ", nextMap=" + nextMap + ", navigation=" + navigation.keySet()
+                + ", sends=" + sends.size() + ", cursorField=" + cursorField
+                + ", termination=" + termination + ']';
+        }
+    }
+
+    /**
+     * Everything one run of a unit under test observably produced: the records it wrote in order, the
+     * state each dataset was left in, the online response it returned, the {@code RETURN-CODE} it set
+     * and the lines it emitted.
      *
      * <p>This is the "behavioural fingerprint" the harness captures and the differ judges. It is
      * declared here rather than in the harness on purpose: the differ is the consumer, so it declares
@@ -1637,71 +2195,84 @@ public final class FieldDiffer {
      * a service's return value or a controller invoked as a plain object - without the differ knowing
      * or caring which.
      *
+     * <p>The writes and the final state are held <strong>separately</strong> because they answer
+     * different questions and a single map cannot answer both. "Did the unit write the right records,
+     * in the right order?" is about the writes. "Is the dataset in the right state now?" is about the
+     * final state, and for a rejection path the honest answer is "exactly as seeded" - which is a
+     * positive assertion that requires the seeded rows to be visible on that channel and absent from
+     * the write channel.
+     *
      * <p>Immutable once built, and it never carries an HTTP response, a {@code JobExecution} or any
      * other framework object. A parity assertion is about arithmetic and byte layout, and neither is
      * improved by putting a servlet container or a job repository between the assertion and the code.
      */
     public static final class Fingerprint {
 
-        /** Dataset key to output, in the order the harness declared them. */
-        private final Map<String, DatasetOutput> outputs;
+        /** Dataset key to the rows the unit wrote, in the order the harness declared them. */
+        private final Map<String, DatasetOutput> writes;
+
+        /** Dataset key to the rows the dataset holds after the run. */
+        private final Map<String, DatasetOutput> finalState;
+
+        /** The online response, or {@code null} for a unit that returns none. */
+        private final ObservedResponse response;
 
         /** The COBOL {@code RETURN-CODE} the run ended with, mapped onto the batch exit status. */
         private final int returnCode;
 
-        /** The emitted lines, in emission order. */
-        private final List<String> messages;
+        /** The emitted lines, in emission order, each on its declared channel. */
+        private final List<EmittedMessage> messages;
 
-        /** Freezes the outputs into an order-preserving map, rejecting a duplicate dataset key. */
-        private Fingerprint(List<DatasetOutput> outputs, int returnCode, List<String> messages) {
-            Map<String, DatasetOutput> byKey = new LinkedHashMap<>();
-            for (int index = 0; index < outputs.size(); index++) {
-                DatasetOutput output = outputs.get(index);
-                if (output == null) {
-                    throw new IllegalArgumentException("Fingerprint output " + index + " is null; "
-                        + "remove the entry rather than leaving a hole among the datasets");
-                }
-                DatasetOutput previous = byKey.put(output.dataset(), output);
-                if (previous != null) {
-                    throw new IllegalArgumentException("Fingerprint declares dataset "
-                        + output.dataset() + " more than once; merge the rows into one DatasetOutput "
-                        + "in write order, because a second entry would silently shadow the first and "
-                        + "the rows it carries would never be compared");
-                }
-            }
-            List<String> emitted = new ArrayList<>(messages.size());
+        /** Freezes every channel, rejecting a duplicate dataset key within either record channel. */
+        private Fingerprint(List<DatasetOutput> writes,
+                            List<DatasetOutput> finalState,
+                            ObservedResponse response,
+                            int returnCode,
+                            List<EmittedMessage> messages) {
+            this.writes = freezeOutputs(writes, "writes");
+            this.finalState = freezeOutputs(finalState, "finalState");
+            this.response = response;
+            this.returnCode = returnCode;
+            List<EmittedMessage> emitted = new ArrayList<>(messages.size());
             for (int index = 0; index < messages.size(); index++) {
-                String message = messages.get(index);
+                EmittedMessage message = messages.get(index);
                 if (message == null) {
-                    throw new IllegalArgumentException("Fingerprint message " + index + " is null; use "
-                        + "an empty string for a blank emitted line, which is what a COBOL DISPLAY of "
-                        + "a blank line produces");
+                    throw new IllegalArgumentException("Fingerprint message " + index + " is null; "
+                        + "capture an EmittedMessage with an empty text on the DISPLAY_LINE channel "
+                        + "for a blank emitted line, which is what a COBOL DISPLAY of a blank line "
+                        + "produces");
                 }
                 emitted.add(message);
             }
-            this.outputs = Collections.unmodifiableMap(byKey);
-            this.returnCode = returnCode;
             this.messages = Collections.unmodifiableList(emitted);
         }
 
         /**
          * Captures a complete fingerprint.
          *
-         * @param outputs the datasets the unit wrote, in declaration order; never {@code null}, and
-         *     empty for a unit that wrote nothing
+         * @param writes the records the unit wrote, per dataset, in write order; never {@code null}
+         * @param finalState what each dataset holds after the run; never {@code null}
+         * @param response the online response, or {@code null} for a unit that returns none
          * @param returnCode the COBOL {@code RETURN-CODE} the run ended with; never negative
-         * @param messages the emitted lines in emission order; never {@code null}, and never containing
-         *     {@code null}
+         * @param messages the emitted lines in emission order; never {@code null}, and never
+         *     containing {@code null}
          * @return the captured fingerprint
-         * @throws NullPointerException if {@code outputs} or {@code messages} is {@code null}
+         * @throws NullPointerException if {@code writes}, {@code finalState} or {@code messages} is
+         *     {@code null}
          * @throws IllegalArgumentException if {@code returnCode} is negative, an element is
-         *     {@code null}, or a dataset key appears twice
+         *     {@code null}, or a dataset key appears twice within one channel
          */
-        public static Fingerprint of(List<DatasetOutput> outputs,
+        public static Fingerprint of(List<DatasetOutput> writes,
+                                     List<DatasetOutput> finalState,
+                                     ObservedResponse response,
                                      int returnCode,
-                                     List<String> messages) {
-            Objects.requireNonNull(outputs, "Fingerprint outputs are required; pass an empty list for "
-                + "a unit that writes no dataset");
+                                     List<EmittedMessage> messages) {
+            Objects.requireNonNull(writes, "Fingerprint writes are required; pass an empty list for a "
+                + "unit that writes nothing");
+            Objects.requireNonNull(finalState, "Fingerprint finalState is required; pass an empty "
+                + "list only when the unit touches no dataset at all - a unit that READ a dataset and "
+                + "wrote nothing must still report that dataset's unchanged rows, because that is the "
+                + "assertion such a case makes");
             Objects.requireNonNull(messages, "Fingerprint messages are required; pass an empty list "
                 + "for a unit that emits nothing");
             if (returnCode < 0) {
@@ -1709,49 +2280,70 @@ public final class FieldDiffer {
                     + "; a z/OS step return code is never negative, so a negative value is a sign "
                     + "error in the capture rather than an observation");
             }
-            return new Fingerprint(outputs, returnCode, messages);
+            return new Fingerprint(writes, finalState, response, returnCode, messages);
         }
 
         /**
-         * Captures a fingerprint for a unit that wrote no dataset and emitted no line - a pure
-         * computation, or a validation that rejected its input before writing anything.
+         * Captures a fingerprint for a unit that touched no dataset, returned no response and emitted
+         * no line - a pure computation, or a validation that rejected its input before doing anything.
          *
          * @param returnCode the COBOL {@code RETURN-CODE} the run ended with; never negative
          * @return the captured fingerprint
          */
         public static Fingerprint ofReturnCode(int returnCode) {
-            return of(List.of(), returnCode, List.of());
+            return of(List.of(), List.of(), null, returnCode, List.of());
         }
 
         /**
-         * The datasets the unit wrote, in the order they were declared.
+         * The records the unit wrote, keyed by dataset and in the order the harness declared them.
          *
-         * @return an immutable list in declaration order
+         * @return an immutable map in declaration order
          */
-        public List<DatasetOutput> outputs() {
-            return List.copyOf(outputs.values());
+        public Map<String, DatasetOutput> writes() {
+            return writes;
         }
 
         /**
-         * Looks up one dataset's output.
+         * What each dataset holds after the run, keyed by dataset.
+         *
+         * @return an immutable map in declaration order
+         */
+        public Map<String, DatasetOutput> finalState() {
+            return finalState;
+        }
+
+        /**
+         * The online response the unit returned.
+         *
+         * @return the response, or {@code null} for a unit that returns none
+         */
+        public ObservedResponse response() {
+            return response;
+        }
+
+        /**
+         * Looks up one dataset's writes.
          *
          * @param dataset the dataset binding key; never {@code null}
          * @return the output, or empty when the unit wrote nothing to that dataset
          * @throws NullPointerException if {@code dataset} is {@code null}
          */
-        public Optional<DatasetOutput> find(String dataset) {
-            Objects.requireNonNull(dataset, "A dataset binding key is required to look up an output");
-            return Optional.ofNullable(outputs.get(dataset));
+        public Optional<DatasetOutput> findWrites(String dataset) {
+            Objects.requireNonNull(dataset, "A dataset binding key is required to look up writes");
+            return Optional.ofNullable(writes.get(dataset));
         }
 
         /**
-         * Whether the unit wrote to a dataset at all.
+         * Looks up one dataset's final state.
          *
          * @param dataset the dataset binding key; never {@code null}
-         * @return {@code true} when an output exists for that key
+         * @return the output, or empty when the fingerprint carries no final state for it
+         * @throws NullPointerException if {@code dataset} is {@code null}
          */
-        public boolean hasOutput(String dataset) {
-            return find(dataset).isPresent();
+        public Optional<DatasetOutput> findFinalState(String dataset) {
+            Objects.requireNonNull(dataset,
+                "A dataset binding key is required to look up a final state");
+            return Optional.ofNullable(finalState.get(dataset));
         }
 
         /**
@@ -1768,25 +2360,46 @@ public final class FieldDiffer {
          *
          * @return an immutable list in emission order
          */
-        public List<String> messages() {
+        public List<EmittedMessage> messages() {
             return messages;
         }
 
         /**
-         * A short description naming the datasets, the return code and the line count.
+         * A short description naming each channel's datasets, the return code and the line count.
          *
          * @return the description, never {@code null}
          */
         @Override
         public String toString() {
-            return "Fingerprint[datasets=" + outputs.keySet() + ", returnCode=" + returnCode
-                + ", messages=" + messages.size() + "]";
+            return "Fingerprint[writes=" + writes.keySet() + ", finalState=" + finalState.keySet()
+                + ", response=" + (response == null ? "absent" : "present")
+                + ", returnCode=" + returnCode + ", messages=" + messages.size() + ']';
+        }
+
+        /** Freezes one record channel into an order-preserving map, rejecting a duplicate key. */
+        private static Map<String, DatasetOutput> freezeOutputs(List<DatasetOutput> outputs,
+                                                               String channel) {
+            Map<String, DatasetOutput> byKey = new LinkedHashMap<>();
+            for (int index = 0; index < outputs.size(); index++) {
+                DatasetOutput output = outputs.get(index);
+                if (output == null) {
+                    throw new IllegalArgumentException("Fingerprint " + channel + " entry " + index
+                        + " is null; remove the entry rather than leaving a hole among the datasets");
+                }
+                DatasetOutput previous = byKey.put(output.dataset(), output);
+                if (previous != null) {
+                    throw new IllegalArgumentException("Fingerprint " + channel + " declares dataset "
+                        + output.dataset() + " more than once; merge the rows into one DatasetOutput "
+                        + "in order, because a second entry would silently shadow the first and the "
+                        + "rows it carries would never be compared");
+                }
+            }
+            return Collections.unmodifiableMap(byKey);
         }
     }
 
     /**
-     * The outcome of one comparison: every difference found, in traversal order, plus a note for every
-     * normalisation that fired.
+     * The outcome of one comparison: every difference found, in traversal order.
      *
      * <p>{@link #count()} is the number the gate is stated in terms of. A module is not complete until
      * its diff count is zero across all twenty of its cases - the gate is per module, so nineteen clean
@@ -1807,18 +2420,11 @@ public final class FieldDiffer {
         /** Every difference, in traversal order. */
         private final List<Diff> entries;
 
-        /** One note per normalisation that fired, in the order they fired. */
-        private final List<String> normalisationsApplied;
-
-        /** Freezes both lists, so a result cannot change after the comparison that produced it. */
-        private DiffResult(String program,
-                           String caseId,
-                           List<Diff> entries,
-                           Set<String> normalisationsApplied) {
+        /** Freezes the list, so a result cannot change after the comparison that produced it. */
+        private DiffResult(String program, String caseId, List<Diff> entries) {
             this.program = program;
             this.caseId = caseId;
             this.entries = List.copyOf(entries);
-            this.normalisationsApplied = List.copyOf(normalisationsApplied);
         }
 
         /**
@@ -1849,20 +2455,6 @@ public final class FieldDiffer {
         }
 
         /**
-         * One note per normalisation that fired, naming the normalisation, the dataset, the widths and
-         * the absent span it supplied.
-         *
-         * <p>Surfaced rather than hidden on purpose. A pad that fires silently is indistinguishable
-         * from a comparison that never needed one, and a reviewer is entitled to see which of the two
-         * happened.
-         *
-         * @return an immutable list in the order the normalisations fired; empty when none did
-         */
-        public List<String> normalisationsApplied() {
-            return normalisationsApplied;
-        }
-
-        /**
          * The program this result belongs to.
          *
          * @return the eight-character COBOL program name
@@ -1886,7 +2478,8 @@ public final class FieldDiffer {
          * <p><strong>Every</strong> difference is rendered. The list is never truncated, never
          * summarised and never capped: a differ that hides its twentieth finding has taught its reader
          * to distrust it, and the cost of a long report is nothing beside the cost of a missed
-         * difference.
+         * difference. What is never rendered is a credential span - the callers masked those before the
+         * difference was built, so the report is complete without being a disclosure.
          *
          * @return the rendered report, never {@code null}
          */
@@ -1902,9 +2495,6 @@ public final class FieldDiffer {
                 .append(count() == 1 ? " difference" : " differences")
                 .append(isClean() ? " - CLEAN, the gate is satisfied for this case."
                     : " - the gate requires a diff count of 0.");
-            for (String note : normalisationsApplied) {
-                text.append(newLine).append("  normalisation: ").append(note);
-            }
             for (int index = 0; index < entries.size(); index++) {
                 text.append(newLine)
                     .append("  [")

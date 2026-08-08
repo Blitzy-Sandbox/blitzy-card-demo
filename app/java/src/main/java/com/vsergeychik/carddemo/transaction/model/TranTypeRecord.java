@@ -55,10 +55,14 @@ import java.util.Objects;
  *       {@code FD-TRAN-TYPE PIC X(02)} + {@code FD-TRAN-DATA PIC X(58)}, which both totals 60 and
  *       confirms that the key is the leading 2 bytes. Line 42 names that same item in
  *       {@code RECORD KEY IS FD-TRAN-TYPE}.</li>
- *   <li><strong>The JCL binding.</strong> {@code app/jcl/TRANREPT.jcl:69-70} binds
- *       {@code //TRANTYPE DD DISP=SHR,DSN=AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS} as an input to
- *       {@code STEP10R EXEC PGM=CBTRN03C}, and the dataset binding in
- *       {@code src/main/resources/application.yml} carries {@code record-length: 60} for it.</li>
+ *   <li><strong>The JCL binding.</strong> {@code app/jcl/TRANREPT.jcl:69-70} declares the
+ *       {@code TRANTYPE} DD with {@code DISP=SHR} as an input to
+ *       {@code STEP10R EXEC PGM=CBTRN03C}, and the {@code TRANTYPE} entry of
+ *       {@code carddemo.datasets} in {@code src/main/resources/application.yml} carries
+ *       {@code record-length: 60} for it. The dataset name that DD carries is deliberately
+ *       <em>not</em> reproduced here: it lives in that configuration entry behind an environment
+ *       placeholder and in no Java source at all (gate G46), so the JCL line and the binding key
+ *       are cited instead and the name keeps a single authority.</li>
  *   <li><strong>The shipped fixture, decoded at these offsets.</strong>
  *       {@code app/data/ASCII/trantype.txt} measures 7 records of exactly 60 bytes and decodes
  *       cleanly:
@@ -393,7 +397,7 @@ public final class TranTypeRecord {
         Objects.requireNonNull(row, "A row image is required; a null row cannot be distinguished "
                 + "from a 60-byte record of spaces, and the two mean different things");
         requireDeclaredWidth(row.length(), "row image");
-        return decode(row.getBytes(codec.charset()), codec);
+        return decode(codec.encodeImage(row, "a TRANTYPE row image"), codec);
     }
 
     /**

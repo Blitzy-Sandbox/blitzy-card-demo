@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.user.dto;
 
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 
@@ -216,7 +217,7 @@ import java.util.List;
  * in generated code.
  *
  * <p>The one protection applied is a diagnostic one that changes no behaviour: {@link #toString()}
- * renders {@value #PASSWORD_MASK} in place of the value, unconditionally, so the password cannot
+ * renders {@link #PASSWORD_MASK} in place of the value, unconditionally, so the password cannot
  * escape through a log line, an exception message or a debugger dump. Nothing in this class logs.
  *
  * <h2>Serialisation</h2>
@@ -471,7 +472,7 @@ public record UserAddRequest(
      * value held - eight characters, matching {@value #PASSWD_LENGTH}, so the shape of the field
      * remains legible while the value never appears in a log line, an exception message or a dump.
      */
-    public static final String PASSWORD_MASK = "********";
+    public static final String PASSWORD_MASK = SensitiveDiagnostics.REDACTED;
 
     /**
      * The twelve payload field names in symbolic-map order, immutable.
@@ -542,7 +543,7 @@ public record UserAddRequest(
 
     /**
      * A diagnostic rendering that reproduces the shape a record's generated {@code toString()} would
-     * produce, with one difference: {@link #passwd()} is replaced by {@value #PASSWORD_MASK}.
+     * produce, with one difference: {@link #passwd()} is replaced by {@link #PASSWORD_MASK}.
      *
      * <p>The substitution is unconditional. It does not inspect the value, does not branch on whether
      * one is present and does not reveal its length, so no execution path can put the password into a
@@ -565,8 +566,8 @@ public record UserAddRequest(
                 + ", pgmName=" + pgmName
                 + ", title02=" + title02
                 + ", curTime=" + curTime
-                + ", fName=" + fName
-                + ", lName=" + lName
+                + ", fName=" + SensitiveDiagnostics.describeText(fName)
+                + ", lName=" + SensitiveDiagnostics.describeText(lName)
                 + ", userId=" + userId
                 + ", passwd=" + PASSWORD_MASK
                 + ", usrType=" + usrType

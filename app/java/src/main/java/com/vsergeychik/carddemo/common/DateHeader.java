@@ -114,15 +114,39 @@ import java.util.Objects;
  * makes each rendering reproducible, and a test can prove it by building twice from the same clock
  * and comparing character for character.
  *
- * <h2>One capture, many renderings</h2>
- * {@code WS-CURDATE-MM-DD-YY}, {@code WS-CURTIME-HH-MM-SS} and {@code WS-TIMESTAMP} are renderings
- * of the same instant as {@code WS-CURDATE-DATA}, never independent values. The COBOL says so
- * explicitly: {@code POPULATE-HEADER-INFO} moves {@code FUNCTION CURRENT-DATE} into
+ * <h2>Four independent groups, not one instant projected four ways</h2>
+ * {@code 01 WS-DATE-TIME} declares <strong>four</strong> {@code 05} groups, and they are separate
+ * storage: {@code WS-CURDATE-DATA} (16 bytes), {@code WS-CURDATE-MM-DD-YY} (8),
+ * {@code WS-CURTIME-HH-MM-SS} (8) and {@code WS-TIMESTAMP} (26), 58 bytes in all. Each is filled by
+ * its own {@code MOVE}, from whichever source that {@code MOVE} names, and this class holds each as
+ * its own value for exactly that reason. Deriving the other three from {@code WS-CURDATE-DATA} would
+ * make two ordinary states of these programs unrepresentable:
+ * <ul>
+ *   <li><strong>Two moments live at once.</strong> {@code app/cbl/COTRN00C.cbl:384} moves a
+ *       <em>stored</em> {@code TRAN-ORIG-TS} into {@code WS-TIMESTAMP} while
+ *       {@code WS-CURDATE-DATA} still holds the current date its screen heading was painted from,
+ *       and {@code L385-L387} then refill {@code WS-CURDATE-MM-DD-YY} from the
+ *       <em>transaction's</em> date rather than today's. {@link #withTimestampImage(String)} and
+ *       {@link #withCurdateMmDdYyFromTimestamp()} are those statements.</li>
+ *   <li><strong>A fractional part that is zeros by statement.</strong>
+ *       {@code app/cbl/COBIL00C.cbl:263-266} fills {@code WS-TIMESTAMP} from
+ *       {@code EXEC CICS FORMATTIME}, which reports no sub-second component, and then moves
+ *       {@code ZEROS} into {@code WS-TIMESTAMP-TM-MS6} outright - so the timestamp it stores in
+ *       {@code TRAN-ORIG-TS} ends in {@code .000000} however precise the clock was, while
+ *       {@code WS-CURTIME-MILSEC} keeps real hundredths.
+ *       {@link #withTimestampFromFormatTime(String, String)} is that sequence.</li>
+ * </ul>
+ *
+ * <h2>The {@code POPULATE-HEADER-INFO} default</h2>
+ * The factories fill all four groups from one captured instant, because that is precisely what
+ * {@code POPULATE-HEADER-INFO} does: it moves {@code FUNCTION CURRENT-DATE} into
  * {@code WS-CURDATE-DATA} and then copies the components across one by one -
  * {@code app/cbl/COMEN01C.cbl:214-231} and {@code app/cbl/COSGN00C.cbl:179-196} are
- * character-for-character identical in this respect. Every accessor below therefore derives from the
- * single {@link CapturedDateTime} this instance holds, so the renderings cannot disagree across a
- * second boundary.
+ * character-for-character identical in this respect. So a freshly built header is self-consistent,
+ * which is what the seventeen online screens need. It is a starting <em>state</em> rather than a
+ * derivation rule: each {@code with…} operation replaces one group and leaves the others exactly as
+ * they were, and after one of them {@link #wsCurdateMmDdYy()} and {@link #wsCurdateData()} may
+ * legitimately disagree.
  *
  * <h2>{@code FUNCTION CURRENT-DATE} returns 21 characters and 5 of them are discarded</h2>
  * {@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA} moves a 21-character intrinsic result -
@@ -310,6 +334,26 @@ public final class DateHeader {
 
     /** {@code PIC X(01)} - the width of every separator {@code FILLER} in this copybook. */
     public static final int SEPARATOR_LENGTH = 1;
+
+    /**
+     * The width of the date portion of {@code WS-TIMESTAMP}: ten characters, {@code YYYY-MM-DD}.
+     *
+     * <p>Named because {@code app/cbl/COBIL00C.cbl:264} addresses exactly this span -
+     * {@code MOVE WS-CUR-DATE-X10 TO WS-TIMESTAMP(01:10)} - so the ten is the reference-modified
+     * length the source writes rather than a length inferred from the separators.
+     */
+    public static final int WS_TIMESTAMP_DATE_WIDTH =
+            YEAR_DIGITS + SEPARATOR_LENGTH + MONTH_DIGITS + SEPARATOR_LENGTH + DAY_DIGITS;
+
+    /**
+     * The width of the time portion of {@code WS-TIMESTAMP}: eight characters, {@code HH:MM:SS}.
+     *
+     * <p>{@code app/cbl/COBIL00C.cbl:265} addresses it as {@code WS-TIMESTAMP(12:08)}, that is the
+     * eight characters starting at one-based position twelve - immediately after the ten date
+     * characters and the one space between them.
+     */
+    public static final int WS_TIMESTAMP_TIME_WIDTH =
+            HOURS_DIGITS + SEPARATOR_LENGTH + MINUTE_DIGITS + SEPARATOR_LENGTH + SECOND_DIGITS;
 
     // =================================================================================================
     // Declared absolute offsets of the four sub-groups. Exposed because a caller holding a serialised
@@ -609,8 +653,9 @@ public final class DateHeader {
 
     /**
      * One instant, decomposed into exactly the components {@code app/cpy/CSDAT01Y.cpy} declares. This
-     * is the whole of a {@link DateHeader}'s time-bearing state, and it is captured once so that every
-     * rendering is a projection of the same moment rather than a fresh reading of a clock.
+     * is the whole of the {@code WS-CURDATE-DATA} group's state - one of a {@link DateHeader}'s four
+     * independent groups - and it is captured once so that the group is a fixed value rather than a
+     * fresh reading of a clock.
      *
      * <h2>Why the fractional second appears twice</h2>
      * {@code hundredths} and {@code microseconds} are carried as separate components on purpose.
@@ -711,17 +756,29 @@ public final class DateHeader {
          * by repeated integer multiplication rather than by {@code Math.pow}, because no value in
          * this class - not even an intermediate one - is ever represented as a floating-point number.
          */
-        private static void requireDigitWidth(int value, int digits, String fieldName) {
-            int exclusiveLimit = 1;
-            for (int decade = 0; decade < digits; decade++) {
-                exclusiveLimit *= 10;
-            }
-            if (value < 0 || value >= exclusiveLimit) {
-                throw new IllegalArgumentException("Value " + value + " does not fit " + fieldName
-                        + " PIC 9(0" + digits + "), which holds 0 to " + (exclusiveLimit - 1)
-                        + "; a wider value would be truncated on the left and the loss would be "
-                        + "invisible in the rendered header");
-            }
+    }
+
+    /**
+     * Rejects a component that does not fit its declared {@code PIC 9(n)} width.
+     *
+     * <p>Declared on the enclosing class rather than on one group, because all four groups validate
+     * the same way and a second copy of this loop would be a place for the two to diverge. Width is
+     * the <em>only</em> check: the COBOL performs no calendar test on any of these items, so a month
+     * of {@code 00} is legitimate rather than corrupt - {@code app/cbl/COBIL00C.cbl:263} issues
+     * {@code INITIALIZE WS-TIMESTAMP} before populating the group, and
+     * {@code app/cbl/COTRN00C.cbl:384} moves a stored {@code TRAN-ORIG-TS PIC X(26)} into it and
+     * reads the sub-fields straight back out. Adding a calendar check would be a new business rule.
+     */
+    private static void requireDigitWidth(int value, int digits, String fieldName) {
+        int exclusiveLimit = 1;
+        for (int decade = 0; decade < digits; decade++) {
+            exclusiveLimit *= 10;
+        }
+        if (value < 0 || value >= exclusiveLimit) {
+            throw new IllegalArgumentException("Value " + value + " does not fit " + fieldName
+                    + " PIC 9(0" + digits + "), which holds 0 to " + (exclusiveLimit - 1)
+                    + "; a wider value would be truncated on the left and the loss would be "
+                    + "invisible in the rendered header");
         }
     }
 
@@ -733,16 +790,172 @@ public final class DateHeader {
      */
     private final FixedWidthCodec codec;
 
-    /** The one captured instant every rendering below is projected from. Never reassigned. */
+    /**
+     * The {@code WS-CURDATE-DATA} group: {@code WS-CURDATE} and {@code WS-CURTIME} together, the
+     * sixteen bytes {@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA} fills. Never reassigned.
+     *
+     * <p>This is <strong>one</strong> of the four independent {@code 05} groups of
+     * {@code 01 WS-DATE-TIME}, not the source of the other three. See the class documentation on
+     * independent groups for why that distinction is load-bearing.
+     */
     private final CapturedDateTime captured;
 
     /**
-     * Pairs a captured instant with the codec that will render it. Private: an instance is always
-     * obtained from one of the factories, each of which names where its instant came from.
+     * The {@code WS-CURDATE-MM-DD-YY} group: its own eight bytes of storage, holding whatever the
+     * last {@code MOVE} into {@code WS-CURDATE-MM}, {@code -DD} and {@code -YY} put there.
+     *
+     * <p>Held separately from {@link #captured} because the COBOL fills it from <em>either</em>
+     * source: {@code app/cbl/COMEN01C.cbl:222-224} moves the components of {@code WS-CURDATE} in,
+     * while {@code app/cbl/COTRN00C.cbl:385-387} moves the components of {@code WS-TIMESTAMP} in
+     * instead. Projecting it from the captured instant would make the second form unrepresentable.
      */
-    private DateHeader(FixedWidthCodec codec, CapturedDateTime captured) {
+    private final EditedDate curdateMmDdYy;
+
+    /**
+     * The {@code WS-CURTIME-HH-MM-SS} group: its own eight bytes, filled by the component moves at
+     * {@code app/cbl/COMEN01C.cbl:228-230}.
+     */
+    private final EditedTime curtimeHhMmSs;
+
+    /**
+     * The {@code WS-TIMESTAMP} group: its own twenty-six bytes, and the group whose independence
+     * matters most.
+     *
+     * <p>{@code app/cbl/COTRN00C.cbl:384} moves a <em>stored</em> {@code TRAN-ORIG-TS} into it while
+     * {@code WS-CURDATE-DATA} still holds the current date for the screen header, so the two carry
+     * different moments at the same time. {@code app/cbl/COBIL00C.cbl:263-266} fills it from
+     * {@code EXEC CICS FORMATTIME} and then moves {@code ZEROS} into
+     * {@code WS-TIMESTAMP-TM-MS6} explicitly, so its fractional part is zeros however precise the
+     * clock was. Neither behaviour survives being projected from a single captured instant.
+     */
+    private final TimestampGroup timestamp;
+
+    /**
+     * Pairs the four independent groups with the codec that will render them. Private: an instance is
+     * always obtained from one of the factories or {@code with…} operations, each of which names
+     * which group it fills and which COBOL statement it stands for.
+     */
+    private DateHeader(FixedWidthCodec codec,
+                       CapturedDateTime captured,
+                       EditedDate curdateMmDdYy,
+                       EditedTime curtimeHhMmSs,
+                       TimestampGroup timestamp) {
         this.codec = codec;
         this.captured = captured;
+        this.curdateMmDdYy = curdateMmDdYy;
+        this.curtimeHhMmSs = curtimeHhMmSs;
+        this.timestamp = timestamp;
+    }
+
+    /**
+     * Builds the state a program is in immediately after {@code POPULATE-HEADER-INFO}: the captured
+     * instant in {@code WS-CURDATE-DATA}, and the three other groups filled from its components,
+     * which is exactly the sequence {@code app/cbl/COMEN01C.cbl:214-231} and
+     * {@code app/cbl/COSGN00C.cbl:179-196} perform.
+     *
+     * <p>{@code WS-TIMESTAMP} is filled from the same instant at full microsecond precision. That is
+     * the {@code COBIL00C}-shaped default - a program that stamps a record with "now" - and it is a
+     * <em>default</em>, not a derivation: {@link #withTimestampImage(String)} and
+     * {@link #withTimestampFromFormatTime(String, String)} replace that group alone, leaving the
+     * other three exactly as they were.
+     */
+    private static DateHeader afterPopulateHeaderInfo(FixedWidthCodec codec,
+                                                      CapturedDateTime captured) {
+        return new DateHeader(codec, captured,
+                // MOVE WS-CURDATE-MONTH TO WS-CURDATE-MM, and the same for DD; WS-CURDATE-YEAR(3:2)
+                // supplies YY - a reference-modified two characters, not a numeric truncation.
+                new EditedDate(captured.month(), captured.day(),
+                        twoDigitYearOf(captured.year())),
+                // MOVE WS-CURTIME-HOURS TO WS-CURTIME-HH, and the same for MM and SS.
+                new EditedTime(captured.hours(), captured.minutes(), captured.seconds()),
+                new TimestampGroup(captured.year(), captured.month(), captured.day(),
+                        captured.hours(), captured.minutes(), captured.seconds(),
+                        captured.microseconds()));
+    }
+
+    /**
+     * The low-order two digits of a four-digit year, which is what {@code WS-CURDATE-YEAR(3:2)}
+     * addresses: characters three and four of the rendered year, not {@code year % 100}. The two
+     * agree for every year a {@code PIC 9(04)} can hold, and the reference-modified form is the one
+     * the source writes, so it is the one named here.
+     */
+    private static int twoDigitYearOf(int year) {
+        return year % 100;
+    }
+
+    // =================================================================================================
+    // The four independent 05 groups of 01 WS-DATE-TIME, each as its own immutable value.
+    // =================================================================================================
+
+    /**
+     * The {@code WS-CURDATE-MM-DD-YY} group: three {@code PIC 9(02)} items with {@code '/'}
+     * separators declared as {@code FILLER … VALUE} literals between them.
+     *
+     * <p>Width-checked and nothing more. The COBOL performs no calendar test on this group - it is a
+     * display edit of whatever was moved in - so a month of {@code 00} is legitimate here rather than
+     * corrupt, exactly as it is in {@link CapturedDateTime}.
+     *
+     * @param mm {@code WS-CURDATE-MM}, 0 to 99
+     * @param dd {@code WS-CURDATE-DD}, 0 to 99
+     * @param yy {@code WS-CURDATE-YY}, 0 to 99
+     */
+    private record EditedDate(int mm, int dd, int yy) {
+        private EditedDate {
+            requireDigitWidth(mm, MONTH_DIGITS, WS_CURDATE_MM);
+            requireDigitWidth(dd, DAY_DIGITS, WS_CURDATE_DD);
+            requireDigitWidth(yy, TWO_DIGIT_YEAR_DIGITS, WS_CURDATE_YY);
+        }
+    }
+
+    /**
+     * The {@code WS-CURTIME-HH-MM-SS} group: three {@code PIC 9(02)} items with {@code ':'}
+     * separators declared as {@code FILLER … VALUE} literals between them.
+     *
+     * @param hh {@code WS-CURTIME-HH}, 0 to 99
+     * @param mm {@code WS-CURTIME-MM}, 0 to 99
+     * @param ss {@code WS-CURTIME-SS}, 0 to 99
+     */
+    private record EditedTime(int hh, int mm, int ss) {
+        private EditedTime {
+            requireDigitWidth(hh, HOURS_DIGITS, WS_CURTIME_HH);
+            requireDigitWidth(mm, MINUTE_DIGITS, WS_CURTIME_MM);
+            requireDigitWidth(ss, SECOND_DIGITS, WS_CURTIME_SS);
+        }
+    }
+
+    /**
+     * The {@code WS-TIMESTAMP} group: seven numeric items and five separator {@code FILLER}s,
+     * twenty-six bytes in all.
+     *
+     * <p>Its fractional part is {@code WS-TIMESTAMP-TM-MS6 PIC 9(06)} - true microseconds, a
+     * different and finer precision than {@link CapturedDateTime#hundredths()}, and never obtained by
+     * padding them. It is carried here rather than derived because
+     * {@code app/cbl/COBIL00C.cbl:266} sets it to {@code ZEROS} outright.
+     *
+     * @param year         {@code WS-TIMESTAMP-DT-YYYY}, 0 to 9999
+     * @param month        {@code WS-TIMESTAMP-DT-MM}, 0 to 99; not calendar-checked
+     * @param day          {@code WS-TIMESTAMP-DT-DD}, 0 to 99; not calendar-checked
+     * @param hours        {@code WS-TIMESTAMP-TM-HH}, 0 to 99
+     * @param minutes      {@code WS-TIMESTAMP-TM-MM}, 0 to 99
+     * @param seconds      {@code WS-TIMESTAMP-TM-SS}, 0 to 99
+     * @param microseconds {@code WS-TIMESTAMP-TM-MS6}, 0 to 999999
+     */
+    private record TimestampGroup(int year,
+                                  int month,
+                                  int day,
+                                  int hours,
+                                  int minutes,
+                                  int seconds,
+                                  int microseconds) {
+        private TimestampGroup {
+            requireDigitWidth(year, YEAR_DIGITS, WS_TIMESTAMP_DT_YYYY);
+            requireDigitWidth(month, MONTH_DIGITS, WS_TIMESTAMP_DT_MM);
+            requireDigitWidth(day, DAY_DIGITS, WS_TIMESTAMP_DT_DD);
+            requireDigitWidth(hours, HOURS_DIGITS, WS_TIMESTAMP_TM_HH);
+            requireDigitWidth(minutes, MINUTE_DIGITS, WS_TIMESTAMP_TM_MM);
+            requireDigitWidth(seconds, SECOND_DIGITS, WS_TIMESTAMP_TM_SS);
+            requireDigitWidth(microseconds, MICROSECOND_DIGITS, WS_TIMESTAMP_TM_MS6);
+        }
     }
 
     // =================================================================================================
@@ -779,7 +992,7 @@ public final class DateHeader {
         Instant instant = clock.instant();
         ZoneId zone = clock.getZone();
         ZoneOffset offset = zone.getRules().getOffset(instant);
-        return new DateHeader(codec, CapturedDateTime.of(LocalDateTime.ofInstant(instant, zone),
+        return afterPopulateHeaderInfo(codec, CapturedDateTime.of(LocalDateTime.ofInstant(instant, zone),
                 offset.getTotalSeconds() / SECONDS_PER_MINUTE));
     }
 
@@ -819,7 +1032,7 @@ public final class DateHeader {
         Objects.requireNonNull(offset, "A ZoneOffset is required; pass ZoneOffset.UTC for the "
                 + "+0000 tail, and note that the offset is discarded by the 16-byte WS-CURDATE-DATA "
                 + "receiver in any case");
-        return new DateHeader(codec,
+        return afterPopulateHeaderInfo(codec,
                 CapturedDateTime.of(dateTime, offset.getTotalSeconds() / SECONDS_PER_MINUTE));
     }
 
@@ -875,7 +1088,7 @@ public final class DateHeader {
         int seconds = readTimestampField(codec, area, WS_TIMESTAMP_TM_SS);
         int microseconds = readTimestampField(codec, area, WS_TIMESTAMP_TM_MS6);
 
-        DateHeader header = new DateHeader(codec, new CapturedDateTime(year, month, day,
+        DateHeader header = afterPopulateHeaderInfo(codec, new CapturedDateTime(year, month, day,
                 hours, minutes, seconds,
                 microseconds / MICROSECONDS_PER_HUNDREDTH,
                 microseconds,
@@ -925,14 +1138,135 @@ public final class DateHeader {
     }
 
     // =================================================================================================
+    // Source-specific population of a SINGLE group. Each operation stands for one COBOL statement or
+    // one short run of them, fills exactly the group that statement fills, and leaves the other three
+    // untouched - which is the whole point: WS-CURDATE-DATA holding "now" for the screen heading while
+    // WS-TIMESTAMP holds a stored transaction timestamp is an ordinary state for these programs, and a
+    // header projected from one instant cannot represent it.
+    // =================================================================================================
+
+    /**
+     * {@code MOVE TRAN-ORIG-TS TO WS-TIMESTAMP} - {@code app/cbl/COTRN00C.cbl:384}. Replaces the
+     * {@code WS-TIMESTAMP} group and <strong>nothing else</strong>.
+     *
+     * <p>This is the operation {@code COTRN00C} performs while the header it has already painted still
+     * carries the current date: {@code POPULATE-HEADER-INFO} filled {@code WS-CURDATE-DATA} from
+     * {@code FUNCTION CURRENT-DATE}, and this move then puts a <em>stored</em> timestamp - one read
+     * from a transaction record, quite possibly years old - into a different group of the same
+     * {@code 01} item. Both values are live at once. Contrast
+     * {@link #ofTimestampImage(FixedWidthCodec, String)}, which builds a whole header <em>from</em> an
+     * image and therefore has no earlier state to preserve.
+     *
+     * <p>The image is validated exactly as that factory validates it - width, digits and the declared
+     * separator positions, proved by re-rendering - so an image in another convention, such as
+     * {@code CBACT04C}'s {@code DB2-FORMAT-TS} form, is rejected rather than silently reinterpreted.
+     *
+     * @param image exactly {@value #WS_TIMESTAMP_LENGTH} characters in
+     *              {@code YYYY-MM-DD HH:MM:SS.ssssss} form
+     * @return a new header with this group replaced; this instance is unchanged
+     * @throws NullPointerException     if {@code image} is {@code null}
+     * @throws IllegalArgumentException if {@code image} is not a well-formed {@code WS-TIMESTAMP}
+     *                                  image
+     */
+    public DateHeader withTimestampImage(String image) {
+        DateHeader fromImage = ofTimestampImage(codec, image);
+        return new DateHeader(codec, captured, curdateMmDdYy, curtimeHhMmSs, fromImage.timestamp);
+    }
+
+    /**
+     * The three moves at {@code app/cbl/COTRN00C.cbl:385-387}, which refill
+     * {@code WS-CURDATE-MM-DD-YY} from {@code WS-TIMESTAMP} rather than from {@code WS-CURDATE}:
+     * <pre>
+     * MOVE WS-TIMESTAMP-DT-YYYY(3:2) TO WS-CURDATE-YY
+     * MOVE WS-TIMESTAMP-DT-MM        TO WS-CURDATE-MM
+     * MOVE WS-TIMESTAMP-DT-DD        TO WS-CURDATE-DD
+     * </pre>
+     *
+     * <p>The same eight bytes {@code POPULATE-HEADER-INFO} filled from the current date are
+     * overwritten here with the transaction's date, and {@code WS-CURDATE-DATA} is not touched. That
+     * is why this group is stored rather than projected: after this call {@link #wsCurdateMmDdYy()}
+     * and {@link #wsCurdateData()} legitimately disagree, and {@code COTRN00C} depends on exactly
+     * that - {@code L388} moves the result into {@code WS-TRAN-DATE} for the transaction list row.
+     *
+     * @return a new header with {@code WS-CURDATE-MM-DD-YY} taken from {@code WS-TIMESTAMP}; this
+     *         instance is unchanged
+     */
+    public DateHeader withCurdateMmDdYyFromTimestamp() {
+        return new DateHeader(codec, captured,
+                new EditedDate(timestamp.month(), timestamp.day(),
+                        twoDigitYearOf(timestamp.year())),
+                curtimeHhMmSs, timestamp);
+    }
+
+    /**
+     * {@code app/cbl/COBIL00C.cbl:263-266} - the {@code EXEC CICS FORMATTIME} form, whose fractional
+     * part is {@code ZEROS} by explicit statement:
+     * <pre>
+     * INITIALIZE WS-TIMESTAMP
+     * MOVE WS-CUR-DATE-X10 TO WS-TIMESTAMP(01:10)
+     * MOVE WS-CUR-TIME-X08 TO WS-TIMESTAMP(12:08)
+     * MOVE ZEROS           TO WS-TIMESTAMP-TM-MS6
+     * </pre>
+     *
+     * <p>{@code COBIL00C} obtains the date and time from {@code EXEC CICS ASKTIME} and
+     * {@code FORMATTIME} with {@code DATESEP('-')} and {@code TIMESEP(':')} - a service that reports
+     * no sub-second component at all - and then zeroes the six microsecond positions outright. So the
+     * timestamp this program moves into {@code TRAN-ORIG-TS} at {@code L231} ends in
+     * {@code .000000} <strong>however precise the clock behind it was</strong>. Deriving those six
+     * digits from a captured instant would put real microseconds into a record the COBOL fills with
+     * zeros, and the difference would show up field-for-field in a parity comparison of
+     * {@code TRAN-ORIG-TS}.
+     *
+     * <p>Only the {@code WS-TIMESTAMP} group is replaced. {@code WS-CURTIME-MILSEC} keeps whatever
+     * hundredths {@code WS-CURDATE-DATA} holds, because {@code INITIALIZE WS-TIMESTAMP} names one
+     * group and clears only that one.
+     *
+     * @param date10 the ten characters {@code FORMATTIME}'s {@code DATE} produced, in
+     *               {@code YYYY-MM-DD} form with {@code DATESEP('-')}
+     * @param time08 the eight characters its {@code TIME} produced, in {@code HH:MM:SS} form with
+     *               {@code TIMESEP(':')}
+     * @return a new header whose {@code WS-TIMESTAMP} carries that date and time with a zero
+     *         fractional part; this instance is unchanged
+     * @throws NullPointerException     if either argument is {@code null}
+     * @throws IllegalArgumentException if either argument is not its declared width, does not carry
+     *                                  the declared separators, or holds a non-digit where a digit
+     *                                  belongs
+     */
+    public DateHeader withTimestampFromFormatTime(String date10, String time08) {
+        Objects.requireNonNull(date10, "A 10-character FORMATTIME DATE value is required; "
+                + "app/cbl/COBIL00C.cbl:264 moves it into WS-TIMESTAMP(01:10)");
+        Objects.requireNonNull(time08, "An 8-character FORMATTIME TIME value is required; "
+                + "app/cbl/COBIL00C.cbl:265 moves it into WS-TIMESTAMP(12:08)");
+
+        // Composed and then validated through the one factory that knows this group's separator
+        // FILLERs, so there is no second parser here and no second place for the separators to be
+        // spelled. The fractional part is the literal ZEROS of L266, written as such.
+        String composed = date10 + TIMESTAMP_DATE_TIME_SEPARATOR + time08
+                + TIMESTAMP_FRACTION_SEPARATOR + pic9(0, MICROSECOND_DIGITS);
+        if (composed.length() != WS_TIMESTAMP_LENGTH) {
+            throw new IllegalArgumentException("WS-TIMESTAMP is PIC X(" + WS_TIMESTAMP_LENGTH
+                    + "), so FORMATTIME's DATE must be " + WS_TIMESTAMP_DATE_WIDTH
+                    + " characters and its TIME " + WS_TIMESTAMP_TIME_WIDTH + "; the supplied values "
+                    + "are " + date10.length() + " and " + time08.length() + ", which compose "
+                    + composed.length() + " characters");
+        }
+        return withTimestampImage(composed);
+    }
+
+    // =================================================================================================
     // The captured instant, and the codec that renders it.
     // =================================================================================================
 
     /**
-     * The instant this header was built from, decomposed into the copybook's components. Every
-     * rendering below is a projection of this one value, which is why they can never disagree.
+     * The {@code WS-CURDATE-DATA} group: the instant {@code MOVE FUNCTION CURRENT-DATE} put there,
+     * decomposed into the copybook's components.
      *
-     * @return the captured components; an immutable record
+     * <p>This is one of the four independent groups, not the source of the other three. After a
+     * {@code with…} operation it may legitimately carry a different moment from
+     * {@link #wsTimestamp()} or {@link #wsCurdateMmDdYy()} - which is exactly what
+     * {@code app/cbl/COTRN00C.cbl:384-387} produces.
+     *
+     * @return the components of this group; an immutable record
      */
     public CapturedDateTime captured() {
         return captured;
@@ -1089,9 +1423,9 @@ public final class DateHeader {
      * @return exactly {@value #WS_CURDATE_MM_DD_YY_LENGTH} characters, for example {@code 12/25/24}
      */
     public String wsCurdateMmDdYy() {
-        return pic9(captured.month(), MONTH_DIGITS)
+        return pic9(curdateMmDdYy.mm(), MONTH_DIGITS)
                 + DATE_SEPARATOR
-                + pic9(captured.day(), DAY_DIGITS)
+                + pic9(curdateMmDdYy.dd(), DAY_DIGITS)
                 + DATE_SEPARATOR
                 + wsCurdateYy();
     }
@@ -1111,7 +1445,7 @@ public final class DateHeader {
      * @return exactly {@value #TWO_DIGIT_YEAR_DIGITS} characters
      */
     public String wsCurdateYy() {
-        return pic9(captured.year(), YEAR_DIGITS).substring(YEAR_DIGITS - TWO_DIGIT_YEAR_DIGITS);
+        return pic9(curdateMmDdYy.yy(), TWO_DIGIT_YEAR_DIGITS);
     }
 
     /**
@@ -1126,11 +1460,11 @@ public final class DateHeader {
      * @return exactly {@value #WS_CURTIME_HH_MM_SS_LENGTH} characters, for example {@code 03:04:05}
      */
     public String wsCurtimeHhMmSs() {
-        return pic9(captured.hours(), HOURS_DIGITS)
+        return pic9(curtimeHhMmSs.hh(), HOURS_DIGITS)
                 + TIME_SEPARATOR
-                + pic9(captured.minutes(), MINUTE_DIGITS)
+                + pic9(curtimeHhMmSs.mm(), MINUTE_DIGITS)
                 + TIME_SEPARATOR
-                + pic9(captured.seconds(), SECOND_DIGITS);
+                + pic9(curtimeHhMmSs.ss(), SECOND_DIGITS);
     }
 
     // =================================================================================================
@@ -1155,19 +1489,19 @@ public final class DateHeader {
      * @return exactly {@value #WS_TIMESTAMP_LENGTH} characters
      */
     public String wsTimestamp() {
-        return pic9(captured.year(), YEAR_DIGITS)
+        return pic9(timestamp.year(), YEAR_DIGITS)
                 + TIMESTAMP_DATE_SEPARATOR
-                + pic9(captured.month(), MONTH_DIGITS)
+                + pic9(timestamp.month(), MONTH_DIGITS)
                 + TIMESTAMP_DATE_SEPARATOR
-                + pic9(captured.day(), DAY_DIGITS)
+                + pic9(timestamp.day(), DAY_DIGITS)
                 + TIMESTAMP_DATE_TIME_SEPARATOR
-                + pic9(captured.hours(), HOURS_DIGITS)
+                + pic9(timestamp.hours(), HOURS_DIGITS)
                 + TIME_SEPARATOR
-                + pic9(captured.minutes(), MINUTE_DIGITS)
+                + pic9(timestamp.minutes(), MINUTE_DIGITS)
                 + TIME_SEPARATOR
-                + pic9(captured.seconds(), SECOND_DIGITS)
+                + pic9(timestamp.seconds(), SECOND_DIGITS)
                 + TIMESTAMP_FRACTION_SEPARATOR
-                + pic9(captured.microseconds(), MICROSECOND_DIGITS);
+                + pic9(timestamp.microseconds(), MICROSECOND_DIGITS);
     }
 
     /**
@@ -1239,19 +1573,19 @@ public final class DateHeader {
         images.put(WS_CURTIME_MINUTE, pic9(captured.minutes(), MINUTE_DIGITS));
         images.put(WS_CURTIME_SECOND, pic9(captured.seconds(), SECOND_DIGITS));
         images.put(WS_CURTIME_MILSEC, pic9(captured.hundredths(), MILSEC_DIGITS));
-        images.put(WS_CURDATE_MM, pic9(captured.month(), MONTH_DIGITS));
-        images.put(WS_CURDATE_DD, pic9(captured.day(), DAY_DIGITS));
+        images.put(WS_CURDATE_MM, pic9(curdateMmDdYy.mm(), MONTH_DIGITS));
+        images.put(WS_CURDATE_DD, pic9(curdateMmDdYy.dd(), DAY_DIGITS));
         images.put(WS_CURDATE_YY, wsCurdateYy());
-        images.put(WS_CURTIME_HH, pic9(captured.hours(), HOURS_DIGITS));
-        images.put(WS_CURTIME_MM, pic9(captured.minutes(), MINUTE_DIGITS));
-        images.put(WS_CURTIME_SS, pic9(captured.seconds(), SECOND_DIGITS));
-        images.put(WS_TIMESTAMP_DT_YYYY, pic9(captured.year(), YEAR_DIGITS));
-        images.put(WS_TIMESTAMP_DT_MM, pic9(captured.month(), MONTH_DIGITS));
-        images.put(WS_TIMESTAMP_DT_DD, pic9(captured.day(), DAY_DIGITS));
-        images.put(WS_TIMESTAMP_TM_HH, pic9(captured.hours(), HOURS_DIGITS));
-        images.put(WS_TIMESTAMP_TM_MM, pic9(captured.minutes(), MINUTE_DIGITS));
-        images.put(WS_TIMESTAMP_TM_SS, pic9(captured.seconds(), SECOND_DIGITS));
-        images.put(WS_TIMESTAMP_TM_MS6, pic9(captured.microseconds(), MICROSECOND_DIGITS));
+        images.put(WS_CURTIME_HH, pic9(curtimeHhMmSs.hh(), HOURS_DIGITS));
+        images.put(WS_CURTIME_MM, pic9(curtimeHhMmSs.mm(), MINUTE_DIGITS));
+        images.put(WS_CURTIME_SS, pic9(curtimeHhMmSs.ss(), SECOND_DIGITS));
+        images.put(WS_TIMESTAMP_DT_YYYY, pic9(timestamp.year(), YEAR_DIGITS));
+        images.put(WS_TIMESTAMP_DT_MM, pic9(timestamp.month(), MONTH_DIGITS));
+        images.put(WS_TIMESTAMP_DT_DD, pic9(timestamp.day(), DAY_DIGITS));
+        images.put(WS_TIMESTAMP_TM_HH, pic9(timestamp.hours(), HOURS_DIGITS));
+        images.put(WS_TIMESTAMP_TM_MM, pic9(timestamp.minutes(), MINUTE_DIGITS));
+        images.put(WS_TIMESTAMP_TM_SS, pic9(timestamp.seconds(), SECOND_DIGITS));
+        images.put(WS_TIMESTAMP_TM_MS6, pic9(timestamp.microseconds(), MICROSECOND_DIGITS));
         return Collections.unmodifiableMap(images);
     }
 
@@ -1310,17 +1644,21 @@ public final class DateHeader {
             return false;
         }
         return captured.equals(that.captured)
+                && curdateMmDdYy.equals(that.curdateMmDdYy)
+                && curtimeHhMmSs.equals(that.curtimeHhMmSs)
+                && timestamp.equals(that.timestamp)
                 && codec.charset().equals(that.codec.charset());
     }
 
     /**
-     * Consistent with {@link #equals(Object)}: derived from the captured instant and the code page.
+     * Consistent with {@link #equals(Object)}: derived from all four independent groups and the
+     * code page.
      *
      * @return the hash code
      */
     @Override
     public int hashCode() {
-        return Objects.hash(captured, codec.charset());
+        return Objects.hash(captured, curdateMmDdYy, curtimeHhMmSs, timestamp, codec.charset());
     }
 
     /**

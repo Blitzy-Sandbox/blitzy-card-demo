@@ -3,8 +3,11 @@ package com.vsergeychik.carddemo.card.dto;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vsergeychik.carddemo.common.DiagnosticText;
+import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
@@ -515,15 +518,25 @@ class CardScreenStateTest {
         }
 
         @Test
-        @DisplayName("the AID is stored through the PIC X(5) rule: padded and truncated on the right")
-        void theAidObeysThePicXRule() {
+        @DisplayName("the AID binds losslessly: a short token is kept as sent, an over-wide one refused")
+        void theAidBindsLosslesslyAndRefusesOverflow() {
             CardScreenState state = new CardScreenState();
 
+            // Stored exactly as sent. Padding it here would make a two-character token
+            // indistinguishable from a two-character token followed by three real spaces.
             state.setCcardAid("PF");
-            assertThat(state.getCcardAid()).isEqualTo("PF   ");
+            assertThat(state.getCcardAid()).isEqualTo("PF");
 
-            state.setCcardAid("TOOLONGVALUE");
-            assertThat(state.getCcardAid()).isEqualTo("TOOLO");
+            // The MOVE is a named, separate step - and only there is the value padded to PIC X(5).
+            assertThat(state.asWorkArea().getCcardAid()).isEqualTo("PF   ");
+
+            // Twelve characters cannot enter a five-byte field, and are refused rather than shortened.
+            assertThatThrownBy(() -> state.setCcardAid("TOOLONGVALUE"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("CCARD-AID")
+                    .hasMessageContaining("12 character(s)")
+                    .hasMessageNotContaining("TOOLONGVALUE");
+            assertThat(state.getCcardAid()).isEqualTo("PF");
         }
     }
 
@@ -589,19 +602,43 @@ class CardScreenStateTest {
         }
 
         @Test
-        @DisplayName("the nine-argument constructor stores every field through the PIC X rule")
-        void fullConstructorNormalisesEveryField() {
+        @DisplayName("the nine-argument constructor stores every field verbatim, and asWorkArea moves it")
+        void fullConstructorStoresVerbatimAndAsWorkAreaMoves() {
             CardScreenState state = new CardScreenState("EN", "P", "M", "S", "e", "r", "1", "2", "3");
 
-            assertThat(state.getCcardAid()).isEqualTo("EN   ");
-            assertThat(state.getCcardNextProg()).isEqualTo("P       ");
-            assertThat(state.getCcardNextMapset()).isEqualTo("M      ");
-            assertThat(state.getCcardNextMap()).isEqualTo("S      ");
-            assertThat(state.getCcardErrorMsg()).hasSize(75).startsWith("e");
-            assertThat(state.getCcardReturnMsg()).hasSize(75).startsWith("r");
-            assertThat(state.getCcAcctId()).isEqualTo("1          ");
-            assertThat(state.getCcCardNum()).isEqualTo("2               ");
-            assertThat(state.getCcCustId()).isEqualTo("3        ");
+            assertThat(state.getCcardAid()).isEqualTo("EN");
+            assertThat(state.getCcardNextProg()).isEqualTo("P");
+            assertThat(state.getCcardNextMapset()).isEqualTo("M");
+            assertThat(state.getCcardNextMap()).isEqualTo("S");
+            assertThat(state.getCcardErrorMsg()).isEqualTo("e");
+            assertThat(state.getCcardReturnMsg()).isEqualTo("r");
+            assertThat(state.getCcAcctId()).isEqualTo("1");
+            assertThat(state.getCcCardNum()).isEqualTo("2");
+            assertThat(state.getCcCustId()).isEqualTo("3");
+
+            CardScreenState moved = state.asWorkArea();
+            assertThat(moved.getCcardAid()).isEqualTo("EN   ");
+            assertThat(moved.getCcardNextProg()).isEqualTo("P       ");
+            assertThat(moved.getCcardNextMapset()).isEqualTo("M      ");
+            assertThat(moved.getCcardNextMap()).isEqualTo("S      ");
+            assertThat(moved.getCcardErrorMsg()).hasSize(75).startsWith("e");
+            assertThat(moved.getCcardReturnMsg()).hasSize(75).startsWith("r");
+            assertThat(moved.getCcAcctId()).isEqualTo("1          ");
+            assertThat(moved.getCcCardNum()).isEqualTo("2               ");
+            assertThat(moved.getCcCustId()).isEqualTo("3        ");
+
+            // The two are the same work area, because equality compares the moved images.
+            assertThat(moved).isEqualTo(state);
+        }
+
+        @Test
+        @DisplayName("the nine-argument constructor refuses an over-wide argument")
+        void fullConstructorRefusesAnOverWideArgument() {
+            assertThatThrownBy(() -> new CardScreenState("ENTER", "COCRDUPCX", "M", "S", "e", "r",
+                    "1", "2", "3"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("CCARD-NEXT-PROG")
+                    .hasMessageContaining("9 character(s)");
         }
     }
 
@@ -610,30 +647,43 @@ class CardScreenStateTest {
     class OpaqueNavigationTokens {
 
         @Test
-        @DisplayName("the program name is padded and truncated on the right at eight characters")
-        void programNameObeysPicX8() {
+        @DisplayName("a full-width program name is stored as sent, and a short one is padded only by the MOVE")
+        void programNameBindsLosslesslyAtEightCharacters() {
             CardScreenState state = new CardScreenState();
 
             state.setCcardNextProg("COCRDUPC");
             assertThat(state.getCcardNextProg()).isEqualTo("COCRDUPC").hasSize(8);
 
             state.setCcardNextProg("AB");
-            assertThat(state.getCcardNextProg()).isEqualTo("AB      ");
-
-            state.setCcardNextProg("COCRDUPCEXTRA");
-            assertThat(state.getCcardNextProg()).isEqualTo("COCRDUPC");
+            assertThat(state.getCcardNextProg()).isEqualTo("AB");
+            assertThat(state.asWorkArea().getCcardNextProg()).isEqualTo("AB      ");
         }
 
         @Test
-        @DisplayName("the mapset and map are seven wide, so an eight-character name loses its last")
-        void mapNamesObeyPicX7() {
+        @DisplayName("a ninth character in the program name is refused, not silently dropped")
+        void programNameRefusesANinthCharacter() {
+            CardScreenState state = new CardScreenState();
+
+            assertThatThrownBy(() -> state.setCcardNextProg("COCRDUPCEXTRA"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("CCARD-NEXT-PROG")
+                    .hasMessageContaining("13 character(s)");
+            assertThat(state.getCcardNextProg()).isEqualTo("        ");
+        }
+
+        @Test
+        @DisplayName("the mapset and map are seven wide, so an eight-character name is refused")
+        void mapNamesAreSevenWideAndRefuseAnEighth() {
             CardScreenState state = new CardScreenState();
 
             state.setCcardNextMapset("CCRDLI");
-            assertThat(state.getCcardNextMapset()).isEqualTo("CCRDLI ").hasSize(7);
+            assertThat(state.getCcardNextMapset()).isEqualTo("CCRDLI");
+            assertThat(state.asWorkArea().getCcardNextMapset()).isEqualTo("CCRDLI ").hasSize(7);
 
-            state.setCcardNextMap("CCRDLIAI");
-            assertThat(state.getCcardNextMap()).isEqualTo("CCRDLIA").hasSize(7);
+            assertThatThrownBy(() -> state.setCcardNextMap("CCRDLIAI"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("CCARD-NEXT-MAP")
+                    .hasMessageContaining("8 character(s)");
         }
 
         @ParameterizedTest(name = "the map name ''{0}'' survives untouched")
@@ -687,17 +737,27 @@ class CardScreenStateTest {
             state.setCcardErrorMsg("Account filter not supplied");
             state.setCcardReturnMsg("Press PF3 to exit");
 
-            assertThat(state.getCcardErrorMsg()).hasSize(75)
+            assertThat(state.getCcardErrorMsg()).isEqualTo("Account filter not supplied");
+            assertThat(state.asWorkArea().getCcardErrorMsg()).hasSize(75)
                     .isEqualTo("Account filter not supplied" + " ".repeat(48));
-            assertThat(state.getCcardReturnMsg()).hasSize(75);
+            assertThat(state.asWorkArea().getCcardReturnMsg()).hasSize(75);
         }
 
         @Test
-        @DisplayName("a message longer than 75 characters is truncated on the right")
-        void anOverlongMessageIsTruncatedOnTheRight() {
+        @DisplayName("a message longer than 75 characters is refused rather than truncated")
+        void anOverlongMessageIsRefused() {
             CardScreenState state = new CardScreenState();
-            state.setCcardErrorMsg("A".repeat(80));
 
+            assertThatThrownBy(() -> state.setCcardErrorMsg("A".repeat(80)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("CCARD-ERROR-MSG")
+                    .hasMessageContaining("80 character(s)")
+                    .hasMessageContaining("movePicX");
+
+            // Nothing was stored, and the deliberate shortening route is named in the message.
+            assertThat(state.getCcardErrorMsg()).isEqualTo(" ".repeat(75));
+            state.setCcardErrorMsg(new FixedWidthCodec(StandardCharsets.US_ASCII)
+                    .movePicX("A".repeat(80), 75));
             assertThat(state.getCcardErrorMsg()).isEqualTo("A".repeat(75));
         }
 
@@ -1293,18 +1353,24 @@ class CardScreenStateTest {
         }
 
         @Test
-        @DisplayName("toString names every COBOL field and masks nothing")
-        void toStringIsCompleteAndUnmasked() {
-            String rendered = populated().toString();
+        @DisplayName("toString names every COBOL field and withholds the three identifiers")
+        void toStringNamesEveryFieldAndRedactsTheIdentifiers() {
+            CardScreenState state = populated();
 
+            String rendered = state.toString();
+
+            // The screen state itself stays legible - it is what a navigation parity failure is read
+            // from - while the three identifiers are masked. Practice B6 is intact: the components, the
+            // accessors and the encoded bytes still carry the real values, and COBOL has no toString.
             assertThat(rendered).contains("CCARD-AID='PFK03'",
                     "CCARD-NEXT-PROG='COCRDSLC'",
                     "CCARD-NEXT-MAPSET='CCRDSLA'",
-                    "CCARD-NEXT-MAP='CCRDSLA'",
-                    "CC-ACCT-ID='00000000011'",
-                    "CC-CARD-NUM='4111111111111111'",
-                    "CC-CUST-ID='000000009'");
-            assertThat(rendered).doesNotContain("****", "REDACTED");
+                    "CCARD-NEXT-MAP='CCRDSLA'");
+            assertThat(rendered)
+                    .doesNotContain("00000000011", "4111111111111111", "000000009")
+                    .contains("CC-ACCT-ID='*******0011'",
+                            "CC-CARD-NUM='************1111'",
+                            "CC-CUST-ID='*****0009'");
         }
     }
 
@@ -1392,6 +1458,131 @@ class CardScreenStateTest {
             String json = mapper.valueToTree(populated()).toString();
 
             assertThat(json).contains("4111111111111111");
+        }
+
+        @Test
+        @DisplayName("an inbound value shorter than its field survives binding unchanged")
+        void aShortInboundValueIsNotPadded() throws Exception {
+            CardScreenState bound = mapper.readValue(
+                    "{\"ccardAid\":\"\",\"ccardNextProg\":\"COMEN01C\",\"ccardNextMapset\":\"\","
+                            + "\"ccardNextMap\":\"\",\"ccardErrorMsg\":\"\",\"ccardReturnMsg\":\"\","
+                            + "\"ccAcctId\":\"11\",\"ccCardNum\":\"\",\"ccCustId\":\"\"}",
+                    CardScreenState.class);
+
+            // Empty stays empty and "11" stays "11": the wire value is inspectable as it was sent.
+            assertThat(bound.getCcardAid()).isEmpty();
+            assertThat(bound.getCcAcctId()).isEqualTo("11");
+            assertThat(bound.getCcardErrorMsg()).isEmpty();
+
+            // And the COBOL semantics are unchanged, because they read the moved image: "11" moves to
+            // "11         ", which is neither all digits nor all spaces - exactly what the pre-binding
+            // behaviour produced, and exactly what the class test IF CC-ACCT-ID IS NUMERIC reports.
+            assertThat(bound.isCcAcctIdSpaces()).isFalse();
+            assertThat(bound.isCcAcctIdNumeric()).isFalse();
+            assertThat(bound.isCcCardNumSpaces()).isTrue();
+            assertThat(bound.isCcCardNumNZeros()).isTrue();
+            assertThat(bound.getCcCardNumN()).isZero();
+            assertThat(bound.asWorkArea().getCcAcctId()).isEqualTo("11         ");
+        }
+
+        @Test
+        @DisplayName("an inbound value wider than its field is refused, and nothing is truncated")
+        void anOverWideInboundValueIsRefused() {
+            assertThatThrownBy(() -> mapper.readValue(
+                    "{\"ccCardNum\":\"41111111111111119999\"}", CardScreenState.class))
+                    .rootCause()
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("CC-CARD-NUM")
+                    .hasMessageContaining("20 character(s)")
+                    .hasMessageNotContaining("41111111111111119999");
+        }
+
+        @Test
+        @DisplayName("a losslessly bound short value still writes the correct 213-byte image")
+        void aShortBoundValueStillWritesTheDeclaredImage() throws Exception {
+            CardScreenState bound = mapper.readValue(
+                    "{\"ccardAid\":\"EN\",\"ccardNextProg\":\"COMEN01C\",\"ccardNextMapset\":\"CO\","
+                            + "\"ccardNextMap\":\"CO\",\"ccardErrorMsg\":\"e\",\"ccardReturnMsg\":\"r\","
+                            + "\"ccAcctId\":\"11\",\"ccCardNum\":\"4111\",\"ccCustId\":\"9\"}",
+                    CardScreenState.class);
+
+            byte[] image = bound.toFixedWidth(StandardCharsets.US_ASCII);
+
+            assertThat(image).hasSize(CardScreenState.RECORD_LENGTH);
+            assertThat(new String(image, CardScreenState.CCARD_AID_OFFSET,
+                    CardScreenState.CCARD_AID_LENGTH, StandardCharsets.US_ASCII)).isEqualTo("EN   ");
+            assertThat(new String(image, CardScreenState.CC_ACCT_ID_OFFSET,
+                    CardScreenState.CC_ACCT_ID_LENGTH, StandardCharsets.US_ASCII))
+                    .isEqualTo("11         ");
+            assertThat(CardScreenState.fromFixedWidth(image, StandardCharsets.US_ASCII))
+                    .isEqualTo(bound);
+        }
+    }
+
+    @Nested
+    @DisplayName("asWorkArea - the one named step that applies the COBOL MOVE")
+    class WorkAreaConversion {
+
+        @Test
+        @DisplayName("every field is rendered at its declared width")
+        void everyFieldIsMovedToItsDeclaredWidth() {
+            CardScreenState state = new CardScreenState();
+            state.setCcardAid("EN");
+            state.setCcardNextProg("P");
+            state.setCcardNextMapset("M");
+            state.setCcardNextMap("S");
+            state.setCcardErrorMsg("e");
+            state.setCcardReturnMsg("r");
+            state.setCcAcctId("1");
+            state.setCcCardNum("2");
+            state.setCcCustId("3");
+
+            CardScreenState moved = state.asWorkArea();
+
+            assertThat(moved.getCcardAid()).hasSize(CardScreenState.CCARD_AID_LENGTH);
+            assertThat(moved.getCcardNextProg()).hasSize(CardScreenState.CCARD_NEXT_PROG_LENGTH);
+            assertThat(moved.getCcardNextMapset()).hasSize(CardScreenState.CCARD_NEXT_MAPSET_LENGTH);
+            assertThat(moved.getCcardNextMap()).hasSize(CardScreenState.CCARD_NEXT_MAP_LENGTH);
+            assertThat(moved.getCcardErrorMsg()).hasSize(CardScreenState.CCARD_ERROR_MSG_LENGTH);
+            assertThat(moved.getCcardReturnMsg()).hasSize(CardScreenState.CCARD_RETURN_MSG_LENGTH);
+            assertThat(moved.getCcAcctId()).hasSize(CardScreenState.CC_ACCT_ID_LENGTH);
+            assertThat(moved.getCcCardNum()).hasSize(CardScreenState.CC_CARD_NUM_LENGTH);
+            assertThat(moved.getCcCustId()).hasSize(CardScreenState.CC_CUST_ID_LENGTH);
+        }
+
+        @Test
+        @DisplayName("it returns a new instance and leaves the original alone")
+        void itDoesNotMutateTheOriginal() {
+            CardScreenState state = new CardScreenState();
+            state.setCcardAid("EN");
+
+            CardScreenState moved = state.asWorkArea();
+
+            assertThat(moved).isNotSameAs(state);
+            assertThat(state.getCcardAid()).isEqualTo("EN");
+            assertThat(moved.getCcardAid()).isEqualTo("EN   ");
+        }
+
+        @Test
+        @DisplayName("it is idempotent, because a moved field is already its declared width")
+        void itIsIdempotent() {
+            CardScreenState once = populated().asWorkArea();
+
+            assertThat(once.asWorkArea()).isEqualTo(once);
+            assertThat(once.asWorkArea().getCcardAid()).isEqualTo(once.getCcardAid());
+        }
+
+        @Test
+        @DisplayName("a work area and its moved form are equal, and hash alike")
+        void equalityIsOverTheMovedImage() {
+            CardScreenState shortForm = new CardScreenState();
+            shortForm.setCcardNextProg("P");
+
+            CardScreenState movedForm = shortForm.asWorkArea();
+
+            assertThat(movedForm).isEqualTo(shortForm);
+            assertThat(shortForm).isEqualTo(movedForm);
+            assertThat(movedForm).hasSameHashCodeAs(shortForm);
         }
     }
 }

@@ -305,6 +305,48 @@ public final class TransactionListRequest {
     /** {@code ERRMSGI PIC X(78)}, {@code DFHMDF POS=(23,1) ATTRB=(ASKIP,BRT,FSET) COLOR=RED}. */
     public static final int ERRMSG_LENGTH = 78;
 
+    /**
+     * Characters in the {@code EIBAID} token carried by {@link #getAid()}: five.
+     *
+     * <p><strong>Not a screen field.</strong> It is absent from {@link #FIELD_NAMES}, from
+     * {@link #FIELD_COUNT} and from the {@value #SYMBOLIC_MAP_LENGTH}-byte image, because
+     * {@code EIBAID} is not part of {@code 01 COTRN0AI} at all - CICS reports it in the exec interface
+     * block, beside the map rather than inside it. It is one of the mandated exceptions to the
+     * one-member-per-{@code DFHMDF} rule, along with the communication area and its cursor.
+     *
+     * <p>It has to be here because {@code app/cbl/COTRN00C.cbl:119-134} decides what the transaction
+     * does by evaluating it and nothing else - {@code EVALUATE EIBAID} with four named arms and a
+     * default:
+     *
+     * <ul>
+     *   <li>{@code WHEN DFHENTER} performs {@code PROCESS-ENTER-KEY}, which acts on whichever row the
+     *       operator selected;</li>
+     *   <li>{@code WHEN DFHPF3} moves {@code 'COMEN01C'} into {@code CDEMO-TO-PROGRAM} and returns to
+     *       the previous screen;</li>
+     *   <li>{@code WHEN DFHPF7} performs {@code PROCESS-PF7-KEY} - page backwards;</li>
+     *   <li>{@code WHEN DFHPF8} performs {@code PROCESS-PF8-KEY} - page forwards;</li>
+     *   <li>{@code WHEN OTHER} raises {@code CCDA-MSG-INVALID-KEY} and repositions the cursor.</li>
+     * </ul>
+     *
+     * <p>Paging is the whole point of this screen, and both directions live entirely on this member:
+     * without it {@code PROCESS-PF7-KEY} and {@code PROCESS-PF8-KEY} are unreachable through the API,
+     * and the {@value PaginationCursor#CURSOR_LENGTH}-byte cursor this payload carries could never be
+     * advanced or rewound. A server-side record of the last key pressed is the one thing rule R6
+     * forbids, so the key travels in the payload.
+     *
+     * <p>The width is the module's convention: {@code COTRN00C} copies neither {@code CVCRD01Y} nor
+     * {@code CSSTRPFY} and tests the raw {@code EIBAID} byte inline, so five characters is taken from
+     * {@code 10 CCARD-AID PIC X(5)} of {@code app/cpy/CVCRD01Y.cpy} and from the width
+     * {@code common.PfKeyResolver.AID_TOKEN_LENGTH} publishes. The four tokens this screen acts on are
+     * {@code ENTER}, {@code PFK03}, {@code PFK07} and {@code PFK08}; anything else, spaces included, is
+     * the {@code WHEN OTHER} arm. {@code common.PfKeyResolver.AidKey#token()} space-pads the shorter
+     * mnemonics to this width, so a caller must not trim what it produces.
+     */
+    public static final int AID_LENGTH = 5;
+
+    /** Name of the pseudo-conversational key indication, the CICS {@code EIBAID} field. */
+    public static final String AID_FIELD = "EIBAID";
+
     // =================================================================================================
     // Derived geometry. Every one of these is arithmetic over the widths above, never a re-typed
     // literal, so a corrected width propagates instead of leaving a stale total behind.
@@ -762,10 +804,15 @@ public final class TransactionListRequest {
     public static final RecordLayout LAYOUT = buildLayout();
 
     /**
-     * The single implementation of the {@code PIC X} width rule used by every setter on this type and
-     * on its two nested types.
+     * The one {@code PICTURE}-rule implementation this type reaches for outside a byte boundary.
      *
-     * <p>{@link FixedWidthCodec#movePicX(String, int)} is a <em>character-level</em> operation that
+     * <p>Only {@link FixedWidthCodec#movePic9(long, int)} is taken from it now, to render
+     * {@code CDEMO-CT00-PAGE-NUM} as its eight zero-filled digits. The {@code PIC X} setters do
+     * <strong>not</strong> use it: they validate through {@link #requirePicX(String, int, String)} and
+     * store what they are given, and the alphanumeric {@code MOVE} is applied once at the byte
+     * boundary instead - see that method for why.
+     *
+     * <p>{@link FixedWidthCodec#movePic9(long, int)} is a <em>character-level</em> operation that
      * converts nothing to bytes, so the code page this instance carries takes no part in the result.
      * It is named {@link StandardCharsets#US_ASCII} explicitly and never derived from the platform,
      * and it is the code page of the authoritative fixtures under {@code app/data/ASCII}. Every actual
@@ -1014,7 +1061,7 @@ public final class TransactionListRequest {
          * @throws NullPointerException if {@code flag} is {@code null}
          */
         public void setFlag(String flag) {
-            this.flagByte = movePicX(flag, FLAG_ITEM_BYTES, flagItemName(baseFieldName));
+            this.flagByte = requireFlagByte(flag, flagItemName(baseFieldName));
         }
 
         /**
@@ -1035,7 +1082,37 @@ public final class TransactionListRequest {
          * @throws NullPointerException if {@code attribute} is {@code null}
          */
         public void setAttribute(String attribute) {
-            this.flagByte = movePicX(attribute, FLAG_ITEM_BYTES, attributeItemName(baseFieldName));
+            this.flagByte = requireFlagByte(attribute, attributeItemName(baseFieldName));
+        }
+
+        /**
+         * Normalises an {@code xxxF} / {@code xxxA} value to exactly one character.
+         *
+         * <p>Unlike a payload field, this item is genuinely one byte wide and the class relies on it:
+         * {@link #toString()} reads {@code charAt(0)} to report the code point, so an empty value would
+         * be a lurking {@link StringIndexOutOfBoundsException} rather than a shorter field. An empty
+         * string is therefore filled to a single space, which is what the byte holds when CICS reports
+         * no attribute.
+         *
+         * <p>A value of more than one character is <strong>refused</strong>, not shortened. It cannot
+         * come from a terminal - CICS reports one attribute byte per field - so it is a caller defect,
+         * and silently keeping the first character would hide it.
+         *
+         * @param value    the byte offered for the item
+         * @param itemName the {@code xxxF} or {@code xxxA} name, for the failure message
+         * @return exactly one character
+         * @throws NullPointerException     if {@code value} is {@code null}
+         * @throws IllegalArgumentException if {@code value} is longer than one character
+         */
+        private static String requireFlagByte(String value, String itemName) {
+            Objects.requireNonNull(value, "A value is required for " + itemName
+                    + ": COBOL has no null, so pass a space to clear the byte explicitly");
+            if (value.length() > FLAG_ITEM_BYTES) {
+                throw new IllegalArgumentException("Item " + itemName + " is declared PICTURE X - one "
+                        + "byte, the single attribute byte CICS reports for a field - but was given "
+                        + value.length() + " character(s)");
+            }
+            return value.isEmpty() ? " " : value;
         }
 
         /**
@@ -1300,7 +1377,7 @@ public final class TransactionListRequest {
          * @throws NullPointerException if {@code trnidFirst} is {@code null}
          */
         public void setTrnidFirst(String trnidFirst) {
-            this.trnidFirst = movePicX(trnidFirst, TRNID_FIRST_LENGTH, TRNID_FIRST_FIELD);
+            this.trnidFirst = requirePicX(trnidFirst, TRNID_FIRST_LENGTH, TRNID_FIRST_FIELD);
         }
 
         /**
@@ -1321,7 +1398,7 @@ public final class TransactionListRequest {
          * @throws NullPointerException if {@code trnidLast} is {@code null}
          */
         public void setTrnidLast(String trnidLast) {
-            this.trnidLast = movePicX(trnidLast, TRNID_LAST_LENGTH, TRNID_LAST_FIELD);
+            this.trnidLast = requirePicX(trnidLast, TRNID_LAST_LENGTH, TRNID_LAST_FIELD);
         }
 
         /**
@@ -1397,7 +1474,7 @@ public final class TransactionListRequest {
          * @throws NullPointerException if {@code nextPageFlg} is {@code null}
          */
         public void setNextPageFlg(String nextPageFlg) {
-            this.nextPageFlg = movePicX(nextPageFlg, NEXT_PAGE_FLG_LENGTH, NEXT_PAGE_FLG_FIELD);
+            this.nextPageFlg = requirePicX(nextPageFlg, NEXT_PAGE_FLG_LENGTH, NEXT_PAGE_FLG_FIELD);
         }
 
         /**
@@ -1455,7 +1532,7 @@ public final class TransactionListRequest {
          * @throws NullPointerException if {@code trnSelFlg} is {@code null}
          */
         public void setTrnSelFlg(String trnSelFlg) {
-            this.trnSelFlg = movePicX(trnSelFlg, TRN_SEL_FLG_LENGTH, TRN_SEL_FLG_FIELD);
+            this.trnSelFlg = requirePicX(trnSelFlg, TRN_SEL_FLG_LENGTH, TRN_SEL_FLG_FIELD);
         }
 
         /**
@@ -1475,7 +1552,7 @@ public final class TransactionListRequest {
          * @throws NullPointerException if {@code trnSelected} is {@code null}
          */
         public void setTrnSelected(String trnSelected) {
-            this.trnSelected = movePicX(trnSelected, TRN_SELECTED_LENGTH, TRN_SELECTED_FIELD);
+            this.trnSelected = requirePicX(trnSelected, TRN_SELECTED_LENGTH, TRN_SELECTED_FIELD);
         }
 
         /**
@@ -1607,42 +1684,52 @@ public final class TransactionListRequest {
     }
 
     // =================================================================================================
-    // The 8 header/control payload fields. Bean Validation constraints are pinned to the declared width
-    // - min and max both equal n - which can never reject a value the COBOL would have accepted,
-    // because every setter has already stored the value at exactly n through the PIC X move rule. The
-    // program does its own editing, and an extra Java rejection would be a parity break.
+    // The 8 header/control payload fields. Bean Validation states a MAXIMUM width and no minimum:
+    // @Size(max = n), never @Size(min = n, max = n).
+    //
+    // The exact form was self-defeating. Every setter used to apply the PIC X move rule before the
+    // constraint was ever evaluated, so the value had already been padded or truncated to exactly n by
+    // the time it was measured - the constraint could not fail, and an over-long value was silently
+    // shortened instead of reported. Now the setter refuses a surplus outright and keeps a short value
+    // as it arrived, so the constraint is a real check on real input.
+    //
+    // A minimum would also be wrong on its own terms: a short value is legitimate. The program tests
+    // several of these fields against SPACES OR LOW-VALUES, and a caller that sends "1" for an eight-
+    // character field means "1" - the width is imposed at the byte boundary, where it belongs, not
+    // demanded of the caller. The program does its own editing, and an extra Java rejection would be a
+    // parity break.
     // =================================================================================================
 
     /** {@code TRNNAMEI PIC X(4)} - the transaction identifier in the screen header. */
-    @Size(min = TRNNAME_LENGTH, max = TRNNAME_LENGTH)
+    @Size(max = TRNNAME_LENGTH)
     private String trnname;
 
     /** {@code TITLE01I PIC X(40)} - the first title line, from {@code COTTL01Y}. */
-    @Size(min = TITLE01_LENGTH, max = TITLE01_LENGTH)
+    @Size(max = TITLE01_LENGTH)
     private String title01;
 
     /** {@code CURDATEI PIC X(8)} - the current date, {@code mm/dd/yy}. */
-    @Size(min = CURDATE_LENGTH, max = CURDATE_LENGTH)
+    @Size(max = CURDATE_LENGTH)
     private String curdate;
 
     /** {@code PGMNAMEI PIC X(8)} - the program name in the screen header. */
-    @Size(min = PGMNAME_LENGTH, max = PGMNAME_LENGTH)
+    @Size(max = PGMNAME_LENGTH)
     private String pgmname;
 
     /** {@code TITLE02I PIC X(40)} - the second title line, from {@code COTTL01Y}. */
-    @Size(min = TITLE02_LENGTH, max = TITLE02_LENGTH)
+    @Size(max = TITLE02_LENGTH)
     private String title02;
 
     /** {@code CURTIMEI PIC X(8)} - the current time, {@code hh:mm:ss}. */
-    @Size(min = CURTIME_LENGTH, max = CURTIME_LENGTH)
+    @Size(max = CURTIME_LENGTH)
     private String curtime;
 
     /** {@code PAGENUMI PIC X(8)} - the displayed page number, alphanumeric on the screen. */
-    @Size(min = PAGENUM_LENGTH, max = PAGENUM_LENGTH)
+    @Size(max = PAGENUM_LENGTH)
     private String pagenum;
 
     /** {@code TRNIDINI PIC X(16)} - the browse-start key; {@code UNPROT}, so genuine user input. */
-    @Size(min = TRNIDIN_LENGTH, max = TRNIDIN_LENGTH)
+    @Size(max = TRNIDIN_LENGTH)
     private String trnidin;
 
     // =================================================================================================
@@ -1652,203 +1739,203 @@ public final class TransactionListRequest {
     // =================================================================================================
 
     /** {@code SEL0001I PIC X(1)} - row 1 selector, {@code UNPROT}. */
-    @Size(min = SELECTION_LENGTH, max = SELECTION_LENGTH)
+    @Size(max = SELECTION_LENGTH)
     private String sel0001;
 
     /** {@code TRNID01I PIC X(16)} - row 1 transaction identifier. */
-    @Size(min = TRANSACTION_ID_LENGTH, max = TRANSACTION_ID_LENGTH)
+    @Size(max = TRANSACTION_ID_LENGTH)
     private String trnid01;
 
     /** {@code TDATE01I PIC X(8)} - row 1 date. */
-    @Size(min = TRANSACTION_DATE_LENGTH, max = TRANSACTION_DATE_LENGTH)
+    @Size(max = TRANSACTION_DATE_LENGTH)
     private String tdate01;
 
     /** {@code TDESC01I PIC X(26)} - row 1 description. */
-    @Size(min = TRANSACTION_DESCRIPTION_LENGTH, max = TRANSACTION_DESCRIPTION_LENGTH)
+    @Size(max = TRANSACTION_DESCRIPTION_LENGTH)
     private String tdesc01;
 
     /** {@code TAMT001I PIC X(12)} - row 1 edited amount, {@code +99999999.99}. */
-    @Size(min = TRANSACTION_AMOUNT_LENGTH, max = TRANSACTION_AMOUNT_LENGTH)
+    @Size(max = TRANSACTION_AMOUNT_LENGTH)
     private String tamt001;
 
     /** {@code SEL0002I PIC X(1)} - row 2 selector, {@code UNPROT}. */
-    @Size(min = SELECTION_LENGTH, max = SELECTION_LENGTH)
+    @Size(max = SELECTION_LENGTH)
     private String sel0002;
 
     /** {@code TRNID02I PIC X(16)} - row 2 transaction identifier. */
-    @Size(min = TRANSACTION_ID_LENGTH, max = TRANSACTION_ID_LENGTH)
+    @Size(max = TRANSACTION_ID_LENGTH)
     private String trnid02;
 
     /** {@code TDATE02I PIC X(8)} - row 2 date. */
-    @Size(min = TRANSACTION_DATE_LENGTH, max = TRANSACTION_DATE_LENGTH)
+    @Size(max = TRANSACTION_DATE_LENGTH)
     private String tdate02;
 
     /** {@code TDESC02I PIC X(26)} - row 2 description. */
-    @Size(min = TRANSACTION_DESCRIPTION_LENGTH, max = TRANSACTION_DESCRIPTION_LENGTH)
+    @Size(max = TRANSACTION_DESCRIPTION_LENGTH)
     private String tdesc02;
 
     /** {@code TAMT002I PIC X(12)} - row 2 edited amount. */
-    @Size(min = TRANSACTION_AMOUNT_LENGTH, max = TRANSACTION_AMOUNT_LENGTH)
+    @Size(max = TRANSACTION_AMOUNT_LENGTH)
     private String tamt002;
 
     /** {@code SEL0003I PIC X(1)} - row 3 selector, {@code UNPROT}. */
-    @Size(min = SELECTION_LENGTH, max = SELECTION_LENGTH)
+    @Size(max = SELECTION_LENGTH)
     private String sel0003;
 
     /** {@code TRNID03I PIC X(16)} - row 3 transaction identifier. */
-    @Size(min = TRANSACTION_ID_LENGTH, max = TRANSACTION_ID_LENGTH)
+    @Size(max = TRANSACTION_ID_LENGTH)
     private String trnid03;
 
     /** {@code TDATE03I PIC X(8)} - row 3 date. */
-    @Size(min = TRANSACTION_DATE_LENGTH, max = TRANSACTION_DATE_LENGTH)
+    @Size(max = TRANSACTION_DATE_LENGTH)
     private String tdate03;
 
     /** {@code TDESC03I PIC X(26)} - row 3 description. */
-    @Size(min = TRANSACTION_DESCRIPTION_LENGTH, max = TRANSACTION_DESCRIPTION_LENGTH)
+    @Size(max = TRANSACTION_DESCRIPTION_LENGTH)
     private String tdesc03;
 
     /** {@code TAMT003I PIC X(12)} - row 3 edited amount. */
-    @Size(min = TRANSACTION_AMOUNT_LENGTH, max = TRANSACTION_AMOUNT_LENGTH)
+    @Size(max = TRANSACTION_AMOUNT_LENGTH)
     private String tamt003;
 
     /** {@code SEL0004I PIC X(1)} - row 4 selector, {@code UNPROT}. */
-    @Size(min = SELECTION_LENGTH, max = SELECTION_LENGTH)
+    @Size(max = SELECTION_LENGTH)
     private String sel0004;
 
     /** {@code TRNID04I PIC X(16)} - row 4 transaction identifier. */
-    @Size(min = TRANSACTION_ID_LENGTH, max = TRANSACTION_ID_LENGTH)
+    @Size(max = TRANSACTION_ID_LENGTH)
     private String trnid04;
 
     /** {@code TDATE04I PIC X(8)} - row 4 date. */
-    @Size(min = TRANSACTION_DATE_LENGTH, max = TRANSACTION_DATE_LENGTH)
+    @Size(max = TRANSACTION_DATE_LENGTH)
     private String tdate04;
 
     /** {@code TDESC04I PIC X(26)} - row 4 description. */
-    @Size(min = TRANSACTION_DESCRIPTION_LENGTH, max = TRANSACTION_DESCRIPTION_LENGTH)
+    @Size(max = TRANSACTION_DESCRIPTION_LENGTH)
     private String tdesc04;
 
     /** {@code TAMT004I PIC X(12)} - row 4 edited amount. */
-    @Size(min = TRANSACTION_AMOUNT_LENGTH, max = TRANSACTION_AMOUNT_LENGTH)
+    @Size(max = TRANSACTION_AMOUNT_LENGTH)
     private String tamt004;
 
     /** {@code SEL0005I PIC X(1)} - row 5 selector, {@code UNPROT}. */
-    @Size(min = SELECTION_LENGTH, max = SELECTION_LENGTH)
+    @Size(max = SELECTION_LENGTH)
     private String sel0005;
 
     /** {@code TRNID05I PIC X(16)} - row 5 transaction identifier. */
-    @Size(min = TRANSACTION_ID_LENGTH, max = TRANSACTION_ID_LENGTH)
+    @Size(max = TRANSACTION_ID_LENGTH)
     private String trnid05;
 
     /** {@code TDATE05I PIC X(8)} - row 5 date. */
-    @Size(min = TRANSACTION_DATE_LENGTH, max = TRANSACTION_DATE_LENGTH)
+    @Size(max = TRANSACTION_DATE_LENGTH)
     private String tdate05;
 
     /** {@code TDESC05I PIC X(26)} - row 5 description. */
-    @Size(min = TRANSACTION_DESCRIPTION_LENGTH, max = TRANSACTION_DESCRIPTION_LENGTH)
+    @Size(max = TRANSACTION_DESCRIPTION_LENGTH)
     private String tdesc05;
 
     /** {@code TAMT005I PIC X(12)} - row 5 edited amount. */
-    @Size(min = TRANSACTION_AMOUNT_LENGTH, max = TRANSACTION_AMOUNT_LENGTH)
+    @Size(max = TRANSACTION_AMOUNT_LENGTH)
     private String tamt005;
 
     /** {@code SEL0006I PIC X(1)} - row 6 selector, {@code UNPROT}. */
-    @Size(min = SELECTION_LENGTH, max = SELECTION_LENGTH)
+    @Size(max = SELECTION_LENGTH)
     private String sel0006;
 
     /** {@code TRNID06I PIC X(16)} - row 6 transaction identifier. */
-    @Size(min = TRANSACTION_ID_LENGTH, max = TRANSACTION_ID_LENGTH)
+    @Size(max = TRANSACTION_ID_LENGTH)
     private String trnid06;
 
     /** {@code TDATE06I PIC X(8)} - row 6 date. */
-    @Size(min = TRANSACTION_DATE_LENGTH, max = TRANSACTION_DATE_LENGTH)
+    @Size(max = TRANSACTION_DATE_LENGTH)
     private String tdate06;
 
     /** {@code TDESC06I PIC X(26)} - row 6 description. */
-    @Size(min = TRANSACTION_DESCRIPTION_LENGTH, max = TRANSACTION_DESCRIPTION_LENGTH)
+    @Size(max = TRANSACTION_DESCRIPTION_LENGTH)
     private String tdesc06;
 
     /** {@code TAMT006I PIC X(12)} - row 6 edited amount. */
-    @Size(min = TRANSACTION_AMOUNT_LENGTH, max = TRANSACTION_AMOUNT_LENGTH)
+    @Size(max = TRANSACTION_AMOUNT_LENGTH)
     private String tamt006;
 
     /** {@code SEL0007I PIC X(1)} - row 7 selector, {@code UNPROT}. */
-    @Size(min = SELECTION_LENGTH, max = SELECTION_LENGTH)
+    @Size(max = SELECTION_LENGTH)
     private String sel0007;
 
     /** {@code TRNID07I PIC X(16)} - row 7 transaction identifier. */
-    @Size(min = TRANSACTION_ID_LENGTH, max = TRANSACTION_ID_LENGTH)
+    @Size(max = TRANSACTION_ID_LENGTH)
     private String trnid07;
 
     /** {@code TDATE07I PIC X(8)} - row 7 date. */
-    @Size(min = TRANSACTION_DATE_LENGTH, max = TRANSACTION_DATE_LENGTH)
+    @Size(max = TRANSACTION_DATE_LENGTH)
     private String tdate07;
 
     /** {@code TDESC07I PIC X(26)} - row 7 description. */
-    @Size(min = TRANSACTION_DESCRIPTION_LENGTH, max = TRANSACTION_DESCRIPTION_LENGTH)
+    @Size(max = TRANSACTION_DESCRIPTION_LENGTH)
     private String tdesc07;
 
     /** {@code TAMT007I PIC X(12)} - row 7 edited amount. */
-    @Size(min = TRANSACTION_AMOUNT_LENGTH, max = TRANSACTION_AMOUNT_LENGTH)
+    @Size(max = TRANSACTION_AMOUNT_LENGTH)
     private String tamt007;
 
     /** {@code SEL0008I PIC X(1)} - row 8 selector, {@code UNPROT}. */
-    @Size(min = SELECTION_LENGTH, max = SELECTION_LENGTH)
+    @Size(max = SELECTION_LENGTH)
     private String sel0008;
 
     /** {@code TRNID08I PIC X(16)} - row 8 transaction identifier. */
-    @Size(min = TRANSACTION_ID_LENGTH, max = TRANSACTION_ID_LENGTH)
+    @Size(max = TRANSACTION_ID_LENGTH)
     private String trnid08;
 
     /** {@code TDATE08I PIC X(8)} - row 8 date. */
-    @Size(min = TRANSACTION_DATE_LENGTH, max = TRANSACTION_DATE_LENGTH)
+    @Size(max = TRANSACTION_DATE_LENGTH)
     private String tdate08;
 
     /** {@code TDESC08I PIC X(26)} - row 8 description. */
-    @Size(min = TRANSACTION_DESCRIPTION_LENGTH, max = TRANSACTION_DESCRIPTION_LENGTH)
+    @Size(max = TRANSACTION_DESCRIPTION_LENGTH)
     private String tdesc08;
 
     /** {@code TAMT008I PIC X(12)} - row 8 edited amount. */
-    @Size(min = TRANSACTION_AMOUNT_LENGTH, max = TRANSACTION_AMOUNT_LENGTH)
+    @Size(max = TRANSACTION_AMOUNT_LENGTH)
     private String tamt008;
 
     /** {@code SEL0009I PIC X(1)} - row 9 selector, {@code UNPROT}. */
-    @Size(min = SELECTION_LENGTH, max = SELECTION_LENGTH)
+    @Size(max = SELECTION_LENGTH)
     private String sel0009;
 
     /** {@code TRNID09I PIC X(16)} - row 9 transaction identifier. */
-    @Size(min = TRANSACTION_ID_LENGTH, max = TRANSACTION_ID_LENGTH)
+    @Size(max = TRANSACTION_ID_LENGTH)
     private String trnid09;
 
     /** {@code TDATE09I PIC X(8)} - row 9 date. */
-    @Size(min = TRANSACTION_DATE_LENGTH, max = TRANSACTION_DATE_LENGTH)
+    @Size(max = TRANSACTION_DATE_LENGTH)
     private String tdate09;
 
     /** {@code TDESC09I PIC X(26)} - row 9 description. */
-    @Size(min = TRANSACTION_DESCRIPTION_LENGTH, max = TRANSACTION_DESCRIPTION_LENGTH)
+    @Size(max = TRANSACTION_DESCRIPTION_LENGTH)
     private String tdesc09;
 
     /** {@code TAMT009I PIC X(12)} - row 9 edited amount. */
-    @Size(min = TRANSACTION_AMOUNT_LENGTH, max = TRANSACTION_AMOUNT_LENGTH)
+    @Size(max = TRANSACTION_AMOUNT_LENGTH)
     private String tamt009;
 
     /** {@code SEL0010I PIC X(1)} - row 10 selector, {@code UNPROT}. Four-digit suffix. */
-    @Size(min = SELECTION_LENGTH, max = SELECTION_LENGTH)
+    @Size(max = SELECTION_LENGTH)
     private String sel0010;
 
     /** {@code TRNID10I PIC X(16)} - row 10 transaction identifier. */
-    @Size(min = TRANSACTION_ID_LENGTH, max = TRANSACTION_ID_LENGTH)
+    @Size(max = TRANSACTION_ID_LENGTH)
     private String trnid10;
 
     /** {@code TDATE10I PIC X(8)} - row 10 date. */
-    @Size(min = TRANSACTION_DATE_LENGTH, max = TRANSACTION_DATE_LENGTH)
+    @Size(max = TRANSACTION_DATE_LENGTH)
     private String tdate10;
 
     /** {@code TDESC10I PIC X(26)} - row 10 description. */
-    @Size(min = TRANSACTION_DESCRIPTION_LENGTH, max = TRANSACTION_DESCRIPTION_LENGTH)
+    @Size(max = TRANSACTION_DESCRIPTION_LENGTH)
     private String tdesc10;
 
     /** {@code TAMT010I PIC X(12)} - row 10 edited amount. Three-digit suffix, not {@code TAMT10}. */
-    @Size(min = TRANSACTION_AMOUNT_LENGTH, max = TRANSACTION_AMOUNT_LENGTH)
+    @Size(max = TRANSACTION_AMOUNT_LENGTH)
     private String tamt010;
 
     // =================================================================================================
@@ -1856,13 +1943,32 @@ public final class TransactionListRequest {
     // =================================================================================================
 
     /** {@code ERRMSGI PIC X(78)} - the error line at screen row 23. */
-    @Size(min = ERRMSG_LENGTH, max = ERRMSG_LENGTH)
+    @Size(max = ERRMSG_LENGTH)
     private String errmsg;
+
+    /**
+     * The resolved {@code EIBAID} key indication as a token, at most {@value #AID_LENGTH} characters.
+     *
+     * <p>Spaces mean no key has been resolved, which selects the {@code WHEN OTHER} arm of
+     * {@code app/cbl/COTRN00C.cbl:129}. See {@link #AID_LENGTH} for why this member exists and why it
+     * is not a screen field.
+     */
+    @Size(max = AID_LENGTH)
+    private String aid;
 
     /**
      * {@code CARDDEMO-COMMAREA} - the {@value NavigationContext#COMMAREA_LENGTH}-byte shared
      * communication area {@code COTRN00C} copies at line 61, carried in the payload rather than held
      * in a session.
+     *
+     * <p><strong>{@code null} when no communication area was passed</strong>, and {@code null} on a
+     * freshly constructed request. {@code app/cbl/COTRN00C.cbl:107-117} tests
+     * {@code IF EIBCALEN = 0} before anything else and, on that branch, moves {@code 'COSGN00C'} into
+     * {@code CDEMO-TO-PROGRAM} and returns to the previous screen without ever reading a context byte.
+     * A freshly initialised area is the other branch - it has a length, so the program copies it and
+     * goes on to test {@code CDEMO-PGM-REENTER} at line 112. The two are different states, and
+     * substituting one for the other left the first with no representation in this payload.
+     * {@link #hasNavigationContext()} is the discriminator.
      */
     private NavigationContext navigationContext;
 
@@ -1902,7 +2008,10 @@ public final class TransactionListRequest {
     public TransactionListRequest() {
         this.fieldMetadata = buildFieldMetadata();
         clearAllFields();
-        this.navigationContext = NavigationContext.empty();
+        // Absence, not an initialised area: EIBCALEN = 0 is what COTRN00C.cbl:107 tests for, and a
+        // request nobody has filled in has had nothing passed to it.
+        this.navigationContext = null;
+        this.aid = spaces(AID_LENGTH);
         this.cursor = new PaginationCursor();
     }
 
@@ -1941,6 +2050,7 @@ public final class TransactionListRequest {
         }
         this.errmsg = other.errmsg;
         this.navigationContext = other.navigationContext;
+        this.aid = other.aid;
         this.cursor = new PaginationCursor(other.cursor);
     }
 
@@ -2004,23 +2114,67 @@ public final class TransactionListRequest {
     }
 
     // =================================================================================================
-    // The two shared PIC X primitives. Both delegate to FixedWidthCodec so there is exactly one
-    // implementation of the pad-and-truncate rule in the module.
+    // The one shared PIC X primitive. It validates and does not transform: the COBOL MOVE itself is
+    // applied once, at the byte boundary, and nowhere else.
     // =================================================================================================
 
     /**
-     * Stores a value at exactly a receiver's declared width, applying the COBOL alphanumeric
-     * {@code MOVE} rule: pad on the right with spaces when short, truncate on the right when long.
+     * Stores a value that fits a receiver's declared width, exactly as supplied, and refuses one that
+     * does not.
      *
-     * <p>{@code null} is rejected rather than coerced. COBOL has no absent state, so a caller that
-     * has nothing to store must say which figurative constant it means - and for this map that is
+     * <h2>Why this validates instead of moving</h2>
+     * This primitive used to apply the alphanumeric {@code MOVE} rule - pad a short value on the
+     * right, truncate a long one - to every value that reached any of the fifty-nine setters. Two
+     * things followed from that, and both were wrong:
+     *
+     * <ul>
+     *   <li><strong>An over-long value was accepted.</strong> It was shortened first and then measured,
+     *       so it always fitted and the {@code @Size} constraint it was checked against could never
+     *       fail. A caller sending twenty characters for a {@code PIC X(16)} field got no error and no
+     *       indication that four characters had gone: silent data loss at the API boundary, in a
+     *       migration whose whole purpose is byte-level fidelity.</li>
+     *   <li><strong>A short value was changed on the way in.</strong> The payload no longer held what
+     *       the caller sent, so a JSON round trip was not the identity, and a field the program tests
+     *       against {@code SPACES OR LOW-VALUES} arrived pre-padded rather than as it was typed.</li>
+     * </ul>
+     *
+     * <p>So the rule is now: a value narrower than the field is kept <strong>unchanged</strong>, and a
+     * value wider than the field is <strong>refused by name</strong>. Nothing is padded and nothing is
+     * truncated here. The padding still happens - {@link #writeInto(FixedWidthRecord)} writes every
+     * field through {@link FixedWidthRecord#writeSpan}, which fills the span to its declared width -
+     * but it happens once, at the point where the value becomes bytes, which is the only place a
+     * fixed-width width is actually required. That layer refuses a surplus too rather than truncating,
+     * so a truncation can only ever be asked for explicitly through
+     * {@link FixedWidthCodec#movePicX(String, int)}, where the direction of the loss is visible at the
+     * call site.
+     *
+     * <p>Refusing is not stricter than the COBOL in any reachable sense: a 3270 {@code RECEIVE MAP}
+     * cannot deliver more bytes than a field is wide, so {@code COTRN00C} never sees the case at all.
+     *
+     * <p>{@code null} is still rejected rather than coerced. COBOL has no absent state, so a caller
+     * that has nothing to store must say which figurative constant it means - and for this map that is
      * almost always {@code SPACES}, since every blanking path in the program uses
      * {@code MOVE SPACES}.
+     *
+     * @param value     the value offered for the field
+     * @param length    the width the field's {@code PICTURE} clause declares
+     * @param cobolName the field's COBOL name, used to identify it in any failure
+     * @return {@code value} unchanged
+     * @throws NullPointerException     if {@code value} is {@code null}
+     * @throws IllegalArgumentException if {@code value} is wider than {@code length}
      */
-    private static String movePicX(String value, int length, String cobolName) {
+    private static String requirePicX(String value, int length, String cobolName) {
         Objects.requireNonNull(value, "A value is required for " + cobolName + ": COBOL has no "
                 + "null, so pass spaces(" + length + ") to blank the field explicitly");
-        return PICTURE_RULES.movePicX(value, length);
+        if (value.length() > length) {
+            throw new IllegalArgumentException("Field " + cobolName + " of "
+                    + SYMBOLIC_MAP_INPUT_GROUP + " is declared PIC X(" + length + ") but was given "
+                    + value.length() + " character(s). This payload never truncates, so that the loss "
+                    + "of a character is always a deliberate act rather than a silent one. To shorten "
+                    + "the value, pass it through FixedWidthCodec.movePicX(value, " + length + "), "
+                    + "which truncates on the right as a COBOL alphanumeric MOVE does");
+        }
+        return value;
     }
 
     /**
@@ -2050,11 +2204,11 @@ public final class TransactionListRequest {
     /**
      * Sets {@code TRNNAMEI}.
      *
-     * @param trnname the value; longer input is truncated on the right, shorter is space-padded
+     * @param trnname the value; kept unchanged if it fits, refused if it is too long
      * @throws NullPointerException if {@code trnname} is {@code null}
      */
     public void setTrnname(String trnname) {
-        this.trnname = movePicX(trnname, TRNNAME_LENGTH, TRNNAME_FIELD);
+        this.trnname = requirePicX(trnname, TRNNAME_LENGTH, TRNNAME_FIELD);
     }
 
     /**
@@ -2073,7 +2227,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code title01} is {@code null}
      */
     public void setTitle01(String title01) {
-        this.title01 = movePicX(title01, TITLE01_LENGTH, TITLE01_FIELD);
+        this.title01 = requirePicX(title01, TITLE01_LENGTH, TITLE01_FIELD);
     }
 
     /**
@@ -2092,7 +2246,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code curdate} is {@code null}
      */
     public void setCurdate(String curdate) {
-        this.curdate = movePicX(curdate, CURDATE_LENGTH, CURDATE_FIELD);
+        this.curdate = requirePicX(curdate, CURDATE_LENGTH, CURDATE_FIELD);
     }
 
     /**
@@ -2111,7 +2265,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code pgmname} is {@code null}
      */
     public void setPgmname(String pgmname) {
-        this.pgmname = movePicX(pgmname, PGMNAME_LENGTH, PGMNAME_FIELD);
+        this.pgmname = requirePicX(pgmname, PGMNAME_LENGTH, PGMNAME_FIELD);
     }
 
     /**
@@ -2130,7 +2284,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code title02} is {@code null}
      */
     public void setTitle02(String title02) {
-        this.title02 = movePicX(title02, TITLE02_LENGTH, TITLE02_FIELD);
+        this.title02 = requirePicX(title02, TITLE02_LENGTH, TITLE02_FIELD);
     }
 
     /**
@@ -2149,7 +2303,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code curtime} is {@code null}
      */
     public void setCurtime(String curtime) {
-        this.curtime = movePicX(curtime, CURTIME_LENGTH, CURTIME_FIELD);
+        this.curtime = requirePicX(curtime, CURTIME_LENGTH, CURTIME_FIELD);
     }
 
     /**
@@ -2174,7 +2328,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code pagenum} is {@code null}
      */
     public void setPagenum(String pagenum) {
-        this.pagenum = movePicX(pagenum, PAGENUM_LENGTH, PAGENUM_FIELD);
+        this.pagenum = requirePicX(pagenum, PAGENUM_LENGTH, PAGENUM_FIELD);
     }
 
     /**
@@ -2199,7 +2353,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnidin} is {@code null}
      */
     public void setTrnidin(String trnidin) {
-        this.trnidin = movePicX(trnidin, TRNIDIN_LENGTH, TRNIDIN_FIELD);
+        this.trnidin = requirePicX(trnidin, TRNIDIN_LENGTH, TRNIDIN_FIELD);
     }
 
     /**
@@ -2221,7 +2375,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code errmsg} is {@code null}
      */
     public void setErrmsg(String errmsg) {
-        this.errmsg = movePicX(errmsg, ERRMSG_LENGTH, ERRMSG_FIELD);
+        this.errmsg = requirePicX(errmsg, ERRMSG_LENGTH, ERRMSG_FIELD);
     }
 
     // =================================================================================================
@@ -2230,26 +2384,91 @@ public final class TransactionListRequest {
 
     /**
      * {@code CARDDEMO-COMMAREA} - the {@value NavigationContext#COMMAREA_LENGTH}-byte communication
-     * area, carried in the payload.
+     * area, carried in the payload, or {@code null} when none was passed.
      *
-     * @return the context, never {@code null}
+     * @return the context, or {@code null} for the {@code EIBCALEN = 0} cold start of
+     *         {@code app/cbl/COTRN00C.cbl:107}
      */
     public NavigationContext getNavigationContext() {
         return navigationContext;
     }
 
     /**
-     * Sets the communication area.
+     * Sets the communication area, or removes it.
      *
-     * @param navigationContext the context; pass {@link NavigationContext#empty()} for the
-     *                          {@code EIBCALEN = 0} case rather than {@code null}
-     * @throws NullPointerException if {@code navigationContext} is {@code null}
+     * <p>{@code null} is stored as {@code null}, and this setter used to reject it outright with the
+     * advice to pass {@link NavigationContext#empty()} instead. That advice was wrong: an initialised
+     * area is not {@code EIBCALEN = 0}, it is the opposite case. {@code EIBCALEN} counts the bytes CICS
+     * was actually handed, so an initialised area reports
+     * {@value NavigationContext#COMMAREA_LENGTH} and sends {@code COTRN00C} down its {@code ELSE}
+     * branch - copy the area, test {@code CDEMO-PGM-REENTER}, paint or validate. Only a genuine absence
+     * reaches line 108 and the transfer to {@code COSGN00C}. Rejecting {@code null} therefore removed
+     * the one spelling that branch had.
+     *
+     * @param navigationContext the context to carry, or {@code null} to carry none
      */
     public void setNavigationContext(NavigationContext navigationContext) {
-        this.navigationContext = Objects.requireNonNull(navigationContext,
-                "A navigation context is required; COTRN00C treats an absent communication area as "
-                        + "EIBCALEN = 0 and returns to COSGN00C, so pass NavigationContext.empty() "
-                        + "to express that rather than null");
+        this.navigationContext = navigationContext;
+    }
+
+    /**
+     * Whether a communication area travelled with this request - the Java reading of {@code EIBCALEN}
+     * being non-zero at {@code app/cbl/COTRN00C.cbl:107}.
+     *
+     * <p>Not a JSON property: it is derived from {@link #getNavigationContext()}, which is already on
+     * the wire as {@code null} or as an object. Emitting it as well would let a payload assert a
+     * presence that contradicts the member it travels with.
+     *
+     * @return {@code true} when {@link #getNavigationContext()} is present
+     */
+    @JsonIgnore
+    public boolean hasNavigationContext() {
+        return navigationContext != null;
+    }
+
+    /**
+     * The length CICS would report in {@code EIBCALEN}:
+     * {@value PaginationCursor#COMMAREA_LENGTH} when a communication area travelled with this request,
+     * and {@code 0} when none did.
+     *
+     * <p>{@code COTRN00C} passes {@code CARDDEMO-COMMAREA} followed by its own
+     * {@value PaginationCursor#CURSOR_LENGTH}-byte {@code CDEMO-CT00-INFO} extension, so the non-zero
+     * case is the sum of the two.
+     *
+     * @return {@value PaginationCursor#COMMAREA_LENGTH} or {@code 0}
+     */
+    @JsonIgnore
+    public int commareaLength() {
+        return hasNavigationContext() ? PaginationCursor.COMMAREA_LENGTH : 0;
+    }
+
+    /**
+     * The resolved {@code EIBAID} key indication - the key the operator pressed, which
+     * {@code app/cbl/COTRN00C.cbl:119} evaluates.
+     *
+     * @return the token, {@value #AID_LENGTH} characters wide, spaces when no key has been resolved
+     */
+    public String getAid() {
+        return aid;
+    }
+
+    /**
+     * Replaces the resolved key indication.
+     *
+     * <p>Pass the token {@code common.PfKeyResolver.AidKey#token()} produces, already space-padded to
+     * {@value #AID_LENGTH}. The four tokens this screen acts on are {@code 'ENTER'}, {@code 'PFK03'},
+     * {@code 'PFK07'} and {@code 'PFK08'}; every other value, spaces included, is the
+     * {@code WHEN OTHER} arm and its {@code CCDA-MSG-INVALID-KEY} message.
+     *
+     * @param aid the resolved key token; {@code null} becomes spaces, meaning no key resolved
+     * @throws IllegalArgumentException if longer than {@value #AID_LENGTH} characters
+     */
+    public void setAid(String aid) {
+        if (aid == null) {
+            this.aid = spaces(AID_LENGTH);
+            return;
+        }
+        this.aid = requirePicX(aid, AID_LENGTH, AID_FIELD);
     }
 
     /**
@@ -2291,7 +2510,7 @@ public final class TransactionListRequest {
      */
     @JsonIgnore
     public boolean isEnter() {
-        return navigationContext.isEnter();
+        return hasNavigationContext() && navigationContext.isEnter();
     }
 
     /**
@@ -2302,7 +2521,7 @@ public final class TransactionListRequest {
      */
     @JsonIgnore
     public boolean isReenter() {
-        return navigationContext.isReenter();
+        return hasNavigationContext() && navigationContext.isReenter();
     }
 
     /**
@@ -2312,12 +2531,19 @@ public final class TransactionListRequest {
      * {@link #getNavigationContext()}; publishing it twice is how the two copies would start to
      * disagree.
      *
-     * @return {@value NavigationContext#PGM_CONTEXT_ENTER} on first entry,
+     * <p>{@value NavigationContext#PGM_CONTEXT_ENTER} is also reported when no communication area
+     * travelled, because a cold start is a first entry in every sense the program acts on - line 108
+     * paints and validates nothing. Use {@link #hasNavigationContext()} where the two must be told
+     * apart; {@link #isEnter()} keeps them apart by reporting {@code false} for the cold start.
+     *
+     * @return {@value NavigationContext#PGM_CONTEXT_ENTER} on first entry and when no area travelled,
      *         {@value NavigationContext#PGM_CONTEXT_REENTER} on re-entry
      */
     @JsonIgnore
     public int getPgmContext() {
-        return navigationContext.pgmContext();
+        return hasNavigationContext()
+                ? navigationContext.pgmContext()
+                : NavigationContext.PGM_CONTEXT_ENTER;
     }
 
     // =================================================================================================
@@ -2339,7 +2565,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code sel0001} is {@code null}
      */
     public void setSel0001(String sel0001) {
-        this.sel0001 = movePicX(sel0001, SELECTION_LENGTH, selectionFieldName(1));
+        this.sel0001 = requirePicX(sel0001, SELECTION_LENGTH, selectionFieldName(1));
     }
 
     /** @return {@code TRNID01I PIC X(16)}, row 1 transaction identifier. */
@@ -2354,7 +2580,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnid01} is {@code null}
      */
     public void setTrnid01(String trnid01) {
-        this.trnid01 = movePicX(trnid01, TRANSACTION_ID_LENGTH, transactionIdFieldName(1));
+        this.trnid01 = requirePicX(trnid01, TRANSACTION_ID_LENGTH, transactionIdFieldName(1));
     }
 
     /** @return {@code TDATE01I PIC X(8)}, row 1 date. */
@@ -2369,7 +2595,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdate01} is {@code null}
      */
     public void setTdate01(String tdate01) {
-        this.tdate01 = movePicX(tdate01, TRANSACTION_DATE_LENGTH, transactionDateFieldName(1));
+        this.tdate01 = requirePicX(tdate01, TRANSACTION_DATE_LENGTH, transactionDateFieldName(1));
     }
 
     /** @return {@code TDESC01I PIC X(26)}, row 1 description. */
@@ -2384,7 +2610,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdesc01} is {@code null}
      */
     public void setTdesc01(String tdesc01) {
-        this.tdesc01 = movePicX(tdesc01, TRANSACTION_DESCRIPTION_LENGTH,
+        this.tdesc01 = requirePicX(tdesc01, TRANSACTION_DESCRIPTION_LENGTH,
                 transactionDescriptionFieldName(1));
     }
 
@@ -2400,7 +2626,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tamt001} is {@code null}
      */
     public void setTamt001(String tamt001) {
-        this.tamt001 = movePicX(tamt001, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(1));
+        this.tamt001 = requirePicX(tamt001, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(1));
     }
 
     /** @return {@code SEL0002I PIC X(1)}, row 2 selector. */
@@ -2415,7 +2641,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code sel0002} is {@code null}
      */
     public void setSel0002(String sel0002) {
-        this.sel0002 = movePicX(sel0002, SELECTION_LENGTH, selectionFieldName(2));
+        this.sel0002 = requirePicX(sel0002, SELECTION_LENGTH, selectionFieldName(2));
     }
 
     /** @return {@code TRNID02I PIC X(16)}, row 2 transaction identifier. */
@@ -2430,7 +2656,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnid02} is {@code null}
      */
     public void setTrnid02(String trnid02) {
-        this.trnid02 = movePicX(trnid02, TRANSACTION_ID_LENGTH, transactionIdFieldName(2));
+        this.trnid02 = requirePicX(trnid02, TRANSACTION_ID_LENGTH, transactionIdFieldName(2));
     }
 
     /** @return {@code TDATE02I PIC X(8)}, row 2 date. */
@@ -2445,7 +2671,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdate02} is {@code null}
      */
     public void setTdate02(String tdate02) {
-        this.tdate02 = movePicX(tdate02, TRANSACTION_DATE_LENGTH, transactionDateFieldName(2));
+        this.tdate02 = requirePicX(tdate02, TRANSACTION_DATE_LENGTH, transactionDateFieldName(2));
     }
 
     /** @return {@code TDESC02I PIC X(26)}, row 2 description. */
@@ -2460,7 +2686,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdesc02} is {@code null}
      */
     public void setTdesc02(String tdesc02) {
-        this.tdesc02 = movePicX(tdesc02, TRANSACTION_DESCRIPTION_LENGTH,
+        this.tdesc02 = requirePicX(tdesc02, TRANSACTION_DESCRIPTION_LENGTH,
                 transactionDescriptionFieldName(2));
     }
 
@@ -2476,7 +2702,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tamt002} is {@code null}
      */
     public void setTamt002(String tamt002) {
-        this.tamt002 = movePicX(tamt002, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(2));
+        this.tamt002 = requirePicX(tamt002, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(2));
     }
 
     /** @return {@code SEL0003I PIC X(1)}, row 3 selector. */
@@ -2491,7 +2717,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code sel0003} is {@code null}
      */
     public void setSel0003(String sel0003) {
-        this.sel0003 = movePicX(sel0003, SELECTION_LENGTH, selectionFieldName(3));
+        this.sel0003 = requirePicX(sel0003, SELECTION_LENGTH, selectionFieldName(3));
     }
 
     /** @return {@code TRNID03I PIC X(16)}, row 3 transaction identifier. */
@@ -2506,7 +2732,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnid03} is {@code null}
      */
     public void setTrnid03(String trnid03) {
-        this.trnid03 = movePicX(trnid03, TRANSACTION_ID_LENGTH, transactionIdFieldName(3));
+        this.trnid03 = requirePicX(trnid03, TRANSACTION_ID_LENGTH, transactionIdFieldName(3));
     }
 
     /** @return {@code TDATE03I PIC X(8)}, row 3 date. */
@@ -2521,7 +2747,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdate03} is {@code null}
      */
     public void setTdate03(String tdate03) {
-        this.tdate03 = movePicX(tdate03, TRANSACTION_DATE_LENGTH, transactionDateFieldName(3));
+        this.tdate03 = requirePicX(tdate03, TRANSACTION_DATE_LENGTH, transactionDateFieldName(3));
     }
 
     /** @return {@code TDESC03I PIC X(26)}, row 3 description. */
@@ -2536,7 +2762,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdesc03} is {@code null}
      */
     public void setTdesc03(String tdesc03) {
-        this.tdesc03 = movePicX(tdesc03, TRANSACTION_DESCRIPTION_LENGTH,
+        this.tdesc03 = requirePicX(tdesc03, TRANSACTION_DESCRIPTION_LENGTH,
                 transactionDescriptionFieldName(3));
     }
 
@@ -2552,7 +2778,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tamt003} is {@code null}
      */
     public void setTamt003(String tamt003) {
-        this.tamt003 = movePicX(tamt003, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(3));
+        this.tamt003 = requirePicX(tamt003, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(3));
     }
 
     /** @return {@code SEL0004I PIC X(1)}, row 4 selector. */
@@ -2567,7 +2793,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code sel0004} is {@code null}
      */
     public void setSel0004(String sel0004) {
-        this.sel0004 = movePicX(sel0004, SELECTION_LENGTH, selectionFieldName(4));
+        this.sel0004 = requirePicX(sel0004, SELECTION_LENGTH, selectionFieldName(4));
     }
 
     /** @return {@code TRNID04I PIC X(16)}, row 4 transaction identifier. */
@@ -2582,7 +2808,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnid04} is {@code null}
      */
     public void setTrnid04(String trnid04) {
-        this.trnid04 = movePicX(trnid04, TRANSACTION_ID_LENGTH, transactionIdFieldName(4));
+        this.trnid04 = requirePicX(trnid04, TRANSACTION_ID_LENGTH, transactionIdFieldName(4));
     }
 
     /** @return {@code TDATE04I PIC X(8)}, row 4 date. */
@@ -2597,7 +2823,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdate04} is {@code null}
      */
     public void setTdate04(String tdate04) {
-        this.tdate04 = movePicX(tdate04, TRANSACTION_DATE_LENGTH, transactionDateFieldName(4));
+        this.tdate04 = requirePicX(tdate04, TRANSACTION_DATE_LENGTH, transactionDateFieldName(4));
     }
 
     /** @return {@code TDESC04I PIC X(26)}, row 4 description. */
@@ -2612,7 +2838,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdesc04} is {@code null}
      */
     public void setTdesc04(String tdesc04) {
-        this.tdesc04 = movePicX(tdesc04, TRANSACTION_DESCRIPTION_LENGTH,
+        this.tdesc04 = requirePicX(tdesc04, TRANSACTION_DESCRIPTION_LENGTH,
                 transactionDescriptionFieldName(4));
     }
 
@@ -2628,7 +2854,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tamt004} is {@code null}
      */
     public void setTamt004(String tamt004) {
-        this.tamt004 = movePicX(tamt004, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(4));
+        this.tamt004 = requirePicX(tamt004, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(4));
     }
 
     /** @return {@code SEL0005I PIC X(1)}, row 5 selector. */
@@ -2643,7 +2869,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code sel0005} is {@code null}
      */
     public void setSel0005(String sel0005) {
-        this.sel0005 = movePicX(sel0005, SELECTION_LENGTH, selectionFieldName(5));
+        this.sel0005 = requirePicX(sel0005, SELECTION_LENGTH, selectionFieldName(5));
     }
 
     /** @return {@code TRNID05I PIC X(16)}, row 5 transaction identifier. */
@@ -2658,7 +2884,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnid05} is {@code null}
      */
     public void setTrnid05(String trnid05) {
-        this.trnid05 = movePicX(trnid05, TRANSACTION_ID_LENGTH, transactionIdFieldName(5));
+        this.trnid05 = requirePicX(trnid05, TRANSACTION_ID_LENGTH, transactionIdFieldName(5));
     }
 
     /** @return {@code TDATE05I PIC X(8)}, row 5 date. */
@@ -2673,7 +2899,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdate05} is {@code null}
      */
     public void setTdate05(String tdate05) {
-        this.tdate05 = movePicX(tdate05, TRANSACTION_DATE_LENGTH, transactionDateFieldName(5));
+        this.tdate05 = requirePicX(tdate05, TRANSACTION_DATE_LENGTH, transactionDateFieldName(5));
     }
 
     /** @return {@code TDESC05I PIC X(26)}, row 5 description. */
@@ -2688,7 +2914,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdesc05} is {@code null}
      */
     public void setTdesc05(String tdesc05) {
-        this.tdesc05 = movePicX(tdesc05, TRANSACTION_DESCRIPTION_LENGTH,
+        this.tdesc05 = requirePicX(tdesc05, TRANSACTION_DESCRIPTION_LENGTH,
                 transactionDescriptionFieldName(5));
     }
 
@@ -2704,7 +2930,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tamt005} is {@code null}
      */
     public void setTamt005(String tamt005) {
-        this.tamt005 = movePicX(tamt005, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(5));
+        this.tamt005 = requirePicX(tamt005, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(5));
     }
 
     /** @return {@code SEL0006I PIC X(1)}, row 6 selector. */
@@ -2719,7 +2945,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code sel0006} is {@code null}
      */
     public void setSel0006(String sel0006) {
-        this.sel0006 = movePicX(sel0006, SELECTION_LENGTH, selectionFieldName(6));
+        this.sel0006 = requirePicX(sel0006, SELECTION_LENGTH, selectionFieldName(6));
     }
 
     /** @return {@code TRNID06I PIC X(16)}, row 6 transaction identifier. */
@@ -2734,7 +2960,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnid06} is {@code null}
      */
     public void setTrnid06(String trnid06) {
-        this.trnid06 = movePicX(trnid06, TRANSACTION_ID_LENGTH, transactionIdFieldName(6));
+        this.trnid06 = requirePicX(trnid06, TRANSACTION_ID_LENGTH, transactionIdFieldName(6));
     }
 
     /** @return {@code TDATE06I PIC X(8)}, row 6 date. */
@@ -2749,7 +2975,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdate06} is {@code null}
      */
     public void setTdate06(String tdate06) {
-        this.tdate06 = movePicX(tdate06, TRANSACTION_DATE_LENGTH, transactionDateFieldName(6));
+        this.tdate06 = requirePicX(tdate06, TRANSACTION_DATE_LENGTH, transactionDateFieldName(6));
     }
 
     /** @return {@code TDESC06I PIC X(26)}, row 6 description. */
@@ -2764,7 +2990,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdesc06} is {@code null}
      */
     public void setTdesc06(String tdesc06) {
-        this.tdesc06 = movePicX(tdesc06, TRANSACTION_DESCRIPTION_LENGTH,
+        this.tdesc06 = requirePicX(tdesc06, TRANSACTION_DESCRIPTION_LENGTH,
                 transactionDescriptionFieldName(6));
     }
 
@@ -2780,7 +3006,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tamt006} is {@code null}
      */
     public void setTamt006(String tamt006) {
-        this.tamt006 = movePicX(tamt006, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(6));
+        this.tamt006 = requirePicX(tamt006, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(6));
     }
 
     /** @return {@code SEL0007I PIC X(1)}, row 7 selector. */
@@ -2795,7 +3021,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code sel0007} is {@code null}
      */
     public void setSel0007(String sel0007) {
-        this.sel0007 = movePicX(sel0007, SELECTION_LENGTH, selectionFieldName(7));
+        this.sel0007 = requirePicX(sel0007, SELECTION_LENGTH, selectionFieldName(7));
     }
 
     /** @return {@code TRNID07I PIC X(16)}, row 7 transaction identifier. */
@@ -2810,7 +3036,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnid07} is {@code null}
      */
     public void setTrnid07(String trnid07) {
-        this.trnid07 = movePicX(trnid07, TRANSACTION_ID_LENGTH, transactionIdFieldName(7));
+        this.trnid07 = requirePicX(trnid07, TRANSACTION_ID_LENGTH, transactionIdFieldName(7));
     }
 
     /** @return {@code TDATE07I PIC X(8)}, row 7 date. */
@@ -2825,7 +3051,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdate07} is {@code null}
      */
     public void setTdate07(String tdate07) {
-        this.tdate07 = movePicX(tdate07, TRANSACTION_DATE_LENGTH, transactionDateFieldName(7));
+        this.tdate07 = requirePicX(tdate07, TRANSACTION_DATE_LENGTH, transactionDateFieldName(7));
     }
 
     /** @return {@code TDESC07I PIC X(26)}, row 7 description. */
@@ -2840,7 +3066,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdesc07} is {@code null}
      */
     public void setTdesc07(String tdesc07) {
-        this.tdesc07 = movePicX(tdesc07, TRANSACTION_DESCRIPTION_LENGTH,
+        this.tdesc07 = requirePicX(tdesc07, TRANSACTION_DESCRIPTION_LENGTH,
                 transactionDescriptionFieldName(7));
     }
 
@@ -2856,7 +3082,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tamt007} is {@code null}
      */
     public void setTamt007(String tamt007) {
-        this.tamt007 = movePicX(tamt007, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(7));
+        this.tamt007 = requirePicX(tamt007, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(7));
     }
 
     /** @return {@code SEL0008I PIC X(1)}, row 8 selector. */
@@ -2871,7 +3097,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code sel0008} is {@code null}
      */
     public void setSel0008(String sel0008) {
-        this.sel0008 = movePicX(sel0008, SELECTION_LENGTH, selectionFieldName(8));
+        this.sel0008 = requirePicX(sel0008, SELECTION_LENGTH, selectionFieldName(8));
     }
 
     /** @return {@code TRNID08I PIC X(16)}, row 8 transaction identifier. */
@@ -2886,7 +3112,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnid08} is {@code null}
      */
     public void setTrnid08(String trnid08) {
-        this.trnid08 = movePicX(trnid08, TRANSACTION_ID_LENGTH, transactionIdFieldName(8));
+        this.trnid08 = requirePicX(trnid08, TRANSACTION_ID_LENGTH, transactionIdFieldName(8));
     }
 
     /** @return {@code TDATE08I PIC X(8)}, row 8 date. */
@@ -2901,7 +3127,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdate08} is {@code null}
      */
     public void setTdate08(String tdate08) {
-        this.tdate08 = movePicX(tdate08, TRANSACTION_DATE_LENGTH, transactionDateFieldName(8));
+        this.tdate08 = requirePicX(tdate08, TRANSACTION_DATE_LENGTH, transactionDateFieldName(8));
     }
 
     /** @return {@code TDESC08I PIC X(26)}, row 8 description. */
@@ -2916,7 +3142,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdesc08} is {@code null}
      */
     public void setTdesc08(String tdesc08) {
-        this.tdesc08 = movePicX(tdesc08, TRANSACTION_DESCRIPTION_LENGTH,
+        this.tdesc08 = requirePicX(tdesc08, TRANSACTION_DESCRIPTION_LENGTH,
                 transactionDescriptionFieldName(8));
     }
 
@@ -2932,7 +3158,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tamt008} is {@code null}
      */
     public void setTamt008(String tamt008) {
-        this.tamt008 = movePicX(tamt008, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(8));
+        this.tamt008 = requirePicX(tamt008, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(8));
     }
 
     /** @return {@code SEL0009I PIC X(1)}, row 9 selector. */
@@ -2947,7 +3173,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code sel0009} is {@code null}
      */
     public void setSel0009(String sel0009) {
-        this.sel0009 = movePicX(sel0009, SELECTION_LENGTH, selectionFieldName(9));
+        this.sel0009 = requirePicX(sel0009, SELECTION_LENGTH, selectionFieldName(9));
     }
 
     /** @return {@code TRNID09I PIC X(16)}, row 9 transaction identifier. */
@@ -2962,7 +3188,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnid09} is {@code null}
      */
     public void setTrnid09(String trnid09) {
-        this.trnid09 = movePicX(trnid09, TRANSACTION_ID_LENGTH, transactionIdFieldName(9));
+        this.trnid09 = requirePicX(trnid09, TRANSACTION_ID_LENGTH, transactionIdFieldName(9));
     }
 
     /** @return {@code TDATE09I PIC X(8)}, row 9 date. */
@@ -2977,7 +3203,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdate09} is {@code null}
      */
     public void setTdate09(String tdate09) {
-        this.tdate09 = movePicX(tdate09, TRANSACTION_DATE_LENGTH, transactionDateFieldName(9));
+        this.tdate09 = requirePicX(tdate09, TRANSACTION_DATE_LENGTH, transactionDateFieldName(9));
     }
 
     /** @return {@code TDESC09I PIC X(26)}, row 9 description. */
@@ -2992,7 +3218,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdesc09} is {@code null}
      */
     public void setTdesc09(String tdesc09) {
-        this.tdesc09 = movePicX(tdesc09, TRANSACTION_DESCRIPTION_LENGTH,
+        this.tdesc09 = requirePicX(tdesc09, TRANSACTION_DESCRIPTION_LENGTH,
                 transactionDescriptionFieldName(9));
     }
 
@@ -3008,7 +3234,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tamt009} is {@code null}
      */
     public void setTamt009(String tamt009) {
-        this.tamt009 = movePicX(tamt009, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(9));
+        this.tamt009 = requirePicX(tamt009, TRANSACTION_AMOUNT_LENGTH, transactionAmountFieldName(9));
     }
 
     /** @return {@code SEL0010I PIC X(1)}, row 10 selector - four-digit suffix. */
@@ -3023,7 +3249,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code sel0010} is {@code null}
      */
     public void setSel0010(String sel0010) {
-        this.sel0010 = movePicX(sel0010, SELECTION_LENGTH, selectionFieldName(ROW_COUNT));
+        this.sel0010 = requirePicX(sel0010, SELECTION_LENGTH, selectionFieldName(ROW_COUNT));
     }
 
     /** @return {@code TRNID10I PIC X(16)}, row 10 transaction identifier. */
@@ -3038,7 +3264,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code trnid10} is {@code null}
      */
     public void setTrnid10(String trnid10) {
-        this.trnid10 = movePicX(trnid10, TRANSACTION_ID_LENGTH, transactionIdFieldName(ROW_COUNT));
+        this.trnid10 = requirePicX(trnid10, TRANSACTION_ID_LENGTH, transactionIdFieldName(ROW_COUNT));
     }
 
     /** @return {@code TDATE10I PIC X(8)}, row 10 date. */
@@ -3053,7 +3279,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdate10} is {@code null}
      */
     public void setTdate10(String tdate10) {
-        this.tdate10 = movePicX(tdate10, TRANSACTION_DATE_LENGTH,
+        this.tdate10 = requirePicX(tdate10, TRANSACTION_DATE_LENGTH,
                 transactionDateFieldName(ROW_COUNT));
     }
 
@@ -3069,7 +3295,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tdesc10} is {@code null}
      */
     public void setTdesc10(String tdesc10) {
-        this.tdesc10 = movePicX(tdesc10, TRANSACTION_DESCRIPTION_LENGTH,
+        this.tdesc10 = requirePicX(tdesc10, TRANSACTION_DESCRIPTION_LENGTH,
                 transactionDescriptionFieldName(ROW_COUNT));
     }
 
@@ -3085,7 +3311,7 @@ public final class TransactionListRequest {
      * @throws NullPointerException if {@code tamt010} is {@code null}
      */
     public void setTamt010(String tamt010) {
-        this.tamt010 = movePicX(tamt010, TRANSACTION_AMOUNT_LENGTH,
+        this.tamt010 = requirePicX(tamt010, TRANSACTION_AMOUNT_LENGTH,
                 transactionAmountFieldName(ROW_COUNT));
     }
 
@@ -3687,13 +3913,27 @@ public final class TransactionListRequest {
      * the COBOL lays them out - the extension is declared at the same {@code 05} level as the
      * copybook's own groups, immediately after {@code COPY COCOM01Y}.
      *
+     * <p>There has to <em>be</em> an area to render. When none travelled with the request -
+     * {@link #hasNavigationContext()} is {@code false}, {@link #commareaLength()} is zero - there are
+     * no {@value PaginationCursor#COMMAREA_LENGTH} bytes to produce and no defensible substitute:
+     * emitting an initialised area would invent the very bytes whose absence
+     * {@code app/cbl/COTRN00C.cbl:107} branches on. The call is refused instead.
+     *
      * @param charset the code page to encode into, named explicitly by the caller
      * @return a fresh array of exactly {@value PaginationCursor#COMMAREA_LENGTH} bytes
-     * @throws NullPointerException if {@code charset} is {@code null}
+     * @throws NullPointerException  if {@code charset} is {@code null}
+     * @throws IllegalStateException if no communication area travelled with this request
      */
     public byte[] toCommareaImage(Charset charset) {
         Objects.requireNonNull(charset, "A charset is required to render the communication area; the "
                 + "code page is stated explicitly and never taken from the platform");
+        if (!hasNavigationContext()) {
+            throw new IllegalStateException("No communication area travelled with this request, so "
+                    + "there are no " + PaginationCursor.COMMAREA_LENGTH + " bytes to render: "
+                    + "EIBCALEN is 0, which is the cold start COTRN00C.cbl:107 tests for and answers "
+                    + "by transferring to COSGN00C. Test hasNavigationContext() first, or set an area "
+                    + "with setNavigationContext");
+        }
         byte[] contextImage = navigationContext.toFixedWidth(new FixedWidthCodec(charset));
         byte[] cursorImage = cursor.toFixedWidth(charset);
         byte[] commarea = new byte[PaginationCursor.COMMAREA_LENGTH];
@@ -3715,14 +3955,15 @@ public final class TransactionListRequest {
             return false;
         }
         return getPayloadValues().equals(that.getPayloadValues())
-                && navigationContext.equals(that.navigationContext)
+                && Objects.equals(navigationContext, that.navigationContext)
+                && Objects.equals(aid, that.aid)
                 && cursor.equals(that.cursor)
                 && fieldMetadata.equals(that.fieldMetadata);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(getPayloadValues(), navigationContext, cursor, fieldMetadata);
+        return Objects.hash(getPayloadValues(), navigationContext, cursor, fieldMetadata, aid);
     }
 
     /**
@@ -3742,6 +3983,12 @@ public final class TransactionListRequest {
                 + ", map=" + MAP_NAME
                 + ", fields=" + FIELD_COUNT
                 + ", " + cursor
-                + ", context=" + (isReenter() ? "REENTER" : "ENTER") + "]";
+                + ", " + AID_FIELD + "='" + aid + "'"
+                // Three states, not two: a cold start is neither ENTER nor REENTER, and printing it as
+                // ENTER would hide exactly the distinction this payload was corrected to preserve.
+                + ", context=" + (hasNavigationContext()
+                        ? (isReenter() ? "REENTER" : "ENTER")
+                        : "none (EIBCALEN=0)")
+                + "]";
     }
 }

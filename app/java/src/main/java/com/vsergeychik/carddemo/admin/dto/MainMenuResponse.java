@@ -115,8 +115,13 @@ import java.util.List;
  *       {@code MockMvc} and no {@code JobLauncher} in the path.</li>
  *   <li><strong>It exposes no attribute metadata as payload.</strong> The four bytes per field -
  *       {@code xxxC}, {@code xxxP}, {@code xxxH}, {@code xxxV} - and the input side's {@code xxxL},
- *       {@code xxxF} and {@code xxxA} items are presentation metadata, never JSON members. The single
- *       exception is deliberate and named for what it is: {@link #errMsgColor()}, described below.</li>
+ *       {@code xxxF} and {@code xxxA} items are presentation metadata, never JSON members. That
+ *       includes {@link #errMsgColor()}, which is the {@code ERRMSGC} byte and is {@code @JsonIgnore}d:
+ *       it is a component of this record, so it is reachable in Java where the service sets it, but it
+ *       is not a property of the document. It was once an ordinary member on the strength of having
+ *       been renamed away from {@code ERRMSGC}, which does not help - a record component is a JSON
+ *       property whatever it is called, and a client had no way to tell it from the twenty fields that
+ *       do trace to a {@code DFHMDF} definition.</li>
  *   <li><strong>It carries nothing security-related.</strong> No credential, no password, no token, no
  *       role and no authorisation annotation. Only the finished message text of an authorisation
  *       decision ever reaches this type.</li>
@@ -207,9 +212,15 @@ import java.util.List;
  * @param nextProgram          the {@code EXEC CICS XCTL} target the client should call next
  * @param nextMapset           the mapset owning the next map; {@value #MAPSET_NAME} for this screen
  * @param nextMap              the next map to render; {@value #MAP_NAME} for this screen
- * @param errMsgColor          the extended-colour byte for the message line, defaulting to
+ * @param errMsgColor          <strong>not a JSON property</strong>: the {@code ERRMSGC} attribute
+ *                             byte, which {@code app/cpy-bms/COMEN01.CPY:256} declares as metadata
+ *                             alongside {@code ERRMSGP}, {@code ERRMSGH} and {@code ERRMSGV}. Only
+ *                             {@code ERRMSGO PIC X(78)} at line 260 is payload. The extended-colour
+ *                             byte for the message line, defaulting to
  *                             {@code DFHRED}; presentation metadata, not screen text
- * @param resetAllOutputFields whether the client should clear every output field before painting,
+ * @param resetAllOutputFields <strong>not a JSON property</strong>: it names an action and
+ *                             corresponds to no copybook item. Whether the client should clear every
+ *                             output field before painting,
  *                             mirroring {@code MOVE LOW-VALUES TO COMEN1AO} at
  *                             {@code app/cbl/COMEN01C.cbl:89}
  */
@@ -238,8 +249,8 @@ public record MainMenuResponse(
         @Size(max = NEXT_PROGRAM_LENGTH) String nextProgram,
         @Size(max = NEXT_MAPSET_LENGTH) String nextMapset,
         @Size(max = NEXT_MAP_LENGTH) String nextMap,
-        byte errMsgColor,
-        boolean resetAllOutputFields) {
+        @JsonIgnore byte errMsgColor,
+        @JsonIgnore boolean resetAllOutputFields) {
 
     // =================================================================================================
     // Screen identity. These four values identify the CICS artefacts this payload belongs to, and are

@@ -1,7 +1,9 @@
 package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
@@ -14,10 +16,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * The outbound payload of the card-detail screen: a field-for-field projection of the
@@ -1222,7 +1226,7 @@ public final class CardSelectResponse {
      * The {@code CVCRD01Y} work area {@code COCRDSLC} copies at {@code app/cbl/COCRDSLC.cbl:194} -
      * the AID token, the next-screen triple, the two message lines and the three search identifiers.
      */
-    private CardScreenState screenState;
+    private CardScreenState cardScreenState;
 
     /**
      * The {@code CARDDEMO-COMMAREA} {@code COCRDSLC} copies at {@code app/cbl/COCRDSLC.cbl:198} and
@@ -1266,14 +1270,14 @@ public final class CardSelectResponse {
      * on the wire that the COBOL never sent.
      *
      * <p>The three navigation members and the two carriers start empty in the same spirit: the
-     * next-screen triple is space-filled at its declared widths, {@link #getScreenState()} is a fresh
+     * next-screen triple is space-filled at its declared widths, {@link #getCardScreenState()} is a fresh
      * {@link CardScreenState} - which {@code INITIALIZE CC-WORK-AREA} at
      * {@code app/cbl/COCRDSLC.cbl:254} makes the program's own starting point - and
      * {@link #getNavigationContext()} is {@link NavigationContext#empty()}.
      */
     public CardSelectResponse() {
         initializeGroup();
-        this.screenState = new CardScreenState();
+        this.cardScreenState = new CardScreenState();
         this.navigationContext = NavigationContext.empty();
         this.nextProgram = CardScreenState.spaces(NEXT_PROGRAM_LENGTH);
         this.nextMapset = CardScreenState.spaces(NEXT_MAPSET_LENGTH);
@@ -1369,7 +1373,7 @@ public final class CardSelectResponse {
         for (ScreenField field : ScreenField.values()) {
             this.attributes.put(field, new FieldAttributes(other.attributes.get(field)));
         }
-        this.screenState = new CardScreenState(other.screenState);
+        this.cardScreenState = new CardScreenState(other.cardScreenState);
         this.navigationContext = other.navigationContext;
         this.nextProgram = other.nextProgram;
         this.nextMapset = other.nextMapset;
@@ -2046,20 +2050,20 @@ public final class CardSelectResponse {
      *
      * @return the work area, never {@code null}
      */
-    public CardScreenState getScreenState() {
-        return screenState;
+    public CardScreenState getCardScreenState() {
+        return cardScreenState;
     }
 
     /**
      * Replaces the {@code CVCRD01Y} work area.
      *
-     * @param screenState the work area to carry
-     * @throws NullPointerException if {@code screenState} is {@code null}; the program always has a work
-     *                             area, having issued {@code INITIALIZE CC-WORK-AREA} at
-     *                             {@code app/cbl/COCRDSLC.cbl:254}
+     * @param cardScreenState the work area to carry
+     * @throws NullPointerException if {@code cardScreenState} is {@code null}; the program always has
+     *                              a work area, having issued {@code INITIALIZE CC-WORK-AREA} at
+     *                              {@code app/cbl/COCRDSLC.cbl:254}
      */
-    public void setScreenState(CardScreenState screenState) {
-        this.screenState = Objects.requireNonNull(screenState,
+    public void setCardScreenState(CardScreenState cardScreenState) {
+        this.cardScreenState = Objects.requireNonNull(cardScreenState,
                 "A card screen state is required; COCRDSLC always has an initialised CC-WORK-AREA");
     }
 
@@ -2218,7 +2222,7 @@ public final class CardSelectResponse {
                     .append("  ")
                     .append(field.describe())
                     .append(" = [")
-                    .append(get(field))
+                    .append(REDACTED_FIELDS.contains(field) ? redacted(get(field)) : get(field))
                     .append("] ")
                     .append(attributes.get(field).describe());
         }
@@ -2269,7 +2273,7 @@ public final class CardSelectResponse {
                 && errmsgo.equals(response.errmsgo)
                 && fkeyso.equals(response.fkeyso)
                 && attributes.equals(response.attributes)
-                && screenState.equals(response.screenState)
+                && cardScreenState.equals(response.cardScreenState)
                 && navigationContext.equals(response.navigationContext)
                 && nextProgram.equals(response.nextProgram)
                 && nextMapset.equals(response.nextMapset)
@@ -2285,25 +2289,63 @@ public final class CardSelectResponse {
     public int hashCode() {
         return Objects.hash(trnnameo, title01o, curdateo, pgmnameo, title02o, curtimeo, acctsido,
                 cardsido, crdnameo, crdstcdo, expmono, expyearo, infomsgo, errmsgo, fkeyso, attributes,
-                screenState, navigationContext, nextProgram, nextMapset, nextMap);
+                cardScreenState, navigationContext, nextProgram, nextMapset, nextMap);
     }
 
     /**
      * A single-line rendering naming the map and the four fields that identify the screen's subject.
      *
-     * <p>The card number is shown as the payload carries it. No sanitising is applied, deliberately:
-     * suppressing it here would be a behaviour change dressed up as hygiene, and the value is already on
-     * the wire. Use {@link #describe()} for the full field-by-field rendering.
+     * <p><strong>{@code ACCTSIDO} and {@code CARDSIDO} are redacted here.</strong> They are an account
+     * identifier and a sixteen-digit card number, and this method's output goes to log lines and test
+     * failure messages - somewhere nobody chose to put them. Each shows as
+     * {@value #REDACTED_VALUE} with its actual length, which is what a diagnostic is read for.
+     * {@code CRDSTCDO} is a one-character status and {@code ERRMSGO} is a message, so both render
+     * verbatim.
+     *
+     * <p>This changes no behaviour of the screen: the JSON body, {@link #fieldImages()} and
+     * {@link #getCardsido()} all carry the number in the clear, exactly as the 3270 displays it.
+     * {@link #describe()} redacts the same fields for the same reason.
      *
      * @return the rendering; never {@code null} and never empty
      */
     @Override
     public String toString() {
         return "CardSelectResponse[map=" + MAP_NAME
-                + ", ACCTSIDO=" + acctsido
-                + ", CARDSIDO=" + cardsido
+                + ", ACCTSIDO=" + SensitiveDiagnostics.maskIdentifier(acctsido)
+                + ", CARDSIDO=" + SensitiveDiagnostics.maskPan(cardsido)
                 + ", CRDSTCDO=" + crdstcdo
                 + ", ERRMSGO=" + errmsgo
                 + ']';
+    }
+
+    /**
+     * What {@link #toString()} and {@link #describe()} substitute for a redacted value: {@value}.
+     *
+     * <p>The same marker every other payload in this module uses, so a log line reads consistently
+     * whichever screen produced it.
+     */
+    private static final String REDACTED_VALUE = "[REDACTED]";
+
+    /**
+     * The three fields the two diagnostic renderings redact: the account identifier, the card number
+     * and the cardholder's name.
+     *
+     * <p>Scoped to those three. {@code CRDSTCDO} is a one-character status, {@code EXPMONO} and
+     * {@code EXPYEARO} are an expiry that identifies nobody alone, and the rest are titles, messages
+     * and the function-key line. Read only by the diagnostics; the payload carries all three in the
+     * clear.
+     */
+    private static final Set<ScreenField> REDACTED_FIELDS =
+            Collections.unmodifiableSet(EnumSet.of(ScreenField.ACCTSID, ScreenField.CARDSID,
+                    ScreenField.CRDNAME));
+
+    /**
+     * A value replaced by {@value #REDACTED_VALUE} and its length, for a diagnostic rendering.
+     *
+     * @param value the value being withheld; never {@code null}
+     * @return the marker followed by the value's actual length in parentheses
+     */
+    private static String redacted(String value) {
+        return REDACTED_VALUE + "(" + value.length() + ")";
     }
 }

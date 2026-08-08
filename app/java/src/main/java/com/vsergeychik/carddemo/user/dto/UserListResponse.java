@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.user.dto;
 
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import java.util.List;
 import java.util.Objects;
 
@@ -1004,6 +1005,27 @@ public record UserListResponse(String trnName,
                       String userType) {
 
         /**
+         * A diagnostic rendering that withholds the personal name, per {@link SensitiveDiagnostics}.
+         *
+         * <p>{@code FNAMEnn} and {@code LNAMEnn} are the listed user's given and family names. Their
+         * length is reported and their content is not. The selection cell, the user id and the user type
+         * render as stored: the id is an eight-character operator id, and all three are what a
+         * pagination or selection parity failure is read from.
+         *
+         * @return a rendering safe to log, never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "Row[" + rowNumber
+                    + ", selection='" + selection
+                    + "', userId='" + userId
+                    + "', firstName=" + SensitiveDiagnostics.describeText(firstName)
+                    + ", lastName=" + SensitiveDiagnostics.describeText(lastName)
+                    + ", userType='" + userType
+                    + "']";
+        }
+
+        /**
          * {@code true} when all four data cells are blank - the state
          * {@code INITIALIZE-USER-DATA} leaves a row in and the browse never overwrites.
          *
@@ -1572,4 +1594,48 @@ public record UserListResponse(String trnName,
             return rowNumber - 1;
         }
     }
+
+    /**
+     * A diagnostic rendering that withholds the twenty personal names this screen carries, per
+     * {@link SensitiveDiagnostics}.
+     *
+     * <p>The override exists because this is a {@code record} with more than sixty components, ten of
+     * which are given names and ten family names - {@code FNAME01} through {@code LNAME10} of
+     * {@code app/cpy-bms/COUSR00.CPY}. The generated {@code toString} rendered all twenty, so a single
+     * log line disclosed a page of the user directory.
+     *
+     * <p>The rows are rendered through {@link Row}, which is the structure this type already publishes
+     * and which masks the names itself. Writing sixty concatenations by hand instead would be one
+     * missed field away from re-opening the same hole, and the row form reads better besides.
+     *
+     * @return a rendering safe to log, never {@code null}
+     */
+    @Override
+    public String toString() {
+        StringBuilder text = new StringBuilder(512);
+        text.append("UserListResponse[trnName=").append(trnName)
+                .append(", title01=").append(title01)
+                .append(", curDate=").append(curDate)
+                .append(", pgmName=").append(pgmName)
+                .append(", title02=").append(title02)
+                .append(", curTime=").append(curTime)
+                .append(", pageNum=").append(pageNum)
+                .append(", usrIdIn=").append(usrIdIn);
+        for (Row row : rows()) {
+            text.append(", ").append(row);
+        }
+        return text.append(", errMsg=").append(errMsg)
+                .append(", cdemoCu00UsrIdFirst=").append(cdemoCu00UsrIdFirst)
+                .append(", cdemoCu00UsrIdLast=").append(cdemoCu00UsrIdLast)
+                .append(", cdemoCu00PageNum=").append(cdemoCu00PageNum)
+                .append(", cdemoCu00NextPageFlg=").append(cdemoCu00NextPageFlg)
+                .append(", cdemoCu00UsrSelFlg=").append(cdemoCu00UsrSelFlg)
+                .append(", cdemoCu00UsrSelected=").append(cdemoCu00UsrSelected)
+                .append(", nextProgram=").append(nextProgram)
+                .append(", nextMapset=").append(nextMapset)
+                .append(", nextMap=").append(nextMap)
+                .append(", navigationContext=").append(navigationContext)
+                .append(']').toString();
+    }
+
 }

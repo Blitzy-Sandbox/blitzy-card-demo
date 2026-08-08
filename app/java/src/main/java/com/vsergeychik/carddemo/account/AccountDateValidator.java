@@ -5,6 +5,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.util.DateUtilityJob;
 import com.vsergeychik.carddemo.util.DateUtilityJob.DateValidationResult;
 import java.math.BigDecimal;
@@ -17,6 +18,7 @@ import java.time.LocalDate;
 import java.time.ZonedDateTime;
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 /**
@@ -414,7 +416,14 @@ public final class AccountDateValidator {
     /** {@link #scanNumval(String)} reports this position when the argument conforms. */
     private static final int NUMVAL_CONFORMS = 0;
 
-    /** The charset the no-argument and two-argument constructors default to, matching the siblings. */
+    /**
+     * The code page the convenience constructors and {@link EditDateState#EditDateState()} default to.
+     *
+     * <p>Not what the Spring container gets: it wires
+     * {@link #AccountDateValidator(Charset, DateUtilityJob)} with the configured dataset code page.
+     * This constant exists so a plain unit test still names a code page rather than inheriting a
+     * platform default, and {@code US-ASCII} is the one the ASCII fixtures are written in.
+     */
     private static final Charset DEFAULT_CHARSET = StandardCharsets.US_ASCII;
 
     // =================================================================================================
@@ -1517,14 +1526,17 @@ public final class AccountDateValidator {
         /**
          * {@code INITIALIZE WS-DATE-VALIDATION-RESULT} - CSUTLDPY L290.
          *
-         * <p>Blanks the five named character fields and re-establishes the three literal
-         * {@code FILLER}s from their {@code VALUE} clauses. COBOL's {@code INITIALIZE} skips
-         * {@code FILLER} altogether and so leaves those literals in place; writing them from the
-         * declaration reaches the same eighty bytes and additionally proves, on every call, that the
-         * layout still sums to eighty.
+         * <p>Blanks the named character fields and leaves the three literal {@code FILLER}s alone,
+         * which is precisely what an unqualified {@code INITIALIZE} does: {@code FILLER} items
+         * participate only when the {@code WITH FILLER} phrase is written, and it is not written
+         * here. Those literals were established when the area was allocated over its layout, so the
+         * eighty bytes are unchanged from the previous formulation while the operation now says which
+         * form of {@code INITIALIZE} the COBOL actually executes.
          */
         public void initializeDateValidationResult() {
-            dateValidationArea.initialise(WS_DATE_VALIDATION_RESULT_LAYOUT);
+            dateValidationArea.initialize(WS_DATE_VALIDATION_RESULT_LAYOUT,
+                    FixedWidthRecord.FillerHandling.WITHOUT_FILLER,
+                    FixedWidthRecord.ValueHandling.CATEGORY_DEFAULTS);
         }
 
         /**
@@ -1828,19 +1840,52 @@ public final class AccountDateValidator {
     private final Clock clock;
 
     /**
-     * Creates the validator the Spring container wires, against
-     * {@link StandardCharsets#US_ASCII} and the system clock.
+     * Creates the validator the Spring container wires: a codec over the <strong>configured dataset
+     * code page</strong> and the system clock.
      *
      * <p>This is the constructor the container selects - it carries {@link Autowired} because the class
-     * declares more than one and there is no no-argument candidate to fall back to. No
-     * {@link FixedWidthCodec} bean exists in this module, so a codec is created here at the same code
-     * page as the sibling components, matching {@code account/AreaCodeLookup} and
-     * {@code util/DateUtilityJob}.
+     * declares four and none of them is a no-argument candidate. No {@link FixedWidthCodec} bean exists
+     * in this module, because a codec needs a mandatory {@link Charset} and
+     * {@code CobolCharsetConfig} publishes three of those with no primary; so the code page is injected
+     * by qualifier and the codec is built here from it.
+     *
+     * <p>Injecting it rather than naming {@code US-ASCII} here is the point. This class positions every
+     * byte of {@code CSUTLDWY}'s work areas by absolute offset and hands the eighty-byte
+     * {@code CSUTLDTC} result on to {@code COACTUPC}, so its output is a byte contract. A deployment
+     * that sets {@code carddemo.charset.dataset: IBM037} for its datasets and got {@code US-ASCII} here
+     * would have one component of the date edit disagreeing with every other about where a byte sits
+     * and what it means. Under the shipped configuration the two agree - the dataset charset defaults
+     * through {@code ${carddemo.charset.ascii}} to {@code US-ASCII} - so this is behaviour-neutral by
+     * default and correct when it is not.
+     *
+     * @param datasetCharset the active dataset code page, selected by qualifier because
+     *                       {@code CobolCharsetConfig} declares no primary {@link Charset} bean
+     * @param dateUtility    the {@code CSUTLDTC} service; must not be {@code null}
+     * @throws NullPointerException     if either argument is {@code null}
+     * @throws IllegalArgumentException if the code page is not single-byte over the digits, the space
+     *                                  and the sign overpunch characters
+     */
+    @Autowired
+    public AccountDateValidator(
+            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset datasetCharset,
+            DateUtilityJob dateUtility) {
+        this(new FixedWidthCodec(Objects.requireNonNull(datasetCharset, "A dataset Charset is "
+                + "required and must be selected by qualifier: config/CobolCharsetConfig publishes "
+                + "three Charset beans and declares no primary, so an unqualified injection point is "
+                + "ambiguous by design")), dateUtility, Clock.systemDefaultZone());
+    }
+
+    /**
+     * Creates the validator against {@link StandardCharsets#US_ASCII} and the system clock.
+     *
+     * <p>Not the constructor the container selects - {@link #AccountDateValidator(Charset,
+     * DateUtilityJob)} is, and it takes the configured code page. This one is the convenience form for
+     * a plain unit test, and it names its code page explicitly rather than inheriting a platform
+     * default.
      *
      * @param dateUtility the {@code CSUTLDTC} service; must not be {@code null}
      * @throws NullPointerException if {@code dateUtility} is {@code null}
      */
-    @Autowired
     public AccountDateValidator(DateUtilityJob dateUtility) {
         this(new FixedWidthCodec(DEFAULT_CHARSET), dateUtility, Clock.systemDefaultZone());
     }

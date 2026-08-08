@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.user.dto;
 
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import java.util.List;
 
 /**
@@ -632,7 +633,7 @@ public record UserAddResponse(String trnName,
      * interpolates the whole object. The value itself is never altered, never hashed and never
      * encoded; {@link #passwd()} returns exactly what was supplied, and the JSON form is untouched.
      */
-    private static final String PASSWD_NOT_RENDERED = "<not rendered>";
+    private static final String PASSWD_NOT_RENDERED = SensitiveDiagnostics.REDACTED;
 
     // =================================================================================================
     // Derivation. Sixteen positional components are easy to transpose, and two members of the header
@@ -884,8 +885,8 @@ public record UserAddResponse(String trnName,
                 + ", pgmName=" + pgmName
                 + ", title02=" + title02
                 + ", curTime=" + curTime
-                + ", fName=" + fName
-                + ", lName=" + lName
+                + ", fName=" + SensitiveDiagnostics.describeText(fName)
+                + ", lName=" + SensitiveDiagnostics.describeText(lName)
                 + ", userId=" + userId
                 + ", passwd=" + PASSWD_NOT_RENDERED
                 + ", usrType=" + usrType

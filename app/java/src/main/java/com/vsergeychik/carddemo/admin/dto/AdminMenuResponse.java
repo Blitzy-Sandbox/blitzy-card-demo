@@ -50,10 +50,18 @@ import java.util.List;
  * able to {@code REDEFINES} {@code AI} over the same storage.
  *
  * <p>The four attribute bytes {@code xxxC}, {@code xxxP}, {@code xxxH} and {@code xxxV} are
- * <strong>presentation metadata, not screen text</strong>, and none of them is a member of this
- * payload. The single presentation fact this screen actually varies at runtime - the error-message
- * colour - is carried by {@link #messageColour()}, one explicit member deliberately <em>not</em>
- * named after {@code ERRMSGC}, so that no JSON key of this type is a metadata item.
+ * <strong>presentation metadata, not screen text</strong>. {@code app/cpy-bms/COADM01.CPY:256}
+ * declares {@code ERRMSGC PICTURE X} as one of that family; only {@code ERRMSGO PIC X(78)} at line 260
+ * is payload. The single presentation fact this screen varies at runtime - the error-message colour -
+ * is therefore carried by {@link #messageColour()} as an {@code @JsonIgnore} component: reachable in
+ * Java, where the service sets it and a test asserts it, and absent from the wire, where it would be a
+ * metadata item masquerading as a screen field.
+ *
+ * <p>Renaming it away from {@code ERRMSGC} was not sufficient on its own. A record component is a JSON
+ * property whatever it is called, so {@code messageColour} was an ordinary member of the document and
+ * a client had no way to tell it from the twenty fields that do trace to a {@code DFHMDF} definition.
+ * The same applies to {@link #resetAllOutputFields()}, which corresponds to no copybook item at all -
+ * it summarises {@code MOVE LOW-VALUES TO COADM1AO}, an action rather than a field.
  *
  * <p>The {@code xxxI} items of {@code COADM1AI} are the inbound direction and belong to
  * {@code AdminMenuRequest}, not here.
@@ -289,10 +297,13 @@ import java.util.List;
  *                              {@code CDEMO-LAST-MAP}; {@value #MAP_NAME} for this screen
  * @param messageColour         the BMS colour attribute for the message line: presentation metadata,
  *                              {@link BmsAttributes#DFHRED} by map declaration and
- *                              {@link BmsAttributes#DFHGREEN} on the coming-soon path
+ *                              {@link BmsAttributes#DFHGREEN} on the coming-soon path.
+ *                              <strong>Not a JSON property</strong> - it is the {@code ERRMSGC}
+ *                              attribute byte, which {@code COADM01.CPY:256} declares as metadata
  * @param resetAllOutputFields  whether the client should clear every output field before painting,
  *                              mirroring {@code MOVE LOW-VALUES TO COADM1AO} at
- *                              {@code app/cbl/COADM01C.cbl:89}
+ *                              {@code app/cbl/COADM01C.cbl:89}. <strong>Not a JSON property</strong> -
+ *                              it names an action and corresponds to no copybook item
  */
 public record AdminMenuResponse(
         @Size(max = TRN_NAME_LENGTH) String trnName,
@@ -319,8 +330,8 @@ public record AdminMenuResponse(
         @Size(max = NEXT_PROGRAM_LENGTH) String nextProgram,
         @Size(max = NEXT_MAPSET_LENGTH) String nextMapset,
         @Size(max = NEXT_MAP_LENGTH) String nextMap,
-        byte messageColour,
-        boolean resetAllOutputFields) {
+        @JsonIgnore byte messageColour,
+        @JsonIgnore boolean resetAllOutputFields) {
 
     // =================================================================================================
     // Screen identity. These four literals are what the CSD, the program and the mapset agree on, and

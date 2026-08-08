@@ -1,16 +1,25 @@
 package com.vsergeychik.carddemo.config;
 
+import com.vsergeychik.carddemo.common.DatasetRelation;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 import javax.sql.DataSource;
 
 import com.zaxxer.hikari.HikariDataSource;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.jdbc.DatabaseDriver;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.util.ClassUtils;
 import org.springframework.util.StringUtils;
 
 /**
@@ -50,7 +59,8 @@ import org.springframework.util.StringUtils;
  * <p>The consequence is stated plainly rather than papered over: <strong>production connectivity
  * cannot be exercised in the build environment.</strong> The repositories are validated against the
  * fixture-backed parity harness instead, on the in-memory H2 instance that
- * {@code application-test.yml} configures under the {@code test} profile - a <em>test-scope-only</em>
+ * {@code src/test/resources/application-test.yml} configures under the {@code test} profile - a
+ * <em>test-scope-only</em>
  * dependency that is never promoted to compile or runtime scope. That same H2 {@code DataSource} also
  * backs the Spring Batch {@code JobRepository}, which Spring Batch 5 requires, which is why the
  * context-load and parity tests all run under the {@code test} profile and never under the default
@@ -60,6 +70,18 @@ import org.springframework.util.StringUtils;
  * names the missing property, rather than quietly falling back to an embedded database. For a
  * migration judged on byte-level parity, an application that silently came up against the wrong
  * backend would produce parity results that mean nothing - a far worse outcome than not starting.
+ *
+ * <p>The same reasoning is applied to the <em>driver</em>, and it is the sharper half of the problem.
+ * A URL is either there or it is not, but a pooled {@code DataSource} whose driver is missing or
+ * misspelled is perfectly constructible: it would be published, injected into all twelve repositories,
+ * and fail on the first query - in the middle of a job, or on a request. Worse, Spring Boot's own
+ * driver determination ends with a fallback to whichever embedded database it finds on the classpath,
+ * and H2 <em>is</em> on this classpath at test scope. A mis-typed driver property could therefore hand
+ * a deployment H2's driver and an empty in-memory database, and the parity comparison would then be
+ * against nothing at all. This class consequently resolves the driver explicitly, refuses that
+ * fallback, and proves the class is loadable <em>before</em> the bean is published - see
+ * {@link #dataSource(DataSourceProperties)}. It still pins no driver coordinate in the build; the
+ * driver remains a deployment-time input.
  *
  * <h2>No dataset name appears in Java (gate G46)</h2>
  * <p>Every dataset name lives in {@code application.yml} and is reached here <em>by DD-name key
@@ -100,6 +122,21 @@ import org.springframework.util.StringUtils;
  * {@code app/jcl} and {@code app/proc}, and the batch aliases of the CICS files - twenty-seven keys
  * in total. {@code application.yml} is the sole authority for their spelling; this class invents no
  * key and renames none.
+ *
+ * <h2>The catalogue is validated at startup, not at the point of use</h2>
+ * <p>{@link DatasetBindings} binds <strong>strictly</strong>: an unknown property under
+ * {@code carddemo.datasets} is rejected rather than ignored, and the whole catalogue is validated once,
+ * immediately after binding, by {@link DatasetBindings#validate()}. A catalogue that is short of a DD
+ * name, carries one nothing reads, omits a location, declares an organization or record format this
+ * module cannot honour, carries a non-positive record width, or describes an incoherent
+ * alternate-index relationship is a <em>configuration defect</em>, and it now stops the context rather
+ * than surfacing later as one job failing to open one dataset.
+ *
+ * <p>That distinction matters more here than it would in an ordinary application. A dataset width or
+ * location that is wrong does not throw - it reads and writes the wrong bytes - so the moment of use
+ * is exactly the wrong place to discover it, and the symptom that eventually appears is a parity diff
+ * with no obvious cause. Validating the whole catalogue up front turns a class of silent data defect
+ * into a startup message naming the entry and the component at fault.
  *
  * <h2>An alternate index is an access path, not a second table (gate G45)</h2>
  * <p>{@code CARDAIX} is a PATH over the {@code CARDDAT} base cluster and {@code CXACAIX} is a PATH
@@ -199,6 +236,38 @@ public class DataSourceConfig {
             Batch JobRepository.""";
 
     /**
+     * The sentence every driver diagnostic ends with, stating the policy that makes the driver a
+     * deployment concern in the first place.
+     *
+     * <p>Declared once so the two driver failures cannot drift apart on the one point an operator
+     * most needs: that the missing coordinate is not an oversight in the build.
+     */
+    private static final String DRIVER_IS_A_DEPLOYMENT_INPUT =
+            "This module pins no JDBC driver coordinate by design - the CardDemo datasets are VSAM "
+                    + "and sequential files, there is no EXEC SQL anywhere in the COBOL estate, and "
+                    + "indexed VSAM has no standard published JDBC driver - so the site's "
+                    + "mainframe data-access driver is supplied at deployment time.";
+
+    /**
+     * Diagnostic raised when a URL is configured but no driver class can be determined for it.
+     *
+     * <p>It names the property to set and states plainly that the embedded database on the classpath
+     * is not a substitute, because that is precisely the guess a reader would expect the framework
+     * to make - Spring Boot's own driver determination does make it - and being handed H2 instead of
+     * the site driver is the failure mode this refusal exists to prevent.
+     */
+    private static final String UNDETERMINED_DRIVER_MESSAGE = """
+            No JDBC driver class could be determined, so no DataSource can be built. \
+            spring.datasource.driver-class-name is not set, and the scheme of \
+            spring.datasource.url is not one Spring Boot recognises - which is expected for a \
+            site-specific mainframe data-access URL. Set spring.datasource.driver-class-name \
+            explicitly. NO FALLBACK IS APPLIED: in particular the embedded database on this \
+            classpath is never substituted, because it is present only at test scope to back the \
+            Spring Batch JobRepository and the parity harness, and a deployment that silently came \
+            up against an empty in-memory database would report byte-level parity results that mean \
+            nothing.""";
+
+    /**
      * The one {@link DataSource} in the module: pooled by HikariCP and assembled entirely from
      * configuration.
      *
@@ -218,17 +287,29 @@ public class DataSourceConfig {
      * {@code @Primary} anywhere: with a single definition there is nothing to disambiguate, and a
      * second definition would reintroduce the ambiguity that {@code @Primary} exists to paper over.
      *
-     * <p>The single guard below is the fail-fast described in this class's documentation. A blank
-     * URL is treated exactly like an absent one, deliberately: {@code application.yml} spells the
-     * property as an environment placeholder with an empty default, so an unconfigured deployment
-     * yields an empty string rather than {@code null}. {@link StringUtils#hasText(String)} covers
-     * {@code null}, empty and whitespace-only in one test, which keeps this method to a single
-     * branch.
+     * <h3>Both halves of "configured" are checked here, before the bean is published</h3>
+     * <p>A blank URL is treated exactly like an absent one, deliberately: {@code application.yml}
+     * spells the property as an environment placeholder with an empty default, so an unconfigured
+     * deployment yields an empty string rather than {@code null}.
+     * {@link StringUtils#hasText(String)} covers {@code null}, empty and whitespace-only in one
+     * test.
+     *
+     * <p>The URL alone is not enough, though, and that is why the driver is resolved here too rather
+     * than left to the builder. A pooled {@code DataSource} is a lazy object: it can be created,
+     * published and injected into all twelve repositories while the driver behind it does not exist,
+     * and the failure then surfaces on the first query - in the middle of a job, or on a request,
+     * long after the point where an operator could read it as a configuration error. Since this
+     * module deliberately pins no driver coordinate, an absent or misspelled driver is one of the
+     * <em>likeliest</em> deployment mistakes here rather than an exotic one, so it is worth catching
+     * at startup. {@link #determineDriverClassName(DataSourceProperties)} does the resolution and
+     * refuses the one substitution that would be worse than failing.
      *
      * @param properties the {@code spring.datasource.*} binding, registered by this class and by
      *                   Spring Boot's JDBC auto-configuration alike; never {@code null}
      * @return the pooled, configuration-bound {@code DataSource}
-     * @throws IllegalStateException if {@code spring.datasource.url} is absent, empty or blank
+     * @throws IllegalStateException if {@code spring.datasource.url} is absent, empty or blank, or
+     *                               if no driver class can be determined for it, or if the
+     *                               determined driver class is not on the runtime classpath
      */
     @Bean
     @ConfigurationProperties("spring.datasource.hikari")
@@ -236,7 +317,77 @@ public class DataSourceConfig {
         if (!StringUtils.hasText(properties.getUrl())) {
             throw new IllegalStateException(NO_DATASOURCE_URL_MESSAGE);
         }
-        return properties.initializeDataSourceBuilder().type(HikariDataSource.class).build();
+        String driverClassName = determineDriverClassName(properties);
+        return properties.initializeDataSourceBuilder()
+                .type(HikariDataSource.class)
+                .driverClassName(driverClassName)
+                .build();
+    }
+
+    /**
+     * Determines the JDBC driver class this deployment will actually load, and proves it is there.
+     *
+     * <p>Two steps, in this order, and no third:
+     *
+     * <ol>
+     *   <li><b>Take the configured driver, or derive it from the URL.</b>
+     *       {@code spring.datasource.driver-class-name} wins when it is set, because a site running
+     *       a mainframe data-access driver has to name it - no URL scheme registry knows about it.
+     *       When it is not set, {@link DatabaseDriver#fromJdbcUrl(String)} derives it from the URL
+     *       scheme, which is what lets the fixture-backed {@code test} profile and the unit-test
+     *       slices supply an {@code h2:mem} URL and nothing else.</li>
+     *   <li><b>Prove the class is loadable.</b> {@link ClassUtils#isPresent(String, ClassLoader)} is
+     *       checked against the same class loader the builder will use, so a typo in the class name
+     *       or a driver jar that was never added to the deployment is reported here, by name, rather
+     *       than on the first connection attempt.</li>
+     * </ol>
+     *
+     * <h3>The embedded-database fallback is refused, and that is the substantive decision</h3>
+     * <p>Spring Boot's own {@code determineDriverClassName()} has a third step this method
+     * deliberately omits: when neither the property nor the URL yields a driver, it falls back to
+     * whichever embedded database it finds on the classpath. In this module that fallback is a trap
+     * rather than a convenience, because H2 <em>is</em> on the classpath - at test scope, to back the
+     * Spring Batch {@code JobRepository} and the parity harness. A deployment that mis-typed its
+     * driver property could therefore be handed H2's driver and come up "successfully" against an
+     * empty in-memory database, and a migration judged on byte-level parity would then be comparing
+     * its output against nothing at all. Refusing to guess is the same rule this module applies to
+     * charsets and to dataset names: the wrong answer silently is worse than no answer loudly.
+     *
+     * <p>Note what is <em>not</em> done here. The driver class is not loaded, instantiated or
+     * registered, and no connection is opened: presence is checked, nothing more. Opening a
+     * connection at startup would make the context depend on a reachable backend, which risk R-E
+     * records as unavailable in this environment, and would turn a transient network fault into a
+     * failure to start.
+     *
+     * @param properties the {@code spring.datasource.*} binding, whose URL has already been
+     *                   established as non-blank
+     * @return the driver class name this deployment will load; never {@code null} or blank
+     * @throws IllegalStateException if no driver class can be determined from the property or the
+     *                               URL, or if the determined class is absent from the classpath
+     */
+    private String determineDriverClassName(DataSourceProperties properties) {
+        String configured = properties.getDriverClassName();
+        String driverClassName = StringUtils.hasText(configured)
+                ? configured
+                : DatabaseDriver.fromJdbcUrl(properties.getUrl()).getDriverClassName();
+        if (!StringUtils.hasText(driverClassName)) {
+            throw new IllegalStateException(UNDETERMINED_DRIVER_MESSAGE);
+        }
+        if (!ClassUtils.isPresent(driverClassName, getClass().getClassLoader())) {
+            throw new IllegalStateException("The JDBC driver class '" + driverClassName
+                    + "' is not on the classpath, so no DataSource can be built. "
+                    + (StringUtils.hasText(configured)
+                            ? "It was named by spring.datasource.driver-class-name; check the "
+                                    + "spelling and confirm the driver jar is deployed with the "
+                                    + "application."
+                            : "It was derived from the scheme of spring.datasource.url; either "
+                                    + "deploy that driver or name the correct one explicitly in "
+                                    + "spring.datasource.driver-class-name.")
+                    + " " + DRIVER_IS_A_DEPLOYMENT_INPUT + " Startup is refused here rather than on "
+                    + "the first query, because a pooled DataSource is lazy: it would otherwise be "
+                    + "injected into every repository and fail in the middle of a job.");
+        }
+        return driverClassName;
     }
 
     /**
@@ -289,6 +440,26 @@ public class DataSourceConfig {
      * in this module calls {@code put}, {@code remove} or {@code clear}: the catalogue is populated
      * once, at context refresh, from configuration. Read it through {@link #binding(String)}.
      *
+     * <h2>Binding is strict, and the catalogue is validated once at startup</h2>
+     * <p>Two mechanisms, and each closes a different hole:
+     *
+     * <ul>
+     *   <li>{@code ignoreUnknownFields = false} makes an unrecognised property under
+     *       {@code carddemo.datasets} - a mis-spelled {@code record-lenght}, a component invented for
+     *       an entry - fail the bind instead of being silently discarded. Discarded is the dangerous
+     *       outcome: the entry still binds, the intended value is simply absent, and the default that
+     *       stands in its place is whatever the record component's type gives (for
+     *       {@code recordLength}, zero).</li>
+     *   <li>{@link #afterPropertiesSet()} runs {@link #validate()} immediately after binding, which
+     *       checks the things no per-property rule can: that the key set is exactly the twenty-seven
+     *       DD names the migrated code reads, and that each entry is internally coherent and
+     *       consistent with the entries it refers to.</li>
+     * </ul>
+     *
+     * <p>Both are startup checks on purpose. A dataset whose width or location is wrong does not
+     * throw - it reads and writes the wrong bytes - so the point of use is the worst possible place
+     * to find out, and what eventually shows up is a parity diff with no traceable cause.</p>
+     *
      * <h2>The twenty-seven keys</h2>
      * <p>Keys are mainframe DD and CICS {@code FILE} names in upper case, spelled exactly as
      * {@code app/csd/CARDDEMO.CSD} and {@code app/jcl} spell them, because keeping the mainframe
@@ -324,8 +495,9 @@ public class DataSourceConfig {
      * resolving a job's view of a DD name is {@code BatchConfig}'s responsibility, not this
      * catalogue's.
      */
-    @ConfigurationProperties(prefix = "carddemo.datasets")
-    public static class DatasetBindings extends LinkedHashMap<String, DatasetBinding> {
+    @ConfigurationProperties(prefix = "carddemo.datasets", ignoreUnknownFields = false)
+    public static class DatasetBindings extends LinkedHashMap<String, DatasetBinding>
+            implements InitializingBean {
 
         /**
          * Fixed serialization identity. {@link LinkedHashMap} is {@link java.io.Serializable}, so an
@@ -333,6 +505,284 @@ public class DataSourceConfig {
          * {@code static final} and primitive, so it introduces no shared mutable state.
          */
         private static final long serialVersionUID = 1L;
+
+        /**
+         * The twenty-seven DD names the catalogue must declare - no fewer, and none besides.
+         *
+         * <p>Immutable and derived from source, not invented: the first eight are the
+         * {@code DEFINE FILE} entries of {@code app/csd/CARDDEMO.CSD}, the next seven are the batch
+         * DD names under which {@code app/jcl} and {@code app/proc} address those same datasets, and
+         * the last twelve are the batch-only datasets. Every one of them is read by name somewhere in
+         * the migrated code, so a missing entry is a job that cannot resolve its own DD - and an
+         * extra entry is either a typo that will never be read or a dataset nobody declared a
+         * consumer for. Both are configuration defects, and both are now caught at startup instead of
+         * at the moment of use.
+         *
+         * <p>{@code application.yml} remains the sole authority for the <em>spelling</em> and the
+         * <em>content</em> of each entry; this set is the authority only for which names must be
+         * present. A deliberate addition to the estate therefore changes two places, which is the
+         * intent: adding a dataset is a decision, not a side effect.
+         */
+        static final Set<String> REQUIRED_DD_NAMES = Set.of(
+                // The 8 CICS FILE definitions - app/csd/CARDDEMO.CSD
+                "ACCTDAT", "CARDAIX", "CARDDAT", "CCXREF", "CUSTDAT", "CXACAIX", "TRANSACT",
+                "USRSEC",
+                // The batch DD aliases of those same datasets - app/jcl, app/proc
+                "ACCTFILE", "CARDFILE", "CUSTFILE", "XREFFILE", "XREFFIL1", "CARDXREF", "TRANFILE",
+                // The batch-only datasets
+                "DALYTRAN", "DALYREJS", "TCATBALF", "DISCGRP", "TRANTYPE", "TRANCATG", "DATEPARM",
+                "TRNXFILE", "TRANREPT", "STMTFILE", "HTMLFILE", "SYSTRAN");
+
+        /**
+         * The organization value that marks an entry as an alternate-index path over a base cluster.
+         *
+         * <p>Named as a constant because two checks turn on it - a path must name a base, and a base
+         * must not itself be a path - and because it is the hinge of gate G45: it is the one value
+         * that says "this entry is an access path, not a dataset of its own".
+         */
+        static final String ALTERNATE_INDEX_ORGANIZATION = "aix-path";
+
+        /**
+         * The access organizations an entry may declare: an indexed cluster, an alternate-index path
+         * over a base cluster, or a sequential dataset.
+         *
+         * <p>Closed on purpose. These three are the only organizations the legacy estate uses, and a
+         * fourth value would silently describe an access path no repository implements. Compared
+         * case-insensitively, because the CSD and the JCL differ in case on the same concept and
+         * neither is more correct than the other.
+         */
+        static final Set<String> VALID_ORGANIZATIONS =
+                Set.of("ksds", ALTERNATE_INDEX_ORGANIZATION, "sequential");
+
+        /**
+         * The record formats an entry may declare: {@code F} or {@code FB}, transcribed from the JCL
+         * {@code DCB}, or nothing at all where no {@code DCB} declares one.
+         *
+         * <p>Note what is <em>not</em> here: {@code V}. The CICS definitions declare
+         * {@code RECORDFORMAT(V)} while the batch JCL declares {@code RECFM=F} or {@code FB} for the
+         * very same datasets, and this module's resolution of that conflict - stated in this class's
+         * outer documentation - is that record length is copybook-fixed and no variable-length record
+         * is modelled. Accepting {@code V} here would let configuration assert a shape the codec
+         * cannot produce.
+         */
+        static final Set<String> VALID_RECORD_FORMATS = Set.of("F", "FB");
+
+        /**
+         * Validates the whole catalogue once, at context refresh, immediately after binding.
+         *
+         * <p>{@link InitializingBean} rather than a validation annotation, for a reason worth
+         * stating: the checks below are relationships <em>between</em> entries - that an
+         * alternate-index path names a base which is itself declared, and is itself a base rather
+         * than another path - and no per-field constraint can express that. Running them here means
+         * an invalid catalogue is a startup failure with the whole picture in one message, rather than
+         * twenty-seven independent failures or, worse, a first failure at the moment a job opens a
+         * dataset.
+         *
+         * @throws IllegalStateException if the catalogue's key set is not exactly
+         *                               {@link #REQUIRED_DD_NAMES}, or if any entry is internally
+         *                               inconsistent
+         */
+        @Override
+        public void afterPropertiesSet() {
+            validate();
+        }
+
+        /**
+         * The catalogue's whole validity contract, as one method so a unit test can drive it with no
+         * application context in the picture.
+         *
+         * <p>It checks, in this order: the key set is exactly the twenty-seven required DD names;
+         * then, for each entry, that it declares a location, a recognised organization, a recognised
+         * record format where it declares one at all, a positive record length, a non-negative block
+         * size and a positive key length where either is declared, and finally that its
+         * alternate-index relationship is coherent - a path names a base and an alternate key, a base
+         * or sequential dataset names neither, and a named base is itself a declared entry that is
+         * not a path.
+         *
+         * <p>Every failure names the DD name and the offending component, because a message that
+         * says only "invalid dataset configuration" costs the reader the entire diagnosis.
+         *
+         * @throws IllegalStateException on the first violation found, describing it and how to fix it
+         */
+        public void validate() {
+            validateKeySet();
+            forEach(this::validateEntry);
+            forEach(this::validateAlternateIndexRelationship);
+            validateKeyGeometry();
+        }
+
+        /**
+         * Requires the key set to be exactly {@link #REQUIRED_DD_NAMES}.
+         *
+         * <p>Reported as two separate lists rather than one difference, because missing and
+         * unexpected keys have opposite fixes: a missing name means a consumer will fail to resolve
+         * its DD, while an unexpected one is almost always a typo whose intended entry is
+         * simultaneously reported as missing - seeing both lists together is what makes that obvious.
+         *
+         * @throws IllegalStateException if any required key is absent or any unexpected key present
+         */
+        private void validateKeySet() {
+            Set<String> missing = new LinkedHashSet<>(REQUIRED_DD_NAMES);
+            missing.removeAll(keySet());
+            Set<String> unexpected = new LinkedHashSet<>(keySet());
+            unexpected.removeAll(REQUIRED_DD_NAMES);
+            if (!missing.isEmpty() || !unexpected.isEmpty()) {
+                throw new IllegalStateException("The carddemo.datasets catalogue must declare "
+                        + "exactly the " + REQUIRED_DD_NAMES.size() + " DD names the migrated code "
+                        + "reads - the 8 CICS FILE definitions of app/csd/CARDDEMO.CSD, the 7 batch "
+                        + "DD aliases of those same datasets, and the 12 batch-only datasets. "
+                        + "Missing: " + sorted(missing) + ". Unexpected: " + sorted(unexpected)
+                        + ". A missing name leaves a job unable to resolve its own DD; an unexpected "
+                        + "one is a name nothing will ever read, and is usually the typo that "
+                        + "explains a missing one. Keys are matched exactly, with no case-insensitive "
+                        + "or fuzzy fallback.");
+            }
+        }
+
+        /**
+         * Validates one entry's own components, independently of every other entry.
+         *
+         * @param ddName  the DD name, quoted in any diagnostic
+         * @param binding the entry bound under it
+         * @throws IllegalStateException if any component is absent where it is required, or outside
+         *                               the values this module can honour
+         */
+        private void validateEntry(String ddName, DatasetBinding binding) {
+            if (binding == null) {
+                throw new IllegalStateException(invalid(ddName)
+                        + " it declares no properties at all. Every entry must declare at least a "
+                        + "dsname, an organization and a record-length.");
+            }
+            if (!StringUtils.hasText(binding.dsname())) {
+                throw new IllegalStateException(invalid(ddName)
+                        + " it declares no dsname. Every dataset's location lives in configuration "
+                        + "and none is defaulted inside Java, so an entry without one cannot be "
+                        + "resolved at all - and a blank value is not an absence to be filled in, it "
+                        + "is an unset environment placeholder that has to be supplied.");
+            }
+            if (!containsIgnoringCase(VALID_ORGANIZATIONS, binding.organization())) {
+                throw new IllegalStateException(invalid(ddName) + " its organization is '"
+                        + binding.organization() + "', which is not one of " + sorted(
+                                VALID_ORGANIZATIONS)
+                        + ". Those three are the only access organizations the legacy estate uses, "
+                        + "and a fourth would describe an access path no repository implements.");
+            }
+            if (binding.recordFormat() != null
+                    && !containsIgnoringCase(VALID_RECORD_FORMATS, binding.recordFormat())) {
+                throw new IllegalStateException(invalid(ddName) + " its record-format is '"
+                        + binding.recordFormat() + "', which is not one of " + sorted(
+                                VALID_RECORD_FORMATS)
+                        + ". Omit the key where the JCL declares no DCB; do not invent a value, and "
+                        + "note that RECORDFORMAT(V) from the CSD is deliberately not accepted "
+                        + "because this module models no variable-length record.");
+            }
+            if (binding.recordLength() <= 0) {
+                throw new IllegalStateException(invalid(ddName) + " its record-length is "
+                        + binding.recordLength() + ". The fixed record width is the single auditable "
+                        + "width source for the hand-written codec and the output writers, so it "
+                        + "must be a positive number of bytes and can never be inferred: a wrong "
+                        + "width silently corrupts every record read or written under this DD name.");
+            }
+            if (binding.blockSize() != null && binding.blockSize() < 0) {
+                throw new IllegalStateException(invalid(ddName) + " its block-size is "
+                        + binding.blockSize() + ". Transcribe the JCL DCB verbatim: 0 is meaningful "
+                        + "and means system-determined, exactly as BLKSIZE=0 asks, but a negative "
+                        + "block size is not something any DCB can declare.");
+            }
+            if (binding.keyLength() != null && binding.keyLength() <= 0) {
+                throw new IllegalStateException(invalid(ddName) + " its key-length is "
+                        + binding.keyLength() + ". State a key length only where a source file "
+                        + "declares one, and state it as a positive number of bytes; omit the key "
+                        + "entirely for a dataset that has no key.");
+            }
+        }
+
+        /**
+         * Validates one entry's alternate-index relationship against the rest of the catalogue.
+         *
+         * <p>This is the check that has to see the whole catalogue, and it enforces gate G45
+         * mechanically rather than by comment: an alternate index is an access <em>path</em> over an
+         * existing base cluster, so a path must name a base and the key it indexes on, that base must
+         * itself be declared, and it must be a base rather than a second path. Equally, an entry that
+         * is not a path must not name a base - an entry that did would look like an access path to
+         * every reader while being bound as a dataset of its own.
+         *
+         * @param ddName  the DD name, quoted in any diagnostic
+         * @param binding the entry bound under it
+         * @throws IllegalStateException if the relationship is incoherent
+         */
+        private void validateAlternateIndexRelationship(String ddName, DatasetBinding binding) {
+            boolean declaresPath =
+                    ALTERNATE_INDEX_ORGANIZATION.equalsIgnoreCase(binding.organization());
+            boolean namesBase = StringUtils.hasText(binding.base());
+            if (declaresPath != namesBase) {
+                throw new IllegalStateException(invalid(ddName) + " it declares organization '"
+                        + binding.organization() + "' and " + (namesBase
+                                ? "names base '" + binding.base() + "'"
+                                : "names no base")
+                        + ". An alternate-index path must name the base cluster it indexes, and an "
+                        + "entry that is not a path must name none: the presence of a base is what "
+                        + "marks an entry as an additional access path over an existing repository "
+                        + "rather than a dataset in its own right (gate G45).");
+            }
+            if (!declaresPath) {
+                return;
+            }
+            if (!StringUtils.hasText(binding.alternateKey())) {
+                throw new IllegalStateException(invalid(ddName) + " it is an alternate-index path "
+                        + "over base '" + binding.base() + "' but names no alternate-key. The "
+                        + "copybook field forming the alternate key is what the finder method on the "
+                        + "base repository reads, so a path without one cannot be used.");
+            }
+            DatasetBinding base = get(binding.base());
+            if (base == null) {
+                throw new IllegalStateException(invalid(ddName) + " it names base '" + binding.base()
+                        + "', which is not itself a declared DD name. A path resolves through its "
+                        + "base, so the base must be an entry of this catalogue. Configured keys: "
+                        + sorted(keySet()) + ".");
+            }
+            if (ALTERNATE_INDEX_ORGANIZATION.equalsIgnoreCase(base.organization())) {
+                throw new IllegalStateException(invalid(ddName) + " it names base '" + binding.base()
+                        + "', which is itself an alternate-index path. A path indexes a base cluster, "
+                        + "never another path: chaining them would imply an index over an index, "
+                        + "which no VSAM definition in app/csd/CARDDEMO.CSD declares.");
+            }
+        }
+
+        /**
+         * Opens every per-entry diagnostic the same way, naming the DD name at fault.
+         *
+         * @param ddName the DD name whose entry is invalid
+         * @return the opening clause of an invalid-entry message
+         */
+        private static String invalid(String ddName) {
+            return "The carddemo.datasets entry for DD name '" + ddName + "' is invalid:";
+        }
+
+        /**
+         * Renders a set in a stable order, so a diagnostic reads the same on every run.
+         *
+         * <p>{@link Set#of(Object...)} makes no iteration-order guarantee, and a failure message
+         * whose contents shuffle between runs is markedly harder to compare against a previous one.
+         *
+         * @param values the values to render
+         * @return the values sorted lexicographically
+         */
+        private static List<String> sorted(Set<String> values) {
+            return values.stream().sorted().toList();
+        }
+
+        /**
+         * Case-insensitive membership, used where the legacy sources themselves differ in case.
+         *
+         * @param permitted the closed set of accepted values, in lower or upper case as declared
+         * @param candidate the configured value, which may be {@code null}
+         * @return {@code true} when {@code candidate} matches a permitted value ignoring case
+         */
+        private static boolean containsIgnoringCase(Set<String> permitted, String candidate) {
+            return candidate != null
+                    && permitted.stream().anyMatch(value -> value.equalsIgnoreCase(candidate));
+        }
 
         /**
          * Resolves a dataset binding by its mainframe DD name.
@@ -361,6 +811,132 @@ public class DataSourceConfig {
                         + "keys: " + keySet() + ".");
             }
             return binding;
+        }
+
+        /**
+         * Checks every configured entry at startup, and refuses to start when one is not addressable
+         * as configured.
+         *
+         * <p>Reached from {@link #validate()}, which {@link #afterPropertiesSet()} runs once while
+         * the context is building, rather than on the first read. A dataset whose key geometry is
+         * wrong is wrong for every read of it, and the difference between learning that at startup
+         * and learning it from a production batch window is the whole value of the check. It stays a
+         * separate public method so a unit test can drive the geometry rules on their own, with no
+         * application context in the picture.
+         *
+         * <p>Four rules, each of which was a real gap:
+         * <ol>
+         *   <li><strong>A keyed entry must declare a key length.</strong> Before this, only
+         *       {@code TCATBALF} and {@code TRNXFILE} did, on the reasoning that a key width should be
+         *       stated only where it is verifiable in a source file. Every one of them is verifiable -
+         *       from the key field's {@code PICTURE} in the copybook the entry already names - so the
+         *       reasoning did not hold and the effect was that a keyed read had no declared authority
+         *       for where its key ended.</li>
+         *   <li><strong>The key span must fit inside the record.</strong> An offset plus a length
+         *       reaching past {@code record-length} cannot describe a key of that record, and it would
+         *       produce a silently truncated or out-of-bounds match rather than an error.</li>
+         *   <li><strong>A sequential entry must NOT declare a key length.</strong> A key on a
+         *       sequential dataset is a contradiction, and reading one as authority would invite a
+         *       keyed access path the dataset does not support.</li>
+         *   <li><strong>An alternate-index path must agree with its base.</strong> Its {@code base}
+         *       must name a configured entry, that entry must be a base cluster rather than another
+         *       path, and the two must share a record length and a copybook - because an
+         *       alternate-index path is a second access path over <em>the same records</em>, not a
+         *       second dataset. An alias whose layout disagrees with its base is exactly the defect
+         *       this rule exists to stop, since it would let one repository decode the other's bytes
+         *       against the wrong layout.</li>
+         * </ol>
+         *
+         * @throws IllegalStateException naming the offending entry and the rule it breaks
+         */
+        public void validateKeyGeometry() {
+            for (Map.Entry<String, DatasetBinding> entry : entrySet()) {
+                String name = entry.getKey();
+                DatasetBinding binding = entry.getValue();
+                if (binding.keyed()) {
+                    validateKeyed(name, binding);
+                } else if (binding.keyLength() != null) {
+                    throw new IllegalStateException("Dataset '" + name + "' is configured with "
+                            + "organization '" + binding.organization() + "' yet declares key-length "
+                            + binding.keyLength() + ". A sequential dataset has no key: it is read "
+                            + "front to back. Remove the key-length, or correct the organization to "
+                            + DatasetBinding.KSDS + " if the dataset really is indexed.");
+                }
+                if (DatasetBinding.AIX_PATH.equals(binding.organization())) {
+                    validateAlternateIndexPath(name, binding);
+                }
+            }
+        }
+
+        /** Rules 1 and 2: a keyed entry declares a key, and the key fits inside the record. */
+        private void validateKeyed(String name, DatasetBinding binding) {
+            Integer keyLength = binding.keyLength();
+            if (keyLength == null) {
+                throw new IllegalStateException("Dataset '" + name + "' is configured with "
+                        + "organization '" + binding.organization() + "' but declares no key-length, "
+                        + "so nothing states where its key ends and a keyed read against it would be "
+                        + "guessing. Transcribe the width from the key field's PICTURE in "
+                        + (binding.copybook() == null ? "the copybook defining its layout"
+                                : binding.copybook()) + " and cite it beside the value.");
+            }
+            if (keyLength < 1) {
+                throw new IllegalStateException("Dataset '" + name + "' declares key-length "
+                        + keyLength + ". A key is at least one byte wide.");
+            }
+            int offset = binding.keyOffsetOrZero();
+            if (offset < 0) {
+                throw new IllegalStateException("Dataset '" + name + "' declares key-offset " + offset
+                        + ". An offset into a record is zero-based and never negative.");
+            }
+            if (offset + keyLength > binding.recordLength()) {
+                throw new IllegalStateException("Dataset '" + name + "' declares a key at offset "
+                        + offset + " of width " + keyLength + ", which ends at byte "
+                        + (offset + keyLength) + " of a record that is only "
+                        + binding.recordLength() + " bytes. A key must lie inside the record it "
+                        + "identifies; check the offset and width against "
+                        + (binding.copybook() == null ? "the layout" : binding.copybook()) + ".");
+            }
+        }
+
+        /** Rule 4: an alternate-index path is a second access path over the SAME records. */
+        private void validateAlternateIndexPath(String name, DatasetBinding path) {
+            String baseName = path.base();
+            if (baseName == null || baseName.isBlank()) {
+                throw new IllegalStateException("Dataset '" + name + "' is configured as an "
+                        + DatasetBinding.AIX_PATH + " but names no base. An alternate-index path is "
+                        + "an additional access path over an existing cluster, so the cluster it "
+                        + "indexes has to be named.");
+            }
+            DatasetBinding base = get(baseName);
+            if (base == null) {
+                throw new IllegalStateException("Dataset '" + name + "' indexes base '" + baseName
+                        + "', which is not configured. Configured keys: " + keySet() + ".");
+            }
+            if (!DatasetBinding.KSDS.equals(base.organization())) {
+                throw new IllegalStateException("Dataset '" + name + "' indexes '" + baseName
+                        + "', whose organization is '" + base.organization() + "'. An "
+                        + "alternate-index path is built over a base cluster, never over another "
+                        + "path.");
+            }
+            if (path.recordLength() != base.recordLength()) {
+                throw new IllegalStateException("Alternate-index path '" + name + "' declares "
+                        + "record-length " + path.recordLength() + " but its base '" + baseName
+                        + "' declares " + base.recordLength() + ". A path reaches the SAME records as "
+                        + "its base, so the two widths cannot differ - one of them would decode the "
+                        + "other's bytes against the wrong layout.");
+            }
+            if (!Objects.equals(path.copybook(), base.copybook())) {
+                throw new IllegalStateException("Alternate-index path '" + name + "' declares "
+                        + "copybook " + path.copybook() + " but its base '" + baseName
+                        + "' declares " + base.copybook() + ". Both address the same records, so both "
+                        + "must name the same layout.");
+            }
+            if (path.alternateKey() == null || path.alternateKey().isBlank()) {
+                throw new IllegalStateException("Dataset '" + name + "' is configured as an "
+                        + DatasetBinding.AIX_PATH + " but names no alternate-key. The copybook field "
+                        + "forming the alternate key is what distinguishes this access path from its "
+                        + "base.");
+            }
         }
     }
 
@@ -404,8 +980,16 @@ public class DataSourceConfig {
      *                     against its {@code PICTURE} clauses without leaving the configuration;
      *                     {@code null} for the few output datasets whose layout is declared inline
      *                     in the program rather than in a copybook.
-     * @param keyLength    the key width in bytes, stated only where it is verifiable in a source
-     *                     file; {@code null} otherwise.
+     * @param keyLength    the key width in bytes. Required for every keyed entry - {@code ksds} or
+     *                     {@code aix-path} - and absent for a sequential one, which has no key.
+     *                     Every width is transcribed from the key field's {@code PICTURE} in the
+     *                     copybook named by {@code copybook}, and the citation is carried in a
+     *                     comment beside it. Enforced by {@link DatasetBindings#validate()}.
+     * @param keyOffset    the key's zero-based byte offset within the record, for the alternate-index
+     *                     paths whose key is not at the start of the record - {@code CARDAIX}'s
+     *                     {@code CARD-ACCT-ID} begins at 16 and {@code CXACAIX}'s
+     *                     {@code XREF-ACCT-ID} at 25. {@code null} means offset zero, which is where
+     *                     every primary key sits.
      * @param base         for an alternate-index path, the key of the base dataset entry it indexes.
      *                     {@code null} for a base cluster or a sequential dataset. Its presence is
      *                     what marks an entry as an additional access path over an existing
@@ -422,7 +1006,52 @@ public class DataSourceConfig {
             int recordLength,
             String copybook,
             Integer keyLength,
+            Integer keyOffset,
             String base,
             String alternateKey) {
+
+        /** The organization value marking an indexed base cluster. */
+        public static final String KSDS = "ksds";
+
+        /** The organization value marking an alternate-index path over a base cluster. */
+        public static final String AIX_PATH = "aix-path";
+
+        /**
+         * Whether this entry is addressed by key - a base KSDS or an alternate-index path over one.
+         *
+         * @return {@code true} for {@value #KSDS} and {@value #AIX_PATH}, {@code false} for a
+         *         sequential dataset
+         */
+        public boolean keyed() {
+            return KSDS.equals(organization) || AIX_PATH.equals(organization);
+        }
+
+        /**
+         * The key's zero-based offset within the record: the declared value, or zero when none is
+         * declared.
+         *
+         * @return the offset, never negative
+         */
+        public int keyOffsetOrZero() {
+            return keyOffset == null ? 0 : keyOffset;
+        }
+
+        /**
+         * The key span, as the repositories address it.
+         *
+         * @return the offset and length of the key
+         * @throws IllegalStateException if this entry declares no key length, which
+         *                               {@link DatasetBindings#validate()} rejects at startup
+         */
+        public DatasetRelation.KeySpan keySpan() {
+            if (keyLength == null) {
+                throw new IllegalStateException("Dataset '" + dsname + "' is configured with "
+                        + "organization '" + organization + "' and declares no key-length, so there "
+                        + "is no authority for where its key ends. A keyed read against it would be "
+                        + "guessing. Declare key-length from the key field's PICTURE in "
+                        + (copybook == null ? "its copybook" : copybook) + ".");
+            }
+            return new DatasetRelation.KeySpan(keyOffsetOrZero(), keyLength);
+        }
     }
 }

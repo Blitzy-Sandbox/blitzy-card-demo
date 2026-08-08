@@ -54,10 +54,15 @@ import java.util.Objects;
  *       the {@code FILLER} into one span. {@code app/cbl/CBTRN03C.cbl:48} then declares
  *       {@code RECORD KEY IS FD-TRAN-CAT-KEY}, which is what fixes the key width at
  *       <strong>6</strong>.</li>
- *   <li><strong>The job that binds the dataset.</strong> {@code app/jcl/TRANREPT.jcl:71-72} binds
- *       {@code //TRANCATG DD DISP=SHR, DSN=AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS} under
- *       {@code STEP10R EXEC PGM=CBTRN03C} at {@code app/jcl/TRANREPT.jcl:59}, listed among that
- *       step's input files - a keyed lookup input, read and never written.</li>
+ *   <li><strong>The job that binds the dataset.</strong> {@code app/jcl/TRANREPT.jcl:71-72} declares
+ *       the {@code TRANCATG} DD with {@code DISP=SHR} under {@code STEP10R EXEC PGM=CBTRN03C} at
+ *       {@code app/jcl/TRANREPT.jcl:59}, listed among that step's input files - a keyed lookup
+ *       input, read and never written. The dataset name that DD carries is deliberately <em>not</em>
+ *       reproduced here. Every dataset name in this module lives in the {@code TRANCATG} entry of
+ *       {@code carddemo.datasets} in {@code src/main/resources/application.yml}, behind an
+ *       environment placeholder, and in no Java source at all (gate G46) - so this class cites the
+ *       JCL line and the binding key, which is enough to find the name and keeps the single
+ *       authority for it in one place.</li>
  *   <li><strong>The real fixture.</strong> {@code app/data/ASCII/trancatg.txt} measures 18 records of
  *       exactly 60 bytes each. Decoding the first three at the offsets above yields
  *       {@code ("01", 1, "Regular Sales Draft")}, {@code ("01", 2, "Regular Cash Advance")} and
@@ -626,7 +631,8 @@ public final class TranCategoryRecord {
      *                                  single-byte code page for the digits and the space
      */
     public static byte[] tranCatKeyBytes(String tranTypeCd, int tranCatCd, Charset charset) {
-        return tranCatKeyImage(tranTypeCd, tranCatCd, charset).getBytes(charset);
+        return FixedWidthRecord.encodeText(tranCatKeyImage(tranTypeCd, tranCatCd, charset), charset,
+                "a TRAN-CAT-KEY image");
     }
 
     /**
@@ -751,7 +757,7 @@ public final class TranCategoryRecord {
      * @return the whole record as characters, exactly {@link #RECORD_LENGTH} of them
      */
     public String toImage() {
-        return new String(image, charset);
+        return FixedWidthRecord.decodeText(image, charset, "a TRAN-CAT-RECORD image");
     }
 
     /**

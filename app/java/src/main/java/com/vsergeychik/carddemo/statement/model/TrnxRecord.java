@@ -1,11 +1,13 @@
 package com.vsergeychik.carddemo.statement.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 import java.math.BigDecimal;
 import java.nio.charset.Charset;
@@ -1099,17 +1101,20 @@ public final class TrnxRecord {
     }
 
     /**
-     * {@code TRNX-MERCHANT-ID PIC 9(09)} as a {@code long}.
+     * {@code TRNX-MERCHANT-ID PIC 9(09)} as an {@code int}.
      *
-     * <p>Nine unsigned zoned {@code DISPLAY} digits. A {@code long} rather than an {@code int} because
-     * the field is an identifier whose full nine-digit range is used, and widening later would be a
-     * breaking change to every caller.
+     * <p>Nine unsigned zoned {@code DISPLAY} digits, so {@code int} rather than {@code long}: AAP rule
+     * R4 assigns {@code int} to a scale-free {@code PIC 9(n)} up to nine digits. The field's full
+     * nine-digit range is used, and an {@code int} covers all of it with room to spare - what a
+     * {@code long} would add is not headroom the field can use but eleven digits of Java state the field
+     * can never hold.
      *
      * @return the merchant identifier the nine digits denote
-     * @throws IllegalArgumentException if the span does not hold nine digits
+     * @throws IllegalArgumentException if the span does not hold nine digits, or denotes a value outside
+     *                                  the {@code int} range - which nine digits cannot
      */
-    public long readTrnxMerchantId() {
-        return codec.readPic9(area, TRNX_MERCHANT_ID);
+    public int readTrnxMerchantId() {
+        return codec.readPic9AsInt(area, TRNX_MERCHANT_ID);
     }
 
     /**
@@ -1119,7 +1124,7 @@ public final class TrnxRecord {
      *              position
      * @throws IllegalArgumentException if {@code value} is negative
      */
-    public void writeTrnxMerchantId(long value) {
+    public void writeTrnxMerchantId(int value) {
         codec.writePic9(area, TRNX_MERCHANT_ID, value);
     }
 
@@ -1248,15 +1253,27 @@ public final class TrnxRecord {
      * record whose numeric spans are blank - a diagnostic that throws while being logged is worse than
      * no diagnostic.
      *
+     * <p>{@code TRNX-CARD-NUM} is masked per {@link SensitiveDiagnostics}: it is a primary account
+     * number, and this record is written to the customer statement files, so anything that logged it
+     * disclosed a payment credential. The transaction id and the raw amount image stay legible - the id
+     * is a correlation key rather than personal data, and the amount image is the whole point of a
+     * numeric parity diagnostic, including the negative-zero overpunch that only the raw image shows.
+     *
      * @return for example
-     *         {@code TrnxRecord[TRNX-CARD-NUM=4111111111111111, TRNX-ID=0000000000000001,
+     *         {@code TrnxRecord[TRNX-CARD-NUM=************1111, TRNX-ID=0000000000000001,
      *         TRNX-AMT=0000005047G, charset=US-ASCII]}
      */
     @Override
     public String toString() {
-        return "TrnxRecord[TRNX-CARD-NUM=" + area.readSpan(TRNX_CARD_NUM)
-                + ", TRNX-ID=" + area.readSpan(TRNX_ID)
-                + ", TRNX-AMT=" + area.readSpan(TRNX_AMT)
+        // The card number is masked to its last four characters and the amount is withheld with its
+        // width: a statement row is one cardholder's spending, so the transaction identifier and the
+        // code page are what identify the record here and the money is not something a log line needs.
+        // readTrnxAmtImage() still returns every digit to a caller that asks for it by name, so a
+        // byte-level parity comparison is unaffected.
+        return "TrnxRecord[TRNX-CARD-NUM="
+                + SensitiveDiagnostics.maskPan(area.readSpan(TRNX_CARD_NUM))
+                + ", TRNX-ID=" + DiagnosticText.singleLine(area.readSpan(TRNX_ID))
+                + ", TRNX-AMT=" + DiagnosticText.omitted(area.readSpan(TRNX_AMT))
                 + ", charset=" + area.charset().name()
                 + "]";
     }

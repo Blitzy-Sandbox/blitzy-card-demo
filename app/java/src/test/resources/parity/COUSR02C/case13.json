@@ -1,7 +1,7 @@
 {
   "program": "COUSR02C",
   "caseId": "case13",
-  "description": "CASE 13 OF 20 - THE GATE G30 ORDERING PROOF FOR COUSR02C.\n\nWHAT THIS CASE PINS: the ordered five-arm EVALUATE TRUE at app/cbl/COUSR02C.cbl:179-213, inside UPDATE-USER-INFO (:177-245), entered from the WHEN DFHPF5 arm at :122-123. THREE of the five blank-validation arms are individually satisfiable on this input - arm 1 (USRIDINI blank), arm 2 (FNAMEI blank) and arm 5 (USRTYPEI blank) - yet ONLY ARM 1 MAY PRODUCE OUTPUT, because EVALUATE is ordered and the first matching WHEN wins. An implementation that rewrote the EVALUATE as five independent if statements would emit three messages here and fail this case; a faithful one emits exactly one. Two arms are left deliberately satisfiable so that source WHEN ORDER is proven, not merely each arm's reachability, and WHEN OTHER (:210-212) stays LAST and unreached.\n\nARM BY ARM, IN SOURCE ORDER. Arm 1, :180-185, USRIDINI OF COUSR2AI = SPACES OR LOW-VALUES: MOVE 'Y' TO WS-ERR-FLG, then the 27-character user-id-empty text at :182-183 to WS-MESSAGE, then MOVE -1 TO USRIDINL at :184, then PERFORM SEND-USRUPD-SCREEN at :185. THIS ARM FIRES AND IS THE ONLY ARM THAT RUNS. Arm 2, :186-191, the first-name blank check: SATISFIABLE HERE (FNAME was submitted as 20 spaces) BUT MUST NOT RUN, so neither its message nor its MOVE -1 TO FNAMEL at :190 occurs. Arm 3, :192-197, the last-name blank check: not satisfied, LNAME was submitted non-blank. Arm 4, :198-203, the password blank check: not satisfied, PASSWD was submitted non-blank. Arm 5, :204-209, the user-type blank check: SATISFIABLE HERE (USRTYPE was submitted as 1 space) BUT MUST NOT RUN, so neither its message nor its MOVE -1 TO USRTYPEL at :208 occurs. WHEN OTHER, :210-212, MOVE -1 TO FNAMEL then CONTINUE: not reached.\n\nSHORT CIRCUIT, AND NO DATASET ACCESS AT ALL (gates G44 and G47): arm 1 set WS-ERR-FLG to 'Y', so the IF NOT ERR-FLG-ON guard at :215 evaluates FALSE and the entire block :216-243 is skipped. Consequently READ-USER-SEC-FILE (:320-353) is never performed, so the save-prompt message at :336 and its neutral-colour move at :338 do NOT appear on this path - in deliberate contrast to cases 07 through 12, where they always do; the four change tests at :219-234 never run; and UPDATE-USER-SEC-FILE (:358-390) is never performed, so there is no REWRITE and none of the success text STRINGed at :372-375. NEITHER SecUserRepository.readForUpdate NOR SecUserRepository.rewrite is called at all. This case's contribution to G47 is precisely that NO-CALL state of both call sites, which is why the ten-row USRSEC seed below is asserted not merely unwritten but entirely untouched.\n\nEXPECTED OUTPUT: exactly ONE emitted message, byte-exact, 27 characters, from :182-183 - three trailing periods with no space before them. It is carried in expectedMessages and appears exactly once in this fixture. WS-MESSAGE is PIC X(80) and reaches the screen through MOVE WS-MESSAGE TO ERRMSGO at :270, while ERRMSGI/ERRMSGO is PIC X(78) at app/cpy-bms/COUSR02.CPY:90, so the on-screen rendering is that text space-padded to 78; the emitted line asserted here is the 27-character text itself. The messages belonging to arms 2, 3, 4 and 5, the save-prompt at :336, the no-change text at :239-240 and the success text at :372-375 are ALL ABSENT from this fixture, by literal string as well as by expectation.\n\nNO COLOUR MOVE IS ASSERTED (contrast case 12): arm 1 at :180-185 never touches ERRMSGC. The red rendering of the error line is the BMS map default - app/bms/COUSR02.bms:155-158 declares ERRMSG with ATTRB=(ASKIP,BRT,FSET), COLOR=RED, LENGTH=78, POS=(23,1) - and NOT the result of a move of the red attribute constant. The one genuine MOVE DFHRED TO ERRMSGC in this program is at :241, inside the no-change branch at :238-243 that this case never reaches, so that assertion belongs to case 12 and is deliberately not made here.\n\nCURSOR METADATA: ONLY USRIDINL is set to -1, by arm 1 at :184, so the cursor lands on the user-id field - which app/bms/COUSR02.bms:85 also marks IC. FNAMEL, LNAMEL, PASSWDL and USRTYPEL are NOT set on this path; each is set only by an arm that did not run. Reporting more than one -1 here is the classic symptom of an EVALUATE rewritten as independent ifs. Per app/cpy-bms/COUSR02.CPY the xxxL COMP PIC S9(4), xxxF PICTURE X and xxxA REDEFINES items are validation and highlight METADATA and are never payload members; ParityCase carries no metadata member, so this expectation is pinned here in prose for the per-program test class to assert.\n\nSCREEN STATE, REENTER (gate G38): EIBCALEN is non-zero so MAIN-PARA takes the ELSE at :93; CDEMO-PGM-CONTEXT is 1, the 88-level CDEMO-PGM-REENTER at app/cpy/COCOM01Y.cpy:31, so the CDEMO-PGM-REENTER test at :95 takes the ELSE at :106; RECEIVE-USRUPD-SCREEN runs at :107 and EVALUATE EIBAID at :108 selects WHEN DFHPF5. Because app/cpy-bms/COUSR02.CPY:91 declares 01 COUSR2AO REDEFINES COUSR2AI, the input and output symbolic maps share one storage span, so the submitted values are echoed back on the single SEND with no blanking and no repopulation: USRIDIN 8 spaces, FNAME 20 spaces, LNAME 'SOMENAME' plus 12 trailing spaces to fill X(20), PASSWD 'SOMEPASS' filling X(08) exactly, USRTYPE 1 space. POPULATE-HEADER-INFO (:296-315) then sets TRNNAME to 'CU02' and PGMNAME to 'COUSR02C', TITLE01 to 6 leading spaces + the 27 characters 'AWS Mainframe Modernization' + 7 trailing spaces = 40, and TITLE02 to 14 leading spaces + 'CardDemo' + 18 trailing spaces = 40, both transcribed from app/cpy/COTTL01Y.cpy:18-22 whose line 21 is a commented-out earlier wording and is ignored; CURDATE becomes '07/19/22' and CURTIME '23:12:34'.\n\nPAYLOAD SHAPE: the 12 xxxI items of app/cpy-bms/COUSR02.CPY and nothing else, in declaration order with their authoritative widths - TRNNAME X(4) from :24, TITLE01 X(40) from :30, CURDATE X(8) from :36, PGMNAME X(8) from :42, TITLE02 X(40) from :48, CURTIME X(8) from :54, USRIDIN X(8) from :60, FNAME X(20) from :66, LNAME X(20) from :72, PASSWD X(8) from :78, USRTYPE X(1) from :84 and ERRMSG X(78) from :90 - each tracing to a DFHMDF definition in app/bms/COUSR02.bms (gate G9 obligation, AAP 0.6.5). The user-id field is named USRIDIN, verbatim from the DFHMDF label at app/bms/COUSR02.bms:85 and the symbolic-map item USRIDINI at app/cpy-bms/COUSR02.CPY:60; no abbreviated alias for it is used anywhere in this fixture.\n\nSTATELESSNESS (gate G37, rule R6): the commarea, the AID and the screen values all travel in the payload, and no server-side session state is used. There is no XCTL on this path - :135-138 is EXEC CICS RETURN TRANSID('CU02') COMMAREA(CARDDEMO-COMMAREA) - so there is NO next-program field; XCTL appears only in RETURN-TO-PREV-SCREEN at :258-260, reached from PF3, PF12 or EIBCALEN = 0. app/cpy/COCOM01Y.cpy sums to 160 bytes (34 + 84 + 12 + 16 + 14) and is the shared common.NavigationContext, while the 34-byte CDEMO-CU02-INFO extension declared at :50-58 (8 + 8 + 8 + 1 + 1 + 8) rides on the DTO instead - which is why EIBCALEN is 194 on a self re-entry.\n\nUNIT: user.UserUpdateController, exercised as unitKind CONTROLLER_POJO - constructed with a fixture-backed user.SecUserRepository and its handler method called directly, with no MockMvc, no servlet container and no web application context in the path (gate G51). The program-to-class binding belongs to the per-program parity test class, so it is stated here rather than duplicated as a parameter where it would become a second source of truth.\n\nCONTRACT CHANNELS: ParityCase declares @JsonIgnoreProperties(ignoreUnknown = false) on every type and has no member for a unit class, an AID, a commarea, screen fields, cursor metadata or a next program; adding such a key would fail deserialisation loudly rather than bind. The scalar input state this path actually reads is therefore carried in jobParameters as raw character strings - the model's only free-form input map, whose values it never parses - and the expectations with no structural slot are pinned in this description, which the contract designates for naming exactly what a case pins. No dataset key is invented for the screen: USRSEC is the only binding key used and it is declared under carddemo.datasets in application.yml with record-length 80 and copybook CSUSR01Y. Gate G46 holds by construction - no fully-qualified mainframe dataset name appears anywhere in this fixture. jobParameters deliberately omits CDEMO-CU02-USR-SELECTED, CDEMO-FROM-PROGRAM and CDEMO-USER-ID because this path does not read them: the first is tested only in the non-REENTER branch at :99-104 and the second only in the PF3 arm at :113-118. Listing them would imply a relevance the source does not have (practice B4).\n\nSEED AND EXPECTED RECORDS: USRSEC has no ASCII fixture - app/data/ASCII holds nine files and none of them is a security-user fixture - so its ten rows are seeded INLINE, verbatim from app/jcl/DUSRSECJ.jcl:35-44, each EXACTLY 57 bytes, at zero-based indices ADMIN001 = 0 through USER0005 = 9. No tenth fixture file is requested or needed. SEC-USR-PWD PIC X(08) is the literal PASSWORD and stays PLAINTEXT (gate G41, practice B6): COSGN00C compares it byte for byte with no hashing, so hashing it here would change observable behaviour, and Spring Security is out of scope in any case. It is 2022-vintage demo seed data reproduced from a committed sample job, it guards nothing, and no credential is introduced by this file. All ten rows are asserted at their seed values and each is pinned TWICE - field by field and as the complete 80-byte record image - so a write of any kind, to any row, fails the case. app/cpy/CSUSR01Y.cpy:17-23 offsets, summed mechanically (practice B11): SEC-USR-ID X(08) at 1-8, SEC-USR-FNAME X(20) at 9-28, SEC-USR-LNAME X(20) at 29-48, SEC-USR-PWD X(08) at 49-56, SEC-USR-TYPE X(01) at 57 and SEC-USR-FILLER X(23) at 58-80, totalling 80 - corroborated twice by DUSRSECJ.jcl, at :46-49 DCB=(LRECL=80,RECFM=FB) and at :64-66 KEYS(8,0) RECORDSIZE(80,80). SEC-USR-FILLER is a NAMED field, not an anonymous FILLER, and is pinned by name as exactly 23 spaces in every one of the ten maps; the 80-byte total is the self-check that fails immediately if it is ever omitted (gates G19 and G21). All six fields are PIC X, so there is no COMP-3, no scale and no sign overpunch anywhere in this record, and rules R2, R3 and R4 on truncation and rounding have no subject here. The 23-byte shortfall between the 57-byte literal and the 80-byte record is declared as the USRSEC_FILLER_PAD_57_TO_80 normalisation rather than silently padded.\n\nDETERMINISM (practice B7, gate G54): the clock is pinned to 2022-07-19 23:12:34 - the version footer this very program carries at :413, 'Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19 23:12:34 CDT' - so the single MOVE FUNCTION CURRENT-DATE at :298 is reproducible, and :305-315 render CURDATE as '07/19/22' and CURTIME as '23:12:34'. The same instant is used by all 20 COUSR02C cases. The encoding of these rows is explicit US-ASCII, per carddemo.charset.ascii in application.yml; no platform default is relied on (practice B8).\n\nRETURN CODE: 0. COUSR02C contains zero CALL 'CEE3ABD' sites, and a validation message is not an abend.\n\nNOT APPLICABLE, AND NOT INVENTED: gate G43 optimistic concurrency - COUSR02C has no 9300-CHECK-CHANGE-IN-REC paragraph, which exists only in COACTUPC and COCRDUPC, so G43 scopes to the account and card packages only; there is no re-read-and-compare here, and no version column anywhere, which gate G44 forbids along with any DDL. Gate G32 - this program contains no GO TO. Gate G35 - no abend call. Gate G39 - no pagination on this path.\n\nPROVENANCE (practice B12, risk R-A): every expected value here is STATICALLY DERIVED, by structured reading of app/cbl/COUSR02C.cbl, the app/cpy/CSUSR01Y.cpy byte layout, the app/cpy-bms/COUSR02.CPY xxxI PICTURE clauses, the app/bms/COUSR02.bms DFHMDF definitions and the app/jcl/DUSRSECJ.jcl seed rows. It is NOT captured from, recorded against or replayed from any execution of the legacy COBOL. Executing it is empirically impossible in this environment (AAP 0.7.6): there is no z/OS or CICS runtime, the available compiler reports its indexed file handler disabled, no Language Environment CEE* services exist, and DFHAID, DFHBMSCA and DFHATTR are absent from the repository - which is also why the DFHPF5 attention identifier is reproduced from IBM CICS documentation in common.CicsAid as the EBCDIC byte 0xF5 under code page IBM037 (risk R-D). Only the PROVENANCE of the expected values is substituted; 20 cases per program, field-for-field diffing and the diff-count-equals-zero gate per module (gates G15 and G18) are all preserved unchanged. No user rules govern this file - review_rules returns the single line 'No user rules provided' - so it is held instead to the enterprise practices B1, B3, B4, B6, B7, B8, B11 and B12, and B3 in particular: every source consulted above was read only, and nothing outside app/java was written.",
+  "description": "The ordering proof for UPDATE-USER-INFO's five-arm EVALUATE TRUE at app/cbl/COUSR02C.cbl:179-213. Two arms would match this input: the user id is blank AND the first name is blank. EVALUATE is ordered and the first matching WHEN wins, so the message must be 'User ID can NOT be empty...' from the arm at :180 and the cursor must be on USRIDINL - not 'First Name can NOT be empty...' and not FNAMEL. A translation that used an unordered structure, or that collected all the failures and reported the last, would produce the wrong message here while still reporting an error, and only an ordered expectation catches that.\n\nThe last name and password are deliberately populated, so the only reason those arms are not taken is that an earlier one was. The blanks are SPACES; case05 and case07 drive the same condition with LOW-VALUES.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -19,156 +19,151 @@
       ]
     }
   },
-  "jobParameters": {
-    "CLOCK-FIXED-AT": "2022-07-19 23:12:34",
-    "CURDATE": "07/19/22",
-    "CURTIME": "23:12:34",
-    "EIBCALEN": "194",
-    "EIBAID": "DFHPF5",
-    "CDEMO-PGM-CONTEXT": "1",
-    "USRIDIN": "        ",
-    "FNAME": "                    ",
-    "LNAME": "SOMENAME            ",
-    "PASSWD": "SOMEPASS",
-    "USRTYPE": " "
+  "screenRequest": {
+    "eibcalen": 194,
+    "aid": "DFHPF5",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
+      "CDEMO-TO-TRANID": "CU02",
+      "CDEMO-TO-PROGRAM": "COUSR02C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "COUSR2A",
+      "CDEMO-LAST-MAPSET": "COUSR02",
+      "CDEMO-CU02-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU02-USRID-LAST": "USER0005",
+      "CDEMO-CU02-PAGE-NUM": "00000001",
+      "CDEMO-CU02-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU02-USR-SEL-FLG": " ",
+      "CDEMO-CU02-USR-SELECTED": "        "
+    },
+    "mapFields": {
+      "USRIDINI": "        ",
+      "FNAMEI": "                    ",
+      "LNAMEI": "SOMENAME            ",
+      "PASSWDI": "SOMEPASS",
+      "USRTYPEI": " "
+    },
+    "forcedOutcomes": {}
   },
-  "expectedRecords": [
+  "expectedResponse": {
+    "nextMapset": "COUSR02",
+    "nextMap": "COUSR2A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
+      "CDEMO-TO-TRANID": "CU02",
+      "CDEMO-TO-PROGRAM": "COUSR02C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "COUSR2A",
+      "CDEMO-LAST-MAPSET": "COUSR02",
+      "CDEMO-CU02-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU02-USRID-LAST": "USER0005",
+      "CDEMO-CU02-PAGE-NUM": "00000001",
+      "CDEMO-CU02-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU02-USR-SEL-FLG": " ",
+      "CDEMO-CU02-USR-SELECTED": "        "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU02",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR02C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "USRIDINO": "        ",
+          "FNAMEO": "                    ",
+          "LNAMEO": "SOMENAME            ",
+          "PASSWDO": "SOMEPASS",
+          "USRTYPEO": " ",
+          "ERRMSGO": "User ID can NOT be empty...                                                   "
+        }
+      }
+    ],
+    "cursorField": "USRIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
     {
       "dataset": "USRSEC",
       "rowIndex": 0,
-      "fields": {
-        "SEC-USR-ID": "ADMIN001",
-        "SEC-USR-FNAME": "MARGARET            ",
-        "SEC-USR-LNAME": "GOLD                ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "A",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 1,
-      "fields": {
-        "SEC-USR-ID": "ADMIN002",
-        "SEC-USR-FNAME": "RUSSELL             ",
-        "SEC-USR-LNAME": "RUSSELL             ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "A",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 2,
-      "fields": {
-        "SEC-USR-ID": "ADMIN003",
-        "SEC-USR-FNAME": "RAYMOND             ",
-        "SEC-USR-LNAME": "WHITMORE            ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "A",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 3,
-      "fields": {
-        "SEC-USR-ID": "ADMIN004",
-        "SEC-USR-FNAME": "EMMANUEL            ",
-        "SEC-USR-LNAME": "CASGRAIN            ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "A",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 4,
-      "fields": {
-        "SEC-USR-ID": "ADMIN005",
-        "SEC-USR-FNAME": "GRANVILLE           ",
-        "SEC-USR-LNAME": "LACHAPELLE          ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "A",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 5,
-      "fields": {
-        "SEC-USR-ID": "USER0001",
-        "SEC-USR-FNAME": "LAWRENCE            ",
-        "SEC-USR-LNAME": "THOMAS              ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "U",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 6,
-      "fields": {
-        "SEC-USR-ID": "USER0002",
-        "SEC-USR-FNAME": "AJITH               ",
-        "SEC-USR-LNAME": "KUMAR               ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "U",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 7,
-      "fields": {
-        "SEC-USR-ID": "USER0003",
-        "SEC-USR-FNAME": "LAURITZ             ",
-        "SEC-USR-LNAME": "ALME                ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "U",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 8,
-      "fields": {
-        "SEC-USR-ID": "USER0004",
-        "SEC-USR-FNAME": "AVERARDO            ",
-        "SEC-USR-LNAME": "MAZZI               ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "U",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 9,
-      "fields": {
-        "SEC-USR-ID": "USER0005",
-        "SEC-USR-FNAME": "LEE                 ",
-        "SEC-USR-LNAME": "TING                ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "U",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
     }
   ],
   "expectedReturnCode": 0,
-  "expectedMessages": [
-    "User ID can NOT be empty..."
-  ],
+  "expectedMessages": [],
   "normalisations": [
-    "USRSEC_FILLER_PAD_57_TO_80"
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
   ]
 }

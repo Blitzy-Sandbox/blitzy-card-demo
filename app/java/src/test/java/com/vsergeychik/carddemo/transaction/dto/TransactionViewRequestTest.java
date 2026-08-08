@@ -1,8 +1,10 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.transaction.dto.TransactionViewRequest.Ct02Info;
 import com.vsergeychik.carddemo.transaction.dto.TransactionViewRequest.FieldMetadata;
 import com.vsergeychik.carddemo.transaction.dto.TransactionViewRequest.ScreenField;
@@ -519,13 +521,28 @@ class TransactionViewRequestTest {
     @Test
     void navigationContextIsCarriedAtItsUnwidenedOneHundredAndSixtyBytes() {
         TransactionViewRequest request = new TransactionViewRequest();
-        assertThat(request.getNavigationContext()).isNotNull();
+
+        // A fresh request carries no area: that is EIBCALEN = 0, which COTRN02C.cbl:115 tests for and
+        // answers by abandoning the transaction for the sign-on screen. Defaulting to an initialised
+        // area would make the branch unreachable through this payload.
+        assertThat(request.getNavigationContext()).isNull();
+        assertThat(request.hasNavigationContext()).isFalse();
+        assertThat(request.commareaLength()).isZero();
+
+        // When an area is carried it is still exactly 160 bytes, never widened for this screen's cursor.
+        request.setNavigationContext(NavigationContext.empty());
         assertThat(request.getNavigationContext().toFixedWidth(
                 new com.vsergeychik.carddemo.common.FixedWidthCodec(ASCII))).hasSize(160);
+        assertThat(request.commareaLength())
+                .isEqualTo(TransactionViewRequest.Ct02Info.COMMAREA_TOTAL_LENGTH)
+                .isEqualTo(160 + TransactionViewRequest.Ct02Info.CT02_INFO_LENGTH);
 
+        // ...and setting null removes it again rather than replacing it with an initialised one.
         request.setNavigationContext(null);
-        assertThat(request.getNavigationContext()).isEqualTo(NavigationContext.empty());
+        assertThat(request.getNavigationContext()).isNull();
+        assertThat(request.hasNavigationContext()).isFalse();
 
+        // The CT02 cursor is a different case: it has no absence semantics and keeps its fresh default.
         request.setCt02Info(null);
         assertThat(request.getCt02Info().isNextPageNo()).isTrue();
     }
@@ -533,6 +550,13 @@ class TransactionViewRequestTest {
     @Test
     void programContextPredicatesDelegateAndAreNotMutualNegations() {
         TransactionViewRequest request = new TransactionViewRequest();
+
+        // With no area at all there is no CDEMO-PGM-CONTEXT byte, so neither predicate holds. This is
+        // the third state, and it is distinct from both enter and re-enter.
+        assertThat(request.isEnterContext()).isFalse();
+        assertThat(request.isReenterContext()).isFalse();
+
+        request.setNavigationContext(NavigationContext.empty());
         assertThat(request.isEnterContext()).isTrue();
         assertThat(request.isReenterContext()).isFalse();
 
@@ -649,12 +673,14 @@ class TransactionViewRequestTest {
         assertThat(request.getMname()).hasSize(30);
         assertThat(request.getMcity()).hasSize(25);
         assertThat(request.getErrmsg()).hasSize(78);
-        assertThat(request.getNavigationContext()).isEqualTo(NavigationContext.empty());
+        assertThat(request.getNavigationContext())
+                .as("a null commarea argument is preserved, not completed")
+                .isNull();
         assertThat(request.getCt02Info().isNextPageNo()).isTrue();
     }
 
     @Test
-    void toStringMasksNothingAndIsKeyedByCopybookNames() {
+    void toStringIsKeyedByCopybookNamesAndMasksTheIdentifiers() {
         TransactionViewRequest request = new TransactionViewRequest();
         request.setCardnin("4111111111111111");
         request.setActidin("00000000011");
@@ -662,12 +688,41 @@ class TransactionViewRequestTest {
         request.requestCursor(ScreenField.CARDNIN);
 
         String rendering = request.toString();
-        assertThat(rendering).contains("CARDNINI=4111111111111111");
-        assertThat(rendering).contains("ACTIDINI=00000000011");
-        assertThat(rendering).contains("MIDI=123456789");
+        // Keyed by the symbolic map's own item names, so a reader can line the rendering up against
+        // COTRN02.CPY - and the two identifying fields are masked to their last four characters by the
+        // module's single diagnostic policy. The accessors still return them in full, which is what the
+        // payload, the 160-byte image and the parity differ see.
+        assertThat(rendering)
+                .doesNotContain("4111111111111111", "00000000011")
+                .contains("CARDNINI=************1111")
+                .contains("ACTIDINI=*******0011");
+        assertThat(rendering)
+                .as("a merchant id identifies a business rather than a cardholder, so it stays legible")
+                .contains("MIDI=123456789");
         assertThat(rendering).contains("(cursor)");
         assertThat(rendering).contains("CT02", "COTRN02C", "COTRN2AI");
-        assertThat(rendering).doesNotContain("****", "REDACTED");
+        assertThat(request.getCardnin()).isEqualTo("4111111111111111");
+        assertThat(request.getActidin()).isEqualTo("00000000011");
+    }
+
+    @Test
+    void toStringCarriesTheCommareaRedactedBecauseThatCarrierRedactsItsOwnIdentifiers() {
+        // The carried CARDDEMO-COMMAREA renders itself: common.NavigationContext withholds
+        // CDEMO-CARD-NUM, CDEMO-ACCT-ID, CDEMO-CUST-ID and the three customer names from its own
+        // diagnostic rendering, and this payload embeds that rendering rather than reaching past it to
+        // the values. The values themselves are untouched: they are still on the wire and still in the
+        // 160-byte image.
+        TransactionViewRequest request = new TransactionViewRequest();
+        request.setNavigationContext(NavigationContext.empty()
+                .withCardNum(4_111_111_111_111_111L)
+                .withUserId("ADMIN001"));
+
+        String rendering = request.toString();
+
+        assertThat(rendering).contains("cardNum=************1111");
+        assertThat(rendering).doesNotContain("4111111111111111");
+        assertThat(request.getNavigationContext().cardNum()).isEqualTo(4_111_111_111_111_111L);
+        assertThat(request.getNavigationContext().userId()).isEqualTo("ADMIN001");
     }
 
     @Test
@@ -904,6 +959,75 @@ class TransactionViewRequestTest {
             assertThat(prefix).isEqualTo(TransactionViewRequest.METADATA_PREFIX_LENGTH);
             assertThat(spans.get(2).offset() + spans.get(2).length())
                     .isEqualTo(field.payloadOffset());
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The AID: every arm of EVALUATE EIBAID at COTRN02C.cbl:133-152 must be selectable.
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    void theAidTokenIsFiveCharactersAndDefaultsToNoKeyResolved() {
+        assertThat(TransactionViewRequest.AID_LENGTH)
+                .isEqualTo(PfKeyResolver.AID_TOKEN_LENGTH);
+        assertThat(TransactionViewRequest.AID_FIELD).isEqualTo("EIBAID");
+        assertThat(new TransactionViewRequest().getAid())
+                .isEqualTo("     ")
+                .hasSize(TransactionViewRequest.AID_LENGTH);
+    }
+
+    @Test
+    void allFiveArmsOfTheKeyEvaluateAreSelectable() {
+        TransactionViewRequest request = new TransactionViewRequest();
+
+        // The four named arms - ENTER adds the transaction, PF3 returns, PF4 clears, PF5 copies the
+        // last transaction. Without this member four of the five arms are unreachable through the API.
+        for (PfKeyResolver.AidKey key : List.of(PfKeyResolver.AidKey.ENTER,
+                PfKeyResolver.AidKey.PFK03, PfKeyResolver.AidKey.PFK04,
+                PfKeyResolver.AidKey.PFK05)) {
+            request.setAid(key.token());
+            assertThat(request.getAid()).isEqualTo(key.token())
+                    .hasSize(TransactionViewRequest.AID_LENGTH);
+        }
+
+        // ...and WHEN OTHER, which spaces select.
+        request.setAid(null);
+        assertThat(request.getAid()).isEqualTo("     ");
+    }
+
+    @Test
+    void theAidIsPartOfValueSemanticsAndSurvivesAJsonRoundTrip() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        TransactionViewRequest before = new TransactionViewRequest();
+        before.setAid(PfKeyResolver.AidKey.PFK04.token());
+        before.setCardnin("4111111111111111");
+
+        TransactionViewRequest after =
+                mapper.readValue(mapper.writeValueAsString(before), TransactionViewRequest.class);
+
+        assertThat(after.getAid()).isEqualTo(PfKeyResolver.AidKey.PFK04.token());
+        assertThat(after).isEqualTo(before);
+
+        // Two requests differing only in the key pressed are different requests.
+        TransactionViewRequest other = new TransactionViewRequest();
+        other.setCardnin("4111111111111111");
+        other.setAid(PfKeyResolver.AidKey.PFK05.token());
+        assertThat(other).isNotEqualTo(before);
+    }
+
+    @Test
+    void anOverLongAidTokenIsRefusedByNameWithoutEchoingIt() {
+        assertThatThrownBy(() -> new TransactionViewRequest().setAid("PFK012"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(TransactionViewRequest.AID_FIELD)
+                .hasMessageContaining("6 character(s)");
+    }
+
+    @Test
+    void theAidIsNotAScreenFieldAndDoesNotWidenTheProjection() {
+        assertThat(ScreenField.values()).hasSize(TransactionViewRequest.PAYLOAD_FIELD_COUNT);
+        for (ScreenField field : ScreenField.values()) {
+            assertThat(field.inputItem()).isNotEqualTo(TransactionViewRequest.AID_FIELD);
         }
     }
 

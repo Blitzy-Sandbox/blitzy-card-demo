@@ -112,7 +112,7 @@ class DataSourceConfigWiringTest {
          */
         private static DatasetBinding accountShapedBinding() {
             return new DatasetBinding("TEST.M2.ACCTDATA.VSAM.KSDS", "ksds", false, "F", 0, 300,
-                    "CVACT01Y", 11, null, null);
+                    "CVACT01Y", 11, null, null, null);
         }
 
         @Test
@@ -176,9 +176,9 @@ class DataSourceConfigWiringTest {
         @DisplayName("The sparse components stay distinguishable from zero and from absent")
         void theSparseComponentsStayDistinguishable() {
             DatasetBinding sequential = new DatasetBinding("TEST.M2.TRANREPT", "sequential", true,
-                    "FB", 0, 133, null, null, null, null);
+                    "FB", 0, 133, null, null, null, null, null);
             DatasetBinding alternateIndex = new DatasetBinding("TEST.M2.CARDDATA.AIX.PATH",
-                    "aix-path", false, null, null, 150, "CVACT02Y", 11, "CARDDAT",
+                    "aix-path", false, null, null, 150, "CVACT02Y", 11, null, "CARDDAT",
                     "CARD-ACCT-ID");
 
             assertThat(sequential.gdg()).isTrue();

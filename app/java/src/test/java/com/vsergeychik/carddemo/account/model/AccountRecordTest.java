@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.account.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
@@ -2052,20 +2053,26 @@ class AccountRecordTest {
         }
 
         @Test
-        @DisplayName("A freshly initialised monetary span is the zone F all-digits form, not '{'")
-        void aFreshMonetarySpanIsTheZoneFForm() {
-            // Worth stating because it is easy to expect '{'. Initialisation zero-fills the span, giving
-            // the unsigned zoned form, which decodes as positive zero all the same. Both forms therefore
-            // have to decode, and both are covered above.
+        @DisplayName("A freshly established monetary span carries a positive-zero overpunch")
+        void aFreshMonetarySpanCarriesAPositiveZeroOverpunch() {
+            // Measured against app/data/ASCII/acctdata.txt, which holds 250 '{' and no '}' - one per
+            // signed field of its 50 records - and renders both of the first record's zero cycle
+            // amounts as 00000000000{. A signed span is signed in storage whatever its value, so an
+            // established span whose trailing byte were a plain '0' would match no row of
+            // production-shaped data and would read back as an unsigned quantity.
             AccountRecord fresh = new AccountRecord(ASCII);
 
-            assertThat(fresh.rawAcctCurrBal()).isEqualTo("000000000000");
+            assertThat(fresh.rawAcctCurrBal()).isEqualTo("00000000000{");
             assertThat(fresh.getAcctCurrBal()).isEqualByComparingTo(SCALE_2_ZERO);
 
             fresh.setAcctCurrBal(SCALE_2_ZERO);
             assertThat(fresh.rawAcctCurrBal())
-                    .as("once written, zero is stored in the overpunched form")
+                    .as("writing zero over it changes nothing, which is the point")
                     .isEqualTo("00000000000{");
+            assertThat(asciiCodec.decodeSignedScaled("000000000000", 2))
+                    .as("the unsigned zone F form still decodes, because a row written by a program "
+                            + "that treated the picture as unsigned has to remain readable")
+                    .isEqualByComparingTo(SCALE_2_ZERO);
         }
 
         @Test
@@ -2323,26 +2330,49 @@ class AccountRecordTest {
         void toStringNamesEveryField() {
             String rendered = decodedRow1().toString();
 
+            // Every copybook name is still named, because a diagnostic that omitted a field name
+            // could not tell a reader which field was wrong. What has changed is that the VALUES are
+            // no longer disclosed: this is an account record, and its balances, limits, dates and
+            // postcode are the cardholder's.
             assertThat(rendered)
                     .startsWith("AccountRecord[")
                     .endsWith("]")
-                    .contains(AccountRecord.ACCT_ID_NAME + "=" + ROW_1_ACCT_ID_IMAGE)
+                    .contains(AccountRecord.ACCT_ID_NAME + "=")
                     .contains(AccountRecord.ACCT_ACTIVE_STATUS_NAME + "='" + ROW_1_ACTIVE_STATUS + "'")
-                    .contains(AccountRecord.ACCT_CURR_BAL_NAME + "=" + ROW_1_CURR_BAL_RAW)
-                    .contains(AccountRecord.ACCT_CREDIT_LIMIT_NAME + "=" + ROW_1_CREDIT_LIMIT_RAW)
-                    .contains(AccountRecord.ACCT_CASH_CREDIT_LIMIT_NAME + "="
-                            + ROW_1_CASH_CREDIT_LIMIT_RAW)
-                    .contains(AccountRecord.ACCT_OPEN_DATE_NAME + "='" + ROW_1_OPEN_DATE + "'")
-                    .contains(AccountRecord.ACCT_EXPIRAION_DATE_NAME + "='"
-                            + ROW_1_EXPIRAION_DATE + "'")
-                    .contains(AccountRecord.ACCT_REISSUE_DATE_NAME + "='" + ROW_1_REISSUE_DATE + "'")
-                    .contains(AccountRecord.ACCT_CURR_CYC_CREDIT_NAME + "="
-                            + ROW_1_CURR_CYC_CREDIT_RAW)
-                    .contains(AccountRecord.ACCT_CURR_CYC_DEBIT_NAME + "=" + ROW_1_CURR_CYC_DEBIT_RAW)
-                    .contains(AccountRecord.ACCT_ADDR_ZIP_NAME + "='" + FIXTURE_ADDR_ZIP + "'")
-                    .contains(AccountRecord.ACCT_GROUP_ID_NAME + "='" + FIXTURE_GROUP_ID + "'")
+                    .contains(AccountRecord.ACCT_CURR_BAL_NAME + "=")
+                    .contains(AccountRecord.ACCT_CREDIT_LIMIT_NAME + "=")
+                    .contains(AccountRecord.ACCT_CASH_CREDIT_LIMIT_NAME + "=")
+                    .contains(AccountRecord.ACCT_OPEN_DATE_NAME + "=")
+                    .contains(AccountRecord.ACCT_EXPIRAION_DATE_NAME + "=")
+                    .contains(AccountRecord.ACCT_REISSUE_DATE_NAME + "=")
+                    .contains(AccountRecord.ACCT_CURR_CYC_CREDIT_NAME + "=")
+                    .contains(AccountRecord.ACCT_CURR_CYC_DEBIT_NAME + "=")
+                    .contains(AccountRecord.ACCT_ADDR_ZIP_NAME + "=")
+                    .contains(AccountRecord.ACCT_GROUP_ID_NAME + "=")
                     .contains("charset=US-ASCII");
         }
+
+        @Test
+        @DisplayName("toString identifies the record but discloses neither money nor postcode")
+        void toStringIdentifiesWithoutDisclosing() {
+            String rendered = decodedRow1().toString();
+
+            // The account identifier survives only as its last four digits, which is enough to tell
+            // two records apart in a log and not enough to reconstruct either.
+            assertThat(rendered).doesNotContain(ROW_1_ACCT_ID_IMAGE)
+                    .contains(DiagnosticText.masked(ROW_1_ACCT_ID_IMAGE));
+            assertThat(rendered)
+                    .doesNotContain(ROW_1_CURR_BAL_RAW)
+                    .doesNotContain(ROW_1_CREDIT_LIMIT_RAW)
+                    .doesNotContain(ROW_1_CASH_CREDIT_LIMIT_RAW)
+                    .doesNotContain(ROW_1_CURR_CYC_CREDIT_RAW)
+                    .doesNotContain(ROW_1_CURR_CYC_DEBIT_RAW)
+                    .doesNotContain(FIXTURE_ADDR_ZIP.trim());
+            // The widths are still reported, because a width is shape rather than content and a
+            // width mismatch is the commonest fixed-width defect there is.
+            assertThat(rendered).contains(DiagnosticText.OMITTED + ":" + ROW_1_CURR_BAL_RAW.length());
+        }
+
 
         @Test
         @DisplayName("toString summarises the 178-byte FILLER rather than printing it, both ways")

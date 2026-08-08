@@ -923,11 +923,13 @@ class DisclosureGroupRecordTest {
         @Test
         @DisplayName("A freshly initialised record reads 0.00 at scale 2 and is zero")
         void aFreshRecordIsZero() {
-            // A fresh record's rate image is the unsigned zoned form 000000, which is a different byte
-            // sequence from the stored 00000{ but the same value. Both must satisfy the predicate.
+            // A fresh record's rate image is 00000{ - a signed span is signed in storage whatever its
+            // value, and that is how every zero-valued signed field in app/data/ASCII/discgrp.txt and
+            // tcatbal.txt is stored. The unsigned zoned form 000000 has the same value and must also
+            // satisfy the predicate, which the decode assertion below covers.
             DisclosureGroupRecord fresh = new DisclosureGroupRecord(ASCII);
 
-            assertThat(fresh.disIntRateImage()).isEqualTo("000000");
+            assertThat(fresh.disIntRateImage()).isEqualTo("00000{");
             assertThat(fresh.disIntRate()).hasScaleOf(2).isEqualByComparingTo(BigDecimal.ZERO);
             assertThat(fresh.disIntRateIsZero()).isTrue();
             assertThat(fresh.disIntRateIsNotZero()).isFalse();
@@ -1309,14 +1311,15 @@ class DisclosureGroupRecordTest {
         }
 
         @Test
-        @DisplayName("An all-default record is 50 bytes: 12 spaces, 0000, 000000, then 28 spaces")
+        @DisplayName("An all-default record is 50 bytes: 12 spaces, 0000, 00000{, then 28 spaces")
         void anAllDefaultRecordIsFullyInitialised() {
             // The complete initialised image, so every span's default is visible in one assertion.
-            // Character spans get the space byte; numeric DISPLAY spans get the zero byte.
+            // Character spans get the space byte; unsigned numeric DISPLAY spans get the zero byte; a
+            // signed span gets zeros with a positive-zero sign overpunch in its trailing byte.
             DisclosureGroupRecord fresh = new DisclosureGroupRecord(ASCII);
 
             assertThat(fresh.encodeToString())
-                    .isEqualTo(" ".repeat(10) + " ".repeat(2) + "0000" + "000000" + " ".repeat(28))
+                    .isEqualTo(" ".repeat(10) + " ".repeat(2) + "0000" + "00000{" + " ".repeat(28))
                     .hasSize(DisclosureGroupRecord.RECORD_LENGTH);
             assertThat(fresh.disAcctGroupId()).isEqualTo(" ".repeat(10));
             assertThat(fresh.disTranTypeCd()).isEqualTo("  ");
@@ -1459,7 +1462,7 @@ class DisclosureGroupRecordTest {
             "123456.78,   3456.78,   34567H",
             "-123456.78, -3456.78,   34567Q",
             "10000.00,    0.00,      00000{",
-            "-10000.00,   0.00,      00000{",
+            "-10000.00,   0.00,      00000}",
             "99999.99,    9999.99,   99999I"
         })
         @DisplayName("G24 - integer digits beyond four are discarded on the LEFT, and nothing throws")
@@ -1468,6 +1471,12 @@ class DisclosureGroupRecordTest {
             // its LOW-order digits: 123456.78 into S9(04)V99 stores 3456.78, never 1234.56. COBOL
             // reports that loss only under ON SIZE ERROR, which appears nowhere in this codebase, so
             // no exception is thrown - the value is quietly wrapped, exactly as the mainframe would.
+            //
+            // The -10000.00 case is the one to read carefully. Discarding high-order digits leaves no
+            // digit set, but the receiver's sign is the SENDING item's sign, not a property of the
+            // digits that survived, so the stored image is 00000} - a negative zero. Reading it back
+            // as a BigDecimal reports 0.00, because a BigDecimal has no negative zero; the stored
+            // bytes keep the distinction the value cannot.
             DisclosureGroupRecord record = new DisclosureGroupRecord(ASCII);
             record.disIntRate(new BigDecimal(sent));
 

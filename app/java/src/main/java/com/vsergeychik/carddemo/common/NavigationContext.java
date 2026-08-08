@@ -1,6 +1,16 @@
 package com.vsergeychik.carddemo.common;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.JsonSerializer;
+import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -180,9 +190,12 @@ import java.util.Objects;
  *
  * <ul>
  *   <li><strong>JSON</strong> is the REST wire format. A Java record's components are its JSON
- *       properties, so the payload is exactly the sixteen copybook fields and no custom serialiser,
- *       no mix-in and no converter is needed; a round trip preserves trailing spaces because no
- *       component is trimmed. The four condition predicates are marked {@link JsonIgnore} because
+ *       properties, so the payload is exactly the sixteen copybook fields; a round trip preserves
+ *       trailing spaces because no component is trimmed. Exactly one component carries a custom
+ *       serialiser: {@link #cardNum()} travels as a <strong>{@value #CARD_NUM_LENGTH}-digit decimal
+ *       string</strong> rather than as a JSON number, for the reason set out under
+ *       {@link CardNumberSerializer}. The four condition predicates are marked {@link JsonIgnore}
+ *       because
  *       they are <em>derived</em> from {@code CDEMO-USER-TYPE} and {@code CDEMO-PGM-CONTEXT} rather
  *       than stored beside them. Emitting them would put four properties on the wire that the
  *       canonical constructor cannot accept back - making a serialise-then-deserialise round trip
@@ -199,13 +212,21 @@ import java.util.Objects;
  * the left, and this class implements neither rule itself. Keeping the move rules in a single seam
  * is what makes the direction of a truncation reviewable instead of accidental.
  *
- * <h2>Credentials travel in the clear, deliberately</h2>
+ * <h2>Credentials travel in the clear, deliberately - but diagnostics do not</h2>
  *
- * {@code CDEMO-USER-ID} and {@code CDEMO-USER-TYPE} are carried exactly as the COMMAREA carries
- * them: unmasked, unhashed, unsigned and unencrypted, and {@code toString()} reports them in full.
- * That is the observable behaviour of the legacy system, and this is a like-for-like migration:
- * adding protection here would change behaviour and would pull in an authentication framework that
- * is explicitly out of scope. The property is documented rather than hidden so it stays visible.
+ * {@code CDEMO-USER-ID} and {@code CDEMO-USER-TYPE} are <strong>carried</strong> exactly as the
+ * COMMAREA carries them: unmasked, unhashed, unsigned and unencrypted. That is the observable
+ * behaviour of the legacy system, and this is a like-for-like migration - adding protection to the
+ * carried value would change behaviour and would pull in an authentication framework that is
+ * explicitly out of scope. The property is documented rather than hidden so it stays visible.
+ *
+ * <p><strong>Carrying a value and rendering it are different acts, and only the first is
+ * behaviour.</strong> {@link #toString()} is a diagnostic: no COBOL program produces it, no parity
+ * case compares it, and nothing serialises through it. It therefore masks the account and card
+ * identifiers and withholds the carried customer name, per the single policy in
+ * {@link DiagnosticText} - which changes no byte that any caller, dataset or parity case can observe.
+ * The user id and user type are still rendered in full, because a user id is the thing a log is read
+ * to correlate on and it is not a credential; the password never reaches this record at all.
  *
  * <h2>Usage</h2>
  *
@@ -266,6 +287,8 @@ public record NavigationContext(String fromTranid,
                                 String custLname,
                                 long acctId,
                                 String acctStatus,
+                                @JsonSerialize(using = CardNumberSerializer.class)
+                                @JsonDeserialize(using = CardNumberDeserializer.class)
                                 long cardNum,
                                 String lastMap,
                                 String lastMapset) {
@@ -525,6 +548,23 @@ public record NavigationContext(String fromTranid,
      * {@link #empty()} builds each character field's initial run.
      */
     private static final String SPACE = " ";
+
+    /**
+     * What {@link #toString()} prints in place of an identifying value, and what the two guards below
+     * print in place of a rejected one.
+     *
+     * <p>The same marker the sign-on payload already uses for its password field, so one convention
+     * covers every redacted diagnostic in this module. It is deliberately a fixed literal and carries
+     * no length, no prefix and no last-four digits: any of those would be a partial disclosure, and a
+     * diagnostic has no need of them.
+     */
+    public static final String REDACTED = "[REDACTED]";
+
+    /**
+     * The single character {@code '0'}, from which {@link #cardNumberImage(long)} builds the
+     * zero-fill that {@code PIC 9(16)} implies on the left of a shorter value.
+     */
+    private static final String ZERO = "0";
 
     /**
      * The ordered, self-checking descriptor list of {@code 01 CARDDEMO-COMMAREA}: sixteen storage
@@ -1234,9 +1274,9 @@ public record NavigationContext(String fromTranid,
                 + "COBOL record, so move SPACES explicitly or start from NavigationContext.empty()");
         if (value.length() > declaredWidth) {
             throw new IllegalArgumentException("Field " + cobolName + " is declared PIC X("
-                    + declaredWidth + ") but was given " + value.length() + " character(s): '" + value
-                    + "'. CARDDEMO-COMMAREA is " + COMMAREA_LENGTH + " bytes and cannot hold the "
-                    + "surplus. To shorten the value deliberately, pass it through "
+                    + declaredWidth + ") but was given " + value.length() + " character(s), value "
+                    + REDACTED + ". CARDDEMO-COMMAREA is " + COMMAREA_LENGTH + " bytes and cannot "
+                    + "hold the surplus. To shorten the value deliberately, pass it through "
                     + "FixedWidthCodec.movePicX(value, " + declaredWidth + "), which truncates on the "
                     + "right as a COBOL alphanumeric MOVE does");
         }
@@ -1256,15 +1296,16 @@ public record NavigationContext(String fromTranid,
         if (value < 0) {
             throw new IllegalArgumentException("Field " + cobolName + " is declared PIC 9("
                     + declaredDigits + "), an unsigned picture with no sign position, so it cannot "
-                    + "hold " + value + ". A signed value belongs in a PIC S9 field");
+                    + "hold a negative value (" + REDACTED + "). A signed value belongs in a PIC S9 "
+                    + "field");
         }
         String digits = Long.toString(value);
         if (digits.length() > declaredDigits) {
             throw new IllegalArgumentException("Field " + cobolName + " is declared PIC 9("
-                    + declaredDigits + ") but " + value + " needs " + digits.length()
-                    + " digit(s). Storing it would silently drop the high-order digit(s); to do that "
-                    + "deliberately, pass the value through FixedWidthCodec.movePic9(value, "
-                    + declaredDigits + ")");
+                    + declaredDigits + ") but the value given (" + REDACTED + ") needs "
+                    + digits.length() + " digit(s). Storing it would silently drop the high-order "
+                    + "digit(s); to do that deliberately, pass the value through "
+                    + "FixedWidthCodec.movePic9(value, " + declaredDigits + ")");
         }
         return value;
     }
@@ -1276,5 +1317,204 @@ public record NavigationContext(String fromTranid,
      */
     private static int requireUnsignedDigits(int value, int declaredDigits, String cobolName) {
         return (int) requireUnsignedDigits((long) value, declaredDigits, cobolName);
+    }
+
+    /**
+     * A diagnostic rendering that discloses the navigation state and withholds the cardholder data, per
+     * {@link SensitiveDiagnostics}.
+     *
+     * <p>This override matters more than any other in the module. {@code COCOM01Y} is copied by all
+     * <strong>seventeen</strong> online programs, so this record is a component of every request and
+     * response DTO in the system - and a record's generated {@code toString} renders every component.
+     * Inheriting it published the carried customer's full name, the customer and account identifiers and
+     * the sixteen-digit card number from any log line, exception message or debugger view that rendered
+     * any of those DTOs, including the ones whose own fields are entirely innocuous. Overriding it here
+     * closes that path for all seventeen at once.
+     *
+     * <p>What stays legible is the navigation state itself - the from and to transaction and program
+     * names, the user id and type, the program context and the last map and mapset. That is precisely
+     * what a pseudo-conversational flow defect is diagnosed from: rule R6 moves this whole area into the
+     * request and response payloads, so when navigation goes wrong these are the fields that say why.
+     * The user id is an eight-character operator id, not a personal identifier, and
+     * {@code app/cbl/COSGN00C.cbl} treats it as the routing key it is.
+     *
+     * <p>{@code equals} and {@code hashCode} remain exactly as the record generates them, over every
+     * component. They are value semantics and disclose nothing, and the parity harness depends on them
+     * comparing the whole area.
+     *
+     * @return a rendering safe to log, never {@code null}
+     */
+    @Override
+    public String toString() {
+        return "NavigationContext[fromTranid=" + fromTranid
+                + ", fromProgram=" + fromProgram
+                + ", toTranid=" + toTranid
+                + ", toProgram=" + toProgram
+                + ", userId=" + userId
+                + ", userType=" + userType
+                + ", pgmContext=" + pgmContext
+                + ", custId=" + SensitiveDiagnostics.maskIdentifier(custId, CUST_ID_LENGTH)
+                + ", custFname=" + SensitiveDiagnostics.describeText(custFname)
+                + ", custMname=" + SensitiveDiagnostics.describeText(custMname)
+                + ", custLname=" + SensitiveDiagnostics.describeText(custLname)
+                + ", acctId=" + SensitiveDiagnostics.maskIdentifier(acctId, ACCT_ID_LENGTH)
+                + ", acctStatus=" + acctStatus
+                + ", cardNum=" + SensitiveDiagnostics.maskPan(cardNum, CARD_NUM_LENGTH)
+                + ", lastMap=" + lastMap
+                + ", lastMapset=" + lastMapset
+                + ']';
+    }
+
+    // =================================================================================================
+    // The JSON representation of CDEMO-CARD-NUM. Sixteen digits do not fit in the exact-integer range
+    // of every JSON client, so the wire form is a string - and the conversion lives here, at the wire
+    // boundary, rather than anywhere a value is computed.
+    // =================================================================================================
+
+    /**
+     * The {@value #CARD_NUM_LENGTH}-digit decimal image of {@link #cardNum()}, zero-filled on the left
+     * exactly as {@code PIC 9(16)} stores it.
+     *
+     * <p>This is a rendering of an already-valid value, not a {@code MOVE}: the canonical constructor
+     * has already refused anything negative or wider than {@value #CARD_NUM_LENGTH} digits, so no
+     * truncation is reachable from here and none is implemented. The padding and truncating
+     * {@code MOVE} rules stay where they belong, in {@link FixedWidthCodec}.
+     *
+     * @param cardNumber the value of {@code CDEMO-CARD-NUM}; must be zero or positive and at most
+     *                   {@value #CARD_NUM_LENGTH} digits
+     * @return exactly {@value #CARD_NUM_LENGTH} decimal digits
+     */
+    public static String cardNumberImage(long cardNumber) {
+        String digits = Long.toString(requireUnsignedDigits(cardNumber, CARD_NUM_LENGTH,
+                CARD_NUM_FIELD));
+        return ZERO.repeat(CARD_NUM_LENGTH - digits.length()) + digits;
+    }
+
+    /**
+     * Reads a {@code CDEMO-CARD-NUM} wire value: a string of at most {@value #CARD_NUM_LENGTH} decimal
+     * digits, with or without its leading zeros.
+     *
+     * @param image the digits as they arrived on the wire; must not be {@code null}
+     * @return the value the digits denote
+     * @throws IllegalArgumentException if {@code image} is empty, longer than
+     *                                  {@value #CARD_NUM_LENGTH} characters, or holds anything other
+     *                                  than {@code '0'} through {@code '9'} - a sign, a space, a
+     *                                  separator or a decimal point included. The message names the
+     *                                  field and the length and never the value
+     */
+    public static long cardNumberOfImage(String image) {
+        Objects.requireNonNull(image, "Field " + CARD_NUM_FIELD + " requires a value; send the "
+                + CARD_NUM_LENGTH + "-digit string, or 0 for the initialised state");
+        if (image.isEmpty() || image.length() > CARD_NUM_LENGTH) {
+            throw new IllegalArgumentException("Field " + CARD_NUM_FIELD + " is declared PIC 9("
+                    + CARD_NUM_LENGTH + ") and is carried as a decimal string of 1 to "
+                    + CARD_NUM_LENGTH + " digits, but " + image.length() + " character(s) arrived "
+                    + "(value " + REDACTED + ")");
+        }
+        for (int index = 0; index < image.length(); index++) {
+            char character = image.charAt(index);
+            if (character < '0' || character > '9') {
+                throw new IllegalArgumentException("Field " + CARD_NUM_FIELD + " is declared PIC 9("
+                        + CARD_NUM_LENGTH + ") and accepts only the digits 0 to 9, but the character "
+                        + "at position " + (index + 1) + " is neither (value " + REDACTED + ")");
+            }
+        }
+        return Long.parseLong(image);
+    }
+
+    /**
+     * Writes {@code CDEMO-CARD-NUM} to JSON as a {@value NavigationContext#CARD_NUM_LENGTH}-digit
+     * decimal <strong>string</strong>.
+     *
+     * <h2>Why a string and not a number</h2>
+     * {@code CDEMO-CARD-NUM} is {@code PIC 9(16)} - {@code app/cpy/COCOM01Y.cpy} line 41 - so a
+     * populated value has sixteen significant digits and can exceed 9,007,199,254,740,991, the largest
+     * integer a IEEE-754 double can represent exactly. JSON does not bound the precision of a number,
+     * but a great many clients parse every number into a double, so a sixteen-digit card number sent as
+     * a JSON number can arrive with a different final digit and no error anywhere. A card number whose
+     * digits change in transit is not a rounding inconvenience: it identifies a different card. The
+     * string form has no such failure mode, and the leading zeros the {@code PICTURE} clause implies
+     * survive it as well.
+     *
+     * <p>The numeric form is not lost, and this is the important half of the design: the component
+     * stays a {@code long}, every internal read and every arithmetic use is unchanged, and
+     * {@link NavigationContext#toFixedWidth(FixedWidthCodec)} still writes the sixteen zoned bytes
+     * through the codec. The conversion happens at the wire boundary and nowhere else.
+     */
+    public static final class CardNumberSerializer extends JsonSerializer<Long> {
+
+        /** Creates the serializer. Stateless, so Jackson may share one instance. */
+        public CardNumberSerializer() {
+            // Intentionally empty: the conversion is a pure function of its argument.
+        }
+
+        /**
+         * Writes the value as its {@value NavigationContext#CARD_NUM_LENGTH}-digit string.
+         *
+         * @param value      the card number; never {@code null} for a primitive component
+         * @param generator  the JSON generator to write to
+         * @param serializers the provider, unused
+         * @throws IOException if the generator cannot be written to
+         */
+        @Override
+        public void serialize(Long value, JsonGenerator generator, SerializerProvider serializers)
+                throws IOException {
+            generator.writeString(cardNumberImage(value));
+        }
+    }
+
+    /**
+     * Reads {@code CDEMO-CARD-NUM} from JSON, accepting <strong>only</strong> a string of decimal
+     * digits.
+     *
+     * <p>A JSON number is refused rather than accepted leniently, and that refusal is the point of the
+     * design: by the time a sixteen-digit card number has been parsed into a client's double it may
+     * already be a different card number, and accepting it would preserve exactly the defect the string
+     * form exists to remove. The refusal is a {@code 400} through
+     * {@code config.WebConfig.CobolErrorHandler}, which reports neither the value nor the parser's own
+     * text.
+     *
+     * <p>An explicit JSON {@code null} reads as {@code 0}: {@code PIC 9(16)} has no absent state, and
+     * zero is what {@code INITIALIZE CARDDEMO-COMMAREA} leaves in the field.
+     */
+    public static final class CardNumberDeserializer extends JsonDeserializer<Long> {
+
+        /** Creates the deserializer. Stateless, so Jackson may share one instance. */
+        public CardNumberDeserializer() {
+            // Intentionally empty: the conversion is a pure function of its argument.
+        }
+
+        /**
+         * Reads the digits and returns the value they denote.
+         *
+         * @param parser  the parser positioned on the value
+         * @param context the deserialization context, unused
+         * @return the card number
+         * @throws IOException              if the parser cannot be read
+         * @throws IllegalArgumentException if the token is not a string, or the string is not 1 to
+         *                                  {@value NavigationContext#CARD_NUM_LENGTH} decimal digits
+         */
+        @Override
+        public Long deserialize(JsonParser parser, DeserializationContext context) throws IOException {
+            if (parser.currentToken() != JsonToken.VALUE_STRING) {
+                throw new IllegalArgumentException("Field " + CARD_NUM_FIELD + " is declared PIC 9("
+                        + CARD_NUM_LENGTH + ") and must be sent as a decimal string of up to "
+                        + CARD_NUM_LENGTH + " digits, because sixteen digits exceed the exact-integer "
+                        + "range of a JSON number in many clients");
+            }
+            return cardNumberOfImage(parser.getText());
+        }
+
+        /**
+         * The value an explicit JSON {@code null} reads as: {@code 0}, the initialised state of a
+         * {@code PIC 9} field.
+         *
+         * @param context the deserialization context, unused
+         * @return {@code 0}
+         */
+        @Override
+        public Long getNullValue(DeserializationContext context) {
+            return 0L;
+        }
     }
 }

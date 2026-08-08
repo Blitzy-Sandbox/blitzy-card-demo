@@ -1,8 +1,11 @@
 package com.vsergeychik.carddemo.common;
 
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.FillerHandling;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.ValueHandling;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.ZonedSign;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -17,6 +20,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
@@ -925,15 +929,21 @@ class FixedWidthRecordTest {
                     .isEqualTo(asAscii.toByteArray());
 
             // The EBCDIC alphabet is not contiguous with the ASCII one either: 'ABC' is C1 C2 C3, which
-            // US-ASCII cannot represent at all. Reading mainframe data under the wrong code page is
-            // therefore not a cosmetic error, it is unrecoverable.
+            // US-ASCII does not define at all. Reading mainframe data under the wrong code page is
+            // therefore not a cosmetic error, it is unrecoverable - so it is REPORTED rather than
+            // decoded into U+FFFD replacement characters, which is what new String(bytes, charset)
+            // would have produced: three plausible-looking characters that were never stored.
             byte[] ebcdicAbc = {(byte) 0xC1, (byte) 0xC2, (byte) 0xC3};
 
             assertThat(FixedWidthRecord.copyOf(ebcdicAbc, 3, EBCDIC).readString(0, 3))
                     .isEqualTo("ABC");
-            assertThat(FixedWidthRecord.copyOf(ebcdicAbc, 3, ASCII).readString(0, 3))
-                    .as("the very same bytes are not 'ABC' under US-ASCII")
-                    .isNotEqualTo("ABC");
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> FixedWidthRecord.copyOf(ebcdicAbc, 3, ASCII).readString(0, 3))
+                    .as("the very same bytes are not characters at all under US-ASCII, and are "
+                            + "refused rather than decoded to replacement characters that would "
+                            + "look like data")
+                    .withMessageContaining("not valid code page US-ASCII data")
+                    .withMessageNotContaining("\uFFFD");
         }
 
         @Test
@@ -1009,23 +1019,73 @@ class FixedWidthRecordTest {
         }
 
         @Test
-        @DisplayName("two charsets produce different bytes for the same non-ASCII character")
+        @DisplayName("two charsets produce different bytes for the same character")
         void theCharsetIsGenuinelyHonoured() {
-            String accented = "\u00e9";
-
             FixedWidthRecord asciiRecord = new FixedWidthRecord(1, ASCII);
             FixedWidthRecord ebcdicRecord = new FixedWidthRecord(1, EBCDIC);
-            asciiRecord.writeString(0, 1, accented);
-            ebcdicRecord.writeString(0, 1, accented);
+            asciiRecord.writeString(0, 1, "A");
+            ebcdicRecord.writeString(0, 1, "A");
 
             byte[] asciiBytes = asciiRecord.toByteArray();
             byte[] ebcdicBytes = ebcdicRecord.toByteArray();
 
-            assertThat(asciiBytes).as("US-ASCII cannot map the character and substitutes")
-                    .containsExactly((byte) '?');
-            assertThat(ebcdicBytes).as("IBM037 maps it to a real code point")
-                    .containsExactly((byte) 0x51);
+            assertThat(asciiBytes).as("'A' is 0x41 under US-ASCII").containsExactly((byte) 0x41);
+            assertThat(ebcdicBytes).as("and 0xC1 under IBM037").containsExactly((byte) 0xC1);
             assertThat(ebcdicBytes).isNotEqualTo(asciiBytes);
+        }
+
+        @Test
+        @DisplayName("two charsets produce different bytes for the same non-ASCII character")
+        void theCharsetIsGenuinelyHonouredForANonAsciiCharacter() {
+            String accented = "\u00e9";
+
+            FixedWidthRecord ebcdicRecord = new FixedWidthRecord(1, EBCDIC);
+            ebcdicRecord.writeString(0, 1, accented);
+
+            assertThat(ebcdicRecord.toByteArray()).as("IBM037 maps it to a real code point")
+                    .containsExactly((byte) 0x51);
+
+            // US-ASCII has no representation for the character at all, and an unrepresentable
+            // character is REPORTED rather than replaced. String.getBytes would have substituted
+            // '?' here: the record would still measure its declared width, the layout self-check
+            // would still pass, and a byte nobody chose would travel to the dataset and into the
+            // parity fingerprint as though it had been written deliberately. Failing instead is what
+            // makes the code page's repertoire part of the record's contract.
+            FixedWidthRecord asciiRecord = new FixedWidthRecord(1, ASCII);
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> asciiRecord.writeString(0, 1, accented))
+                    .withMessageContaining("US-ASCII")
+                    .as("the code page is named and the refusal says the character cannot be "
+                            + "represented in it - reported rather than replaced")
+                    .withMessageContaining("cannot represent")
+                    .satisfies(rejected -> assertThat(rejected.getMessage())
+                            .as("the offending characters are withheld: an exception message reaches "
+                                    + "logs and HTTP error bodies")
+                            .doesNotContain(accented));
+
+            assertThat(asciiRecord.toByteArray())
+                    .as("a rejected write leaves the span at its initial pad byte, unmodified")
+                    .containsExactly((byte) 0x20);
+        }
+
+        @Test
+        @DisplayName("a character one code page cannot map is refused there and written in the other")
+        void anUnmappableCharacterIsRefusedRatherThanSubstituted() {
+            String accented = "\u00e9";
+
+            FixedWidthRecord ebcdicRecord = new FixedWidthRecord(1, EBCDIC);
+            ebcdicRecord.writeString(0, 1, accented);
+
+            assertThat(ebcdicRecord.toByteArray()).as("IBM037 maps it to a real code point")
+                    .containsExactly((byte) 0x51);
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new FixedWidthRecord(1, ASCII).writeString(0, 1, accented))
+                    .as("US-ASCII cannot map it. Substituting '?' - which is what "
+                            + "String.getBytes(Charset) does - would write a value into the dataset "
+                            + "that no COBOL program could have produced, and it would then be "
+                            + "indistinguishable from a genuine question mark for ever after")
+                    .withMessageContaining("cannot represent");
         }
     }
 
@@ -1372,14 +1432,21 @@ class FixedWidthRecordTest {
         }
 
         @Test
-        @DisplayName("numeric spans take the zero byte and character spans the space byte")
+        @DisplayName("category defaults: zoned zeros with a sign where signed, spaces elsewhere")
         void theInitializeConventionIsApplied() {
             RecordLayout layout = accountRecordLayout();
 
             FixedWidthRecord record = layout.newRecord(ASCII);
 
-            assertThat(record.readSpan(layout.span("ACCT-ID"))).isEqualTo("00000000000");
-            assertThat(record.readSpan(layout.span("ACCT-CURR-BAL"))).isEqualTo("000000000000");
+            assertThat(record.readSpan(layout.span("ACCT-ID")))
+                    .as("an unsigned PIC 9 span has no sign position, so it is all zone-F zeros")
+                    .isEqualTo("00000000000");
+            assertThat(record.readSpan(layout.span("ACCT-CURR-BAL")))
+                    .as("a signed span's zero carries a positive-zero overpunch in its trailing "
+                            + "byte, exactly as every zero-valued signed field in "
+                            + "app/data/ASCII/acctdata.txt is stored - the fixture's first record "
+                            + "renders both zero cycle amounts as 00000000000{")
+                    .isEqualTo("00000000000{");
             assertThat(record.readSpan(layout.span("ACCT-OPEN-DATE"))).isEqualTo("          ");
             assertThat(record.recordLength()).isEqualTo(300);
             assertThat(record.toByteArray()).hasSize(300);
@@ -1403,24 +1470,40 @@ class FixedWidthRecordTest {
         }
 
         @Test
-        @DisplayName("initialise refuses a layout of a different declared length")
+        @DisplayName("both operations refuse a layout of a different declared length")
         void initialiseRejectsAMismatchedLayout() {
             FixedWidthRecord record = new FixedWidthRecord(50, ASCII);
 
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> record.initialise(accountRecordLayout()))
+                    .isThrownBy(() -> record.initialize(accountRecordLayout(),
+                            FillerHandling.WITH_FILLER, ValueHandling.CATEGORY_DEFAULTS))
                     .withMessageContaining("Layout declares a record length of 300")
                     .withMessageContaining("this record is 50 byte(s) wide");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> record.loadDeclaredValues(accountRecordLayout()))
+                    .withMessageContaining("Layout declares a record length of 300");
 
-            assertThatNullPointerException().isThrownBy(() -> record.initialise(null))
+            assertThatNullPointerException()
+                    .isThrownBy(() -> record.initialize(null, FillerHandling.WITH_FILLER,
+                            ValueHandling.CATEGORY_DEFAULTS))
                     .withMessageContaining("record layout is required");
+            assertThatNullPointerException().isThrownBy(() -> record.loadDeclaredValues(null))
+                    .withMessageContaining("record layout is required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> record.initialize(tranCatBalLayout(), null,
+                            ValueHandling.CATEGORY_DEFAULTS))
+                    .withMessageContaining("whether FILLER participates");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> record.initialize(tranCatBalLayout(),
+                            FillerHandling.WITH_FILLER, null))
+                    .withMessageContaining("what INITIALIZE moves");
             assertThatNullPointerException()
                     .isThrownBy(() -> FixedWidthRecord.forLayout(null, ASCII))
                     .withMessageContaining("record layout is required");
         }
 
         @Test
-        @DisplayName("initialise resets a dirty area and skips REDEFINES overlays")
+        @DisplayName("INITIALIZE resets a dirty area and skips REDEFINES overlays")
         void initialiseIsIdempotentAndSkipsOverlays() {
             FieldSpan acctId = FieldSpan.alphanumeric("CC-ACCT-ID", 0, 11);
             RecordLayout layout = RecordLayout.of(11,
@@ -1434,11 +1517,245 @@ class FixedWidthRecordTest {
                     .isEqualTo("           ");
 
             record.writeString(0, 11, "DIRTY");
-            record.initialise(layout);
+            record.initialize(layout, FillerHandling.WITH_FILLER, ValueHandling.CATEGORY_DEFAULTS);
 
             assertThat(record.readString(0, 11)).isEqualTo("           ");
             assertThat(layout.redefinitions()).hasSize(1);
             assertThat(layout.storageSpans()).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("every signed span's category default ends in a positive-zero overpunch")
+        void signedSpansInitialiseWithASignOverpunch() {
+            // Measured, not inferred. app/data/ASCII/acctdata.txt holds 250 '{' and no '}' - one per
+            // signed field of its 50 records - and its first record renders ACCT-CURR-BAL as
+            // 00000001940{ with both zero cycle amounts as 00000000000{. tcatbal.txt and discgrp.txt
+            // agree. A signed span whose trailing byte were a plain '0' would match no row of
+            // production-shaped data, and would read back as an unsigned quantity.
+            FixedWidthRecord tranCatBal = tranCatBalLayout().newRecord(ASCII);
+            FixedWidthRecord disclosure = disclosureGroupLayout().newRecord(ASCII);
+
+            assertThat(tranCatBal.readSpan(tranCatBalLayout().span("TRAN-CAT-BAL")))
+                    .as("CVTRA01Y's S9(09)V99 is 11 bytes: ten zoned zeros and a signed zero")
+                    .isEqualTo("0000000000" + ZonedSign.POSITIVE_ZERO)
+                    .hasSize(11);
+            assertThat(disclosure.readSpan(disclosureGroupLayout().span("DIS-INT-RATE")))
+                    .as("CVTRA02Y's S9(04)V99 is 6 bytes")
+                    .isEqualTo("00000" + ZonedSign.POSITIVE_ZERO)
+                    .hasSize(6);
+            assertThat(tranCatBal.readSpan(tranCatBalLayout().span("TRANCAT-ACCT-ID")))
+                    .as("an unsigned span is untouched by the sign rule")
+                    .isEqualTo("00000000000");
+        }
+
+        @Test
+        @DisplayName("the sign overpunch is a code-page byte, not a hard-coded 0x7B")
+        void theSignOverpunchIsResolvedThroughTheCodePage() {
+            FixedWidthRecord ascii = tranCatBalLayout().newRecord(ASCII);
+            FixedWidthRecord ebcdic = tranCatBalLayout().newRecord(EBCDIC);
+
+            assertThat(ascii.readBytes(27, 1))
+                    .as("'{' is 0x7B under US-ASCII")
+                    .containsExactly((byte) 0x7B);
+            assertThat(ebcdic.readBytes(27, 1))
+                    .as("'{' is 0xC0 under IBM037, so a hard-coded ASCII byte would corrupt every "
+                            + "signed field of an EBCDIC record")
+                    .containsExactly((byte) 0xC0);
+            assertThat(ebcdic.readSpan(tranCatBalLayout().span("TRAN-CAT-BAL")))
+                    .as("decoded under its own code page the image is identical either way")
+                    .isEqualTo("0000000000{");
+        }
+
+        @Test
+        @DisplayName("loadDeclaredValues applies literals only and leaves unvalued spans alone")
+        void loadDeclaredValuesLeavesUnvaluedStorageAlone() {
+            RecordLayout layout = curdateMmDdYyLayout();
+            FixedWidthRecord record = new FixedWidthRecord(layout.recordLength(), ASCII);
+            record.fill(0, layout.recordLength(), (byte) 'Z');
+
+            record.loadDeclaredValues(layout);
+
+            assertThat(record.readString(0, 8))
+                    .as("the two FILLER VALUE '/' spans are applied; the three numeric spans declare "
+                            + "no literal and so keep whatever the storage held - this operation "
+                            + "never invents a value a declaration did not state")
+                    .isEqualTo("ZZ/ZZ/ZZ");
+        }
+
+        @Test
+        @DisplayName("INITIALIZE without WITH FILLER leaves FILLER literals standing")
+        void initializeWithoutFillerSkipsFillerSpans() {
+            RecordLayout layout = curdateMmDdYyLayout();
+            FixedWidthRecord record = layout.newRecord(ASCII);
+            record.writeSpan(layout.span("WS-CURDATE-MM"), "12");
+
+            record.initialize(layout, FillerHandling.WITHOUT_FILLER,
+                    ValueHandling.CATEGORY_DEFAULTS);
+
+            assertThat(record.readString(0, 8))
+                    .as("COBOL's INITIALIZE skips FILLER unless WITH FILLER is written, so the "
+                            + "separators survive and only the named spans are blanked")
+                    .isEqualTo("00/00/00");
+        }
+
+        @Test
+        @DisplayName("INITIALIZE WITH FILLER blanks the separators; TO VALUE restores them")
+        void withFillerBlanksSeparatorsAndToValueRestoresThem() {
+            RecordLayout layout = curdateMmDdYyLayout();
+            FixedWidthRecord record = layout.newRecord(ASCII);
+
+            record.initialize(layout, FillerHandling.WITH_FILLER, ValueHandling.CATEGORY_DEFAULTS);
+            assertThat(record.readString(0, 8))
+                    .as("WITH FILLER treats a FILLER like any other span, so its literal is gone")
+                    .isEqualTo("00 00 00");
+
+            record.initialize(layout, FillerHandling.WITH_FILLER, ValueHandling.TO_VALUE);
+            assertThat(record.readString(0, 8))
+                    .as("ALL TO VALUE moves each declared literal and leaves a span that declares "
+                            + "none exactly as it was, which is why the digits are untouched here")
+                    .isEqualTo("00/00/00");
+        }
+
+        @Test
+        @DisplayName("forLayout is the composition of the two, and says so")
+        void forLayoutComposesTheTwoOperations() {
+            RecordLayout layout = curdateMmDdYyLayout();
+
+            FixedWidthRecord established = FixedWidthRecord.forLayout(layout, ASCII);
+
+            FixedWidthRecord byHand = new FixedWidthRecord(layout.recordLength(), ASCII);
+            byHand.initialize(layout, FillerHandling.WITH_FILLER, ValueHandling.CATEGORY_DEFAULTS);
+            byHand.loadDeclaredValues(layout);
+
+            assertThat(established.toByteArray()).isEqualTo(byHand.toByteArray());
+        }
+    }
+
+    // =============================================================================================
+    @Nested
+    @DisplayName("Strict transcoding - a coding failure is refused, never substituted")
+    class StrictTranscoding {
+
+        @Test
+        @DisplayName("an unrepresentable character is refused instead of becoming a question mark")
+        void anUnrepresentableCharacterIsRefused() {
+            FixedWidthRecord record = new FixedWidthRecord(10, ASCII);
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> record.writeString(0, 10, "CAF\u00c9"))
+                    .as("String.getBytes(US-ASCII) would have written 'CAF?' - a value no COBOL "
+                            + "program could have produced, and one that compares equal to a "
+                            + "genuine question mark for ever after")
+                    .withMessageContaining("cannot represent")
+                    .withMessageContaining("character position 3")
+                    .withMessageNotContaining("CAF");
+        }
+
+        @Test
+        @DisplayName("a malformed stored byte is refused instead of becoming U+FFFD")
+        void aMalformedStoredByteIsRefused() {
+            byte[] stored = {(byte) 0x41, (byte) 0xFF, (byte) 0x43};
+            FixedWidthRecord record = FixedWidthRecord.copyOf(stored, 3, ASCII);
+
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> record.readString(0, 3))
+                    .withMessageContaining("not valid code page US-ASCII data")
+                    .withMessageContaining("withheld deliberately");
+        }
+
+        @Test
+        @DisplayName("a coding failure names the field it happened in, and never its content")
+        void aCodingFailureNamesTheFieldNotTheContent() {
+            FixedWidthRecord record = new FixedWidthRecord(16, ASCII);
+            FieldSpan cardNumber = FieldSpan.alphanumeric("CARD-NUM", 0, 16);
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> record.writeSpan(cardNumber, "4111\u00a011112222333"))
+                    .withMessageContaining("CARD-NUM")
+                    .withMessageNotContaining("4111");
+        }
+
+        @Test
+        @DisplayName("the static seam serves callers holding an image but no record")
+        void theStaticSeamTranscodesWholeImages() {
+            byte[] encoded = FixedWidthRecord.encodeText("ABC", ASCII, "a test image");
+
+            assertThat(encoded).containsExactly((byte) 'A', (byte) 'B', (byte) 'C');
+            assertThat(FixedWidthRecord.decodeText(encoded, ASCII, "a test image")).isEqualTo("ABC");
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> FixedWidthRecord.decodeText(new byte[]{(byte) 0x80}, ASCII,
+                            "a test image"))
+                    .withMessageContaining("US-ASCII");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> FixedWidthRecord.decodeText(null, ASCII, "a test image"))
+                    .withMessageContaining("Stored bytes are required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> FixedWidthRecord.encodeText("A", ASCII, null))
+                    .withMessageContaining("subject is required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> FixedWidthRecord.encodeText(null, ASCII, "a test image"))
+                    .withMessageContaining("Text is required");
+        }
+
+        @Test
+        @DisplayName("a multi-byte code page is refused by the width assertion, not silently widened")
+        void aMultiByteCodePageIsRefusedByTheWidthAssertion() {
+            FixedWidthRecord.Transcoder utf8 =
+                    new FixedWidthRecord.Transcoder(java.nio.charset.StandardCharsets.UTF_8);
+
+            assertThat(utf8.encode("ABC", "a test image")).hasSize(3);
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> utf8.encode("\u00c9", "a test image"))
+                    .as("UTF-8 can represent it, but in two bytes, which would shift every "
+                            + "subsequent offset in the record")
+                    .withMessageContaining("produced 2 byte(s)")
+                    .withMessageContaining("exactly one byte");
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> utf8.decode("\u00c9".getBytes(
+                            java.nio.charset.StandardCharsets.UTF_8), 0, 2, "a test image"))
+                    .as("and decoding is refused for the mirror-image reason: two stored bytes that "
+                            + "are one character would shorten every span they appear in")
+                    .withMessageContaining("produced 1 character(s)")
+                    .withMessageContaining("single-byte code page");
+            assertThat(utf8.measuredWidthOf('A'))
+                    .as("the measurement path reports a width rather than throwing, so a codec can "
+                            + "name the offending character itself")
+                    .isEqualTo(1);
+            assertThat(utf8.measuredWidthOf('\u00c9')).isEqualTo(2);
+            assertThat(new FixedWidthRecord.Transcoder(ASCII).measuredWidthOf('\u00c9'))
+                    .as("zero means the code page cannot represent it at all")
+                    .isZero();
+            assertThat(utf8.charset()).isEqualTo(java.nio.charset.StandardCharsets.UTF_8);
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new FixedWidthRecord.Transcoder(null))
+                    .withMessageContaining("charset must be supplied explicitly");
+        }
+
+        @Test
+        @DisplayName("the zoned sign alphabet is one table, shared with the layer above")
+        void theZonedSignAlphabetIsShared() {
+            assertThat(ZonedSign.POSITIVE_DIGITS).isEqualTo("{ABCDEFGHI");
+            assertThat(ZonedSign.NEGATIVE_DIGITS).isEqualTo("}JKLMNOPQR");
+            assertThat(ZonedSign.POSITIVE_ZERO).isEqualTo('{');
+            assertThat(ZonedSign.NEGATIVE_ZERO).isEqualTo('}');
+            assertThat(ZonedSign.overpunch(0, false)).isEqualTo('{');
+            assertThat(ZonedSign.overpunch(7, false)).isEqualTo('G');
+            assertThat(ZonedSign.overpunch(0, true)).isEqualTo('}');
+            assertThat(ZonedSign.overpunch(9, true)).isEqualTo('R');
+            assertThat(ZonedSign.digitOf('{')).isZero();
+            assertThat(ZonedSign.digitOf('}')).isZero();
+            assertThat(ZonedSign.digitOf('G')).isEqualTo(7);
+            assertThat(ZonedSign.digitOf('R')).isEqualTo(9);
+            assertThat(ZonedSign.digitOf('4')).isEqualTo(4);
+            assertThat(ZonedSign.digitOf('*')).isEqualTo(-1);
+            assertThat(ZonedSign.isNegative('}')).isTrue();
+            assertThat(ZonedSign.isNegative('R')).isTrue();
+            assertThat(ZonedSign.isNegative('{')).isFalse();
+            assertThat(ZonedSign.isNegative('0')).isFalse();
+            assertThatIllegalArgumentException().isThrownBy(() -> ZonedSign.overpunch(10, false))
+                    .withMessageContaining("cannot be sign-overpunched");
+            assertThatIllegalArgumentException().isThrownBy(() -> ZonedSign.overpunch(-1, true))
+                    .withMessageContaining("cannot be sign-overpunched");
         }
     }
 
@@ -1852,6 +2169,148 @@ class FixedWidthRecordTest {
                     .hasSize(11);
             assertThat(layout.span("TRAN-AMT").length()).isEqualTo(11);
             assertThat(record.readString(330, 20)).isEqualTo(" ".repeat(20));
+        }
+    }
+
+    // =============================================================================================
+    // F08 - the strict character/byte boundary, and F18 - exact geometry arithmetic.
+    // =============================================================================================
+
+    /**
+     * That every character/byte conversion in this class <strong>reports</strong> rather than
+     * replaces, and that the published helpers behave identically to the internal call sites.
+     *
+     * <p>The condition being guarded against is silent corruption with no signal:
+     * {@code String.getBytes(Charset)} substitutes the code page's replacement byte and
+     * {@code new String(bytes, Charset)} substitutes {@code U+FFFD}, so a record built through them
+     * still measures its declared width and still passes the layout self-check while carrying bytes
+     * nobody chose. Every assertion here also checks that the offending value is absent from the
+     * failure message, because an exception message reaches logs and HTTP error bodies and these
+     * areas hold card numbers, government identifiers and balances.
+     */
+    @Nested
+    @DisplayName("Strict coding boundary and exact geometry - F08 and F18")
+    class StrictCodingAndGeometry {
+
+        /** A character US-ASCII has no representation for. */
+        private static final String UNMAPPABLE_UNDER_ASCII = "\u00e9";
+
+        @Test
+        @DisplayName("encodeStrictly rejects an unmappable character and withholds it")
+        void encodeStrictlyRejectsAnUnmappableCharacter() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FixedWidthRecord.encodeStrictly(UNMAPPABLE_UNDER_ASCII, ASCII,
+                            "CUST-FIRST-NAME"))
+                    .withMessageContaining("US-ASCII")
+                    .withMessageContaining("CUST-FIRST-NAME")
+                    .withMessageContaining("0-based position 0")
+                    .satisfies(rejected -> assertThat(rejected.getMessage())
+                            .doesNotContain(UNMAPPABLE_UNDER_ASCII));
+        }
+
+        @Test
+        @DisplayName("encodeStrictly returns the code page's own bytes when every character maps")
+        void encodeStrictlyReturnsTheCodePagesOwnBytes() {
+            assertThat(FixedWidthRecord.encodeStrictly("A", EBCDIC, "a span"))
+                    .containsExactly((byte) 0xC1);
+            assertThat(FixedWidthRecord.encodeStrictly("A", ASCII, "a span"))
+                    .containsExactly((byte) 0x41);
+            assertThat(FixedWidthRecord.encodeStrictly("", ASCII, "an empty span")).isEmpty();
+        }
+
+        @Test
+        @DisplayName("decodeStrictly rejects a sequence the code page does not define")
+        void decodeStrictlyRejectsAnUndefinedSequence() {
+            byte[] ebcdicAbc = {(byte) 0xC1, (byte) 0xC2, (byte) 0xC3};
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FixedWidthRecord.decodeStrictly(ebcdicAbc, ASCII,
+                            "a CVACT02Y row image"))
+                    .withMessageContaining("US-ASCII")
+                    .withMessageContaining("a CVACT02Y row image")
+                    .satisfies(rejected -> assertThat(rejected.getMessage())
+                            .doesNotContain("\uFFFD"));
+
+            assertThat(FixedWidthRecord.decodeStrictly(ebcdicAbc, EBCDIC, "the same row image"))
+                    .isEqualTo("ABC");
+        }
+
+        @Test
+        @DisplayName("decodeStrictly reports the offending byte's absolute position within the array")
+        void decodeStrictlyReportsTheAbsolutePosition() {
+            byte[] withBadTail = {0x41, 0x42, (byte) 0xC3};
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FixedWidthRecord.decodeStrictly(withBadTail, 1, 2, ASCII,
+                            "a two-byte span at offset 1"))
+                    .withMessageContaining("0-based position 2");
+        }
+
+        @Test
+        @DisplayName("decodeStrictly bounds-checks its span before it decodes anything")
+        void decodeStrictlyBoundsChecksItsSpan() {
+            byte[] three = {0x41, 0x42, 0x43};
+
+            assertThatExceptionOfType(IndexOutOfBoundsException.class)
+                    .isThrownBy(() -> FixedWidthRecord.decodeStrictly(three, 2, 2, ASCII, "a span"));
+        }
+
+        @Test
+        @DisplayName("both helpers refuse a null charset rather than reaching for a platform default")
+        void bothHelpersRefuseANullCharset() {
+            assertThatNullPointerException().isThrownBy(
+                    () -> FixedWidthRecord.encodeStrictly("A", null, "a span"));
+            assertThatNullPointerException().isThrownBy(
+                    () -> FixedWidthRecord.decodeStrictly(new byte[] {0x41}, null, "a span"));
+        }
+
+        @Test
+        @DisplayName("F18 - a FieldSpan whose end offset would overflow an int is refused")
+        void aFieldSpanWhoseEndOffsetWouldOverflowIsRefused() {
+            // offset + length is 2^31, which wraps to Integer.MIN_VALUE in int arithmetic and would
+            // otherwise present as an apparently ordinary - indeed negative - end offset.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FieldSpan.alphanumeric("WIDE", Integer.MAX_VALUE, 1))
+                    .withMessageContaining("2147483648")
+                    .withMessageContaining("addressing limit");
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> FieldSpan.alphanumeric("WIDER", Integer.MAX_VALUE - 1,
+                            Integer.MAX_VALUE - 1))
+                    .withMessageContaining("addressing limit");
+        }
+
+        @Test
+        @DisplayName("F18 - the largest representable span is accepted and reports its exact end")
+        void theLargestRepresentableSpanIsAccepted() {
+            FieldSpan atTheLimit = FieldSpan.alphanumeric("EDGE", Integer.MAX_VALUE - 1, 1);
+
+            assertThat(atTheLimit.endOffsetExclusive()).isEqualTo(Integer.MAX_VALUE);
+        }
+
+        @Test
+        @DisplayName("F18 - an OCCURS element whose offset would overflow an int is refused")
+        void anOccursElementWhoseOffsetWouldOverflowIsRefused() {
+            // (3 - 1) * 1_500_000_000 is 3e9, which wraps to a small positive int - an offset that
+            // would look perfectly valid inside a record.
+            assertThatExceptionOfType(IndexOutOfBoundsException.class)
+                    .isThrownBy(() -> FixedWidthRecord.occursElementOffsetOneBased(0, 1_500_000_000,
+                            3, 3))
+                    .withMessageContaining("addressing limit");
+
+            // The element STARTS inside the range but FINISHES outside it, which start-only checking
+            // would have accepted.
+            assertThatExceptionOfType(IndexOutOfBoundsException.class)
+                    .isThrownBy(() -> FixedWidthRecord.occursElementOffsetOneBased(
+                            Integer.MAX_VALUE - 10, 100, 2, 1))
+                    .withMessageContaining("addressing limit");
+        }
+
+        @Test
+        @DisplayName("F18 - ordinary OCCURS arithmetic is unchanged, at both ends of the table")
+        void ordinaryOccursArithmeticIsUnchanged() {
+            assertThat(FixedWidthRecord.occursElementOffsetOneBased(10, 4, 9, 1)).isEqualTo(10);
+            assertThat(FixedWidthRecord.occursElementOffsetOneBased(10, 4, 9, 9)).isEqualTo(42);
         }
     }
 }

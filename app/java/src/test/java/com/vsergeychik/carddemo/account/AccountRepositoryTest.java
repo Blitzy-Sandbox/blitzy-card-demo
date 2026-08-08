@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.account;
 
+import com.vsergeychik.carddemo.account.AccountRepository.AccountFile;
 import com.vsergeychik.carddemo.account.AccountRepository.OpenMode;
 import com.vsergeychik.carddemo.account.AccountRepository.ReadResult;
 import com.vsergeychik.carddemo.account.AccountRepository.Statements;
@@ -18,7 +19,10 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
 import java.io.IOException;
@@ -36,10 +40,14 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -113,6 +121,14 @@ class AccountRepositoryTest {
      */
     private static final AtomicInteger DATABASE_SEQUENCE = new AtomicInteger();
 
+    /**
+     * How long a second connection waits for a row lock before reporting failure.
+     *
+     * <p>Short, because the point is to observe that a lock is held rather than to wait out a realistic
+     * one, and a held lock must not stall the suite.
+     */
+    private static final int LOCK_TIMEOUT_MILLIS = 250;
+
     // =============================================================================================
     // Fixtures and helpers.
     // =============================================================================================
@@ -132,9 +148,9 @@ class AccountRepositoryTest {
             Integer keyLength) {
         DatasetBindings catalogue = new DatasetBindings();
         catalogue.put(AccountRepository.CICS_FILE_NAME, new DatasetBinding(cicsDsname, "ksds", false,
-                "FB", null, recordLength, "CVACT01Y", keyLength, null, null));
+                "FB", null, recordLength, "CVACT01Y", keyLength, null, null, null));
         catalogue.put(AccountRepository.BATCH_DD_NAME, new DatasetBinding(batchDsname, "ksds", false,
-                "FB", null, recordLength, "CVACT01Y", keyLength, null, null));
+                "FB", null, recordLength, "CVACT01Y", keyLength, null, null, null));
         return catalogue;
     }
 
@@ -225,20 +241,136 @@ class AccountRepositoryTest {
     /**
      * Drains a browse into a list, stopping at the first end-of-file outcome.
      *
-     * @param repository the repository to browse
-     * @param limit      the most reads to perform, so a defect cannot loop for ever
+     * @param file  the opened file to browse
+     * @param limit the most reads to perform, so a defect cannot loop for ever
      * @return the record images returned, in the order returned
      */
-    private static List<String> drain(AccountRepository repository, int limit) {
+    private static List<String> drain(AccountFile file, int limit) {
         List<String> images = new ArrayList<>();
         for (int read = 0; read < limit; read++) {
-            ReadResult result = repository.readNext();
+            ReadResult result = file.readNext();
             if (!result.isFound()) {
                 break;
             }
             images.add(result.account().orElseThrow().toFixedWidthString());
         }
         return images;
+    }
+
+    /**
+     * Opens the account master for input over a template, asserting nothing.
+     *
+     * @param template the template to reach the relation with
+     * @return the opened file
+     */
+    private static AccountFile openedInput(JdbcTemplate template) {
+        return repository(template).open(OpenMode.INPUT);
+    }
+
+    /**
+     * Runs an action with the calling thread marked as being inside a transaction.
+     *
+     * <p>The marker rather than a real transaction, because the failure arms are driven through mocked
+     * JDBC chains that cannot yield a connection at all - a real transaction manager would fail while
+     * trying to begin, before the operation under test ran. What
+     * {@link AccountRepository#readForUpdate(String)} inspects is exactly this marker, so this is the
+     * honest way to reach the code after the guard.
+     *
+     * @param action the action to run
+     * @param <T>    the action's result type
+     * @return the action's result
+     */
+    private static <T> T withUnitOfWork(Supplier<T> action) {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            return action.get();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    /**
+     * A transaction template over a seeded relation, for the tests that need a genuine unit of work.
+     *
+     * @param template the template whose data source the transaction is bound to
+     * @return a transaction template that begins and commits a real transaction
+     */
+    private static TransactionTemplate transactionOver(JdbcTemplate template) {
+        return new TransactionTemplate(new DataSourceTransactionManager(template.getDataSource()));
+    }
+
+    /**
+     * A mocked chain that describes a usable column and records the text of every statement prepared
+     * against it, returning no rows.
+     *
+     * <p>This is how the locking read is proved to be a locking read without depending on any backend's
+     * behaviour: what the repository asks the driver for is captured verbatim, so a test can assert that
+     * a read for update carries {@code FOR UPDATE} and a plain keyed read does not.
+     *
+     * @param prepared the list every prepared statement's text is appended to, in order
+     * @return a template over the recording chain
+     * @throws SQLException never; declared because the mocked JDBC methods declare it
+     */
+    private static JdbcTemplate recordingPreparedStatements(List<String> prepared)
+            throws SQLException {
+        DataSource dataSource = Mockito.mock(DataSource.class);
+        Connection connection = Mockito.mock(Connection.class);
+        Statement statement = Mockito.mock(Statement.class);
+        ResultSet probeResultSet = Mockito.mock(ResultSet.class);
+        ResultSetMetaData metaData = Mockito.mock(ResultSetMetaData.class);
+        PreparedStatement preparedStatement = Mockito.mock(PreparedStatement.class);
+        ResultSet emptyResultSet = Mockito.mock(ResultSet.class);
+        Mockito.when(dataSource.getConnection()).thenReturn(connection);
+        Mockito.when(connection.createStatement()).thenReturn(statement);
+        Mockito.when(statement.executeQuery(Mockito.anyString())).thenReturn(probeResultSet);
+        Mockito.when(probeResultSet.getMetaData()).thenReturn(metaData);
+        Mockito.when(metaData.getColumnCount()).thenReturn(1);
+        Mockito.when(metaData.getColumnName(1)).thenReturn(RECORD_IMAGE_COLUMN);
+        Mockito.when(connection.prepareStatement(Mockito.anyString())).thenAnswer(invocation -> {
+            prepared.add(invocation.getArgument(0));
+            return preparedStatement;
+        });
+        Mockito.when(preparedStatement.executeQuery()).thenReturn(emptyResultSet);
+        Mockito.when(preparedStatement.execute()).thenReturn(true);
+        Mockito.when(preparedStatement.getResultSet()).thenReturn(emptyResultSet);
+        Mockito.when(preparedStatement.getUpdateCount()).thenReturn(0);
+        Mockito.when(emptyResultSet.next()).thenReturn(false);
+        return new JdbcTemplate(dataSource);
+    }
+
+    /**
+     * Whether an independent connection can take an exclusive lock on the row carrying a key.
+     *
+     * <p>A genuinely separate connection, obtained from the data source directly rather than through
+     * {@code DataSourceUtils}, so it is not the transaction-bound one the repository is using. Its lock
+     * timeout is set to a fraction of a second, so a held lock is reported as a failure quickly instead
+     * of stalling the suite.
+     *
+     * @param dataSource the seeded relation's data source
+     * @param keyImage   the eleven-character key of the row to try to lock
+     * @return {@code true} when the lock was granted, {@code false} when it was refused or timed out
+     */
+    private static boolean anotherConnectionCanLock(DataSource dataSource, String keyImage) {
+        try (Connection other = dataSource.getConnection()) {
+            other.setAutoCommit(false);
+            try (Statement timeout = other.createStatement()) {
+                timeout.execute("SET LOCK_TIMEOUT " + LOCK_TIMEOUT_MILLIS);
+            }
+            try (PreparedStatement locking = other.prepareStatement("SELECT * FROM \"" + TEST_DSNAME
+                    + "\" WHERE " + RECORD_IMAGE_COLUMN + " LIKE ? FOR UPDATE")) {
+                locking.setString(1, keyImage + "%");
+                try (ResultSet locked = locking.executeQuery()) {
+                    return locked.next();
+                }
+            } catch (SQLException refused) {
+                return false;
+            } finally {
+                other.rollback();
+            }
+        } catch (SQLException unusable) {
+            throw new IllegalStateException("The second connection could not be established, so the "
+                    + "lock could not be tested", unusable);
+        }
     }
 
     /**
@@ -365,7 +497,6 @@ class AccountRepositoryTest {
             assertThat(repository.datasetName()).isEqualTo(TEST_DSNAME);
             assertThat(repository.recordLength()).isEqualTo(THREE_HUNDRED);
             assertThat(repository.datasetCharset()).isEqualTo(ASCII);
-            assertThat(repository.openMode()).isEmpty();
         }
 
         @Test
@@ -439,7 +570,7 @@ class AccountRepositoryTest {
         void refusesAnUnconfiguredDdName() {
             DatasetBindings incomplete = new DatasetBindings();
             incomplete.put(AccountRepository.BATCH_DD_NAME, new DatasetBinding(TEST_DSNAME, "ksds",
-                    false, "FB", null, THREE_HUNDRED, "CVACT01Y", null, null, null));
+                    false, "FB", null, THREE_HUNDRED, "CVACT01Y", null, null, null, null));
 
             assertThatIllegalStateException()
                     .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), incomplete, ASCII))
@@ -473,9 +604,11 @@ class AccountRepositoryTest {
             String corrupt = "TEST.ACCOUNT\u0001KSDS";
             DatasetBindings corruptName = bindings(corrupt, corrupt, THREE_HUNDRED, null);
 
-            assertThatIllegalStateException()
+            // The grammar decides, so the diagnostic names the offending position rather than the
+            // category of character - which is what a reader needs to correct the configured value.
+            assertThatIllegalArgumentException()
                     .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), corruptName, ASCII))
-                    .withMessageContaining("control character");
+                    .withMessageContaining("well-formed z/OS dataset name");
         }
 
         @Test
@@ -511,18 +644,20 @@ class AccountRepositoryTest {
 
             assertThat(repository.columnProbeSql())
                     .isEqualTo("SELECT * FROM \"" + TEST_DSNAME + "\" WHERE 1 = 0");
-            assertThat(repository.resolvedStatements()).isNull();
         }
 
         @Test
         @DisplayName("a quote inside a configured name is escaped by repetition, not by removal")
-        void aQuoteInsideANameIsEscapedByRepetition() {
+        void aQuoteInsideANameIsRefused() {
             String awkward = "TEST.\"ACCOUNT\".KSDS";
-            AccountRepository repository = new AccountRepository(new JdbcTemplate(),
-                    bindings(awkward, awkward, THREE_HUNDRED, null), ASCII);
+            DatasetBindings quoted = bindings(awkward, awkward, THREE_HUNDRED, null);
 
-            assertThat(repository.columnProbeSql())
-                    .isEqualTo("SELECT * FROM \"TEST.\"\"ACCOUNT\"\".KSDS\" WHERE 1 = 0");
+            // A quotation mark is not a character a z/OS dataset name admits, so the name is refused
+            // rather than quoted into an identifier. The grammar is the defence; the delimited rendering
+            // that follows it is belt and braces, and is asserted directly on DatasetRelation.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new AccountRepository(new JdbcTemplate(), quoted, ASCII))
+                    .withMessageContaining("well-formed z/OS dataset name");
         }
 
         @Test
@@ -530,37 +665,49 @@ class AccountRepositoryTest {
         void everyStatementNamesTheDiscoveredColumn() {
             AccountRepository repository = repository(seeded(List.of()));
 
-            assertThat(repository.open(OpenMode.INPUT)).isEqualTo(FileStatus.OK);
-            Statements statements = repository.resolvedStatements();
+            Statements statements = repository.resolveStatements();
 
             assertThat(statements).isNotNull();
             String dataset = "\"" + TEST_DSNAME + "\"";
             String column = "\"" + RECORD_IMAGE_COLUMN + "\"";
+            String keyed = " WHERE " + column + " LIKE ? ESCAPE '\\'";
             assertThat(statements.selectFirst())
                     .isEqualTo("SELECT * FROM " + dataset + " ORDER BY " + column + " ASC");
             assertThat(statements.selectNext())
                     .isEqualTo("SELECT * FROM " + dataset + " WHERE " + column + " > ? ORDER BY "
                             + column + " ASC");
             assertThat(statements.selectByKey())
-                    .isEqualTo("SELECT * FROM " + dataset + " WHERE " + column + " LIKE ? ESCAPE '\\'");
+                    .isEqualTo("SELECT * FROM " + dataset + " WHERE " + column
+                            + " LIKE ? ESCAPE '\\' ORDER BY " + column + " ASC");
+            assertThat(statements.selectByKeyForUpdate())
+                    .isEqualTo(statements.selectByKey() + " FOR UPDATE");
             assertThat(statements.rewrite())
-                    .isEqualTo("UPDATE " + dataset + " SET " + column + " = ? WHERE " + column
-                            + " LIKE ? ESCAPE '\\'");
+                    .isEqualTo("UPDATE " + dataset + " SET " + column + " = ?" + keyed);
             assertThat(statements.selectFirst()).doesNotContain("FETCH", "OFFSET", "LIMIT");
         }
 
         @Test
-        @DisplayName("the resolved shape is cached, and released by close")
-        void theResolvedShapeIsCachedAndReleasedByClose() {
+        @DisplayName("the locking select is the plain keyed select plus the clause, and nothing else")
+        void theLockingSelectDiffersOnlyByTheClause() {
+            Statements statements = repository(seeded(List.of())).resolveStatements();
+
+            assertThat(statements.selectByKeyForUpdate())
+                    .isEqualTo(statements.selectByKey() + " FOR UPDATE");
+            assertThat(statements.selectByKey()).doesNotContain("FOR UPDATE");
+        }
+
+        @Test
+        @DisplayName("the shape is resolved afresh per call and cached nowhere on the singleton")
+        void theShapeIsResolvedAfreshAndCachedNowhere() {
             AccountRepository repository = repository(seeded(List.of()));
 
-            repository.open(OpenMode.INPUT);
-            Statements first = repository.resolvedStatements();
-            repository.readNext();
-            assertThat(repository.resolvedStatements()).isSameAs(first);
+            Statements first = repository.resolveStatements();
+            Statements second = repository.resolveStatements();
 
-            assertThat(repository.close()).isEqualTo(FileStatus.OK);
-            assertThat(repository.resolvedStatements()).isNull();
+            // Equal in every component, because the dataset and the discovered column cannot change -
+            // and NOT the same instance, because nothing is held between calls. A cache here would be
+            // shared mutable state on a Spring singleton, which is what F02 is about.
+            assertThat(second).isEqualTo(first).isNotSameAs(first);
         }
     }
 
@@ -575,12 +722,15 @@ class AccountRepositoryTest {
 
         @ParameterizedTest
         @EnumSource(OpenMode.class)
-        @DisplayName("a successful open reports '00' and records the verb that was issued")
+        @DisplayName("a successful open reports '00' and its handle records the verb that was issued")
         void aSuccessfulOpenRecordsTheVerb(OpenMode mode) {
-            AccountRepository repository = repository(seeded(List.of()));
-
-            assertThat(repository.open(mode)).isEqualTo(FileStatus.OK);
-            assertThat(repository.openMode()).contains(mode);
+            try (AccountFile file = repository(seeded(List.of())).open(mode)) {
+                assertThat(file.openStatus()).isEqualTo(FileStatus.OK);
+                assertThat(file.openOutcome()).isSameAs(Outcome.OK);
+                assertThat(file.mode()).isSameAs(mode);
+                assertThat(file.datasetName()).isEqualTo(TEST_DSNAME);
+                assertThat(file.isClosed()).isFalse();
+            }
         }
 
         @Test
@@ -592,32 +742,72 @@ class AccountRepositoryTest {
         }
 
         @Test
-        @DisplayName("a failed open leaves the dataset closed, exactly as COBOL does")
-        void aFailedOpenLeavesTheDatasetClosed() {
-            AccountRepository repository = repository(unreachable());
+        @DisplayName("a failed open yields a handle that reports the failure from every operation")
+        void aFailedOpenReportsItsFailureFromEveryOperation() {
+            try (AccountFile file = repository(unreachable()).open(OpenMode.I_O)) {
+                assertThat(file.openStatus()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+                assertThat(file.openOutcome()).isSameAs(Outcome.OTHER);
 
-            assertThat(repository.open(OpenMode.INPUT))
-                    .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
-            assertThat(repository.openMode()).isEmpty();
+                // A caller that ignored openStatus() still cannot mistake a dataset it never reached
+                // for one that was empty: the open's own status comes back, not a fresh one and not
+                // end of file.
+                ReadResult browsed = file.readNext();
+                assertThat(browsed.isEndOfFile()).isFalse();
+                assertThat(browsed.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+                assertThat(file.readByKey(1L).status())
+                        .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+                assertThat(withUnitOfWork(() -> file.readForUpdate("0".repeat(ELEVEN))).status())
+                        .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+                assertThat(file.rewrite(new AccountRecord(ASCII)).status())
+                        .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            }
         }
 
         @Test
-        @DisplayName("close reports '00' and gives up the recorded verb")
-        void closeReportsOkAndGivesUpTheVerb() {
-            AccountRepository repository = repository(seeded(List.of()));
-            repository.open(OpenMode.I_O);
+        @DisplayName("close reports '00' and is idempotent, so try-with-resources is safe")
+        void closeReportsOkAndIsIdempotent() {
+            AccountFile file = repository(seeded(List.of())).open(OpenMode.I_O);
 
-            assertThat(repository.close()).isEqualTo(FileStatus.OK);
-            assertThat(repository.openMode()).isEmpty();
+            assertThat(file.closeFile()).isEqualTo(FileStatus.OK);
+            assertThat(file.isClosed()).isTrue();
+            assertThat(file.closeFile()).isEqualTo(FileStatus.OK);
+            file.close();
+            assertThat(file.isClosed()).isTrue();
         }
 
         @Test
         @DisplayName("close reports a permanent error when the dataset is no longer addressable")
-        void closeReportsAPermanentErrorWhenUnreachable() {
-            AccountRepository repository = repository(unreachable());
+        void closeReportsAPermanentErrorWhenUnreachable() throws SQLException {
+            // The open succeeds against a chain that describes the column, and the close then finds the
+            // dataset undescribable - the analogue of a dataset de-allocated under an open file. Both of
+            // the COBOL's symmetric guards are therefore reachable, and neither is dead code.
+            DataSource dataSource = Mockito.mock(DataSource.class);
+            Connection connection = Mockito.mock(Connection.class);
+            Statement statement = Mockito.mock(Statement.class);
+            ResultSet resultSet = Mockito.mock(ResultSet.class);
+            ResultSetMetaData metaData = Mockito.mock(ResultSetMetaData.class);
+            Mockito.when(dataSource.getConnection()).thenReturn(connection)
+                    .thenThrow(new SQLException("the dataset is gone"));
+            Mockito.when(connection.createStatement()).thenReturn(statement);
+            Mockito.when(statement.executeQuery(Mockito.anyString())).thenReturn(resultSet);
+            Mockito.when(resultSet.getMetaData()).thenReturn(metaData);
+            Mockito.when(metaData.getColumnCount()).thenReturn(1);
+            Mockito.when(metaData.getColumnName(1)).thenReturn(RECORD_IMAGE_COLUMN);
 
-            assertThat(repository.close()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
-            assertThat(repository.openMode()).isEmpty();
+            AccountFile file = repository(new JdbcTemplate(dataSource)).open(OpenMode.INPUT);
+            assertThat(file.openStatus()).isEqualTo(FileStatus.OK);
+
+            assertThat(file.closeFile()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            assertThat(file.isClosed()).isTrue();
+        }
+
+        @Test
+        @DisplayName("closing a handle whose open failed reports that open's status, and probes nothing")
+        void closingAFailedOpenReportsTheOpenStatus() {
+            AccountFile file = repository(unreachable()).open(OpenMode.INPUT);
+
+            assertThat(file.closeFile()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            assertThat(file.closeFile()).isEqualTo(FileStatus.OK);
         }
 
         @Test
@@ -637,17 +827,35 @@ class AccountRepositoryTest {
             String lowestKey = rows.stream().map(AccountRepositoryTest::keyImageOf).sorted()
                     .findFirst().orElseThrow();
 
-            repository.open(OpenMode.INPUT);
-            ReadResult first = repository.readNext();
-            ReadResult second = repository.readNext();
-            assertThat(first.account().orElseThrow().keyImage()).isEqualTo(lowestKey);
-            assertThat(second.account().orElseThrow().keyImage()).isNotEqualTo(lowestKey);
+            try (AccountFile first = repository.open(OpenMode.INPUT)) {
+                assertThat(first.readNext().account().orElseThrow().keyImage()).isEqualTo(lowestKey);
+                assertThat(first.readNext().account().orElseThrow().keyImage())
+                        .isNotEqualTo(lowestKey);
+            }
 
-            repository.open(OpenMode.INPUT);
-            assertThat(repository.readNext().account().orElseThrow().keyImage()).isEqualTo(lowestKey);
+            // A CLOSE followed by an OPEN INPUT re-reads a COBOL file from its first record, and a fresh
+            // handle re-reads this one from its first record too.
+            try (AccountFile second = repository.open(OpenMode.INPUT)) {
+                assertThat(second.readNext().account().orElseThrow().keyImage()).isEqualTo(lowestKey);
+            }
+        }
 
-            repository.close();
-            assertThat(repository.readNext().account().orElseThrow().keyImage()).isEqualTo(lowestKey);
+        @Test
+        @DisplayName("every operation on a closed handle is a loud defect, never an invented status")
+        void everyOperationOnAClosedHandleThrows() {
+            AccountFile file = repository(seeded(fixtureRows())).open(OpenMode.I_O);
+            file.closeFile();
+
+            assertThatIllegalStateException().isThrownBy(file::readNext)
+                    .withMessageContaining("has been closed");
+            assertThatIllegalStateException().isThrownBy(() -> file.readByKey(1L))
+                    .withMessageContaining("has been closed");
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> withUnitOfWork(() -> file.readForUpdate("0".repeat(ELEVEN))))
+                    .withMessageContaining("has been closed");
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> file.rewrite(new AccountRecord(ASCII)))
+                    .withMessageContaining("has been closed");
         }
     }
 
@@ -666,20 +874,20 @@ class AccountRepositoryTest {
             List<String> rows = fixtureRows();
             assertThat(rows).hasSize(FIXTURE_RECORDS).allSatisfy(row ->
                     assertThat(row).hasSize(THREE_HUNDRED));
-            AccountRepository repository = repository(seeded(rows));
-            repository.open(OpenMode.INPUT);
 
-            List<String> read = drain(repository, FIXTURE_RECORDS + 1);
+            try (AccountFile file = openedInput(seeded(rows))) {
+                List<String> read = drain(file, FIXTURE_RECORDS + 1);
 
-            assertThat(read).hasSize(FIXTURE_RECORDS)
-                    .containsExactlyElementsOf(rows.stream().sorted().toList());
-            ReadResult atEnd = repository.readNext();
-            assertThat(atEnd.isEndOfFile()).isTrue();
-            assertThat(atEnd.status()).isEqualTo(FileStatus.END_OF_FILE);
-            assertThat(atEnd.account()).isEmpty();
-            assertThat(atEnd.applResult()).isEqualTo(FileStatus.APPL_EOF);
-            // Reading past end of file keeps reporting end of file rather than inventing a status.
-            assertThat(repository.readNext().isEndOfFile()).isTrue();
+                assertThat(read).hasSize(FIXTURE_RECORDS)
+                        .containsExactlyElementsOf(rows.stream().sorted().toList());
+                ReadResult atEnd = file.readNext();
+                assertThat(atEnd.isEndOfFile()).isTrue();
+                assertThat(atEnd.status()).isEqualTo(FileStatus.END_OF_FILE);
+                assertThat(atEnd.account()).isEmpty();
+                assertThat(atEnd.applResult()).isEqualTo(FileStatus.APPL_EOF);
+                // Reading past end of file keeps reporting end of file rather than inventing a status.
+                assertThat(file.readNext().isEndOfFile()).isTrue();
+            }
         }
 
         @Test
@@ -687,12 +895,13 @@ class AccountRepositoryTest {
         void deliversAscendingKeyOrderWhateverTheStoredOrder() {
             List<String> rows = new ArrayList<>(fixtureRows());
             rows.sort(Comparator.reverseOrder());
-            AccountRepository repository = repository(seeded(rows));
 
             List<Long> identifiers = new ArrayList<>();
-            for (ReadResult result = repository.readNext(); result.isFound();
-                    result = repository.readNext()) {
-                identifiers.add(result.account().orElseThrow().getAcctId());
+            try (AccountFile file = openedInput(seeded(rows))) {
+                for (ReadResult result = file.readNext(); result.isFound();
+                        result = file.readNext()) {
+                    identifiers.add(result.account().orElseThrow().getAcctId());
+                }
             }
 
             assertThat(identifiers).hasSize(FIXTURE_RECORDS).isSorted();
@@ -702,16 +911,17 @@ class AccountRepositoryTest {
         @DisplayName("preserves the 178 FILLER spaces and every field of a decoded record")
         void preservesFillerAndEveryField() {
             List<String> rows = fixtureRows();
-            AccountRepository repository = repository(seeded(rows));
-
-            AccountRecord account = repository.readNext().account().orElseThrow();
             String expected = rows.stream().sorted().findFirst().orElseThrow();
 
-            assertThat(account.recordLength()).isEqualTo(THREE_HUNDRED);
-            assertThat(account.toByteArray()).hasSize(THREE_HUNDRED);
-            assertThat(account.toFixedWidthString()).isEqualTo(expected);
-            assertThat(account.getFiller()).isEqualTo(" ".repeat(FILLER_WIDTH));
-            assertThat(account.keyImage()).isEqualTo(keyImageOf(expected));
+            try (AccountFile file = openedInput(seeded(rows))) {
+                AccountRecord account = file.readNext().account().orElseThrow();
+
+                assertThat(account.recordLength()).isEqualTo(THREE_HUNDRED);
+                assertThat(account.toByteArray()).hasSize(THREE_HUNDRED);
+                assertThat(account.toFixedWidthString()).isEqualTo(expected);
+                assertThat(account.getFiller()).isEqualTo(" ".repeat(FILLER_WIDTH));
+                assertThat(account.keyImage()).isEqualTo(keyImageOf(expected));
+            }
         }
 
         @Test
@@ -719,59 +929,56 @@ class AccountRepositoryTest {
         void widensAShortStoredImage() {
             String full = fixtureRows().get(0);
             String trimmed = full.substring(0, THREE_HUNDRED - FILLER_WIDTH);
-            AccountRepository repository = repository(seeded(List.of(trimmed)));
 
-            AccountRecord account = repository.readNext().account().orElseThrow();
+            try (AccountFile file = openedInput(seeded(List.of(trimmed)))) {
+                AccountRecord account = file.readNext().account().orElseThrow();
 
-            assertThat(account.toFixedWidthString()).isEqualTo(full);
-            assertThat(account.getFiller()).isEqualTo(" ".repeat(FILLER_WIDTH));
+                assertThat(account.toFixedWidthString()).isEqualTo(full);
+                assertThat(account.getFiller()).isEqualTo(" ".repeat(FILLER_WIDTH));
+            }
         }
 
         @Test
         @DisplayName("rejects a stored image wider than the copybook declares")
         void rejectsAnOverWideStoredImage() {
             String overWide = fixtureRows().get(0) + " ";
-            AccountRepository repository = repository(seeded(List.of(overWide), THREE_HUNDRED + 1));
 
-            assertThatIllegalArgumentException().isThrownBy(repository::readNext)
-                    .withMessageContaining("wider than the declared width");
+            try (AccountFile file = openedInput(seeded(List.of(overWide), THREE_HUNDRED + 1))) {
+                assertThatIllegalArgumentException().isThrownBy(file::readNext)
+                        .withMessageContaining("wider than the declared width");
+            }
         }
 
         @Test
         @DisplayName("reports an empty dataset as end of file, not as a failure")
         void reportsAnEmptyDatasetAsEndOfFile() {
-            AccountRepository repository = repository(seeded(List.of()));
-
-            assertThat(repository.readNext().isEndOfFile()).isTrue();
-        }
-
-        @Test
-        @DisplayName("reports a permanent error when the browse cannot reach the dataset")
-        void reportsAPermanentErrorWhenTheDatasetIsUnreachable() {
-            ReadResult result = repository(unreachable()).readNext();
-
-            assertThat(result.isOther()).isTrue();
-            assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
-            assertThat(result.applResult()).isEqualTo(AccountRepository.APPL_RESULT_FATAL);
+            try (AccountFile file = openedInput(seeded(List.of()))) {
+                assertThat(file.readNext().isEndOfFile()).isTrue();
+            }
         }
 
         @Test
         @DisplayName("reports a permanent error when the read itself is refused")
         void reportsAPermanentErrorWhenTheReadIsRefused() throws SQLException {
-            ReadResult result = repository(describingThenRefusing()).readNext();
+            try (AccountFile file = openedInput(describingThenRefusing())) {
+                ReadResult result = file.readNext();
 
-            assertThat(result.isOther()).isTrue();
-            assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+                assertThat(result.isOther()).isTrue();
+                assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+                assertThat(result.applResult()).isEqualTo(AccountRepository.APPL_RESULT_FATAL);
+            }
         }
 
         @Test
         @DisplayName("a row with no record image is a failure, never an end of file")
         void aRowWithNoRecordImageIsAFailure() throws SQLException {
-            ReadResult result = repository(describingThenReturningNoImage()).readNext();
+            try (AccountFile file = openedInput(describingThenReturningNoImage())) {
+                ReadResult result = file.readNext();
 
-            assertThat(result.isOther()).isTrue();
-            assertThat(result.isEndOfFile()).isFalse();
-            assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+                assertThat(result.isOther()).isTrue();
+                assertThat(result.isEndOfFile()).isFalse();
+                assertThat(result.status()).isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            }
         }
     }
 
@@ -826,11 +1033,13 @@ class AccountRepositoryTest {
         @DisplayName("finds the record for the eleven-character RIDFLD image")
         void findsARecordForTheRidfldImage() {
             List<String> rows = fixtureRows();
-            AccountRepository repository = repository(seeded(rows));
+            JdbcTemplate template = seeded(rows);
+            AccountRepository repository = repository(template);
             String wanted = rows.get(0);
 
-            ReadResult result = repository.readForUpdate(keyImageOf(wanted));
+            ReadResult result = inUnitOfWork(() -> repository.readForUpdate(keyImageOf(wanted)));
 
+            assertThat(result).isNotNull();
             assertThat(result.isFound()).isTrue();
             assertThat(result.cicsResp()).hasValue(FileStatus.NORMAL);
             assertThat(result.account().orElseThrow().toFixedWidthString()).isEqualTo(wanted);
@@ -839,32 +1048,84 @@ class AccountRepositoryTest {
         @Test
         @DisplayName("a blank RIDFLD is a not-found record, not a rejection")
         void aBlankRidfldIsNotFound() {
-            AccountRepository repository = repository(seeded(fixtureRows()));
+            JdbcTemplate template = seeded(fixtureRows());
+            AccountRepository repository = repository(template);
 
-            assertThat(repository.readForUpdate(" ".repeat(ELEVEN)).isNotFound()).isTrue();
+            assertThat(inUnitOfWork(() -> repository.readForUpdate(" ".repeat(ELEVEN))).isNotFound())
+                    .isTrue();
         }
 
         @ParameterizedTest(name = "RIDFLD of eleven [{0}] characters")
         @ValueSource(strings = { "%", "_", "\\" })
         @DisplayName("a LIKE metacharacter in the RIDFLD matches nothing rather than another account")
         void aMetacharacterInTheRidfldMatchesNothing(String character) {
-            AccountRepository repository = repository(seeded(fixtureRows()));
+            JdbcTemplate template = seeded(fixtureRows());
+            AccountRepository repository = repository(template);
 
-            ReadResult result = repository.readForUpdate(character.repeat(ELEVEN));
+            ReadResult result = inUnitOfWork(() -> repository.readForUpdate(character.repeat(ELEVEN)));
 
+            assertThat(result).isNotNull();
             assertThat(result.isNotFound()).isTrue();
             assertThat(result.account()).isEmpty();
         }
 
         @Test
-        @DisplayName("refuses a RIDFLD that is not exactly eleven characters")
+        @DisplayName("refuses a RIDFLD that is not exactly eleven characters, before anything else")
         void refusesARidfldOfTheWrongWidth() {
             AccountRepository repository = repository(seeded(List.of()));
 
+            // The width check precedes the unit-of-work check, so a malformed key is reported as a
+            // malformed key whether or not the caller happened to be inside a transaction.
             assertThatIllegalArgumentException().isThrownBy(() -> repository.readForUpdate("0000000001"))
                     .withMessageContaining("PIC X(11)");
             assertThatNullPointerException().isThrownBy(() -> repository.readForUpdate(null))
                     .withMessageContaining("key image is required");
+        }
+
+        @Test
+        @DisplayName("a read-for-update with no unit of work open is refused, not issued anyway")
+        void aReadForUpdateOutsideAUnitOfWorkIsRefused() {
+            AccountRepository repository = repository(seeded(fixtureRows()));
+
+            // COACTUPC's 9600-WRITE-PROCESSING locks the account, locks the customer, compares each
+            // against the copy the screen was painted from, and only then rewrites - and that comparison
+            // is only meaningful because nothing can change the records in between. A lock taken with no
+            // transaction to hold it is released at once, so the comparison would still pass and protect
+            // nothing. Refusing turns a silent correctness bug into a loud wiring bug.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> repository.readForUpdate("00000000001"))
+                    .withMessageContaining("no transaction is open on this thread")
+                    .as("a wiring diagnostic names the dataset and the operation; an account identifier "
+                            + "adds nothing to it and would put a customer identifier in a stack trace")
+                    .withMessageNotContaining("00000000001");
+        }
+
+        @Test
+        @DisplayName("the locking read asks for the lock; the plain keyed read does not")
+        void theLockingReadRequestsTheLock() {
+            AccountRepository repository = repository(seeded(fixtureRows()));
+            repository.readByKey(1L);
+            Statements statements = repository.resolveStatements();
+
+            assertThat(statements.selectByKey()).doesNotContain("FOR UPDATE");
+            assertThat(statements.selectByKeyForUpdate())
+                    .isEqualTo(statements.selectByKey() + " FOR UPDATE");
+        }
+
+        @Test
+        @DisplayName("reports the width of a malformed RIDFLD but never the key itself")
+        void reportsTheWidthOfAMalformedRidfldButNotTheKey() {
+            AccountRepository repository = repository(seeded(List.of()));
+            String malformedKey = "00000000012345";
+
+            // The account identifier is the caller's data and this message is one an error boundary
+            // could publish, so the guard names the declared width and the width it was given and
+            // stops there.
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> repository.readForUpdate(malformedKey))
+                    .withMessageContaining("declared PIC X(11)")
+                    .withMessageContaining("given 14 character(s)")
+                    .withMessageNotContaining(malformedKey);
         }
 
         @Test
@@ -876,6 +1137,46 @@ class AccountRepositoryTest {
                     .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
             assertThat(repository(describingThenReturningNoImage()).readByKey(1L).status())
                     .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+        }
+
+        @Test
+        @DisplayName("a read for update reports a permanent error when it cannot reach or lock the record")
+        void aReadForUpdateReportsAPermanentErrorOnFailure() throws SQLException {
+            AccountRepository unreachableRepository = repository(unreachable());
+            AccountRepository refusingRepository = repository(describingThenRefusing());
+            String key = "0".repeat(ELEVEN);
+
+            // A conflict, a timeout or an outright refusal all arrive as a DataAccessException and all
+            // become the same coarse status, which is what puts COACTUPC on its
+            // COULD-NOT-LOCK-ACCT-FOR-UPDATE arm at L3910-L3913.
+            assertThat(withUnitOfWork(() -> unreachableRepository.readForUpdate(key)).status())
+                    .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            assertThat(withUnitOfWork(() -> refusingRepository.readForUpdate(key)).status())
+                    .isEqualTo(AccountRepository.PERMANENT_ERROR_STATUS);
+            assertThat(withUnitOfWork(() -> refusingRepository.readForUpdate(key)).isFound())
+                    .as("not found, so the caller takes the could-not-lock arm")
+                    .isFalse();
+        }
+    }
+
+    /**
+     * Runs a body with a transaction marked active on this thread, which a locking read requires.
+     *
+     * <p>Marking the flag rather than starting a real transaction is the honest test of the precondition:
+     * what {@code readForUpdate} demands is that a unit of work be open, and this asserts exactly that
+     * without dragging a transaction manager and a live {@code DataSource} into a test whose subject is
+     * the read.
+     *
+     * @param work the body
+     * @param <T>  its result type
+     * @return the body's result
+     */
+    private static <T> T inUnitOfWork(java.util.function.Supplier<T> work) {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            return work.get();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
         }
     }
 
@@ -914,6 +1215,32 @@ class AccountRepositoryTest {
             assertThat(reread.getAcctCurrCycCredit()).isEqualByComparingTo(BigDecimal.ZERO);
             assertThat(reread.getAcctCurrCycDebit()).isEqualByComparingTo(BigDecimal.ZERO);
             assertThat(reread.getFiller()).isEqualTo(" ".repeat(FILLER_WIDTH));
+        }
+
+        @Test
+        @DisplayName("a rewrite issued through an open handle writes through that handle's statements")
+        void aRewriteThroughAnOpenHandleWrites() {
+            // Every other rewrite test here goes straight to the repository. A COBOL program does not:
+            // it issues REWRITE against a file it has OPEN I-O, and the handle is what carries the
+            // prepared statements. Exercising that route proves the handle delegates rather than
+            // holding a second, divergent path to the same dataset.
+            List<String> rows = fixtureRows();
+            AccountRepository repository = repository(seeded(rows));
+            long acctId = Long.parseLong(keyImageOf(rows.get(0)));
+
+            try (AccountFile file = repository.open(OpenMode.I_O)) {
+                assertThat(file.openStatus()).isEqualTo(FileStatus.OK);
+                AccountRecord account = file.readByKey(acctId).account().orElseThrow();
+                account.setAcctGroupId("VIAHANDLE");
+
+                WriteResult written = file.rewrite(account);
+
+                assertThat(written.isWritten()).isTrue();
+                assertThat(written.status()).isEqualTo(FileStatus.OK);
+                assertThat(file.readByKey(acctId).account().orElseThrow().toFixedWidthString())
+                        .isEqualTo(account.toFixedWidthString())
+                        .hasSize(THREE_HUNDRED);
+            }
         }
 
         @Test
@@ -1005,7 +1332,7 @@ class AccountRepositoryTest {
         void noColumnsIsRefused() throws SQLException {
             AccountRepository repository = repository(describing(0, RECORD_IMAGE_COLUMN));
 
-            assertThatIllegalStateException().isThrownBy(repository::readNext)
+            assertThatIllegalStateException().isThrownBy(repository::resolveStatements)
                     .withMessageContaining("describes no column");
         }
 
@@ -1024,8 +1351,309 @@ class AccountRepositoryTest {
         void aControlCharacterInTheColumnNameIsRefused() throws SQLException {
             AccountRepository repository = repository(describing(1, "RE\u0001C"));
 
-            assertThatIllegalStateException().isThrownBy(() -> repository.close())
+            assertThatIllegalStateException().isThrownBy(() -> repository.open(OpenMode.I_O))
                     .withMessageContaining("control character");
+        }
+    }
+
+    // =============================================================================================
+    // The locking read. F01: readForUpdate used to issue the same plain SELECT as readByKey, so nothing
+    // held the record between COACTUPC's comparison at L3947-L3948 and its REWRITE at L4065.
+    // =============================================================================================
+
+    /** {@code EXEC CICS READ ... UPDATE}: a lock that is really taken, and really held. */
+    @Nested
+    @DisplayName("readForUpdate - the locking read")
+    class LockingReadTests {
+
+        /**
+         * The statement text a keyed read against the seeded relation must produce.
+         *
+         * <p>The ordering clause is part of it: every read this module composes states its order
+         * explicitly rather than relying on whatever a backend happens to return, so a keyed read is
+         * ordered by the record image exactly as a browse of the same relation is.
+         */
+        private String keyedSelect() {
+            return "SELECT * FROM \"" + TEST_DSNAME + "\" WHERE \"" + RECORD_IMAGE_COLUMN
+                    + "\" LIKE ? ESCAPE '\\' ORDER BY \"" + RECORD_IMAGE_COLUMN + "\" ASC";
+        }
+
+        @Test
+        @DisplayName("asks the driver for a locking read, where the plain keyed read does not")
+        void asksTheDriverForALockingRead() throws SQLException {
+            List<String> prepared = new ArrayList<>();
+            AccountRepository repository = repository(recordingPreparedStatements(prepared));
+
+            repository.readByKey(1L);
+            assertThat(prepared)
+                    .as("the plain keyed read takes no lock, and must not start taking one")
+                    .containsExactly(keyedSelect());
+
+            prepared.clear();
+            withUnitOfWork(() -> repository.readForUpdate("0".repeat(ELEVEN)));
+
+            // What the repository actually handed the driver, captured verbatim. This is the whole of
+            // F01: the two reads must not be the same statement.
+            assertThat(prepared).containsExactly(keyedSelect() + " FOR UPDATE");
+        }
+
+        @Test
+        @DisplayName("the handle's read for update asks for the same locking statement")
+        void theHandlesReadForUpdateLocksToo() throws SQLException {
+            List<String> prepared = new ArrayList<>();
+            try (AccountFile file = repository(recordingPreparedStatements(prepared))
+                    .open(OpenMode.I_O)) {
+                prepared.clear();
+
+                withUnitOfWork(() -> file.readForUpdate("0".repeat(ELEVEN)));
+
+                assertThat(prepared).containsExactly(keyedSelect() + " FOR UPDATE");
+            }
+        }
+
+        @Test
+        @DisplayName("refuses to run outside a unit of work, where the lock would not survive the call")
+        void refusesOutsideAUnitOfWork() {
+            AccountRepository repository = repository(seeded(fixtureRows()));
+            String key = keyImageOf(fixtureRows().get(0));
+
+            assertThatIllegalStateException().isThrownBy(() -> repository.readForUpdate(key))
+                    .withMessageContaining("no transaction is open on this thread")
+                    .withMessageContaining("9700-CHECK-CHANGE-IN-REC");
+
+            // The plain keyed read has no such requirement: it takes no lock, so there is nothing for a
+            // transaction to hold, and CBACT04C reads by key with no unit of work of its own.
+            assertThat(repository.readByKey(Long.parseLong(key)).isFound()).isTrue();
+        }
+
+        @Test
+        @DisplayName("the handle refuses outside a unit of work for the same reason")
+        void theHandleRefusesOutsideAUnitOfWork() {
+            try (AccountFile file = repository(seeded(fixtureRows())).open(OpenMode.I_O)) {
+                String key = keyImageOf(fixtureRows().get(0));
+
+                assertThatIllegalStateException().isThrownBy(() -> file.readForUpdate(key))
+                        .withMessageContaining("no transaction is open on this thread");
+                assertThat(file.readByKey(Long.parseLong(key)).isFound()).isTrue();
+            }
+        }
+
+        @Test
+        @DisplayName("the record is genuinely held: a second connection cannot lock it concurrently")
+        void theRecordIsGenuinelyHeldAgainstAnotherConnection() {
+            List<String> rows = fixtureRows();
+            JdbcTemplate template = seeded(rows);
+            AccountRepository repository = repository(template);
+            DataSource dataSource = template.getDataSource();
+            assertThat(dataSource).isNotNull();
+            String key = keyImageOf(rows.get(0));
+
+            Boolean secondReaderWasBlocked = transactionOver(template).execute(status -> {
+                assertThat(repository.readForUpdate(key).isFound()).isTrue();
+                return !anotherConnectionCanLock(dataSource, key);
+            });
+
+            assertThat(secondReaderWasBlocked)
+                    .as("the row must stay locked for the whole unit of work, or nothing protects the "
+                            + "comparison and the rewrite that follow it")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("without the lock the same row is free, which is what made the old read unsafe")
+        void withoutTheLockTheRowIsFree() {
+            List<String> rows = fixtureRows();
+            JdbcTemplate template = seeded(rows);
+            AccountRepository repository = repository(template);
+            DataSource dataSource = template.getDataSource();
+            assertThat(dataSource).isNotNull();
+            String key = keyImageOf(rows.get(0));
+
+            // The control for the test above: the plain keyed read leaves the row unlocked, so the
+            // second connection takes it immediately. That is exactly the state readForUpdate used to
+            // leave COACTUPC in.
+            Boolean free = transactionOver(template).execute(status -> {
+                assertThat(repository.readByKey(Long.parseLong(key)).isFound()).isTrue();
+                return anotherConnectionCanLock(dataSource, key);
+            });
+
+            assertThat(free).isTrue();
+        }
+
+        @Test
+        @DisplayName("read, compare and rewrite run inside one unit of work, as 9600 does")
+        void readCompareAndRewriteRunInOneUnitOfWork() {
+            List<String> rows = fixtureRows();
+            JdbcTemplate template = seeded(rows);
+            AccountRepository repository = repository(template);
+            String key = keyImageOf(rows.get(0));
+            long acctId = Long.parseLong(key);
+
+            WriteResult written = transactionOver(template).execute(status -> {
+                // 9600-WRITE-PROCESSING: read for update ...
+                AccountRecord locked = repository.readForUpdate(key).account().orElseThrow();
+                // ... 9700-CHECK-CHANGE-IN-REC: the caller's field-by-field comparison, which is the
+                // service's job and is represented here by the image it compares ...
+                assertThat(locked.toFixedWidthString()).isEqualTo(rows.get(0));
+                locked.setAcctCurrBal(locked.getAcctCurrBal().add(new BigDecimal("1.00")));
+                // ... then the REWRITE at L4065, still holding the record.
+                return repository.rewrite(locked);
+            });
+
+            assertThat(written).isNotNull();
+            assertThat(written.isWritten()).isTrue();
+            assertThat(repository.readByKey(acctId).account().orElseThrow().toFixedWidthString())
+                    .hasSize(THREE_HUNDRED)
+                    .isNotEqualTo(rows.get(0));
+        }
+    }
+
+    // =============================================================================================
+    // Execution-state isolation. F02: the singleton used to hold the resolved shape, the open mode and
+    // the browse position, so two concurrent executions shared one file position.
+    // =============================================================================================
+
+    /** One repository, many independent files: the state a COBOL program owns is not shared. */
+    @Nested
+    @DisplayName("Per-execution state isolation")
+    class StateIsolationTests {
+
+        @Test
+        @DisplayName("the repository declares no non-final instance field, so it holds nothing mutable")
+        void theRepositoryHoldsNothingMutable() {
+            for (Field field : AccountRepository.class.getDeclaredFields()) {
+                if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
+                    continue;
+                }
+                assertThat(Modifier.isFinal(field.getModifiers()))
+                        .describedAs("AccountRepository.%s is an instance field of a Spring singleton "
+                                + "and must be final: a browse position or an open mode held here "
+                                + "would be shared by every concurrent execution", field.getName())
+                        .isTrue();
+            }
+        }
+
+        @Test
+        @DisplayName("the per-execution state lives on the handle, which is where COBOL keeps it")
+        void thePerExecutionStateLivesOnTheHandle() {
+            List<String> mutable = new ArrayList<>();
+            for (Field field : AccountFile.class.getDeclaredFields()) {
+                if (!field.isSynthetic() && !Modifier.isStatic(field.getModifiers())
+                        && !Modifier.isFinal(field.getModifiers())) {
+                    mutable.add(field.getName());
+                }
+            }
+
+            assertThat(mutable)
+                    .as("exactly the file position and the closed flag, and nothing else")
+                    .containsExactlyInAnyOrder("browsePosition", "closed");
+            assertThat(AutoCloseable.class).isAssignableFrom(AccountFile.class);
+            assertThat(Modifier.isFinal(AccountFile.class.getModifiers())).isTrue();
+            assertThat(AccountFile.class.getDeclaredConstructors())
+                    .as("constructed only by open(OpenMode), so a handle always matches a real open")
+                    .allSatisfy(constructor ->
+                            assertThat(Modifier.isPrivate(constructor.getModifiers())).isTrue());
+        }
+
+        @Test
+        @DisplayName("two interleaved browses over one repository each see every record in order")
+        void twoInterleavedBrowsesDoNotInterfere() {
+            List<String> rows = fixtureRows();
+            List<String> expected = rows.stream().sorted().toList();
+            AccountRepository repository = repository(seeded(rows));
+
+            List<String> left = new ArrayList<>();
+            List<String> right = new ArrayList<>();
+            try (AccountFile first = repository.open(OpenMode.INPUT);
+                    AccountFile second = repository.open(OpenMode.INPUT)) {
+                for (int read = 0; read < FIXTURE_RECORDS; read++) {
+                    left.add(first.readNext().account().orElseThrow().toFixedWidthString());
+                    right.add(second.readNext().account().orElseThrow().toFixedWidthString());
+                }
+                assertThat(first.readNext().isEndOfFile()).isTrue();
+                assertThat(second.readNext().isEndOfFile()).isTrue();
+            }
+
+            // Before the fix the two browses shared one position on the singleton: the second open would
+            // have rewound the first, and the reads would have consumed alternate records.
+            assertThat(left).containsExactlyElementsOf(expected);
+            assertThat(right).containsExactlyElementsOf(expected);
+        }
+
+        @Test
+        @DisplayName("opening a second file does not rewind or close the first")
+        void openingASecondFileDoesNotDisturbTheFirst() {
+            List<String> rows = fixtureRows();
+            List<String> expected = rows.stream().sorted().toList();
+            AccountRepository repository = repository(seeded(rows));
+
+            try (AccountFile first = repository.open(OpenMode.INPUT)) {
+                assertThat(first.readNext().account().orElseThrow().toFixedWidthString())
+                        .isEqualTo(expected.get(0));
+
+                try (AccountFile second = repository.open(OpenMode.I_O)) {
+                    assertThat(second.mode()).isSameAs(OpenMode.I_O);
+                    assertThat(second.readNext().account().orElseThrow().toFixedWidthString())
+                            .isEqualTo(expected.get(0));
+                }
+
+                // The inner file's close ended the inner file only.
+                assertThat(first.isClosed()).isFalse();
+                assertThat(first.mode()).isSameAs(OpenMode.INPUT);
+                assertThat(first.readNext().account().orElseThrow().toFixedWidthString())
+                        .isEqualTo(expected.get(1));
+            }
+        }
+
+        @Test
+        @DisplayName("two threads browsing their own handles over one repository each read all 50")
+        void twoThreadsEachReadEveryRecord() throws InterruptedException {
+            List<String> rows = fixtureRows();
+            List<String> expected = rows.stream().sorted().toList();
+            AccountRepository repository = repository(seeded(rows));
+            List<List<String>> results = List.of(new ArrayList<>(), new ArrayList<>());
+            List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+            CyclicBarrier startTogether = new CyclicBarrier(2);
+
+            List<Thread> workers = new ArrayList<>();
+            for (List<String> sink : results) {
+                Thread worker = new Thread(() -> {
+                    try {
+                        startTogether.await();
+                        try (AccountFile file = repository.open(OpenMode.INPUT)) {
+                            sink.addAll(drain(file, FIXTURE_RECORDS + 1));
+                        }
+                    } catch (RuntimeException | InterruptedException | BrokenBarrierException problem) {
+                        failures.add(problem);
+                    }
+                });
+                workers.add(worker);
+                worker.start();
+            }
+            for (Thread worker : workers) {
+                worker.join();
+            }
+
+            assertThat(failures).isEmpty();
+            assertThat(results).allSatisfy(read -> assertThat(read)
+                    .as("a shared position would have split the 50 records between the two threads")
+                    .containsExactlyElementsOf(expected));
+        }
+
+        @Test
+        @DisplayName("the keyed operations hold nothing between calls either")
+        void theKeyedOperationsHoldNothingBetweenCalls() {
+            List<String> rows = fixtureRows();
+            AccountRepository repository = repository(seeded(rows));
+            long first = Long.parseLong(keyImageOf(rows.get(0)));
+            long last = Long.parseLong(keyImageOf(rows.get(rows.size() - 1)));
+
+            // Repeated in a different order, from one instance, with no open in sight: each call depends
+            // only on its own argument.
+            assertThat(repository.readByKey(last).account().orElseThrow().getAcctId()).isEqualTo(last);
+            assertThat(repository.readByKey(first).account().orElseThrow().getAcctId()).isEqualTo(first);
+            assertThat(repository.readByKey(ABSENT_ACCT_ID).isNotFound()).isTrue();
+            assertThat(repository.readByKey(last).account().orElseThrow().getAcctId()).isEqualTo(last);
         }
     }
 
@@ -1113,7 +1741,8 @@ class AccountRepositoryTest {
             Optional<AccountRecord> account = Optional.of(blank());
 
             assertThatIllegalArgumentException().isThrownBy(
-                    () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, account))
+                    () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, account,
+                            Optional.empty()))
                     .withMessageContaining("carries no record");
         }
 
@@ -1121,7 +1750,8 @@ class AccountRepositoryTest {
         @DisplayName("a status and its classification must agree")
         void aStatusAndItsClassificationMustAgree() {
             assertThatIllegalArgumentException().isThrownBy(
-                    () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.NOT_FOUND, Optional.empty()))
+                    () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.NOT_FOUND, Optional.empty(),
+                            Optional.empty()))
                     .withMessageContaining("must agree");
         }
 
@@ -1133,11 +1763,16 @@ class AccountRepositoryTest {
             assertThatNullPointerException().isThrownBy(() -> ReadResult.of(null))
                     .withMessageContaining("two-character file status");
             assertThatNullPointerException().isThrownBy(
-                    () -> new ReadResult(FileStatus.OK, null, Optional.empty()))
+                    () -> new ReadResult(FileStatus.OK, null, Optional.empty(), Optional.empty()))
                     .withMessageContaining("classification");
             assertThatNullPointerException().isThrownBy(
-                    () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, null))
+                    () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, null,
+                            Optional.empty()))
                     .withMessageContaining("empty record");
+            assertThatNullPointerException().isThrownBy(
+                    () -> new ReadResult(FileStatus.END_OF_FILE, Outcome.END_OF_FILE, Optional.empty(),
+                            null))
+                    .withMessageContaining("empty diagnostic");
         }
 
         @Test

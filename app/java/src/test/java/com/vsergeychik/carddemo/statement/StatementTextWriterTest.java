@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.statement;
 
 import com.vsergeychik.carddemo.common.CobolDecimal;
+import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
@@ -17,6 +18,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -34,6 +36,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -80,8 +83,15 @@ class StatementTextWriterTest {
     /** The EBCDIC code page, used to prove the encoding is genuinely the injected one. */
     private static final Charset EBCDIC = Charset.forName("IBM037");
 
-    /** A stand-in dataset name. The real one lives only in {@code application.yml}. */
-    private static final String TEST_DSNAME = "TEST.STATEMENT.PS";
+    /**
+     * A stand-in dataset name. The real one lives only in {@code application.yml}.
+     *
+     * <p>Well formed as z/OS requires: four qualifiers of at most eight characters each, every one
+     * beginning with a letter. The earlier stand-in here spelled out {@code STATEMENT}, which is nine
+     * characters and so is not a qualifier a mainframe would accept - a reminder that a stand-in still
+     * has to obey the grammar it stands in for.
+     */
+    private static final String TEST_DSNAME = "TEST.M2.STATEMNT.PS";
 
     /** The declared record width, restated here from the COBOL rather than read from the class. */
     private static final int EIGHTY = 80;
@@ -99,7 +109,7 @@ class StatementTextWriterTest {
     private static DatasetBindings bindings(int recordLength) {
         DatasetBindings catalogue = new DatasetBindings();
         catalogue.put("STMTFILE", new DatasetBinding(TEST_DSNAME, "sequential", false, "FB", 8000,
-                recordLength, null, null, null, null));
+                recordLength, null, null, null, null, null));
         return catalogue;
     }
 
@@ -116,6 +126,21 @@ class StatementTextWriterTest {
     /** A writer over {@link #ASCII}. */
     private static StatementTextWriter writer() {
         return writer(ASCII);
+    }
+
+    /**
+     * A correctly configured 80-byte writer whose {@code STMTFILE} binding names an arbitrary
+     * location, so the dataset-name checks can be driven over every shape a deployment might supply.
+     *
+     * @param dsname the configured name, well formed or not, possibly {@code null}
+     * @return the writer, which construction always succeeds for - see
+     *         {@link JdbcSinkTests#stillConstructsUnderAFixtureBackedBinding()}
+     */
+    private static StatementTextWriter writerBoundTo(String dsname) {
+        DatasetBindings catalogue = new DatasetBindings();
+        catalogue.put("STMTFILE", new DatasetBinding(dsname, "sequential", false, "FB", 8000,
+                EIGHTY, null, null, null, null, null));
+        return new StatementTextWriter(new JdbcTemplate(), ASCII, catalogue);
     }
 
     /**
@@ -964,6 +989,169 @@ class StatementTextWriterTest {
 
     // =============================================================================================
 
+    /**
+     * A sink that breaks its contract by answering {@code null}.
+     *
+     * <p>Not reachable through the production sink - {@link StatementTextWriter.JdbcRecordSink} always
+     * answers - but entirely reachable through the injectable seam, which is the point: the seam exists
+     * so a site can substitute its own sink, and a substituted sink is exactly the thing that might
+     * return nothing on a path its author did not think about.
+     */
+    private static final class NullAnsweringSink implements RecordSink {
+
+        /**
+         * How many records this sink answers properly before it starts answering {@code null}, or
+         * {@link Integer#MAX_VALUE} to answer properly always.
+         *
+         * <p>Counted rather than switched, because the interesting case is a sink that has already
+         * accepted records: the record count the diagnostic names is only meaningful if the run got
+         * somewhere first.
+         */
+        private final int writesBeforeNull;
+
+        /** Whether {@link #close()} answers {@code null}. */
+        private final boolean nullOnClose;
+
+        /** How many records reached the sink. */
+        private int writeCalls;
+
+        /** How many closes reached the sink. */
+        private int closeCalls;
+
+        private NullAnsweringSink(final int writesBeforeNull, final boolean nullOnClose) {
+            this.writesBeforeNull = writesBeforeNull;
+            this.nullOnClose = nullOnClose;
+        }
+
+        /** A sink that answers every write and every close properly. */
+        private static NullAnsweringSink compliant() {
+            return new NullAnsweringSink(Integer.MAX_VALUE, false);
+        }
+
+        @Override
+        public FileStatus.Outcome write(final byte[] recordImage) {
+            this.writeCalls++;
+            return this.writeCalls > this.writesBeforeNull ? null : FileStatus.Outcome.OK;
+        }
+
+        @Override
+        public FileStatus.Outcome close() {
+            this.closeCalls++;
+            return this.nullOnClose ? null : FileStatus.Outcome.OK;
+        }
+    }
+
+    @Nested
+    @DisplayName("The sink contract - a null outcome is a defect, not a FILE STATUS")
+    class SinkContractTests {
+
+        @Test
+        @DisplayName("A null write outcome is rejected at the write, naming the line and the count")
+        void aNullWriteOutcomeIsRejected() {
+            NullAnsweringSink sink = new NullAnsweringSink(1, false);
+            StatementFile file = writer().openOutput(sink);
+            file.writeLine(StatementLine.ST_LINE0);
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> file.writeLine(StatementLine.ST_LINE15))
+                    .withMessageContaining("STMTFILE")
+                    .withMessageContaining("write(byte[])")
+                    .withMessageContaining("ST-LINE15")
+                    .withMessageContaining("1 record(s)")
+                    .withMessageContaining("FileStatus.Outcome.OTHER");
+        }
+
+        @Test
+        @DisplayName("The rejected write does not advance the record count")
+        void theRejectedWriteDoesNotAdvanceTheCount() {
+            NullAnsweringSink sink = new NullAnsweringSink(0, false);
+            StatementFile file = writer().openOutput(sink);
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> file.writeLine(StatementLine.ST_LINE0));
+
+            // The record did reach the sink; what did not happen is the count advancing past a
+            // record whose fate is unknown.
+            assertThat(sink.writeCalls).isEqualTo(1);
+            assertThat(file.recordsWritten()).isZero();
+        }
+
+        @Test
+        @DisplayName("A null close outcome is rejected at closeOutput(), naming the count")
+        void aNullCloseOutcomeIsRejected() {
+            NullAnsweringSink sink = new NullAnsweringSink(Integer.MAX_VALUE, true);
+            StatementFile file = writer().openOutput(sink);
+            file.writeLine(StatementLine.ST_LINE0);
+
+            assertThatNullPointerException()
+                    .isThrownBy(file::closeOutput)
+                    .withMessageContaining("STMTFILE")
+                    .withMessageContaining("close()")
+                    .withMessageContaining("1 record(s)");
+        }
+
+        @Test
+        @DisplayName("A handle whose close was rejected is still closed, so the sink is reached once")
+        void aRejectedCloseStillClosesTheHandle() {
+            NullAnsweringSink sink = new NullAnsweringSink(Integer.MAX_VALUE, true);
+            StatementFile file = writer().openOutput(sink);
+
+            assertThatNullPointerException().isThrownBy(file::closeOutput);
+
+            assertThat(file.isOpen()).isFalse();
+            assertThat(sink.closeCalls).isEqualTo(1);
+
+            // The second close is the idempotent no-op arm, so it cannot reach the broken sink again.
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(sink.closeCalls).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("close() surfaces the contract violation rather than an unrelated NPE later")
+        void closeSurfacesTheContractViolation() {
+            NullAnsweringSink sink = new NullAnsweringSink(Integer.MAX_VALUE, true);
+            StatementFile file = writer().openOutput(sink);
+
+            // Before the fix this NPE came from Outcome.name() on a null, with the sink long gone
+            // from the stack; now the message names the sink, the DD and the count.
+            assertThatNullPointerException()
+                    .isThrownBy(file::close)
+                    .withMessageContaining("STMTFILE")
+                    .withMessageContaining("close()");
+        }
+
+        @Test
+        @DisplayName("A sink that answers properly is unaffected: OK and OTHER both pass through")
+        void aCompliantSinkIsUnaffected() {
+            NullAnsweringSink compliant = NullAnsweringSink.compliant();
+            StatementFile file = writer().openOutput(compliant);
+
+            assertThat(file.writeLine(StatementLine.ST_LINE0)).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(file.closeOutput()).isEqualTo(FileStatus.Outcome.OK);
+
+            CollectingSink rejecting = new CollectingSink(FileStatus.Outcome.OTHER,
+                    FileStatus.Outcome.OTHER);
+            StatementFile other = writer().openOutput(rejecting);
+
+            assertThat(other.writeLine(StatementLine.ST_LINE0)).isEqualTo(FileStatus.Outcome.OTHER);
+            assertThat(other.closeOutput()).isEqualTo(FileStatus.Outcome.OTHER);
+        }
+
+        @Test
+        @DisplayName("The interface documents both outcomes as non-null, so the guard is the contract")
+        void theInterfaceDocumentsBothOutcomesAsNonNull() {
+            // The default close() - the one a sink inherits when it declares nothing - answers OK,
+            // which is what makes a null answer a deliberate act rather than an omission.
+            RecordSink inheriting = recordImage -> FileStatus.Outcome.OK;
+
+            assertThat(inheriting.close()).isEqualTo(FileStatus.Outcome.OK);
+            assertThat(inheriting.write(new byte[StatementTextWriter.RECORD_LENGTH]))
+                    .isEqualTo(FileStatus.Outcome.OK);
+        }
+    }
+
+    // =============================================================================================
+
     @Nested
     @DisplayName("Construction - configuration-bound, and cross-checked against the copybook")
     class ConstructionTests {
@@ -1041,25 +1229,83 @@ class StatementTextWriterTest {
             // stand-in: the production dataset name belongs in application.yml alone, so writing it
             // into a Java source - even a test - would put a hit into the negative scan that gate
             // G46 relies on being empty.
-            assertThat(StatementTextWriter.insertStatement("FIVE.PART.DOTTED.DATASET.NAME"))
-                    .isEqualTo("INSERT INTO \"FIVE.PART.DOTTED.DATASET.NAME\" VALUES (?)");
+            assertThat(writerBoundTo("FIVE.PART.DOTTED.DSN.NAME").insertStatement())
+                    .isEqualTo("INSERT INTO \"FIVE.PART.DOTTED.DSN.NAME\" VALUES (?)");
         }
 
         @Test
-        @DisplayName("doubles an embedded quote, per the ANSI delimited-identifier rule")
-        void doublesAnEmbeddedQuote() {
-            assertThat(StatementTextWriter.insertStatement("ODD\"NAME"))
-                    .isEqualTo("INSERT INTO \"ODD\"\"NAME\" VALUES (?)");
+        @DisplayName("composes that statement through DatasetRelation, not through text of its own")
+        void composesThroughTheOneContract() {
+            // Pinned to the module's one data-access contract rather than to a string literal, so a
+            // second renderer cannot reappear here and pass: the only way this holds is if the writer
+            // asks DatasetRelation. Its sibling StatementHtmlWriter is pinned the same way, which is
+            // what makes the two statements identical apart from the dataset they name (F07).
+            assertThat(writer().insertStatement())
+                    .isEqualTo(DatasetRelation.of(TEST_DSNAME, EIGHTY).insertRecordImage());
         }
 
         @Test
-        @DisplayName("rejects a blank or null dataset name, naming the property to set")
+        @DisplayName("refuses a name that is not a well-formed dataset name, rather than quoting it")
+        void refusesAMalformedDatasetName() {
+            // An embedded quotation mark was previously doubled and composed. Doubling is the right
+            // rule for an identifier that legitimately contains a quote - and a z/OS dataset name
+            // never does, so a name carrying one is not a dataset name and is refused outright. The
+            // grammar's own verdict travels as the cause so the offending position is not lost.
+            StatementTextWriter odd = writerBoundTo("ODD\"NAME");
+
+            assertThatIllegalStateException()
+                    .isThrownBy(odd::insertStatement)
+                    .withMessageContaining("carddemo.datasets.STMTFILE.dsname")
+                    .withMessageContaining("openOutput(RecordSink)")
+                    .withCauseInstanceOf(IllegalArgumentException.class);
+        }
+
+        @ParameterizedTest
+        @DisplayName("refuses every shape a dataset name cannot take, and never composes it")
+        @ValueSource(strings = {
+            "A.B; DROP TABLE C",
+            "A.B--C.D E",
+            "A.B'C",
+            "TOOLONGQUALIFIER.B",
+            "9BAD.START",
+            "A..B",
+            "/tmp/carddemo/statement.txt",
+            "classpath:fixtures/statement.txt",
+        })
+        void refusesEveryUnusableShape(String candidate) {
+            StatementTextWriter bound = writerBoundTo(candidate);
+
+            assertThatIllegalStateException().isThrownBy(bound::insertStatement);
+            assertThatIllegalStateException().isThrownBy(bound::openOutput);
+        }
+
+        @Test
+        @DisplayName("rejects a blank or absent dataset name, naming the property to set")
         void rejectsABlankDatasetName() {
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> StatementTextWriter.insertStatement("   "))
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> writerBoundTo("   ").insertStatement())
                     .withMessageContaining("carddemo.datasets.STMTFILE.dsname");
-            assertThatNullPointerException()
-                    .isThrownBy(() -> StatementTextWriter.insertStatement(null));
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> writerBoundTo(null).insertStatement())
+                    .withMessageContaining("carddemo.datasets.STMTFILE.dsname");
+        }
+
+        @Test
+        @DisplayName("still constructs under a fixture-backed binding, so the context starts (G3)")
+        void stillConstructsUnderAFixtureBackedBinding() {
+            // The 'test' profile binds STMTFILE to a filesystem location. That is not a dataset name
+            // and can never become a SQL identifier - but refusing the bean outright would stop the
+            // application context from starting under the only profile this environment can run,
+            // even though every test and the parity harness supply their own sink. So construction
+            // succeeds, the geometry is still checked, and the refusal waits until something actually
+            // asks for the default sink.
+            StatementTextWriter fixtureBound = writerBoundTo("/tmp/carddemo/statement.txt");
+
+            assertThat(fixtureBound.recordLength()).isEqualTo(EIGHTY);
+            assertThat(fixtureBound.datasetBinding().dsname())
+                    .isEqualTo("/tmp/carddemo/statement.txt");
+            assertThatCode(() -> fixtureBound.openOutput(new CollectingSink()))
+                    .doesNotThrowAnyException();
         }
 
         @Test

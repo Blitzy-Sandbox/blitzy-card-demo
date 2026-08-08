@@ -1,10 +1,12 @@
 package com.vsergeychik.carddemo.transaction.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 import java.math.BigDecimal;
 import java.nio.charset.Charset;
@@ -483,7 +485,8 @@ public final class TranRecord {
      */
     public static TranRecord decode(String image, Charset charset) {
         Objects.requireNonNull(image, "A record image is required to decode a TRAN-RECORD");
-        return decode(image.getBytes(requireCharset(charset)), charset);
+        return decode(FixedWidthRecord.encodeText(image, requireCharset(charset),
+                "a TRAN-RECORD image"), charset);
     }
 
     /**
@@ -758,17 +761,20 @@ public final class TranRecord {
     /**
      * {@code TRAN-MERCHANT-ID PIC 9(09)} - at 0-based offset 143.
      *
-     * <p>A {@code long} because the {@code PICTURE} is scale-free {@code 9}. Nine digits would fit an
-     * {@code int}, but every identifier in this model layer is returned as a {@code long} so that the
-     * wider keys - an 11-digit account id, a 16-digit card number read numerically - need no different
-     * treatment at a call site. For the stored digits including leading zeros, use
-     * {@link #tranMerchantIdImage()}.
+     * <p>An {@code int}, because the {@code PICTURE} is scale-free and nine digits wide: AAP rule R4
+     * assigns {@code int} to a scale-free {@code PIC 9(n)} up to nine digits and reserves {@code long}
+     * for wider ones. Returning a {@code long} here for symmetry with the eleven- and sixteen-digit keys
+     * would be a uniformity that costs something real - it widens the set of Java values the accessor
+     * appears able to report to nineteen digits, when the field can hold nine - so the keys keep
+     * {@code long} on their own merits and this one does not borrow it. For the stored digits including
+     * leading zeros, use {@link #tranMerchantIdImage()}.
      *
      * @return the stored value, 0 to 999999999
-     * @throws IllegalArgumentException if the span does not hold nine digits
+     * @throws IllegalArgumentException if the span does not hold nine digits, or denotes a value outside
+     *                                  the {@code int} range - which nine digits cannot
      */
-    public long tranMerchantId() {
-        return codec.readPic9(area, TRAN_MERCHANT_ID);
+    public int tranMerchantId() {
+        return codec.readPic9AsInt(area, TRAN_MERCHANT_ID);
     }
 
     /**
@@ -1117,8 +1123,8 @@ public final class TranRecord {
     public void writeTranAmtImage(String image) {
         Objects.requireNonNull(image, "A TRAN-AMT image is required");
         if (image.length() != TRAN_AMT_LENGTH) {
-            throw new IllegalArgumentException("TRAN-AMT image '" + image + "' is "
-                    + image.length() + " character(s) but PIC S9(09)V99 occupies exactly "
+            throw new IllegalArgumentException("A TRAN-AMT image of " + image.length()
+                    + " character(s) was supplied but PIC S9(09)V99 occupies exactly "
                     + TRAN_AMT_LENGTH + "; the sign is overpunched into the trailing byte rather than "
                     + "stored separately, so the image is never padded or truncated here");
         }
@@ -1310,9 +1316,18 @@ public final class TranRecord {
      * <p>Every field is shown by its copybook name and at its full stored width, so a difference in
      * trailing spaces is visible rather than hidden. {@code TRAN-AMT} is given both as its raw zoned
      * image and as its decoded value, because the two can differ in the one way that matters - a
-     * whole-value negative zero. {@code TRAN-CARD-NUM} is shown in full and unmasked, deliberately:
-     * this type models a record whose consuming programs display it in the clear, and abbreviating it
-     * here would make a byte-level comparison unreproducible from the diagnostic.
+     * whole-value negative zero.
+     *
+     * <p>{@code TRAN-CARD-NUM} is masked per {@link SensitiveDiagnostics}. An earlier version of this
+     * comment argued for showing it in full, on the grounds that the consuming programs display it in
+     * the clear and that masking would make a byte-level comparison unreproducible. The first point is
+     * true and irrelevant - the screen field and the record bytes are unchanged, and only this
+     * {@code toString} is masked, which no COBOL program has. The second is answered by
+     * {@link #displayImage()} and {@link #fieldImages(Charset)}: a byte-level comparison reads those,
+     * by name, and they still carry every digit.
+     *
+     * <p>The merchant fields stay legible. A merchant name, city and zip identify a business rather than
+     * a cardholder, and they are what a transaction-posting parity failure is diagnosed from.
      *
      * <p>For the exact {@code SYSOUT} text of {@code DISPLAY TRAN-RECORD} use {@link #displayImage()}
      * instead; this rendering is annotated and is not a record image.
@@ -1333,10 +1348,12 @@ public final class TranRecord {
                 + ", TRAN-MERCHANT-NAME='" + tranMerchantName() + '\''
                 + ", TRAN-MERCHANT-CITY='" + tranMerchantCity() + '\''
                 + ", TRAN-MERCHANT-ZIP='" + tranMerchantZip() + '\''
-                + ", TRAN-CARD-NUM='" + tranCardNum() + '\''
+                + ", TRAN-CARD-NUM='" + SensitiveDiagnostics.maskPan(tranCardNum()) + '\''
                 + ", TRAN-ORIG-TS='" + tranOrigTs() + '\''
                 + ", TRAN-PROC-TS='" + tranProcTs() + '\''
-                + ", FILLER='" + filler() + '\''
+                // FILLER carries no field semantics - it is pad - so its width is the only thing
+                // worth reporting about it, and printing twenty spaces would only pad the line.
+                + ", FILLER.length=" + filler().length()
                 + ']';
     }
 

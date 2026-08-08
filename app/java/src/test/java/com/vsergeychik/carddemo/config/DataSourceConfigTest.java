@@ -22,6 +22,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
+import org.springframework.boot.context.properties.ConfigurationPropertiesBindException;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.env.MapPropertySource;
@@ -247,6 +248,69 @@ class DataSourceConfigTest {
     }
 
     /**
+     * The same no-document slice, plus a complete and valid dataset catalogue supplied inline.
+     *
+     * <p>Needed because the catalogue is validated at startup: it must declare exactly the
+     * twenty-seven DD names the migrated code reads, so a slice that configures one entry - or none -
+     * no longer starts. That is the intended behaviour, and it changes what a "minimal" inline
+     * configuration is rather than what these tests are for. Each caller still proves the same
+     * property it always did, against a catalogue that is now complete instead of partial.
+     *
+     * <p>The geometry below is deliberately <em>not</em> the shipped geometry. Every location is an
+     * obvious sentinel and every width is the same 50 bytes, because these slices exist to prove that
+     * values travel from configuration into the bindings - the real widths are asserted against the
+     * shipped documents elsewhere in this file, which is where they belong.
+     *
+     * @param inlineProperties properties appended after the catalogue, so a caller can override any
+     *                         entry's component simply by restating it
+     * @return a runner over a valid catalogue plus the caller's own properties
+     */
+    private ApplicationContextRunner withValidCatalogueAnd(String... inlineProperties) {
+        return withInlinePropertiesOnly(
+                Stream.concat(minimalValidCatalogue(), Stream.of(inlineProperties))
+                        .toArray(String[]::new));
+    }
+
+    /**
+     * A complete, valid twenty-seven-entry catalogue as inline properties.
+     *
+     * <p>The three alternate-index paths carry their base and alternate key, because a path that named
+     * neither would be rejected - the relationship is part of what makes a catalogue valid, not an
+     * optional embellishment.
+     *
+     * @return one {@code key=value} property per component of every required DD name
+     */
+    private static Stream<String> minimalValidCatalogue() {
+        Map<String, String> alternateIndexBases = Map.of(
+                "CARDAIX", "CARDDAT", "CXACAIX", "CCXREF", "XREFFIL1", "CCXREF");
+        return ALL_DATASET_KEYS.stream().flatMap(ddName -> {
+            String prefix = "carddemo.datasets." + ddName + ".";
+            String base = alternateIndexBases.get(ddName);
+            boolean indexedByAPath = alternateIndexBases.containsValue(ddName);
+            String organization = base != null ? "aix-path" : indexedByAPath ? "ksds" : "sequential";
+            Stream<String> components = Stream.of(
+                    prefix + "dsname=SENTINEL.CATALOGUE." + ddName,
+                    prefix + "organization=" + organization,
+                    prefix + "record-format=FB",
+                    prefix + "record-length=50");
+            if (base == null && !indexedByAPath) {
+                return components;
+            }
+            // A keyed entry states where its key is, and a cluster an alternate-index path indexes is
+            // keyed itself - a path is a second access path over the same records. The sentinel span
+            // below sits inside the sentinel 50-byte record, which is all the catalogue check asks.
+            Stream<String> keyGeometry = Stream.of(
+                    prefix + "key-length=11",
+                    prefix + "key-offset=0");
+            return base == null
+                    ? Stream.concat(components, keyGeometry)
+                    : Stream.concat(Stream.concat(components, keyGeometry), Stream.of(
+                            prefix + "base=" + base,
+                            prefix + "alternate-key=SENTINEL-ALT-KEY"));
+        });
+    }
+
+    /**
      * Copies a descriptor with a different location, so that two profiles' descriptors can be
      * compared on their geometry alone.
      *
@@ -257,7 +321,8 @@ class DataSourceConfigTest {
     private static DatasetBinding withLocation(DatasetBinding binding, String location) {
         return new DatasetBinding(location, binding.organization(), binding.gdg(),
                 binding.recordFormat(), binding.blockSize(), binding.recordLength(),
-                binding.copybook(), binding.keyLength(), binding.base(), binding.alternateKey());
+                binding.copybook(), binding.keyLength(), binding.keyOffset(), binding.base(),
+                binding.alternateKey());
     }
 
     @Nested
@@ -453,18 +518,46 @@ class DataSourceConfigTest {
         }
 
         /**
-         * A key width is stated only where it is verifiable in a source file, so that no width in
-         * this configuration is an inference. Exactly two are: the transaction-category balance
-         * file's seventeen-byte composite key, and the statement transaction file's thirty-two-byte
-         * key from the {@code IDCAMS DEFINE CLUSTER} at {@code CREASTMT.JCL} L29-L39, which declares
+         * Every keyed dataset states its key width, and every width is transcribed from a source file.
+         *
+         * <p>Only {@code TCATBALF} and {@code TRNXFILE} used to, on the reasoning that a width should
+         * be stated only where a source file verifies it. That reasoning does not survive contact with
+         * the copybooks: each of these widths is the {@code PICTURE} of the key field in the copybook
+         * the entry already names, which is as verifiable as it gets. The effect of leaving them out
+         * was that a keyed read had no declared authority for where its key ended.
+         *
+         * <p>The composite keys are the ones worth reading twice. {@code TCATBALF} is
+         * {@code TRANCAT-ACCT-ID 9(11)} + {@code TRANCAT-TYPE-CD X(02)} + {@code TRANCAT-CD 9(04)} =
+         * 17; {@code DISCGRP} is {@code DIS-ACCT-GROUP-ID X(10)} + {@code DIS-TRAN-TYPE-CD X(02)} +
+         * {@code DIS-TRAN-CAT-CD 9(04)} = 16; {@code TRANCATG} is {@code TRAN-TYPE-CD X(02)} +
+         * {@code TRAN-CAT-CD 9(04)} = 6; and {@code TRNXFILE}'s 32 is corroborated independently by
+         * the {@code IDCAMS DEFINE CLUSTER} at {@code CREASTMT.JCL} L29-L39, which declares
          * {@code KEYS(32 0)} alongside {@code RECORDSIZE(350 350)}.
          */
         @ParameterizedTest(name = "[{index}] {0} -> {1}-byte key")
         @CsvSource({
+            "ACCTDAT,  11",
+            "CARDDAT,  16",
+            "CARDAIX,  11",
+            "CCXREF,   16",
+            "CXACAIX,  11",
+            "CUSTDAT,   9",
+            "TRANSACT, 16",
+            "USRSEC,    8",
+            "ACCTFILE, 11",
+            "CARDFILE, 16",
+            "XREFFILE, 16",
+            "XREFFIL1, 11",
+            "CARDXREF, 16",
+            "CUSTFILE,  9",
+            "TRANFILE, 16",
+            "DISCGRP,  16",
             "TCATBALF, 17",
+            "TRANTYPE,  2",
+            "TRANCATG,  6",
             "TRNXFILE, 32",
         })
-        @DisplayName("key widths are stated only where a source file verifies them")
+        @DisplayName("every keyed dataset states the key width its copybook declares")
         void verifiableKeyWidthsAreStated(String ddName, int keyLength) {
             shippedDefaultProfile().run(context -> assertThat(
                     context.getBean(DatasetBindings.class).binding(ddName).keyLength())
@@ -473,17 +566,63 @@ class DataSourceConfigTest {
         }
 
         @Test
-        @DisplayName("no other entry claims a key width, because no other source file states one")
-        void noOtherEntryClaimsAKeyWidth() {
+        @DisplayName("a key width is declared for every keyed entry and for no sequential one")
+        void aKeyWidthIsDeclaredForEveryKeyedEntryAndNoOther() {
+            // The two halves of one property. A keyed dataset with no key width has no authority for
+            // where its key ends; a sequential dataset with one advertises an access path it does not
+            // have. DatasetBindings.validate() enforces both at startup, and this asserts the shipped
+            // configuration satisfies them.
             shippedDefaultProfile().run(context -> {
                 DatasetBindings bindings = context.getBean(DatasetBindings.class);
-                List<String> declared = new ArrayList<>();
+                List<String> keyedWithoutWidth = new ArrayList<>();
+                List<String> sequentialWithWidth = new ArrayList<>();
                 bindings.forEach((ddName, binding) -> {
-                    if (binding.keyLength() != null) {
-                        declared.add(ddName);
+                    if (binding.keyed() && binding.keyLength() == null) {
+                        keyedWithoutWidth.add(ddName);
+                    }
+                    if (!binding.keyed() && binding.keyLength() != null) {
+                        sequentialWithWidth.add(ddName);
                     }
                 });
-                assertThat(declared).containsExactlyInAnyOrder("TCATBALF", "TRNXFILE");
+                assertThat(keyedWithoutWidth).as("keyed entries missing a key width").isEmpty();
+                assertThat(sequentialWithWidth).as("sequential entries claiming a key").isEmpty();
+            });
+        }
+
+        @Test
+        @DisplayName("the alternate-index paths declare the offset their key actually begins at")
+        void theAlternateIndexPathsDeclareTheirKeyOffset() {
+            // The one place an offset is not zero, and the reason keyOffset exists at all. CARDAIX's
+            // alternate key CARD-ACCT-ID follows CARD-NUM X(16), so it begins at 16; CXACAIX's
+            // XREF-ACCT-ID follows X(16) + 9(09), so it begins at 25. A primary key sits at 0, which
+            // is what an absent offset means.
+            shippedDefaultProfile().run(context -> {
+                DatasetBindings bindings = context.getBean(DatasetBindings.class);
+                assertThat(bindings.binding("CARDAIX").keyOffsetOrZero()).isEqualTo(16);
+                assertThat(bindings.binding("CXACAIX").keyOffsetOrZero()).isEqualTo(25);
+                assertThat(bindings.binding("XREFFIL1").keyOffsetOrZero()).isEqualTo(25);
+                assertThat(bindings.binding("ACCTDAT").keyOffsetOrZero())
+                        .as("a primary key begins at the start of the record")
+                        .isZero();
+                assertThat(bindings.binding("ACCTDAT").keyOffset())
+                        .as("and declares no offset at all, rather than an explicit zero")
+                        .isNull();
+            });
+        }
+
+        @Test
+        @DisplayName("every declared key span lies inside its record")
+        void everyKeySpanLiesInsideItsRecord() {
+            shippedDefaultProfile().run(context -> {
+                DatasetBindings bindings = context.getBean(DatasetBindings.class);
+                bindings.forEach((ddName, binding) -> {
+                    if (binding.keyed()) {
+                        assertThat(binding.keyOffsetOrZero() + binding.keyLength())
+                                .as("%s key ends within its %d-byte record", ddName,
+                                        binding.recordLength())
+                                .isLessThanOrEqualTo(binding.recordLength());
+                    }
+                });
             });
         }
 
@@ -715,7 +854,7 @@ class DataSourceConfigTest {
         private static final String SAMPLE_KEY = "ACCTDAT";
 
         private static final DatasetBinding SAMPLE_BINDING = new DatasetBinding(
-                "SENTINEL.LOOKUP.SAMPLE", "ksds", false, "FB", null, 300, "CVACT01Y", null, null,
+                "SENTINEL.LOOKUP.SAMPLE", "ksds", false, "FB", null, 300, "CVACT01Y", null, null, null,
                 null);
 
         private DatasetBindings catalogueWithOneEntry() {
@@ -885,7 +1024,7 @@ class DataSourceConfigTest {
         @DisplayName("pool settings supplied inline round-trip onto the pool, which is what proves "
                 + "they are bound rather than hard-coded")
         void poolSettingsSuppliedInlineRoundTrip() {
-            withInlinePropertiesOnly(IN_MEMORY_URL_PROPERTY,
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
                     "spring.datasource.hikari.pool-name=carddemo-inline-pool",
                     "spring.datasource.hikari.maximum-pool-size=3",
                     "spring.datasource.hikari.minimum-idle=1")
@@ -913,15 +1052,74 @@ class DataSourceConfigTest {
         @DisplayName("the URL comes from configuration and the driver class is inferred from it, so "
                 + "no driver coordinate is pinned in Java")
         void urlComesFromConfigurationAndTheDriverIsInferredFromIt() {
-            // Only a URL is supplied. If a driver class were named in Java this assertion could not
-            // distinguish the two cases, so note what makes it decisive: the shipped default profile
-            // leaves spring.datasource.driver-class-name empty, and the context still starts.
-            withInlinePropertiesOnly(IN_MEMORY_URL_PROPERTY).run(context -> {
+            // No driver class is supplied - only a URL - and the pool still ends up with the right
+            // driver, which is what proves the driver is derived from the URL's scheme rather than
+            // named in Java. The shipped default profile leaves spring.datasource.driver-class-name
+            // empty for exactly this reason: a site that needs to name its own driver sets that
+            // property, and nothing in this module presumes what it will be.
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY).run(context -> {
                 HikariDataSource pool = (HikariDataSource) context.getBean(DataSource.class);
                 assertThat(pool.getJdbcUrl()).isEqualTo(
                         IN_MEMORY_URL_PROPERTY.substring("spring.datasource.url=".length()));
                 assertThat(pool.getDriverClassName()).isEqualTo("org.h2.Driver");
             });
+        }
+
+        @Test
+        @DisplayName("an explicitly configured driver class wins over the one the URL would imply")
+        void anExplicitlyConfiguredDriverClassWins() {
+            // The case that matters for a real deployment: a site-specific mainframe URL scheme is
+            // not in any registry, so the driver has to be named. Proving the named value is the one
+            // that reaches the pool - even where the URL scheme would have implied another - is what
+            // makes that path trustworthy.
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
+                    "spring.datasource.driver-class-name=org.h2.jdbcx.JdbcDataSource")
+                    .run(context -> {
+                        HikariDataSource pool = (HikariDataSource) context.getBean(DataSource.class);
+                        assertThat(pool.getDriverClassName())
+                                .isEqualTo("org.h2.jdbcx.JdbcDataSource");
+                    });
+        }
+
+        @Test
+        @DisplayName("a driver class that is not on the classpath refuses startup, naming the class "
+                + "and the property that named it")
+        void anAbsentDriverClassRefusesStartup() {
+            // A pooled DataSource is lazy, so without this check the bean would be published, injected
+            // into all twelve repositories, and fail on the first query - in the middle of a job.
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
+                    "spring.datasource.driver-class-name=com.example.NoSuchMainframeDriver")
+                    .run(context -> {
+                        assertThat(context).hasFailed();
+                        assertThat(context.getStartupFailure()).rootCause()
+                                .isInstanceOf(IllegalStateException.class)
+                                .hasMessageContaining("com.example.NoSuchMainframeDriver")
+                                .hasMessageContaining("is not on the classpath")
+                                .hasMessageContaining("spring.datasource.driver-class-name")
+                                .hasMessageContaining("pins no JDBC driver coordinate by design");
+                    });
+        }
+
+        @Test
+        @DisplayName("an unrecognised URL scheme with no driver named refuses startup rather than "
+                + "silently substituting the embedded database on the classpath")
+        void anUndeterminableDriverRefusesStartupRatherThanFallingBackToH2() {
+            // THE SUBSTANTIVE GUARD. Spring Boot's own driver determination ends by falling back to
+            // whichever embedded database is on the classpath, and H2 is on this one at test scope to
+            // back the Batch JobRepository and the parity harness. Without this refusal, a deployment
+            // that mis-typed its driver property would be handed H2 and an empty in-memory database -
+            // and every parity comparison would then be against nothing at all.
+            withValidCatalogueAnd("spring.datasource.url=jdbc:carddemo-vsam://mainframe/PROD")
+                    .run(context -> {
+                        assertThat(context).hasFailed();
+                        assertThat(context.getStartupFailure()).rootCause()
+                                .isInstanceOf(IllegalStateException.class)
+                                .hasMessageContaining("No JDBC driver class could be determined")
+                                .hasMessageContaining("spring.datasource.driver-class-name")
+                                .hasMessageContaining("NO FALLBACK IS APPLIED")
+                                .hasMessageContaining("embedded database on this classpath is never "
+                                        + "substituted");
+                    });
         }
 
         @Test
@@ -1106,8 +1304,8 @@ class DataSourceConfigTest {
                     .map(RecordComponent::getName)
                     .toList();
             assertThat(componentNames).containsExactly("dsname", "organization", "gdg",
-                    "recordFormat", "blockSize", "recordLength", "copybook", "keyLength", "base",
-                    "alternateKey");
+                    "recordFormat", "blockSize", "recordLength", "copybook", "keyLength",
+                    "keyOffset", "base", "alternateKey");
         }
 
         @Test
@@ -1117,9 +1315,9 @@ class DataSourceConfigTest {
             assertThat(DatasetBinding.class.isRecord()).isTrue();
             assertThat(Modifier.isFinal(DatasetBinding.class.getModifiers())).isTrue();
             DatasetBinding one = new DatasetBinding("SENTINEL.VALUE.ONE", "ksds", false, "FB", null,
-                    300, "CVACT01Y", null, null, null);
+                    300, "CVACT01Y", null, null, null, null);
             DatasetBinding same = new DatasetBinding("SENTINEL.VALUE.ONE", "ksds", false, "FB", null,
-                    300, "CVACT01Y", null, null, null);
+                    300, "CVACT01Y", null, null, null, null);
             assertThat(one).isEqualTo(same).hasSameHashCodeAs(same)
                     .isNotEqualTo(withLocation(one, "SENTINEL.VALUE.TWO"));
         }
@@ -1151,14 +1349,11 @@ class DataSourceConfigTest {
         @DisplayName("a location that could not be a default survives binding unchanged")
         void sentinelLocationsSurviveBindingUnchanged(String ddName, String sentinelLocation) {
             String prefix = "carddemo.datasets." + ddName + ".";
-            withInlinePropertiesOnly(IN_MEMORY_URL_PROPERTY,
-                    prefix + "dsname=" + sentinelLocation,
-                    prefix + "organization=sequential",
-                    prefix + "record-format=FB",
-                    prefix + "record-length=50")
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY, prefix + "dsname=" + sentinelLocation)
                     .run(context -> {
                         DatasetBindings bindings = context.getBean(DatasetBindings.class);
-                        assertThat(bindings.keySet()).containsExactly(ddName);
+                        assertThat(bindings.keySet())
+                                .containsExactlyInAnyOrderElementsOf(ALL_DATASET_KEYS);
                         DatasetBinding binding = bindings.binding(ddName);
                         assertThat(binding.dsname()).isEqualTo(sentinelLocation);
                         assertThat(binding.recordLength()).isEqualTo(50);
@@ -1167,12 +1362,128 @@ class DataSourceConfigTest {
         }
 
         @Test
-        @DisplayName("with no dataset configured the catalogue is empty, so no location is supplied "
-                + "from inside Java")
-        void anUnconfiguredCatalogueIsEmpty() {
+        @DisplayName("an entirely unconfigured catalogue refuses startup, listing every DD name the "
+                + "migrated code reads")
+        void anUnconfiguredCatalogueRefusesStartup() {
+            // This assertion replaces one that asserted the opposite - that an unconfigured catalogue
+            // was a successfully started context with an empty map. That was the wrong contract, and
+            // dangerously so: an empty catalogue means every repository in the module resolves nothing,
+            // and the first symptom would have been a job failing to open a dataset at run time.
+            //
+            // The URL is supplied so the pool's own guard cannot be the thing that fails, which is what
+            // makes the catalogue the subject here rather than a bystander.
             withInlinePropertiesOnly(IN_MEMORY_URL_PROPERTY).run(context -> {
-                assertThat(context).hasSingleBean(DatasetBindings.class);
-                assertThat(context.getBean(DatasetBindings.class)).isEmpty();
+                assertThat(context).hasFailed();
+                assertThat(context.getStartupFailure()).rootCause()
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("must declare exactly the 27 DD names")
+                        .hasMessageContaining("Missing: [ACCTDAT,")
+                        .hasMessageContaining("Unexpected: []");
+            });
+        }
+
+        @Test
+        @DisplayName("one missing DD name refuses startup, naming exactly that one")
+        void oneMissingDdNameRefusesStartup() {
+            // A DD name is read by name somewhere in the migrated code, so a catalogue short of one is
+            // a job that cannot resolve its own dataset. Reported at startup, naming the absentee.
+            String[] withoutTcatbalf = minimalValidCatalogue()
+                    .filter(property -> !property.startsWith("carddemo.datasets.TCATBALF."))
+                    .toArray(String[]::new);
+            withInlinePropertiesOnly(Stream.concat(
+                            Stream.of(withoutTcatbalf), Stream.of(IN_MEMORY_URL_PROPERTY))
+                            .toArray(String[]::new))
+                    .run(context -> {
+                        assertThat(context).hasFailed();
+                        assertThat(context.getStartupFailure()).rootCause()
+                                .isInstanceOf(IllegalStateException.class)
+                                .hasMessageContaining("Missing: [TCATBALF]")
+                                .hasMessageContaining("Unexpected: []");
+                    });
+        }
+
+        @Test
+        @DisplayName("an unexpected DD name refuses startup, and is reported alongside the name it "
+                + "was probably a typo for")
+        void anUnexpectedDdNameRefusesStartup() {
+            // The two lists together are what make a typo obvious: the misspelling appears under
+            // Unexpected and the name it displaced appears under Missing, in one message.
+            String[] misspelled = minimalValidCatalogue()
+                    .map(property -> property.replace("carddemo.datasets.TCATBALF.",
+                            "carddemo.datasets.TCATBLAF."))
+                    .toArray(String[]::new);
+            withInlinePropertiesOnly(Stream.concat(
+                            Stream.of(misspelled), Stream.of(IN_MEMORY_URL_PROPERTY))
+                            .toArray(String[]::new))
+                    .run(context -> {
+                        assertThat(context).hasFailed();
+                        assertThat(context.getStartupFailure()).rootCause()
+                                .isInstanceOf(IllegalStateException.class)
+                                .hasMessageContaining("Missing: [TCATBALF]")
+                                .hasMessageContaining("Unexpected: [TCATBLAF]");
+                    });
+        }
+
+        @Test
+        @DisplayName("an unknown property on an otherwise valid entry refuses startup rather than "
+                + "being silently discarded")
+        void anUnknownPropertyOnAnEntryRefusesStartup() {
+            // Binding is strict, and this is why. Discarded silently, a mis-spelled record-lenght
+            // leaves the entry bound with the component absent and its type's default - zero - standing
+            // in for the width, which is the single value most able to corrupt every record written.
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY,
+                    "carddemo.datasets.ACCTDAT.record-lenght=300")
+                    .run(context -> {
+                        assertThat(context).hasFailed();
+                        assertThat(context.getStartupFailure())
+                                .isInstanceOf(ConfigurationPropertiesBindException.class);
+                    });
+        }
+
+        @ParameterizedTest(name = "[{index}] {0} is rejected: {1}")
+        @CsvSource(delimiter = '|', value = {
+            "carddemo.datasets.ACCTDAT.dsname=                 | it declares no dsname",
+            "carddemo.datasets.ACCTDAT.organization=vsam       | its organization is 'vsam'",
+            "carddemo.datasets.ACCTDAT.record-format=V         | its record-format is 'V'",
+            "carddemo.datasets.ACCTDAT.record-length=0         | its record-length is 0",
+            "carddemo.datasets.ACCTDAT.record-length=-1        | its record-length is -1",
+            "carddemo.datasets.ACCTDAT.block-size=-1           | its block-size is -1",
+            "carddemo.datasets.ACCTDAT.key-length=0            | its key-length is 0",
+        })
+        @DisplayName("an invalid component on any entry refuses startup, naming the DD name and the "
+                + "component")
+        void anInvalidComponentRefusesStartup(String override, String expectedDiagnostic) {
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY, override.trim()).run(context -> {
+                assertThat(context).hasFailed();
+                assertThat(context.getStartupFailure()).rootCause()
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("entry for DD name 'ACCTDAT' is invalid")
+                        .hasMessageContaining(expectedDiagnostic.trim());
+            });
+        }
+
+        @ParameterizedTest(name = "[{index}] {1}")
+        @CsvSource(delimiter = '|', value = {
+            "carddemo.datasets.ACCTDAT.base=CARDDAT         | names base 'CARDDAT'",
+            "carddemo.datasets.CARDAIX.base=                | names no base",
+            "carddemo.datasets.CARDAIX.alternate-key=       | names no alternate-key",
+            "carddemo.datasets.CARDAIX.base=NOSUCHDD        | which is not itself a declared DD name",
+            "carddemo.datasets.CARDAIX.base=CXACAIX        "
+                    + "| which is itself an alternate-index path",
+        })
+        @DisplayName("an incoherent alternate-index relationship refuses startup (gate G45)")
+        void anIncoherentAlternateIndexRelationshipRefusesStartup(
+                String override, String expectedDiagnostic) {
+            // Gate G45 enforced mechanically rather than by comment: a path names the base cluster it
+            // indexes and the key it indexes on, a non-path names neither, and a base is a base rather
+            // than a second path. Chaining paths would imply an index over an index, which no VSAM
+            // definition in app/csd/CARDDEMO.CSD declares.
+            withValidCatalogueAnd(IN_MEMORY_URL_PROPERTY, override.trim()).run(context -> {
+                assertThat(context).hasFailed();
+                assertThat(context.getStartupFailure()).rootCause()
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("is invalid")
+                        .hasMessageContaining(expectedDiagnostic.trim());
             });
         }
 

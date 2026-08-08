@@ -1,11 +1,14 @@
 package com.vsergeychik.carddemo.customer.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -51,7 +54,10 @@ import java.util.Objects;
  * {@code CVCUS01Y} declares no signed and no {@code V}-scaled picture anywhere: its complete
  * {@code PICTURE} census is {@code 9(03)} once, {@code 9(09)} twice and the rest {@code PIC X}. There
  * is no {@code COMP-3} and no {@code PACKED-DECIMAL}. Its three numeric fields are consequently
- * scale-free and map to {@code long}, {@code long} and {@code int}. This is the one persisted model
+ * scale-free and, being three and nine digits wide, all map to {@code int} - AAP rule R4 assigns
+ * {@code int} to a scale-free {@code PIC 9(n)} for {@code n} up to nine and reserves {@code long} for
+ * wider ones, and a wider Java type would accept values the field itself cannot hold. This is the one
+ * persisted model
  * type in the migration carrying no monetary field at all, so the module's shared fixed-point decimal
  * helper has no subject here and is deliberately not imported - it must not be added for symmetry
  * with the sibling model types, every one of which genuinely does carry scaled money fields. Every
@@ -68,7 +74,7 @@ import java.util.Objects;
  * It slices the field's <em>nine character bytes</em>, not its numeric value, and the plain
  * {@code MOVE} on the commented-out line 495 was deliberately replaced by it. The distinction is not
  * academic: record 1 of the fixture holds {@code '020973888'}, which slices to {@code 020-97-3888},
- * whereas slicing the {@code long} {@code 20973888} would yield {@code 209-73-888} - a silent and
+ * whereas slicing the integer {@code 20973888} would yield {@code 209-73-888} - a silent and
  * catastrophic divergence. {@link #custIdImage(Charset)}, {@link #custSsnImage(Charset)} and
  * {@link #custFicoCreditScoreImage(Charset)} therefore expose the zero-filled fixed-width image
  * beside the typed value, which is precisely the two-views-over-one-span relationship the codebase
@@ -306,69 +312,105 @@ public final class CustomerRecord {
     // Field values. Strictly per-instance: nothing below is static, because COBOL WORKING-STORAGE must
     // never become shared Java state - that would break row isolation and test determinism alike.
     //
-    // The initial state mirrors a COBOL INITIALIZE of this record: every alphanumeric field starts
-    // empty, so it encodes to its declared width in spaces, and every numeric field starts at zero, so
-    // it encodes to its declared width in zeros. No field is ever null.
+    // The initial state mirrors a COBOL INITIALIZE of this record: every alphanumeric field starts as
+    // its declared width in SPACES - not as an empty string - and every numeric field starts at zero,
+    // so it images as its declared width in zeros. No field is ever null.
+    //
+    // Holding the padded content rather than an empty string is the point of F11's correction: a field
+    // is its declared width from the moment it exists, so a getter, an equals and an encode can never
+    // disagree about what the record contains. Nothing here is static except the immutable, code-page-
+    // free PICTURE_RULES: COBOL WORKING-STORAGE must never become shared Java state, because that
+    // would break row isolation and test determinism alike.
     // =================================================================================================
 
-    /** {@code CUST-ID PIC 9(09)} - scale-free, so an exact integral type. */
-    private long custId;
+    /**
+     * The {@code PICTURE} move rules, applied when a value <em>enters</em> a receiver.
+     *
+     * <p>Static and shared, which is safe and correct here for a reason worth stating: a
+     * {@link FixedWidthCodec} is immutable, and the two rules used below -
+     * {@link FixedWidthCodec#movePicX(String, int)} and {@link FixedWidthCodec#movePic9(long, int)}
+     * (reached with an {@code int}, which widens) -
+     * are pure character and digit work. They count characters and digits; they render no byte and
+     * consult no code page, so the answer is identical under {@code IBM037} and {@code US-ASCII} alike.
+     * The code page still matters when the record is <em>encoded</em>, and there it is supplied
+     * explicitly by the caller, as every {@code encode} and {@code decode} overload shows.
+     *
+     * <p>This is what makes normalising at setter time possible at all. Were the move rules code-page
+     * dependent, a receiver could not be filled until the target charset were known, and the class
+     * would be forced back into holding an unbounded value and normalising late - which is exactly the
+     * defect this addresses.
+     */
+    private static final FixedWidthCodec PICTURE_RULES =
+            new FixedWidthCodec(StandardCharsets.US_ASCII);
+
+    /** {@code CUST-ID PIC 9(09)} - scale-free and nine digits, so {@code int} (AAP rule R4). */
+    private int custId;
 
     /** {@code CUST-FIRST-NAME PIC X(25)}. */
-    private String custFirstName = "";
+    private String custFirstName = blank(CUST_FIRST_NAME);
 
     /** {@code CUST-MIDDLE-NAME PIC X(25)}. */
-    private String custMiddleName = "";
+    private String custMiddleName = blank(CUST_MIDDLE_NAME);
 
     /** {@code CUST-LAST-NAME PIC X(25)}. */
-    private String custLastName = "";
+    private String custLastName = blank(CUST_LAST_NAME);
 
     /** {@code CUST-ADDR-LINE-1 PIC X(50)}. */
-    private String custAddrLine1 = "";
+    private String custAddrLine1 = blank(CUST_ADDR_LINE_1);
 
     /** {@code CUST-ADDR-LINE-2 PIC X(50)}. */
-    private String custAddrLine2 = "";
+    private String custAddrLine2 = blank(CUST_ADDR_LINE_2);
 
     /** {@code CUST-ADDR-LINE-3 PIC X(50)}. */
-    private String custAddrLine3 = "";
+    private String custAddrLine3 = blank(CUST_ADDR_LINE_3);
 
     /** {@code CUST-ADDR-STATE-CD PIC X(02)}. */
-    private String custAddrStateCd = "";
+    private String custAddrStateCd = blank(CUST_ADDR_STATE_CD);
 
     /** {@code CUST-ADDR-COUNTRY-CD PIC X(03)}. */
-    private String custAddrCountryCd = "";
+    private String custAddrCountryCd = blank(CUST_ADDR_COUNTRY_CD);
 
     /** {@code CUST-ADDR-ZIP PIC X(10)}. */
-    private String custAddrZip = "";
+    private String custAddrZip = blank(CUST_ADDR_ZIP);
 
     /** {@code CUST-PHONE-NUM-1 PIC X(15)}. */
-    private String custPhoneNum1 = "";
+    private String custPhoneNum1 = blank(CUST_PHONE_NUM_1);
 
     /** {@code CUST-PHONE-NUM-2 PIC X(15)}. */
-    private String custPhoneNum2 = "";
+    private String custPhoneNum2 = blank(CUST_PHONE_NUM_2);
 
-    /** {@code CUST-SSN PIC 9(09)} - held in the clear, exactly as the legacy design stores it. */
-    private long custSsn;
+    /**
+     * {@code CUST-SSN PIC 9(09)} - held in the clear, exactly as the legacy design stores it.
+     *
+     * <p>Nine digits and scale-free, so {@code int} (AAP rule R4). Hashing it would be a behaviour
+     * change and Spring Security is out of scope, so the plaintext storage is inherited deliberately.
+     */
+    private int custSsn;
 
     /** {@code CUST-GOVT-ISSUED-ID PIC X(20)} - alphanumeric, held in the clear. */
-    private String custGovtIssuedId = "";
+    private String custGovtIssuedId = blank(CUST_GOVT_ISSUED_ID);
 
     /** {@code CUST-DOB-YYYY-MM-DD PIC X(10)} - ten characters of text, never a parsed date. */
-    private String custDobYyyyMmDd = "";
+    private String custDobYyyyMmDd = blank(CUST_DOB_YYYY_MM_DD);
 
     /** {@code CUST-EFT-ACCOUNT-ID PIC X(10)}. */
-    private String custEftAccountId = "";
+    private String custEftAccountId = blank(CUST_EFT_ACCOUNT_ID);
 
     /** {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)}. */
-    private String custPriCardHolderInd = "";
+    private String custPriCardHolderInd = blank(CUST_PRI_CARD_HOLDER_IND);
 
     /** {@code CUST-FICO-CREDIT-SCORE PIC 9(03)} - scale-free, so {@code int}. */
     private int custFicoCreditScore;
 
     /**
-     * Creates a record in its {@code INITIALIZE} state: every alphanumeric field empty and every
-     * numeric field zero, so an immediate {@link #encode(Charset)} yields spaces in the character
-     * spans, zeros in the numeric spans and 168 spaces in the trailing {@code FILLER}.
+     * Creates a record in its {@code INITIALIZE} state: every alphanumeric field holding its declared
+     * width in spaces and every numeric field zero, so an immediate {@link #encode(Charset)} yields
+     * spaces in the character spans, zeros in the numeric spans and 168 spaces in the trailing
+     * {@code FILLER}.
+     *
+     * <p>{@link #getCustFirstName()} on a fresh record therefore returns twenty-five spaces rather than
+     * an empty string. That is what the field contains, and a getter that said otherwise would be
+     * describing a state {@code PIC X(25)} cannot hold.
      */
     public CustomerRecord() {
         // Field initialisers above establish the complete initial state; nothing further is required.
@@ -420,7 +462,7 @@ public final class CustomerRecord {
         // Assigned directly rather than through the setters: a decode is a faithful load of bytes the
         // codec has already validated, so re-validating here would only obscure that. Every PIC X span
         // is read UNTRIMMED, because its padding is part of the field and the parity differ compares it.
-        decoded.custId = codec.readPic9(area, CUST_ID);
+        decoded.custId = codec.readPic9AsInt(area, CUST_ID);
         decoded.custFirstName = codec.readPicX(area, CUST_FIRST_NAME);
         decoded.custMiddleName = codec.readPicX(area, CUST_MIDDLE_NAME);
         decoded.custLastName = codec.readPicX(area, CUST_LAST_NAME);
@@ -432,7 +474,7 @@ public final class CustomerRecord {
         decoded.custAddrZip = codec.readPicX(area, CUST_ADDR_ZIP);
         decoded.custPhoneNum1 = codec.readPicX(area, CUST_PHONE_NUM_1);
         decoded.custPhoneNum2 = codec.readPicX(area, CUST_PHONE_NUM_2);
-        decoded.custSsn = codec.readPic9(area, CUST_SSN);
+        decoded.custSsn = codec.readPic9AsInt(area, CUST_SSN);
         decoded.custGovtIssuedId = codec.readPicX(area, CUST_GOVT_ISSUED_ID);
         decoded.custDobYyyyMmDd = codec.readPicX(area, CUST_DOB_YYYY_MM_DD);
         decoded.custEftAccountId = codec.readPicX(area, CUST_EFT_ACCOUNT_ID);
@@ -456,7 +498,8 @@ public final class CustomerRecord {
         Objects.requireNonNull(source, "A 500-character CVCUS01Y record image is required to decode "
                 + "a customer record");
         Objects.requireNonNull(charset, "A charset is required to read a record image as bytes");
-        return decode(source.getBytes(charset), charset);
+        return decode(FixedWidthRecord.encodeText(source, charset, "a CUSTOMER-RECORD image"),
+                charset);
     }
 
     // =================================================================================================
@@ -674,7 +717,7 @@ public final class CustomerRecord {
      * @param field the descriptor whose declared length fixes the image width
      * @return the value as exactly {@code field.length()} digits, left zero-filled
      */
-    private static String numericImage(FixedWidthCodec codec, long value, FieldSpan field) {
+    private static String numericImage(FixedWidthCodec codec, int value, FieldSpan field) {
         Objects.requireNonNull(codec, "A codec is required to render a numeric field image: the "
                 + "PIC 9 left-zero-fill rule belongs to the codec, not to this model");
         return codec.movePic9(value, field.length());
@@ -686,49 +729,82 @@ public final class CustomerRecord {
     // =================================================================================================
 
     /**
-     * Rejects {@code null} for an alphanumeric field. COBOL has no null: an empty {@code PIC X} field
-     * holds spaces, so a caller wanting to blank a field supplies spaces or an empty string. Accepting
-     * {@code null} here would defer the failure to encode time, far from the mistake that caused it.
+     * Receives a value into an alphanumeric field, applying the {@code PIC X} move rule.
+     *
+     * <p><strong>This is the receiver, not a validator.</strong> A COBOL {@code MOVE} into
+     * {@code PIC X(n)} left-justifies and either right-space-pads to {@code n} or truncates on the
+     * right at {@code n}; the field afterwards holds exactly {@code n} characters and no other state is
+     * reachable. Applying that here rather than at encode time is what keeps a single state observable:
+     * every getter, every {@code equals}, every comparison and every serialisation sees the same
+     * {@code n} characters, and a value the copybook's field can never contain cannot be held even
+     * transiently.
+     *
+     * <p>Deferring it to encode - which is what this class used to do - let a caller set a
+     * thirty-character first name, read thirty characters back, compare two records as unequal on that
+     * basis, and only then encode twenty-five. Three of those four observations describe a record that
+     * cannot exist.
+     *
+     * <p>{@code null} is still refused rather than normalised. COBOL has no null: an empty
+     * {@code PIC X} field holds spaces, so a caller wanting to blank a field supplies spaces or an
+     * empty string, and both arrive here and leave as {@code n} spaces.
      *
      * @param value the candidate field value
-     * @param field the descriptor whose name and width the diagnostic quotes
-     * @return {@code value}, unchanged, when it is not {@code null}
+     * @param field the descriptor whose name and width the diagnostic quotes and the rule uses
+     * @return exactly {@code field.length()} characters
      * @throws NullPointerException if {@code value} is {@code null}
      */
-    private static String requireFieldValue(String value, FieldSpan field) {
+    private static String receive(String value, FieldSpan field) {
         if (value == null) {
             throw new NullPointerException("Field '" + field.name() + "' cannot be null: COBOL has no "
                     + "null, so an empty PIC X(" + field.length() + ") field holds spaces. Supply an "
                     + "empty string or spaces to blank it");
         }
-        return value;
+        return PICTURE_RULES.movePicX(value, field.length());
     }
 
     /**
-     * Rejects a negative value for an unsigned numeric field. {@code PIC 9(n)} declares no sign
-     * position, so a negative value has no stored representation at all and is a caller error rather
-     * than something to normalise. Note that an over-wide value is <em>not</em> rejected: COBOL
-     * truncates a numeric {@code MOVE} on the left without complaint unless the program asks for
-     * {@code ON SIZE ERROR}, and no program in this codebase does, so that behaviour is preserved and
-     * applied by the codec at encode time.
+     * The {@code INITIALIZE} content of an alphanumeric field: its declared width in spaces.
+     *
+     * @param field the descriptor whose width fixes the length
+     * @return exactly {@code field.length()} spaces
+     */
+    private static String blank(FieldSpan field) {
+        return PICTURE_RULES.movePicX("", field.length());
+    }
+
+    /**
+     * Receives a value into an unsigned numeric field, applying the {@code PIC 9} move rule.
+     *
+     * <p>A negative value is refused rather than normalised: {@code PIC 9(n)} declares no sign position,
+     * so a negative value has no stored representation at all and is a caller error, not something to
+     * reshape.
+     *
+     * <p>An over-wide value is <strong>truncated on the left, not refused</strong>, and that asymmetry
+     * is COBOL's rather than a choice made here: a numeric {@code MOVE} discards high-order digits
+     * silently unless the program asks for {@code ON SIZE ERROR}, and no program in this codebase does.
+     * What changes is only <em>when</em> the truncation happens - now, as the value enters the field,
+     * rather than later during encode - so the stored value and its image can no longer disagree.
      *
      * @param value the candidate field value
-     * @param field the descriptor whose name and width the diagnostic quotes
-     * @return {@code value}, unchanged, when it is not negative
+     * @param field the descriptor whose name and width the diagnostic quotes and the rule uses
+     * @return the value reduced to at most {@code field.length()} digits
      * @throws IllegalArgumentException if {@code value} is negative
      */
-    private static long requireUnsigned(long value, FieldSpan field) {
+    private static int receive(int value, FieldSpan field) {
         if (value < 0) {
             throw new IllegalArgumentException("Field '" + field.name() + "' is PIC 9("
                     + field.length() + "), an unsigned picture with no sign position, so it cannot "
                     + "hold " + value);
         }
-        return value;
+        return Integer.parseInt(PICTURE_RULES.movePic9(value, field.length()));
     }
 
     // =================================================================================================
     // Accessors. One pair per named span, in copybook order. PIC X values are returned exactly as held,
-    // never trimmed, because the padding is part of the field and the parity differ compares it.
+    // never trimmed, because the padding is part of the field and the parity differ compares it - and
+    // since a setter applies the PIC X move on the way in, "as held" is always exactly the declared
+    // width. A numeric getter likewise returns the value the field holds, already reduced to at most
+    // its declared number of digits.
     // =================================================================================================
 
     /**
@@ -736,24 +812,27 @@ public final class CustomerRecord {
      *
      * @return {@code CUST-ID}, the record's primary key
      */
-    public long getCustId() {
+    public int getCustId() {
         return custId;
     }
 
     /**
      * Writes span 1, {@code CUST-ID PIC 9(09)}.
      *
-     * @param custId the new {@code CUST-ID}; must not be negative
+     * @param custId the new {@code CUST-ID}; must not be negative. It is received through
+     *        the {@code PIC 9(09)} move rule, so a value of more than 9 digits loses its
+     *        high-order excess exactly as a COBOL numeric {@code MOVE} does
      * @throws IllegalArgumentException if {@code custId} is negative
      */
-    public void setCustId(long custId) {
-        this.custId = requireUnsigned(custId, CUST_ID);
+    public void setCustId(int custId) {
+        this.custId = receive(custId, CUST_ID);
     }
 
     /**
      * Reads span 2, {@code CUST-FIRST-NAME PIC X(25)}.
      *
-     * @return {@code CUST-FIRST-NAME}, untrimmed
+     * @return {@code CUST-FIRST-NAME}, exactly 25 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustFirstName() {
         return custFirstName;
@@ -762,17 +841,21 @@ public final class CustomerRecord {
     /**
      * Writes span 2, {@code CUST-FIRST-NAME PIC X(25)}.
      *
-     * @param custFirstName the new {@code CUST-FIRST-NAME}; must not be {@code null}
+     * @param custFirstName the new {@code CUST-FIRST-NAME}; must not be {@code null}. It is received
+     *        through the {@code PIC X(25)} move rule, so a shorter value is right-space-padded
+     *        to 25 characters and a longer one truncated on the right at 25 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custFirstName} is {@code null}
      */
     public void setCustFirstName(String custFirstName) {
-        this.custFirstName = requireFieldValue(custFirstName, CUST_FIRST_NAME);
+        this.custFirstName = receive(custFirstName, CUST_FIRST_NAME);
     }
 
     /**
      * Reads span 3, {@code CUST-MIDDLE-NAME PIC X(25)}.
      *
-     * @return {@code CUST-MIDDLE-NAME}, untrimmed
+     * @return {@code CUST-MIDDLE-NAME}, exactly 25 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustMiddleName() {
         return custMiddleName;
@@ -781,17 +864,21 @@ public final class CustomerRecord {
     /**
      * Writes span 3, {@code CUST-MIDDLE-NAME PIC X(25)}.
      *
-     * @param custMiddleName the new {@code CUST-MIDDLE-NAME}; must not be {@code null}
+     * @param custMiddleName the new {@code CUST-MIDDLE-NAME}; must not be {@code null}. It is received
+     *        through the {@code PIC X(25)} move rule, so a shorter value is right-space-padded
+     *        to 25 characters and a longer one truncated on the right at 25 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custMiddleName} is {@code null}
      */
     public void setCustMiddleName(String custMiddleName) {
-        this.custMiddleName = requireFieldValue(custMiddleName, CUST_MIDDLE_NAME);
+        this.custMiddleName = receive(custMiddleName, CUST_MIDDLE_NAME);
     }
 
     /**
      * Reads span 4, {@code CUST-LAST-NAME PIC X(25)}.
      *
-     * @return {@code CUST-LAST-NAME}, untrimmed
+     * @return {@code CUST-LAST-NAME}, exactly 25 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustLastName() {
         return custLastName;
@@ -800,17 +887,21 @@ public final class CustomerRecord {
     /**
      * Writes span 4, {@code CUST-LAST-NAME PIC X(25)}.
      *
-     * @param custLastName the new {@code CUST-LAST-NAME}; must not be {@code null}
+     * @param custLastName the new {@code CUST-LAST-NAME}; must not be {@code null}. It is received
+     *        through the {@code PIC X(25)} move rule, so a shorter value is right-space-padded
+     *        to 25 characters and a longer one truncated on the right at 25 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custLastName} is {@code null}
      */
     public void setCustLastName(String custLastName) {
-        this.custLastName = requireFieldValue(custLastName, CUST_LAST_NAME);
+        this.custLastName = receive(custLastName, CUST_LAST_NAME);
     }
 
     /**
      * Reads span 5, {@code CUST-ADDR-LINE-1 PIC X(50)}.
      *
-     * @return {@code CUST-ADDR-LINE-1}, untrimmed
+     * @return {@code CUST-ADDR-LINE-1}, exactly 50 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustAddrLine1() {
         return custAddrLine1;
@@ -819,17 +910,21 @@ public final class CustomerRecord {
     /**
      * Writes span 5, {@code CUST-ADDR-LINE-1 PIC X(50)}.
      *
-     * @param custAddrLine1 the new {@code CUST-ADDR-LINE-1}; must not be {@code null}
+     * @param custAddrLine1 the new {@code CUST-ADDR-LINE-1}; must not be {@code null}. It is received
+     *        through the {@code PIC X(50)} move rule, so a shorter value is right-space-padded
+     *        to 50 characters and a longer one truncated on the right at 50 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custAddrLine1} is {@code null}
      */
     public void setCustAddrLine1(String custAddrLine1) {
-        this.custAddrLine1 = requireFieldValue(custAddrLine1, CUST_ADDR_LINE_1);
+        this.custAddrLine1 = receive(custAddrLine1, CUST_ADDR_LINE_1);
     }
 
     /**
      * Reads span 6, {@code CUST-ADDR-LINE-2 PIC X(50)}.
      *
-     * @return {@code CUST-ADDR-LINE-2}, untrimmed
+     * @return {@code CUST-ADDR-LINE-2}, exactly 50 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustAddrLine2() {
         return custAddrLine2;
@@ -838,17 +933,21 @@ public final class CustomerRecord {
     /**
      * Writes span 6, {@code CUST-ADDR-LINE-2 PIC X(50)}.
      *
-     * @param custAddrLine2 the new {@code CUST-ADDR-LINE-2}; must not be {@code null}
+     * @param custAddrLine2 the new {@code CUST-ADDR-LINE-2}; must not be {@code null}. It is received
+     *        through the {@code PIC X(50)} move rule, so a shorter value is right-space-padded
+     *        to 50 characters and a longer one truncated on the right at 50 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custAddrLine2} is {@code null}
      */
     public void setCustAddrLine2(String custAddrLine2) {
-        this.custAddrLine2 = requireFieldValue(custAddrLine2, CUST_ADDR_LINE_2);
+        this.custAddrLine2 = receive(custAddrLine2, CUST_ADDR_LINE_2);
     }
 
     /**
      * Reads span 7, {@code CUST-ADDR-LINE-3 PIC X(50)}.
      *
-     * @return {@code CUST-ADDR-LINE-3}, untrimmed
+     * @return {@code CUST-ADDR-LINE-3}, exactly 50 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustAddrLine3() {
         return custAddrLine3;
@@ -857,17 +956,21 @@ public final class CustomerRecord {
     /**
      * Writes span 7, {@code CUST-ADDR-LINE-3 PIC X(50)}.
      *
-     * @param custAddrLine3 the new {@code CUST-ADDR-LINE-3}; must not be {@code null}
+     * @param custAddrLine3 the new {@code CUST-ADDR-LINE-3}; must not be {@code null}. It is received
+     *        through the {@code PIC X(50)} move rule, so a shorter value is right-space-padded
+     *        to 50 characters and a longer one truncated on the right at 50 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custAddrLine3} is {@code null}
      */
     public void setCustAddrLine3(String custAddrLine3) {
-        this.custAddrLine3 = requireFieldValue(custAddrLine3, CUST_ADDR_LINE_3);
+        this.custAddrLine3 = receive(custAddrLine3, CUST_ADDR_LINE_3);
     }
 
     /**
      * Reads span 8, {@code CUST-ADDR-STATE-CD PIC X(02)}.
      *
-     * @return {@code CUST-ADDR-STATE-CD}, untrimmed
+     * @return {@code CUST-ADDR-STATE-CD}, exactly 2 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustAddrStateCd() {
         return custAddrStateCd;
@@ -876,17 +979,21 @@ public final class CustomerRecord {
     /**
      * Writes span 8, {@code CUST-ADDR-STATE-CD PIC X(02)}.
      *
-     * @param custAddrStateCd the new {@code CUST-ADDR-STATE-CD}; must not be {@code null}
+     * @param custAddrStateCd the new {@code CUST-ADDR-STATE-CD}; must not be {@code null}. It is received
+     *        through the {@code PIC X(02)} move rule, so a shorter value is right-space-padded
+     *        to 2 characters and a longer one truncated on the right at 2 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custAddrStateCd} is {@code null}
      */
     public void setCustAddrStateCd(String custAddrStateCd) {
-        this.custAddrStateCd = requireFieldValue(custAddrStateCd, CUST_ADDR_STATE_CD);
+        this.custAddrStateCd = receive(custAddrStateCd, CUST_ADDR_STATE_CD);
     }
 
     /**
      * Reads span 9, {@code CUST-ADDR-COUNTRY-CD PIC X(03)}.
      *
-     * @return {@code CUST-ADDR-COUNTRY-CD}, untrimmed
+     * @return {@code CUST-ADDR-COUNTRY-CD}, exactly 3 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustAddrCountryCd() {
         return custAddrCountryCd;
@@ -895,17 +1002,21 @@ public final class CustomerRecord {
     /**
      * Writes span 9, {@code CUST-ADDR-COUNTRY-CD PIC X(03)}.
      *
-     * @param custAddrCountryCd the new {@code CUST-ADDR-COUNTRY-CD}; must not be {@code null}
+     * @param custAddrCountryCd the new {@code CUST-ADDR-COUNTRY-CD}; must not be {@code null}. It is received
+     *        through the {@code PIC X(03)} move rule, so a shorter value is right-space-padded
+     *        to 3 characters and a longer one truncated on the right at 3 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custAddrCountryCd} is {@code null}
      */
     public void setCustAddrCountryCd(String custAddrCountryCd) {
-        this.custAddrCountryCd = requireFieldValue(custAddrCountryCd, CUST_ADDR_COUNTRY_CD);
+        this.custAddrCountryCd = receive(custAddrCountryCd, CUST_ADDR_COUNTRY_CD);
     }
 
     /**
      * Reads span 10, {@code CUST-ADDR-ZIP PIC X(10)}.
      *
-     * @return {@code CUST-ADDR-ZIP}, untrimmed
+     * @return {@code CUST-ADDR-ZIP}, exactly 10 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustAddrZip() {
         return custAddrZip;
@@ -914,17 +1025,21 @@ public final class CustomerRecord {
     /**
      * Writes span 10, {@code CUST-ADDR-ZIP PIC X(10)}.
      *
-     * @param custAddrZip the new {@code CUST-ADDR-ZIP}; must not be {@code null}
+     * @param custAddrZip the new {@code CUST-ADDR-ZIP}; must not be {@code null}. It is received
+     *        through the {@code PIC X(10)} move rule, so a shorter value is right-space-padded
+     *        to 10 characters and a longer one truncated on the right at 10 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custAddrZip} is {@code null}
      */
     public void setCustAddrZip(String custAddrZip) {
-        this.custAddrZip = requireFieldValue(custAddrZip, CUST_ADDR_ZIP);
+        this.custAddrZip = receive(custAddrZip, CUST_ADDR_ZIP);
     }
 
     /**
      * Reads span 11, {@code CUST-PHONE-NUM-1 PIC X(15)}.
      *
-     * @return {@code CUST-PHONE-NUM-1}, untrimmed, with its punctuation intact
+     * @return {@code CUST-PHONE-NUM-1}, exactly 15 characters and untrimmed - the receiver's
+     *         own content, with its punctuation intact
      */
     public String getCustPhoneNum1() {
         return custPhoneNum1;
@@ -933,17 +1048,21 @@ public final class CustomerRecord {
     /**
      * Writes span 11, {@code CUST-PHONE-NUM-1 PIC X(15)}.
      *
-     * @param custPhoneNum1 the new {@code CUST-PHONE-NUM-1}; must not be {@code null}
+     * @param custPhoneNum1 the new {@code CUST-PHONE-NUM-1}; must not be {@code null}. It is received
+     *        through the {@code PIC X(15)} move rule, so a shorter value is right-space-padded
+     *        to 15 characters and a longer one truncated on the right at 15 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custPhoneNum1} is {@code null}
      */
     public void setCustPhoneNum1(String custPhoneNum1) {
-        this.custPhoneNum1 = requireFieldValue(custPhoneNum1, CUST_PHONE_NUM_1);
+        this.custPhoneNum1 = receive(custPhoneNum1, CUST_PHONE_NUM_1);
     }
 
     /**
      * Reads span 12, {@code CUST-PHONE-NUM-2 PIC X(15)}.
      *
-     * @return {@code CUST-PHONE-NUM-2}, untrimmed, with its punctuation intact
+     * @return {@code CUST-PHONE-NUM-2}, exactly 15 characters and untrimmed - the receiver's
+     *         own content, with its punctuation intact
      */
     public String getCustPhoneNum2() {
         return custPhoneNum2;
@@ -952,11 +1071,14 @@ public final class CustomerRecord {
     /**
      * Writes span 12, {@code CUST-PHONE-NUM-2 PIC X(15)}.
      *
-     * @param custPhoneNum2 the new {@code CUST-PHONE-NUM-2}; must not be {@code null}
+     * @param custPhoneNum2 the new {@code CUST-PHONE-NUM-2}; must not be {@code null}. It is received
+     *        through the {@code PIC X(15)} move rule, so a shorter value is right-space-padded
+     *        to 15 characters and a longer one truncated on the right at 15 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custPhoneNum2} is {@code null}
      */
     public void setCustPhoneNum2(String custPhoneNum2) {
-        this.custPhoneNum2 = requireFieldValue(custPhoneNum2, CUST_PHONE_NUM_2);
+        this.custPhoneNum2 = receive(custPhoneNum2, CUST_PHONE_NUM_2);
     }
 
     /**
@@ -966,24 +1088,27 @@ public final class CustomerRecord {
      *
      * @return {@code CUST-SSN}
      */
-    public long getCustSsn() {
+    public int getCustSsn() {
         return custSsn;
     }
 
     /**
      * Writes span 13, {@code CUST-SSN PIC 9(09)}.
      *
-     * @param custSsn the new {@code CUST-SSN}; must not be negative
+     * @param custSsn the new {@code CUST-SSN}; must not be negative. It is received through
+     *        the {@code PIC 9(09)} move rule, so a value of more than 9 digits loses its
+     *        high-order excess exactly as a COBOL numeric {@code MOVE} does
      * @throws IllegalArgumentException if {@code custSsn} is negative
      */
-    public void setCustSsn(long custSsn) {
-        this.custSsn = requireUnsigned(custSsn, CUST_SSN);
+    public void setCustSsn(int custSsn) {
+        this.custSsn = receive(custSsn, CUST_SSN);
     }
 
     /**
      * Reads span 14, {@code CUST-GOVT-ISSUED-ID PIC X(20)}.
      *
-     * @return {@code CUST-GOVT-ISSUED-ID}, untrimmed, with any leading zeros intact
+     * @return {@code CUST-GOVT-ISSUED-ID}, exactly 20 characters and untrimmed - the receiver's
+     *         own content, with any leading zeros intact
      */
     public String getCustGovtIssuedId() {
         return custGovtIssuedId;
@@ -992,11 +1117,14 @@ public final class CustomerRecord {
     /**
      * Writes span 14, {@code CUST-GOVT-ISSUED-ID PIC X(20)}.
      *
-     * @param custGovtIssuedId the new {@code CUST-GOVT-ISSUED-ID}; must not be {@code null}
+     * @param custGovtIssuedId the new {@code CUST-GOVT-ISSUED-ID}; must not be {@code null}. It is received
+     *        through the {@code PIC X(20)} move rule, so a shorter value is right-space-padded
+     *        to 20 characters and a longer one truncated on the right at 20 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custGovtIssuedId} is {@code null}
      */
     public void setCustGovtIssuedId(String custGovtIssuedId) {
-        this.custGovtIssuedId = requireFieldValue(custGovtIssuedId, CUST_GOVT_ISSUED_ID);
+        this.custGovtIssuedId = receive(custGovtIssuedId, CUST_GOVT_ISSUED_ID);
     }
 
     /**
@@ -1004,7 +1132,8 @@ public final class CustomerRecord {
      * {@code LocalDate}: the legacy program moves it straight to a screen field, and parsing it here
      * would impose validation the COBOL does not perform.
      *
-     * @return {@code CUST-DOB-YYYY-MM-DD}, untrimmed
+     * @return {@code CUST-DOB-YYYY-MM-DD}, exactly 10 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustDobYyyyMmDd() {
         return custDobYyyyMmDd;
@@ -1018,13 +1147,14 @@ public final class CustomerRecord {
      * @throws NullPointerException if {@code custDobYyyyMmDd} is {@code null}
      */
     public void setCustDobYyyyMmDd(String custDobYyyyMmDd) {
-        this.custDobYyyyMmDd = requireFieldValue(custDobYyyyMmDd, CUST_DOB_YYYY_MM_DD);
+        this.custDobYyyyMmDd = receive(custDobYyyyMmDd, CUST_DOB_YYYY_MM_DD);
     }
 
     /**
      * Reads span 16, {@code CUST-EFT-ACCOUNT-ID PIC X(10)}.
      *
-     * @return {@code CUST-EFT-ACCOUNT-ID}, untrimmed
+     * @return {@code CUST-EFT-ACCOUNT-ID}, exactly 10 characters and untrimmed - the receiver's
+     *         own content
      */
     public String getCustEftAccountId() {
         return custEftAccountId;
@@ -1033,11 +1163,14 @@ public final class CustomerRecord {
     /**
      * Writes span 16, {@code CUST-EFT-ACCOUNT-ID PIC X(10)}.
      *
-     * @param custEftAccountId the new {@code CUST-EFT-ACCOUNT-ID}; must not be {@code null}
+     * @param custEftAccountId the new {@code CUST-EFT-ACCOUNT-ID}; must not be {@code null}. It is received
+     *        through the {@code PIC X(10)} move rule, so a shorter value is right-space-padded
+     *        to 10 characters and a longer one truncated on the right at 10 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custEftAccountId} is {@code null}
      */
     public void setCustEftAccountId(String custEftAccountId) {
-        this.custEftAccountId = requireFieldValue(custEftAccountId, CUST_EFT_ACCOUNT_ID);
+        this.custEftAccountId = receive(custEftAccountId, CUST_EFT_ACCOUNT_ID);
     }
 
     /**
@@ -1052,11 +1185,14 @@ public final class CustomerRecord {
     /**
      * Writes span 17, {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)}.
      *
-     * @param custPriCardHolderInd the new {@code CUST-PRI-CARD-HOLDER-IND}; must not be {@code null}
+     * @param custPriCardHolderInd the new {@code CUST-PRI-CARD-HOLDER-IND}; must not be {@code null}. It is received
+     *        through the {@code PIC X(01)} move rule, so a shorter value is right-space-padded
+     *        to 1 characters and a longer one truncated on the right at 1 - the field holds the
+     *        result, not the argument
      * @throws NullPointerException if {@code custPriCardHolderInd} is {@code null}
      */
     public void setCustPriCardHolderInd(String custPriCardHolderInd) {
-        this.custPriCardHolderInd = requireFieldValue(custPriCardHolderInd, CUST_PRI_CARD_HOLDER_IND);
+        this.custPriCardHolderInd = receive(custPriCardHolderInd, CUST_PRI_CARD_HOLDER_IND);
     }
 
     /**
@@ -1071,12 +1207,14 @@ public final class CustomerRecord {
     /**
      * Writes span 18, {@code CUST-FICO-CREDIT-SCORE PIC 9(03)}.
      *
-     * @param custFicoCreditScore the new {@code CUST-FICO-CREDIT-SCORE}; must not be negative
+     * @param custFicoCreditScore the new {@code CUST-FICO-CREDIT-SCORE}; must not be negative. It is received through
+     *        the {@code PIC 9(03)} move rule, so a value of more than 3 digits loses its
+     *        high-order excess exactly as a COBOL numeric {@code MOVE} does
      * @throws IllegalArgumentException if {@code custFicoCreditScore} is negative
      */
     public void setCustFicoCreditScore(int custFicoCreditScore) {
         this.custFicoCreditScore =
-                (int) requireUnsigned(custFicoCreditScore, CUST_FICO_CREDIT_SCORE);
+                receive(custFicoCreditScore, CUST_FICO_CREDIT_SCORE);
     }
 
     // =================================================================================================
@@ -1143,35 +1281,55 @@ public final class CustomerRecord {
     }
 
     /**
-     * Renders every field under its exact copybook name, with alphanumeric values bracketed so trailing
-     * spaces stay visible.
+     * Names every field under its exact copybook name, and withholds the personal data per
+     * {@link SensitiveDiagnostics}.
      *
-     * <p>Nothing is omitted, masked, truncated or redacted, including {@code CUST-SSN} and
-     * {@code CUST-GOVT-ISSUED-ID}. Those fields are plaintext in the legacy design, and hiding them
-     * here would be a behaviour change that also defeats field-for-field diffing during a parity
-     * investigation - which is exactly when this output is read.
+     * <p>This is the most sensitive record in the module. {@code CVCUS01Y} is a complete identity
+     * dossier: legal name, three address lines, two telephone numbers, date of birth, social security
+     * number, government-issued identifier and an electronic funds transfer account. Rendering it in
+     * full - which this method previously did - meant one log statement or one failed assertion
+     * disclosed everything needed to impersonate the customer.
      *
-     * @return a complete, single-line rendering of all 18 named fields
+     * <p>Three categories, and the treatment differs because the risk does. {@code CUST-SSN},
+     * {@code CUST-GOVT-ISSUED-ID} and {@code CUST-EFT-ACCOUNT-ID} are withheld outright, with no partial
+     * value and no length, because they are credentials rather than descriptors. The name, address,
+     * telephone, zip and date-of-birth fields report their length and nothing else, because a name has no
+     * safely-revealable part - the last four characters of a surname are still the surname.
+     * {@code CUST-ID} is masked to its last four digits at full stored width, enough to correlate two log
+     * lines about one customer and not enough to reconstruct the key. State code, country code, the
+     * primary-card-holder indicator and the FICO score stay legible: none identifies a person once the
+     * identifier is masked, and they are what an account-update validation parity failure is read from.
+     *
+     * <p>The earlier rationale here was that hiding these fields would be a behaviour change and would
+     * defeat field-for-field diffing. Neither holds. It is not a behaviour change, because COBOL has no
+     * {@code toString} and nothing the legacy program or the parity harness can observe is altered - the
+     * accessors, {@link #encode(Charset)} and {@link #fieldImages(Charset)} all still return the real
+     * values. And it does not defeat diffing, because the differ compares
+     * {@link #fieldImages(Charset)} rather than this string: a caller that asks for the values by name
+     * still gets them, while a caller that merely renders the object no longer does.
+     *
+     * @return a rendering safe to log, naming all 18 fields
      */
     @Override
     public String toString() {
-        return "CustomerRecord{CUST-ID=" + custId
-                + ", CUST-FIRST-NAME=[" + custFirstName
-                + "], CUST-MIDDLE-NAME=[" + custMiddleName
-                + "], CUST-LAST-NAME=[" + custLastName
-                + "], CUST-ADDR-LINE-1=[" + custAddrLine1
-                + "], CUST-ADDR-LINE-2=[" + custAddrLine2
-                + "], CUST-ADDR-LINE-3=[" + custAddrLine3
-                + "], CUST-ADDR-STATE-CD=[" + custAddrStateCd
+        return "CustomerRecord{CUST-ID="
+                + SensitiveDiagnostics.maskIdentifier(custId, CUST_ID.length())
+                + ", CUST-FIRST-NAME=" + SensitiveDiagnostics.describeText(custFirstName)
+                + ", CUST-MIDDLE-NAME=" + SensitiveDiagnostics.describeText(custMiddleName)
+                + ", CUST-LAST-NAME=" + SensitiveDiagnostics.describeText(custLastName)
+                + ", CUST-ADDR-LINE-1=" + SensitiveDiagnostics.describeText(custAddrLine1)
+                + ", CUST-ADDR-LINE-2=" + SensitiveDiagnostics.describeText(custAddrLine2)
+                + ", CUST-ADDR-LINE-3=" + SensitiveDiagnostics.describeText(custAddrLine3)
+                + ", CUST-ADDR-STATE-CD=[" + custAddrStateCd
                 + "], CUST-ADDR-COUNTRY-CD=[" + custAddrCountryCd
-                + "], CUST-ADDR-ZIP=[" + custAddrZip
-                + "], CUST-PHONE-NUM-1=[" + custPhoneNum1
-                + "], CUST-PHONE-NUM-2=[" + custPhoneNum2
-                + "], CUST-SSN=" + custSsn
-                + ", CUST-GOVT-ISSUED-ID=[" + custGovtIssuedId
-                + "], CUST-DOB-YYYY-MM-DD=[" + custDobYyyyMmDd
-                + "], CUST-EFT-ACCOUNT-ID=[" + custEftAccountId
-                + "], CUST-PRI-CARD-HOLDER-IND=[" + custPriCardHolderInd
+                + "], CUST-ADDR-ZIP=" + SensitiveDiagnostics.describeText(custAddrZip)
+                + ", CUST-PHONE-NUM-1=" + SensitiveDiagnostics.describeText(custPhoneNum1)
+                + ", CUST-PHONE-NUM-2=" + SensitiveDiagnostics.describeText(custPhoneNum2)
+                + ", CUST-SSN=" + SensitiveDiagnostics.redacted()
+                + ", CUST-GOVT-ISSUED-ID=" + SensitiveDiagnostics.redacted()
+                + ", CUST-DOB-YYYY-MM-DD=" + SensitiveDiagnostics.describeText(custDobYyyyMmDd)
+                + ", CUST-EFT-ACCOUNT-ID=" + SensitiveDiagnostics.redacted()
+                + ", CUST-PRI-CARD-HOLDER-IND=[" + custPriCardHolderInd
                 + "], CUST-FICO-CREDIT-SCORE=" + custFicoCreditScore
                 + '}';
     }

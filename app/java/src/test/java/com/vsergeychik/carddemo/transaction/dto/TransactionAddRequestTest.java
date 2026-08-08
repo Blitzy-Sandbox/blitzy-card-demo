@@ -310,13 +310,23 @@ class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("the communication area and its extension are present, never null")
+        @DisplayName("a fresh request carries no communication area, but does carry its extension")
         void conversationStateIsInitialised() {
             TransactionAddRequest request = new TransactionAddRequest();
-            assertThat(request.getNavigationContext()).isNotNull();
-            assertThat(request.getCt01Info()).isNotNull();
-            assertThat(request.isEnter()).isTrue();
+
+            // Absence is the honest default: nothing has been passed to a request nobody has filled
+            // in yet, and that is exactly the EIBCALEN = 0 state COTRN01C.cbl:94 tests for. Defaulting
+            // to an initialised area would make that state unreachable through the API, because every
+            // request would then carry one whether or not it was passed.
+            assertThat(request.getNavigationContext()).isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
+            assertThat(request.commareaLength()).isZero();
+            assertThat(request.isEnter()).isFalse();
             assertThat(request.isReenter()).isFalse();
+
+            // The extension is a different case and keeps its fresh default - see
+            // aNullExtensionIsNormalised.
+            assertThat(request.getCt01Info()).isNotNull();
         }
     }
 
@@ -453,7 +463,15 @@ class TransactionAddRequestTest {
         @DisplayName("the commarea image is exactly 218 bytes: 160 + 58")
         void commareaImageIs218() {
             assertThat(populated().toCommareaImage(CODEC)).hasSize(218);
-            assertThat(new TransactionAddRequest().toCommareaImage(CODEC)).hasSize(218);
+
+            // A request that carries an area renders one whatever else is set on it...
+            TransactionAddRequest fresh = new TransactionAddRequest();
+            fresh.setNavigationContext(NavigationContext.empty());
+            assertThat(fresh.toCommareaImage(CODEC)).hasSize(218);
+
+            // ...and a request that carries none renders nothing, rather than 218 invented bytes.
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> new TransactionAddRequest().toCommareaImage(CODEC));
         }
 
         @Test
@@ -788,14 +806,102 @@ class TransactionAddRequestTest {
         }
 
         @Test
-        @DisplayName("a null communication area or extension is normalised, never left null")
-        void nullConversationStateIsNormalised() {
+        @DisplayName("a null communication area is preserved: it is EIBCALEN = 0, not a missing value")
+        void aNullCommareaIsPreserved() {
             TransactionAddRequest request = populated();
             request.setNavigationContext(null);
+
+            // COTRN01C.cbl:94-96 acts on the absence itself - IF EIBCALEN = 0 transfers to COSGN00C
+            // without ever reading a context byte - so substituting an initialised area would send
+            // the request down the ELSE branch instead. The absence has to survive.
+            assertThat(request.getNavigationContext()).isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
+            assertThat(request.commareaLength()).isZero();
+            assertThat(request.isEnter()).isFalse();
+            assertThat(request.isReenter()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a null CDEMO-CT01-INFO extension is still normalised to a fresh one")
+        void aNullExtensionIsNormalised() {
+            TransactionAddRequest request = populated();
             request.setCt01Info(null);
-            assertThat(request.getNavigationContext()).isEqualTo(NavigationContext.empty());
+
+            // Unlike the commarea, the extension has no absence semantics of its own: COTRN01C reads
+            // it only on the branch where a commarea was passed, so a fresh one is the honest default.
             assertThat(request.getCt01Info()).isEqualTo(new Ct01Info());
             assertThat(request.getCt01Info().getNextPageFlg()).isEqualTo("N");
+        }
+
+        @Test
+        @DisplayName("a present area reports EIBCALEN 218 and its own context state")
+        void aPresentAreaReportsItsState() {
+            TransactionAddRequest request = populated();
+            request.setNavigationContext(NavigationContext.empty());
+
+            assertThat(request.hasNavigationContext()).isTrue();
+            assertThat(request.commareaLength())
+                    .isEqualTo(TransactionAddRequest.COMMAREA_TOTAL_LENGTH)
+                    .isEqualTo(NavigationContext.COMMAREA_LENGTH + Ct01Info.RECORD_LENGTH);
+            assertThat(request.isEnter()).isTrue();
+            assertThat(request.isReenter()).isFalse();
+
+            request.setNavigationContext(NavigationContext.empty().withPgmReenter());
+            assertThat(request.isReenter()).isTrue();
+            assertThat(request.isEnter()).isFalse();
+        }
+
+        @Test
+        @DisplayName("neither predicate holds for a context digit that names no condition")
+        void anUnknownContextDigitSatisfiesNeither() {
+            TransactionAddRequest request = populated();
+            request.setNavigationContext(NavigationContext.empty().withPgmContext(9));
+
+            assertThat(request.isEnter()).isFalse();
+            assertThat(request.isReenter()).isFalse();
+        }
+
+        @Test
+        @DisplayName("with no area there are no commarea bytes to render, and none are invented")
+        void aColdStartHasNoCommareaImage() {
+            TransactionAddRequest request = populated();
+            request.setNavigationContext(null);
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> request.toCommareaImage(CODEC))
+                    .withMessageContaining("EIBCALEN is 0")
+                    .withMessageContaining("hasNavigationContext");
+        }
+
+        @Test
+        @DisplayName("the diagnostic rendering names the cold start rather than printing a context")
+        void theDiagnosticNamesTheColdStart() {
+            TransactionAddRequest cold = populated();
+            cold.setNavigationContext(null);
+
+            // Three states, not two. Printing a cold start as pgmContext=0 would hide exactly the
+            // distinction this payload was corrected to preserve.
+            assertThat(cold.toString()).contains("pgmContext=none (EIBCALEN=0)");
+
+            TransactionAddRequest warm = populated();
+            warm.setNavigationContext(NavigationContext.empty());
+            assertThat(warm.toString()).contains("pgmContext=0")
+                    .doesNotContain("EIBCALEN");
+        }
+
+        @Test
+        @DisplayName("the absence survives a JSON round trip in both directions")
+        void theAbsenceSurvivesJson() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            TransactionAddRequest before = populated();
+            before.setNavigationContext(null);
+
+            String json = mapper.writeValueAsString(before);
+            TransactionAddRequest after = mapper.readValue(json, TransactionAddRequest.class);
+
+            assertThat(mapper.readTree(json).get("navigationContext").isNull()).isTrue();
+            assertThat(after.hasNavigationContext()).isFalse();
+            assertThat(after).isEqualTo(before);
         }
 
         @Test

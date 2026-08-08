@@ -2,15 +2,20 @@ package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
+import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import jakarta.validation.constraints.Size;
 import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * The inbound payload of {@code GET /api/cards/{cardNum}} - the credit-card detail screen, CSD
@@ -632,6 +637,18 @@ public final class CardSelectRequest {
      * The {@code CARDDEMO-COMMAREA} of {@code COCOM01Y}, copied by {@code app/cbl/COCRDSLC.cbl:198} -
      * {@value NavigationContext#COMMAREA_LENGTH} bytes, carrying among much else
      * {@code CDEMO-PGM-CONTEXT}, on which {@link #isEnter()} and {@link #isReenter()} turn.
+     *
+     * <p><strong>{@code null} is meaningful here, and it is not an empty area.</strong>
+     * {@code app/cbl/COCRDSLC.cbl:268-272} tests
+     * {@code IF EIBCALEN IS EQUAL TO 0 OR (CDEMO-FROM-PROGRAM = LIT-MENUPGM AND NOT
+     * CDEMO-PGM-REENTER)} and answers it by {@code INITIALIZE}-ing {@code CARDDEMO-COMMAREA} and
+     * {@code WS-THIS-PROGCOMMAREA}; the {@code ELSE} at {@code :273-278} instead moves both areas out
+     * of {@code DFHCOMMAREA}. The first disjunct is the cold start - no communication area at all -
+     * and it is the one an initialised {@link NavigationContext} cannot express, because an
+     * initialised area reports {@code EIBCALEN} as {@value NavigationContext#COMMAREA_LENGTH} and so
+     * takes the {@code ELSE}. The second disjunct is a decision about a <em>present</em> area and
+     * belongs to {@code CardSelectController}. This member therefore stays nullable, carries no
+     * presence constraint, and {@link #hasNavigationContext()} is the discriminator.
      */
     @JsonProperty("navigationContext")
     private NavigationContext navigationContext;
@@ -650,6 +667,28 @@ public final class CardSelectRequest {
      */
     private final EnumMap<ScreenField, ScreenFieldMetadata> metadata =
             new EnumMap<>(ScreenField.class);
+
+    /**
+     * What {@link #toString()} substitutes for a redacted value: {@value}.
+     *
+     * <p>The same marker every other payload in this module uses, so a log line reads consistently
+     * whichever screen produced it.
+     */
+    private static final String REDACTED_VALUE = "[REDACTED]";
+
+    /**
+     * The three fields {@link #toString()} redacts: the card number, the account identifier and the
+     * cardholder's name.
+     *
+     * <p>Scoped to those three and no others. {@code CRDSTCD} is a one-character status,
+     * {@code EXPMON} and {@code EXPYEAR} are an expiry that identifies nobody on its own, and the rest
+     * are screen furniture, titles, messages and the function-key line. Redacting them would cost
+     * diagnostic value for no gain. This set is read only by {@link #toString()}; the JSON body, the
+     * group image and every accessor carry all three in the clear.
+     */
+    private static final Set<ScreenField> REDACTED_FIELDS =
+            Collections.unmodifiableSet(EnumSet.of(ScreenField.ACCTSID, ScreenField.CARDSID,
+                    ScreenField.CRDNAME));
 
     // =================================================================================================
     // Construction.
@@ -766,7 +805,9 @@ public final class CardSelectRequest {
         this.errmsg = spaces(ERRMSG_LENGTH);
         this.fkeys = spaces(FKEYS_LENGTH);
         this.cardScreenState = new CardScreenState();
-        this.navigationContext = NavigationContext.empty();
+        // Absence, not an initialised area: EIBCALEN = 0 is the first disjunct of COCRDSLC.cbl:268,
+        // and a request nobody has passed a communication area to has not been passed one.
+        this.navigationContext = null;
     }
 
     /**
@@ -1244,17 +1285,63 @@ public final class CardSelectRequest {
     }
 
     /**
-     * Replaces the {@code CARDDEMO-COMMAREA}.
+     * Replaces the {@code CARDDEMO-COMMAREA}, storing {@code null} verbatim.
      *
-     * @param navigationContext the communication area; {@code null} is taken as
-     *                          {@link NavigationContext#empty()}, whose
-     *                          {@code CDEMO-PGM-CONTEXT} is
-     *                          {@value NavigationContext#PGM_CONTEXT_ENTER} and which therefore reads
-     *                          as first entry
+     * <p>{@code null} is <strong>not</strong> taken as {@link NavigationContext#empty()}. The two are
+     * different states of {@code EIBCALEN} - {@code 0} against
+     * {@value NavigationContext#COMMAREA_LENGTH} - and {@code app/cbl/COCRDSLC.cbl:268} branches on
+     * exactly that difference. Substituting one for the other deletes the cold-start path.
+     *
+     * @param navigationContext the communication area, or {@code null} where none travelled with the
+     *                          request
      */
     public void setNavigationContext(NavigationContext navigationContext) {
-        this.navigationContext =
-                navigationContext == null ? NavigationContext.empty() : navigationContext;
+        this.navigationContext = navigationContext;
+    }
+
+    /**
+     * Whether a communication area travelled with this request - the Java reading of {@code EIBCALEN}
+     * being non-zero at {@code app/cbl/COCRDSLC.cbl:268}.
+     *
+     * <p>Not a JSON property: it is derived from {@link #getNavigationContext()}, which is already on
+     * the wire as {@code null} or as an object, and a second member could contradict it.
+     *
+     * @return {@code true} when {@link #getNavigationContext()} is present
+     */
+    @JsonIgnore
+    public boolean hasNavigationContext() {
+        return navigationContext != null;
+    }
+
+    /**
+     * The length CICS would report in {@code EIBCALEN}:
+     * {@value NavigationContext#COMMAREA_LENGTH} when a communication area travelled with this request
+     * and {@code 0} when none did.
+     *
+     * @return {@value NavigationContext#COMMAREA_LENGTH} or {@code 0}
+     */
+    @JsonIgnore
+    public int commareaLength() {
+        return hasNavigationContext() ? NavigationContext.COMMAREA_LENGTH : 0;
+    }
+
+    /**
+     * {@code CDEMO-PGM-CONTEXT PIC 9(01)} as carried by the communication area, or
+     * {@value NavigationContext#PGM_CONTEXT_ENTER} where no area travelled.
+     *
+     * <p>The fallback is the arm an uninitialised area takes, and it is not observable in the COBOL:
+     * the cold-start branch at {@code app/cbl/COCRDSLC.cbl:271-272} {@code INITIALIZE}s the area
+     * before anything reads the context out of it. A caller that must tell an absent area from a
+     * present one holding {@value NavigationContext#PGM_CONTEXT_ENTER} asks
+     * {@link #hasNavigationContext()}.
+     *
+     * @return the program context, or {@value NavigationContext#PGM_CONTEXT_ENTER} when absent
+     */
+    @JsonIgnore
+    public int getPgmContext() {
+        return hasNavigationContext()
+                ? navigationContext.pgmContext()
+                : NavigationContext.PGM_CONTEXT_ENTER;
     }
 
     /**
@@ -1268,12 +1355,16 @@ public final class CardSelectRequest {
      * {@link NavigationContext#pgmContext()}, which is already on the wire inside the carrier, so
      * publishing it again would let one payload carry the same fact twice and disagree with itself.
      *
-     * @return {@code true} when the carried program context is
+     * <p>False when no communication area travelled: the condition name is a test over a field, and
+     * there is no field to test. With {@link #isReenter()} that gives three states, not two - which is
+     * what the cold-start disjunct at {@code app/cbl/COCRDSLC.cbl:268} needs.
+     *
+     * @return {@code true} when a communication area travelled and its carried program context is
      *         {@value NavigationContext#PGM_CONTEXT_ENTER}
      */
     @JsonIgnore
     public boolean isEnter() {
-        return navigationContext.isEnter();
+        return hasNavigationContext() && navigationContext.isEnter();
     }
 
     /**
@@ -1285,16 +1376,17 @@ public final class CardSelectRequest {
      * value {@code common/FieldAttributeSetter} takes as its re-entry argument.
      *
      * <p>Deliberately not written as the negation of {@link #isEnter()}: {@code CDEMO-PGM-CONTEXT} is
-     * {@code PIC 9(01)} and can hold any digit, so a context of 9 satisfies neither condition.
+     * {@code PIC 9(01)} and can hold any digit, so a context of 9 satisfies neither condition - and
+     * neither does an absent communication area.
      *
      * <p>{@link JsonIgnore}d for the same reason as {@link #isEnter()}.
      *
-     * @return {@code true} when the carried program context is
+     * @return {@code true} when a communication area travelled and its carried program context is
      *         {@value NavigationContext#PGM_CONTEXT_REENTER}
      */
     @JsonIgnore
     public boolean isReenter() {
-        return navigationContext.isReenter();
+        return hasNavigationContext() && navigationContext.isReenter();
     }
 
     // =================================================================================================
@@ -1456,8 +1548,8 @@ public final class CardSelectRequest {
             ScreenFieldMetadata holder = request.metadata.get(field);
             holder.setLength(lengthItem);
             holder.setAttribute(groupImage[field.flagItemOffset()]);
-            request.setValue(field,
-                    new String(groupImage, field.dataOffset(), field.length(), charset));
+            request.setValue(field, new FixedWidthRecord.Transcoder(charset).decode(groupImage,
+                    field.dataOffset(), field.length(), "the CCRDSLAI item " + field.name()));
         }
         return request;
     }
@@ -1518,7 +1610,7 @@ public final class CardSelectRequest {
                                         int declaredWidth,
                                         Charset charset,
                                         String what) {
-        byte[] encoded = image.getBytes(charset);
+        byte[] encoded = FixedWidthRecord.encodeText(image, charset, what);
         if (encoded.length != declaredWidth) {
             throw new IllegalArgumentException("Charset " + charset.name() + " encodes " + what
                     + " to " + encoded.length + " byte(s) where the copybook declares "
@@ -1566,7 +1658,7 @@ public final class CardSelectRequest {
                 && errmsg.equals(that.errmsg)
                 && fkeys.equals(that.fkeys)
                 && cardScreenState.equals(that.cardScreenState)
-                && navigationContext.equals(that.navigationContext)
+                && Objects.equals(navigationContext, that.navigationContext)
                 && metadata.equals(that.metadata);
     }
 
@@ -1585,11 +1677,21 @@ public final class CardSelectRequest {
     /**
      * A diagnostic rendering naming every field by its {@code DFHMDF} label.
      *
-     * <p>Nothing is masked, abbreviated or elided - {@code CARDSID}'s sixteen digits and
-     * {@code ACCTSID}'s account identifier appear exactly as stored. A sanitising {@code toString} would
-     * be as much of a behaviour change as removing a validation, and the COBOL sanitises nothing
-     * (practice <strong>B6</strong>). Field values are quoted so that the trailing spaces of a
-     * {@code PIC X} field, which are part of its value, are visible in a failure message.
+     * <p><strong>{@code CARDSID}, {@code ACCTSID} and {@code CRDNAME} are redacted here, and only
+     * here.</strong> They are a sixteen-digit card number, an account identifier and a cardholder's
+     * name, and a diagnostic is the one place they reach somewhere nobody chose to put them: a log
+     * file, a test failure message, an exception trail. Each is replaced with
+     * {@value #REDACTED_VALUE} followed by its actual length, so the rendering still answers "was the
+     * field populated, and at what width", which is what a failure message is read for.
+     *
+     * <p>This is <strong>not</strong> a behaviour change to the screen, and it is not the COBOL being
+     * sanitised. The JSON body carries all fifteen fields exactly as the symbolic map declares them,
+     * {@link #toGroupImage(FixedWidthCodec)} writes the same bytes it always wrote, and
+     * {@link #value(ScreenField)} returns the value in the clear - the 3270 shows it in the clear.
+     * Only this method changes, and it is documented as being for diagnostics and never a wire format.
+     *
+     * <p>Every other field renders verbatim, and values are quoted so that the trailing spaces of a
+     * {@code PIC X} field, which are part of its value, stay visible in a failure message.
      *
      * @return a single-line rendering of every field, both carriers and all fifteen metadata holders
      */
@@ -1599,7 +1701,7 @@ public final class CardSelectRequest {
         for (ScreenField field : ScreenField.values()) {
             rendered.append(field.label())
                     .append("='")
-                    .append(value(field))
+                    .append(SensitiveDiagnostics.render(disclosureOf(field), value(field)))
                     .append("' ")
                     .append(metadata.get(field))
                     .append(", ");
@@ -2236,4 +2338,25 @@ public final class CardSelectRequest {
                     + String.format("%02X", attribute) + "]";
         }
     }
+
+    /**
+     * How much of each screen field a diagnostic rendering may disclose.
+     *
+     * <p>Named per field rather than pattern-matched, because a symbolic map is a closed set taken
+     * straight from {@code app/cpy-bms/} and can therefore be enumerated exactly. Anything not named here
+     * is screen furniture - a title, a date, a status code, a message - and renders as stored, which is
+     * what a parity failure has to be read from.
+     *
+     * @param field the screen field
+     * @return its classification, never {@code null}
+     */
+    private static SensitiveDiagnostics.Disclosure disclosureOf(ScreenField field) {
+        return switch (field) {
+            case ACCTSID -> SensitiveDiagnostics.Disclosure.IDENTIFIER;
+            case CARDSID -> SensitiveDiagnostics.Disclosure.PAN;
+            case CRDNAME -> SensitiveDiagnostics.Disclosure.TEXT;
+            default -> SensitiveDiagnostics.Disclosure.PLAIN;
+        };
+    }
+
 }

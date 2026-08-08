@@ -172,8 +172,14 @@ public final class BmsAttributes {
     public static final byte DFHBMUNP = (byte) 0x40;
 
     /**
-     * Unprotected, normal intensity, MDT set: {@code 0x61} in ASCII terms but {@code 0xC1} here,
+     * Unprotected, normal intensity, MDT set: {@code 0x41} in ASCII terms but {@code 0xC1} here,
      * EBCDIC {@code 'A'}. Named {@code DFHBMFSE} in the copybook, for "field set".
+     *
+     * <p>The two numbers are the two code pages' encodings of the <em>same</em> character
+     * {@code 'A'}: {@code 0x41} in ASCII, {@code 0xC1} in EBCDIC. {@code 0xC1} is the value this
+     * class declares, because the estate's attribute bytes are EBCDIC. ({@code 0x61} is ASCII
+     * lower-case {@code 'a'} and belongs to no attribute of this mnemonic; the same byte appears in
+     * this class as {@link #DFHBMPRF}, where it is EBCDIC {@code '/'}.)
      *
      * <p>Setting the modified data tag makes CICS return the field on the next input even when the
      * operator did not retype it, which is how these programs redisplay a screen without losing what

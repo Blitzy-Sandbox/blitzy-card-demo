@@ -127,9 +127,16 @@ class AdminMenuResponseTest {
             "navigationContext",
             "nextProgram",
             "nextMapset",
-            "nextMap",
-            "messageColour",
-            "resetAllOutputFields");
+            "nextMap");
+
+    /**
+     * The two components that are deliberately NOT published: the {@code ERRMSGC} attribute byte and the
+     * clear-the-screen signal. Both are {@code @JsonIgnore}d - reachable in Java, absent from the
+     * document - because {@code app/cpy-bms/COADM01.CPY:256} declares {@code ERRMSGC} as metadata and
+     * the reset signal corresponds to no copybook item at all.
+     */
+    private static final List<String> UNPUBLISHED_MEMBERS =
+            List.of("messageColour", "resetAllOutputFields");
 
     /** The four attribute bytes of the output view plus the three metadata items of the input view. */
     private static final List<String> METADATA_SUFFIXES = List.of("L", "F", "A", "C", "P", "H", "V");
@@ -664,6 +671,43 @@ class AdminMenuResponseTest {
         }
 
         @Test
+        @DisplayName("a non-default colour and reset signal do not survive a round trip, by design")
+        void theColourDoesNotTravel() throws Exception {
+            final AdminMenuResponse coloured = populated().toBuilder()
+                    .messageColour(BmsAttributes.DFHGREEN)
+                    .resetAllOutputFields(true)
+                    .build();
+
+            final AdminMenuResponse after =
+                    mapper.readValue(mapper.writeValueAsString(coloured), AdminMenuResponse.class);
+
+            assertThat(after.messageColour()).isEqualTo(BmsAttributes.DFHDFCOL);
+            assertThat(after.resetAllOutputFields()).isFalse();
+            // ...while everything that traces to a DFHMDF definition crosses unchanged.
+            assertThat(after.payloadValues()).containsExactlyElementsOf(coloured.payloadValues());
+            assertThat(after.navigationContext()).isEqualTo(coloured.navigationContext());
+        }
+
+        @Test
+        @DisplayName("the ERRMSGC colour byte and the reset signal are not JSON properties")
+        void theTwoMetadataMembersAreNotPublished() throws Exception {
+            final AdminMenuResponse response = populated().toBuilder()
+                    .messageColour(BmsAttributes.DFHGREEN)
+                    .resetAllOutputFields(true)
+                    .build();
+
+            assertThat(serialize(response).keySet()).doesNotContainAnyElementsOf(UNPUBLISHED_MEMBERS);
+
+            // Both are still components of the record - reachable in Java, where the service sets them
+            // and this assertion reads them - which is what "internal" means here.
+            assertThat(response.messageColour()).isEqualTo(BmsAttributes.DFHGREEN);
+            assertThat(response.resetAllOutputFields()).isTrue();
+            assertThat(Stream.of(AdminMenuResponse.class.getRecordComponents())
+                    .map(java.lang.reflect.RecordComponent::getName).toList())
+                    .containsAll(UNPUBLISHED_MEMBERS);
+        }
+
+        @Test
         @DisplayName("no xxxL, xxxF, xxxA, xxxC, xxxP, xxxH or xxxV item leaks into the payload")
         void noAttributeMetadataLeaksIntoThePayload() throws Exception {
             final List<String> keys = new ArrayList<>(serialize(populated()).keySet());
@@ -702,22 +746,39 @@ class AdminMenuResponseTest {
             final String json = mapper.writeValueAsString(original);
             final AdminMenuResponse restored = mapper.readValue(json, AdminMenuResponse.class);
 
-            assertThat(restored).isEqualTo(original);
+            // Every published member survives; the two ignored ones do not travel, so whole-object
+            // equality is deliberately NOT the property under test here - see theColourDoesNotTravel.
             assertThat(restored.payloadValues()).containsExactlyElementsOf(original.payloadValues());
             assertThat(restored.option()).isEqualTo("01");
             assertThat(restored.optn012())
                     .as("an all-spaces value must not be trimmed away")
                     .isEqualTo(spaces(AdminMenuResponse.OPTION_LINE_LENGTH));
             assertThat(restored.navigationContext()).isEqualTo(original.navigationContext());
-            assertThat(restored.messageColour()).isEqualTo(BmsAttributes.DFHRED);
+            // The colour is not on the wire, so it comes back as DFHDFCOL - the terminal's default
+            // colour, X'00' - rather than being carried. That is the point of ignoring it: it is a
+            // presentation attribute the server decides on each response, not state a client echoes.
+            assertThat(restored.messageColour()).isEqualTo(BmsAttributes.DFHDFCOL);
         }
 
         @Test
         @DisplayName("a blank response round-trips too, and absent keys normalise rather than fail")
         void blankResponseRoundTrips() throws Exception {
             final AdminMenuResponse blank = AdminMenuResponse.empty();
-            assertThat(mapper.readValue(mapper.writeValueAsString(blank), AdminMenuResponse.class))
-                    .isEqualTo(blank);
+            final AdminMenuResponse afterBlank =
+                    mapper.readValue(mapper.writeValueAsString(blank), AdminMenuResponse.class);
+
+            // Every published member survives a blank round trip...
+            assertThat(afterBlank.payloadValues()).containsExactlyElementsOf(blank.payloadValues());
+            assertThat(afterBlank.navigationContext()).isEqualTo(blank.navigationContext());
+            assertThat(afterBlank.nextMapset()).isEqualTo(blank.nextMapset());
+            assertThat(afterBlank.nextMap()).isEqualTo(blank.nextMap());
+
+            // ...and the two ignored members come back at the Java defaults the canonical constructor
+            // receives, because nothing about them reached the document. DFHDFCOL is X'00', the
+            // terminal's own default colour, so the result is a coherent response rather than a
+            // nonsense attribute.
+            assertThat(afterBlank.messageColour()).isEqualTo(BmsAttributes.DFHDFCOL);
+            assertThat(afterBlank.resetAllOutputFields()).isFalse();
             assertThat(mapper.readValue("{}", AdminMenuResponse.class).optionLines())
                     .hasSize(12)
                     .allSatisfy(line -> assertThat(line).isEqualTo(spaces(40)));

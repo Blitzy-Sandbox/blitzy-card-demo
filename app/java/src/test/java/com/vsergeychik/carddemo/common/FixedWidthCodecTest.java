@@ -1016,6 +1016,177 @@ class FixedWidthCodecTest {
     class ZonedSignedDecimal {
 
         @Test
+        @DisplayName("a negative zero survives the round trip, because the sign is held separately")
+        void aNegativeZeroSurvivesTheRoundTrip() {
+            // 0000000000} is a real, distinct stored value: eleven bytes that are not the eleven
+            // bytes of 0000000000{. A sign carried as BigDecimal.signum() < 0 cannot express it,
+            // because new BigDecimal("-0.00").signum() is 0 - so reading such a field and writing it
+            // back would silently turn it positive, which no arithmetic assertion would catch.
+            FixedWidthCodec.SignedZoned negativeZero = codec.decodeSignedZoned("0000000000}", 2);
+
+            assertThat(negativeZero.negative()).isTrue();
+            assertThat(negativeZero.zero()).isTrue();
+            assertThat(negativeZero.negativeZero()).isTrue();
+            assertThat(negativeZero.magnitude()).isEqualByComparingTo("0.00");
+            assertThat(negativeZero.magnitude().scale()).isEqualTo(2);
+            assertThat(codec.encodeSignedZoned(negativeZero, 9, 2))
+                    .as("the stored image is reproduced byte for byte")
+                    .isEqualTo("0000000000}");
+        }
+
+        @Test
+        @DisplayName("a positive zero and a negative zero are distinct images, never interchangeable")
+        void positiveAndNegativeZeroAreDistinctImages() {
+            FixedWidthCodec.SignedZoned positiveZero =
+                    new FixedWidthCodec.SignedZoned(new BigDecimal("0.00"), false);
+            FixedWidthCodec.SignedZoned negativeZero =
+                    new FixedWidthCodec.SignedZoned(new BigDecimal("0.00"), true);
+
+            assertThat(codec.encodeSignedZoned(positiveZero, 9, 2)).isEqualTo("0000000000{");
+            assertThat(codec.encodeSignedZoned(negativeZero, 9, 2)).isEqualTo("0000000000}");
+            assertThat(positiveZero).isNotEqualTo(negativeZero);
+            assertThat(positiveZero.negativeZero()).isFalse();
+
+            FixedWidthCodec.SignedZoned negativeAmount =
+                    new FixedWidthCodec.SignedZoned(new BigDecimal("1.23"), true);
+            assertThat(negativeAmount.zero()).isFalse();
+            assertThat(negativeAmount.negativeZero())
+                    .as("a negative quantity that is not zero is not a negative zero")
+                    .isFalse();
+            assertThat(negativeAmount.signedValue()).isEqualByComparingTo("-1.23");
+        }
+
+        @Test
+        @DisplayName("the BigDecimal entry point is magnitude-only, and says so")
+        void theBigDecimalEntryPointIsMagnitudeOnly() {
+            assertThat(codec.decodeSignedScaled("0000000000}", 2))
+                    .as("a BigDecimal has no negative zero, so the sign of a zero is lost here")
+                    .isEqualByComparingTo("0.00");
+            assertThat(codec.encodeSignedScaled(new BigDecimal("-0.00"), 9, 2))
+                    .as("and cannot be recovered on the way back out")
+                    .isEqualTo("0000000000{");
+            assertThat(codec.encodeSignedScaled(new BigDecimal("-0.01"), 9, 2))
+                    .as("a non-zero negative is unaffected: the sign rides the magnitude there, so "
+                            + "-0.01 is ten zeros and a 'J' - digit 1, negative")
+                    .isEqualTo("0000000000J");
+        }
+
+        @Test
+        @DisplayName("zone F, zone C and zone D all decode, and each re-encodes to its own zone")
+        void everyStoredZoneDecodesAndReEncodesToItself() {
+            assertThat(codec.decodeSignedZoned("00000000123", 2).negative()).isFalse();
+            assertThat(codec.decodeSignedZoned("0000000012C", 2).negative()).isFalse();
+            assertThat(codec.decodeSignedZoned("0000000012L", 2).negative()).isTrue();
+
+            assertThat(codec.decodeSignedZoned("00000000123", 2).magnitude())
+                    .as("zone F is the unsigned form: positive by definition, digit 3 in the trailing "
+                            + "position")
+                    .isEqualByComparingTo("1.23");
+            assertThat(codec.encodeSignedZoned(codec.decodeSignedZoned("00000000123", 2), 9, 2))
+                    .as("re-encoding normalises the unsigned form to its signed equivalent, which is "
+                            + "why the parity differ compares stored images rather than values")
+                    .isEqualTo("0000000012C");
+            assertThat(codec.encodeSignedZoned(codec.decodeSignedZoned("0000000012L", 2), 9, 2))
+                    .isEqualTo("0000000012L");
+        }
+
+        @Test
+        @DisplayName("a literal expectation honours a leading minus even on an all-zero value")
+        void aLiteralExpectationHonoursAnExplicitMinusZero() {
+            assertThat(FixedWidthCodec.SignedZoned.ofLiteral("-0.00").negativeZero()).isTrue();
+            assertThat(FixedWidthCodec.SignedZoned.ofLiteral(" -0.00 ").negativeZero()).isTrue();
+            assertThat(FixedWidthCodec.SignedZoned.ofLiteral("0.00").negativeZero()).isFalse();
+            assertThat(FixedWidthCodec.SignedZoned.ofLiteral("-1.23").magnitude())
+                    .isEqualByComparingTo("1.23");
+            assertThat(FixedWidthCodec.SignedZoned.ofLiteral("-1.23").negative()).isTrue();
+            assertThat(FixedWidthCodec.SignedZoned.of(new BigDecimal("-1.23")).negative()).isTrue();
+            assertThat(FixedWidthCodec.SignedZoned.of(new BigDecimal("-0.00")).negative())
+                    .as("BigDecimal cannot express it, so this factory cannot produce it")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the sign-bearing form guards its own invariants")
+        void theSignBearingFormGuardsItsInvariants() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new FixedWidthCodec.SignedZoned(new BigDecimal("-1.00"), true))
+                    .withMessageContaining("is negative");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new FixedWidthCodec.SignedZoned(null, false))
+                    .withMessageContaining("magnitude is required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> FixedWidthCodec.SignedZoned.of(null))
+                    .withMessageContaining("value is required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> FixedWidthCodec.SignedZoned.ofLiteral(null))
+                    .withMessageContaining("literal is required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> codec.encodeSignedZoned(null, 9, 2))
+                    .withMessageContaining("signed zoned quantity is required");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> codec.encodeSignedZoned(
+                            FixedWidthCodec.SignedZoned.ofLiteral("1.23"), 0, 2))
+                    .withMessageContaining("requires p of at least 1");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> codec.encodeSignedZoned(
+                            FixedWidthCodec.SignedZoned.ofLiteral("1.23"), 9, -1))
+                    .withMessageContaining("s must not be negative");
+        }
+
+        @Test
+        @DisplayName("the sign-bearing span accessors round-trip a negative zero through a record")
+        void theSignBearingSpanAccessorsRoundTripANegativeZero() {
+            RecordLayout layout = tranCatBalLayout();
+            FieldSpan balance = layout.span("TRAN-CAT-BAL");
+            FixedWidthRecord record = codec.newRecord(layout);
+
+            assertThat(codec.readSignedZoned(record, balance, 2).negativeZero())
+                    .as("an established record holds a positive zero, as the datasets do")
+                    .isFalse();
+
+            codec.writeSignedZoned(record, balance,
+                    new FixedWidthCodec.SignedZoned(new BigDecimal("0.00"), true), 2);
+
+            assertThat(record.readSpan(balance)).isEqualTo("0000000000}");
+            assertThat(codec.readSignedZoned(record, balance, 2).negativeZero()).isTrue();
+            assertThat(codec.readMonetary(record, balance))
+                    .as("read as a quantity it is simply zero")
+                    .isEqualByComparingTo("0.00");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> codec.readSignedZoned(null, balance, 2))
+                    .withMessageContaining("record area is required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> codec.readSignedZoned(record, null, 2))
+                    .withMessageContaining("field descriptor is required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> codec.writeSignedZoned(null, balance,
+                            FixedWidthCodec.SignedZoned.ofLiteral("0.00"), 2))
+                    .withMessageContaining("record area is required");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> codec.writeSignedZoned(record, null,
+                            FixedWidthCodec.SignedZoned.ofLiteral("0.00"), 2))
+                    .withMessageContaining("field descriptor is required");
+        }
+
+        @Test
+        @DisplayName("a whole record image transcodes strictly through the codec's own seam")
+        void aWholeRecordImageTranscodesStrictly() {
+            assertThat(codec.encodeImage("AB", "a test image"))
+                    .containsExactly((byte) 'A', (byte) 'B');
+            assertThat(codec.decodeImage(new byte[]{(byte) 'A', (byte) 'B'}, "a test image"))
+                    .isEqualTo("AB");
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> codec.encodeImage("\u00e9", "a test image"))
+                    .withMessageContaining("cannot represent");
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> codec.decodeImage(new byte[]{(byte) 0x80}, "a test image"))
+                    .withMessageContaining("not valid code page US-ASCII data");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> codec.decodeImage(null, "a test image"))
+                    .withMessageContaining("Stored bytes are required");
+        }
+
+        @Test
         @DisplayName("the first account record's balance decodes to 194.00 at scale 2")
         void decodesTheFirstAccountRecordBalance() {
             // derived from app/data/ASCII/acctdata.txt record 1, ACCT-CURR-BAL at 0-based offset 12
@@ -2002,10 +2173,13 @@ class FixedWidthCodecTest {
             assertThat(codec.newRecord(layout).toByteArray()).isEqualTo(initialised);
             assertThat(image.substring(0, 11)).isEqualTo(runOf('0', 11));      // ACCT-ID       9(11)
             assertThat(image.substring(11, 12)).isEqualTo(" ");                // STATUS        X(01)
-            assertThat(image.substring(12, 24)).isEqualTo(runOf('0', 12));     // CURR-BAL  S9(10)V99
+            // A signed span's zero carries a positive-zero overpunch in its trailing byte, which is
+            // how every zero-valued signed field in app/data/ASCII/acctdata.txt is stored: the
+            // fixture's first record renders both zero cycle amounts as 00000000000{.
+            assertThat(image.substring(12, 24)).isEqualTo(runOf('0', 11) + "{"); // CURR-BAL S9(10)V99
             assertThat(image.substring(122)).isEqualTo(runOf(' ', 178));       // FILLER      X(178)
 
-            // An initialised signed span is the unsigned zone F form, which decodes as positive zero.
+            // The overpunched positive zero decodes as positive zero at the declared scale.
             assertThat(codec.readMonetary(codec.wrap(initialised, layout), layout.span("ACCT-CURR-BAL")))
                     .isEqualTo(new BigDecimal("0.00"));
         }

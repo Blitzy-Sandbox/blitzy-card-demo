@@ -197,6 +197,17 @@ public final class FileStatus {
      */
     public static final int STATUS_IMAGE_LENGTH = 4;
 
+    /**
+     * Masks a {@code char} down to the one byte a COBOL {@code PIC X} item actually holds.
+     *
+     * <p>{@code IO-STAT1} and {@code IO-STAT2} are each {@code PIC X}, so each carries exactly one
+     * byte with an unsigned value of 0 to 255. A Java {@code char} is sixteen bits wide and can hold
+     * more than that, so every status character is narrowed through this mask before it is either
+     * classified or rendered. Applying it to one character and not the other is what allowed
+     * classification and rendering to disagree, which is precisely the defect this constant removes.
+     */
+    private static final int BYTE_MASK = 0xFF;
+
     // ---------------------------------------------------------------------------------------
     // CICS RESP values - the online form
     //
@@ -423,23 +434,35 @@ public final class FileStatus {
      *         {@link #STATUS_IMAGE_LENGTH} characters long
      */
     public static String toStatusImage(final char stat1, final char stat2) {
+        // BOTH operands are narrowed to their low-order eight bits FIRST, once, and only the narrowed
+        // values are used below - for the class condition, for the '9' test and for the rendering
+        // alike. IO-STAT1 and IO-STAT2 are PIC X, that is one byte each, so a caller handing over a
+        // char above 0xFF has supplied something COBOL storage cannot hold. Narrowing one operand and
+        // not the other would make the two halves of this method disagree about what the status is:
+        // a char whose low byte is a digit would be rendered on the numeric arm but classified on the
+        // non-numeric one, or vice versa. This is the single normalisation the whole method reads
+        // from, which is why it happens before the first test rather than beside the second.
+        final char firstByte = (char) (stat1 & BYTE_MASK);
+        final char secondByte = (char) (stat2 & BYTE_MASK);
+
         // IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9'
         //
         // The class condition is evaluated over both bytes of the group; the '9' test looks only at
         // the first. Both operands are kept as named locals so each half of the condition is
         // separately visible to a reviewer and separately reachable by a test.
-        final boolean statusIsNumeric = isSingleByteDigit(stat1) && isSingleByteDigit(stat2);
+        final boolean statusIsNumeric = isSingleByteDigit(firstByte) && isSingleByteDigit(secondByte);
         final StringBuilder image = new StringBuilder(STATUS_IMAGE_LENGTH);
 
-        if (!statusIsNumeric || stat1 == '9') {
-            // MOVE IO-STAT1 TO IO-STATUS-04(1:1) - the first byte passes through untouched.
-            image.append(stat1);
+        if (!statusIsNumeric || firstByte == '9') {
+            // MOVE IO-STAT1 TO IO-STATUS-04(1:1) - the first byte passes through as the single byte
+            // COBOL storage holds.
+            image.append(firstByte);
 
             // MOVE 0 TO TWO-BYTES-BINARY, then MOVE IO-STAT2 TO TWO-BYTES-RIGHT. Zeroing the
             // two-byte binary and then overwriting only its low-order byte leaves the field holding
-            // that byte's unsigned value. Masking to eight bits is what makes it unsigned: a raw
-            // 0xFF must read as 255, never as -1.
-            final int rightByte = stat2 & 0xFF;
+            // that byte's unsigned value, which is why the operand was narrowed above: a raw 0xFF
+            // must read as 255, never as -1.
+            final int rightByte = secondByte;
 
             // MOVE TWO-BYTES-BINARY TO IO-STATUS-0403 - a PIC 999 receiver, so exactly three
             // zero-padded decimal digits. Written out digit by digit so the padding rule is
@@ -455,7 +478,7 @@ public final class FileStatus {
 
             // MOVE IO-STATUS TO IO-STATUS-04(3:2) - the two status characters land on the
             // one-based positions three and four.
-            image.append(stat1).append(stat2);
+            image.append(firstByte).append(secondByte);
         }
 
         return image.toString();

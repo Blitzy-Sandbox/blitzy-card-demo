@@ -1,10 +1,12 @@
 package com.vsergeychik.carddemo.card.dto;
 
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardDetails;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardUpdateRecord;
 import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.ChangeAction;
@@ -187,9 +189,10 @@ class CardUpdateRequestTest {
                 assertThat(value.isBlank()).as(name).isTrue();
             });
             assertThat(request.getCommArea().changeAction().isDetailsNotFetched()).isTrue();
-            assertThat(request.getNavigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(request.getNavigationContext()).isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
             assertThat(request.getCardScreenState()).isNotNull();
-            assertThat(request.isEnter()).isTrue();
+            assertThat(request.isEnter()).isFalse();
             assertThat(request.isReenter()).isFalse();
         }
 
@@ -278,9 +281,17 @@ class CardUpdateRequestTest {
             request.setCommArea(null);
             request.setCardScreenState(null);
             request.setNavigationContext(null);
-            assertThat(request.getCommArea()).isEqualTo(CommArea.initialised());
+            assertThat(request.getCommArea())
+                    .as("WS-THIS-PROGCOMMAREA is the program's own storage - INITIALIZE at "
+                            + "COCRDUPC.cbl:391-392 - so it always exists")
+                    .isEqualTo(CommArea.initialised());
             assertThat(request.getCardScreenState()).isNotNull();
-            assertThat(request.getNavigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(request.getNavigationContext())
+                    .as("DFHCOMMAREA is what the caller passed, and it may not have been passed at "
+                            + "all; EIBCALEN = 0 is the first disjunct of COCRDUPC.cbl:388")
+                    .isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
+            assertThat(request.commareaLength()).isZero();
         }
 
         @Test
@@ -339,7 +350,9 @@ class CardUpdateRequestTest {
             assertThat(defaulted.fieldValues()).hasSize(17);
             assertThat(defaulted.getCommArea()).isEqualTo(CommArea.initialised());
             assertThat(defaulted.getCardScreenState()).isNotNull();
-            assertThat(defaulted.getNavigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(defaulted.getNavigationContext())
+                    .as("a null commarea argument means none was passed, which the constructor keeps")
+                    .isNull();
         }
 
         @Test
@@ -363,11 +376,43 @@ class CardUpdateRequestTest {
         @DisplayName("ENTER and REENTER are carried by the navigation context, never a session")
         void enterAndReenterAreCarriedInThePayload() {
             CardUpdateRequest request = new CardUpdateRequest();
+            assertThat(request.isEnter())
+                    .as("with no communication area there is no CDEMO-PGM-CONTEXT to test, so the "
+                            + "condition name is false rather than true - three states, not two")
+                    .isFalse();
+            assertThat(request.isReenter()).isFalse();
+            assertThat(request.getPgmContext()).isEqualTo(NavigationContext.PGM_CONTEXT_ENTER);
+
+            request.setNavigationContext(NavigationContext.empty());
             assertThat(request.isEnter()).isTrue();
+            assertThat(request.commareaLength()).isEqualTo(NavigationContext.COMMAREA_LENGTH);
+
             request.setNavigationContext(NavigationContext.empty()
                     .withPgmContext(NavigationContext.PGM_CONTEXT_REENTER));
             assertThat(request.isReenter()).isTrue();
             assertThat(request.isEnter()).isFalse();
+
+            request.setNavigationContext(NavigationContext.empty().withPgmContext(4));
+            assertThat(request.isEnter()).isFalse();
+            assertThat(request.isReenter()).isFalse();
+            assertThat(request.getPgmContext()).isEqualTo(4);
+        }
+
+        @Test
+        @DisplayName("the disclosure policy names the card number, the account key and the embossed name")
+        void theDisclosurePolicyNamesEverySensitiveField() {
+            assertThat(CardUpdateRequest.disclosureOf("CARDSID"))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.PAN);
+            assertThat(CardUpdateRequest.disclosureOf("ACCTSID"))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.IDENTIFIER);
+            assertThat(CardUpdateRequest.disclosureOf("CRDNAME"))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.TEXT);
+            assertThat(CardUpdateRequest.disclosureOf("CRDSTCD"))
+                    .as("a status code identifies nobody and is needed for validation parity")
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.PLAIN);
+            assertThat(CardUpdateRequest.disclosureOf(null))
+                    .as("an unnamed field is withheld, not published")
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.REDACTED_VALUE);
         }
 
         @Test
@@ -376,11 +421,30 @@ class CardUpdateRequestTest {
             CardUpdateRequest request = new CardUpdateRequest();
             request.setCardsid("4111111111111111");
             assertThat(request.toString()).startsWith("CCRDUPA[")
-                    .contains("CARDSID='4111111111111111'")
+                    .doesNotContain("4111111111111111")
+                    .contains("CARDSID='************1111'")
                     .contains("FKEYSC=")
                     .contains("commArea=")
                     .contains("cardScreenState=")
                     .contains("navigationContext=");
+        }
+
+        @Test
+        @DisplayName("the accessors and the payload carry the identifiers in the clear")
+        void theAccessorsAndPayloadCarryTheIdentifiersInTheClear() throws Exception {
+            CardUpdateRequest request = new CardUpdateRequest();
+            request.setCardsid("4111111111111111");
+            request.setAcctsid("00000000011");
+
+            assertThat(request.getCardsid()).isEqualTo("4111111111111111");
+            assertThat(request.fieldValues())
+                    .containsEntry("CARDSID", "4111111111111111")
+                    .containsEntry("ACCTSID", "00000000011");
+            assertThat(new ObjectMapper().writeValueAsString(request))
+                    .as("the 3270 shows both in the clear and the payload must too")
+                    .contains("4111111111111111")
+                    .contains("00000000011")
+                    .doesNotContain("REDACTED");
         }
     }
 
@@ -1136,7 +1200,10 @@ class CardUpdateRequestTest {
             assertThat(request.getFkeysc()).isEqualTo("F5=Save");
             assertThat(request.getCommArea()).isNotNull();
             assertThat(request.getCardScreenState()).isNotNull();
-            assertThat(request.getNavigationContext()).isNotNull();
+            assertThat(request.getNavigationContext())
+                    .as("an omitted commarea is an absent one, not an initialised one")
+                    .isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
         }
 
         @Test

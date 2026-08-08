@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.account.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
@@ -541,7 +542,8 @@ public final class AccountRecord {
         Objects.requireNonNull(image, "Stored text is required to decode an account record");
         Objects.requireNonNull(charset, "A charset is required to decode an account record: the "
                 + "stored characters become bytes in a specific code page, which is never assumed");
-        return new AccountRecord(image.getBytes(charset), charset);
+        return new AccountRecord(FixedWidthRecord.encodeText(image, charset,
+                "an ACCOUNT-RECORD image"), charset);
     }
 
 
@@ -1427,21 +1429,25 @@ public final class AccountRecord {
                 ? FILLER_LENGTH + " spaces"
                 : FILLER_LENGTH + " bytes, not blank";
         return "AccountRecord["
-                + ACCT_ID_NAME + "=" + rawAcctId()
-                + ", " + ACCT_ACTIVE_STATUS_NAME + "='" + rawAcctActiveStatus() + "'"
-                + ", " + ACCT_CURR_BAL_NAME + "=" + rawAcctCurrBal()
-                + ", " + ACCT_CREDIT_LIMIT_NAME + "=" + rawAcctCreditLimit()
-                + ", " + ACCT_CASH_CREDIT_LIMIT_NAME + "=" + rawAcctCashCreditLimit()
-                + ", " + ACCT_OPEN_DATE_NAME + "='" + rawAcctOpenDate() + "'"
-                + ", " + ACCT_EXPIRAION_DATE_NAME + "='" + rawAcctExpiraionDate() + "'"
-                + ", " + ACCT_REISSUE_DATE_NAME + "='" + rawAcctReissueDate() + "'"
-                + ", " + ACCT_CURR_CYC_CREDIT_NAME + "=" + rawAcctCurrCycCredit()
-                + ", " + ACCT_CURR_CYC_DEBIT_NAME + "=" + rawAcctCurrCycDebit()
-                + ", " + ACCT_ADDR_ZIP_NAME + "='" + rawAcctAddrZip() + "'"
-                + ", " + ACCT_GROUP_ID_NAME + "='" + rawAcctGroupId() + "'"
+                + ACCT_ID_NAME + "=" + DiagnosticText.masked(rawAcctId())
+                + ", " + ACCT_ACTIVE_STATUS_NAME + "='"
+                + DiagnosticText.singleLine(rawAcctActiveStatus()) + "'"
+                + ", " + ACCT_CURR_BAL_NAME + "=" + DiagnosticText.omitted(rawAcctCurrBal())
+                + ", " + ACCT_CREDIT_LIMIT_NAME + "=" + DiagnosticText.omitted(rawAcctCreditLimit())
+                + ", " + ACCT_CASH_CREDIT_LIMIT_NAME + "="
+                + DiagnosticText.omitted(rawAcctCashCreditLimit())
+                + ", " + ACCT_OPEN_DATE_NAME + "=" + DiagnosticText.omitted(rawAcctOpenDate())
+                + ", " + ACCT_EXPIRAION_DATE_NAME + "="
+                + DiagnosticText.omitted(rawAcctExpiraionDate())
+                + ", " + ACCT_REISSUE_DATE_NAME + "=" + DiagnosticText.omitted(rawAcctReissueDate())
+                + ", " + ACCT_CURR_CYC_CREDIT_NAME + "="
+                + DiagnosticText.omitted(rawAcctCurrCycCredit())
+                + ", " + ACCT_CURR_CYC_DEBIT_NAME + "="
+                + DiagnosticText.omitted(rawAcctCurrCycDebit())
+                + ", " + ACCT_ADDR_ZIP_NAME + "=" + DiagnosticText.omitted(rawAcctAddrZip())
+                + ", " + ACCT_GROUP_ID_NAME + "='" + DiagnosticText.singleLine(rawAcctGroupId()) + "'"
                 + ", FILLER=" + fillerSummary
                 + ", charset=" + charset().name()
                 + "]";
     }
 }
-

@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.statement;
 
 import com.vsergeychik.carddemo.common.CobolDecimal;
+import com.vsergeychik.carddemo.common.DatasetRelation;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
@@ -767,7 +768,11 @@ public class StatementTextWriter {
          *                    allocated for this call and is not retained or reused by the caller, so
          *                    an implementation may keep it
          * @return {@link FileStatus.Outcome#OK} when the record was accepted, or
-         *         {@link FileStatus.Outcome#OTHER} for any failure - the {@code WHEN OTHER} arm
+         *         {@link FileStatus.Outcome#OTHER} for any failure - the {@code WHEN OTHER} arm.
+         *         <strong>Never {@code null}</strong>: there is no COBOL {@code FILE STATUS} that
+         *         means "no answer", so a {@code null} is an implementation defect and
+         *         {@link StatementTextFile#writeLine(StatementLine)} rejects it rather than carrying
+         *         it forward
          */
         FileStatus.Outcome write(byte[] recordImage);
 
@@ -781,7 +786,8 @@ public class StatementTextWriter {
          * release.
          *
          * @return {@link FileStatus.Outcome#OK} when the sink closed cleanly, or
-         *         {@link FileStatus.Outcome#OTHER} otherwise
+         *         {@link FileStatus.Outcome#OTHER} otherwise. <strong>Never {@code null}</strong>, for
+         *         the same reason {@link #write(byte[])} is never {@code null}
          */
         default FileStatus.Outcome close() {
             return FileStatus.Outcome.OK;
@@ -1195,10 +1201,27 @@ public class StatementTextWriter {
     private final DatasetBinding binding;
 
     /**
-     * The parameterised statement the default sink issues for one record, built once at construction
-     * from the binding. See {@link #insertStatement(String)} for why it takes the shape it does.
+     * The dataset as the module's one data-access contract sees it, or {@code null} when the
+     * configured name is not a dataset name at all.
+     *
+     * <p>Resolved at construction and held, not recomposed per open, so the configured name is
+     * validated once. It is <strong>deliberately nullable</strong>: the fixture-backed {@code test}
+     * profile binds {@value #DD_NAME} to a filesystem location, which is not a dataset name and cannot
+     * become a SQL identifier, and refusing to construct the bean at all would stop the application
+     * context from starting under that profile (gate G3) even though every test and the parity harness
+     * supply their own sink and need no dataset. So the refusal is deferred to
+     * {@link #insertStatement()} - the one place that would otherwise compose the name into SQL - and
+     * {@link #datasetRefusal} carries the reason until then.
      */
-    private final String insertStatement;
+    private final DatasetRelation relation;
+
+    /**
+     * Why {@link #relation} is absent, or {@code null} when it is present.
+     *
+     * <p>Kept so the diagnostic is the one the grammar produced, at the position it found the fault,
+     * rather than a second description written from memory of it.
+     */
+    private final RuntimeException datasetRefusal;
 
     /**
      * Wires the writer and verifies, before the application can start, that the configured dataset
@@ -1248,7 +1271,24 @@ public class StatementTextWriter {
                     + " in application.yml; a record width is copybook-fixed and must never be "
                     + "overridden per profile.");
         }
-        this.insertStatement = insertStatement(binding.dsname());
+
+        // Null and empty are separated from malformed so this reads the same way round as the sibling
+        // HTML writer's check, and so the only exception caught here is the one the grammar raises
+        // rather than any unchecked type that might come from somewhere else inside it.
+        DatasetRelation resolved = null;
+        RuntimeException refusal = null;
+        if (binding.dsname() == null || binding.dsname().isEmpty()) {
+            refusal = new IllegalArgumentException("carddemo.datasets." + DD_NAME + ".dsname is not "
+                    + "configured, so there is no destination to address");
+        } else {
+            try {
+                resolved = DatasetRelation.of(binding.dsname(), RECORD_LENGTH);
+            } catch (IllegalArgumentException notADatasetName) {
+                refusal = notADatasetName;
+            }
+        }
+        this.relation = resolved;
+        this.datasetRefusal = refusal;
     }
 
     /**
@@ -1296,9 +1336,11 @@ public class StatementTextWriter {
      * caller that opens twice gets two independent runs and never shares slot state between them.
      *
      * @return a new per-execution handle, already in the {@code INITIALIZE STATEMENT-LINES} state
+     * @throws IllegalStateException if the configured dataset name cannot be addressed as a dataset,
+     *                               as {@link #insertStatement()} describes
      */
     public StatementFile openOutput() {
-        return new StatementFile(new JdbcRecordSink(jdbcTemplate, insertStatement));
+        return new StatementFile(new JdbcRecordSink(jdbcTemplate, insertStatement()));
     }
 
     /**
@@ -1320,41 +1362,57 @@ public class StatementTextWriter {
     }
 
     /**
-     * Builds the single-parameter statement the default sink issues for one record.
+     * The single-parameter statement the default sink issues for one record, composed by the module's
+     * one data-access contract.
      *
-     * <p>Its shape is chosen to assume as little as possible about the backend:
+     * <p>Every character of it comes from {@link DatasetRelation#insertRecordImage()} - the identifier
+     * rendering included - and that matters more than it looks. Both sequential statement outputs are
+     * written by sibling classes against the same deployment driver, so if each rendered the configured
+     * dataset name its own way, at most one of them could be right and the other would fail, or worse
+     * address something else, on a backend nobody here can exercise. Routing both through one renderer
+     * makes the two statements differ in exactly one respect: which dataset they name.
+     *
+     * <p>What that shape asserts, and why:
      * <ul>
      *   <li><strong>No column list.</strong> This migration introduces no schema, no data-definition
-     *       statement, no entity mapping and no version column (gate G44), so it cannot name a
-     *       column. The record is one fixed-width image and is bound positionally.</li>
-     *   <li><strong>The dataset name is a delimited identifier.</strong> A mainframe dataset name
+     *       statement, no entity mapping and no version column (gate G44), and an output-only dataset
+     *       is never described, so there is no column name to be had. The record is one fixed-width
+     *       image and is bound positionally.</li>
+     *   <li><strong>The dataset name is one delimited identifier.</strong> A mainframe dataset name
      *       contains dots, which an SQL parser would otherwise read as a qualified
-     *       catalogue-schema-table name. Wrapping it in the ANSI delimited-identifier quote keeps it
-     *       one name, and any embedded quote is doubled per the same standard rule.</li>
-     *   <li><strong>The name comes from configuration, verbatim.</strong> It is resolved by DD-name
-     *       key from {@code carddemo.datasets}, so no mainframe dataset literal appears in this file
-     *       or anywhere else in the Java sources (gate G46).</li>
+     *       catalogue-schema-table reference.</li>
+     *   <li><strong>The name is validated as a dataset name before it is rendered.</strong> It arrives
+     *       from configuration, which is externally controlled, and reaches a position no bind
+     *       parameter can occupy, so it must satisfy the z/OS dataset-name grammar rather than merely
+     *       survive a scan for punctuation somebody thought of. That check happened at construction;
+     *       this method reports its verdict.</li>
+     *   <li><strong>The name comes from configuration, verbatim.</strong> Resolved by DD-name key from
+     *       {@code carddemo.datasets}, so no mainframe dataset literal appears in this file or anywhere
+     *       else in the Java sources (gate G46).</li>
      * </ul>
      *
-     * <p>Package-visible so its behaviour is asserted directly by a unit test rather than inferred
-     * from a database round trip.
+     * <p>Package-visible so its text is asserted directly by a unit test rather than inferred from a
+     * database round trip.
      *
-     * @param dsname the configured dataset name or resource location
      * @return the parameterised statement
-     * @throws NullPointerException     if {@code dsname} is {@code null}
-     * @throws IllegalArgumentException if {@code dsname} is blank, which would leave no addressable
-     *                                  destination at all
+     * @throws IllegalStateException if {@code carddemo.datasets.}{@value #DD_NAME}{@code .dsname} is
+     *                               absent, or is not a well-formed z/OS dataset name - which includes
+     *                               the filesystem location the fixture-backed {@code test} profile
+     *                               binds. In that case write through {@link #openOutput(RecordSink)}
+     *                               with a caller-supplied sink instead, exactly as every unit test and
+     *                               the parity harness do
      */
-    static String insertStatement(String dsname) {
-        Objects.requireNonNull(dsname, "A dataset name is required to address " + DD_NAME
-                + "; it is declared as carddemo.datasets." + DD_NAME + ".dsname");
-        if (dsname.isBlank()) {
-            throw new IllegalArgumentException("carddemo.datasets." + DD_NAME + ".dsname is blank, "
-                    + "so there is no destination to write the plain-text statement to. Set it to "
-                    + "the dataset name, or - under a fixture-backed profile - to a resolvable "
-                    + "resource location.");
+    String insertStatement() {
+        if (relation == null) {
+            throw new IllegalStateException("carddemo.datasets." + DD_NAME + ".dsname cannot be "
+                    + "addressed as a dataset, so no statement can be composed for it and the default "
+                    + "sink cannot be built. Set it to a well-formed z/OS dataset name, or write "
+                    + "through openOutput(RecordSink) with your own sink - which is what a "
+                    + "fixture-backed profile, every unit test and the parity harness do, and why this "
+                    + "is refused here rather than at startup. The grammar's own verdict is attached.",
+                    datasetRefusal);
         }
-        return "INSERT INTO \"" + dsname.replace("\"", "\"\"") + "\" VALUES (?)";
+        return relation.insertRecordImage();
     }
 
     /**
@@ -1382,7 +1440,7 @@ public class StatementTextWriter {
         /** The template that issues the insert. */
         private final JdbcTemplate jdbcTemplate;
 
-        /** The parameterised statement, built once by {@link #insertStatement(String)}. */
+        /** The parameterised statement, built once by {@link StatementTextWriter#insertStatement()}. */
         private final String statement;
 
         /**
@@ -1799,10 +1857,18 @@ public class StatementTextWriter {
          * because reporting it as an ordinary failed write would let a job quietly lose records it
          * believes it wrote.
          *
+         * <p>A sink that answers {@code null} is a third thing again, and it is rejected here rather
+         * than returned. {@code null} is not a {@code FILE STATUS} the COBOL can branch on, so
+         * carrying it forward would let it reach {@link #close()} and surface there as an unrelated
+         * {@link NullPointerException} - at a point where the sink that produced it is no longer in
+         * the stack trace. Rejecting it at the call site names the sink, the line and the record
+         * count instead.
+         *
          * @param line the line to write; must not be {@code null}
          * @return {@link FileStatus.Outcome#OK} when the record was accepted, or
-         *         {@link FileStatus.Outcome#OTHER} when the sink rejected it
-         * @throws NullPointerException  if {@code line} is {@code null}
+         *         {@link FileStatus.Outcome#OTHER} when the sink rejected it; never {@code null}
+         * @throws NullPointerException  if {@code line} is {@code null}, or if the sink returns a
+         *                               {@code null} outcome
          * @throws IllegalStateException if this handle has already been closed
          */
         public FileStatus.Outcome writeLine(StatementLine line) {
@@ -1814,7 +1880,13 @@ public class StatementTextWriter {
                         + "(app/cbl/CBSTM03A.CBL:L293) and closes it once at the end (L339), so open "
                         + "a new handle for a new run rather than reusing a closed one.");
             }
-            FileStatus.Outcome outcome = sink.write(renderLineBytes(line));
+            FileStatus.Outcome outcome = Objects.requireNonNull(sink.write(renderLineBytes(line)),
+                    "The record sink supplied for " + DD_NAME + " returned a null outcome from "
+                            + "write(byte[]) for " + line.cobolName() + " after " + recordsWritten
+                            + " record(s). A sink must report FileStatus.Outcome.OK when the record "
+                            + "was accepted or FileStatus.Outcome.OTHER for any failure - the WHEN "
+                            + "OTHER arm the statement job branches on - because there is no COBOL "
+                            + "FILE STATUS meaning 'no answer'.");
             recordsWritten++;
             return outcome;
         }
@@ -1849,15 +1921,25 @@ public class StatementTextWriter {
          * {@link FileStatus.Outcome#OK} and does not reach the sink a second time, so a
          * try-with-resources block around an explicit close is harmless.
          *
+         * <p>The handle is marked closed before the sink is reached, so a sink that violates its
+         * contract by answering {@code null} - which is rejected here, exactly as in
+         * {@link #writeLine(StatementLine)} - still cannot be closed a second time.
+         *
          * @return {@link FileStatus.Outcome#OK} when the sink closed cleanly or was already closed,
-         *         or {@link FileStatus.Outcome#OTHER} otherwise
+         *         or {@link FileStatus.Outcome#OTHER} otherwise; never {@code null}
+         * @throws NullPointerException if the sink returns a {@code null} outcome
          */
         public FileStatus.Outcome closeOutput() {
             if (!open) {
                 return FileStatus.Outcome.OK;
             }
             open = false;
-            return sink.close();
+            return Objects.requireNonNull(sink.close(),
+                    "The record sink supplied for " + DD_NAME + " returned a null outcome from "
+                            + "close() after " + recordsWritten + " record(s). A sink must report "
+                            + "FileStatus.Outcome.OK when it closed cleanly or "
+                            + "FileStatus.Outcome.OTHER otherwise, because there is no COBOL FILE "
+                            + "STATUS meaning 'no answer'.");
         }
 
         /**
@@ -1868,6 +1950,17 @@ public class StatementTextWriter {
          * {@code close()} would mask whatever the block itself was doing. A caller that needs to act
          * on the outcome - the statement job, deciding on an abend - calls {@link #closeOutput()}
          * instead.
+         *
+         * <p>A dataset condition and a broken sink are treated differently, deliberately. {@code
+         * OTHER} is a dataset condition the COBOL has a guard for, so it is logged and the block
+         * continues; a {@code null} outcome is a sink that does not implement its contract, so the
+         * {@link NullPointerException} {@link #closeOutput()} raises is allowed to propagate. That
+         * cannot mask a failure in the block either: a try-with-resources block whose body already
+         * threw records a {@code close()} failure as a suppressed exception rather than replacing the
+         * primary one.
+         *
+         * @throws NullPointerException if the sink returns a {@code null} outcome from
+         *                              {@link RecordSink#close()}
          */
         @Override
         public void close() {

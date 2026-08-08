@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.card.dto.CardSelectResponse.FieldAttributes;
 import com.vsergeychik.carddemo.card.dto.CardSelectResponse.ScreenField;
 import com.vsergeychik.carddemo.card.dto.CardSelectResponse.SpanDescriptor;
@@ -394,8 +396,8 @@ final class CardSelectResponseTest {
         @DisplayName("the carriers start empty: a fresh work area, an empty commarea, spaces for the triple")
         void carriersStartEmpty() {
             CardSelectResponse response = new CardSelectResponse();
-            assertThat(response.getScreenState()).isNotNull();
-            assertThat(response.getScreenState().getCcAcctId()).isEqualTo(" ".repeat(11));
+            assertThat(response.getCardScreenState()).isNotNull();
+            assertThat(response.getCardScreenState().getCcAcctId()).isEqualTo(" ".repeat(11));
             assertThat(response.getNavigationContext()).isEqualTo(NavigationContext.empty());
             assertThat(response.getNextProgram()).isEqualTo(" ".repeat(8));
             assertThat(response.getNextMapset()).isEqualTo(" ".repeat(7));
@@ -443,14 +445,14 @@ final class CardSelectResponseTest {
         void copyConstructorIsDeep() {
             CardSelectResponse original = populated();
             original.attributes(ScreenField.CARDSID).setColour(BmsAttributes.DFHRED);
-            original.getScreenState().setCcAcctId("00000000011");
+            original.getCardScreenState().setCcAcctId("00000000011");
             original.setNavigationContext(NavigationContext.empty().withFromProgram("COCRDSLC"));
 
             CardSelectResponse copy = new CardSelectResponse(original);
             assertThat(copy).isEqualTo(original).hasSameHashCodeAs(original);
             assertThat(copy.fieldImages()).isEqualTo(original.fieldImages());
-            assertThat(copy.getScreenState()).isNotSameAs(original.getScreenState());
-            assertThat(copy.getScreenState().getCcAcctId()).isEqualTo("00000000011");
+            assertThat(copy.getCardScreenState()).isNotSameAs(original.getCardScreenState());
+            assertThat(copy.getCardScreenState().getCcAcctId()).isEqualTo("00000000011");
             assertThat(copy.getNavigationContext()).isSameAs(original.getNavigationContext());
 
             copy.attributes(ScreenField.CARDSID).setColour(BmsAttributes.DFHGREEN);
@@ -598,7 +600,7 @@ final class CardSelectResponseTest {
                     target -> target.setFkeyso(null),
                     target -> target.setNextProgram(null),
                     target -> target.setNextMap(null),
-                    target -> target.setScreenState(null),
+                    target -> target.setCardScreenState(null),
                     target -> target.setNavigationContext(null),
                     target -> target.get(null),
                     target -> target.set(null, "x"),
@@ -717,9 +719,9 @@ final class CardSelectResponseTest {
             CardScreenState state = new CardScreenState();
             state.setCcAcctId("00000000011");
             state.setCcardNextProg("COCRDLIC");
-            response.setScreenState(state);
-            assertThat(response.getScreenState()).isSameAs(state);
-            assertThat(response.getScreenState().getCcardNextProg()).isEqualTo("COCRDLIC");
+            response.setCardScreenState(state);
+            assertThat(response.getCardScreenState()).isSameAs(state);
+            assertThat(response.getCardScreenState().getCcardNextProg()).isEqualTo("COCRDLIC");
 
             NavigationContext context = NavigationContext.empty()
                     .withFromProgram("COCRDSLC")
@@ -1039,12 +1041,14 @@ final class CardSelectResponseTest {
 
         @Test
         @DisplayName("toString names the map and the identifying fields, unmasked")
-        void toStringIsUnmasked() {
+        void toStringMasksTheIdentifiersItCarries() {
             CardSelectResponse response = populated();
+
             assertThat(response.toString())
                     .startsWith("CardSelectResponse[map=CCRDSLA")
-                    .contains("ACCTSIDO=00000000011")
-                    .contains("CARDSIDO=1234567890123456");
+                    .doesNotContain("00000000011", "1234567890123456")
+                    .contains("ACCTSIDO=*******0011")
+                    .contains("CARDSIDO=************3456");
         }
     }
 
@@ -1076,8 +1080,8 @@ final class CardSelectResponseTest {
                 new Mutation("attributes",
                         target -> target.attributes(ScreenField.ERRMSG)
                                 .setColour(BmsAttributes.DFHRED)),
-                new Mutation("screenState",
-                        target -> target.getScreenState().setCcCustId("999999999")),
+                new Mutation("cardScreenState",
+                        target -> target.getCardScreenState().setCcCustId("999999999")),
                 new Mutation("navigationContext",
                         target -> target.setNavigationContext(
                                 NavigationContext.empty().withUserId("ADMIN001"))),
@@ -1146,7 +1150,7 @@ final class CardSelectResponseTest {
                     "trnnameo", "title01o", "curdateo", "pgmnameo", "title02o", "curtimeo",
                     "acctsido", "cardsido", "crdnameo", "crdstcdo", "expmono", "expyearo",
                     "infomsgo", "errmsgo", "fkeyso",
-                    "screenState", "navigationContext", "nextProgram", "nextMapset", "nextMap");
+                    "cardScreenState", "navigationContext", "nextProgram", "nextMapset", "nextMap");
             assertThat(json).hasSize(20);
             assertThat(json.keySet()).doesNotContain("attributeQuads", "attributeItems",
                     "fieldImages", "describe", "groupGeometry", "attributes", "acctsidc",

@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.card.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
@@ -28,6 +29,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -1572,11 +1574,13 @@ class CardRecordTest {
         void decodingAnEbcdicImageAsAsciiDoesNotSucceedSilently() {
             byte[] ebcdicImage = row1().encode(EBCDIC);
 
-            // The numeric spans hold EBCDIC digits, which are not ASCII digits, so the mismatch is
-            // caught rather than producing a plausible-looking wrong value.
-            assertThatIllegalArgumentException()
+            // Most EBCDIC bytes are not characters in US-ASCII at all, so the mismatch is refused at
+            // the transcoding seam rather than producing a plausible-looking wrong value or a run of
+            // replacement characters.
+            assertThatExceptionOfType(IllegalStateException.class)
                     .as("a code-page mismatch must fail loudly, never decode to a plausible value")
-                    .isThrownBy(() -> CardRecord.decode(ebcdicImage, ASCII));
+                    .isThrownBy(() -> CardRecord.decode(ebcdicImage, ASCII))
+                    .withMessageContaining("not valid code page US-ASCII data");
         }
 
         @Test
@@ -1953,12 +1957,15 @@ class CardRecordTest {
                     .contains("CARD-EMBOSSED-NAME")
                     .contains("CARD-EXPIRAION-DATE")
                     .contains("CARD-ACTIVE-STATUS")
-                    .contains("FILLER")
-                    .contains(ROW_1_CARD_NUM);
+                    .contains("FILLER");
             assertThat(rendering)
-                    .as("character fields are quoted so their padding is visible")
-                    .contains("'" + expectedPadded(ROW_1_NAME,
-                            CardRecord.CARD_EMBOSSED_NAME_LENGTH) + "'");
+                    .as("the PAN, the account key, the CVV and the embossed name are all withheld: "
+                            + "rendered together they are a usable card credential (CWE-532)")
+                    .doesNotContain(ROW_1_CARD_NUM)
+                    .contains("CARD-NUM='" + "*".repeat(CardRecord.CARD_NUM_LENGTH - 4)
+                            + ROW_1_CARD_NUM.substring(ROW_1_CARD_NUM.length() - 4) + "'")
+                    .doesNotContain(ROW_1_NAME)
+                    .contains("CARD-CVV-CD=[redacted]");
         }
     }
 

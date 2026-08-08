@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -11,6 +12,11 @@ import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import jakarta.validation.ValidatorFactory;
+import jakarta.validation.constraints.Size;
 import com.vsergeychik.carddemo.transaction.dto.TransactionListRequest.FieldMetadata;
 import com.vsergeychik.carddemo.transaction.dto.TransactionListRequest.PaginationCursor;
 import java.nio.charset.StandardCharsets;
@@ -449,7 +455,7 @@ class TransactionListRequestTest {
             assertThat(request.getSel0001()).isEqualTo("S");
             assertThat(request.getTrnid01()).isEqualTo("0000000000000001");
             assertThat(request.getTdate01()).isEqualTo("01/02/03");
-            assertThat(request.getTdesc01()).isEqualTo("FIRST ROW" + spaces(17));
+            assertThat(request.getTdesc01()).isEqualTo("FIRST ROW");
             assertThat(request.getTamt001()).isEqualTo("+00000001.00");
         }
 
@@ -466,7 +472,7 @@ class TransactionListRequestTest {
             assertThat(request.getSel0010()).isEqualTo("s");
             assertThat(request.getTrnid10()).isEqualTo("0000000000000010");
             assertThat(request.getTdate10()).isEqualTo("10/11/12");
-            assertThat(request.getTdesc10()).isEqualTo("LAST ROW" + spaces(18));
+            assertThat(request.getTdesc10()).isEqualTo("LAST ROW");
             assertThat(request.getTamt010()).isEqualTo("-00000010.99");
         }
 
@@ -486,9 +492,9 @@ class TransactionListRequestTest {
             for (int row = 1; row <= 10; row++) {
                 request.setSelection(row, String.valueOf(row % 10));
                 request.setTransactionId(row, "ID" + row);
-                request.setTransactionDate(row, "0" + row + "/01/24");
+                request.setTransactionDate(row, String.format("%02d/01/24", row));
                 request.setTransactionDescription(row, "DESC " + row);
-                request.setTransactionAmount(row, "+0000000" + row + ".00");
+                request.setTransactionAmount(row, String.format("+%08d.00", row));
             }
             for (int row = 1; row <= 10; row++) {
                 String selectionField = TransactionListRequest.selectionFieldName(row);
@@ -581,23 +587,52 @@ class TransactionListRequestTest {
 
         @Test
         @DisplayName("a short value is padded on the right")
-        void shortValuePaddedRight() {
+        void shortValueIsStoredUnchanged() {
             TransactionListRequest request = new TransactionListRequest();
             request.setErrmsg("Invalid selection. Valid value is S");
+
+            // Stored exactly as it arrived - not padded. The payload holds what the caller sent, so a
+            // JSON round trip is the identity and a field the program tests against SPACES OR
+            // LOW-VALUES arrives as it was typed.
             assertThat(request.getErrmsg())
-                    .hasSize(78)
+                    .isEqualTo("Invalid selection. Valid value is S")
+                    .hasSize(35);
+
+            // The declared width is imposed once, at the byte boundary, where it is actually needed.
+            byte[] image = request.toFixedWidth(ASCII);
+            String errmsgSpan = new String(image, ASCII).substring(
+                    TransactionListRequest.LAYOUT.span("ERRMSGI").offset(), image.length);
+            assertThat(errmsgSpan).hasSize(78)
                     .startsWith("Invalid selection. Valid value is S")
                     .endsWith(" ");
         }
 
         @Test
-        @DisplayName("an over-long value is truncated on the RIGHT, keeping the leading characters")
-        void longValueTruncatedRight() {
+        @DisplayName("an over-long value is REFUSED by name, never silently shortened")
+        void longValueIsRefused() {
             TransactionListRequest request = new TransactionListRequest();
-            request.setTdesc01("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-            assertThat(request.getTdesc01()).isEqualTo("ABCDEFGHIJKLMNOPQRSTUVWXYZ").hasSize(26);
-            request.setTrnname("TOOLONG");
-            assertThat(request.getTrnname()).isEqualTo("TOOL");
+
+            // The setter used to shorten the value and then measure it, so the @Size constraint it was
+            // checked against could never fail and four characters could vanish with no error. Now the
+            // surplus is reported, naming the field and both widths.
+            assertThatThrownBy(() -> request.setTdesc01("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("TDESC01")
+                    .hasMessageContaining("PIC X(26)")
+                    .hasMessageContaining("36 character(s)");
+            assertThatThrownBy(() -> request.setTrnname("TOOLONG"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("TRNNAME")
+                    .hasMessageContaining("7 character(s)");
+
+            // Nothing was stored by either refused call.
+            assertThat(request.getTdesc01()).isEqualTo(spaces(26));
+            assertThat(request.getTrnname()).isEqualTo(spaces(4));
+
+            // A deliberate truncation is still available, and says so at the call site.
+            request.setTdesc01(new FixedWidthCodec(ASCII)
+                    .movePicX("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 26));
+            assertThat(request.getTdesc01()).isEqualTo("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
         }
 
         @Test
@@ -617,8 +652,8 @@ class TransactionListRequestTest {
         }
 
         @Test
-        @DisplayName("all 59 header, row and error accessors store at their declared width")
-        void everyAccessorStoresAtDeclaredWidth() {
+        @DisplayName("all 59 header, row and error accessors store exactly what they are given")
+        void everyAccessorStoresWhatItIsGiven() {
             TransactionListRequest request = new TransactionListRequest();
             request.setTrnname("CT00");
             request.setTitle01("T1");
@@ -629,15 +664,25 @@ class TransactionListRequestTest {
             request.setPagenum("00000001");
             request.setTrnidin("0000000000000001");
             request.setErrmsg("E");
-            assertThat(request.getTrnname()).hasSize(4);
-            assertThat(request.getTitle01()).hasSize(40);
-            assertThat(request.getCurdate()).hasSize(8);
-            assertThat(request.getPgmname()).hasSize(8);
-            assertThat(request.getTitle02()).hasSize(40);
-            assertThat(request.getCurtime()).hasSize(8);
-            assertThat(request.getPagenum()).hasSize(8);
-            assertThat(request.getTrnidin()).hasSize(16);
-            assertThat(request.getErrmsg()).hasSize(78);
+
+            // Identity, not width. Each accessor returns the value it was given - "T1" is two
+            // characters and stays two. Widening is the byte boundary's job, and is asserted there.
+            assertThat(request.getTrnname()).isEqualTo("CT00");
+            assertThat(request.getTitle01()).isEqualTo("T1");
+            assertThat(request.getCurdate()).isEqualTo("08/08/26");
+            assertThat(request.getPgmname()).isEqualTo("COTRN00C");
+            assertThat(request.getTitle02()).isEqualTo("T2");
+            assertThat(request.getCurtime()).isEqualTo("12:34:56");
+            assertThat(request.getPagenum()).isEqualTo("00000001");
+            assertThat(request.getTrnidin()).isEqualTo("0000000000000001");
+            assertThat(request.getErrmsg()).isEqualTo("E");
+
+            // ...and every one of them still lands at its declared width in the image.
+            byte[] image = request.toFixedWidth(ASCII);
+            assertThat(image).hasSize(TransactionListRequest.SYMBOLIC_MAP_LENGTH);
+            TransactionListRequest widened = TransactionListRequest.fromFixedWidth(image, ASCII);
+            assertThat(widened.getTitle01()).hasSize(40).startsWith("T1").endsWith(" ");
+            assertThat(widened.getErrmsg()).hasSize(78).startsWith("E");
         }
     }
 
@@ -906,7 +951,13 @@ class TransactionListRequestTest {
         @DisplayName("the flag byte is exactly one character, padded or truncated as PIC X requires")
         void flagByteIsOneCharacter() {
             FieldMetadata metadata = new FieldMetadata("ERRMSG");
-            metadata.setFlag("ABC");
+            // CICS reports one attribute byte per field, so three characters is a caller defect rather
+            // than data to be shortened.
+            assertThatThrownBy(() -> metadata.setFlag("ABC"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("ERRMSGF")
+                    .hasMessageContaining("3 character(s)");
+            metadata.setFlag("A");
             assertThat(metadata.getFlag()).isEqualTo("A").hasSize(1);
             metadata.setAttribute("");
             assertThat(metadata.getAttribute()).isEqualTo(" ").hasSize(1);
@@ -1215,7 +1266,14 @@ class TransactionListRequestTest {
         @DisplayName("a fresh request carries an empty context and a fresh cursor")
         void freshCarriedState() {
             TransactionListRequest request = new TransactionListRequest();
-            assertThat(request.getNavigationContext()).isEqualTo(NavigationContext.empty());
+
+            // No area on a fresh request: nothing has been passed to it, which is EIBCALEN = 0.
+            assertThat(request.getNavigationContext()).isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
+            assertThat(request.isEnter()).isFalse();
+            assertThat(request.isReenter()).isFalse();
+
+            // The cursor, which has no absence semantics, does get its fresh default.
             assertThat(request.getCursor()).isEqualTo(new PaginationCursor());
         }
 
@@ -1240,9 +1298,63 @@ class TransactionListRequestTest {
         @DisplayName("the carried state is required, so absence is stated explicitly")
         void carriedStateRequired() {
             TransactionListRequest request = new TransactionListRequest();
-            assertThatNullPointerException().isThrownBy(() -> request.setNavigationContext(null))
-                    .withMessageContaining("EIBCALEN");
+
+            // The commarea accepts null, because null IS a state: EIBCALEN = 0, which COTRN00C.cbl:107
+            // tests for and answers by transferring to COSGN00C. This setter used to reject null and
+            // advise passing NavigationContext.empty() instead, but an initialised area reports 160
+            // bytes and takes the opposite branch, so that advice removed the only spelling the cold
+            // start had.
+            request.setNavigationContext(null);
+            assertThat(request.getNavigationContext()).isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
+            assertThat(request.commareaLength()).isZero();
+
+            // ...and when an area IS carried, EIBCALEN is the commarea plus this screen's own cursor.
+            request.setNavigationContext(NavigationContext.empty());
+            assertThat(request.hasNavigationContext()).isTrue();
+            assertThat(request.commareaLength())
+                    .isEqualTo(PaginationCursor.COMMAREA_LENGTH)
+                    .isEqualTo(NavigationContext.COMMAREA_LENGTH + PaginationCursor.CURSOR_LENGTH)
+                    .isEqualTo(218);
+
+            // The cursor is a different case: it has no absence semantics, so it is still required.
             assertThatNullPointerException().isThrownBy(() -> request.setCursor(null));
+        }
+
+        @Test
+        @DisplayName("a cold start reports the enter context digit but is neither ENTER nor REENTER")
+        void aColdStartReportsTheEnterDigitWithoutClaimingTheState() {
+            TransactionListRequest cold = new TransactionListRequest();
+
+            // getPgmContext answers with the byte the program would act as though it had - a cold start
+            // paints and validates nothing, exactly as first entry does...
+            assertThat(cold.getPgmContext()).isEqualTo(NavigationContext.PGM_CONTEXT_ENTER);
+            // ...but isEnter() still refuses to claim the state, because there is no context byte.
+            assertThat(cold.isEnter()).isFalse();
+            assertThat(cold.isReenter()).isFalse();
+            // And the diagnostic says which of the three states it is.
+            assertThat(cold.toString()).contains("context=none (EIBCALEN=0)");
+
+            TransactionListRequest warm = new TransactionListRequest();
+            warm.setNavigationContext(NavigationContext.empty());
+            assertThat(warm.getPgmContext()).isEqualTo(NavigationContext.PGM_CONTEXT_ENTER);
+            assertThat(warm.isEnter()).isTrue();
+            assertThat(warm.toString()).contains("context=ENTER").doesNotContain("EIBCALEN");
+
+            warm.setNavigationContext(NavigationContext.empty().withPgmReenter());
+            assertThat(warm.getPgmContext()).isEqualTo(NavigationContext.PGM_CONTEXT_REENTER);
+            assertThat(warm.toString()).contains("context=REENTER");
+        }
+
+        @Test
+        @DisplayName("with no area there are no commarea bytes to render, and none are invented")
+        void aColdStartHasNoCommareaImage() {
+            TransactionListRequest request = new TransactionListRequest();
+
+            assertThatThrownBy(() -> request.toCommareaImage(ASCII))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("EIBCALEN is 0")
+                    .hasMessageContaining("hasNavigationContext");
         }
 
         @Test
@@ -1310,8 +1422,10 @@ class TransactionListRequestTest {
         @DisplayName("the payload carries exactly the 59 fields plus the two carried structures")
         void payloadShape() throws Exception {
             Map<String, Object> tree = tree(MAPPER.writeValueAsString(new TransactionListRequest()));
-            assertThat(tree).hasSize(59 + 2);
-            assertThat(tree).containsKeys("navigationContext", "cursor");
+            // 59 screen fields plus the three members that are not screen fields: the commarea, its
+            // cursor, and the resolved EIBAID token COTRN00C.cbl:119 branches on.
+            assertThat(tree).hasSize(59 + 3);
+            assertThat(tree).containsKeys("navigationContext", "cursor", "aid");
         }
 
         @Test
@@ -1328,8 +1442,11 @@ class TransactionListRequestTest {
             String json = MAPPER.writeValueAsString(request);
             TransactionListRequest restored = MAPPER.readValue(json, TransactionListRequest.class);
 
-            assertThat(restored.getErrmsg()).hasSize(78).isEqualTo(request.getErrmsg());
-            assertThat(restored.getTdesc10()).hasSize(26).isEqualTo(request.getTdesc10());
+            // A JSON round trip is the identity now, whatever width the value happens to be: the
+            // payload neither pads on the way in nor trims on the way out.
+            assertThat(restored.getErrmsg()).isEqualTo(request.getErrmsg())
+                    .isEqualTo("Tran ID must be Numeric ...");
+            assertThat(restored.getTdesc10()).isEqualTo(request.getTdesc10()).isEqualTo("PAYMENT");
             assertThat(restored.getTamt010()).hasSize(12).isEqualTo(request.getTamt010());
             assertThat(restored.getPayloadValues()).isEqualTo(request.getPayloadValues());
             assertThat(restored.getCursor().getPageNum()).isEqualTo(2);
@@ -1340,10 +1457,23 @@ class TransactionListRequestTest {
         @DisplayName("a blank row serialises as spaces, never as null")
         void blankRowSerialisesAsSpaces() throws Exception {
             String json = MAPPER.writeValueAsString(new TransactionListRequest());
-            assertThat(json).doesNotContain("null");
             Map<String, Object> tree = tree(json);
+
+            // Every screen field is its declared width in spaces - the constructor performs COBOL's
+            // unconditional MOVE SPACES, which is a different rule from the alphanumeric MOVE and is
+            // unaffected by the setters no longer padding.
             assertThat(tree.get("tamt001")).isEqualTo(spaces(12));
             assertThat(tree.get("errmsg")).isEqualTo(spaces(78));
+            for (String fieldName : TransactionListRequest.FIELD_NAMES) {
+                assertThat(tree.get(fieldName.toLowerCase(java.util.Locale.ROOT)))
+                        .as("%s is spaces, never null", fieldName)
+                        .isNotNull();
+            }
+
+            // The one null in the document is the communication area, and it is deliberate: it is the
+            // EIBCALEN = 0 cold start, which has no other spelling.
+            assertThat(tree.get("navigationContext")).isNull();
+            assertThat(json.indexOf("null")).isEqualTo(json.lastIndexOf("null"));
         }
     }
 
@@ -1594,22 +1724,149 @@ class TransactionListRequestTest {
     }
 
     /** A request with every one of the 59 fields distinctly populated. */
+    /**
+     * A fully populated request, every field at exactly its declared width.
+     *
+     * <p>Declared width deliberately: that is what a 3270 {@code RECEIVE MAP} delivers, so it is the
+     * shape the fixed-width round trip must reproduce byte for byte. The setters no longer pad, so a
+     * fixture holding short values would round-trip to the padded form rather than to itself - which is
+     * correct behaviour but a different property, and it is asserted on its own in
+     * {@code shortValueIsStoredUnchanged} rather than smuggled into every round-trip test here.
+     */
+    @Nested
+    @DisplayName("The AID and the width contract - gate G37 and the maximum-only validation shape")
+    class KeyIndicationAndWidthContract {
+
+        @Test
+        @DisplayName("every one of the 59 constraints states a maximum only, never an exact width")
+        void constraintsAreMaximumOnly() throws Exception {
+            int checked = 0;
+            for (String baseFieldName : TransactionListRequest.FIELD_NAMES) {
+                String member = baseFieldName.toLowerCase(java.util.Locale.ROOT);
+                Size size = TransactionListRequest.class.getDeclaredField(member)
+                        .getAnnotation(Size.class);
+                assertThat(size).as("@Size on %s", member).isNotNull();
+                // A minimum would make a short value invalid, and a short value is legitimate: several
+                // of these fields are tested against SPACES OR LOW-VALUES by the program itself.
+                assertThat(size.min()).as("@Size(min) on %s must be the default 0", member).isZero();
+                assertThat(size.max()).as("@Size(max) on %s", member).isPositive();
+                checked++;
+            }
+            assertThat(checked).isEqualTo(TransactionListRequest.FIELD_COUNT).isEqualTo(59);
+        }
+
+        @Test
+        @DisplayName("a short value is valid, and an over-long one cannot even be stored")
+        void theConstraintIsAnActualCheck() {
+            try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
+                Validator validator = factory.getValidator();
+
+                TransactionListRequest shortValues = new TransactionListRequest();
+                shortValues.setTitle01("T1");
+                shortValues.setErrmsg("E");
+                assertThat(validator.validate(shortValues))
+                        .as("a value narrower than its field is legitimate")
+                        .isEmpty();
+            }
+
+            // And the surplus case never reaches Bean Validation at all: the setter refuses it, so it
+            // cannot be shortened into validity the way it used to be.
+            assertThatThrownBy(() -> new TransactionListRequest().setTitle01("X".repeat(41)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("TITLE01")
+                    .hasMessageContaining("41 character(s)");
+        }
+
+        @Test
+        @DisplayName("the AID token is five characters and starts at no key resolved")
+        void theAidTokenIsFiveCharacters() {
+            assertThat(TransactionListRequest.AID_LENGTH)
+                    .isEqualTo(PfKeyResolver.AID_TOKEN_LENGTH);
+            assertThat(TransactionListRequest.AID_FIELD).isEqualTo("EIBAID");
+            assertThat(new TransactionListRequest().getAid()).isEqualTo(spaces(5));
+        }
+
+        @Test
+        @DisplayName("all five arms of EVALUATE EIBAID are selectable, paging included")
+        void everyArmIsSelectable() {
+            TransactionListRequest request = new TransactionListRequest();
+
+            // ENTER acts on the selected row; PF3 returns; PF7 and PF8 are the two paging directions,
+            // which are the whole purpose of this screen and live entirely on this member.
+            for (PfKeyResolver.AidKey key : List.of(PfKeyResolver.AidKey.ENTER,
+                    PfKeyResolver.AidKey.PFK03, PfKeyResolver.AidKey.PFK07,
+                    PfKeyResolver.AidKey.PFK08)) {
+                request.setAid(key.token());
+                assertThat(request.getAid()).isEqualTo(key.token())
+                        .hasSize(TransactionListRequest.AID_LENGTH);
+            }
+
+            // ...and WHEN OTHER, which spaces select.
+            request.setAid(null);
+            assertThat(request.getAid()).isEqualTo(spaces(5));
+        }
+
+        @Test
+        @DisplayName("the AID is on the wire, in value semantics, and outside the 59-field projection")
+        void theAidIsCarriedAndCounted() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            TransactionListRequest before = new TransactionListRequest();
+            before.setAid(PfKeyResolver.AidKey.PFK08.token());
+
+            TransactionListRequest after = mapper.readValue(mapper.writeValueAsString(before),
+                    TransactionListRequest.class);
+            assertThat(after.getAid()).isEqualTo(PfKeyResolver.AidKey.PFK08.token());
+            assertThat(after).isEqualTo(before);
+
+            // Two requests differing only in the key pressed are different requests - PF7 pages back
+            // where PF8 pages forward.
+            TransactionListRequest paging = new TransactionListRequest();
+            paging.setAid(PfKeyResolver.AidKey.PFK07.token());
+            assertThat(paging).isNotEqualTo(before);
+
+            // It is not a screen field: not in FIELD_NAMES, and the image width is unchanged.
+            assertThat(TransactionListRequest.FIELD_NAMES)
+                    .doesNotContain(TransactionListRequest.AID_FIELD);
+            assertThat(before.toFixedWidth(ASCII))
+                    .hasSize(TransactionListRequest.SYMBOLIC_MAP_LENGTH);
+        }
+
+        @Test
+        @DisplayName("an over-long token is refused by name")
+        void anOverLongTokenIsRefused() {
+            assertThatThrownBy(() -> new TransactionListRequest().setAid("PFK012"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(TransactionListRequest.AID_FIELD)
+                    .hasMessageContaining("6 character(s)");
+        }
+    }
+
+    // =================================================================================================
+
+    /** A value space-padded to a declared width - what a RECEIVE MAP would have delivered. */
+    private static String atWidth(String value, int width) {
+        return value + " ".repeat(width - value.length());
+    }
+
     private static TransactionListRequest populated() {
         TransactionListRequest request = new TransactionListRequest();
         request.setTrnname("CT00");
-        request.setTitle01("AWS Mainframe Modernization");
+        request.setTitle01(atWidth("AWS Mainframe Modernization",
+                TransactionListRequest.TITLE01_LENGTH));
         request.setCurdate("08/08/26");
         request.setPgmname("COTRN00C");
-        request.setTitle02("CardDemo");
+        request.setTitle02(atWidth("CardDemo", TransactionListRequest.TITLE02_LENGTH));
         request.setCurtime("09:10:11");
         request.setPagenum("00000001");
         request.setTrnidin("0000000000000001");
-        request.setErrmsg("Invalid selection. Valid value is S");
+        request.setErrmsg(atWidth("Invalid selection. Valid value is S",
+                TransactionListRequest.ERRMSG_LENGTH));
         for (int row = 1; row <= TransactionListRequest.ROW_COUNT; row++) {
             request.setSelection(row, row == 1 ? "S" : " ");
             request.setTransactionId(row, String.format("%016d", row));
             request.setTransactionDate(row, "0" + (row % 10) + "/02/24");
-            request.setTransactionDescription(row, "DESCRIPTION FOR ROW " + row);
+            request.setTransactionDescription(row, atWidth("DESCRIPTION FOR ROW " + row,
+                    TransactionListRequest.TRANSACTION_DESCRIPTION_LENGTH));
             request.setTransactionAmount(row, String.format("+%08d.99", row));
         }
         request.setNavigationContext(NavigationContext.empty()

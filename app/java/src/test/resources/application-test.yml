@@ -3,6 +3,24 @@
 #  'test' PROFILE CONFIGURATION
 # =============================================================================================
 #
+#  WHERE THIS FILE LIVES, AND WHY IT MOVED
+#  ---------------------------------------
+#  src/test/resources, NOT src/main/resources. It was under src/main/resources, where Maven
+#  copies it to target/classes and packages it into the distributable jar - so a datasource
+#  username and password and the ten plaintext USRSEC seed passwords below were shipped inside
+#  the production artifact (CWE-798). Nothing needed them there: this file is only ever read
+#  when the 'test' profile is active, which happens in the suite and in the documented local
+#  run, and that run is invoked with -Dspring-boot.run.useTestClasspath=true, so it reaches
+#  the test classpath either way.
+#
+#  The credentials themselves are H2's conventional in-memory account and the seed rows are
+#  transcribed from app/jcl/DUSRSECJ.jcl, so neither is a real secret. That is an argument for
+#  keeping them in the repository at all - it is not an argument for packaging them into a
+#  deployable artifact, where a scanner cannot tell them apart from one that is real and where
+#  they would be the first thing an operator tried against a production endpoint.
+#
+#  KEEP THIS FILE OUT OF src/main/resources. Anything under src/main/resources ships.
+#
 #  WHAT THIS FILE IS
 #  -----------------
 #  application.yml declares WHAT every CardDemo dataset is - its DD name, its organization, its
@@ -43,7 +61,9 @@
 #  ---------------------------------------
 #  ONLY the "dsname" of a dataset entry. record-length, record-format, block-size, copybook,
 #  key-length, base and alternate-key are copybook-fixed or JCL-fixed and are NEVER restated or
-#  relaxed here. The location of a dataset is environmental; its geometry is not. Every override
+#  relaxed here. Which dataset a DD name resolves to is environmental; its geometry is not, and
+#  neither is the SHAPE of the name - a dsname is validated as a z/OS dataset name because it
+#  becomes a delimited SQL identifier, so an override names a dataset and never a file. Every override
 #  below is therefore a single "dsname:" line beneath a DD name spelled exactly as
 #  application.yml spells it - not a replacement entry, and not a bare scalar, either of which
 #  would break the binding and silently stop overriding anything.
@@ -95,14 +115,46 @@ spring:
   #
   # ISOLATION AND DETERMINISM (practice B7, and gate G18 depends on it)
   # A "jdbc:h2:mem:" database is private to the JVM that opens it, so two Maven runs - in
-  # parallel clones or one after another - cannot see each other's rows. The name is fixed
-  # rather than randomised or timestamped, so a given run is byte-for-byte reproducible; nothing
-  # here varies with the wall clock or a random seed. Per-CASE isolation within one JVM is the
-  # harness's job: it seeds and clears the datasets it touches for each of the 20 cases.
+  # parallel clones or one after another - cannot see each other's rows. That handles the JVM
+  # boundary. It does NOT handle the boundary that actually matters inside one surefire JVM,
+  # which is the SPRING CONTEXT: a test run builds many contexts, and a fixed database name plus
+  # DB_CLOSE_DELAY=-1 would give every one of them the same database.
   #
-  # DB_CLOSE_DELAY=-1 keeps the database alive for the JVM's lifetime, so the JobRepository
-  # metadata created once at context refresh survives even if the pool drops every connection.
+  # ONE DATABASE PER CONTEXT, VIA ${random.uuid} IN THE NAME. Two distinct problems are solved:
+  #   1. A HARD FAILURE. classpath:org/springframework/batch/core/schema-h2.sql contains 9 bare
+  #      CREATE statements and NOT ONE "IF NOT EXISTS" - verified by reading it inside
+  #      spring-batch-core-5.2.6.jar. With initialize-schema: always below, the second context to
+  #      refresh against a shared database would fail on "table BATCH_JOB_INSTANCE already
+  #      exists". Today no context in this module both activates this profile and enables Batch,
+  #      so the defect is latent rather than visible - which is precisely why it is worth removing
+  #      now rather than after a later test trips it.
+  #   2. CROSS-CONTEXT STATE. BATCH_JOB_EXECUTION rows and seeded application rows written by one
+  #      context would otherwise be visible to the next, making an outcome depend on test order.
+  #
+  # WHY THE NAME IS RANDOM WHILE NOTHING ELSE HERE IS. Reproducibility is a property of the
+  # OBSERVED OUTPUT, and no assertion, fixture, record or report in this module reads the database
+  # name - it is addressing, not data. Every value that a comparison can see stays fixed. The
+  # random element is resolved EXACTLY ONCE per context, when Spring binds spring.datasource.url
+  # into DataSourceProperties, which is what makes it a per-context identity rather than a
+  # per-lookup one: ${random.uuid} yields a NEW value on every resolution, so it must never be
+  # placed in a value that is referenced more than once (see carddemo.test.work-dir, which
+  # deliberately uses stable discriminators instead).
+  #
+  # NOTE FOR ANYONE BUILDING A CONTEXT BY HAND. ${random.uuid} comes from Spring Boot's
+  # RandomValuePropertySource, which SpringApplication installs - so it is present under a real
+  # run, under spring-boot:run and under @SpringBootTest, but NOT in a bare
+  # ApplicationContextRunner. A hand-built context that binds spring.datasource.url from this
+  # profile must call RandomValuePropertySource.addToEnvironment(environment) first, exactly as
+  # ConfigBranchCoverageTest does.
+  #
+  # DB_CLOSE_DELAY=-1 is RETAINED rather than traded for close-on-last-connection. It keeps the
+  # database alive for the JVM's lifetime, so the JobRepository metadata created once at context
+  # refresh survives even if the pool drops every connection - i.e. it removes a timing-dependent
+  # failure mode. Because the name is now unique per context, keeping it costs no isolation.
   # DB_CLOSE_ON_EXIT=FALSE lets the JVM shut down without H2 racing the Spring lifecycle.
+  #
+  # Per-CASE isolation within one context remains the harness's job: it seeds and clears the
+  # datasets it touches for each of the 20 cases.
   #
   # NO SQL COMPATIBILITY MODE IS SET, deliberately. H2 runs in its standard (REGULAR) mode:
   # Spring Batch's bundled schema-h2.sql targets standard H2, and a compatibility mode would
@@ -113,7 +165,7 @@ spring:
   # JVM and holds only fixture data. It is a test-only non-secret, not a credential.
   # -------------------------------------------------------------------------------------------
   datasource:
-    url: jdbc:h2:mem:carddemo_test;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    url: jdbc:h2:mem:carddemo_test_${random.uuid};DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
     driver-class-name: org.h2.Driver
     username: sa
     password: ''
@@ -150,6 +202,13 @@ spring:
   #   * this profile sets it to always, because the only database this profile can reach is the
   #     throwaway in-memory H2 instance configured above.
   # The tables therefore exist in H2 and nowhere else. Do not set "always" in application.yml.
+  #
+  # "always" IS ONLY SAFE BECAUSE THE DATABASE IS NEW. schema-h2.sql issues 9 bare CREATE
+  # statements with no "IF NOT EXISTS", and the initializer has no notion of "already applied": it
+  # runs the script at every context refresh. That is correct against a database this context has
+  # to itself, and a hard failure against one it shares. So the ${random.uuid} in the datasource
+  # URL above is not a tidiness measure - it is the precondition for this setting. Removing the
+  # per-context name without also changing this key would fail the second context to refresh.
   #
   # THE SCRIPT IS THE FRAMEWORK'S, NOT OURS - and it is named rather than left to @@platform@@
   # substitution so that claim is verifiable by inspection. classpath:org/springframework/batch/
@@ -191,9 +250,12 @@ spring:
 # @LocalServerPort.
 #
 # The override key is application.yml's own CARDDEMO_SERVER_PORT, so one variable governs the
-# port in every profile. Everything else under server.* - the context path and the error
-# response shape, whose message and binding errors are parity-relevant because the COBOL returns
-# its diagnostic text in the screen's error field - is inherited unchanged.
+# port in every profile. Everything else under server.* is inherited unchanged - including
+# server.error.*, which publishes no message, no binding errors and no stack trace. That is
+# inherited rather than relaxed for tests on purpose: a test profile that published exception
+# text would be exercising a different error boundary from the one that ships, and the boundary
+# is the thing being tested. The COBOL-produced text a parity case compares is a modelled field
+# in the controller's own response payload, not a framework error attribute.
 # ---------------------------------------------------------------------------------------------
 server:
   port: ${CARDDEMO_SERVER_PORT:0}
@@ -214,13 +276,26 @@ carddemo:
   # fall back to a default for either; app/data/EBCDIC/ is reference-only, and README.md:L65
   # requires those twelve binary datasets be transferred in binary mode.
   #
-  # These two values are IDENTICAL to application.yml's on purpose - encoding is a parity
-  # concern, not an environmental one, so the test profile must not be able to differ from
-  # production here. They appear again only so the guarantee is visible where it is exercised.
+  # "ebcdic" and "ascii" are IDENTICAL to application.yml's on purpose - they name what the two
+  # code pages ARE, which is a parity concern rather than an environmental one, so the test profile
+  # must not be able to differ from production about it. They appear again only so the guarantee is
+  # visible where it is exercised.
+  #
+  # "dataset" is the one key that legitimately DOES differ, because it names which of those two
+  # code pages is in use, and that follows the datasets a profile is bound to. Every dataset
+  # binding below is repointed at a fixture under src/test/resources/fixtures or at a file this
+  # profile's work directory produces, and all of those are US-ASCII text - so US-ASCII here, where
+  # application.yml carries IBM037 for the mainframe datasets it binds instead.
+  #
+  # All three keys are REQUIRED and carry no default: CobolCharsetConfig binds each with a bare
+  # placeholder, so omitting one fails the context at startup naming that exact key. Removing this
+  # one would not fall back to anything - which is the point, because a fallback is how a wrong
+  # code page reaches production without anybody noticing.
   # -------------------------------------------------------------------------------------------
   charset:
     ebcdic: IBM037
     ascii: US-ASCII
+    dataset: US-ASCII
 
   # -------------------------------------------------------------------------------------------
   # carddemo.test.* - TEST-PROFILE-ONLY FACTS. Consumed by the parity harness.
@@ -236,6 +311,31 @@ carddemo:
   # -------------------------------------------------------------------------------------------
   test:
 
+    # CLONE DISCRIMINATOR. Agents work this repository in parallel, each in its own clone, and
+    # every clone runs this same profile from the same image with the same ${java.io.tmpdir}. The
+    # clone index is the only thing that distinguishes them, so it is read here and folded into the
+    # owned root below. It resolves from the process environment - always present in any Spring
+    # Environment, and stable across every resolution - and falls back to the literal "local" when
+    # a developer runs the suite outside that arrangement.
+    clone-id: ${CLONE_INDEX:local}
+
+    # RUN DISCRIMINATOR. Overridden, not defaulted: app/java/pom.xml's surefire configuration
+    # passes -Dcarddemo.test.run-id=${maven.build.timestamp}, and a system property outranks a
+    # profile document in Spring Boot's property source order, so every Maven run gets its own
+    # value while this file keeps an honest literal for a run started some other way. Verified to
+    # interpolate: the value arrives in the forked JVM as e.g. 20260808-133029937.
+    #
+    # It has to be a STABLE value rather than ${random.uuid}: work-dir below is referenced by all
+    # 27 dataset locations, by two job-scoped overrides and by the job-submission port, and
+    # ${random.uuid} yields a new value on EVERY resolution - so a random run id would scatter one
+    # run's datasets across thirty different directories.
+    run-id: local
+
+    # The two discriminators as one path segment pair, composed once so work-dir below stays
+    # readable. Both components are stable values, so this resolves identically every time it is
+    # referenced - which is what lets one run's thirty-odd outputs share one directory.
+    isolation-path: clone-${carddemo.test.clone-id}/run-${carddemo.test.run-id}
+
     # WRITABLE ROOT for every dataset a test run produces, and the single place to repoint them.
     #
     # It is outside the repository entirely, which is what makes practice B3 structural rather
@@ -244,10 +344,64 @@ carddemo:
     # here. ${java.io.tmpdir}/carddemo/... is the convention application.yml already uses for its
     # job-submission destination, so both files agree on where transient output belongs.
     #
-    # The path is fixed, not randomised or timestamped, so a run is reproducible (practice B7).
-    # Set CARDDEMO_TEST_WORK_DIR to give a CI executor or a parallel checkout its own root
-    # without touching this file.
-    work-dir: ${CARDDEMO_TEST_WORK_DIR:${java.io.tmpdir}/carddemo/test-datasets}
+    # THE PATH IS UNIQUE PER CLONE AND PER RUN, AND THAT IS A SECURITY PROPERTY.
+    #
+    # ${java.io.tmpdir} is /tmp on this platform: world-writable and sticky, and shared with every
+    # other process and every parallel clone of this repository on the same host. A FIXED root
+    # under it - which is what this key used to be - is a defect in three distinct ways:
+    #   * CWE-59  (link following). The name is predictable, so any other user on the host can
+    #             pre-create it, or any path beneath it, as a symlink pointing somewhere else.
+    #             Every dataset the suite then "writes" is redirected, and the suite still passes.
+    #   * CWE-377 (insecure temporary file). A predictable name in a shared directory is readable
+    #             and replaceable by anyone; the USRSEC seed the suite materialises here carries
+    #             the legacy plaintext SEC-USR-PWD span, so it must not land on a guessable path.
+    #   * CWE-362 (race). Two concurrent runs - two clones under one workspace root, or simply two
+    #             invocations - would open the same files and overwrite each other's output, which
+    #             produces a parity diff whose cause is another process rather than the code.
+    # Two independent components remove all three:
+    #   * CLONE_INDEX             WHICH CHECKOUT. Exported by the platform for exactly this
+    #                             purpose. Defaults to "local" so a developer run still works.
+    #   * carddemo.test.run.id    WHICH INVOCATION. A system property set by surefire from the
+    #                             build timestamp (see app/java/pom.xml). Defaults to "local-run".
+    #
+    # Determinism is not lost. Within one run the value resolves once and every dataset below
+    # composes from it, so the suite is still reproducible and still reads nothing from the wall
+    # clock (practice B7); what changes between runs is only WHERE the transient output lives.
+    # A placeholder that regenerated per resolution - ${random.uuid}, for instance - would be
+    # actively wrong here, because each dataset below would then land under a different root.
+    #
+    # THE REST OF THE CONTRACT IS EXECUTABLE, NOT ADVISORY. A configured path cannot create a
+    # directory safely on its own, so config/TestWorkspaceIsolationTest enforces the remainder as
+    # a build-time assertion: the root is created with owner-only permissions (rwx------), it is a
+    # real directory rather than a symlink when checked with NOFOLLOW_LINKS, writes beneath it use
+    # CREATE_NEW and NOFOLLOW_LINKS so an existing link is never followed, and cleanup is confined
+    # to the directory this run owns and never ascends to a shared parent.
+    #
+    # Set CARDDEMO_TEST_WORK_DIR to give a CI executor its own root explicitly; it overrides both
+    # components and is then the caller's responsibility to keep unique.
+    #
+    # The two components are composed here, once, so that work-dir below stays one readable line
+    # and so that the uniqueness rule has a single place to be read and audited.
+    # OWNED, NOT SHARED - and that is the point of the two discriminators. A single fixed root
+    # would be reached by every clone and every run at once, and several outputs underneath it are
+    # written in append mode - the job-submission port is DISPOSITION(MOD) by CSD contract, and
+    # GDG-style outputs accumulate - so sharing produces two distinct faults: parallel clones
+    # interleaving records into one file, and a fresh run reading its predecessor's leftovers as
+    # its own output. Neither raises an error; both simply make a diff count wrong.
+    #
+    # Staleness is made IMPOSSIBLE rather than cleaned up after. run-id changes on every Maven
+    # invocation, so a run always starts in a directory that did not previously exist, and there is
+    # nothing to inherit - no cleanup step to skip, fail, or race. The harness may still remove
+    # what it created, but it must confine itself to this subtree and never to the parent
+    # test-datasets directory, which belongs to other clones and other runs.
+    #
+    # Set CARDDEMO_TEST_WORK_DIR to hand a CI executor an explicit root instead; doing so replaces
+    # the whole derived path, discriminators included, and then the isolation is the caller's to
+    # guarantee.
+    # run-scope is the same pair of segments under its other name, so a reader or test that asks
+    # for either vocabulary resolves the one composition above.
+    run-scope: ${carddemo.test.isolation-path}
+    work-dir: ${CARDDEMO_TEST_WORK_DIR:${java.io.tmpdir}/carddemo-test/${carddemo.test.isolation-path}}
 
     # -----------------------------------------------------------------------------------------
     # THE NINE FIXTURES, WITH MEASURED GEOMETRY.
@@ -271,11 +425,26 @@ carddemo:
     #                     that is carddemo.datasets.<DD>.record-length in application.yml, and it
     #                     is never restated here. Declaring both is what makes the two of them
     #                     comparable, which is the whole point.
-    #   pad-to            present ONLY where the fixture is short of its copybook width. The
-    #                     loader right-pads every record with spaces (0x20) to this many bytes
-    #                     before the record is decoded or compared. Its absence means the
-    #                     fixture already matches its copybook exactly, so the set of deviations
-    #                     is machine-enumerable: exactly two entries carry it.
+    #   pad-to            present ONLY where the fixture is short of its copybook width. Its
+    #                     absence means the fixture already matches its copybook exactly, so the
+    #                     set of deviations is machine-enumerable: exactly two entries carry it.
+    #
+    #                     THE PAD HAS EXACTLY ONE OWNER, AND IT IS THE SEEDING SIDE.
+    #                     Every record is right-padded with spaces (0x20) to this width ONCE, at
+    #                     SEED TIME, BEFORE anything decodes it - by the single validated
+    #                     normaliser on ParityCase.DatasetNormalisation, which a case reaches
+    #                     through its dataset-bound "normalisations" entry. What a repository
+    #                     receives is therefore already the full copybook width, which is exactly
+    #                     what SecUserRecord.decode and CardXrefRecord.decode require: a
+    #                     fixed-width record is never partially decoded.
+    #                     NOTHING PADS AGAIN AT COMPARISON TIME. FieldDiffer treats any width
+    #                     disagreement as a difference and never makes one up, so a case that
+    #                     forgets to declare its normalisation fails loudly at seeding instead of
+    #                     being quietly repaired during the comparison. Two owners for one pad
+    #                     would mean neither could be audited: a 57-byte row reaching a decoder
+    #                     would look like a seeding bug from one side and a differ bug from the
+    #                     other, and an expectation written at the short width would be silently
+    #                     accepted.
     #   datasets          the DD names this one file serves. Several DD names address one
     #                     physical dataset - the CICS name used by the online programs and the
     #                     batch name used by the JCL - and an alternate-index PATH is a finder
@@ -399,7 +568,12 @@ carddemo:
       #                                    --
       #                                    80
       # Every one of the ten records below measures exactly 57 bytes, 8+20+20+8+1, and omits
-      # SEC-USR-FILLER X(23). pad-to restores it as spaces, precisely as for cardxref.
+      # SEC-USR-FILLER X(23). pad-to restores it as spaces, precisely as for cardxref, and it does
+      # so ONCE at seed time through ParityCase.DatasetNormalisation.USRSEC_FILLER_PAD_57_TO_80 -
+      # the single owner named in the FIELD MEANINGS block above. A case seeding USRSEC must declare
+      # that normalisation against the USRSEC dataset, because the 57-byte rows below are NOT
+      # decodable as they stand: SecUserRecord.decode requires exactly 80 bytes and rejects a short
+      # row rather than partially decoding it.
       # DUSRSECJ.jcl corroborates the 80 twice - SYSUT2 at L46-L49 is
       # DCB=(LRECL=80,RECFM=FB,DSORG=PS,BLKSIZE=0), and the DEFINE CLUSTER at L64-L73 is
       # KEYS(8,0) RECORDSIZE(80,80) INDEXED - which is also where USRSEC's 8-byte key comes from.
@@ -414,7 +588,15 @@ carddemo:
       #
       # Layout of each record, by column: 1-8 id, 9-28 first name, 29-48 last name, 49-56
       # password, 57 user type - 'A' for the five administrators, 'U' for the five regular
-      # users. Single-quoted so every run of interior spaces is preserved exactly as the JCL has
+      # users.
+      #
+      # THE PASSWORD COLUMN IS PLAINTEXT, and that is the legacy design rather than a defect
+      # here: SEC-USR-PWD is PIC X(08) in app/cpy/CSUSR01Y.cpy and app/cbl/COSGN00C.cbl
+      # compares it directly, so hashing it would change observable behaviour (practice B6,
+      # gate G41). These ten rows are transcribed from app/jcl/DUSRSECJ.jcl and exist only to
+      # seed an in-memory H2 database inside the test JVM. They live under src/test/resources
+      # precisely so they are NOT packaged into the distributable jar - see the note at the top
+      # of this file. Single-quoted so every run of interior spaces is preserved exactly as the JCL has
       # it; the field alignment below IS the data and must not be reflowed.
       # -------------------------------------------------------------------------------------
       usrsec:
@@ -448,14 +630,28 @@ carddemo:
   # overriding a width would silently break parity.
   #
   # ALL 27 ARE OVERRIDDEN, WITH NO EXCEPTIONS. Any DD name left out would keep its
-  # AWS.M2.CARDDEMO.* mainframe default and fail - or worse, resolve to nothing - the moment a
-  # test touched it. The three groups are:
+  # AWS.M2.CARDDEMO.* mainframe default, and a test run would then be addressing a production
+  # dataset name. Each override names the SAME dataset under a CARDDEMO.TEST high-level
+  # qualifier, so a test run can never resolve to a production name, and the aliases that are one
+  # dataset on the mainframe are one dataset here too - byte for byte the same value, because
+  # AccountRepository refuses a CICS-name and DD-name pair that disagree. The three groups are:
   #
-  #   17 DD names -> the 9 classpath fixtures  (read-only inputs, one file serving its aliases)
-  #    1 DD name  -> the inline seed above     (USRSEC, which has no fixture file)
-  #    9 DD names -> carddemo.test.work-dir    (written by a job, or seeded per case)
+  #   17 DD names -> 9 dataset names, one per fixture (read-only inputs, aliases sharing a name)
+  #    1 DD name  -> the inline seed above            (USRSEC, which has no fixture file)
+  #    9 DD names -> 9 produced dataset names         (written by a job, or seeded per case)
   #   --
   #   27
+  #
+  # A dsname IS A DATASET NAME, NOT A LOCATION.
+  # ------------------------------------------
+  # A repository reaches its dataset through JDBC, so the dsname becomes a delimited SQL
+  # identifier - and common/DatasetRelation validates it as a z/OS dataset name (44 characters or
+  # fewer, dot-separated qualifiers of 1 to 8 characters) before composing it into any statement.
+  # A classpath URL or a filesystem path is therefore refused here, and rightly: it could never be
+  # read by a JDBC repository, and admitting one would mean an unvalidated string reaching a SQL
+  # identifier. Where the test data itself lives is a separate question with its own answer above:
+  # carddemo.test.fixtures binds each dataset to the fixture resource holding its rows, and
+  # carddemo.test.work-dir is the run-owned root a produced dataset is materialised under.
   # -------------------------------------------------------------------------------------------
   datasets:
 
@@ -465,19 +661,19 @@ carddemo:
     # the online programs use, ACCTFILE the DD name READACCT.jcl, INTCALC.jcl, POSTTRAN.jcl and
     # CREASTMT.JCL use.
     ACCTDAT:
-      dsname: classpath:fixtures/acctdata.txt
+      dsname: CARDDEMO.TEST.ACCTDATA.VSAM.KSDS
     ACCTFILE:
-      dsname: classpath:fixtures/acctdata.txt
+      dsname: CARDDEMO.TEST.ACCTDATA.VSAM.KSDS
 
     # Card master, CVACT02Y, 150 B. CARDDAT is the CICS FILE, CARDFILE the DD name READCARD.jcl
     # uses, and CARDAIX the alternate-index PATH over the same base keyed by account id - a
     # finder on the base repository, so it reads the identical fixture (gate G45).
     CARDDAT:
-      dsname: classpath:fixtures/carddata.txt
+      dsname: CARDDEMO.TEST.CARDDATA.VSAM.KSDS
     CARDFILE:
-      dsname: classpath:fixtures/carddata.txt
+      dsname: CARDDEMO.TEST.CARDDATA.VSAM.KSDS
     CARDAIX:
-      dsname: classpath:fixtures/carddata.txt
+      dsname: CARDDEMO.TEST.CARDDATA.VSAM.KSDS
 
     # Card-to-account cross reference, CVACT03Y, 50 B - the 36-to-50 right-pad case. The fixture
     # is 36 bytes per record; carddemo.test.fixtures.cardxref.pad-to restores the missing
@@ -488,40 +684,40 @@ carddemo:
     # INTCALC.jcl, POSTTRAN.jcl and CREASTMT.JCL use, CARDXREF the name TRANREPT.jcl uses, and
     # CXACAIX and XREFFIL1 are both alternate-index PATHs over that same base.
     CCXREF:
-      dsname: classpath:fixtures/cardxref.txt
+      dsname: CARDDEMO.TEST.CARDXREF.VSAM.KSDS
     CARDXREF:
-      dsname: classpath:fixtures/cardxref.txt
+      dsname: CARDDEMO.TEST.CARDXREF.VSAM.KSDS
     XREFFILE:
-      dsname: classpath:fixtures/cardxref.txt
+      dsname: CARDDEMO.TEST.CARDXREF.VSAM.KSDS
     CXACAIX:
-      dsname: classpath:fixtures/cardxref.txt
+      dsname: CARDDEMO.TEST.CARDXREF.VSAM.KSDS
     XREFFIL1:
-      dsname: classpath:fixtures/cardxref.txt
+      dsname: CARDDEMO.TEST.CARDXREF.VSAM.KSDS
 
     # Customer master, CVCUS01Y, 500 B. CUSTDAT is the CICS FILE, CUSTFILE the DD name
     # READCUST.jcl and CREASTMT.JCL use.
     CUSTDAT:
-      dsname: classpath:fixtures/custdata.txt
+      dsname: CARDDEMO.TEST.CUSTDATA.VSAM.KSDS
     CUSTFILE:
-      dsname: classpath:fixtures/custdata.txt
+      dsname: CARDDEMO.TEST.CUSTDATA.VSAM.KSDS
 
     # Daily transaction input, CVTRA06Y, 350 B - sequential, browsed front to back.
     DALYTRAN:
-      dsname: classpath:fixtures/dailytran.txt
+      dsname: CARDDEMO.TEST.DALYTRAN
 
     # Interest-rate disclosure groups, CVTRA02Y, 50 B.
     DISCGRP:
-      dsname: classpath:fixtures/discgrp.txt
+      dsname: CARDDEMO.TEST.DISCGRP
 
     # Transaction category balances, CVTRA01Y, 50 B, 17-byte composite key.
     TCATBALF:
-      dsname: classpath:fixtures/tcatbal.txt
+      dsname: CARDDEMO.TEST.TCATBAL.VSAM.KSDS
 
     # Transaction type and category lookups, CVTRA03Y / CVTRA04Y, 60 B each.
     TRANTYPE:
-      dsname: classpath:fixtures/trantype.txt
+      dsname: CARDDEMO.TEST.TRANTYPE
     TRANCATG:
-      dsname: classpath:fixtures/trancatg.txt
+      dsname: CARDDEMO.TEST.TRANCATG
 
     # --- Inline-seeded input -----------------------------------------------------------------
 
@@ -531,7 +727,7 @@ carddemo:
     # classpath path would name a resource that does not exist and yield a silently empty
     # dataset, so every sign-on assertion would pass or fail for the wrong reason (practice B1).
     USRSEC:
-      dsname: ${carddemo.test.work-dir}/usrsec.txt
+      dsname: CARDDEMO.TEST.USRSEC.VSAM.KSDS
 
     # --- Written or seeded during a run: rooted at carddemo.test.work-dir --------------------
     #
@@ -547,14 +743,14 @@ carddemo:
     # POSTTRAN.jcl's DD name for the same dataset. Bound to one file so a transaction written by
     # one program is visible to the next, exactly as one KSDS behaves.
     TRANSACT:
-      dsname: ${carddemo.test.work-dir}/transact.txt
+      dsname: CARDDEMO.TEST.TRANSACT.VSAM.KSDS
     TRANFILE:
-      dsname: ${carddemo.test.work-dir}/transact.txt
+      dsname: CARDDEMO.TEST.TRANSACT.VSAM.KSDS
 
     # Statement extract KSDS, COSTM01, 350 B, 32-byte key. CREASTMT.JCL builds it by SORT and
     # IDCAMS REPRO before CBSTM03A runs, so in a test it is produced, never shipped.
     TRNXFILE:
-      dsname: ${carddemo.test.work-dir}/trnxfile.txt
+      dsname: CARDDEMO.TEST.TRNXFILE
 
     # CBTRN03C's report date range, 80 B sequential.
     #
@@ -565,31 +761,31 @@ carddemo:
     # appears anywhere in this file, which is also what keeps the suite deterministic: nothing
     # reads the wall clock (practice B7, gate G54).
     DATEPARM:
-      dsname: ${carddemo.test.work-dir}/dateparm.txt
+      dsname: CARDDEMO.TEST.DATEPARM
 
     # Rejected daily transactions, 430 B fixed - CBTRN02C's FD-REJECT-RECORD X(350) plus
     # FD-VALIDATION-TRAILER X(80). Written by the posting job (gate G20).
     DALYREJS:
-      dsname: ${carddemo.test.work-dir}/dalyrejs.txt
+      dsname: CARDDEMO.TEST.DALYREJS
 
     # Transaction detail report, 133 B fixed - the report line width, with CVTRA07Y's edit masks
     # and its 133-byte ALL '-' separator (gate G20).
     TRANREPT:
-      dsname: ${carddemo.test.work-dir}/tranrept.txt
+      dsname: CARDDEMO.TEST.TRANREPT
 
     # The two statement outputs CBSTM03A writes: 80 B text and 100 B HTML.
     # HTMLFILE IS 100, NOT 80 (gate G20, risk R-G) - CREASTMT.JCL declares it twice, and the
     # STEP040 step that actually creates the file is authoritative over the STEP030 pre-delete.
     # That width lives in application.yml; only the location is set here.
     STMTFILE:
-      dsname: ${carddemo.test.work-dir}/statement.txt
+      dsname: CARDDEMO.TEST.STMTFILE
     HTMLFILE:
-      dsname: ${carddemo.test.work-dir}/statement.html
+      dsname: CARDDEMO.TEST.HTMLFILE
 
     # CBACT04C's generated interest transactions, 350 B fixed. In INTCALC.jcl this is written
     # through the DD name TRANSACT, which the job-scoped override below resolves.
     SYSTRAN:
-      dsname: ${carddemo.test.work-dir}/systran.txt
+      dsname: CARDDEMO.TEST.SYSTRAN
 
   # -------------------------------------------------------------------------------------------
   # JOB-SCOPED DATASET LOCATIONS - the six that carddemo.datasets cannot reach.
@@ -654,12 +850,24 @@ carddemo:
   # starts from a known place instead of appending to whatever a previous run or a local
   # application instance left behind.
   #
+  # THIS IS THE OUTPUT THAT MOST NEEDED THE ISOLATED ROOT. The port's disposition is MOD, so it
+  # APPENDS - it is the one output for which a shared path does not overwrite but accumulates, and
+  # a second run would have read its predecessor's records back as its own. Because the
+  # destination derives from carddemo.test.work-dir, which now carries the clone and run
+  # discriminators, that cannot happen and no cleanup step has to be relied on for it.
+  #
   # The byte contract is untouched and inherited: record-length 80, RECORDFORMAT(FIXED),
   # BLOCKFORMAT(UNBLOCKED), DISPOSITION(MOD) - transcribed in application.yml from
   # app/csd/CARDDEMO.CSD:L499-L505. Those are what make the output byte-identical to the COBOL's,
   # so none of them may be restated or relaxed for a test run.
+  #
+  # approved-root MOVES WITH THE DESTINATION, and must, because WebConfig.JobSubmissionProperties
+  # requires the destination to resolve strictly inside it. Relocating one without the other is a
+  # startup failure rather than a silent escape, which is the point of validating them together:
+  # a test run may choose WHERE it writes, but not whether the boundary applies to it.
   # -------------------------------------------------------------------------------------------
   job-submission:
+    approved-root: ${carddemo.test.work-dir}
     destination: ${carddemo.test.work-dir}/inreader/JOBS
 
 # ---------------------------------------------------------------------------------------------

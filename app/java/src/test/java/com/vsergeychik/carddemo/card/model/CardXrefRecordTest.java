@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.card.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
@@ -1479,10 +1480,17 @@ class CardXrefRecordTest {
             assertThat(rendered)
                     .isNotNull()
                     .startsWith("CARD-XREF-RECORD[")
-                    .contains(CardXrefRecord.XREF_CARD_NUM_NAME + "='ABC'")
-                    .contains(CardXrefRecord.XREF_CUST_ID_NAME + "=50")
-                    .contains(CardXrefRecord.XREF_ACCT_ID_NAME + "=50")
+                    // All three fields are masked: this record exists to link a card number to a
+                    // customer and an account, so rendering it in full published that association. A
+                    // value at or below the revealed length is masked entirely rather than disclosed.
+                    .contains(CardXrefRecord.XREF_CARD_NUM_NAME + "='***'")
+                    .contains(CardXrefRecord.XREF_CUST_ID_NAME + "=*****0050")
+                    .contains(CardXrefRecord.XREF_ACCT_ID_NAME + "=*******0050")
                     .endsWith("]");
+            // 'ABC' is masked entirely rather than shown, because showing four of three characters
+            // would disclose the whole of a short identifier while looking as though it had been
+            // masked - the most misleading of the available outcomes.
+            assertThat(rendered).doesNotContain("ABC");
             // No clock, no identity hash, no locale-dependent formatting: the same record always
             // renders identically, which is what makes a failure message reproducible (B7).
             assertThat(rendered).isEqualTo(new CardXrefRecord("ABC", 50, 50L).toString());

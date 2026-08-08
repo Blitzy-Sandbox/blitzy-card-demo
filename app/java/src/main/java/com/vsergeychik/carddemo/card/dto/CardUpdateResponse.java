@@ -1,7 +1,12 @@
 package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardDetails;
+import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CardUpdateRecord;
+import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.CommArea;
+import com.vsergeychik.carddemo.card.dto.CardUpdateRequest.DetailGroup;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
@@ -130,10 +135,17 @@ import java.util.Objects;
  * <h2>Statelessness (rule R6, gate G37)</h2>
  *
  * <p>Every scrap of CICS pseudo-conversational state travels in the payload: the 329-byte
- * {@code WS-THIS-PROGCOMMAREA} as {@link #getProgCommarea()}, the {@code CVCRD01Y} work area as
- * {@link #getScreenState()} and the {@code COCOM01Y} commarea as {@link #getNavigation()}. This
- * class holds no {@code HttpSession}, no {@code @SessionAttributes}, no server-side cache, no static
- * map and no {@code ThreadLocal}, and it never will.
+ * {@code WS-THIS-PROGCOMMAREA} as {@link #getCommArea()}, the {@code CVCRD01Y} work area as
+ * {@link #getCardScreenState()} and the {@code COCOM01Y} navigation commarea as
+ * {@link #getNavigationContext()}. This class holds no {@code HttpSession}, no
+ * {@code @SessionAttributes}, no server-side cache, no static map and no {@code ThreadLocal}, and it
+ * never will.
+ *
+ * <p>All three carriers use the same member name on the request and on the response -
+ * {@code commArea}, {@code cardScreenState} and {@code navigationContext} - and, for the program
+ * commarea, the same Java type. A client echoes what it received straight back; it never transcribes
+ * one shape into another. See the closing comment of this file for why the response no longer
+ * declares its own copy of the 329-byte area.
  *
  * <h2>The 329-byte program commarea, decomposed</h2>
  *
@@ -153,9 +165,9 @@ import java.util.Objects;
  *      329    329  = 1 + 89 + 89 + 150
  * </pre>
  *
- * <p>{@link ProgCommarea#LAYOUT} declares every one of those bytes, {@code FILLER} included, and
+ * <p>{@link CommArea#LAYOUT} declares every one of those bytes, {@code FILLER} included, and
  * {@link RecordLayout} refuses to exist unless the spans are contiguous from offset 0 and sum to
- * exactly {@value ProgCommarea#COMMAREA_LENGTH}. The arithmetic above is therefore machine-checked
+ * exactly {@value CommArea#RECORD_LENGTH}. The arithmetic above is therefore machine-checked
  * at class-initialisation time rather than asserted in prose.
  *
  * <h2>Three preserved misspellings</h2>
@@ -1160,16 +1172,16 @@ public final class CardUpdateResponse {
     private final Map<String, FieldAttributes> attributes;
 
     /**
-     * The echoed {@value ProgCommarea#COMMAREA_LENGTH}-byte {@code WS-THIS-PROGCOMMAREA}
+     * The echoed {@value CommArea#RECORD_LENGTH}-byte {@code WS-THIS-PROGCOMMAREA}
      * ({@code app/cbl/COCRDUPC.cbl:274-321}).
      */
-    private ProgCommarea progCommarea;
+    private CommArea commArea;
 
     /** The echoed {@code CVCRD01Y} work area ({@code COPY CVCRD01Y} at {@code COCRDUPC.cbl:268}). */
-    private CardScreenState screenState;
+    private CardScreenState cardScreenState;
 
     /** The echoed {@code COCOM01Y} commarea ({@code COPY COCOM01Y} at {@code COCRDUPC.cbl:272}). */
-    private NavigationContext navigation;
+    private NavigationContext navigationContext;
 
     /** The {@code XCTL} target program, 8 characters, opaque. */
     private String nextProgram;
@@ -1190,7 +1202,7 @@ public final class CardUpdateResponse {
      *
      * <p>Concretely: all 17 payload items hold {@code LOW-VALUES} at their declared widths, all 68
      * attribute bytes hold {@code 0x00}, the program commarea is
-     * {@link ProgCommarea#initialised()}, the work area is a fresh {@link CardScreenState}, the
+     * {@link CommArea#initialised()}, the work area is a fresh {@link CardScreenState}, the
      * navigation commarea is {@link NavigationContext#empty()} and the three {@code XCTL} target
      * tokens are spaces.
      *
@@ -1208,9 +1220,9 @@ public final class CardUpdateResponse {
             this.payload.put(field.name(), CardScreenState.lowValues(field.length()));
             this.attributes.put(field.name(), new FieldAttributes());
         }
-        this.progCommarea = ProgCommarea.initialised();
-        this.screenState = new CardScreenState();
-        this.navigation = NavigationContext.empty();
+        this.commArea = CommArea.initialised();
+        this.cardScreenState = new CardScreenState();
+        this.navigationContext = NavigationContext.empty();
         this.nextProgram = CardScreenState.spaces(CardScreenState.CCARD_NEXT_PROG_LENGTH);
         this.nextMapset = CardScreenState.spaces(CardScreenState.CCARD_NEXT_MAPSET_LENGTH);
         this.nextMap = CardScreenState.spaces(CardScreenState.CCARD_NEXT_MAP_LENGTH);
@@ -1234,9 +1246,9 @@ public final class CardUpdateResponse {
         for (Map.Entry<String, FieldAttributes> quad : other.attributes.entrySet()) {
             this.attributes.put(quad.getKey(), new FieldAttributes(quad.getValue()));
         }
-        this.progCommarea = other.progCommarea;
-        this.screenState = new CardScreenState(other.screenState);
-        this.navigation = other.navigation;
+        this.commArea = other.commArea;
+        this.cardScreenState = new CardScreenState(other.cardScreenState);
+        this.navigationContext = other.navigationContext;
         this.nextProgram = other.nextProgram;
         this.nextMapset = other.nextMapset;
         this.nextMap = other.nextMap;
@@ -1963,25 +1975,25 @@ public final class CardUpdateResponse {
     // =================================================================================================
 
     /**
-     * The {@value ProgCommarea#COMMAREA_LENGTH}-byte {@code WS-THIS-PROGCOMMAREA} the client must send
+     * The {@value CommArea#RECORD_LENGTH}-byte {@code WS-THIS-PROGCOMMAREA} the client must send
      * back on its next call ({@code app/cbl/COCRDUPC.cbl:274-321}).
      *
      * @return the commarea; never {@code null}
      */
-    public ProgCommarea getProgCommarea() {
-        return progCommarea;
+    public CommArea getCommArea() {
+        return commArea;
     }
 
     /**
      * Replaces the echoed program commarea.
      *
-     * @param progCommarea the commarea to echo
-     * @throws NullPointerException if {@code progCommarea} is {@code null}; COBOL has no absent
-     *                              commarea, and {@link ProgCommarea#initialised()} is the empty state
+     * @param commArea the commarea to echo
+     * @throws NullPointerException if {@code commArea} is {@code null}; COBOL has no absent
+     *                              commarea, and {@link CommArea#initialised()} is the empty state
      */
-    public void setProgCommarea(ProgCommarea progCommarea) {
-        this.progCommarea = Objects.requireNonNull(progCommarea, "A program commarea is required; "
-                + "ProgCommarea.initialised() is the INITIALIZE WS-THIS-PROGCOMMAREA state");
+    public void setCommArea(CommArea commArea) {
+        this.commArea = Objects.requireNonNull(commArea, "A program commarea is required; "
+                + "CommArea.initialised() is the INITIALIZE WS-THIS-PROGCOMMAREA state");
     }
 
     /**
@@ -1990,18 +2002,18 @@ public final class CardUpdateResponse {
      *
      * @return the work area; never {@code null}
      */
-    public CardScreenState getScreenState() {
-        return screenState;
+    public CardScreenState getCardScreenState() {
+        return cardScreenState;
     }
 
     /**
      * Replaces the echoed work area.
      *
-     * @param screenState the work area to echo
-     * @throws NullPointerException if {@code screenState} is {@code null}
+     * @param cardScreenState the work area to echo
+     * @throws NullPointerException if {@code cardScreenState} is {@code null}
      */
-    public void setScreenState(CardScreenState screenState) {
-        this.screenState = Objects.requireNonNull(screenState,
+    public void setCardScreenState(CardScreenState cardScreenState) {
+        this.cardScreenState = Objects.requireNonNull(cardScreenState,
                 "A CVCRD01Y work area is required; new CardScreenState() is the INITIALIZE state");
     }
 
@@ -2012,19 +2024,19 @@ public final class CardUpdateResponse {
      *
      * @return the commarea; never {@code null}
      */
-    public NavigationContext getNavigation() {
-        return navigation;
+    public NavigationContext getNavigationContext() {
+        return navigationContext;
     }
 
     /**
      * Replaces the echoed application commarea.
      *
-     * @param navigation the commarea to echo
-     * @throws NullPointerException if {@code navigation} is {@code null};
+     * @param navigationContext the commarea to echo
+     * @throws NullPointerException if {@code navigationContext} is {@code null};
      *                              {@link NavigationContext#empty()} is the empty state
      */
-    public void setNavigation(NavigationContext navigation) {
-        this.navigation = Objects.requireNonNull(navigation,
+    public void setNavigationContext(NavigationContext navigationContext) {
+        this.navigationContext = Objects.requireNonNull(navigationContext,
                 "A COCOM01Y commarea is required; NavigationContext.empty() is the empty state");
     }
 
@@ -2388,9 +2400,9 @@ public final class CardUpdateResponse {
         }
         return payload.equals(response.payload)
                 && attributes.equals(response.attributes)
-                && progCommarea.equals(response.progCommarea)
-                && screenState.equals(response.screenState)
-                && navigation.equals(response.navigation)
+                && commArea.equals(response.commArea)
+                && cardScreenState.equals(response.cardScreenState)
+                && navigationContext.equals(response.navigationContext)
                 && nextProgram.equals(response.nextProgram)
                 && nextMapset.equals(response.nextMapset)
                 && nextMap.equals(response.nextMap);
@@ -2398,8 +2410,8 @@ public final class CardUpdateResponse {
 
     @Override
     public int hashCode() {
-        return Objects.hash(payload, attributes, progCommarea, screenState, navigation, nextProgram,
-                nextMapset, nextMap);
+        return Objects.hash(payload, attributes, commArea, cardScreenState, navigationContext,
+                nextProgram, nextMapset, nextMap);
     }
 
     /**
@@ -2418,1511 +2430,36 @@ public final class CardUpdateResponse {
     public String toString() {
         return "CardUpdateResponse[" + MAPSET_NAME + "/" + OUTPUT_GROUP_NAME + " " + GROUP_LENGTH
                 + "B, txn=" + TRANSACTION_ID + ", changeAction="
-                + progCommarea.describeChangeAction() + ", next=" + nextProgram.strip() + "/"
+                + commArea.changeAction().describe() + ", next=" + nextProgram.strip() + "/"
                 + nextMapset.strip() + "/" + nextMap.strip() + "]";
     }
 
     // =================================================================================================
     // 01 WS-THIS-PROGCOMMAREA - app/cbl/COCRDUPC.cbl:274-321, 329 bytes, echoed on the response.
+    //
+    // There are deliberately NO nested record types declared below this point. The area, its two
+    // 89-byte detail groups and the embedded 150-byte card record are all declared ONCE, on
+    // CardUpdateRequest, and referenced here through the four imports at the top of this file:
+    // CommArea, CardDetails, DetailGroup and CardUpdateRecord.
+    //
+    // 01 WS-THIS-PROGCOMMAREA [app/cbl/COCRDUPC.cbl:274-321] is ONE area of 329 bytes: a one-byte
+    // CCUP-CHANGE-ACTION, then CCUP-OLD-DETAILS and CCUP-NEW-DETAILS at 89 bytes each, then the
+    // 150-byte CARD-UPDATE-RECORD. COMMON-RETURN [COCRDUPC.cbl:549-558] appends it to WS-COMMAREA
+    // behind the 160-byte CARDDEMO-COMMAREA and hands the pair back on EXEC CICS RETURN, and :396-400
+    // slices the same bytes out of DFHCOMMAREA on the next invocation - so the area this response
+    // carries IS the area the next request arrives with. One area in the COBOL therefore has to be one
+    // type in Java.
+    //
+    // This class previously declared a second implementation of all four, under different names:
+    // ProgCommarea against the request's CommArea, CcupDetails against CardDetails, DetailsPrefix
+    // against DetailGroup, and its own CardUpdateRecord against the request's. Same 329 bytes and the
+    // same four-part structure at the same offsets 0, 1, 90 and 179 - but two JSON shapes, two sets of
+    // member names and two sets of constants, so the pair could not round-trip: a client echoing the
+    // response's area back into a request had to rewrite it member by member, and every such
+    // rewriting is a place for the two to diverge silently. Nothing was lost by keeping the request's
+    // set: its ChangeAction record carries the whole CCUP-CHANGE-ACTION 88-level family that
+    // ProgCommarea only delegated to as a bare PIC X(1), and its DetailGroup carries the FieldSpan
+    // layout that DetailsPrefix described by name only. Nor was any COBOL-observable behaviour lost -
+    // toFixedWidth/fromFixedWidth below still write and read the same 329 bytes at the same offsets.
     // =================================================================================================
-
-    /**
-     * The program's own conversational commarea, {@code 01 WS-THIS-PROGCOMMAREA}
-     * ({@code app/cbl/COCRDUPC.cbl:274-321}): the change action, the card details as read, the card
-     * details as typed, and the record staged for the file.
-     *
-     * <p>Immutable, and echoed on the response so the client can return it unchanged on its next call.
-     * That is the whole of rule <strong>R6</strong> for this transaction: CICS kept this storage
-     * across pseudo-conversational turns, and the Java form keeps it in the payload instead of on the
-     * server.
-     *
-     * <h2>The change action and its nine condition names</h2>
-     *
-     * <p>{@code CCUP-CHANGE-ACTION PIC X(1) VALUE LOW-VALUES} ({@code :276-277}) carries the entire
-     * state of the conversation in one byte, and {@code :278-290} declare nine {@code 88}-levels over
-     * it. Two of them - {@code CCUP-CHANGES-MADE} and {@code CCUP-CHANGES-FAILED} - are multi-valued
-     * and <strong>deliberately overlap</strong> the single-valued ones:
-     *
-     * <pre>
-     *   byte          88-level                             kind          source line
-     *   ------------  -----------------------------------  ------------  -----------
-     *   LOW-VALUES    CCUP-DETAILS-NOT-FETCHED             two values     L278-L280
-     *   SPACES        CCUP-DETAILS-NOT-FETCHED             two values     L278-L280
-     *   'S'           CCUP-SHOW-DETAILS                    one value      L281
-     *   'E'           CCUP-CHANGES-MADE + CHANGES-NOT-OK   overlapping    L282-L285
-     *   'N'           CCUP-CHANGES-MADE + OK-NOT-CONFIRMED overlapping    L282-L286
-     *   'C'           CCUP-CHANGES-MADE + OKAYED-AND-DONE  overlapping    L282-L287
-     *   'L'           CHANGES-MADE + FAILED + LOCK-ERROR   overlapping    L282-L289
-     *   'F'           CHANGES-MADE + FAILED + BUT-FAILED   overlapping    L282-L290
-     * </pre>
-     *
-     * <p>The overlap is preserved exactly, because {@code 2000-DECIDE-ACTION}
-     * ({@code app/cbl/COCRDUPC.cbl:948-1030}) is an ordered {@code EVALUATE TRUE} whose arms test
-     * these names in a specific sequence, and {@code 3200-SETUP-SCREEN-VARS} ({@code :1113}) and
-     * {@code 1000-PROCESS-INPUTS} ({@code :518}) test the grouping names rather than the individual
-     * ones. Collapsing the nine into a flat enumeration of six bytes would lose the grouping and
-     * break that dispatch (gate <strong>G30</strong>).
-     *
-     * <p>{@code LOW-VALUES} and {@code SPACES} are two <em>different</em> byte states that one
-     * {@code 88}-level happens to cover jointly, and neither is Java {@code null}. The distinction is
-     * visible: {@code SET CCUP-DETAILS-NOT-FETCHED TO TRUE} ({@code :394}, {@code :510}, {@code :527})
-     * stores the <em>first</em> value of the {@code VALUES} list, which is {@code LOW-VALUES}, so
-     * {@link #detailsNotFetched()} stores {@code LOW-VALUES} while
-     * {@link #withChangeAction(String)} can still carry a space.
-     *
-     * <p>Only seven of the nine are ever {@code SET} in the source. {@code CCUP-CHANGES-MADE} and
-     * {@code CCUP-CHANGES-FAILED} are tested but never set, so this type offers no factory for them:
-     * a factory would manufacture a state transition the program cannot make. They remain fully
-     * testable through {@link #isCcupChangesMade()} and {@link #isCcupChangesFailed()}.
-     *
-     * @param ccupChangeAction   {@code CCUP-CHANGE-ACTION PIC X(1)}, {@code :276}; exactly one
-     *                           character, which may be {@code U+0000} for {@code LOW-VALUES}
-     * @param ccupOldDetails     {@code CCUP-OLD-DETAILS}, {@code :291-301}; the details as read from
-     *                           the file, 89 bytes
-     * @param ccupNewDetails     {@code CCUP-NEW-DETAILS}, {@code :303-313}; the details as typed by
-     *                           the user, 89 bytes
-     * @param cardUpdateRecord   {@code CARD-UPDATE-RECORD}, {@code :314-321}; the record staged for
-     *                           {@code REWRITE}, 150 bytes
-     */
-    public record ProgCommarea(String ccupChangeAction,
-                               CcupDetails ccupOldDetails,
-                               CcupDetails ccupNewDetails,
-                               CardUpdateRecord cardUpdateRecord) {
-
-        /** {@code CCUP-CHANGE-ACTION PIC X(1)} - one byte, {@code app/cbl/COCRDUPC.cbl:276}. */
-        public static final int CHANGE_ACTION_LENGTH = 1;
-
-        /** Absolute offset of {@code CARD-UPDATE-SCREEN-DATA}, {@code app/cbl/COCRDUPC.cbl:275}. */
-        public static final int CHANGE_ACTION_OFFSET = 0;
-
-        /** Absolute offset of {@code CCUP-OLD-DETAILS}, {@code app/cbl/COCRDUPC.cbl:291}. */
-        public static final int OLD_DETAILS_OFFSET = CHANGE_ACTION_OFFSET + CHANGE_ACTION_LENGTH;
-
-        /** Absolute offset of {@code CCUP-NEW-DETAILS}, {@code app/cbl/COCRDUPC.cbl:303}. */
-        public static final int NEW_DETAILS_OFFSET = OLD_DETAILS_OFFSET + CcupDetails.DETAILS_LENGTH;
-
-        /** Absolute offset of {@code CARD-UPDATE-RECORD}, {@code app/cbl/COCRDUPC.cbl:314}. */
-        public static final int CARD_UPDATE_RECORD_OFFSET =
-                NEW_DETAILS_OFFSET + CcupDetails.DETAILS_LENGTH;
-
-        /**
-         * The declared total width: <strong>329</strong> bytes = 1 + 89 + 89 + 150.
-         *
-         * <p>Proved mechanically by {@link #LAYOUT}, not asserted in prose.
-         */
-        public static final int COMMAREA_LENGTH =
-                CARD_UPDATE_RECORD_OFFSET + CardUpdateRecord.RECORD_LENGTH;
-
-        /** The copybook name of {@link #ccupChangeAction()}, carried verbatim. */
-        public static final String CHANGE_ACTION_FIELD = "CCUP-CHANGE-ACTION";
-
-        /** {@code CCUP-SHOW-DETAILS VALUE 'S'}, {@code app/cbl/COCRDUPC.cbl:281}. */
-        public static final String SHOW_DETAILS = "S";
-
-        /** {@code CCUP-CHANGES-NOT-OK VALUE 'E'}, {@code app/cbl/COCRDUPC.cbl:285}. */
-        public static final String CHANGES_NOT_OK = "E";
-
-        /** {@code CCUP-CHANGES-OK-NOT-CONFIRMED VALUE 'N'}, {@code app/cbl/COCRDUPC.cbl:286}. */
-        public static final String CHANGES_OK_NOT_CONFIRMED = "N";
-
-        /** {@code CCUP-CHANGES-OKAYED-AND-DONE VALUE 'C'}, {@code app/cbl/COCRDUPC.cbl:287}. */
-        public static final String CHANGES_OKAYED_AND_DONE = "C";
-
-        /** {@code CCUP-CHANGES-OKAYED-LOCK-ERROR VALUE 'L'}, {@code app/cbl/COCRDUPC.cbl:289}. */
-        public static final String CHANGES_OKAYED_LOCK_ERROR = "L";
-
-        /** {@code CCUP-CHANGES-OKAYED-BUT-FAILED VALUE 'F'}, {@code app/cbl/COCRDUPC.cbl:290}. */
-        public static final String CHANGES_OKAYED_BUT_FAILED = "F";
-
-        /** The {@code LOW-VALUES} state of the change action - the field's declared {@code VALUE}. */
-        public static final String DETAILS_NOT_FETCHED_LOW_VALUES = "\u0000";
-
-        /** The {@code SPACES} state of the change action - the second value of the same 88-level. */
-        public static final String DETAILS_NOT_FETCHED_SPACES = " ";
-
-        /**
-         * The five bytes {@code CCUP-CHANGES-MADE} covers, in the order
-         * {@code app/cbl/COCRDUPC.cbl:282-284} lists them: {@code 'E'}, {@code 'N'}, {@code 'C'},
-         * {@code 'L'}, {@code 'F'}.
-         */
-        public static final List<String> CHANGES_MADE_VALUES = List.of(CHANGES_NOT_OK,
-                CHANGES_OK_NOT_CONFIRMED, CHANGES_OKAYED_AND_DONE, CHANGES_OKAYED_LOCK_ERROR,
-                CHANGES_OKAYED_BUT_FAILED);
-
-        /**
-         * The two bytes {@code CCUP-CHANGES-FAILED} covers, {@code app/cbl/COCRDUPC.cbl:288}:
-         * {@code 'L'} and {@code 'F'}.
-         */
-        public static final List<String> CHANGES_FAILED_VALUES =
-                List.of(CHANGES_OKAYED_LOCK_ERROR, CHANGES_OKAYED_BUT_FAILED);
-
-        /**
-         * The complete {@value #COMMAREA_LENGTH}-byte geometry: the change action, the two 89-byte
-         * details groups with their own field names, and the 150-byte staged record including its
-         * trailing {@code FILLER}.
-         *
-         * <p>{@link RecordLayout} refuses to exist unless these spans are contiguous from offset 0 and
-         * sum to exactly {@value #COMMAREA_LENGTH}, so the 1 + 89 + 89 + 150 arithmetic is checked at
-         * class-initialisation time.
-         *
-         * <p>The intermediate group levels {@code CARD-UPDATE-SCREEN-DATA} ({@code :275}),
-         * {@code CCUP-OLD-CARDDATA} / {@code CCUP-NEW-CARDDATA} ({@code :295}, {@code :307}) and
-         * {@code CCUP-OLD-EXPIRAION-DATE} / {@code CCUP-NEW-EXPIRAION-DATE} ({@code :297},
-         * {@code :309}) are groups rather than elementary items, so they occupy no span of their own in
-         * a flattened layout. They are still addressable as values - see {@link CcupDetails#carddata()}
-         * and {@link CcupDetails#expiraionDate()} - because the program compares one of them as a
-         * group.
-         */
-        public static final RecordLayout LAYOUT = declareCommareaLayout();
-
-        /**
-         * Normalises the change action to exactly one character and rejects a missing group.
-         *
-         * @throws NullPointerException     if any component is {@code null}
-         * @throws IllegalArgumentException if {@code ccupChangeAction} is longer than one character
-         */
-        public ProgCommarea {
-            Objects.requireNonNull(ccupChangeAction, "A change action is required for "
-                    + CHANGE_ACTION_FIELD + "; its declared VALUE is LOW-VALUES, which is "
-                    + "ProgCommarea.DETAILS_NOT_FETCHED_LOW_VALUES and not null");
-            if (ccupChangeAction.length() > CHANGE_ACTION_LENGTH) {
-                throw new IllegalArgumentException(CHANGE_ACTION_FIELD + " is PIC X("
-                        + CHANGE_ACTION_LENGTH + ") but " + ccupChangeAction.length()
-                        + " character(s) were supplied; the field carries a single state byte");
-            }
-            ccupChangeAction = PICTURE_RULES.movePicX(ccupChangeAction, CHANGE_ACTION_LENGTH);
-            Objects.requireNonNull(ccupOldDetails, "CCUP-OLD-DETAILS is required; "
-                    + "CcupDetails.initialised() is the INITIALIZE state");
-            Objects.requireNonNull(ccupNewDetails, "CCUP-NEW-DETAILS is required; "
-                    + "CcupDetails.initialised() is the INITIALIZE state");
-            Objects.requireNonNull(cardUpdateRecord, "CARD-UPDATE-RECORD is required; "
-                    + "CardUpdateRecord.initialised() is the INITIALIZE state");
-        }
-
-        /**
-         * The state {@code INITIALIZE WS-THIS-PROGCOMMAREA} leaves behind
-         * ({@code app/cbl/COCRDUPC.cbl:506}, {@code :519}): the change action at its declared
-         * {@code LOW-VALUES}, both details groups space-filled and the staged record space-filled.
-         *
-         * <p>The change action is {@code LOW-VALUES} rather than a space because that is its declared
-         * {@code VALUE} ({@code :277}) and because the program follows every
-         * {@code INITIALIZE WS-THIS-PROGCOMMAREA} with an explicit
-         * {@code SET CCUP-DETAILS-NOT-FETCHED TO TRUE} ({@code :510}, {@code :527}), which stores the
-         * same byte.
-         *
-         * @return the initialised commarea; never {@code null}
-         */
-        public static ProgCommarea initialised() {
-            return new ProgCommarea(DETAILS_NOT_FETCHED_LOW_VALUES, CcupDetails.initialised(),
-                    CcupDetails.initialised(), CardUpdateRecord.initialised());
-        }
-
-        /**
-         * Replaces the change action with an arbitrary byte.
-         *
-         * <p>Accepts any single character, including one that satisfies none of the nine
-         * {@code 88}-levels. That state is reachable and is not an error here: it is what drives
-         * {@code 2000-DECIDE-ACTION}'s {@code WHEN OTHER} arm to abend with
-         * {@code 'UNEXPECTED DATA SCENARIO'} ({@code app/cbl/COCRDUPC.cbl:1019-1027}), and a parity
-         * case has to be able to construct it.
-         *
-         * @param changeAction the state byte; one character, or empty for spaces
-         * @return a copy carrying that state
-         * @throws NullPointerException     if {@code changeAction} is {@code null}
-         * @throws IllegalArgumentException if {@code changeAction} is longer than one character
-         */
-        public ProgCommarea withChangeAction(String changeAction) {
-            return new ProgCommarea(changeAction, ccupOldDetails, ccupNewDetails, cardUpdateRecord);
-        }
-
-        /**
-         * Reproduces {@code SET CCUP-DETAILS-NOT-FETCHED TO TRUE} ({@code app/cbl/COCRDUPC.cbl:394},
-         * {@code :510}, {@code :527}), storing {@code LOW-VALUES} - the first of the two values the
-         * {@code 88}-level lists, which is the value a COBOL {@code SET} on a multi-valued condition
-         * name stores.
-         *
-         * @return a copy in the not-fetched state
-         */
-        public ProgCommarea detailsNotFetched() {
-            return withChangeAction(DETAILS_NOT_FETCHED_LOW_VALUES);
-        }
-
-        /**
-         * Reproduces {@code SET CCUP-SHOW-DETAILS TO TRUE} ({@code app/cbl/COCRDUPC.cbl:494},
-         * {@code :964}, {@code :998}, {@code :1012}).
-         *
-         * <p>{@code :998} is the third of {@code CardUpdateService}'s outcomes: the record was changed
-         * by someone else between the read and the rewrite, so the details are shown again rather than
-         * reported as a failure.
-         *
-         * @return a copy in the show-details state
-         */
-        public ProgCommarea showDetails() {
-            return withChangeAction(SHOW_DETAILS);
-        }
-
-        /**
-         * Reproduces {@code SET CCUP-CHANGES-NOT-OK TO TRUE} ({@code app/cbl/COCRDUPC.cbl:696}) - the
-         * edits found a problem in what the user typed.
-         *
-         * @return a copy in the changes-not-ok state
-         */
-        public ProgCommarea changesNotOk() {
-            return withChangeAction(CHANGES_NOT_OK);
-        }
-
-        /**
-         * Reproduces {@code SET CCUP-CHANGES-OK-NOT-CONFIRMED TO TRUE}
-         * ({@code app/cbl/COCRDUPC.cbl:713}, {@code :976}) - the edits passed and the user is being
-         * asked to confirm with F5.
-         *
-         * @return a copy in the awaiting-confirmation state
-         */
-        public ProgCommarea changesOkNotConfirmed() {
-            return withChangeAction(CHANGES_OK_NOT_CONFIRMED);
-        }
-
-        /**
-         * Reproduces {@code SET CCUP-CHANGES-OKAYED-AND-DONE TO TRUE}
-         * ({@code app/cbl/COCRDUPC.cbl:1000}) - the rewrite succeeded.
-         *
-         * @return a copy in the committed state
-         */
-        public ProgCommarea changesOkayedAndDone() {
-            return withChangeAction(CHANGES_OKAYED_AND_DONE);
-        }
-
-        /**
-         * Reproduces {@code SET CCUP-CHANGES-OKAYED-LOCK-ERROR TO TRUE}
-         * ({@code app/cbl/COCRDUPC.cbl:994}) - the first of {@code CardUpdateService}'s failure
-         * outcomes, {@code COULD-NOT-LOCK-FOR-UPDATE}.
-         *
-         * @return a copy in the could-not-lock state
-         */
-        public ProgCommarea changesOkayedLockError() {
-            return withChangeAction(CHANGES_OKAYED_LOCK_ERROR);
-        }
-
-        /**
-         * Reproduces {@code SET CCUP-CHANGES-OKAYED-BUT-FAILED TO TRUE}
-         * ({@code app/cbl/COCRDUPC.cbl:996}) - the second failure outcome,
-         * {@code LOCKED-BUT-UPDATE-FAILED}.
-         *
-         * @return a copy in the locked-but-failed state
-         */
-        public ProgCommarea changesOkayedButFailed() {
-            return withChangeAction(CHANGES_OKAYED_BUT_FAILED);
-        }
-
-        /**
-         * Replaces {@code CCUP-OLD-DETAILS} - the details as read from the file, which
-         * {@code 9300-CHECK-CHANGE-IN-REC} compares against the record on disk before rewriting.
-         *
-         * @param details the details as read
-         * @return a copy carrying them
-         * @throws NullPointerException if {@code details} is {@code null}
-         */
-        public ProgCommarea withOldDetails(CcupDetails details) {
-            return new ProgCommarea(ccupChangeAction, details, ccupNewDetails, cardUpdateRecord);
-        }
-
-        /**
-         * Replaces {@code CCUP-NEW-DETAILS} - the details as typed by the user.
-         *
-         * @param details the details as typed
-         * @return a copy carrying them
-         * @throws NullPointerException if {@code details} is {@code null}
-         */
-        public ProgCommarea withNewDetails(CcupDetails details) {
-            return new ProgCommarea(ccupChangeAction, ccupOldDetails, details, cardUpdateRecord);
-        }
-
-        /**
-         * Replaces {@code CARD-UPDATE-RECORD} - the 150-byte image staged for the file.
-         *
-         * @param record the staged record
-         * @return a copy carrying it
-         * @throws NullPointerException if {@code record} is {@code null}
-         */
-        public ProgCommarea withCardUpdateRecord(CardUpdateRecord record) {
-            return new ProgCommarea(ccupChangeAction, ccupOldDetails, ccupNewDetails, record);
-        }
-
-        /**
-         * {@code 88 CCUP-DETAILS-NOT-FETCHED VALUES LOW-VALUES, SPACES}
-         * ({@code app/cbl/COCRDUPC.cbl:278-280}).
-         *
-         * <p>True for both byte states, which are genuinely two states and not one: a space is
-         * {@code 0x40} under EBCDIC and {@code 0x20} under ASCII, while {@code LOW-VALUES} is
-         * {@code 0x00} under both.
-         *
-         * @return {@code true} when the change action is {@code LOW-VALUES} or a space
-         */
-        public boolean isCcupDetailsNotFetched() {
-            return DETAILS_NOT_FETCHED_LOW_VALUES.equals(ccupChangeAction)
-                    || DETAILS_NOT_FETCHED_SPACES.equals(ccupChangeAction);
-        }
-
-        /**
-         * {@code 88 CCUP-SHOW-DETAILS VALUE 'S'} ({@code app/cbl/COCRDUPC.cbl:281}).
-         *
-         * @return {@code true} when the change action is {@code 'S'}
-         */
-        public boolean isCcupShowDetails() {
-            return SHOW_DETAILS.equals(ccupChangeAction);
-        }
-
-        /**
-         * {@code 88 CCUP-CHANGES-MADE VALUES 'E', 'N', 'C', 'L', 'F'}
-         * ({@code app/cbl/COCRDUPC.cbl:282-284}) - a grouping level that overlaps five single-valued
-         * ones. Tested at {@code :1113} and never {@code SET}.
-         *
-         * @return {@code true} when the change action is any of the five
-         */
-        public boolean isCcupChangesMade() {
-            return CHANGES_MADE_VALUES.contains(ccupChangeAction);
-        }
-
-        /**
-         * {@code 88 CCUP-CHANGES-NOT-OK VALUE 'E'} ({@code app/cbl/COCRDUPC.cbl:285}).
-         *
-         * @return {@code true} when the change action is {@code 'E'}
-         */
-        public boolean isCcupChangesNotOk() {
-            return CHANGES_NOT_OK.equals(ccupChangeAction);
-        }
-
-        /**
-         * {@code 88 CCUP-CHANGES-OK-NOT-CONFIRMED VALUE 'N'} ({@code app/cbl/COCRDUPC.cbl:286}).
-         *
-         * @return {@code true} when the change action is {@code 'N'}
-         */
-        public boolean isCcupChangesOkNotConfirmed() {
-            return CHANGES_OK_NOT_CONFIRMED.equals(ccupChangeAction);
-        }
-
-        /**
-         * {@code 88 CCUP-CHANGES-OKAYED-AND-DONE VALUE 'C'} ({@code app/cbl/COCRDUPC.cbl:287}).
-         *
-         * @return {@code true} when the change action is {@code 'C'}
-         */
-        public boolean isCcupChangesOkayedAndDone() {
-            return CHANGES_OKAYED_AND_DONE.equals(ccupChangeAction);
-        }
-
-        /**
-         * {@code 88 CCUP-CHANGES-FAILED VALUES 'L', 'F'} ({@code app/cbl/COCRDUPC.cbl:288}) - the
-         * second grouping level, true for the two failure bytes and for nothing else. Tested at
-         * {@code :518} and never {@code SET}.
-         *
-         * @return {@code true} when the change action is {@code 'L'} or {@code 'F'}
-         */
-        public boolean isCcupChangesFailed() {
-            return CHANGES_FAILED_VALUES.contains(ccupChangeAction);
-        }
-
-        /**
-         * {@code 88 CCUP-CHANGES-OKAYED-LOCK-ERROR VALUE 'L'} ({@code app/cbl/COCRDUPC.cbl:289}).
-         *
-         * @return {@code true} when the change action is {@code 'L'}
-         */
-        public boolean isCcupChangesOkayedLockError() {
-            return CHANGES_OKAYED_LOCK_ERROR.equals(ccupChangeAction);
-        }
-
-        /**
-         * {@code 88 CCUP-CHANGES-OKAYED-BUT-FAILED VALUE 'F'} ({@code app/cbl/COCRDUPC.cbl:290}).
-         *
-         * @return {@code true} when the change action is {@code 'F'}
-         */
-        public boolean isCcupChangesOkayedButFailed() {
-            return CHANGES_OKAYED_BUT_FAILED.equals(ccupChangeAction);
-        }
-
-        /**
-         * Names the change action for a log line or an assertion message, without deciding anything.
-         *
-         * @return the condition name that holds, for example {@code "CCUP-CHANGES-OKAYED-AND-DONE"},
-         *         or {@code "UNRECOGNISED"} plus the byte in hex for a state no {@code 88}-level
-         *         covers - the state that reaches {@code 2000-DECIDE-ACTION}'s {@code WHEN OTHER}
-         */
-        public String describeChangeAction() {
-            if (isCcupDetailsNotFetched()) {
-                return "CCUP-DETAILS-NOT-FETCHED";
-            }
-            if (isCcupShowDetails()) {
-                return "CCUP-SHOW-DETAILS";
-            }
-            if (isCcupChangesNotOk()) {
-                return "CCUP-CHANGES-NOT-OK";
-            }
-            if (isCcupChangesOkNotConfirmed()) {
-                return "CCUP-CHANGES-OK-NOT-CONFIRMED";
-            }
-            if (isCcupChangesOkayedAndDone()) {
-                return "CCUP-CHANGES-OKAYED-AND-DONE";
-            }
-            if (isCcupChangesOkayedLockError()) {
-                return "CCUP-CHANGES-OKAYED-LOCK-ERROR";
-            }
-            if (isCcupChangesOkayedButFailed()) {
-                return "CCUP-CHANGES-OKAYED-BUT-FAILED";
-            }
-            return "UNRECOGNISED(" + BmsAttributes.toHex((byte) ccupChangeAction.charAt(0)) + ")";
-        }
-
-        /**
-         * Renders the commarea as its {@value #COMMAREA_LENGTH}-byte image.
-         *
-         * @param charset the code page, named explicitly by the caller
-         * @return a new array of exactly {@value #COMMAREA_LENGTH} bytes
-         * @throws NullPointerException if {@code charset} is {@code null}
-         */
-        public byte[] encode(Charset charset) {
-            Objects.requireNonNull(charset, "A charset is required to encode WS-THIS-PROGCOMMAREA");
-            FixedWidthRecord record = FixedWidthRecord.forLayout(LAYOUT, charset);
-            record.writeSpan(changeActionSpan(), ccupChangeAction);
-            ccupOldDetails.writeInto(record, DetailsPrefix.OLD, OLD_DETAILS_OFFSET);
-            ccupNewDetails.writeInto(record, DetailsPrefix.NEW, NEW_DETAILS_OFFSET);
-            cardUpdateRecord.writeInto(record, CARD_UPDATE_RECORD_OFFSET);
-            return record.toByteArray();
-        }
-
-        /**
-         * Decodes a {@value #COMMAREA_LENGTH}-byte image.
-         *
-         * @param image   the stored bytes; exactly {@value #COMMAREA_LENGTH} of them
-         * @param charset the code page, named explicitly
-         * @return the decoded commarea
-         * @throws NullPointerException     if {@code image} or {@code charset} is {@code null}
-         * @throws IllegalArgumentException if {@code image} is not exactly
-         *                                  {@value #COMMAREA_LENGTH} bytes
-         */
-        public static ProgCommarea decode(byte[] image, Charset charset) {
-            Objects.requireNonNull(image, "An image is required to decode WS-THIS-PROGCOMMAREA");
-            Objects.requireNonNull(charset, "A charset is required to decode WS-THIS-PROGCOMMAREA");
-            FixedWidthRecord record = FixedWidthRecord.copyOf(image, COMMAREA_LENGTH, charset);
-            return new ProgCommarea(record.readSpan(changeActionSpan()),
-                    CcupDetails.readFrom(record, DetailsPrefix.OLD, OLD_DETAILS_OFFSET),
-                    CcupDetails.readFrom(record, DetailsPrefix.NEW, NEW_DETAILS_OFFSET),
-                    CardUpdateRecord.readFrom(record, CARD_UPDATE_RECORD_OFFSET));
-        }
-
-        /**
-         * Every elementary item of the commarea keyed by its copybook name, for the parity differ.
-         *
-         * <p>The two details groups contribute their own prefixed names, so
-         * {@code CCUP-OLD-ACCTID} and {@code CCUP-NEW-ACCTID} are distinct keys and a difference is
-         * always attributed to the right group.
-         *
-         * @return an unmodifiable insertion-ordered map of 1 + 8 + 8 + 6 = 23 entries
-         */
-        public Map<String, String> fieldImages() {
-            Map<String, String> images = new LinkedHashMap<>(48);
-            images.put(CHANGE_ACTION_FIELD, ccupChangeAction);
-            images.putAll(ccupOldDetails.fieldImages(DetailsPrefix.OLD));
-            images.putAll(ccupNewDetails.fieldImages(DetailsPrefix.NEW));
-            images.putAll(cardUpdateRecord.fieldImages());
-            return Collections.unmodifiableMap(images);
-        }
-
-        /** @return the one-byte {@code CCUP-CHANGE-ACTION} span */
-        private static FieldSpan changeActionSpan() {
-            return FieldSpan.alphanumeric(CHANGE_ACTION_FIELD, CHANGE_ACTION_OFFSET,
-                    CHANGE_ACTION_LENGTH);
-        }
-
-        /**
-         * Assembles the {@value #COMMAREA_LENGTH}-byte layout from the change action and the three
-         * groups.
-         *
-         * @return the validated layout
-         */
-        private static RecordLayout declareCommareaLayout() {
-            List<FieldSpan> spans = new ArrayList<>(23);
-            spans.add(changeActionSpan());
-            spans.addAll(CcupDetails.spansAt(DetailsPrefix.OLD, OLD_DETAILS_OFFSET));
-            spans.addAll(CcupDetails.spansAt(DetailsPrefix.NEW, NEW_DETAILS_OFFSET));
-            spans.addAll(CardUpdateRecord.spansAt(CARD_UPDATE_RECORD_OFFSET));
-            return new RecordLayout(COMMAREA_LENGTH, spans);
-        }
-    }
-
-    // =================================================================================================
-    // CCUP-OLD-DETAILS and CCUP-NEW-DETAILS - identical 89-byte shapes under two different name
-    // prefixes, app/cbl/COCRDUPC.cbl:291-301 and :303-313.
-    // =================================================================================================
-
-    /**
-     * Which of the two 89-byte details groups a set of names belongs to.
-     *
-     * <p>The two groups are declared separately in the source with identical shapes and different
-     * name prefixes. The prefix is modelled here, alongside the values, rather than <em>inside</em>
-     * {@link CcupDetails} - and that is a deliberate choice with a specific consequence: because the
-     * prefix is not a component of the record, {@code oldDetails.equals(newDetails)} is a genuine
-     * field-for-field comparison of the two groups' contents. That comparison is exactly what
-     * {@code COCRDUPC} performs to decide whether anything changed
-     * ({@code app/cbl/COCRDUPC.cbl:680-681}), so making the prefix part of the value would have
-     * quietly made every such comparison false.
-     */
-    public enum DetailsPrefix {
-
-        /** {@code CCUP-OLD-DETAILS} - the details as read from the card file. */
-        OLD("CCUP-OLD-", "CCUP-OLD-DETAILS"),
-
-        /** {@code CCUP-NEW-DETAILS} - the details as typed by the user. */
-        NEW("CCUP-NEW-", "CCUP-NEW-DETAILS");
-
-        /** The item-name prefix, hyphen included. */
-        private final String prefix;
-
-        /** The {@code 05}-level group name. */
-        private final String groupName;
-
-        DetailsPrefix(String prefix, String groupName) {
-            this.prefix = prefix;
-            this.groupName = groupName;
-        }
-
-        /**
-         * The item-name prefix this group qualifies every field name with.
-         *
-         * @return the prefix, hyphen included, for example {@code "CCUP-OLD-"}
-         */
-        public String prefix() {
-            return prefix;
-        }
-
-        /**
-         * The {@code 05}-level group name as the source declares it.
-         *
-         * @return the group name, for example {@code "CCUP-OLD-DETAILS"}
-         */
-        public String groupName() {
-            return groupName;
-        }
-
-        /**
-         * Qualifies an item suffix with this group's prefix.
-         *
-         * @param suffix the item suffix as the copybook spells it, for example {@code "CVV-CD"}
-         * @return the full item name, for example {@code "CCUP-OLD-CVV-CD"}
-         */
-        public String item(String suffix) {
-            return prefix + suffix;
-        }
-
-        /**
-         * The {@code 10}-level group name of the 59-byte span the program compares as a whole at
-         * {@code app/cbl/COCRDUPC.cbl:680-681}.
-         *
-         * @return {@code CCUP-OLD-CARDDATA} or {@code CCUP-NEW-CARDDATA}
-         *         ({@code app/cbl/COCRDUPC.cbl:295}, {@code :307})
-         */
-        public String carddataName() {
-            return item(CcupDetails.CARDDATA_SUFFIX);
-        }
-
-        /**
-         * The {@code 20}-level group name of the eight-byte expiry span, misspelled in the source and
-         * carried verbatim.
-         *
-         * @return {@code CCUP-OLD-EXPIRAION-DATE} or {@code CCUP-NEW-EXPIRAION-DATE}
-         *         ({@code app/cbl/COCRDUPC.cbl:297}, {@code :309})
-         */
-        public String expiraionDateName() {
-            return item(CcupDetails.EXPIRAION_DATE_SUFFIX);
-        }
-    }
-
-    /**
-     * One 89-byte card-details group: {@code CCUP-OLD-DETAILS}
-     * ({@code app/cbl/COCRDUPC.cbl:291-301}) or {@code CCUP-NEW-DETAILS} ({@code :303-313}). The two
-     * are declared separately with identical shapes, so one immutable type serves both and
-     * {@link DetailsPrefix} supplies the names.
-     *
-     * <pre>
-     *   offset  bytes  PICTURE  item (OLD group)              source line
-     *   ------  -----  -------  ----------------------------  -----------
-     *        0     11  X(11)    CCUP-OLD-ACCTID                  L292
-     *       11     16  X(16)    CCUP-OLD-CARDID                  L293
-     *       27      3  X(3)     CCUP-OLD-CVV-CD                  L294
-     *       30     50  X(50)    CCUP-OLD-CRDNAME                 L296
-     *       80      4  X(4)     CCUP-OLD-EXPYEAR                 L298
-     *       84      2  X(2)     CCUP-OLD-EXPMON                  L299
-     *       86      2  X(2)     CCUP-OLD-EXPDAY                  L300
-     *       88      1  X(1)     CCUP-OLD-CRDSTCD                 L301
-     *   ------  -----
-     *       89     89  = 11 + 16 + 3 + 50 + 4 + 2 + 2 + 1
-     * </pre>
-     *
-     * <h2>Two group levels that carry no bytes of their own</h2>
-     *
-     * <p>{@code CCUP-OLD-CARDDATA} ({@code :295}) spans the last four items - 50 + 8 + 1 =
-     * {@value #CARDDATA_LENGTH} bytes - and {@code CCUP-OLD-EXPIRAION-DATE} ({@code :297}) spans three
-     * of those - {@value #EXPIRAION_DATE_LENGTH} bytes. Being groups they contribute no span to a
-     * flattened layout, but they are addressable as values and one of them is load-bearing:
-     * {@code app/cbl/COCRDUPC.cbl:680-681} compares
-     * {@code FUNCTION UPPER-CASE(CCUP-NEW-CARDDATA)} against
-     * {@code FUNCTION UPPER-CASE(CCUP-OLD-CARDDATA)} as whole groups to decide whether the user
-     * changed anything, and {@code :653} moves {@code LOW-VALUES} into
-     * {@code CCUP-NEW-CARDDATA} as a whole group. {@link #carddata()} is that value.
-     *
-     * <h2>Deliberate inconsistencies, all preserved</h2>
-     *
-     * <ul>
-     *   <li>{@code EXPIRAION} is misspelled at {@code :297} and {@code :309}, mirroring
-     *       {@code app/cpy/CVACT02Y.cpy:9}. Carried verbatim (<strong>I1</strong>).</li>
-     *   <li>The expiry date here is year + month + day with <strong>no separators</strong>, 8 bytes,
-     *       whereas {@link CardUpdateRecord#cardUpdateExpiraionDate()} is a 10-byte
-     *       {@code YYYY-MM-DD}. Two shapes in one commarea, and they are not unified.</li>
-     *   <li>{@code CCUP-OLD-CVV-CD} and {@code CCUP-NEW-CVV-CD} are {@code PIC X(3)} - alphanumeric -
-     *       whereas {@code CARD-UPDATE-CVV-CD} is {@code PIC 9(03)} - numeric. So the CVV is a
-     *       {@link String} here and an {@code int} there, exactly as declared. Neither is masked, in
-     *       keeping with practice <strong>B6</strong>.</li>
-     * </ul>
-     *
-     * @param acctid  {@code ...-ACCTID PIC X(11)}, L292 / L304
-     * @param cardid  {@code ...-CARDID PIC X(16)}, L293 / L305
-     * @param cvvCd   {@code ...-CVV-CD PIC X(3)}, L294 / L306 - alphanumeric, not numeric
-     * @param crdname {@code ...-CRDNAME PIC X(50)}, L296 / L308
-     * @param expyear {@code ...-EXPYEAR PIC X(4)}, L298 / L310
-     * @param expmon  {@code ...-EXPMON PIC X(2)}, L299 / L311
-     * @param expday  {@code ...-EXPDAY PIC X(2)}, L300 / L312
-     * @param crdstcd {@code ...-CRDSTCD PIC X(1)}, L301 / L313
-     */
-    public record CcupDetails(String acctid,
-                              String cardid,
-                              String cvvCd,
-                              String crdname,
-                              String expyear,
-                              String expmon,
-                              String expday,
-                              String crdstcd) {
-
-        /** Item suffix {@code ACCTID}. */
-        public static final String ACCTID_SUFFIX = "ACCTID";
-
-        /** Item suffix {@code CARDID}. */
-        public static final String CARDID_SUFFIX = "CARDID";
-
-        /** Item suffix {@code CVV-CD}, hyphen included exactly as the source spells it. */
-        public static final String CVV_CD_SUFFIX = "CVV-CD";
-
-        /** Item suffix {@code CRDNAME}. */
-        public static final String CRDNAME_SUFFIX = "CRDNAME";
-
-        /** Item suffix {@code EXPYEAR}. */
-        public static final String EXPYEAR_SUFFIX = "EXPYEAR";
-
-        /** Item suffix {@code EXPMON}. */
-        public static final String EXPMON_SUFFIX = "EXPMON";
-
-        /** Item suffix {@code EXPDAY}. */
-        public static final String EXPDAY_SUFFIX = "EXPDAY";
-
-        /** Item suffix {@code CRDSTCD}. */
-        public static final String CRDSTCD_SUFFIX = "CRDSTCD";
-
-        /** Group suffix {@code CARDDATA} ({@code app/cbl/COCRDUPC.cbl:295}, {@code :307}). */
-        public static final String CARDDATA_SUFFIX = "CARDDATA";
-
-        /**
-         * Group suffix {@code EXPIRAION-DATE} ({@code app/cbl/COCRDUPC.cbl:297}, {@code :309}) -
-         * misspelled in the source and carried verbatim.
-         */
-        public static final String EXPIRAION_DATE_SUFFIX = "EXPIRAION-DATE";
-
-        /** {@code ...-ACCTID PIC X(11)} - 11 bytes. */
-        public static final int ACCTID_LENGTH = 11;
-
-        /** {@code ...-CARDID PIC X(16)} - 16 bytes. */
-        public static final int CARDID_LENGTH = 16;
-
-        /** {@code ...-CVV-CD PIC X(3)} - 3 bytes, alphanumeric. */
-        public static final int CVV_CD_LENGTH = 3;
-
-        /** {@code ...-CRDNAME PIC X(50)} - 50 bytes. */
-        public static final int CRDNAME_LENGTH = 50;
-
-        /** {@code ...-EXPYEAR PIC X(4)} - 4 bytes. */
-        public static final int EXPYEAR_LENGTH = 4;
-
-        /** {@code ...-EXPMON PIC X(2)} - 2 bytes. */
-        public static final int EXPMON_LENGTH = 2;
-
-        /** {@code ...-EXPDAY PIC X(2)} - 2 bytes. */
-        public static final int EXPDAY_LENGTH = 2;
-
-        /** {@code ...-CRDSTCD PIC X(1)} - 1 byte. */
-        public static final int CRDSTCD_LENGTH = 1;
-
-        /** Relative offset of {@code ...-ACCTID} within the group. */
-        public static final int ACCTID_OFFSET = 0;
-
-        /** Relative offset of {@code ...-CARDID}. */
-        public static final int CARDID_OFFSET = ACCTID_OFFSET + ACCTID_LENGTH;
-
-        /** Relative offset of {@code ...-CVV-CD}. */
-        public static final int CVV_CD_OFFSET = CARDID_OFFSET + CARDID_LENGTH;
-
-        /** Relative offset of the {@code ...-CARDDATA} group, and of {@code ...-CRDNAME} within it. */
-        public static final int CARDDATA_OFFSET = CVV_CD_OFFSET + CVV_CD_LENGTH;
-
-        /** Relative offset of {@code ...-CRDNAME}. */
-        public static final int CRDNAME_OFFSET = CARDDATA_OFFSET;
-
-        /** Relative offset of the {@code ...-EXPIRAION-DATE} group, and of {@code ...-EXPYEAR}. */
-        public static final int EXPIRAION_DATE_OFFSET = CRDNAME_OFFSET + CRDNAME_LENGTH;
-
-        /** Relative offset of {@code ...-EXPYEAR}. */
-        public static final int EXPYEAR_OFFSET = EXPIRAION_DATE_OFFSET;
-
-        /** Relative offset of {@code ...-EXPMON}. */
-        public static final int EXPMON_OFFSET = EXPYEAR_OFFSET + EXPYEAR_LENGTH;
-
-        /** Relative offset of {@code ...-EXPDAY}. */
-        public static final int EXPDAY_OFFSET = EXPMON_OFFSET + EXPMON_LENGTH;
-
-        /** Relative offset of {@code ...-CRDSTCD}. */
-        public static final int CRDSTCD_OFFSET = EXPDAY_OFFSET + EXPDAY_LENGTH;
-
-        /**
-         * The {@code ...-EXPIRAION-DATE} group width: <strong>8</strong> bytes = 4 + 2 + 2, year then
-         * month then day, with no separators.
-         */
-        public static final int EXPIRAION_DATE_LENGTH = EXPYEAR_LENGTH + EXPMON_LENGTH
-                + EXPDAY_LENGTH;
-
-        /**
-         * The {@code ...-CARDDATA} group width: <strong>59</strong> bytes = 50 + 8 + 1. This is the
-         * span {@code app/cbl/COCRDUPC.cbl:680-681} compares as a whole.
-         */
-        public static final int CARDDATA_LENGTH = CRDNAME_LENGTH + EXPIRAION_DATE_LENGTH
-                + CRDSTCD_LENGTH;
-
-        /**
-         * The declared group width: <strong>89</strong> bytes = 11 + 16 + 3 + 59.
-         */
-        public static final int DETAILS_LENGTH = ACCTID_LENGTH + CARDID_LENGTH + CVV_CD_LENGTH
-                + CARDDATA_LENGTH;
-
-        /**
-         * Pads every item on the right to its declared width, rejecting an over-wide one.
-         *
-         * <p>Padding is the lossless half of a COBOL alphanumeric {@code MOVE} and is applied here so
-         * an instance can never hold a short item. Truncation is <strong>not</strong> applied, because
-         * these values are commarea contents rather than screen items: the program moves them between
-         * equal-width fields, so an over-wide value is a caller defect and not a {@code MOVE} that
-         * needs a direction. A caller that genuinely wants the screen's truncating move performs it
-         * with {@link FixedWidthCodec#movePicX(String, int)} first.
-         *
-         * @throws NullPointerException     if any component is {@code null}
-         * @throws IllegalArgumentException if any component is wider than its declared width
-         */
-        public CcupDetails {
-            acctid = padded(acctid, ACCTID_LENGTH, ACCTID_SUFFIX);
-            cardid = padded(cardid, CARDID_LENGTH, CARDID_SUFFIX);
-            cvvCd = padded(cvvCd, CVV_CD_LENGTH, CVV_CD_SUFFIX);
-            crdname = padded(crdname, CRDNAME_LENGTH, CRDNAME_SUFFIX);
-            expyear = padded(expyear, EXPYEAR_LENGTH, EXPYEAR_SUFFIX);
-            expmon = padded(expmon, EXPMON_LENGTH, EXPMON_SUFFIX);
-            expday = padded(expday, EXPDAY_LENGTH, EXPDAY_SUFFIX);
-            crdstcd = padded(crdstcd, CRDSTCD_LENGTH, CRDSTCD_SUFFIX);
-        }
-
-        /**
-         * The state {@code INITIALIZE CCUP-OLD-DETAILS} ({@code app/cbl/COCRDUPC.cbl:1345}) and
-         * {@code INITIALIZE CCUP-NEW-DETAILS} ({@code :586}) leave behind: every item space-filled to
-         * its declared width, since a COBOL {@code INITIALIZE} without {@code REPLACING} sets every
-         * alphanumeric item to spaces and every item of this group is {@code PIC X}.
-         *
-         * @return the initialised group; never {@code null}
-         */
-        public static CcupDetails initialised() {
-            return new CcupDetails(spaces(ACCTID_LENGTH), spaces(CARDID_LENGTH),
-                    spaces(CVV_CD_LENGTH), spaces(CRDNAME_LENGTH), spaces(EXPYEAR_LENGTH),
-                    spaces(EXPMON_LENGTH), spaces(EXPDAY_LENGTH), spaces(CRDSTCD_LENGTH));
-        }
-
-        /**
-         * The {@code ...-CARDDATA} group value: the embossed name, the eight-character expiry date and
-         * the status byte concatenated, {@value #CARDDATA_LENGTH} characters.
-         *
-         * <p>This is the value {@code app/cbl/COCRDUPC.cbl:680-681} compares between the two groups,
-         * upper-cased on both sides, to decide whether the user changed anything. It is offered as a
-         * value only; the comparison itself belongs to {@code CardUpdateService}, which owns the
-         * {@code 9300-CHECK-CHANGE-IN-REC} logic.
-         *
-         * @return exactly {@value #CARDDATA_LENGTH} characters
-         */
-        public String carddata() {
-            return crdname + expiraionDate() + crdstcd;
-        }
-
-        /**
-         * The {@code ...-EXPIRAION-DATE} group value: year, month, day concatenated with no
-         * separators, {@value #EXPIRAION_DATE_LENGTH} characters.
-         *
-         * <p>Not to be confused with {@link CardUpdateRecord#cardUpdateExpiraionDate()}, which is ten
-         * characters and carries the {@code YYYY-MM-DD} separators. The commarea holds both shapes and
-         * they are deliberately different.
-         *
-         * @return exactly {@value #EXPIRAION_DATE_LENGTH} characters
-         */
-        public String expiraionDate() {
-            return expyear + expmon + expday;
-        }
-
-        /**
-         * Replaces the account identifier.
-         *
-         * @param replacement the new value, no wider than {@value #ACCTID_LENGTH}
-         * @return a copy carrying it
-         */
-        public CcupDetails withAcctid(String replacement) {
-            return new CcupDetails(replacement, cardid, cvvCd, crdname, expyear, expmon, expday,
-                    crdstcd);
-        }
-
-        /**
-         * Replaces the card identifier.
-         *
-         * @param replacement the new value, no wider than {@value #CARDID_LENGTH}
-         * @return a copy carrying it
-         */
-        public CcupDetails withCardid(String replacement) {
-            return new CcupDetails(acctid, replacement, cvvCd, crdname, expyear, expmon, expday,
-                    crdstcd);
-        }
-
-        /**
-         * Replaces the CVV.
-         *
-         * @param replacement the new value, no wider than {@value #CVV_CD_LENGTH}
-         * @return a copy carrying it
-         */
-        public CcupDetails withCvvCd(String replacement) {
-            return new CcupDetails(acctid, cardid, replacement, crdname, expyear, expmon, expday,
-                    crdstcd);
-        }
-
-        /**
-         * Replaces the embossed name.
-         *
-         * @param replacement the new value, no wider than {@value #CRDNAME_LENGTH}
-         * @return a copy carrying it
-         */
-        public CcupDetails withCrdname(String replacement) {
-            return new CcupDetails(acctid, cardid, cvvCd, replacement, expyear, expmon, expday,
-                    crdstcd);
-        }
-
-        /**
-         * Replaces the expiry year.
-         *
-         * @param replacement the new value, no wider than {@value #EXPYEAR_LENGTH}
-         * @return a copy carrying it
-         */
-        public CcupDetails withExpyear(String replacement) {
-            return new CcupDetails(acctid, cardid, cvvCd, crdname, replacement, expmon, expday,
-                    crdstcd);
-        }
-
-        /**
-         * Replaces the expiry month.
-         *
-         * @param replacement the new value, no wider than {@value #EXPMON_LENGTH}
-         * @return a copy carrying it
-         */
-        public CcupDetails withExpmon(String replacement) {
-            return new CcupDetails(acctid, cardid, cvvCd, crdname, expyear, replacement, expday,
-                    crdstcd);
-        }
-
-        /**
-         * Replaces the expiry day.
-         *
-         * @param replacement the new value, no wider than {@value #EXPDAY_LENGTH}
-         * @return a copy carrying it
-         */
-        public CcupDetails withExpday(String replacement) {
-            return new CcupDetails(acctid, cardid, cvvCd, crdname, expyear, expmon, replacement,
-                    crdstcd);
-        }
-
-        /**
-         * Replaces the active status.
-         *
-         * @param replacement the new value, no wider than {@value #CRDSTCD_LENGTH}
-         * @return a copy carrying it
-         */
-        public CcupDetails withCrdstcd(String replacement) {
-            return new CcupDetails(acctid, cardid, cvvCd, crdname, expyear, expmon, expday,
-                    replacement);
-        }
-
-        /**
-         * The eight elementary items keyed by their fully qualified copybook names under the given
-         * prefix, for the parity differ.
-         *
-         * @param prefix which group these names belong to
-         * @return an unmodifiable insertion-ordered map of eight entries, for example keyed
-         *         {@code CCUP-OLD-ACCTID} through {@code CCUP-OLD-CRDSTCD}
-         * @throws NullPointerException if {@code prefix} is {@code null}
-         */
-        public Map<String, String> fieldImages(DetailsPrefix prefix) {
-            Objects.requireNonNull(prefix, "A DetailsPrefix is required: the two groups differ only "
-                    + "in their item names, so a nameless image could not be attributed to either");
-            Map<String, String> images = new LinkedHashMap<>(16);
-            images.put(prefix.item(ACCTID_SUFFIX), acctid);
-            images.put(prefix.item(CARDID_SUFFIX), cardid);
-            images.put(prefix.item(CVV_CD_SUFFIX), cvvCd);
-            images.put(prefix.item(CRDNAME_SUFFIX), crdname);
-            images.put(prefix.item(EXPYEAR_SUFFIX), expyear);
-            images.put(prefix.item(EXPMON_SUFFIX), expmon);
-            images.put(prefix.item(EXPDAY_SUFFIX), expday);
-            images.put(prefix.item(CRDSTCD_SUFFIX), crdstcd);
-            return Collections.unmodifiableMap(images);
-        }
-
-        /**
-         * The eight spans of this group at an absolute base offset, named for the given prefix.
-         *
-         * @param prefix     which group's names to use
-         * @param baseOffset the absolute offset of the group
-         * @return the eight spans in declaration order
-         * @throws NullPointerException if {@code prefix} is {@code null}
-         */
-        public static List<FieldSpan> spansAt(DetailsPrefix prefix, int baseOffset) {
-            Objects.requireNonNull(prefix, "A DetailsPrefix is required to name the spans");
-            return List.of(
-                    FieldSpan.alphanumeric(prefix.item(ACCTID_SUFFIX), baseOffset + ACCTID_OFFSET,
-                            ACCTID_LENGTH),
-                    FieldSpan.alphanumeric(prefix.item(CARDID_SUFFIX), baseOffset + CARDID_OFFSET,
-                            CARDID_LENGTH),
-                    FieldSpan.alphanumeric(prefix.item(CVV_CD_SUFFIX), baseOffset + CVV_CD_OFFSET,
-                            CVV_CD_LENGTH),
-                    FieldSpan.alphanumeric(prefix.item(CRDNAME_SUFFIX), baseOffset + CRDNAME_OFFSET,
-                            CRDNAME_LENGTH),
-                    FieldSpan.alphanumeric(prefix.item(EXPYEAR_SUFFIX), baseOffset + EXPYEAR_OFFSET,
-                            EXPYEAR_LENGTH),
-                    FieldSpan.alphanumeric(prefix.item(EXPMON_SUFFIX), baseOffset + EXPMON_OFFSET,
-                            EXPMON_LENGTH),
-                    FieldSpan.alphanumeric(prefix.item(EXPDAY_SUFFIX), baseOffset + EXPDAY_OFFSET,
-                            EXPDAY_LENGTH),
-                    FieldSpan.alphanumeric(prefix.item(CRDSTCD_SUFFIX), baseOffset + CRDSTCD_OFFSET,
-                            CRDSTCD_LENGTH));
-        }
-
-        /**
-         * Writes this group into a record area at an absolute base offset.
-         *
-         * @param record     the area to write into
-         * @param prefix     which group's names to use
-         * @param baseOffset the absolute offset of the group
-         * @throws NullPointerException if any argument is {@code null}
-         */
-        public void writeInto(FixedWidthRecord record, DetailsPrefix prefix, int baseOffset) {
-            Objects.requireNonNull(record, "A record area is required to write a details group");
-            List<FieldSpan> spans = spansAt(prefix, baseOffset);
-            List<String> values = List.of(acctid, cardid, cvvCd, crdname, expyear, expmon, expday,
-                    crdstcd);
-            for (int index = 0; index < spans.size(); index++) {
-                record.writeSpan(spans.get(index), values.get(index));
-            }
-        }
-
-        /**
-         * Reads a group from a record area at an absolute base offset.
-         *
-         * @param record     the area to read
-         * @param prefix     which group's names to use
-         * @param baseOffset the absolute offset of the group
-         * @return the decoded group
-         * @throws NullPointerException if {@code record} or {@code prefix} is {@code null}
-         */
-        public static CcupDetails readFrom(FixedWidthRecord record, DetailsPrefix prefix,
-                int baseOffset) {
-            Objects.requireNonNull(record, "A record area is required to read a details group");
-            List<FieldSpan> spans = spansAt(prefix, baseOffset);
-            return new CcupDetails(record.readSpan(spans.get(0)), record.readSpan(spans.get(1)),
-                    record.readSpan(spans.get(2)), record.readSpan(spans.get(3)),
-                    record.readSpan(spans.get(4)), record.readSpan(spans.get(5)),
-                    record.readSpan(spans.get(6)), record.readSpan(spans.get(7)));
-        }
-
-        /**
-         * Right-pads a {@code PIC X} value to its declared width, rejecting an over-wide one.
-         *
-         * @param value  the value
-         * @param width  the declared width
-         * @param suffix the item suffix, for the diagnostic
-         * @return the value at exactly {@code width} characters
-         */
-        private static String padded(String value, int width, String suffix) {
-            Objects.requireNonNull(value, "A value is required for ...-" + suffix + "; COBOL has no "
-                    + "null, so pass an empty string for SPACES");
-            if (value.length() > width) {
-                throw new IllegalArgumentException("...-" + suffix + " is PIC X(" + width + ") but "
-                        + value.length() + " character(s) were supplied. This constructor never "
-                        + "truncates, because the direction differs by PICTURE; apply "
-                        + "FixedWidthCodec.movePicX(value, " + width + ") first if COBOL MOVE "
-                        + "semantics are what is wanted");
-            }
-            return PICTURE_RULES.movePicX(value, width);
-        }
-
-        /** @return a string of {@code length} spaces */
-        private static String spaces(int length) {
-            return CardScreenState.spaces(length);
-        }
-    }
-
-    // =================================================================================================
-    // CARD-UPDATE-RECORD - app/cbl/COCRDUPC.cbl:314-321, 150 bytes, modelled INLINE and deliberately
-    // NOT reusing card/model/CardRecord.
-    // =================================================================================================
-
-    /**
-     * The 150-byte card image the program stages for the file, {@code CARD-UPDATE-RECORD}
-     * ({@code app/cbl/COCRDUPC.cbl:314-321}). Written by
-     * {@code EXEC CICS REWRITE ... FROM(CARD-UPDATE-RECORD) LENGTH(LENGTH OF CARD-UPDATE-RECORD)}
-     * ({@code :1479-1480}) and initialised at {@code :1461}.
-     *
-     * <pre>
-     *   offset  bytes  PICTURE  item                            source line
-     *   ------  -----  -------  ------------------------------  -----------
-     *        0     16  X(16)    CARD-UPDATE-NUM                    L315
-     *       16     11  9(11)    CARD-UPDATE-ACCT-ID                L316
-     *       27      3  9(03)    CARD-UPDATE-CVV-CD                 L317
-     *       30     50  X(50)    CARD-UPDATE-EMBOSSED-NAME          L318
-     *       80     10  X(10)    CARD-UPDATE-EXPIRAION-DATE         L319
-     *       90      1  X(01)    CARD-UPDATE-ACTIVE-STATUS          L320
-     *       91     59  X(59)    FILLER                             L321
-     *   ------  -----
-     *      150    150  = 16 + 11 + 3 + 50 + 10 + 1 + 59
-     * </pre>
-     *
-     * <h2>Why this is modelled here and not taken from {@code card/model/CardRecord}</h2>
-     *
-     * <p>The geometry is byte-identical to {@code CARD-RECORD} in {@code app/cpy/CVACT02Y.cpy} -
-     * 16/11/3/50/10/1/59, the same 150 - but every field <em>name</em> differs:
-     * {@code CARD-UPDATE-NUM} against {@code CARD-NUM}, {@code CARD-UPDATE-ACCT-ID} against
-     * {@code CARD-ACCT-ID}, and so on. Under AAP &sect;0.1.4 <strong>I1</strong> a field name is part
-     * of the contract that field-for-field diffing compares, so reusing {@code CardRecord} would
-     * report every difference under the wrong name. The AAP sets this precedent itself by keeping
-     * {@code app/cpy/CUSTREC.cpy} separate from {@code app/cpy/CVCUS01Y.cpy} over a single differing
-     * field name; two structures with seven differing names are a stronger case, not a weaker one.
-     *
-     * <h2>{@code FILLER X(59)} is emitted, as spaces</h2>
-     *
-     * <p>{@code FILLER} is a first-class span of {@link #LAYOUT}, written as spaces by
-     * {@link #encode(Charset)} - gate <strong>G21</strong>. Dropping it would make the image 91 bytes
-     * and the {@code REWRITE} would fail its length check, which is exactly why the immediate
-     * verification is that the image is 150 bytes wide.
-     *
-     * <h2>Two numeric items, and no floating point anywhere</h2>
-     *
-     * <p>{@code CARD-UPDATE-ACCT-ID PIC 9(11)} and {@code CARD-UPDATE-CVV-CD PIC 9(03)} are
-     * scale-free unsigned pictures, so rule <strong>R4</strong> maps them to {@code long} and
-     * {@code int}. There is no {@code PIC 9...V...} field in this record, hence no
-     * {@code BigDecimal}, no scale and no rounding - and no {@code double} or {@code float}, ever
-     * (gates <strong>G22</strong> and <strong>G24</strong>). Their digits are read and written by
-     * {@link FixedWidthCodec}'s {@code PIC 9} helpers, which zero-fill and truncate on the
-     * <em>left</em>, and never by {@code Integer.parseInt} or {@code Long.parseLong} over a
-     * fixed-width span (practice <strong>B11</strong>).
-     *
-     * @param cardUpdateNum            {@code CARD-UPDATE-NUM PIC X(16)}, L315 - alphanumeric, so
-     *                                 leading zeros survive
-     * @param cardUpdateAcctId         {@code CARD-UPDATE-ACCT-ID PIC 9(11)}, L316
-     * @param cardUpdateCvvCd          {@code CARD-UPDATE-CVV-CD PIC 9(03)}, L317 - numeric here,
-     *                                 whereas {@code CCUP-OLD-CVV-CD} and {@code CCUP-NEW-CVV-CD} are
-     *                                 {@code PIC X(3)}; the difference is declared and is preserved
-     * @param cardUpdateEmbossedName   {@code CARD-UPDATE-EMBOSSED-NAME PIC X(50)}, L318
-     * @param cardUpdateExpiraionDate  {@code CARD-UPDATE-EXPIRAION-DATE PIC X(10)}, L319 - misspelled
-     *                                 in the source, carried verbatim, and ten characters
-     *                                 ({@code YYYY-MM-DD}) rather than the eight of
-     *                                 {@link CcupDetails#expiraionDate()}
-     * @param cardUpdateActiveStatus   {@code CARD-UPDATE-ACTIVE-STATUS PIC X(01)}, L320
-     */
-    public record CardUpdateRecord(String cardUpdateNum,
-                                   long cardUpdateAcctId,
-                                   int cardUpdateCvvCd,
-                                   String cardUpdateEmbossedName,
-                                   String cardUpdateExpiraionDate,
-                                   String cardUpdateActiveStatus) {
-
-        /** Copybook name of {@link #cardUpdateNum()}, carried verbatim. */
-        public static final String NUM_FIELD = "CARD-UPDATE-NUM";
-
-        /** Copybook name of {@link #cardUpdateAcctId()}. */
-        public static final String ACCT_ID_FIELD = "CARD-UPDATE-ACCT-ID";
-
-        /** Copybook name of {@link #cardUpdateCvvCd()}. */
-        public static final String CVV_CD_FIELD = "CARD-UPDATE-CVV-CD";
-
-        /** Copybook name of {@link #cardUpdateEmbossedName()}. */
-        public static final String EMBOSSED_NAME_FIELD = "CARD-UPDATE-EMBOSSED-NAME";
-
-        /**
-         * Copybook name of {@link #cardUpdateExpiraionDate()} - <strong>misspelled in the source</strong>
-         * at {@code app/cbl/COCRDUPC.cbl:319}, mirroring {@code app/cpy/CVACT02Y.cpy:9}, and carried
-         * exactly as declared.
-         */
-        public static final String EXPIRAION_DATE_FIELD = "CARD-UPDATE-EXPIRAION-DATE";
-
-        /** Copybook name of {@link #cardUpdateActiveStatus()}. */
-        public static final String ACTIVE_STATUS_FIELD = "CARD-UPDATE-ACTIVE-STATUS";
-
-        /** {@code CARD-UPDATE-NUM PIC X(16)} - 16 bytes. */
-        public static final int NUM_LENGTH = 16;
-
-        /** {@code CARD-UPDATE-ACCT-ID PIC 9(11)} - 11 digits, one byte each. */
-        public static final int ACCT_ID_LENGTH = 11;
-
-        /** {@code CARD-UPDATE-CVV-CD PIC 9(03)} - 3 digits. */
-        public static final int CVV_CD_LENGTH = 3;
-
-        /** {@code CARD-UPDATE-EMBOSSED-NAME PIC X(50)} - 50 bytes. */
-        public static final int EMBOSSED_NAME_LENGTH = 50;
-
-        /** {@code CARD-UPDATE-EXPIRAION-DATE PIC X(10)} - 10 bytes, {@code YYYY-MM-DD}. */
-        public static final int EXPIRAION_DATE_LENGTH = 10;
-
-        /** {@code CARD-UPDATE-ACTIVE-STATUS PIC X(01)} - 1 byte. */
-        public static final int ACTIVE_STATUS_LENGTH = 1;
-
-        /** {@code FILLER PIC X(59)} - 59 bytes, present and space-filled (gate G21). */
-        public static final int FILLER_LENGTH = 59;
-
-        /** Relative offset of {@code CARD-UPDATE-NUM}. */
-        public static final int NUM_OFFSET = 0;
-
-        /** Relative offset of {@code CARD-UPDATE-ACCT-ID}. */
-        public static final int ACCT_ID_OFFSET = NUM_OFFSET + NUM_LENGTH;
-
-        /** Relative offset of {@code CARD-UPDATE-CVV-CD}. */
-        public static final int CVV_CD_OFFSET = ACCT_ID_OFFSET + ACCT_ID_LENGTH;
-
-        /** Relative offset of {@code CARD-UPDATE-EMBOSSED-NAME}. */
-        public static final int EMBOSSED_NAME_OFFSET = CVV_CD_OFFSET + CVV_CD_LENGTH;
-
-        /** Relative offset of {@code CARD-UPDATE-EXPIRAION-DATE}. */
-        public static final int EXPIRAION_DATE_OFFSET = EMBOSSED_NAME_OFFSET + EMBOSSED_NAME_LENGTH;
-
-        /** Relative offset of {@code CARD-UPDATE-ACTIVE-STATUS}. */
-        public static final int ACTIVE_STATUS_OFFSET = EXPIRAION_DATE_OFFSET + EXPIRAION_DATE_LENGTH;
-
-        /** Relative offset of the trailing {@code FILLER}. */
-        public static final int FILLER_OFFSET = ACTIVE_STATUS_OFFSET + ACTIVE_STATUS_LENGTH;
-
-        /**
-         * The declared total width: <strong>150</strong> bytes = 16 + 11 + 3 + 50 + 10 + 1 + 59.
-         *
-         * <p>The same 150 that {@code app/cpy/CVACT02Y.cpy:2} states for {@code CARD-RECORD}, which is
-         * the point: identical geometry, different names.
-         */
-        public static final int RECORD_LENGTH = FILLER_OFFSET + FILLER_LENGTH;
-
-        /** One past the largest value {@code PIC 9(11)} can hold. */
-        public static final long ACCT_ID_EXCLUSIVE_LIMIT = 100_000_000_000L;
-
-        /** One past the largest value {@code PIC 9(03)} can hold. */
-        public static final int CVV_CD_EXCLUSIVE_LIMIT = 1_000;
-
-        /**
-         * The complete {@value #RECORD_LENGTH}-byte geometry, {@code FILLER} included.
-         *
-         * <p>{@link RecordLayout} verifies that the seven spans are contiguous from offset 0 and sum to
-         * exactly {@value #RECORD_LENGTH}, so omitting the {@code FILLER} would fail here rather than
-         * producing a 91-byte image.
-         */
-        public static final RecordLayout LAYOUT = new RecordLayout(RECORD_LENGTH, spansAt(0));
-
-        /**
-         * Pads each character item to its declared width and checks each numeric item fits its digit
-         * count, so an instance can never exist in a shape the record cannot hold.
-         *
-         * @throws NullPointerException     if any character component is {@code null}
-         * @throws IllegalArgumentException if a character component is wider than its declared width,
-         *                                  or a numeric component is negative or too large for its
-         *                                  digit count
-         */
-        public CardUpdateRecord {
-            cardUpdateNum = padded(cardUpdateNum, NUM_LENGTH, NUM_FIELD);
-            requireUnsigned(cardUpdateAcctId, ACCT_ID_FIELD, ACCT_ID_LENGTH,
-                    ACCT_ID_EXCLUSIVE_LIMIT);
-            requireUnsigned(cardUpdateCvvCd, CVV_CD_FIELD, CVV_CD_LENGTH, CVV_CD_EXCLUSIVE_LIMIT);
-            cardUpdateEmbossedName = padded(cardUpdateEmbossedName, EMBOSSED_NAME_LENGTH,
-                    EMBOSSED_NAME_FIELD);
-            cardUpdateExpiraionDate = padded(cardUpdateExpiraionDate, EXPIRAION_DATE_LENGTH,
-                    EXPIRAION_DATE_FIELD);
-            cardUpdateActiveStatus = padded(cardUpdateActiveStatus, ACTIVE_STATUS_LENGTH,
-                    ACTIVE_STATUS_FIELD);
-        }
-
-        /**
-         * The state {@code INITIALIZE CARD-UPDATE-RECORD} ({@code app/cbl/COCRDUPC.cbl:1461}) leaves
-         * behind: the four {@code PIC X} items space-filled and the two {@code PIC 9} items zero, which
-         * is what a COBOL {@code INITIALIZE} without {@code REPLACING} does to each category.
-         *
-         * @return the initialised record; never {@code null}
-         */
-        public static CardUpdateRecord initialised() {
-            return new CardUpdateRecord(CardScreenState.spaces(NUM_LENGTH), 0L, 0,
-                    CardScreenState.spaces(EMBOSSED_NAME_LENGTH),
-                    CardScreenState.spaces(EXPIRAION_DATE_LENGTH),
-                    CardScreenState.spaces(ACTIVE_STATUS_LENGTH));
-        }
-
-        /**
-         * Renders the record as its {@value #RECORD_LENGTH}-byte image, with the trailing
-         * {@code FILLER} present and space-filled.
-         *
-         * @param charset the code page, named explicitly by the caller
-         * @return a new array of exactly {@value #RECORD_LENGTH} bytes
-         * @throws NullPointerException if {@code charset} is {@code null}
-         */
-        public byte[] encode(Charset charset) {
-            Objects.requireNonNull(charset, "A charset is required to encode " + NUM_FIELD
-                    + "'s record: fixed-width data is bytes in a specific code page");
-            FixedWidthRecord record = FixedWidthRecord.forLayout(LAYOUT, charset);
-            writeInto(record, 0);
-            return record.toByteArray();
-        }
-
-        /**
-         * Decodes a {@value #RECORD_LENGTH}-byte image.
-         *
-         * @param image   the stored bytes; exactly {@value #RECORD_LENGTH} of them
-         * @param charset the code page, named explicitly
-         * @return the decoded record
-         * @throws NullPointerException     if {@code image} or {@code charset} is {@code null}
-         * @throws IllegalArgumentException if {@code image} is not exactly {@value #RECORD_LENGTH}
-         *                                  bytes, or a numeric span does not hold digits
-         */
-        public static CardUpdateRecord decode(byte[] image, Charset charset) {
-            Objects.requireNonNull(image, "An image is required to decode a CARD-UPDATE-RECORD");
-            Objects.requireNonNull(charset, "A charset is required to decode a CARD-UPDATE-RECORD");
-            return readFrom(FixedWidthRecord.copyOf(image, RECORD_LENGTH, charset), 0);
-        }
-
-        /**
-         * Writes this record into a record area at an absolute base offset.
-         *
-         * <p>The {@code FILLER} span is filled with the area's space byte, which is {@code 0x40} under
-         * EBCDIC and {@code 0x20} under ASCII - the code page decides, never this method.
-         *
-         * @param record     the area to write into
-         * @param baseOffset the absolute offset of the record
-         * @throws NullPointerException if {@code record} is {@code null}
-         */
-        public void writeInto(FixedWidthRecord record, int baseOffset) {
-            Objects.requireNonNull(record, "A record area is required to write a CARD-UPDATE-RECORD");
-            List<FieldSpan> spans = spansAt(baseOffset);
-            record.writeSpan(spans.get(0), cardUpdateNum);
-            PICTURE_RULES.writePic9(record, spans.get(1), cardUpdateAcctId);
-            PICTURE_RULES.writePic9(record, spans.get(2), cardUpdateCvvCd);
-            record.writeSpan(spans.get(3), cardUpdateEmbossedName);
-            record.writeSpan(spans.get(4), cardUpdateExpiraionDate);
-            record.writeSpan(spans.get(5), cardUpdateActiveStatus);
-            record.fill(baseOffset + FILLER_OFFSET, FILLER_LENGTH, record.spacePadByte());
-        }
-
-        /**
-         * Reads a record from a record area at an absolute base offset.
-         *
-         * @param record     the area to read
-         * @param baseOffset the absolute offset of the record
-         * @return the decoded record
-         * @throws NullPointerException     if {@code record} is {@code null}
-         * @throws IllegalArgumentException if a numeric span does not hold digits
-         */
-        public static CardUpdateRecord readFrom(FixedWidthRecord record, int baseOffset) {
-            Objects.requireNonNull(record, "A record area is required to read a CARD-UPDATE-RECORD");
-            List<FieldSpan> spans = spansAt(baseOffset);
-            return new CardUpdateRecord(record.readSpan(spans.get(0)),
-                    PICTURE_RULES.readPic9(record, spans.get(1)),
-                    PICTURE_RULES.readPic9AsInt(record, spans.get(2)),
-                    record.readSpan(spans.get(3)),
-                    record.readSpan(spans.get(4)),
-                    record.readSpan(spans.get(5)));
-        }
-
-        /**
-         * The seven spans of this record at an absolute base offset, {@code FILLER} last.
-         *
-         * @param baseOffset the absolute offset of the record
-         * @return the seven spans in declaration order
-         */
-        public static List<FieldSpan> spansAt(int baseOffset) {
-            return List.of(
-                    FieldSpan.alphanumeric(NUM_FIELD, baseOffset + NUM_OFFSET, NUM_LENGTH),
-                    FieldSpan.unsignedNumeric(ACCT_ID_FIELD, baseOffset + ACCT_ID_OFFSET,
-                            ACCT_ID_LENGTH),
-                    FieldSpan.unsignedNumeric(CVV_CD_FIELD, baseOffset + CVV_CD_OFFSET,
-                            CVV_CD_LENGTH),
-                    FieldSpan.alphanumeric(EMBOSSED_NAME_FIELD, baseOffset + EMBOSSED_NAME_OFFSET,
-                            EMBOSSED_NAME_LENGTH),
-                    FieldSpan.alphanumeric(EXPIRAION_DATE_FIELD, baseOffset + EXPIRAION_DATE_OFFSET,
-                            EXPIRAION_DATE_LENGTH),
-                    FieldSpan.alphanumeric(ACTIVE_STATUS_FIELD, baseOffset + ACTIVE_STATUS_OFFSET,
-                            ACTIVE_STATUS_LENGTH),
-                    FieldSpan.filler(baseOffset + FILLER_OFFSET, FILLER_LENGTH));
-        }
-
-        /**
-         * The six elementary items keyed by their copybook names, for the parity differ. The two
-         * numeric items are rendered as their zero-filled digit images, which is how they appear in the
-         * record, rather than as decimal text.
-         *
-         * @return an unmodifiable insertion-ordered map of six entries
-         */
-        public Map<String, String> fieldImages() {
-            Map<String, String> images = new LinkedHashMap<>(12);
-            images.put(NUM_FIELD, cardUpdateNum);
-            images.put(ACCT_ID_FIELD, acctIdImage());
-            images.put(CVV_CD_FIELD, cvvCdImage());
-            images.put(EMBOSSED_NAME_FIELD, cardUpdateEmbossedName);
-            images.put(EXPIRAION_DATE_FIELD, cardUpdateExpiraionDate);
-            images.put(ACTIVE_STATUS_FIELD, cardUpdateActiveStatus);
-            return Collections.unmodifiableMap(images);
-        }
-
-        /**
-         * {@code CARD-UPDATE-ACCT-ID} as it is stored: {@value #ACCT_ID_LENGTH} digits, zero-filled on
-         * the left.
-         *
-         * @return exactly {@value #ACCT_ID_LENGTH} digits
-         */
-        public String acctIdImage() {
-            return PICTURE_RULES.movePic9(cardUpdateAcctId, ACCT_ID_LENGTH);
-        }
-
-        /**
-         * {@code CARD-UPDATE-CVV-CD} as it is stored: {@value #CVV_CD_LENGTH} digits, zero-filled on
-         * the left. Not masked, exactly as the COBOL stores it (practice <strong>B6</strong>).
-         *
-         * @return exactly {@value #CVV_CD_LENGTH} digits
-         */
-        public String cvvCdImage() {
-            return PICTURE_RULES.movePic9(cardUpdateCvvCd, CVV_CD_LENGTH);
-        }
-
-        /**
-         * Replaces the card number.
-         *
-         * @param replacement the new value, no wider than {@value #NUM_LENGTH}
-         * @return a copy carrying it
-         */
-        public CardUpdateRecord withCardUpdateNum(String replacement) {
-            return new CardUpdateRecord(replacement, cardUpdateAcctId, cardUpdateCvvCd,
-                    cardUpdateEmbossedName, cardUpdateExpiraionDate, cardUpdateActiveStatus);
-        }
-
-        /**
-         * Replaces the account identifier.
-         *
-         * @param replacement the new value, below {@value #ACCT_ID_EXCLUSIVE_LIMIT}
-         * @return a copy carrying it
-         */
-        public CardUpdateRecord withCardUpdateAcctId(long replacement) {
-            return new CardUpdateRecord(cardUpdateNum, replacement, cardUpdateCvvCd,
-                    cardUpdateEmbossedName, cardUpdateExpiraionDate, cardUpdateActiveStatus);
-        }
-
-        /**
-         * Replaces the CVV.
-         *
-         * @param replacement the new value, below {@value #CVV_CD_EXCLUSIVE_LIMIT}
-         * @return a copy carrying it
-         */
-        public CardUpdateRecord withCardUpdateCvvCd(int replacement) {
-            return new CardUpdateRecord(cardUpdateNum, cardUpdateAcctId, replacement,
-                    cardUpdateEmbossedName, cardUpdateExpiraionDate, cardUpdateActiveStatus);
-        }
-
-        /**
-         * Replaces the embossed name.
-         *
-         * @param replacement the new value, no wider than {@value #EMBOSSED_NAME_LENGTH}
-         * @return a copy carrying it
-         */
-        public CardUpdateRecord withCardUpdateEmbossedName(String replacement) {
-            return new CardUpdateRecord(cardUpdateNum, cardUpdateAcctId, cardUpdateCvvCd,
-                    replacement, cardUpdateExpiraionDate, cardUpdateActiveStatus);
-        }
-
-        /**
-         * Replaces the expiry date, the {@value #EXPIRAION_DATE_LENGTH}-character {@code YYYY-MM-DD}
-         * form.
-         *
-         * @param replacement the new value, no wider than {@value #EXPIRAION_DATE_LENGTH}
-         * @return a copy carrying it
-         */
-        public CardUpdateRecord withCardUpdateExpiraionDate(String replacement) {
-            return new CardUpdateRecord(cardUpdateNum, cardUpdateAcctId, cardUpdateCvvCd,
-                    cardUpdateEmbossedName, replacement, cardUpdateActiveStatus);
-        }
-
-        /**
-         * Replaces the active status.
-         *
-         * @param replacement the new value, no wider than {@value #ACTIVE_STATUS_LENGTH}
-         * @return a copy carrying it
-         */
-        public CardUpdateRecord withCardUpdateActiveStatus(String replacement) {
-            return new CardUpdateRecord(cardUpdateNum, cardUpdateAcctId, cardUpdateCvvCd,
-                    cardUpdateEmbossedName, cardUpdateExpiraionDate, replacement);
-        }
-
-        /**
-         * Right-pads a {@code PIC X} item to its declared width, rejecting an over-wide value.
-         *
-         * @param value     the value
-         * @param width     the declared width
-         * @param cobolName the item name, for the diagnostic
-         * @return the value at exactly {@code width} characters
-         */
-        private static String padded(String value, int width, String cobolName) {
-            Objects.requireNonNull(value, "A value is required for " + cobolName + "; COBOL has no "
-                    + "null, so pass an empty string for SPACES");
-            if (value.length() > width) {
-                throw new IllegalArgumentException(cobolName + " is PIC X(" + width + ") but "
-                        + value.length() + " character(s) were supplied. This constructor never "
-                        + "truncates, because COBOL truncates PIC X on the right and PIC 9 on the "
-                        + "left; apply FixedWidthCodec.movePicX(value, " + width + ") first if that "
-                        + "is what is intended");
-            }
-            return PICTURE_RULES.movePicX(value, width);
-        }
-
-        /**
-         * Checks that a value fits an unsigned {@code PIC 9(n)} item.
-         *
-         * @param value          the value
-         * @param cobolName      the item name
-         * @param digits         the declared digit count
-         * @param exclusiveLimit one past the largest value the item can hold
-         * @throws IllegalArgumentException if {@code value} is negative or at least
-         *                                  {@code exclusiveLimit}
-         */
-        private static void requireUnsigned(long value, String cobolName, int digits,
-                long exclusiveLimit) {
-            if (value < 0) {
-                throw new IllegalArgumentException("Cannot store " + value + " in " + cobolName
-                        + ": app/cbl/COCRDUPC.cbl declares it PIC 9(" + digits + "), an unsigned "
-                        + "picture with no sign position, so a negative value has no representation "
-                        + "in it");
-            }
-            if (value >= exclusiveLimit) {
-                throw new IllegalArgumentException("Cannot store " + value + " in " + cobolName
-                        + ": it declares only " + digits + " digit(s), so the value must be below "
-                        + exclusiveLimit + ". COBOL would keep the low-order digits, and that "
-                        + "truncation has to be requested deliberately through "
-                        + "FixedWidthCodec.movePic9");
-            }
-        }
-    }
 }

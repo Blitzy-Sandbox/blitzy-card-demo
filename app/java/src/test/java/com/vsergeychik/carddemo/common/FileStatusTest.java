@@ -1345,4 +1345,77 @@ class FileStatusTest {
             assertThat(absentResponse).isNotNull().isEmpty();
         }
     }
+
+    // =============================================================================================
+    // F11 - both status characters are narrowed to the one byte a PIC X item holds.
+    // =============================================================================================
+
+    /**
+     * That {@code toStatusImage} narrows <strong>both</strong> operands to their low-order eight bits
+     * before it classifies or renders either of them.
+     *
+     * <p>{@code IO-STAT1} and {@code IO-STAT2} are each {@code PIC X}, one byte, so a {@code char}
+     * above {@code 0xFF} carries more than COBOL storage can hold. Narrowing one operand and not the
+     * other let the two halves of the method disagree: the class condition would be evaluated on the
+     * wide value while the rendering used it verbatim, so a character whose low byte is a digit could
+     * be classified as non-numeric and emitted on the wrong arm. These tests pin the narrowing at
+     * both operand positions and on both arms of the {@code EVALUATE}.
+     */
+    @Nested
+    @DisplayName("toStatusImage narrows both PIC X operands - F11")
+    class StatusCharacterNarrowing {
+
+        @Test
+        @DisplayName("a wide first operand classifies and renders as its low-order byte")
+        void aWideFirstOperandIsNarrowed() {
+            // U+0130 has low-order byte 0x30, which is the digit '0'. Narrowed, the pair is "00" and
+            // takes the numeric arm; unnarrowed, the class condition failed and the wide char itself
+            // was emitted at position one.
+            assertThat(FileStatus.toStatusImage((char) 0x0130, '0'))
+                    .isEqualTo(FileStatus.toStatusImage('0', '0'))
+                    .isEqualTo("0000");
+        }
+
+        @Test
+        @DisplayName("a wide second operand classifies and renders as its low-order byte")
+        void aWideSecondOperandIsNarrowed() {
+            assertThat(FileStatus.toStatusImage('0', (char) 0x0130))
+                    .isEqualTo(FileStatus.toStatusImage('0', '0'))
+                    .isEqualTo("0000");
+        }
+
+        @Test
+        @DisplayName("a wide operand whose low byte is '9' still selects the '9' arm")
+        void aWideOperandWhoseLowByteIsNineSelectsTheNineArm() {
+            // U+0139 has low-order byte 0x39, the digit '9', so the IO-STAT1 = '9' half of the
+            // condition must fire and the second byte must render as three unsigned decimal digits.
+            assertThat(FileStatus.toStatusImage((char) 0x0139, (char) 0x000A))
+                    .isEqualTo(FileStatus.toStatusImage('9', (char) 0x000A))
+                    .isEqualTo("9010");
+        }
+
+        @Test
+        @DisplayName("the non-numeric arm renders the narrowed first byte, not the wide char")
+        void theNonNumericArmRendersTheNarrowedFirstByte() {
+            // U+0141 has low-order byte 0x41, 'A' - non-numeric, so the first arm is taken and the
+            // rendered first character must be 'A' rather than U+0141.
+            assertThat(FileStatus.toStatusImage((char) 0x0141, '\u0000'))
+                    .isEqualTo("A000")
+                    .doesNotContain(String.valueOf((char) 0x0141));
+        }
+
+        @Test
+        @DisplayName("the highest byte value reads as 255, never as -1")
+        void theHighestByteValueReadsAsUnsigned() {
+            assertThat(FileStatus.toStatusImage('9', (char) 0x00FF)).isEqualTo("9255");
+            assertThat(FileStatus.toStatusImage('9', (char) 0x01FF)).isEqualTo("9255");
+        }
+
+        @Test
+        @DisplayName("toDisplayLine inherits the narrowing through toStatusImage")
+        void toDisplayLineInheritsTheNarrowing() {
+            assertThat(FileStatus.toDisplayLine((char) 0x0130, '0'))
+                    .isEqualTo(FileStatus.toDisplayLine('0', '0'));
+        }
+    }
 }

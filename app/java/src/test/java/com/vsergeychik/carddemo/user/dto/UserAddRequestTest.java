@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.common.NavigationContext;
 import jakarta.validation.ConstraintViolation;
@@ -438,7 +439,9 @@ class UserAddRequestTest {
                     .contains("passwd=" + UserAddRequest.PASSWORD_MASK)
                     .contains("trnName=CU01")
                     .contains("userId=NEWUSR01")
-                    .contains("fName=JANE                ")
+                    .as("a given name has no safely-revealable part, so only its length is reported")
+                    .doesNotContain("JANE")
+                    .contains("fName=[text len=" + UserAddRequest.FNAME_LENGTH + "]")
                     .contains("aid=ENTER")
                     .startsWith("UserAddRequest[")
                     .endsWith("]");
@@ -452,9 +455,11 @@ class UserAddRequestTest {
                     .contains("passwd=" + UserAddRequest.PASSWORD_MASK)
                     .contains("navigationContext=null");
             assertThat(UserAddRequest.PASSWORD_MASK)
-                    .as("the mask hides the length as well as the value")
-                    .hasSize(UserAddRequest.PASSWD_LENGTH)
-                    .isEqualTo("********");
+                    .as("the mask hides the length as well as the value, and is now the module's one "
+                            + "marker: this file, SignOnRequest and UserUpdateRequest previously used "
+                            + "three different ones")
+                    .isEqualTo(SensitiveDiagnostics.REDACTED)
+                    .doesNotContain("*");
         }
 
         @Test

@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.config;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -31,6 +32,7 @@ import org.springframework.batch.core.step.builder.SimpleStepBuilder;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.builder.TaskletStepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.ExitCodeExceptionMapper;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -193,7 +195,12 @@ import org.springframework.util.StringUtils;
  *       {@code app/cbl/CBACT04C.cbl:L476-L477}). Parsing it as a date, reformatting it or
  *       revalidating it would corrupt every identifier the job writes, so it is a
  *       {@code String} job parameter named {@value #PARM_DATE_PARAMETER} and nothing more. See
- *       {@link #parmDateValidator()}.</li>
+ *       {@link #parmDateValidator()}. Its <em>width</em> is nonetheless checked, and exactly:
+ *       {@code app/cbl/CBACT04C.cbl:178} declares {@code PARM-DATE PIC X(10)} and the
+ *       {@code STRING ... DELIMITED BY SIZE} contributes that whole width to a fixed
+ *       {@code PIC X(16)} identifier, so a nine- or eleven-character value silently misplaces the
+ *       generated suffix in every transaction the job writes. Checking the width is not the same as
+ *       parsing the value, and only the width is checked.</li>
  *   <li><strong>No parameters at all - eight jobs.</strong> {@code app/jcl/POSTTRAN.jcl:L23} is a
  *       bare {@code //STEP15 EXEC PGM=CBTRN02C} with no {@code PARM}, and the four single-DD
  *       readers such as {@code app/jcl/READACCT.jcl:L22} are the same. Those jobs declare no
@@ -204,6 +211,22 @@ import org.springframework.util.StringUtils;
  *       range is <em>read</em> by the report-date reader bean. Turning it into a job parameter
  *       would move a value out of the file the COBOL reads it from.</li>
  * </ul>
+ *
+ * <h2>Job contracts are validated at startup, not when a job is built</h2>
+ * <p>{@link JobContracts} binds <strong>strictly</strong> - an unknown property under
+ * {@code carddemo.jobs} fails the bind rather than being discarded - and
+ * {@link JobContracts#validate(DataSourceConfig.DatasetBindings)} runs once at context refresh, driven
+ * by the {@link JobContractValidator} bean. It requires exactly the nine source-derived jobs, each
+ * paired with the COBOL program it was translated from, and then holds every nested contract to the
+ * JCL it came from: a non-empty step sequence with uniquely named steps and no gating on a first step,
+ * parameters only for the one job whose JCL step carries a {@code PARM}, and each job-scoped dataset
+ * override either an alias that resolves in the global catalogue or a complete inline declaration -
+ * never an ambiguous mixture of the two.
+ *
+ * <p>The reason it is a <em>startup</em> check is the same reason the dataset catalogue has one. A job
+ * whose contract is wrong does not fail when the job is built. It runs - against the wrong dataset,
+ * or with a step that should have been gated - and the first sign of trouble is output that does not
+ * match. Startup is the last point at which the mistake is still cheap to see.
  *
  * <h2>No dataset name appears in Java (gate G46)</h2>
  * <p>Dataset names live in {@code application.yml} and are reached by DD-name key only. This class
@@ -249,6 +272,33 @@ public class BatchConfig {
      * {@code app/jcl/INTCALC.jcl:L22} and is character data, never a date.
      */
     public static final String PARM_DATE_PARAMETER = "parmDate";
+
+    /**
+     * The fixed width of {@value #PARM_DATE_PARAMETER}, in characters: <strong>10</strong>.
+     *
+     * <p>Not a convention and not a maximum - it is the declared width of the COBOL field the value
+     * lands in. {@code app/cbl/CBACT04C.cbl:178} declares {@code PARM-DATE PIC X(10)} inside the
+     * {@code EXTERNAL-PARMS} linkage item, and {@code app/jcl/INTCALC.jcl:22} supplies exactly ten
+     * characters for it: {@code PARM='2022071800'}.
+     */
+    public static final int PARM_DATE_WIDTH = 10;
+
+    /**
+     * Why {@value #PARM_DATE_WIDTH} is exact rather than approximate, quoted in the diagnostic so an
+     * operator sees the reasoning and not just the rule.
+     *
+     * <p>Declared once because two call sites raise the same failure - a launch-time parameter and a
+     * configured contract value - and they must not drift apart on the explanation.
+     */
+    private static final String PARM_DATE_WIDTH_RATIONALE =
+            "app/cbl/CBACT04C.cbl:178 declares PARM-DATE PIC X(10), and L476-L480 does STRING "
+                    + "PARM-DATE, WS-TRANID-SUFFIX DELIMITED BY SIZE INTO TRAN-ID - so the whole "
+                    + "declared width is contributed to a fixed PIC X(16) identifier, trailing "
+                    + "spaces included. A shorter value shifts the generated suffix left in every "
+                    + "identifier the job writes and a longer one pushes it off the end, and neither "
+                    + "would fail at run time. app/jcl/INTCALC.jcl:22 supplies exactly 10 characters "
+                    + "(PARM='2022071800'). The value is character data used verbatim and is never "
+                    + "parsed as a date, so its width is the only thing there is to check.";
 
     /**
      * The decider outcome meaning "every preceding step returned zero, so the gated step runs".
@@ -694,6 +744,67 @@ public class BatchConfig {
     }
 
     /**
+     * Validates the whole job-contract graph against the dataset catalogue, once, at startup.
+     *
+     * <p>A bean rather than a method on {@link JobContracts}, for one reason: the checks that matter
+     * most span both catalogues. A job-scoped alias is only valid relative to the global DD-name
+     * catalogue, and a bound properties object cannot inject a sibling properties object - so the
+     * cross-catalogue check needs a bean that can take both. {@link JobContractValidator} is an
+     * {@link InitializingBean}, so Spring runs it after both catalogues have been bound and
+     * validated, and before any job is built from them.
+     *
+     * <p>What it buys is the same thing the dataset catalogue's own validation buys, for the same
+     * reason: a job whose contract is wrong does not throw when it is <em>built</em>. It runs, against
+     * the wrong dataset or with the wrong step gating, and the first sign of trouble is output that
+     * does not match. Startup is the last cheap place to catch that.
+     *
+     * @param jobContracts     the job catalogue bound from {@code carddemo.jobs}
+     * @param datasetBindings  the DD-name catalogue bound from {@code carddemo.datasets}
+     * @return the startup validator
+     */
+    @Bean
+    public JobContractValidator jobContractValidator(JobContracts jobContracts,
+            DatasetBindings datasetBindings) {
+        return new JobContractValidator(jobContracts, datasetBindings);
+    }
+
+    /**
+     * Runs {@link JobContracts#validate(DatasetBindings)} at context refresh.
+     *
+     * <p>A named type rather than a lambda, so the failure it raises carries a stack frame that names
+     * what was being checked. It holds both catalogues and nothing else, and does its whole job once.
+     */
+    static final class JobContractValidator implements InitializingBean {
+
+        /** The job catalogue to validate. */
+        private final JobContracts jobContracts;
+
+        /** The global DD-name catalogue that job-scoped aliases resolve through. */
+        private final DatasetBindings datasetBindings;
+
+        /**
+         * Captures both catalogues by constructor injection.
+         *
+         * @param jobContracts    the job catalogue bound from {@code carddemo.jobs}
+         * @param datasetBindings the DD-name catalogue bound from {@code carddemo.datasets}
+         */
+        JobContractValidator(JobContracts jobContracts, DatasetBindings datasetBindings) {
+            this.jobContracts = jobContracts;
+            this.datasetBindings = datasetBindings;
+        }
+
+        /**
+         * Validates the job catalogue, failing the context on the first incoherence found.
+         *
+         * @throws IllegalStateException if any job contract is invalid
+         */
+        @Override
+        public void afterPropertiesSet() {
+            jobContracts.validate(datasetBindings);
+        }
+    }
+
+    /**
      * The process exit code for a failure: the abend's {@code RETURN-CODE} if the chain contains an
      * abend, otherwise {@link #NO_MAPPED_EXIT_CODE}.
      *
@@ -886,11 +997,32 @@ public class BatchConfig {
     }
 
     /**
-     * Requires the interest calculator's {@code parmDate} parameter to be present and non-blank.
+     * Requires the interest calculator's {@code parmDate} parameter to be present, non-blank and
+     * <strong>exactly {@value #PARM_DATE_WIDTH} characters wide</strong>.
      *
      * <p>Presence is delegated to the framework's own validator so the required-key diagnostic is
-     * the standard one; only the blank check is added, and it is added because an empty value would
-     * corrupt every transaction identifier the job generates rather than failing outright.
+     * the standard one. The two checks added here are both about fidelity to a fixed-width COBOL
+     * field rather than about taste:
+     *
+     * <ul>
+     *   <li><b>Non-blank</b>, because an empty value would corrupt every transaction identifier the
+     *       job generates rather than failing outright.</li>
+     *   <li><b>Exactly {@value #PARM_DATE_WIDTH} characters</b>, because that is the width of the
+     *       field the value lands in. {@code app/cbl/CBACT04C.cbl:178} declares
+     *       {@code PARM-DATE PIC X(10)} inside {@code EXTERNAL-PARMS}, and {@code L476-L480} does
+     *       {@code STRING PARM-DATE, WS-TRANID-SUFFIX DELIMITED BY SIZE INTO TRAN-ID}.
+     *       {@code DELIMITED BY SIZE} means the <em>whole declared width</em> is contributed - all
+     *       ten bytes, trailing spaces included - and {@code TRAN-ID} is itself a fixed
+     *       {@code PIC X(16)}. So the width is not cosmetic: a nine-character value shifts the
+     *       generated suffix one byte left in every identifier the job writes, and an
+     *       eleven-character one pushes it off the end. {@code app/jcl/INTCALC.jcl:22} supplies
+     *       exactly ten characters - {@code PARM='2022071800'} - and any other length is a
+     *       misconfiguration rather than an alternative.</li>
+     * </ul>
+     *
+     * <p>What is deliberately <em>not</em> checked is that the value looks like a date. It is
+     * character data and stays character data: {@code CBACT04C} never parses it, it concatenates it,
+     * so imposing a date format here would invent a constraint the COBOL does not have.
      */
     static final class ParmDateJobParametersValidator implements JobParametersValidator {
 
@@ -905,7 +1037,8 @@ public class BatchConfig {
          * Validates the parameters of an interest-calculator launch.
          *
          * @param parameters the parameters to validate
-         * @throws JobParametersInvalidException if {@code parmDate} is absent, or present but blank
+         * @throws JobParametersInvalidException if {@code parmDate} is absent, blank, or not exactly
+         *                                       {@value BatchConfig#PARM_DATE_WIDTH} characters wide
          */
         @Override
         public void validate(JobParameters parameters) throws JobParametersInvalidException {
@@ -917,6 +1050,11 @@ public class BatchConfig {
                         + "character data that CBACT04C concatenates verbatim into the transaction "
                         + "identifiers it generates, so a blank value would silently write short "
                         + "identifiers instead of failing.");
+            }
+            if (parmDate.length() != PARM_DATE_WIDTH) {
+                throw new JobParametersInvalidException("The job parameter '" + PARM_DATE_PARAMETER
+                        + "' is " + parmDate.length() + " characters ('" + parmDate + "'), but it "
+                        + "must be exactly " + PARM_DATE_WIDTH + ". " + PARM_DATE_WIDTH_RATIONALE);
             }
         }
     }
@@ -964,8 +1102,11 @@ public class BatchConfig {
      * </ul>
      *
      * <h2>Nine keys, and why no tenth is missing</h2>
-     * <p>The count is stated here because the migration plan quotes ten batch jobs in places, and a
-     * later reader must not close that gap by inventing one. Nine is right, and it decomposes
+     * <p>The count is now <em>enforced</em> by {@link #validate(DataSourceConfig.DatasetBindings)}
+     * rather than merely documented, and {@link #REQUIRED_JOBS} additionally pins each key to the
+     * program it was translated from - so a job cannot be quietly re-pointed at another program
+     * either. It is stated here as well because the migration plan quotes ten batch jobs in places, and
+     * a later reader must not close that gap by inventing one. Nine is right, and it decomposes
      * exactly: eight programs are invoked by an {@code EXEC PGM=} step somewhere in {@code app/jcl},
      * and {@code CBTRN01C} is invoked by nothing yet migrates all the same. The apparent tenth is
      * {@code CBCUS01C} counted twice - it is simultaneously one of those eight, through
@@ -980,8 +1121,48 @@ public class BatchConfig {
      * Neither has an {@code EXEC PGM=} step anywhere in {@code app/jcl} or {@code app/proc}, so
      * neither may be given one here.
      */
-    @ConfigurationProperties(prefix = "carddemo.jobs")
+    @ConfigurationProperties(prefix = "carddemo.jobs", ignoreUnknownFields = false)
     public static class JobContracts extends LinkedHashMap<String, JobContract> {
+
+        /**
+         * The nine job keys, each mapped to the COBOL {@code PROGRAM-ID} it was translated from.
+         *
+         * <p>Both halves are source-derived and both are checked, because a job key and a program are
+         * two independent facts and either can be wrong on its own. Eight of the programs are invoked
+         * by an {@code EXEC PGM=} step somewhere in {@code app/jcl}; {@code CBTRN01C} is invoked by
+         * nothing and migrates all the same. Pinning the pairing is what stops a job key being quietly
+         * re-pointed at a different program - which would run the wrong step sequence against the
+         * wrong datasets while every other check still passed.
+         *
+         * <p>Note the two programs that are deliberately absent, because their prompt-mandated names
+         * end in {@code Job} and invite exactly this mistake: {@code CBSTM03B} is the statement job's
+         * data-access collaborator, called thirteen times from {@code CBSTM03A}, and
+         * {@code CSUTLDTC} is a date service called from two online programs. Neither has an
+         * {@code EXEC PGM=} step anywhere in {@code app/jcl} or {@code app/proc}, so neither may be
+         * given one here.
+         */
+        static final Map<String, String> REQUIRED_JOBS = Map.of(
+                "account-balance-job", "CBACT01C",
+                "account-balance-reader-job", "CBACT02C",
+                "account-balance-update-job", "CBACT03C",
+                "customer-file-reader-job", "CBCUS01C",
+                "account-interest-calc-job", "CBACT04C",
+                "transaction-validation-job", "CBTRN02C",
+                "transaction-report-job", "CBTRN03C",
+                "statement-generation-job-a", "CBSTM03A",
+                "transaction-posting-job", "CBTRN01C");
+
+        /**
+         * The only job that may declare a parameter, because it is the only JCL step carrying a
+         * {@code PARM}: {@code app/jcl/INTCALC.jcl:22}.
+         *
+         * <p>The other eight steps are bare {@code EXEC PGM=} invocations and pass nothing, so a
+         * parameter declared against one of them would be an input the COBOL never receives.
+         * {@code CBTRN03C} is the case worth naming explicitly: it does read a reporting date range,
+         * but from the {@code DATEPARM} dataset rather than from a {@code PARM}, which is why it
+         * declares {@code date-range-source} instead.
+         */
+        static final String PARAMETERISED_JOB = "account-interest-calc-job";
 
         /**
          * Fixed serialization identity. {@link LinkedHashMap} is {@link java.io.Serializable}, so an
@@ -1014,6 +1195,245 @@ public class BatchConfig {
                         + "keys: " + keySet() + ".");
             }
             return contract;
+        }
+
+        /**
+         * The catalogue's whole validity contract, checked against the global dataset catalogue.
+         *
+         * <p>One method so a unit test can drive every arm by direct call with no application context.
+         * It checks, in order: the key set is exactly the nine source-derived jobs and each is paired
+         * with the program it was translated from; then, per job, that its step sequence is present
+         * and coherent, that only the parameterised job declares parameters and that those parameters
+         * are usable, and that each job-scoped dataset override is either an alias that resolves or a
+         * complete inline declaration.
+         *
+         * <p>It takes the global catalogue rather than looking it up, because an alias is only valid
+         * relative to that catalogue - and resolving aliases at startup is what turns "this job will
+         * fail when it opens that DD name" into "this configuration is wrong".
+         *
+         * @param global the DD-name catalogue owned by {@code DataSourceConfig}, already validated
+         * @throws IllegalStateException    if the key set is wrong, a program is mispaired, or any
+         *                                  nested contract is incoherent
+         * @throws IllegalArgumentException if a declared parameter is unusable, which
+         *                                  {@link JobParameterContract#requireStringValue()} reports
+         */
+        public void validate(DatasetBindings global) {
+            Assert.notNull(global, "The global dataset catalogue is required to validate job "
+                    + "contracts, because a job-scoped alias is only meaningful relative to it");
+            validateKeySet();
+            forEach((jobKey, contract) -> validateContract(jobKey, contract, global));
+        }
+
+        /**
+         * Requires the key set to be exactly {@link #REQUIRED_JOBS}.
+         *
+         * <p>Missing and unexpected keys are reported as two lists for the same reason the dataset
+         * catalogue reports them that way: a renamed job appears in both, and seeing both together is
+         * what identifies it as a rename rather than two unrelated faults.
+         *
+         * @throws IllegalStateException if any required job is absent or any unexpected job present
+         */
+        private void validateKeySet() {
+            Set<String> missing = new LinkedHashSet<>(REQUIRED_JOBS.keySet());
+            missing.removeAll(keySet());
+            Set<String> unexpected = new LinkedHashSet<>(keySet());
+            unexpected.removeAll(REQUIRED_JOBS.keySet());
+            if (!missing.isEmpty() || !unexpected.isEmpty()) {
+                throw new IllegalStateException("carddemo.jobs must declare exactly the "
+                        + REQUIRED_JOBS.size() + " runnable batch jobs this migration has - the 8 "
+                        + "programs invoked by an EXEC PGM= step in app/jcl plus the untriggered "
+                        + "CBTRN01C. Missing: " + sortedKeys(missing) + ". Unexpected: "
+                        + sortedKeys(unexpected) + ". Do not close a gap by inventing a tenth job: "
+                        + "the apparent tenth in the migration plan's prose is CBCUS01C counted "
+                        + "twice, and CBSTM03B and CSUTLDTC carry names ending in Job while being a "
+                        + "called subprogram and a date service respectively.");
+            }
+        }
+
+        /**
+         * Validates one job's whole contract.
+         *
+         * @param jobKey   the configuration key, quoted in every diagnostic
+         * @param contract the contract bound under it
+         * @param global   the global DD-name catalogue, for resolving aliases
+         * @throws IllegalStateException if the contract is incoherent
+         */
+        private void validateContract(String jobKey, JobContract contract, DatasetBindings global) {
+            if (contract == null) {
+                throw new IllegalStateException(invalidJob(jobKey)
+                        + " it declares no properties at all. Every job declares at least a program "
+                        + "and a step sequence.");
+            }
+            String expectedProgram = REQUIRED_JOBS.get(jobKey);
+            if (!expectedProgram.equals(contract.program())) {
+                throw new IllegalStateException(invalidJob(jobKey) + " it declares program '"
+                        + contract.program() + "', but this job was translated from "
+                        + expectedProgram + ". The pairing is fixed by the source: re-pointing a job "
+                        + "key at another program would run the wrong step sequence against the "
+                        + "wrong datasets, and nothing downstream would notice.");
+            }
+            validateSteps(jobKey, contract.steps());
+            validateParameters(jobKey, contract.parameters());
+            contract.datasets().forEach((ddName, override) ->
+                    validateDatasetOverride(jobKey, ddName, override, global));
+        }
+
+        /**
+         * Validates a job's step sequence: present, individually complete, uniquely named, and with a
+         * first step that is not gated behind something that cannot exist.
+         *
+         * <p>A {@code null} step is not checked for, deliberately: {@link JobContract}'s constructor
+         * normalises the list through {@code List.copyOf}, which rejects a null element outright, so
+         * no bound contract can carry one. A guard for it would be a branch nothing could ever reach.
+         *
+         * @param jobKey the configuration key, quoted in every diagnostic
+         * @param steps  the declared steps, in execution order
+         * @throws IllegalStateException if the sequence is empty, a step is incomplete, two steps
+         *                               share a name, or the first step is gated
+         */
+        private void validateSteps(String jobKey, List<StepContract> steps) {
+            if (steps.isEmpty()) {
+                throw new IllegalStateException(invalidJob(jobKey) + " it declares no steps. A job "
+                        + "runs a step sequence transcribed from its JCL, and the untriggered "
+                        + "CBTRN01C still declares the single step it would run.");
+            }
+            Set<String> names = new LinkedHashSet<>();
+            for (int index = 0; index < steps.size(); index++) {
+                StepContract step = steps.get(index);
+                if (!StringUtils.hasText(step.name()) || !StringUtils.hasText(step.program())) {
+                    throw new IllegalStateException(invalidJob(jobKey) + " its step at position "
+                            + index + " declares no name or no program. Both are transcribed from "
+                            + "the JCL step - the name from the step label and the program from its "
+                            + "EXEC PGM= - and a step missing either cannot be addressed or run.");
+                }
+                if (!names.add(step.name())) {
+                    throw new IllegalStateException(invalidJob(jobKey) + " it declares two steps "
+                            + "named '" + step.name() + "'. Steps are addressed by name, so a "
+                            + "duplicate makes one of them unreachable. Where the JCL itself names "
+                            + "two steps identically - app/jcl/TRANREPT.jcl does, at L23 and L37 - "
+                            + "the cataloged procedure form app/proc/TRANREPT.prc supplies the "
+                            + "unambiguous names and configuration uses those.");
+                }
+                if (index == 0 && step.requirePrecedingExitCodeZero()) {
+                    throw new IllegalStateException(invalidJob(jobKey) + " its first step '"
+                            + step.name() + "' is gated on every preceding step having returned "
+                            + "zero, but it has no preceding step. COND=(0,NE) gating is "
+                            + "transcribed from the JCL and appears only on the three gated steps of "
+                            + "app/jcl/CREASTMT.JCL, never on a job's first step.");
+                }
+            }
+        }
+
+        /**
+         * Validates a job's declared parameters: only the parameterised job may have any, and each
+         * must be one this migration recognises and can use.
+         *
+         * @param jobKey     the configuration key, quoted in every diagnostic
+         * @param parameters the declared parameters, in declaration order
+         * @throws IllegalStateException    if a job that takes no {@code PARM} declares a parameter,
+         *                                  or the parameterised job declares the wrong one
+         * @throws IllegalArgumentException if a parameter's type or value is unusable
+         */
+        private void validateParameters(String jobKey, List<JobParameterContract> parameters) {
+            if (!PARAMETERISED_JOB.equals(jobKey)) {
+                if (!parameters.isEmpty()) {
+                    throw new IllegalStateException(invalidJob(jobKey) + " it declares parameters "
+                            + parameters.stream().map(JobParameterContract::name).toList()
+                            + ", but its JCL step carries no PARM, so the COBOL program receives "
+                            + "nothing. Only " + PARAMETERISED_JOB + " takes a parameter "
+                            + "(app/jcl/INTCALC.jcl:22); CBTRN03C reads its reporting date range "
+                            + "from the DATEPARM dataset and declares date-range-source instead.");
+                }
+                return;
+            }
+            List<String> names = parameters.stream().map(JobParameterContract::name).toList();
+            if (!names.equals(List.of(PARM_DATE_PARAMETER))) {
+                throw new IllegalStateException(invalidJob(jobKey) + " it declares parameters "
+                        + names + ", but it takes exactly one: '" + PARM_DATE_PARAMETER + "', whose "
+                        + "value is the PARM of app/jcl/INTCALC.jcl:22.");
+            }
+            parameters.forEach(JobParameterContract::requireStringValue);
+        }
+
+        /**
+         * Validates one job-scoped DD-name override: an alias that resolves, or a complete inline
+         * declaration - and never an ambiguous mixture of the two.
+         *
+         * @param jobKey   the configuration key, quoted in every diagnostic
+         * @param ddName   the DD name the override is declared under
+         * @param override the override
+         * @param global   the global DD-name catalogue, for resolving an alias
+         * <p>As with a step, a {@code null} override is not checked for: {@link JobContract}'s
+         * constructor normalises the map through {@code Map.copyOf}, which rejects a null value, so no
+         * bound contract can carry one either.
+         *
+         * @throws IllegalStateException if the override is ambiguous, names an unknown alias, or is an
+         *                               inline declaration missing its geometry
+         */
+        private void validateDatasetOverride(String jobKey, String ddName,
+                JobDatasetBinding override, DatasetBindings global) {
+            boolean isAlias = StringUtils.hasText(override.alias());
+            boolean isInline = StringUtils.hasText(override.dsname())
+                    || override.recordLength() != null
+                    || StringUtils.hasText(override.organization());
+            if (isAlias && isInline) {
+                throw new IllegalStateException(invalidJob(jobKey) + " its dataset override for DD "
+                        + "name '" + ddName + "' names alias '" + override.alias() + "' and also "
+                        + "declares its own dsname, organization or record-length. That is "
+                        + "ambiguous: an alias resolves entirely through the global entry it names, "
+                        + "so any inline geometry beside it is silently ignored. Declare one or the "
+                        + "other.");
+            }
+            if (!isAlias && !isInline) {
+                throw new IllegalStateException(invalidJob(jobKey) + " its dataset override for DD "
+                        + "name '" + ddName + "' declares neither an alias nor a dataset of its own.");
+            }
+            if (isAlias) {
+                // Resolving it here is the check: an alias that names nothing fails at startup
+                // rather than when the job first opens that DD name.
+                global.binding(override.alias());
+                return;
+            }
+            override.resolve(ddName, global);
+            if (!StringUtils.hasText(override.dsname())) {
+                throw new IllegalStateException(invalidJob(jobKey) + " its inline dataset for DD "
+                        + "name '" + ddName + "' declares no dsname. An entry that is not an alias is "
+                        + "a dataset of its own, so it has to say where it lives - there is no global "
+                        + "entry for it to inherit a location from.");
+            }
+            if (override.recordLength() <= 0) {
+                throw new IllegalStateException(invalidJob(jobKey) + " its inline dataset for DD "
+                        + "name '" + ddName + "' declares record-length " + override.recordLength()
+                        + ". The fixed record width is what the codec and the output writers are "
+                        + "built from, so it must be a positive number of bytes - a wrong width "
+                        + "silently corrupts every record the job writes under this DD name.");
+            }
+            if (override.blockSize() != null && override.blockSize() < 0) {
+                throw new IllegalStateException(invalidJob(jobKey) + " its inline dataset for DD "
+                        + "name '" + ddName + "' declares block-size " + override.blockSize()
+                        + ". Transcribe the JCL DCB verbatim: 0 means system-determined, exactly as "
+                        + "BLKSIZE=0 asks, but no DCB declares a negative block size.");
+            }
+        }
+
+        /**
+         * Opens every per-job diagnostic the same way, naming the job at fault.
+         *
+         * @param jobKey the configuration key whose contract is invalid
+         * @return the opening clause of an invalid-contract message
+         */
+        private static String invalidJob(String jobKey) {
+            return "The carddemo.jobs contract for '" + jobKey + "' is invalid:";
+        }
+
+        /**
+         * Renders a key set in a stable order, so a diagnostic reads the same on every run.
+         *
+         * @param keys the keys to render
+         * @return the keys sorted lexicographically
+         */
+        private static List<String> sortedKeys(Set<String> keys) {
+            return keys.stream().sorted().toList();
         }
     }
 
@@ -1157,15 +1577,26 @@ public class BatchConfig {
         /**
          * The value, once it is confirmed to be a usable string.
          *
-         * <p>Both checks matter and neither is cosmetic. A declared type other than {@code string}
+         * <p>All three checks matter and none is cosmetic. A declared type other than {@code string}
          * would mean someone intends a parameter to be parsed, and the one {@code PARM} in this
          * estate must never be parsed: {@code CBACT04C} concatenates it verbatim into the
          * transaction identifiers it generates. A blank value would produce short identifiers rather
-         * than an error, which is the harder defect to find later.
+         * than an error, which is the harder defect to find later. And a value of the wrong
+         * <em>width</em> is the subtlest of the three: {@value BatchConfig#PARM_DATE_PARAMETER} lands
+         * in a {@code PIC X(10)} field whose whole width is contributed to a fixed
+         * {@code PIC X(16)} identifier, so a nine- or eleven-character value silently misplaces the
+         * generated suffix in every transaction the job writes.
+         *
+         * <p>The width check applies to {@value BatchConfig#PARM_DATE_PARAMETER} specifically rather
+         * than to every parameter, because a width is a property of the COBOL field a value lands in
+         * and this migration declares exactly one such parameter. A second parameter, if the estate
+         * ever grew one, would carry its own field's width - not this one's.
          *
          * @return the value
-         * @throws IllegalArgumentException if the declared type is not {@code string}, or the value
-         *                                  is {@code null}, empty or blank
+         * @throws IllegalArgumentException if the declared type is not {@code string}, the value is
+         *                                  {@code null}, empty or blank, or the value is
+         *                                  {@value BatchConfig#PARM_DATE_PARAMETER} and is not
+         *                                  exactly {@value BatchConfig#PARM_DATE_WIDTH} characters
          */
         public String requireStringValue() {
             Assert.isTrue(PARAMETER_TYPE_STRING.equalsIgnoreCase(type),
@@ -1177,6 +1608,10 @@ public class BatchConfig {
                     () -> "Job parameter '" + name + "' declares no value. It is character data "
                             + "used verbatim, so a blank value would be written through rather than "
                             + "rejected.");
+            Assert.isTrue(!PARM_DATE_PARAMETER.equals(name) || value.length() == PARM_DATE_WIDTH,
+                    () -> "Job parameter '" + name + "' declares a value of " + value.length()
+                            + " characters ('" + value + "'), but it must be exactly "
+                            + PARM_DATE_WIDTH + ". " + PARM_DATE_WIDTH_RATIONALE);
             return value;
         }
     }
@@ -1214,7 +1649,10 @@ public class BatchConfig {
      *                     absent for an alias
      * @param copybook     the {@code app/cpy} member defining the layout, so a width can be diffed
      *                     against its {@code PICTURE} clauses without leaving the configuration
-     * @param keyLength    the key width in bytes, where the source declares one
+     * @param keyLength    the key width in bytes, required for a keyed inline declaration and absent
+     *                     for a sequential one or an alias
+     * @param keyOffset    the key's zero-based offset within the record, for a key that does not begin
+     *                     at the start of it; {@code null} means offset zero
      * @param base         for an alternate-index path, the key of the base entry it indexes. Its
      *                     presence marks an additional access path over an existing dataset rather
      *                     than a dataset of its own
@@ -1230,6 +1668,7 @@ public class BatchConfig {
             Integer recordLength,
             String copybook,
             Integer keyLength,
+            Integer keyOffset,
             String base,
             String alternateKey) {
 
@@ -1269,7 +1708,7 @@ public class BatchConfig {
                             + "codec and the output writers are built from, so it cannot be "
                             + "inferred.");
             return new DatasetBinding(dsname, organization, gdg, recordFormat, blockSize,
-                    recordLength, copybook, keyLength, base, alternateKey);
+                    recordLength, copybook, keyLength, keyOffset, base, alternateKey);
         }
     }
 }

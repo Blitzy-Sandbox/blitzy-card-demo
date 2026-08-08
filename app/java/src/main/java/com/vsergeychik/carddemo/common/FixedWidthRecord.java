@@ -1,6 +1,14 @@
 package com.vsergeychik.carddemo.common;
 
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.MalformedInputException;
+import java.nio.charset.UnmappableCharacterException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -89,13 +97,24 @@ import java.util.Set;
  * filler literal, which is why placement follows the span's {@link PictureKind} rather than a
  * single fixed rule.
  *
- * <h2>Which pad byte, when no literal is declared</h2>
- * {@link #initialise(RecordLayout)} follows the COBOL {@code INITIALIZE} convention: a numeric
- * {@code DISPLAY} span with no literal is filled with the charset's zero byte and an alphanumeric
- * or {@code FILLER} span with the charset's space byte. That is what makes the initialised
- * {@code WS-CURDATE-MM-DD-YY} group read {@code 00/00/00} rather than {@code   /  /  }. A bare
- * allocation through {@link #FixedWidthRecord(int, Charset)} is space-filled throughout, because a
- * COBOL record area is space-filled and because space-filling is what keeps the remaining bytes
+ * <h2>Two distinct operations, never one</h2>
+ * Establishing storage and executing the {@code INITIALIZE} statement are separate acts in COBOL and
+ * separate methods here, because their outcomes differ and every difference is silent:
+ * <ul>
+ *   <li>{@link #loadDeclaredValues(RecordLayout)} applies the declared {@code VALUE} literals and
+ *       nothing else, leaving an unvalued span exactly as it was - which is what a program's storage
+ *       holds when its declaration carries no literal;</li>
+ *   <li>{@link #initialize(RecordLayout, FillerHandling, ValueHandling)} is the {@code INITIALIZE}
+ *       statement, with the {@code WITH FILLER} and {@code TO VALUE} phrases as explicit parameters
+ *       rather than assumptions. Its category default is the charset's zero byte for a numeric
+ *       {@code DISPLAY} span - with a positive-zero sign overpunch in the trailing byte when the span
+ *       is signed - and the charset's space byte otherwise;</li>
+ *   <li>{@link #forLayout(RecordLayout, Charset)} composes the two, in that order, to reach the state
+ *       a program's record area is in at load time. That composition is what makes an established
+ *       {@code WS-CURDATE-MM-DD-YY} group read {@code 00/00/00} rather than {@code   /  /  }.</li>
+ * </ul>
+ * A bare allocation through {@link #FixedWidthRecord(int, Charset)} is space-filled throughout,
+ * because a COBOL record area is space-filled and because space-filling keeps the remaining bytes
  * correct in the common case where a trailing {@code FILLER} carries no literal.
  *
  * <h2>A signed field has no sign byte of its own</h2>
@@ -140,7 +159,8 @@ import java.util.Set;
  * An instance is not safe for concurrent mutation and is not intended to be shared across threads;
  * confine one to the request, step or chunk that owns it.
  *
- * @see #initialise(RecordLayout)
+ * @see #loadDeclaredValues(RecordLayout)
+ * @see #initialize(RecordLayout, FillerHandling, ValueHandling)
  * @see RecordLayout
  * @see FieldSpan
  */
@@ -215,6 +235,336 @@ public final class FixedWidthRecord {
     }
 
     /**
+     * Which {@code FILLER} spans an {@code INITIALIZE} touches.
+     *
+     * <p>COBOL's {@code INITIALIZE} statement leaves {@code FILLER} items alone unless the
+     * {@code WITH FILLER} phrase is written, so the phrase is a parameter here rather than an
+     * assumption. Getting this wrong is silent: a {@code FILLER} that carries a literal
+     * {@code VALUE}, as every separator in {@code app/cpy/CSDAT01Y.cpy} does, is blanked by an
+     * unqualified fill and never recovered.
+     */
+    public enum FillerHandling {
+
+        /** The COBOL default: {@code FILLER} spans are not touched. */
+        WITHOUT_FILLER,
+
+        /** The {@code WITH FILLER} phrase: {@code FILLER} spans are treated like any other span. */
+        WITH_FILLER;
+
+        /**
+         * Whether {@code FILLER} spans participate.
+         *
+         * @return {@code true} only for {@link #WITH_FILLER}
+         */
+        public boolean includesFiller() {
+            return this == WITH_FILLER;
+        }
+    }
+
+    /**
+     * What an {@code INITIALIZE} moves into each participating span.
+     *
+     * <p>The two forms are not interchangeable and neither is a superset of the other, which is why
+     * the caller must say which one it means. An unqualified {@code INITIALIZE} moves the
+     * <em>category default</em> into every participating span and ignores {@code VALUE} clauses
+     * entirely; {@code ALL TO VALUE} moves each span's declared {@code VALUE} and leaves a span that
+     * declares none exactly as it was.
+     */
+    public enum ValueHandling {
+
+        /**
+         * The unqualified {@code INITIALIZE}: spaces into character spans, zoned zeros into numeric
+         * {@code DISPLAY} spans - with a positive-zero sign overpunch in the trailing byte of a
+         * signed span, because that is the only representation of zero the datasets contain.
+         */
+        CATEGORY_DEFAULTS,
+
+        /**
+         * {@code ALL TO VALUE}: each span that declares a {@code VALUE} receives that literal, and a
+         * span that declares none is left untouched.
+         */
+        TO_VALUE
+    }
+
+    /**
+     * The zoned-{@code DISPLAY} sign convention: <em>where</em> the sign of a signed numeric span
+     * lives and which byte carries it.
+     *
+     * <h2>Why this sits in the byte layer</h2>
+     * That a signed field's sign is overpunched into the trailing digit rather than occupying a byte
+     * of its own is a fact about <em>storage geometry</em>, not about arithmetic: it is the reason
+     * {@code app/cpy/CVACT01Y.cpy} sums to exactly 300 with five {@code S9(10)V99} fields of twelve
+     * bytes each, and reserving a sign byte would make it 305. The byte layer therefore owns the
+     * alphabet, and the layer above owns what the digits <em>mean</em>. Holding the alphabet in one
+     * place also means the record layer and the codec can never drift apart on it.
+     *
+     * <h2>The alphabet</h2>
+     * Under the zoned convention the low-order digit's zone nibble carries the sign, which in the
+     * single-byte code pages this module uses renders as a substituted character:
+     * <table border="1">
+     *   <caption>Trailing-byte rendering by sign and low-order digit</caption>
+     *   <tr><th>Digit</th><th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th>
+     *       <th>7</th><th>8</th><th>9</th></tr>
+     *   <tr><td>Positive</td><td>{@code &#123;}</td><td>A</td><td>B</td><td>C</td><td>D</td>
+     *       <td>E</td><td>F</td><td>G</td><td>H</td><td>I</td></tr>
+     *   <tr><td>Negative</td><td>{@code &#125;}</td><td>J</td><td>K</td><td>L</td><td>M</td>
+     *       <td>N</td><td>O</td><td>P</td><td>Q</td><td>R</td></tr>
+     * </table>
+     * A plain digit in the trailing byte - the unsigned {@code zone F} rendering - is read as
+     * positive, which is what an unsigned {@code PIC 9} field or an externally produced row may
+     * carry.
+     *
+     * <h2>Measured against the datasets</h2>
+     * The fixtures decide this, not inference. {@code app/data/ASCII/acctdata.txt} contains 250
+     * occurrences of <code>&#123;</code> and no <code>&#125;</code> - one per signed field of its 50
+     * records - and its first row renders {@code ACCT-CURR-BAL} as {@code 00000001940&#123;} and the
+     * two zero cycle amounts as {@code 00000000000&#123;}. {@code app/data/ASCII/tcatbal.txt} and
+     * {@code app/data/ASCII/discgrp.txt} agree, and {@code app/data/ASCII/dailytran.txt} carries six
+     * <code>&#125;</code> for genuinely negative amounts. So <strong>a zero-valued signed field is
+     * stored with a positive-zero overpunch, never as an unsigned run of zeros</strong>: an
+     * initialised signed span that ends in a plain {@code 0} would not match a single row of
+     * production-shaped data.
+     */
+    public static final class ZonedSign {
+
+        /** Trailing-byte characters for a positive value, indexed by low-order digit. */
+        public static final String POSITIVE_DIGITS = "{ABCDEFGHI";
+
+        /** Trailing-byte characters for a negative value, indexed by low-order digit. */
+        public static final String NEGATIVE_DIGITS = "}JKLMNOPQR";
+
+        /** The trailing byte of a positive zero - the representation the datasets use. */
+        public static final char POSITIVE_ZERO = '{';
+
+        /** The trailing byte of a negative zero, which is a distinct stored value from a positive zero. */
+        public static final char NEGATIVE_ZERO = '}';
+
+        private ZonedSign() {
+            throw new AssertionError("ZonedSign publishes the zoned sign alphabet and is never "
+                    + "instantiated");
+        }
+
+        /**
+         * The trailing-byte character for a low-order digit under a given sign.
+         *
+         * @param digit    the low-order digit, 0 through 9
+         * @param negative {@code true} for a negative value
+         * @return the overpunched character
+         * @throws IllegalArgumentException if {@code digit} is outside 0 through 9
+         */
+        public static char overpunch(int digit, boolean negative) {
+            if (digit < 0 || digit > 9) {
+                throw new IllegalArgumentException("Digit " + digit + " cannot be sign-overpunched; "
+                        + "a zoned DISPLAY byte carries exactly one decimal digit, 0 through 9");
+            }
+            return (negative ? NEGATIVE_DIGITS : POSITIVE_DIGITS).charAt(digit);
+        }
+
+        /**
+         * The decimal digit a trailing byte carries, whether it is overpunched or a plain digit.
+         *
+         * @param trailing the trailing character of a signed zoned span
+         * @return the digit 0 through 9, or {@code -1} when {@code trailing} is neither an overpunch
+         *         character nor a decimal digit
+         */
+        public static int digitOf(char trailing) {
+            int positive = POSITIVE_DIGITS.indexOf(trailing);
+            if (positive >= 0) {
+                return positive;
+            }
+            int negative = NEGATIVE_DIGITS.indexOf(trailing);
+            if (negative >= 0) {
+                return negative;
+            }
+            return trailing >= '0' && trailing <= '9' ? trailing - '0' : -1;
+        }
+
+        /**
+         * Whether a trailing byte marks the value negative. A plain digit is positive, matching the
+         * unsigned {@code zone F} rendering.
+         *
+         * @param trailing the trailing character of a signed zoned span
+         * @return {@code true} only for a negative overpunch character
+         */
+        public static boolean isNegative(char trailing) {
+            return NEGATIVE_DIGITS.indexOf(trailing) >= 0;
+        }
+    }
+
+    /**
+     * The single-byte text seam: the one place in this module where bytes become characters and
+     * characters become bytes.
+     *
+     * <h2>Why the platform conversions are not used</h2>
+     * {@code new String(byte[], Charset)} and {@code String.getBytes(Charset)} are both defined to
+     * <em>substitute</em> rather than fail - a byte that is not a character in the code page decodes
+     * to {@code U+FFFD}, and a character the code page cannot represent encodes to {@code ?}. For a
+     * fixed-width record that substitution is the worst possible outcome: it is silent, it is
+     * lossy, and it produces a value that looks like data. A row whose stored byte is corrupt would
+     * be reported as containing a replacement character, and a value carrying a character outside
+     * the dataset's code page would be written to the dataset as a question mark and then compared
+     * equal to a genuine question mark forever after.
+     *
+     * <p>This seam therefore configures {@link CodingErrorAction#REPORT} on both directions, so a
+     * malformed stored byte and an unrepresentable character are each refused where they occur, with
+     * the field and the span named and <strong>without echoing the offending content</strong> - the
+     * spans this module handles carry card numbers, government identifiers and passwords, so a
+     * diagnostic must never quote them.
+     *
+     * <h2>Single-byte is a requirement, not an expectation</h2>
+     * A record area addressed by absolute byte offset is only coherent if one character occupies one
+     * byte. Both directions therefore assert that the conversion neither grew nor shrank the span,
+     * which rejects a multi-byte code page outright instead of letting it silently shift every
+     * subsequent offset.
+     *
+     * <h2>Thread safety</h2>
+     * {@link CharsetEncoder} and {@link CharsetDecoder} are stateful and explicitly not thread safe,
+     * so a fresh one is created per conversion rather than cached in a field. Caching one per
+     * instance would make a record area unsafe to hand between threads, and caching one statically
+     * would be shared mutable state.
+     */
+    public static final class Transcoder {
+
+        private final Charset charset;
+
+        /**
+         * @param charset the code page, supplied explicitly and never derived from the platform
+         * @throws NullPointerException if {@code charset} is {@code null}
+         */
+        public Transcoder(Charset charset) {
+            this.charset = Objects.requireNonNull(charset, "A charset must be supplied explicitly: "
+                    + "a fixed-width span can never be transcoded against an assumed encoding");
+        }
+
+        /**
+         * The code page this seam converts under.
+         *
+         * @return the charset, never {@code null}
+         */
+        public Charset charset() {
+            return charset;
+        }
+
+        /**
+         * Encodes text, refusing anything the code page cannot represent exactly.
+         *
+         * @param text    the characters to encode
+         * @param subject what is being encoded, named in any diagnostic - a field name, a span
+         *                description or a record name. Never the content itself
+         * @return the encoded bytes, one per character
+         * @throws NullPointerException     if {@code text} or {@code subject} is {@code null}
+         * @throws IllegalArgumentException if any character is unrepresentable in the code page, or
+         *                                  if the code page is not single-byte for this text
+         */
+        public byte[] encode(String text, String subject) {
+            byte[] bytes = encodeWithoutWidthCheck(text, subject);
+            if (bytes.length != text.length()) {
+                throw new IllegalArgumentException("Encoding " + text.length() + " character(s) for "
+                        + subject + " under code page " + charset.name() + " produced "
+                        + bytes.length + " byte(s). A fixed-width record area is addressed by "
+                        + "absolute byte offset, so it requires a single-byte code page - one that "
+                        + "encodes every character of its data to exactly one byte. IBM037 for the "
+                        + "EBCDIC datasets and US-ASCII for the text fixtures both qualify");
+            }
+            return bytes;
+        }
+
+        /**
+         * Encodes text strictly but without asserting one byte per character, so that a caller who is
+         * <em>measuring</em> the code page - rather than writing data through it - can report the
+         * measured width itself.
+         *
+         * @param text    the characters to encode
+         * @param subject what is being encoded, named in any diagnostic. Never the content itself
+         * @return the encoded bytes, however many the code page produced
+         * @throws NullPointerException     if {@code text} or {@code subject} is {@code null}
+         * @throws IllegalArgumentException if any character is unrepresentable in the code page
+         */
+        byte[] encodeWithoutWidthCheck(String text, String subject) {
+            Objects.requireNonNull(text, "Text is required to encode");
+            Objects.requireNonNull(subject, "A subject is required so a coding failure can be "
+                    + "attributed without quoting the content");
+            CharsetEncoder encoder = charset.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT);
+            // The input buffer is held rather than discarded so that a failure can be attributed to an
+            // exact character position: the encoder leaves the buffer positioned at the character it
+            // could not encode, which is more precise than any re-scan and needs no second pass.
+            CharBuffer input = CharBuffer.wrap(text);
+            ByteBuffer encoded;
+            try {
+                encoded = encoder.encode(input);
+            } catch (CharacterCodingException failure) {
+                throw new IllegalArgumentException("The value supplied for " + subject + " contains "
+                        + "a character that code page " + charset.name() + " cannot represent, at "
+                        + "0-based character position " + input.position() + " of " + text.length()
+                        + ". The content is withheld deliberately. A fixed-width dataset field must "
+                        + "be written in the dataset's own code page, and substituting a replacement "
+                        + "character would put a value into the dataset that no COBOL program could "
+                        + "have produced", failure);
+            }
+            byte[] bytes = new byte[encoded.remaining()];
+            encoded.get(bytes);
+            return bytes;
+        }
+
+        /**
+         * Decodes stored bytes, refusing anything that is not a character in the code page.
+         *
+         * @param source  the buffer holding the stored bytes
+         * @param offset  the 0-based offset of the span within {@code source}
+         * @param length  the span width in bytes
+         * @param subject what is being decoded, named in any diagnostic. Never the content itself
+         * @return the decoded characters, one per byte
+         * @throws NullPointerException  if {@code source} or {@code subject} is {@code null}
+         * @throws IllegalStateException if any stored byte is not a character in the code page, or if
+         *                               the code page is not single-byte for these bytes
+         */
+        public String decode(byte[] source, int offset, int length, String subject) {
+            Objects.requireNonNull(source, "Stored bytes are required to decode");
+            Objects.requireNonNull(subject, "A subject is required so a coding failure can be "
+                    + "attributed without quoting the content");
+            CharsetDecoder decoder = charset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT);
+            CharBuffer decoded;
+            try {
+                decoded = decoder.decode(ByteBuffer.wrap(source, offset, length));
+            } catch (CharacterCodingException failure) {
+                throw new IllegalStateException("The stored bytes of " + subject + " are not valid "
+                        + "code page " + charset.name() + " data. The content is withheld "
+                        + "deliberately. Decoding them would substitute a replacement character and "
+                        + "present corrupt storage as though it were a field value, so the span is "
+                        + "refused instead", failure);
+            }
+            if (decoded.remaining() != length) {
+                throw new IllegalStateException("Decoding " + length + " byte(s) of " + subject
+                        + " under code page " + charset.name() + " produced " + decoded.remaining()
+                        + " character(s). A fixed-width record area is addressed by absolute byte "
+                        + "offset, so it requires a single-byte code page");
+            }
+            return decoded.toString();
+        }
+
+        /**
+         * How many bytes this code page encodes one character to, for a caller that is measuring the
+         * code page rather than writing data through it. Zero when the character cannot be
+         * represented at all, so a measurement never throws.
+         *
+         * @param character the character to measure
+         * @return the encoded width in bytes, or {@code 0} when unrepresentable
+         */
+        int measuredWidthOf(char character) {
+            if (!charset.newEncoder().canEncode(character)) {
+                return 0;
+            }
+            return encodeWithoutWidthCheck(String.valueOf(character),
+                    "the '" + character + "' character").length;
+        }
+
+    }
+
+    /**
      * The reserved COBOL name for an unnamed span. {@code FILLER} may legitimately be declared many
      * times in one layout and can never be referenced, so it is excluded from duplicate-name
      * detection and from name lookup.
@@ -277,6 +627,19 @@ public final class FixedWidthRecord {
             if (length < 1) {
                 throw new IllegalArgumentException("FieldSpan '" + name + "' declares length "
                         + length + "; every copybook item occupies at least 1 byte");
+            }
+            // The end offset is computed in long and range-checked HERE, once, so that
+            // endOffsetExclusive() below can be plain arithmetic on values already proved to fit.
+            // Without this, offset + length can overflow into a small or negative int and a span that
+            // reaches past Integer.MAX_VALUE would present an apparently valid positive end offset -
+            // which every geometry check downstream would then accept.
+            long endOffset = (long) offset + (long) length;
+            if (endOffset > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("FieldSpan '" + name + "' at offset " + offset
+                        + " of length " + length + " ends at byte " + endOffset + ", beyond the "
+                        + Integer.MAX_VALUE + "-byte addressing limit of a record area. A record is "
+                        + "held as one byte array, so its highest addressable end offset is that "
+                        + "limit; a span reaching past it is a transcription error");
             }
             if (initialValue != null && initialValue.length() > length) {
                 throw new IllegalArgumentException("FieldSpan '" + name + "' declares a VALUE "
@@ -458,10 +821,16 @@ public final class FixedWidthRecord {
          * The exclusive end offset of this span, that is {@code offset + length}. For the last
          * storage span of a well-formed layout this equals the record length.
          *
+         * <p>Cannot overflow: the canonical constructor computes {@code offset + length} in
+         * {@code long} and refuses any descriptor whose end offset would exceed
+         * {@link Integer#MAX_VALUE}, so every descriptor that exists has an end offset representable
+         * as a positive {@code int}. The sum is computed in {@code long} here as well and asserted
+         * exactly, so the two places cannot drift apart if the constructor is ever changed.
+         *
          * @return the offset one byte past the end of this span
          */
         public int endOffsetExclusive() {
-            return offset + length;
+            return Math.toIntExact((long) offset + (long) length);
         }
 
         /**
@@ -557,6 +926,10 @@ public final class FixedWidthRecord {
          */
         private static void verifyGeometry(int recordLength, List<FieldSpan> spans) {
             Set<String> referableNames = new LinkedHashSet<>();
+            // The cursor only ever takes a span's own end offset, and FieldSpan has already proved in
+            // long arithmetic that every such value is a positive int no greater than
+            // Integer.MAX_VALUE. It is therefore never a running sum that could overflow, which is
+            // what makes the comparisons below exact rather than merely plausible.
             int cursor = 0;
             for (FieldSpan span : spans) {
                 if (!FILLER_NAME.equalsIgnoreCase(span.name()) && !referableNames.add(span.name())) {
@@ -599,7 +972,8 @@ public final class FixedWidthRecord {
 
         /**
          * The spans that actually occupy storage, in declaration order, excluding every
-         * {@code REDEFINES} overlay. These are the spans {@link #initialise(RecordLayout)} fills and
+         * {@code REDEFINES} overlay. These are the spans
+         * {@link #initialize(RecordLayout, FillerHandling, ValueHandling)} fills and
          * the spans whose lengths sum to {@link #recordLength()}.
          *
          * @return an immutable list of the storage spans
@@ -671,9 +1045,11 @@ public final class FixedWidthRecord {
         }
 
         /**
-         * Allocates a record over this layout and initialises it, emitting each span's declared
-         * {@code VALUE} literal where one exists and the pad byte for the span's kind where none
-         * does.
+         * Allocates a record over this layout and establishes it as a program's record area is
+         * established at load time - each span's category default, overlaid with its declared
+         * {@code VALUE} literal where one exists. See
+         * {@link FixedWidthRecord#forLayout(RecordLayout, Charset)} for the composition this performs
+         * and for the narrower operations to call instead when only one half is meant.
          *
          * @param charset the code page of the record's data, supplied explicitly by the caller
          * @return a newly allocated, initialised record of this layout's declared length
@@ -705,12 +1081,20 @@ public final class FixedWidthRecord {
     private final byte zeroByte;
 
     /**
+     * The strict text seam for this record's code page. Every byte-to-character conversion in this
+     * class goes through it, so a malformed stored byte or an unrepresentable character is refused
+     * rather than silently substituted.
+     */
+    private final Transcoder transcoder;
+
+    /**
      * Allocates a space-filled record area of the given width.
      *
      * <p>The area is filled with {@code charset}'s space byte, matching a COBOL record area and
      * keeping the bytes correct in the common case of a trailing {@code FILLER} that declares no
      * literal. To apply the per-kind {@code INITIALIZE} convention instead, use
-     * {@link #forLayout(RecordLayout, Charset)} or call {@link #initialise(RecordLayout)}.
+     * {@link #forLayout(RecordLayout, Charset)}, or call
+     * {@link #initialize(RecordLayout, FillerHandling, ValueHandling)} directly.
      *
      * @param recordLength the declared record width in bytes, supplied by the caller from the
      *                     relevant dataset binding or copybook; at least 1
@@ -729,6 +1113,7 @@ public final class FixedWidthRecord {
             throw new IllegalArgumentException("Record length " + recordLength
                     + " is not a valid record width; a record occupies at least 1 byte");
         }
+        this.transcoder = new Transcoder(charset);
         this.spaceByte = singleByte(' ', charset);
         this.zeroByte = singleByte('0', charset);
         this.recordLength = recordLength;
@@ -770,12 +1155,28 @@ public final class FixedWidthRecord {
     }
 
     /**
-     * Allocates a record over a layout and initialises every storage span from it, emitting each
-     * declared {@code VALUE} literal and otherwise the pad byte for the span's kind.
+     * Allocates a record area over a layout and establishes it as a program's own record area is
+     * established at load time.
+     *
+     * <p>That state is the composition of the two operations COBOL keeps distinct, applied in the
+     * order their outcomes require and named here so the composition is visible rather than implied:
+     * <ol>
+     *   <li>{@link #initialize(RecordLayout, FillerHandling, ValueHandling)} with
+     *       {@link FillerHandling#WITH_FILLER} and {@link ValueHandling#CATEGORY_DEFAULTS}, so every
+     *       span - {@code FILLER} included - holds its category default and no span is left holding
+     *       whatever the allocation happened to leave; then</li>
+     *   <li>{@link #loadDeclaredValues(RecordLayout)}, so every span that declares a {@code VALUE}
+     *       holds it.</li>
+     * </ol>
+     * A caller that means only one of those two things should call that one directly. A caller that
+     * needs an unvalued span left demonstrably unspecified should allocate with
+     * {@link #FixedWidthRecord(int, Charset)} and call {@link #loadDeclaredValues(RecordLayout)}
+     * alone.
      *
      * @param layout  the validated layout, whose declared record length becomes the record's width
      * @param charset the code page of the record's data, supplied explicitly
-     * @return a newly allocated, initialised record
+     * @return a newly allocated record holding each span's category default overlaid with its declared
+     *         literal
      * @throws NullPointerException     if {@code layout} or {@code charset} is {@code null}
      * @throws IllegalArgumentException if {@code charset} is not a single-byte code page for the
      *                                  space and zero characters
@@ -784,8 +1185,157 @@ public final class FixedWidthRecord {
         Objects.requireNonNull(layout, "A record layout is required to initialise a record from "
                 + "its declared spans");
         FixedWidthRecord record = new FixedWidthRecord(layout.recordLength(), charset);
-        record.initialise(layout);
+        record.initialize(layout, FillerHandling.WITH_FILLER, ValueHandling.CATEGORY_DEFAULTS);
+        record.loadDeclaredValues(layout);
         return record;
+    }
+
+    // =================================================================================================
+    // The strict character/byte boundary. Every conversion in this module passes through here.
+    // =================================================================================================
+
+    /**
+     * Encodes text under an explicitly named code page, <strong>reporting</strong> rather than
+     * replacing anything the code page cannot represent.
+     *
+     * <h2>Why {@code String.getBytes(Charset)} is not used anywhere in this module</h2>
+     * {@link String#getBytes(Charset)} is specified to substitute the code page's replacement byte for
+     * any character it cannot map, and it does so silently. In a fixed-width record that is data
+     * corruption with no signal: a character outside the single-byte repertoire becomes {@code '?'} -
+     * {@code 0x6F} under {@code IBM037}, {@code 0x3F} under {@code US-ASCII} - the record still measures
+     * its declared width, the layout self-check still passes, and the wrong byte travels all the way to
+     * the dataset and into the parity fingerprint as though it had been written deliberately. This
+     * method configures the encoder with {@link CodingErrorAction#REPORT} on both malformed input and
+     * unmappable characters, so the same condition fails immediately and names where it happened.
+     *
+     * <p><strong>No value text appears in the failure message.</strong> The message names the code page,
+     * the field or span being written and the character position at fault, and nothing else. These areas
+     * hold card numbers, government-issued identifiers and account balances, and an exception message
+     * travels into logs and into HTTP error bodies, so the offending characters themselves are never
+     * quoted.
+     *
+     * @param text    the characters to encode; never {@code null}
+     * @param charset the code page, always named explicitly and never a platform default
+     * @param subject what is being encoded, for the failure message - a copybook field name, a span
+     *                descriptor or a short phrase. Never a value
+     * @return the encoded bytes, exactly as the code page defines them
+     * @throws NullPointerException     if {@code text}, {@code charset} or {@code subject} is
+     *                                  {@code null}
+     * @throws IllegalArgumentException if any character of {@code text} is malformed or is not
+     *                                  representable in {@code charset}
+     */
+    public static byte[] encodeStrictly(String text, Charset charset, String subject) {
+        Objects.requireNonNull(text, "Text is required to encode a fixed-width span");
+        Objects.requireNonNull(charset, "A code page is required; it is never the platform default");
+        Objects.requireNonNull(subject, "A subject is required so a failure names what was encoded");
+        CharsetEncoder encoder = charset.newEncoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+        try {
+            ByteBuffer encoded = encoder.encode(CharBuffer.wrap(text));
+            byte[] bytes = new byte[encoded.remaining()];
+            encoded.get(bytes);
+            if (bytes.length != text.length()) {
+                throw new IllegalArgumentException("Encoding " + text.length() + " character(s) for "
+                        + subject + " under code page " + charset.name() + " produced "
+                        + bytes.length + " byte(s). A fixed-width record area is addressed by "
+                        + "absolute byte offset, so it requires a single-byte code page - one that "
+                        + "encodes every character of its data to exactly one byte. IBM037 for the "
+                        + "EBCDIC datasets and US-ASCII for the text fixtures both qualify");
+            }
+            return bytes;
+        } catch (CharacterCodingException unrepresentable) {
+            throw new IllegalArgumentException("Cannot encode " + subject + " under code page "
+                    + charset.name() + ": the character at 0-based position "
+                    + codingErrorPosition(unrepresentable, text.length())
+                    + " is malformed or has no representation in that code page. A fixed-width record "
+                    + "is addressed by absolute byte offset, so substituting a replacement byte would "
+                    + "corrupt the record silently; the value is withheld from this message because it "
+                    + "may carry sensitive data", unrepresentable);
+        }
+    }
+
+    /**
+     * Decodes bytes under an explicitly named code page, <strong>reporting</strong> rather than
+     * replacing any sequence the code page does not define.
+     *
+     * <p>The mirror of {@link #encodeStrictly(String, Charset, String)} and refused for the same
+     * reason: {@code new String(bytes, charset)} substitutes {@code U+FFFD} for an undecodable
+     * sequence, so a driver returning bytes from the wrong code page would present a plausible-looking
+     * field whose characters are not the ones stored. Failing here turns that into an immediate,
+     * located error.
+     *
+     * <p>The result is <strong>not</strong> trimmed. A COBOL {@code PIC X} field is space-padded to its
+     * full width and that padding is part of the field's value.
+     *
+     * @param bytes   the source array; never {@code null}
+     * @param offset  the 0-based offset of the first byte to decode; never negative
+     * @param length  how many bytes to decode; never negative
+     * @param charset the code page, always named explicitly and never a platform default
+     * @param subject what is being decoded, for the failure message. Never a value
+     * @return the decoded characters, exactly {@code length} bytes' worth
+     * @throws NullPointerException      if {@code bytes}, {@code charset} or {@code subject} is
+     *                                   {@code null}
+     * @throws IndexOutOfBoundsException if {@code [offset, offset + length)} lies outside {@code bytes}
+     * @throws IllegalArgumentException  if the bytes are not a valid sequence in {@code charset}
+     */
+    public static String decodeStrictly(byte[] bytes, int offset, int length, Charset charset,
+                                        String subject) {
+        Objects.requireNonNull(bytes, "Bytes are required to decode a fixed-width span");
+        Objects.requireNonNull(charset, "A code page is required; it is never the platform default");
+        Objects.requireNonNull(subject, "A subject is required so a failure names what was decoded");
+        Objects.checkFromIndexSize(offset, length, bytes.length);
+        CharsetDecoder decoder = charset.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+        try {
+            return decoder.decode(ByteBuffer.wrap(bytes, offset, length)).toString();
+        } catch (CharacterCodingException undecodable) {
+            throw new IllegalArgumentException("Cannot decode " + subject + " under code page "
+                    + charset.name() + ": the byte at 0-based position "
+                    + (offset + codingErrorPosition(undecodable, length))
+                    + " begins a sequence that code page does not define. Substituting a replacement "
+                    + "character would present bytes that were never stored; the bytes are withheld "
+                    + "from this message because they may carry sensitive data", undecodable);
+        }
+    }
+
+    /**
+     * Decodes a whole array strictly - the common case where the span is the entire array.
+     *
+     * @param bytes   the bytes to decode in full; never {@code null}
+     * @param charset the code page, always named explicitly
+     * @param subject what is being decoded, for the failure message. Never a value
+     * @return the decoded characters
+     * @throws NullPointerException     if any argument is {@code null}
+     * @throws IllegalArgumentException if the bytes are not a valid sequence in {@code charset}
+     */
+    public static String decodeStrictly(byte[] bytes, Charset charset, String subject) {
+        Objects.requireNonNull(bytes, "Bytes are required to decode a fixed-width record image");
+        return decodeStrictly(bytes, 0, bytes.length, charset, subject);
+    }
+
+    /**
+     * The position a coding failure reports, clamped into the subject's own range so a message never
+     * quotes an index outside it.
+     *
+     * <p>{@link MalformedInputException} and
+     * {@link UnmappableCharacterException} carry the input length that failed rather
+     * than its position, and {@link CharsetEncoder#encode(CharBuffer)} reports through the buffer's
+     * position; taking the failure's own view and bounding it keeps the message honest without
+     * depending on which of the two arrived.
+     */
+    private static int codingErrorPosition(CharacterCodingException failure, int inputLength) {
+        int reported = 0;
+        if (failure instanceof MalformedInputException malformed) {
+            reported = malformed.getInputLength();
+        } else if (failure instanceof UnmappableCharacterException unmappable) {
+            reported = unmappable.getInputLength();
+        }
+        if (reported < 0) {
+            return 0;
+        }
+        return Math.min(reported, Math.max(inputLength - 1, 0));
     }
 
     /**
@@ -794,7 +1344,9 @@ public final class FixedWidthRecord {
      * encoding of its pad characters.
      */
     private static byte singleByte(char character, Charset charset) {
-        byte[] encoded = String.valueOf(character).getBytes(charset);
+        byte[] encoded = new Transcoder(charset)
+                .encodeWithoutWidthCheck(String.valueOf(character), "the '" + character
+                        + "' pad character");
         if (encoded.length != 1) {
             throw new IllegalArgumentException("Charset " + charset.name() + " encodes '" + character
                     + "' to " + encoded.length + " byte(s). A fixed-width record area is addressed "
@@ -828,6 +1380,44 @@ public final class FixedWidthRecord {
     }
 
     /**
+     * Encodes a record image strictly under an explicitly named code page, refusing any character the
+     * code page cannot represent and any code page that is not single-byte.
+     *
+     * <p>This is the entry point for the model and repository types that hold a row as text and must
+     * turn it into the bytes of a record area. It exists so that no caller anywhere in the module has
+     * a reason to reach for {@code String.getBytes(Charset)}, whose defined behaviour is to
+     * substitute {@code ?} for anything it cannot encode.
+     *
+     * @param text    the image to encode
+     * @param charset the code page, supplied explicitly
+     * @param subject what is being encoded, named in any diagnostic - never its content
+     * @return the encoded bytes, one per character
+     * @throws NullPointerException     if any argument is {@code null}
+     * @throws IllegalArgumentException if a character is unrepresentable or the code page is not
+     *                                  single-byte
+     */
+    public static byte[] encodeText(String text, Charset charset, String subject) {
+        return new Transcoder(charset).encode(text, subject);
+    }
+
+    /**
+     * Decodes stored bytes strictly under an explicitly named code page, refusing any byte that is
+     * not a character in it.
+     *
+     * @param source  the stored bytes, decoded in full
+     * @param charset the code page, supplied explicitly
+     * @param subject what is being decoded, named in any diagnostic - never its content
+     * @return the decoded text, one character per byte
+     * @throws NullPointerException  if any argument is {@code null}
+     * @throws IllegalStateException if a stored byte is not valid data in the code page, or the code
+     *                               page is not single-byte
+     */
+    public static String decodeText(byte[] source, Charset charset, String subject) {
+        Objects.requireNonNull(source, "Stored bytes are required to decode");
+        return new Transcoder(charset).decode(source, 0, source.length, subject);
+    }
+
+    /**
      * The space byte under this record's charset - the pad for character spans.
      *
      * @return {@code 0x40} under EBCDIC, {@code 0x20} under ASCII
@@ -846,10 +1436,14 @@ public final class FixedWidthRecord {
     }
 
     /**
-     * The pad byte a span of the given kind is filled with when it declares no {@code VALUE}: the
-     * zero byte for numeric {@code DISPLAY} kinds and the space byte otherwise. This is the COBOL
-     * {@code INITIALIZE} convention, and it is what makes an initialised
-     * {@code WS-CURDATE-MM-DD-YY} group read {@code 00/00/00}.
+     * The byte that fills the unused remainder of a span of the given kind when a shorter value is
+     * placed into it: the zero byte for numeric {@code DISPLAY} kinds and the space byte otherwise,
+     * mirroring how COBOL pads a {@code MOVE} into each category.
+     *
+     * <p>This is the <em>pad</em> byte, and it is not by itself the category default an
+     * {@code INITIALIZE} moves into a span: a signed numeric span's category default additionally
+     * carries a sign overpunch in its trailing byte. See
+     * {@link #initialize(RecordLayout, FillerHandling, ValueHandling)}.
      *
      * @param kind the span category
      * @return the pad byte under this record's charset
@@ -936,12 +1530,43 @@ public final class FixedWidthRecord {
      *
      * @param offset the absolute 0-based byte offset
      * @param length the span width in bytes; at least 1
+     * <p>Stored bytes that are not characters in this record's code page are <strong>refused</strong>
+     * rather than decoded to replacement characters, so corrupt storage can never be presented as
+     * though it were a field value. The diagnostic names the span and withholds the content.
+     *
+     * @param offset the absolute 0-based byte offset
+     * @param length the span width in bytes; at least 1
      * @return the decoded text, exactly {@code length} bytes' worth
      * @throws IndexOutOfBoundsException if the span falls outside the record
+     * @throws IllegalStateException     if the stored bytes are not valid data in this record's code
+     *                                   page
      */
     public String readString(int offset, int length) {
+        return readString(offset, length, positionalSubject(offset, length));
+    }
+
+    /**
+     * Decodes a span as text under this record's charset, attributing any coding failure to a named
+     * subject.
+     *
+     * @param offset  the absolute 0-based byte offset
+     * @param length  the span width in bytes; at least 1
+     * @param subject what the span is, named in any diagnostic - never its content
+     * @return the decoded text, exactly {@code length} bytes' worth
+     * @throws NullPointerException      if {@code subject} is {@code null}
+     * @throws IndexOutOfBoundsException if the span falls outside the record
+     * @throws IllegalStateException     if the stored bytes are not valid data in this record's code
+     *                                   page
+     */
+    public String readString(int offset, int length, String subject) {
         checkSpan(offset, length);
-        return new String(area, offset, length, charset);
+        return transcoder.decode(area, offset, length, subject);
+    }
+
+    /** Names a span by position alone, for a caller that supplied no field name. */
+    private String positionalSubject(int offset, int length) {
+        return "the span at offset " + offset + " of length " + length + " in a record of length "
+                + recordLength;
     }
 
     /**
@@ -983,10 +1608,32 @@ public final class FixedWidthRecord {
      */
     public void writeString(int offset, int length, String value, boolean leftJustified,
                             byte padByte) {
+        writeString(offset, length, value, leftJustified, padByte,
+                positionalSubject(offset, length));
+    }
+
+    /**
+     * Writes text into a span with the justification, pad byte and diagnostic subject all stated
+     * explicitly.
+     *
+     * @param offset        the absolute 0-based byte offset
+     * @param length        the span width in bytes; at least 1
+     * @param value         the text to write; its encoded form must not exceed {@code length}
+     * @param leftJustified {@code true} to place the value at the start of the span and pad after it
+     * @param padByte       the byte filling the remainder of the span
+     * @param subject       what the span is, named in any diagnostic - never its content
+     * @throws NullPointerException      if {@code value} or {@code subject} is {@code null}
+     * @throws IndexOutOfBoundsException if the span falls outside the record
+     * @throws IllegalArgumentException  if {@code value} encodes to more than {@code length} bytes,
+     *                                   or contains a character this record's code page cannot
+     *                                   represent
+     */
+    public void writeString(int offset, int length, String value, boolean leftJustified,
+                            byte padByte, String subject) {
         Objects.requireNonNull(value, "A value is required; call fill(offset, length, byte) to blank "
                 + "a span instead");
         checkSpan(offset, length);
-        byte[] encoded = value.getBytes(charset);
+        byte[] encoded = transcoder.encode(value, subject);
         if (encoded.length > length) {
             throw new IllegalArgumentException("Value encodes to " + encoded.length + " byte(s) "
                     + "under " + charset.name() + " but the span at offset " + offset + " is only "
@@ -1022,7 +1669,7 @@ public final class FixedWidthRecord {
      */
     public String readSpan(FieldSpan field) {
         Objects.requireNonNull(field, "A field descriptor is required to read a named span");
-        return readString(field.offset(), field.length());
+        return readString(field.offset(), field.length(), field.describe());
     }
 
     /**
@@ -1039,7 +1686,7 @@ public final class FixedWidthRecord {
     public void writeSpan(FieldSpan field, String value) {
         Objects.requireNonNull(field, "A field descriptor is required to write a named span");
         writeString(field.offset(), field.length(), value, field.kind().leftJustified(),
-                padByteFor(field.kind()));
+                padByteFor(field.kind()), field.describe());
     }
 
     /**
@@ -1080,42 +1727,129 @@ public final class FixedWidthRecord {
     }
 
     /**
-     * Initialises every storage span of a layout: each span that declares a {@code VALUE} literal
-     * receives that literal, and every other span receives the pad byte for its kind.
+     * Applies the layout's declared {@code VALUE} literals and nothing else, which is what
+     * establishing a program's record area amounts to.
      *
-     * <p>This is where the {@code app/cpy/CSDAT01Y.cpy} exception is honoured. Initialising that
-     * copybook's {@code WS-CURDATE-MM-DD-YY} group yields {@code 00/00/00}: the two numeric spans
-     * declare no literal and so take the zero byte, while the two {@code FILLER X(01) VALUE '/'}
-     * spans emit their slash. A blanket space-fill would have produced {@code   /  /  } at best and
-     * blanked the separators entirely at worst.
+     * <p>This is the storage-construction half of the two operations COBOL keeps separate and which
+     * are easy to conflate into one. A data item that declares a {@code VALUE} holds that literal
+     * from the moment its storage exists; a data item that declares none holds <strong>unspecified
+     * content</strong>. This method therefore writes the literals and leaves every other span exactly
+     * as it was found - which, for a freshly allocated area, is this module's own space fill. It never
+     * invents a value for an unvalued span, so a caller cannot come to depend on one.
      *
-     * <p>{@code REDEFINES} overlays are skipped, because the storage they view has already been
-     * initialised by the span they redefine. Initialising an overlay separately would overwrite that
-     * storage a second time and make the result depend on declaration order.
+     * <p>It is also the {@code ALL TO VALUE} form of {@code INITIALIZE}, in which only the items that
+     * declare a {@code VALUE} are receiving operands, and it honours the
+     * {@code app/cpy/CSDAT01Y.cpy} separators - the {@code FILLER X(01) VALUE '/'} spans of
+     * {@code WS-CURDATE-MM-DD-YY} - because a {@code FILLER} that declares a literal is still a span
+     * that carries one.
      *
-     * @param layout the layout to initialise from; its declared record length must equal this
-     *               record's
+     * <p>{@code REDEFINES} overlays are skipped: the storage they view belongs to the span they
+     * redefine, so writing through both would apply two literals to one span and make the result
+     * depend on declaration order.
+     *
+     * @param layout the layout whose declared literals to apply; its declared record length must
+     *               equal this record's
      * @throws NullPointerException     if {@code layout} is {@code null}
      * @throws IllegalArgumentException if the layout's declared record length differs from this
      *                                  record's length
      */
-    public void initialise(RecordLayout layout) {
+    public void loadDeclaredValues(RecordLayout layout) {
+        requireMatchingLayout(layout);
+        for (FieldSpan span : layout.spans()) {
+            if (span.redefinition() || !span.hasInitialValue()) {
+                continue;
+            }
+            writeSpan(span, span.initialValue());
+        }
+    }
+
+    /**
+     * The COBOL {@code INITIALIZE} <em>statement</em>, with both of its phrases stated explicitly.
+     *
+     * <h2>Why the phrases are parameters</h2>
+     * {@code INITIALIZE} is a family of operations, not one operation, and the differences between
+     * its members are all silent when they are wrong:
+     * <ul>
+     *   <li>an unqualified {@code INITIALIZE} moves the <em>category default</em> into each
+     *       participating item - spaces into character items, zeros into numeric items - and ignores
+     *       {@code VALUE} clauses completely;</li>
+     *   <li>{@code ALL TO VALUE} moves each item's declared {@code VALUE} and leaves an item that
+     *       declares none untouched;</li>
+     *   <li>{@code FILLER} items participate only when {@code WITH FILLER} is written.</li>
+     * </ul>
+     * A single method that always applied literals <em>and</em> always filled {@code FILLER} would be
+     * none of these forms, and every caller would silently get the other form's behaviour. So each
+     * call site names the form it means.
+     *
+     * <h2>The signed category default carries a sign</h2>
+     * A signed zoned span's zero is not a bare run of zeros. Its trailing byte carries the sign as an
+     * overpunch, so the category default is zeros with {@link ZonedSign#POSITIVE_ZERO} in the last
+     * byte - {@code 00000000000&#123;} for the eleven-byte {@code TRAN-CAT-BAL}, and
+     * {@code 000000000000&#123;} widened to the twelve-byte {@code ACCT-CURR-BAL}. This is measured,
+     * not inferred: every zero-valued signed field in {@code app/data/ASCII/acctdata.txt},
+     * {@code tcatbal.txt} and {@code discgrp.txt} is stored exactly that way, and a span ending in a
+     * plain {@code 0} would match no row of production-shaped data and would be read back as an
+     * unsigned quantity.
+     *
+     * <p>{@code REDEFINES} overlays are skipped, as COBOL's own rules require: the storage they view
+     * has already been initialised through the span they redefine, and initialising an overlay
+     * separately would overwrite that storage a second time under a different category.
+     *
+     * @param layout         the layout to initialise over; its declared record length must equal this
+     *                       record's
+     * @param fillerHandling whether {@code FILLER} spans participate, i.e. the {@code WITH FILLER}
+     *                       phrase
+     * @param valueHandling  what is moved into each participating span
+     * @throws NullPointerException     if any argument is {@code null}
+     * @throws IllegalArgumentException if the layout's declared record length differs from this
+     *                                  record's length
+     */
+    public void initialize(RecordLayout layout, FillerHandling fillerHandling,
+                           ValueHandling valueHandling) {
+        requireMatchingLayout(layout);
+        Objects.requireNonNull(fillerHandling, "State whether FILLER participates: COBOL's "
+                + "INITIALIZE skips FILLER unless WITH FILLER is written, and a FILLER that declares "
+                + "a literal VALUE is blanked for good by an unqualified fill");
+        Objects.requireNonNull(valueHandling, "State what INITIALIZE moves: the category default, or "
+                + "each span's declared VALUE");
+        for (FieldSpan span : layout.spans()) {
+            if (span.redefinition()) {
+                continue;
+            }
+            if (span.kind().filler() && !fillerHandling.includesFiller()) {
+                continue;
+            }
+            if (valueHandling == ValueHandling.TO_VALUE) {
+                if (span.hasInitialValue()) {
+                    writeSpan(span, span.initialValue());
+                }
+                continue;
+            }
+            applyCategoryDefault(span);
+        }
+    }
+
+    /**
+     * Moves one span's category default into it: zoned zeros for a numeric {@code DISPLAY} span, with
+     * a positive-zero sign overpunch in the trailing byte when the span is signed, and spaces
+     * otherwise.
+     */
+    private void applyCategoryDefault(FieldSpan span) {
+        fill(span.offset(), span.length(), padByteFor(span.kind()));
+        if (span.kind() == PictureKind.SIGNED_SCALED) {
+            int trailing = span.offset() + span.length() - 1;
+            area[trailing] = singleByte(ZonedSign.POSITIVE_ZERO, charset);
+        }
+    }
+
+    /** Rejects a layout whose declared width is not this record's width. */
+    private void requireMatchingLayout(RecordLayout layout) {
         Objects.requireNonNull(layout, "A record layout is required to initialise from its "
                 + "declared spans");
         if (layout.recordLength() != recordLength) {
             throw new IllegalArgumentException("Layout declares a record length of "
                     + layout.recordLength() + " but this record is " + recordLength
                     + " byte(s) wide; a layout and the record it initialises must agree exactly");
-        }
-        for (FieldSpan span : layout.spans()) {
-            if (span.redefinition()) {
-                continue;
-            }
-            if (span.hasInitialValue()) {
-                writeSpan(span, span.initialValue());
-            } else {
-                fill(span.offset(), span.length(), padByteFor(span.kind()));
-            }
         }
     }
 
@@ -1158,7 +1892,21 @@ public final class FixedWidthRecord {
                     + " is outside 1.." + occursCount + "; COBOL subscripts are 1-based, so the "
                     + "first element is index 1 and there is no index 0");
         }
-        return baseOffset + (oneBasedIndex - 1) * elementLength;
+        // Computed in long and range-checked, because (oneBasedIndex - 1) * elementLength is exactly
+        // the kind of product that overflows: a wide element at a high subscript can wrap into a
+        // small or negative int, and the result would then look like a perfectly ordinary offset
+        // inside the record. The element's own END offset is checked too, not only its start, since a
+        // span that begins inside the addressable range can still finish outside it.
+        long elementOffset = (long) baseOffset + ((long) oneBasedIndex - 1L) * (long) elementLength;
+        long elementEnd = elementOffset + (long) elementLength;
+        if (elementEnd > Integer.MAX_VALUE) {
+            throw new IndexOutOfBoundsException("OCCURS element " + oneBasedIndex + " of "
+                    + occursCount + ", each " + elementLength + " byte(s) wide from base offset "
+                    + baseOffset + ", ends at byte " + elementEnd + ", beyond the "
+                    + Integer.MAX_VALUE + "-byte addressing limit of a record area. The table span "
+                    + "or the occurrence count is wrong");
+        }
+        return (int) elementOffset;
     }
 
     /**

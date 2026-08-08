@@ -1,11 +1,15 @@
 package com.vsergeychik.carddemo.util;
 
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.util.DateUtilityJob.DateValidationResult;
+import com.vsergeychik.carddemo.util.DateUtilityJob.FeedbackToken;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.Charset;
@@ -22,6 +26,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -640,6 +650,30 @@ class DateUtilityJobTest {
             return decodeSeverity(hexToken);
         }
 
+        /**
+         * Whether this arm can be reached by handing the service an {@code LS-DATE} and an
+         * {@code LS-DATE-FORMAT}.
+         *
+         * <p>True for the nine named arms. False for {@code WHEN OTHER}, which exists for a feedback
+         * token outside the nine and is therefore unreachable from the public API by construction -
+         * see {@link #resultThroughTheMappingSeam()}.
+         *
+         * @return {@code true} when {@link #inputDate()} drives this arm
+         */
+        boolean drivenByInput() {
+            return inputDate != null;
+        }
+
+        /**
+         * The result text this arm stores, obtained from the {@code EVALUATE} mapping itself rather
+         * than by driving the validator - the only honest way to cover an arm no input can reach.
+         *
+         * @return the fifteen-character {@code WS-RESULT} text
+         */
+        String resultThroughTheMappingSeam() {
+            return DateUtilityJob.resultTextOfFeedbackToken(FeedbackToken.UNENUMERATED);
+        }
+
         @Override
         public String toString() {
             return "arm " + armNumber + " " + cobolName + " -> '" + expectedResult + "'";
@@ -703,12 +737,17 @@ class DateUtilityJobTest {
                 new EvaluateArm(9, "FC-YEAR-IN-ERA-ZERO", TOKEN_FC_YEAR_IN_ERA_ZERO,
                         "0000-07-18", MASK_HYPHENATED, RESULT_YEAR_IN_ERA_ZERO),
 
-                // Arm 10, L147-L148, WHEN OTHER. Reached through the public API by a literal-delimiter
-                // mismatch: the picture demands '-' at offsets 4 and 7 and the input supplies '/'.
-                // No documented CEEDAYS code describes a shape mismatch of that kind, which is exactly
-                // what WHEN OTHER exists for.
+                // Arm 10, L147-L148, WHEN OTHER. DELIBERATELY not reachable through validateDate,
+                // and that is the corrected contract rather than a gap in this table: every condition
+                // the validator can detect maps onto one of the nine documented CEEDAYS codes, so the
+                // only thing that can reach this arm is a feedback token outside those nine - which a
+                // real Language Environment could return and this reimplementation never manufactures.
+                // A null input marks it, and DateUtilityJob.resultTextOfFeedbackToken is the seam the
+                // tests drive it through. Its severity and message number remain decoded from the
+                // sentinel token, so the '0003'/'0000' combination is still asserted - as something
+                // CEEDAYS cannot return, not as something this service produces.
                 new EvaluateArm(10, "WHEN OTHER", TOKEN_UNENUMERATED_SENTINEL,
-                        "2022/07/18", MASK_HYPHENATED, RESULT_DATE_IS_INVALID));
+                        null, null, RESULT_DATE_IS_INVALID));
     }
 
     /**
@@ -941,6 +980,19 @@ class DateUtilityJobTest {
         @MethodSource("com.vsergeychik.carddemo.util.DateUtilityJobTest#evaluateArmsInSourceOrder")
         @DisplayName("each arm yields its own severity, message number, result text and return code")
         void eachArmYieldsItsOwnObservableOutcome(EvaluateArm arm) {
+            if (!arm.drivenByInput()) {
+                // WHEN OTHER. Asserted through the mapping itself, and its declared severity and
+                // message number are asserted as the impossible combination they are: CEEDAYS never
+                // returns severity 3 with message number 0, so nothing this service produces may
+                // carry it.
+                assertThat(arm.resultThroughTheMappingSeam())
+                        .as("WS-RESULT for %s", arm.cobolName())
+                        .isEqualTo(arm.expectedResult())
+                        .hasSize(RESULT_LENGTH);
+                assertThat(arm.expectedSeverityCode()).isEqualTo(asPicNine4(3));
+                assertThat(arm.expectedMessageNumber()).isEqualTo(asPicNine4(0));
+                return;
+            }
             final DateValidationResult result =
                     newService().validateDate(arm.inputDate(), arm.pictureMask());
 
@@ -1102,7 +1154,9 @@ class DateUtilityJobTest {
             final Set<String> expected = new LinkedHashSet<>();
 
             for (EvaluateArm arm : evaluateArmsInSourceOrder().toList()) {
-                observed.add(service.validateDate(arm.inputDate(), arm.pictureMask()).result());
+                observed.add(arm.drivenByInput()
+                        ? service.validateDate(arm.inputDate(), arm.pictureMask()).result()
+                        : arm.resultThroughTheMappingSeam());
                 expected.add(arm.expectedResult());
             }
 
@@ -1120,16 +1174,20 @@ class DateUtilityJobTest {
         void every88LevelIsDrivenBothTrueAndFalse(EvaluateArm arm) {
             final DateUtilityJob service = newService();
 
-            // The TRUE state: the condition matches its own token and stores its own text.
-            assertThat(service.validateDate(arm.inputDate(), arm.pictureMask()).result())
+            // The TRUE state: the condition matches its own token and stores its own text. For the
+            // nine named arms that is an input; for WHEN OTHER it is the mapping, because no input
+            // can reach it.
+            assertThat(arm.drivenByInput()
+                    ? service.validateDate(arm.inputDate(), arm.pictureMask()).result()
+                    : arm.resultThroughTheMappingSeam())
                     .as("%s must be TRUE for its own token", arm.cobolName())
                     .isEqualTo(arm.expectedResult());
 
             // The FALSE state: for every OTHER arm's input this condition must not match, so this
-            // arm's text must not appear. Driving all nine others gives far more than the required
+            // arm's text must not appear. Driving all the others gives far more than the required
             // "at least one other token" and makes the exclusion exhaustive.
             for (EvaluateArm other : evaluateArmsInSourceOrder().toList()) {
-                if (other.armNumber() == arm.armNumber()) {
+                if (other.armNumber() == arm.armNumber() || !other.drivenByInput()) {
                     continue;
                 }
                 assertThat(service.validateDate(other.inputDate(), other.pictureMask()).result())
@@ -1143,41 +1201,72 @@ class DateUtilityJobTest {
         @Test
         @DisplayName("WHEN OTHER is the default: an unenumerated token yields 'Date is invalid' only")
         void whenOtherIsTheDefaultAndYieldsDateIsInvalidOnly() {
-            // A literal-delimiter mismatch: the picture demands '-' at offsets 4 and 7, the input
-            // supplies '/'. No documented CEEDAYS condition describes that, so the feedback token is
-            // outside the nine 88-levels and L147-L148 must catch it.
-            final DateValidationResult result = newService().validateDate("2022/07/18", MASK_HYPHENATED);
+            // L147-L148 is reached by a feedback token outside the nine 88-levels, and by nothing
+            // else. Driven through the mapping itself, which is the only route that exists: the
+            // validator maps every condition it can detect onto one of the nine documented CEEDAYS
+            // codes, so it never produces a token this arm would catch.
+            final String whenOther =
+                    DateUtilityJob.resultTextOfFeedbackToken(FeedbackToken.UNENUMERATED);
 
-            assertThat(result.result())
+            assertThat(whenOther)
                     .as("the WHEN OTHER arm at L147-L148")
-                    .isEqualTo(RESULT_DATE_IS_INVALID);
+                    .isEqualTo(RESULT_DATE_IS_INVALID)
+                    .hasSize(RESULT_LENGTH);
 
-            // ...and nothing else. It must not have been captured by any of the nine named arms.
-            assertThat(result.result()).isNotIn(
+            // ...and nothing else. It must not coincide with any of the nine named arms' texts.
+            assertThat(whenOther).isNotIn(
                     RESULT_DATE_IS_VALID, RESULT_INSUFFICIENT, RESULT_DATEVALUE_ERROR,
                     RESULT_INVALID_ERA, RESULT_UNSUPP_RANGE, RESULT_INVALID_MONTH,
                     RESULT_BAD_PIC_STRING, RESULT_NONNUMERIC_DATA, RESULT_YEAR_IN_ERA_ZERO);
 
-            // The severity and message number on this path are whatever the validator returned and are
-            // never forced to a named value, so the callers see '0003'/'0000' and reject the date -
-            // the right outcome for input the picture string never described.
-            assertThat(result.severityCode()).isEqualTo(asPicNine4(3));
-            assertThat(result.messageNumber()).isEqualTo(asPicNine4(0));
-            assertThat(result.returnCode()).isEqualTo(3);
-            assertFillersAreIntact(result.message());
+            // Each of the nine named tokens maps to its OWN text, so the default really is the last
+            // resort rather than an arm that competes.
+            for (FeedbackToken named : FeedbackToken.values()) {
+                if (named == FeedbackToken.UNENUMERATED) {
+                    continue;
+                }
+                assertThat(DateUtilityJob.resultTextOfFeedbackToken(named))
+                        .as("%s must not fall through to WHEN OTHER", named)
+                        .isNotEqualTo(RESULT_DATE_IS_INVALID);
+            }
         }
 
         @Test
-        @DisplayName("a second, independent WHEN OTHER trigger reaches the same arm")
-        void aSecondIndependentWhenOtherTriggerReachesTheSameArm() {
-            // Leftover non-blank input: '<CC>YYMMDD' describes only eight input characters, so the
-            // final two must be blank. Supplying '99' there is neither missing data nor a bad value,
-            // so once again no documented code fits and WHEN OTHER catches it. Two structurally
-            // different routes to the same arm guard against the arm being reachable by accident.
-            final DateValidationResult result = newService().validateDate("AD22071899", "<CC>YYMMDD");
+        @DisplayName("no input can reach WHEN OTHER: every shape failure is a documented code")
+        void noInputCanReachWhenOther() {
+            final DateUtilityJob service = newService();
 
-            assertThat(result.result()).isEqualTo(RESULT_DATE_IS_INVALID);
-            assertThat(result.returnCode()).isEqualTo(3);
+            // The four inputs that used to be routed to WHEN OTHER, each now landing where the
+            // documented CEEDAYS contract puts it. Three are accepted outright, because IBM states
+            // that leading and trailing blanks are tolerated, that a leading zero may be omitted, and
+            // that "after a valid date is parsed, remaining characters are ignored"; the fourth is a
+            // genuine shape failure and is CEE2520.
+            assertThat(service.validateDate("2022/07/18", MASK_HYPHENATED).result())
+                    .as("a delimiter VARIANT is accepted where the picture declares a delimiter")
+                    .isEqualTo(RESULT_DATE_IS_VALID);
+            assertThat(service.validateDate("AD22071899", "<CC>YYMMDD").result())
+                    .as("characters beyond everything the picture described are ignored")
+                    .isEqualTo(RESULT_DATE_IS_VALID);
+            assertThat(service.validateDate("2022-07-1", MASK_HYPHENATED).result())
+                    .as("an omitted leading zero is accepted, as CEEDAYS' own '6/2/88' example shows")
+                    .isEqualTo(RESULT_DATE_IS_VALID);
+            assertThat(service.validateDate("20A2-07-18", MASK_HYPHENATED).result())
+                    .as("a letter where the picture located digits IS a shape failure: CEE2520")
+                    .isEqualTo(RESULT_NONNUMERIC_DATA);
+
+            // And the standing guarantee: none of the four - nor a wholly blank input - can produce
+            // the severity 3 with message number 0000 that only the sentinel carries. That
+            // combination is one CEEDAYS cannot return, so nothing this service emits may hold it.
+            for (String candidate : List.of("2022/07/18", "AD22071899", "2022-07-1", "20A2-07-18",
+                    "          ", "", "2022-07-18")) {
+                final DateValidationResult observed = service.validateDate(candidate,
+                        candidate.length() == 10 && candidate.startsWith("AD")
+                                ? "<CC>YYMMDD" : MASK_HYPHENATED);
+                assertThat(observed.severityCode() + observed.messageNumber())
+                        .as("'%s' must not report the impossible 0003/0000 pair", candidate)
+                        .isNotEqualTo(asPicNine4(3) + asPicNine4(0));
+                assertFillersAreIntact(observed.message());
+            }
         }
 
         @Test
@@ -1276,6 +1365,13 @@ class DateUtilityJobTest {
         @MethodSource("com.vsergeychik.carddemo.util.DateUtilityJobTest#evaluateArmsInSourceOrder")
         @DisplayName("both overlay views agree on every arm the service can produce")
         void bothOverlayViewsAgreeOnEveryArm(EvaluateArm arm) {
+            if (!arm.drivenByInput()) {
+                // No service call can reach WHEN OTHER, so there is no pair of overlay views to
+                // compare. The two readings of the sentinel token itself still have to agree.
+                assertThat(Integer.parseInt(arm.expectedSeverityCode()))
+                        .isEqualTo(arm.expectedReturnCode());
+                return;
+            }
             final DateValidationResult result =
                     newService().validateDate(arm.inputDate(), arm.pictureMask());
 
@@ -1317,9 +1413,16 @@ class DateUtilityJobTest {
                     .as("FC-INVALID-DATE is the SUCCESS token, so RETURN-CODE is 0")
                     .isZero();
 
-            // Arms 2 through 9 all carry severity 3, and so does the WHEN OTHER sentinel.
+            // Arms 2 through 9 all carry severity 3, and so does the WHEN OTHER sentinel - which is
+            // asserted from its declared token, because no input reaches that arm.
             for (EvaluateArm arm : evaluateArmsInSourceOrder().toList()) {
                 if (arm.armNumber() == 1) {
+                    continue;
+                }
+                if (!arm.drivenByInput()) {
+                    assertThat(arm.expectedReturnCode())
+                            .as("the %s sentinel declares severity 3", arm.cobolName())
+                            .isEqualTo(3);
                     continue;
                 }
                 assertThat(service.validateDate(arm.inputDate(), arm.pictureMask()).returnCode())
@@ -1347,6 +1450,9 @@ class DateUtilityJobTest {
             final Set<Integer> observed = new LinkedHashSet<>();
             final DateUtilityJob service = newService();
             for (EvaluateArm arm : evaluateArmsInSourceOrder().toList()) {
+                if (!arm.drivenByInput()) {
+                    continue; // WHEN OTHER is unreachable from the public API.
+                }
                 observed.add(service.validateDate(arm.inputDate(), arm.pictureMask()).returnCode());
             }
             assertThat(observed).containsExactlyInAnyOrder(0, 3);
@@ -1360,6 +1466,9 @@ class DateUtilityJobTest {
             // an abend path here would fail rather than pass unnoticed.
             final DateUtilityJob service = newService();
             for (EvaluateArm arm : evaluateArmsInSourceOrder().toList()) {
+                if (!arm.drivenByInput()) {
+                    continue; // WHEN OTHER is unreachable from the public API.
+                }
                 assertThatCode(() -> service.validateDate(arm.inputDate(), arm.pictureMask()))
                         .as("%s must return normally - CSUTLDTC never abends", arm.cobolName())
                         .doesNotThrowAnyException();
@@ -1591,6 +1700,9 @@ class DateUtilityJobTest {
         @MethodSource("com.vsergeychik.carddemo.util.DateUtilityJobTest#evaluateArmsInSourceOrder")
         @DisplayName("the four-field caller projection reads the same severity and message number")
         void theFourFieldCallerProjectionReadsTheSameValues(EvaluateArm arm) {
+            if (!arm.drivenByInput()) {
+                return; // WHEN OTHER produces no eighty-byte message, because no input reaches it.
+            }
             final DateValidationResult result =
                     newService().validateDate(arm.inputDate(), arm.pictureMask());
             final String message = result.message();
@@ -1677,6 +1789,9 @@ class DateUtilityJobTest {
             // else, which is what makes 2513 the single interesting value in the contract.
             final DateUtilityJob service = newService();
             for (EvaluateArm arm : evaluateArmsInSourceOrder().toList()) {
+                if (!arm.drivenByInput()) {
+                    continue; // WHEN OTHER is unreachable from the public API.
+                }
                 final DateValidationResult result =
                         service.validateDate(arm.inputDate(), arm.pictureMask());
                 final boolean disagreement =
@@ -1698,8 +1813,10 @@ class DateUtilityJobTest {
             assertThat(copybookCallerAccepts(valid)).isTrue();
 
             for (EvaluateArm arm : evaluateArmsInSourceOrder().toList()) {
-                if (arm.armNumber() == 1 || arm.armNumber() == 5) {
-                    continue; // arm 1 is the success token; arm 5 is the tolerated 2513.
+                if (arm.armNumber() == 1 || arm.armNumber() == 5 || !arm.drivenByInput()) {
+                    // Arm 1 is the success token; arm 5 is the tolerated 2513; WHEN OTHER is
+                    // unreachable from the public API.
+                    continue;
                 }
                 final DateValidationResult error =
                         service.validateDate(arm.inputDate(), arm.pictureMask());
@@ -1785,11 +1902,15 @@ class DateUtilityJobTest {
             final List<String> secondPass = new ArrayList<>();
 
             for (EvaluateArm arm : evaluateArmsInSourceOrder().toList()) {
-                firstPass.add(shared.validateDate(arm.inputDate(), arm.pictureMask()).message());
+                if (arm.drivenByInput()) {
+                    firstPass.add(shared.validateDate(arm.inputDate(), arm.pictureMask()).message());
+                }
             }
             // Drive every arm again through the very same instance, in the same order.
             for (EvaluateArm arm : evaluateArmsInSourceOrder().toList()) {
-                secondPass.add(shared.validateDate(arm.inputDate(), arm.pictureMask()).message());
+                if (arm.drivenByInput()) {
+                    secondPass.add(shared.validateDate(arm.inputDate(), arm.pictureMask()).message());
+                }
             }
 
             assertThat(secondPass)
@@ -1953,11 +2074,18 @@ class DateUtilityJobTest {
             final DateUtilityJob service = newService();
 
             // COBOL right-pads an alphanumeric receiver, so a nine-character date gains a trailing
-            // space - which lands in the DD field and is not a digit, hence 'Nonnumeric data'.
+            // space. CEEDAYS tolerates a trailing blank and accepts an omitted leading zero, so the
+            // day field takes the single '1' and the pad is simply the tail the picture never reached.
             final DateValidationResult padded = service.validateDate("2022-07-1", MASK_HYPHENATED);
             assertThat(movePicX("2022-07-1", DATE_LENGTH)).isEqualTo("2022-07-1 ");
-            assertThat(padded.result()).isEqualTo(RESULT_NONNUMERIC_DATA);
+            assertThat(padded.result()).isEqualTo(RESULT_DATE_IS_VALID);
             assertThat(padded.message()).hasSize(MESSAGE_LENGTH);
+
+            // A field that supplies NO digit at all is a different matter, and it is the documented
+            // CEE2520: this is what a half-typed screen field actually produces.
+            final DateValidationResult noDigits = service.validateDate("2022-07-", MASK_HYPHENATED);
+            assertThat(movePicX("2022-07-", DATE_LENGTH)).isEqualTo("2022-07-  ");
+            assertThat(noDigits.result()).isEqualTo(RESULT_NONNUMERIC_DATA);
 
             // COBOL truncates an alphanumeric sender on the RIGHT, so the excess is dropped and the
             // first ten characters still form a valid date.
@@ -2062,7 +2190,8 @@ class DateUtilityJobTest {
             "2022-07-A8 | YYYY-MM-DD | 0003 | 2520 | a letter in the day field",
             "2022-A00   | YYYY-DDD   | 0003 | 2520 | a letter in the day-of-year field",
             "AB-07-18   | YY-MM-DD   | 0003 | 2520 | a letter in a two-digit year field",
-            "2022-07-1  | YYYY-MM-DD | 0003 | 2520 | a blank counts as non-numeric",
+            "2022-07-   | YYYY-MM-DD | 0003 | 2520 | a numeric field supplying no digit at all",
+            "2022--7-18 | YYYY-MM-DD | 0003 | 2520 | a delimiter where the month's digits belong",
             // ---- the supported range, on both sides of the Lillian epoch --------------------------
             "1582-10-15 | YYYY-MM-DD | 0000 | 0000 | the Lillian epoch itself is in range",
             "1582-10-14 | YYYY-MM-DD | 0003 | 2513 | a day the Gregorian reform skipped",
@@ -2088,11 +2217,17 @@ class DateUtilityJobTest {
             "2022       | YYYY       | 0003 | 2507 | a year alone cannot yield a Lillian value",
             "2022-07    | YYYY-MM    | 0003 | 2507 | a year and month with no day",
             "2022-07-18 | MM-DD      | 0003 | 2507 | a month and day with no year",
-            // ---- shape mismatches, which no documented code covers -> WHEN OTHER -----------------
-            "2022/07/18 | YYYY-MM-DD | 0003 | 0000 | a literal delimiter the input does not match",
-            "2022-07.18 | YYYY-MM-DD | 0003 | 0000 | a literal mismatch at the second delimiter",
-            "2022-07-18 | YYYY{MM{DD | 0003 | 0000 | a literal mismatch on an above-'z' delimiter",
-            "AD22071899 | <CC>YYMMDD | 0003 | 0000 | non-blank input beyond the picture's description",
+            // ---- documented CEEDAYS leniency: these are ACCEPTED, not shape failures -------------
+            "2022/07/18 | YYYY-MM-DD | 0000 | 0000 | a delimiter variant where the picture declares one",
+            "2022-07.18 | YYYY-MM-DD | 0000 | 0000 | a variant at the second delimiter only",
+            "2022-07-18 | YYYY{MM{DD | 0000 | 0000 | the picture's delimiter is above 'z'; '-' still separates",
+            "AD22071899 | <CC>YYMMDD | 0000 | 0000 | characters beyond the picture's description are ignored",
+            "2022-07-1  | YYYY-MM-DD | 0000 | 0000 | an omitted leading zero in the day, as '6/2/88' shows",
+            "2022-7-18  | YYYY-MM-DD | 0000 | 0000 | an omitted leading zero in the month",
+            "  22-07-18 | YY-MM-DD   | 0000 | 0000 | parsing begins at the first non-blank character",
+            // ---- shape mismatches, which ARE a documented code: CEE2520 --------------------------
+            "2022-07    | YYYY-MM-DD | 0003 | 2520 | the input runs out before the picture does",
+            "2022-07-AB | YYYY-MM-DD | 0003 | 2520 | letters where the day's digits belong",
         })
         @DisplayName("each guard-chain condition reports its documented severity and message number")
         void eachGuardChainConditionReportsItsDocumentedOutcome(String inputDate,
@@ -2258,6 +2393,149 @@ class DateUtilityJobTest {
             assertThat(service.validateDate("2021-365  ", "YYYY-DDD  ").severityCode())
                     .as("JULIAN_DAY_3").isEqualTo(ACCEPTED_SEVERITY_CODE);
             assertThat(eraResult.severityCode()).as("ERA").isEqualTo(ACCEPTED_SEVERITY_CODE);
+        }
+    }
+
+    // =============================================================================================
+
+    @Nested
+    @DisplayName("container wiring - the eighty bytes follow the CONFIGURED code page, not US-ASCII")
+    class ContainerWiring {
+
+        /** The EBCDIC code page a deployment selects when its datasets are EBCDIC. */
+        private static final String EBCDIC_NAME = "IBM037";
+
+        /** The ASCII code page the shipped configuration names. */
+        private static final String ASCII_NAME = "US-ASCII";
+
+        /**
+         * A context slice carrying only the charset configuration, the service under test and strict
+         * placeholder resolution.
+         *
+         * <p>{@link ApplicationContextRunner} rather than {@code @SpringBootTest}: what is being
+         * asserted is which constructor the container selects and what it passes, and that needs the
+         * real bean-definition machinery but none of the rest of the graph. A bare runner registers no
+         * placeholder configurer, hence the auto-configuration.
+         *
+         * @param datasetCharsetName the value for {@code carddemo.charset.dataset}
+         * @return a runner ready to run one assertion
+         */
+        private ApplicationContextRunner containerWith(String datasetCharsetName) {
+            return new ApplicationContextRunner()
+                    .withConfiguration(AutoConfigurations.of(
+                            PropertyPlaceholderAutoConfiguration.class))
+                    .withUserConfiguration(CobolCharsetConfig.class, DateUtilityJob.class)
+                    .withPropertyValues(
+                            CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY + "=" + EBCDIC_NAME,
+                            CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=" + ASCII_NAME,
+                            CobolCharsetConfig.DATASET_CHARSET_PROPERTY + "="
+                                    + datasetCharsetName);
+        }
+
+        @Test
+        @DisplayName("under IBM037 the container's service emits IBM037 bytes, not ASCII ones")
+        void underIbm037TheContainersServiceEmitsEbcdicBytes() {
+            containerWith(EBCDIC_NAME).run(context -> {
+                DateUtilityJob wired = context.getBean(DateUtilityJob.class);
+                DateValidationResult result = wired.validateDate(SAMPLE_DATE, MASK_HYPHENATED);
+
+                // The charset the result reports, and the bytes it actually produced, must both be the
+                // configured one. Reporting IBM037 while emitting ASCII would be the same defect wearing
+                // a label.
+                assertThat(result.charset()).isEqualTo(Charset.forName(EBCDIC_NAME));
+                assertThat(result.messageBytes()).hasSize(MESSAGE_LENGTH);
+
+                // 'Mesg Code:' begins at offset 4 of WS-MESSAGE. In IBM037 'M' is x'D4'; in US-ASCII it
+                // is x'4D'. The exact bytes are asserted rather than a decoded string, because a decode
+                // would agree under either code page and so would prove nothing.
+                byte[] expectedLabel = "Mesg Code:".getBytes(Charset.forName(EBCDIC_NAME));
+                byte[] actualLabel = java.util.Arrays.copyOfRange(result.messageBytes(), 4,
+                        4 + expectedLabel.length);
+                assertThat(actualLabel).isEqualTo(expectedLabel);
+                assertThat(actualLabel[0]).isEqualTo((byte) 0xD4);
+                assertThat(actualLabel).isNotEqualTo("Mesg Code:".getBytes(MESSAGE_CHARSET));
+
+                // The severity digits are equally code-page bearing: PIC 9(4) '0000' is x'F0F0F0F0' in
+                // IBM037 and x'30303030' in US-ASCII.
+                assertThat(java.util.Arrays.copyOfRange(result.messageBytes(), 0, 4))
+                        .containsExactly((byte) 0xF0, (byte) 0xF0, (byte) 0xF0, (byte) 0xF0);
+                assertThat(result.severityCode()).isEqualTo(ACCEPTED_SEVERITY_CODE);
+            });
+        }
+
+        @Test
+        @DisplayName("under US-ASCII the container's service emits the ASCII bytes this suite asserts")
+        void underAsciiTheContainersServiceEmitsAsciiBytes() {
+            containerWith(ASCII_NAME).run(context -> {
+                DateValidationResult result = context.getBean(DateUtilityJob.class)
+                        .validateDate(SAMPLE_DATE, MASK_HYPHENATED);
+
+                assertThat(result.charset()).isEqualTo(MESSAGE_CHARSET);
+                assertThat(result.messageBytes())
+                        .isEqualTo(newService().validateDate(SAMPLE_DATE, MASK_HYPHENATED)
+                                .messageBytes());
+            });
+        }
+
+        @Test
+        @DisplayName("with the dataset key unset the context refuses to start rather than guessing")
+        void withTheDatasetKeyUnsetTheContextRefusesToStart() {
+            // The dataset code page carries no default anywhere in Java, so an unset key is a missing
+            // configuration rather than an invitation to follow another one. Falling back to the ASCII
+            // key would read every dataset in the wrong code page on a deployment that simply forgot
+            // to state it, and it would do so silently: each profile therefore declares the key, and
+            // an absent one fails the context naming itself.
+            new ApplicationContextRunner()
+                    .withConfiguration(AutoConfigurations.of(
+                            PropertyPlaceholderAutoConfiguration.class))
+                    .withUserConfiguration(CobolCharsetConfig.class, DateUtilityJob.class)
+                    .withPropertyValues(
+                            CobolCharsetConfig.EBCDIC_CHARSET_PROPERTY + "=" + EBCDIC_NAME,
+                            CobolCharsetConfig.ASCII_CHARSET_PROPERTY + "=" + ASCII_NAME)
+                    .run(context -> {
+                        assertThat(context).hasFailed();
+                        assertThat(context).getFailure().rootCause()
+                                .hasMessageContaining("Could not resolve placeholder")
+                                .hasMessageContaining(
+                                        CobolCharsetConfig.DATASET_CHARSET_PROPERTY);
+                    });
+        }
+
+        @Test
+        @DisplayName("with the dataset key set to the ASCII code page the service emits ASCII bytes")
+        void withTheDatasetKeySetToAsciiTheServiceEmitsAsciiBytes() {
+            // The positive half of the pair above, and what the shipped test profile actually does:
+            // the key is declared, and the code page it names is the one the service reports.
+            containerWith(ASCII_NAME).run(context -> assertThat(
+                    context.getBean(DateUtilityJob.class)
+                            .validateDate(SAMPLE_DATE, MASK_HYPHENATED).charset())
+                    .isEqualTo(MESSAGE_CHARSET));
+        }
+
+        @Test
+        @DisplayName("the container picks the Charset constructor, not the no-argument one")
+        void theContainerPicksTheCharsetConstructor() {
+            // Asserted structurally as well as behaviourally. Both constructors are public and the
+            // no-argument one would win by default, so the @Autowired marker is what decides - and a
+            // future edit that dropped it would silently reinstate the hardcoded code page.
+            assertThat(DateUtilityJob.class.getDeclaredConstructors())
+                    .filteredOn(candidate -> candidate.isAnnotationPresent(
+                            org.springframework.beans.factory.annotation.Autowired.class))
+                    .singleElement()
+                    .satisfies(annotated -> assertThat(annotated.getParameterTypes())
+                            .containsExactly(Charset.class));
+
+            try (AnnotationConfigApplicationContext context =
+                         new AnnotationConfigApplicationContext()) {
+                context.register(DateUtilityJob.class);
+                context.registerBean("carddemoDatasetCharset", Charset.class,
+                        () -> Charset.forName(EBCDIC_NAME));
+                context.refresh();
+
+                assertThat(context.getBean(DateUtilityJob.class)
+                        .validateDate(SAMPLE_DATE, MASK_HYPHENATED).charset())
+                        .isEqualTo(Charset.forName(EBCDIC_NAME));
+            }
         }
     }
 }

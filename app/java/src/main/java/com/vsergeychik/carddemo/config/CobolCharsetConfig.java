@@ -1,9 +1,11 @@
 package com.vsergeychik.carddemo.config;
 
 import java.nio.charset.Charset;
+import java.nio.charset.IllegalCharsetNameException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.util.StringUtils;
 
 /**
  * The single place in the CardDemo Java module where a character encoding is named.
@@ -67,13 +69,13 @@ import org.springframework.context.annotation.Configuration;
  * {@code trantype.txt}). For this migration the <b>ASCII side is authoritative</b> and the EBCDIC
  * side is reference-only, and the test profile binds every dataset to one of those nine fixtures.
  *
- * <p>That is why {@link #carddemoDatasetCharset()} - the charset dataset input and output actually
- * uses - defaults to the ASCII code page rather than the EBCDIC one. Both are published all the
- * same, because a site running against the real EBCDIC datasets needs the other one: setting
- * {@value #DATASET_CHARSET_PROPERTY} to the EBCDIC code page is the supported, single-line path to
- * reading {@code app/data/EBCDIC} content, and it is the only supported way to change the active
- * encoding. Editing this class is not required, and hard-coding an encoding at a call site is
- * forbidden.
+ * <p>Which of the two is <em>active</em> is a property of the deployment, not of this class, so
+ * {@link #carddemoDatasetCharset()} - the charset dataset input and output actually uses - resolves
+ * {@value #DATASET_CHARSET_PROPERTY} and that key <b>carries no default</b>. Each profile states it
+ * on one line: {@code IBM037} in {@code application.yml}, whose bindings address the mainframe
+ * datasets, and {@code US-ASCII} in {@code application-test.yml}, whose bindings address the nine
+ * fixtures. That single line is the only supported way to change the active encoding; editing this
+ * class is not required, and hard-coding an encoding at a call site is forbidden.
  *
  * <h2>The published bean contract</h2>
  *
@@ -100,8 +102,7 @@ import org.springframework.context.annotation.Configuration;
  *   <tr>
  *     <td>{@link #DATASET_CHARSET_BEAN_NAME}</td>
  *     <td>{@value #DATASET_CHARSET_BEAN_NAME}</td>
- *     <td>{@value #DATASET_CHARSET_PROPERTY}, defaulting to
- *         {@value #ASCII_CHARSET_PROPERTY}</td>
+ *     <td>{@value #DATASET_CHARSET_PROPERTY}, required in every profile</td>
  *     <td>The <em>active</em> encoding for dataset input and output. This is the one to
  *         inject.</td>
  *   </tr>
@@ -124,28 +125,29 @@ import org.springframework.context.annotation.Configuration;
  *     charset:
  *       ebcdic: IBM037
  *       ascii: US-ASCII
+ *       dataset: IBM037     # US-ASCII in application-test.yml
  * </pre>
  *
- * <p>{@code application-test.yml} restates both with identical values, deliberately: an encoding is
- * a parity concern, not an environmental one, so the test profile must not be able to differ from
- * production here.
+ * <p>The first two keys hold identical values in both documents, deliberately: they name the two
+ * code pages that exist in this estate, and an encoding is a parity concern rather than an
+ * environmental one, so neither profile may redefine what "the EBCDIC code page" or "the ASCII code
+ * page" means.
  *
- * <p>{@value #DATASET_CHARSET_PROPERTY} is <b>absent from both documents by design</b>. It is
- * bound with a nested placeholder default of {@code ${carddemo.charset.ascii}}, so when it is not
- * set the active dataset charset resolves from the ASCII key and the two beans are the same
- * {@link Charset} instance. That keeps the ASCII code page written down exactly once - a second
- * literal could drift from the first - and it means the default is applied by the property resolver
- * rather than by a conditional in Java, which is why this class contains only the single decision
- * described below.
+ * <p>The third key, {@value #DATASET_CHARSET_PROPERTY}, is the one that genuinely differs between
+ * the two documents, because it says which of those code pages the data layer is actually reading
+ * <em>right now</em> - and that follows the datasets a profile is bound to, not the module.
+ * {@code application.yml} binds the mainframe datasets and therefore names {@code IBM037};
+ * {@code application-test.yml} binds the nine text fixtures and therefore names {@code US-ASCII}.
  *
- * <p>A required key is <b>never</b> defaulted. {@value #EBCDIC_CHARSET_PROPERTY} and
- * {@value #ASCII_CHARSET_PROPERTY} carry no default of their own, so removing either one fails the
+ * <p>All three keys are <b>required and never defaulted</b>, so removing any one of them fails the
  * context at startup with Spring's own "Could not resolve placeholder" diagnostic naming the exact
- * key; and blanking one out is not treated as absence either - an empty value reaches
- * {@link #resolve(String, String)} and is rejected there rather than quietly standing in for a code
- * page. Failing to start is the correct outcome: an application that silently decodes mainframe
- * records with the wrong code page is worse than one that refuses to run (practice B12,
- * "environmental limits documented, not absorbed").
+ * key. The active key is required precisely because it is the consequential one: a default would let
+ * a deployment that never stated its code page start anyway and then decode every record in the
+ * wrong one, silently. Blanking a key out is not treated as absence either - an empty value reaches
+ * {@link #resolve(String, String)} and is rejected there, naming the key that was blanked, rather
+ * than quietly standing in for a code page. Failing to start is the correct outcome: an application
+ * that silently decodes mainframe records with the wrong code page is worse than one that refuses to
+ * run (practice B12, "environmental limits documented, not absorbed").
  *
  * <h2>Dependency direction is one-way, and must stay that way</h2>
  *
@@ -219,9 +221,7 @@ public class CobolCharsetConfig {
      * Configuration key naming the ASCII code page: {@code carddemo.charset.ascii}, declared with
      * the value {@code US-ASCII} in both {@code application.yml} and {@code application-test.yml}.
      *
-     * <p>It carries no default. A deployment that removes it does not start - and because
-     * {@value #DATASET_CHARSET_PROPERTY} falls back to this key, removing it also removes the
-     * default for the active dataset charset, which is precisely why that failure must be loud.
+     * <p>It carries no default. A deployment that removes it does not start.
      */
     public static final String ASCII_CHARSET_PROPERTY = "carddemo.charset.ascii";
 
@@ -229,10 +229,15 @@ public class CobolCharsetConfig {
      * Configuration key naming the <em>active</em> dataset code page:
      * {@code carddemo.charset.dataset}.
      *
-     * <p>Absent from both configuration documents by design, and bound with a nested placeholder
-     * default of {@value #ASCII_CHARSET_PROPERTY}: unset, the active encoding is the ASCII code
-     * page of the nine authoritative fixtures. Setting it to the EBCDIC code page is the supported
-     * path for reading the twelve binary datasets under {@code app/data/EBCDIC} at a real site.
+     * <p>Declared in both configuration documents and different in each, because it follows the
+     * datasets a profile is bound to: {@code IBM037} in {@code application.yml}, which binds the
+     * mainframe datasets, and {@code US-ASCII} in {@code application-test.yml}, which binds the nine
+     * authoritative text fixtures.
+     *
+     * <p>It carries no default, and of the three keys this is the one where that matters most. It
+     * decides how every dataset byte in the module is interpreted, so a default would let a
+     * deployment that never stated its code page start anyway and then decode every record in the
+     * wrong one, with no error to show for it. A deployment that removes it does not start.
      */
     public static final String DATASET_CHARSET_PROPERTY = "carddemo.charset.dataset";
 
@@ -273,10 +278,14 @@ public class CobolCharsetConfig {
      * bean - and therefore the specific property - that asked for it, rather than as one opaque
      * constructor failure covering all three.
      *
-     * <p>The two required placeholders carry no default, so a missing key fails the context with
-     * Spring's own diagnostic naming that key. The third defaults to the second by nested
-     * placeholder, which is what makes the active dataset charset default to the ASCII code page
-     * without a conditional in Java and without writing {@code US-ASCII} down a second time.
+     * <p><strong>All three placeholders carry no default</strong>, so a missing key fails the
+     * context with Spring's own diagnostic naming that key. That includes
+     * {@value #DATASET_CHARSET_PROPERTY}: the <em>active</em> code page is the one that decides how
+     * every dataset byte is interpreted, and defaulting it here would mean a deployment that forgot
+     * to state its code page still started - and then decoded EBCDIC records as ASCII without any
+     * error. Each profile therefore names it explicitly: {@code IBM037} in {@code application.yml},
+     * whose dataset bindings address the mainframe datasets, and {@code US-ASCII} in
+     * {@code application-test.yml}, whose bindings address the nine text fixtures.
      *
      * <p>This constructor is also the entire test seam for the bean methods: a unit test can
      * instantiate the class directly with three literal names and assert the three beans with no
@@ -286,14 +295,14 @@ public class CobolCharsetConfig {
      *                           {@code IBM037}
      * @param asciiCharsetName   value of {@value #ASCII_CHARSET_PROPERTY}, expected to be
      *                           {@code US-ASCII}
-     * @param datasetCharsetName value of {@value #DATASET_CHARSET_PROPERTY}, defaulting to the
-     *                           value of {@value #ASCII_CHARSET_PROPERTY}
+     * @param datasetCharsetName value of {@value #DATASET_CHARSET_PROPERTY}, required and never
+     *                           defaulted - {@code IBM037} under the default profile and
+     *                           {@code US-ASCII} under the {@code test} profile
      */
     public CobolCharsetConfig(
             @Value("${" + EBCDIC_CHARSET_PROPERTY + "}") String ebcdicCharsetName,
             @Value("${" + ASCII_CHARSET_PROPERTY + "}") String asciiCharsetName,
-            @Value("${" + DATASET_CHARSET_PROPERTY + ":${" + ASCII_CHARSET_PROPERTY + "}}")
-                    String datasetCharsetName) {
+            @Value("${" + DATASET_CHARSET_PROPERTY + "}") String datasetCharsetName) {
         this.ebcdicCharsetName = ebcdicCharsetName;
         this.asciiCharsetName = asciiCharsetName;
         this.datasetCharsetName = datasetCharsetName;
@@ -350,27 +359,40 @@ public class CobolCharsetConfig {
     /**
      * The <em>active</em> dataset code page, published as bean
      * {@value #DATASET_CHARSET_BEAN_NAME} and resolved from {@value #DATASET_CHARSET_PROPERTY},
-     * which defaults to {@value #ASCII_CHARSET_PROPERTY}.
+     * which every profile must state explicitly.
      *
      * <p><b>This is the bean that dataset input and output injects.</b> Repositories, the
      * fixed-width output writers, the date-parameter reader and the parity harness take this one,
      * so that the encoding of the whole data layer is governed by a single property rather than
      * by a decision repeated at each call site.
      *
-     * <p>It defaults to the ASCII code page because the nine text fixtures are authoritative for
-     * this migration and the test profile binds every dataset to one of them. To read the twelve
-     * binary datasets under {@code app/data/EBCDIC} at a real site, set
-     * {@value #DATASET_CHARSET_PROPERTY} to the EBCDIC code page - for example
-     * {@code carddemo.charset.dataset: IBM037} in a deployment profile. That single line is the
-     * supported way to flip the active encoding; no Java change is needed and none is permitted.
+     * <p><b>It has no default, and that is the point.</b> Because this one bean decides how every
+     * dataset byte in the module is interpreted, an unstated value is a configuration defect rather
+     * than a situation to recover from: a deployment whose bindings address the mainframe datasets
+     * but whose active code page had quietly defaulted to the fixtures' would decode every record
+     * wrongly and report no error at all. So each profile names it, one line each, and the choice is
+     * visible in the document that made it:
      *
-     * <p>Left unset, this bean and {@link #carddemoAsciiCharset()} resolve the same name and are
-     * therefore the same {@link Charset} instance. They remain distinct <em>beans</em> on purpose,
-     * so that flipping the key later moves the data layer without touching the fixture-reading code
-     * that must stay on ASCII.
+     * <ul>
+     *   <li>{@code application.yml} - {@code carddemo.charset.dataset: IBM037}. Its dataset
+     *       bindings address the mainframe datasets, which {@code README.md} line 65 requires be
+     *       transferred in binary mode and which are therefore raw EBCDIC bytes on arrival.</li>
+     *   <li>{@code application-test.yml} - {@code carddemo.charset.dataset: US-ASCII}. Its bindings
+     *       address the nine authoritative text fixtures, so the parity assertions read them in
+     *       their own code page.</li>
+     * </ul>
+     *
+     * <p>Changing the active encoding for a deployment is therefore still a single configuration
+     * line and never a Java change - which remains forbidden - but it is now a line that must be
+     * <em>written</em> rather than one that can be omitted.
+     *
+     * <p>This bean stays distinct from {@link #carddemoAsciiCharset()} even where a profile happens
+     * to give both the same name, so that moving the data layer's code page never moves the
+     * fixture-reading code that must stay on ASCII.
      *
      * @return the configured active dataset {@link Charset}
-     * @throws IllegalStateException if this JVM does not support the configured name
+     * @throws IllegalStateException if the configured name is blank, syntactically illegal, or a
+     *                               legal name this JVM does not support
      */
     @Bean(DATASET_CHARSET_BEAN_NAME)
     public Charset carddemoDatasetCharset() {
@@ -382,50 +404,99 @@ public class CobolCharsetConfig {
      * or fail loudly naming the property that supplied it.
      *
      * <p>Package-visible and {@code static} on purpose. It is the whole of this class's branching
-     * behaviour, and keeping it free of any dependency on an application context means both
-     * outcomes - supported and unsupported - are reachable from a plain unit test with a direct
-     * call, which is how the {@code config} package clears the build's per-package branch-coverage
-     * gate without standing up Spring.
+     * behaviour, and keeping it free of any dependency on an application context means every
+     * outcome is reachable from a plain unit test with a direct call, which is how the
+     * {@code config} package clears the build's per-package branch-coverage gate without standing up
+     * Spring.
      *
-     * <p>There is exactly one condition here, and no more by design. No platform-default fallback,
-     * no second-choice code page, no default-within-a-default and no {@code try}/{@code catch}
-     * recovery: each of those would convert a configuration error into corrupted records, which for
-     * a byte-parity migration is the worst available outcome. The diagnostic names the offending
-     * property key and its value, and points at the usual cause - {@code IBM037} lives in the
-     * JDK's {@code jdk.charsets} module, which a minimal {@code jlink} runtime image omits even
-     * though the JVM otherwise looks complete.
+     * <p><b>Every rejection is a configuration error, reported as one.</b> There are three ways a
+     * configured name can be unusable and all three raise the same {@link IllegalStateException}
+     * naming the offending property key <em>and</em> the value it rejected:
      *
-     * <p>Two inputs are rejected by the JDK before this method's own condition is reached, and that
-     * is intended rather than overlooked: a syntactically illegal name such as {@code "bogus!"} or
-     * {@code ""} raises {@link java.nio.charset.IllegalCharsetNameException} quoting the name, and
-     * a {@code null} raises {@link IllegalArgumentException}. Both are already unambiguous, both
-     * are
-     * unreachable from configuration - a missing key fails earlier, during placeholder resolution,
-     * naming the key - and wrapping them would add a branch that no configuration error can ever
-     * reach, and therefore one that could never be covered.
+     * <ol>
+     *   <li><b>Absent in substance</b> - {@code null}, empty, or whitespace only. A key that is
+     *       present but blank is not treated as a choice of code page; blank is rejected in its own
+     *       right so the diagnostic can say which key was blanked out, which the JDK's own
+     *       {@link java.nio.charset.IllegalCharsetNameException} for {@code ""} cannot.</li>
+     *   <li><b>Syntactically illegal</b> - a name built from characters outside the legal set, such
+     *       as {@code IBM 037} or {@code bogus!}, or an unresolved placeholder that arrived here as
+     *       literal text. The JDK raises
+     *       {@link java.nio.charset.IllegalCharsetNameException} quoting only the name; it is caught
+     *       and re-reported so the message also carries the key that supplied it.</li>
+     *   <li><b>Legal but unsupported</b> - a well-formed name this JVM has no charset for. This is
+     *       the case that matters in practice, because {@code IBM037} is supplied by the JDK's
+     *       {@code jdk.charsets} module, which a minimal {@code jlink} runtime image omits even
+     *       though the JVM otherwise looks complete.</li>
+     * </ol>
+     *
+     * <p>The {@code catch} translates a diagnostic; it is emphatically <b>not</b> a recovery. No
+     * platform-default fallback, no second-choice code page and no default-within-a-default appears
+     * here or anywhere in this class: each of those would convert a configuration error into
+     * corrupted records, which for a byte-parity migration is the worst available outcome. Every
+     * path out of this method either returns the code page that was asked for or refuses to start.
+     *
+     * <p>The rejected value is quoted in the message on purpose. A code-page name is not a
+     * credential and carries nothing sensitive, and without it an operator reading the log cannot
+     * tell a typo from a trimmed runtime image.
      *
      * @param charsetName the configured code-page name, for example {@code IBM037} or
      *                    {@code US-ASCII}
      * @param propertyKey the configuration key that supplied {@code charsetName}, reported verbatim
      *                    in the failure message so the fix is unambiguous
      * @return the {@link Charset} for {@code charsetName}
-     * @throws IllegalStateException if {@code charsetName} is a legal charset name that this JVM
-     *                               does not support
+     * @throws IllegalStateException if {@code charsetName} is blank, syntactically illegal, or a
+     *                               legal charset name that this JVM does not support
      */
     static Charset resolve(String charsetName, String propertyKey) {
-        if (Charset.isSupported(charsetName)) {
-            return Charset.forName(charsetName);
+        if (!StringUtils.hasText(charsetName)) {
+            throw new IllegalStateException(rejected(charsetName, propertyKey)
+                    + " A charset name is required and is never defaulted: the platform default "
+                    + "charset is never substituted, because decoding a fixed-width mainframe "
+                    + "record with the wrong code page corrupts it silently. Set '" + propertyKey
+                    + "' to the code page this deployment's datasets are actually written in - "
+                    + "IBM037 for the EBCDIC datasets, US-ASCII for the text fixtures.");
         }
-        throw new IllegalStateException(
-                "Charset '" + charsetName + "' configured by property '" + propertyKey
-                        + "' is not supported by this JVM. No fallback is applied and the platform "
-                        + "default charset is never substituted: every CardDemo dataset charset is "
-                        + "named explicitly, because decoding a fixed-width mainframe record with "
-                        + "the wrong code page corrupts it silently. If the name is IBM037, note "
-                        + "that EBCDIC code pages are supplied by the JDK's jdk.charsets module, "
-                        + "which a minimal jlink runtime image omits - run a full JDK or JRE, or "
-                        + "include jdk.charsets in the image. Otherwise correct the value of '"
-                        + propertyKey + "' to a charset this JVM supports.");
+        try {
+            if (!Charset.isSupported(charsetName)) {
+                throw new IllegalStateException(rejected(charsetName, propertyKey)
+                        + " It is a legal charset name, but it is not supported by this JVM. No "
+                        + "fallback is applied and the platform default charset is never "
+                        + "substituted: every CardDemo dataset charset is named explicitly, because "
+                        + "decoding a fixed-width mainframe record with the wrong code page corrupts "
+                        + "it silently. If the name is IBM037, note that EBCDIC code pages are "
+                        + "supplied by the JDK's jdk.charsets module, which a minimal jlink runtime "
+                        + "image omits - run a full JDK or JRE, or include jdk.charsets in the "
+                        + "image. Otherwise correct the value of '" + propertyKey + "' to a charset "
+                        + "this JVM supports.");
+            }
+        } catch (IllegalCharsetNameException illegalName) {
+            throw new IllegalStateException(rejected(charsetName, propertyKey)
+                    + " It is not a syntactically legal charset name: a charset name may contain "
+                    + "only letters, digits and the characters '-', '+', '.', ':' and '_', and must "
+                    + "begin with a letter or digit. Correct the value of '" + propertyKey
+                    + "' - and if it looks like an unresolved ${...} placeholder, the key it refers "
+                    + "to is the one that is missing.", illegalName);
+        }
+        return Charset.forName(charsetName);
+    }
+
+    /**
+     * Opens every rejection message the same way, naming the property key and quoting the value it
+     * rejected.
+     *
+     * <p>A shared opening rather than three hand-written ones, so that no arm of
+     * {@link #resolve(String, String)} can be the one that forgets to say which key was at fault -
+     * which is the single most useful thing the message can carry. It is a method rather than a
+     * constant because the text varies with its arguments, and because this class deliberately
+     * declares no field beyond its six contract constants and three bound names.
+     *
+     * @param charsetName the rejected value, quoted verbatim; may be {@code null} or blank, in which
+     *                    case the quotes themselves are what show that
+     * @param propertyKey the configuration key that supplied it
+     * @return the opening sentence of a charset configuration failure
+     */
+    private static String rejected(String charsetName, String propertyKey) {
+        return "Charset '" + charsetName + "' configured by property '" + propertyKey
+                + "' cannot be used.";
     }
 }
-

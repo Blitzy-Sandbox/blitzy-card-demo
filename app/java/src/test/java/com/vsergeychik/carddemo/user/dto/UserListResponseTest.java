@@ -1017,7 +1017,9 @@ class UserListResponseTest {
         @DisplayName("toString names the fields, which is what a parity diff needs")
         void toStringNamesTheFields() {
             assertThat(fullPage().toString())
-                    .contains("usrId01=USER0001")
+                    .as("the row form renders through Row, which masks the 20 personal names")
+                    .contains("Row[1, ")
+                    .contains("userId='USER0001'")
                     .contains("errMsg=")
                     .contains("cdemoCu00PageNum=1");
         }

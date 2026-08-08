@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.user.dto;
 
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import java.util.Objects;
 
 /**
@@ -832,4 +833,42 @@ public record UserDeleteResponse(String trnName,
         }
         return value;
     }
+
+    /**
+     * A diagnostic rendering that withholds the personal name, per {@link SensitiveDiagnostics}.
+     *
+     * <p>The override exists because this is a {@code record}: the generated {@code toString} renders
+     * every component, and two of them - {@code FNAME} and {@code LNAME} - are the user's given and
+     * family names as {@code app/cpy-bms/COUSR03.CPY} declares them. Their length is reported and their
+     * content is not, because a name has no safely-revealable part.
+     *
+     * <p>Everything else renders as stored. The user id is an eight-character operator id rather than a
+     * personal identifier, the user type is a single authorisation character, and the remaining fields are
+     * screen furniture and the error message - all of which a screen-flow parity failure has to be read
+     * from. The carried {@code NavigationContext} renders through its own masked form.
+     *
+     * <p>{@code equals} and {@code hashCode} remain as the record generates them.
+     *
+     * @return a rendering safe to log, never {@code null}
+     */
+    @Override
+    public String toString() {
+        return "UserDeleteResponse[trnName=" + trnName
+                + ", title01=" + title01
+                + ", curDate=" + curDate
+                + ", pgmName=" + pgmName
+                + ", title02=" + title02
+                + ", curTime=" + curTime
+                + ", usrIdIn=" + usrIdIn
+                + ", fName=" + SensitiveDiagnostics.describeText(fName)
+                + ", lName=" + SensitiveDiagnostics.describeText(lName)
+                + ", usrType=" + usrType
+                + ", errMsg=" + errMsg
+                + ", navigationContext=" + navigationContext
+                + ", nextProgram=" + nextProgram
+                + ", nextMapset=" + nextMapset
+                + ", nextMap=" + nextMap
+                + ']';
+    }
+
 }

@@ -1,5 +1,6 @@
 package com.vsergeychik.carddemo.transaction.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.CobolDecimal;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import org.junit.jupiter.api.DisplayName;
@@ -185,7 +186,7 @@ class TranRecordTest {
     class InitialisedArea {
 
         @Test
-        @DisplayName("is 350 bytes with character fields blank and numeric fields zero-filled")
+        @DisplayName("is 350 bytes: text blank, unsigned numerics zero-filled, TRAN-AMT a signed zero")
         void newRecordIsInitialisedPerPicture() {
             TranRecord record = new TranRecord(ASCII);
 
@@ -194,7 +195,10 @@ class TranRecordTest {
             assertThat(record.tranDesc()).isEqualTo(" ".repeat(100));
             assertThat(record.tranCatCdImage()).isEqualTo("0000");
             assertThat(record.tranMerchantIdImage()).isEqualTo("000000000");
-            assertThat(record.tranAmtImage()).isEqualTo("0".repeat(11));
+            assertThat(record.tranAmtImage())
+                    .as("TRAN-AMT is S9(09)V99: ten zoned zeros and a positive-zero overpunch, which "
+                            + "is how a zero-valued signed field is stored in app/data/ASCII")
+                    .isEqualTo("0".repeat(10) + "{");
             assertThat(record.tranAmt()).isEqualByComparingTo("0.00");
             assertThat(record.filler()).isEqualTo(" ".repeat(20));
             assertThat(record.charset()).isEqualTo(ASCII);
@@ -239,7 +243,7 @@ class TranRecordTest {
                     .hasSize(100);
             assertThat(record.tranAmtImage()).isEqualTo("0000005047G");
             assertThat(record.tranAmt()).isEqualByComparingTo("504.77");
-            assertThat(record.tranMerchantId()).isEqualTo(800000000L);
+            assertThat(record.tranMerchantId()).isEqualTo(800000000);
             assertThat(record.tranMerchantIdImage()).isEqualTo("800000000");
             assertThat(record.tranMerchantName()).startsWith("Abshire-Lowe").hasSize(50);
             assertThat(record.tranMerchantCity()).startsWith("North Enoshaven").hasSize(50);
@@ -596,7 +600,7 @@ class TranRecordTest {
 
             record.moveTranMerchantId(800000000L);
             assertThat(record.tranMerchantIdImage()).isEqualTo("800000000");
-            assertThat(record.tranMerchantId()).isEqualTo(800000000L);
+            assertThat(record.tranMerchantId()).isEqualTo(800000000);
 
             record.moveTranCatCd(5);
             assertThat(record.tranCatCdImage()).isEqualTo("0005");
@@ -651,7 +655,7 @@ class TranRecordTest {
             record.moveTranMerchantId("42");
 
             assertThat(record.tranMerchantIdImage()).isEqualTo("000000042");
-            assertThat(record.tranMerchantId()).isEqualTo(42L);
+            assertThat(record.tranMerchantId()).isEqualTo(42);
         }
 
         @Test
@@ -1043,20 +1047,24 @@ class TranRecordTest {
 
             String rendered = record.toString();
 
+            // The structural codes identify the transaction and are disclosed in full.
             assertThat(rendered)
                     .contains("TRAN-ID='0000000000683580'")
                     .contains("TRAN-TYPE-CD='01'")
                     .contains("TRAN-CAT-CD='0001'")
                     .contains("TRAN-SOURCE='POS TERM  '")
-                    .contains("TRAN-AMT='0000005047G'=504.77")
                     .contains("TRAN-MERCHANT-ID='800000000'")
-                    .contains("TRAN-CARD-NUM='4859452612877065'")
                     .contains("TRAN-ORIG-TS='2022-06-10 19:27:53.000000'")
-                    .contains("FILLER=")
+                    .contains("FILLER.length=")
                     .contains("charset=US-ASCII");
-            // The legacy programs display the card number in the clear, so masking it here would
-            // change observable behaviour and make a byte comparison unreproducible.
-            assertThat(rendered).doesNotContain("****").doesNotContain("...5");
+            // The merchant fields stay legible - they identify a business, not a cardholder - and the
+            // amount is given as both image and value, because that pair is what a numeric parity
+            // failure is diagnosed from. Only the PAN is withheld. displayImage() and
+            // fieldImages(Charset) still return every digit to a caller that asks by name, so a
+            // byte-level comparison is unaffected.
+            assertThat(rendered)
+                    .doesNotContain("4859452612877065")
+                    .contains("TRAN-CARD-NUM='************7065'");
         }
     }
 }

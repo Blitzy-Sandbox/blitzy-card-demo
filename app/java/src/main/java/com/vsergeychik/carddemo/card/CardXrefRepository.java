@@ -1,27 +1,36 @@
 package com.vsergeychik.carddemo.card;
 
 import com.vsergeychik.carddemo.card.model.CardXrefRecord;
+import com.vsergeychik.carddemo.common.DatasetRelation;
+import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
+import com.vsergeychik.carddemo.common.DatasetRelation.KeySpan;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
-import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
 
 import java.nio.charset.Charset;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Function;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreator;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
@@ -193,19 +202,24 @@ import org.springframework.stereotype.Repository;
  * entirely configuration-bound by {@code DataSourceConfig}. Three consequences are visible in the
  * code below and are not defects to be tidied away:
  * <ul>
- *   <li>The record image is read <strong>by column position 1 and never by column name</strong>. A
- *       dataset carrying no relational metadata is presented as a single record-image column, and a
- *       column name written into Java here would be an unverifiable literal.</li>
- *   <li>The key match is therefore performed <strong>in Java</strong>, on the byte image the codec
- *       produces, rather than pushed down as a predicate - a predicate would have to name that
- *       column. The comparison is the byte comparison VSAM itself performs, so it is exact; it is
- *       simply not delegated. There is no performance objective in this migration, and introducing
- *       one here would risk parity rather than improve anything measurable. A deployment whose driver
- *       does expose a nameable column can add a pushdown without changing this class's contract.</li>
+ *   <li>A row's record image is read <strong>by column position 1 and never by a column name written
+ *       into Java</strong>. A dataset carrying no relational metadata is presented as a single
+ *       record-image column, and a column name hard-coded here would be an unverifiable literal.</li>
+ *   <li>The name a keyed read needs is therefore <strong>discovered</strong>, not invented: a
+ *       read-only describe statement whose predicate is false on every row reports the relation's
+ *       shape without transferring any of it, and the reported name is what the {@code WHERE} clause
+ *       uses. So <strong>the key predicate is pushed down</strong>, which is what a VSAM keyed read
+ *       does - it reaches only the records whose key matches and cannot be broken by a corrupt record
+ *       elsewhere in the cluster. The byte comparison VSAM performs is still made here, on each
+ *       returned row, so the predicate narrows and the byte compare decides.</li>
  *   <li>Every {@link DataAccessException} the driver raises is reported as a permanent-error file
  *       status, {@link #PERMANENT_ERROR_STATUS}, which classifies as {@link Outcome#OTHER} - the
  *       {@code WHEN OTHER} arm, which in every consumer is the error or abend path. The status is the
- *       whole of what is reported, exactly as the COBOL keeps nothing but the status.</li>
+ *       whole of what is <em>reported</em>, exactly as the COBOL keeps nothing but the status; the
+ *       cause behind it is written to this class's log with the operation and the access path that
+ *       failed, because a status names no reason and a discarded cause leaves a production failure
+ *       undiagnosable. <strong>No key value and no record value is ever logged</strong> - a key here
+ *       can be screen-derived and a record here carries a card number.</li>
  * </ul>
  *
  * <h2>Record format: the copybook wins</h2>
@@ -262,6 +276,18 @@ public class CardXrefRepository {
      * {@link #baseFileNameForCics()} renders it back to that exact eight-byte form for a caller
      * composing {@code ERROR-FILE}.
      */
+    /**
+     * Logger for the diagnostics this class emits when an operation fails.
+     *
+     * <p>{@code static final} and a reference to an immutable logger, so it introduces no shared mutable
+     * state. It exists because the outcome that travels back to a caller is deliberately coarse - a
+     * two-character file status, exactly as the COBOL has - and discarding the underlying reason would
+     * leave a production failure undiagnosable. What is logged is the operation, the access path and the
+     * rendered status; <strong>never a key value and never a record value</strong>, because a key here
+     * can be screen-derived and a record here carries a card number.
+     */
+    private static final Log LOG = LogFactory.getLog(CardXrefRepository.class);
+
     public static final String BASE_DD_NAME = "CCXREF";
 
     /**
@@ -311,7 +337,38 @@ public class CardXrefRepository {
      * <p>Position, never a name, for the reason set out under residual risk R-E on this class. This
      * matches the convention the module's other configuration-bound reader already established.
      */
-    public static final int RECORD_IMAGE_COLUMN_INDEX = 1;
+    public static final int RECORD_IMAGE_COLUMN_INDEX = DatasetRelation.RECORD_IMAGE_COLUMN_INDEX;
+
+    /**
+     * Where the base key sits inside the record image: {@code XREF-CARD-NUM PIC X(16)} at offset 0.
+     *
+     * <p>An offset and a length rather than a column name. {@code XREF-CARD-NUM} names a span of
+     * {@code app/cpy/CVACT03Y.cpy}, not a column of a relation, so the predicate that finds a record by
+     * it is expressed over the record image at this offset for this length.
+     */
+    private static final KeySpan CARD_NUMBER_KEY_SPAN = new KeySpan(
+            CardXrefRecord.XREF_CARD_NUM.offset(), CardXrefRecord.XREF_CARD_NUM.length());
+
+    /**
+     * Where the alternate key sits inside the record image: {@code XREF-ACCT-ID PIC 9(11)} at offset 25.
+     *
+     * <p>The offset is what distinguishes it from the card record's account id, which is also eleven
+     * bytes and also an alternate key but sits at offset 16. Transposing the two compiles cleanly and
+     * reads the wrong records, which is why both are derived from their model's declared span.
+     */
+    private static final KeySpan ACCOUNT_ID_KEY_SPAN = new KeySpan(
+            CardXrefRecord.XREF_ACCT_ID.offset(), CardXrefRecord.XREF_ACCT_ID.length());
+
+    /**
+     * How many rows a keyed read fetches: {@value}.
+     *
+     * <p>One more than the answer needs, and no more than that. A unique key can match only one record,
+     * so a second row means either a non-unique alternate index - which is a real condition CICS reports
+     * as a duplicate-key response alongside the first record - or a base key that has lost its
+     * uniqueness. Either way the second row settles the question and nothing beyond it changes the
+     * answer, so nothing beyond it is transferred.
+     */
+    private static final int DUPLICATE_DETECTION_ROW_LIMIT = 2;
 
     /**
      * The width of a CICS {@code FILE} name as the online programs declare it: {@code PIC X(08)}.
@@ -388,6 +445,37 @@ public class CardXrefRepository {
     // there is no static mutable state anywhere in this class (practice B9, gate G53).
     // =================================================================================================
 
+    /**
+     * The {@code LIKE} escape character, so a metacharacter inside a key matches itself.
+     *
+     * <p>Not defensive decoration. A base key is a {@code PIC X(16)} value that can reach this class
+     * from a screen field, so an unescaped {@code _} inside it would match any character and could
+     * return a <em>different</em> card's cross-reference record.
+     */
+    private static final char LIKE_ESCAPE = '\\';
+
+    /** The {@code LIKE} many-character wildcard, closing every positional pattern. */
+    private static final char LIKE_WILDCARD = '%';
+
+    /** The {@code LIKE} single-character wildcard, standing for one byte before the key span. */
+    private static final char LIKE_SINGLE_WILDCARD = '_';
+
+    /**
+     * A predicate that is false on every row, so the record-image column can be named without any of
+     * the dataset being transferred. Two literals compared, which every SQL dialect accepts.
+     */
+    private static final String NEVER_TRUE_PREDICATE = "1 = 0";
+
+    /**
+     * How many rows a keyed read transfers at most.
+     *
+     * <p>Two, and two is exactly what the outcome vocabulary needs: none is {@code NOTFND}, one is
+     * {@code NORMAL}, and more than one is the duplicate condition carrying the first match. A CICS
+     * {@code READ} returns one record and a condition - never a count - so a third row would tell a
+     * caller nothing it can express, and transferring one would be work no COBOL path performs.
+     */
+    private static final int KEYED_READ_ROW_LIMIT = 2;
+
     /** The module's single {@link JdbcTemplate}, over the configuration-bound {@code DataSource}. */
     private final JdbcTemplate jdbcTemplate;
 
@@ -398,22 +486,20 @@ public class CardXrefRepository {
     private final FixedWidthCodec codec;
 
     /** The resolved {@code CCXREF} dataset name, from configuration and never from a literal. */
-    private final String baseDatasetName;
+    private final DatasetRelation baseRelation;
 
     /** The resolved {@code CXACAIX} dataset name, from configuration and never from a literal. */
-    private final String alternateIndexDatasetName;
+    private final DatasetRelation alternateIndexRelation;
+
 
     /**
-     * The statement that reads the base cluster, in base-key order. Composed once in the constructor
-     * from the configured dataset name.
+     * The composed statements, resolved on first use.
+     *
+     * <p>Lazily, because the record-image column's name is discovered from the backend and a repository
+     * must be constructible in a context that has not reached its backend. {@code null} means "not yet
+     * resolved"; the value it holds is immutable.
      */
-    private final String baseSelectSql;
-
-    /**
-     * The statement that reads the alternate-index path, in base-key order. A different dataset name
-     * from {@link #baseSelectSql}, which is the concrete run-time expression of gate G45.
-     */
-    private final String alternateIndexSelectSql;
+    private Statements statements;
 
     /**
      * Assembles the repository from the module's shared {@link JdbcTemplate}, the DD-name-keyed
@@ -477,11 +563,11 @@ public class CardXrefRepository {
         requireAlternateIndexOverBase(alternateIndex);
         requireBaseCluster(base);
 
-        this.baseDatasetName = requireUsableDatasetName(BASE_DD_NAME, base.dsname());
-        this.alternateIndexDatasetName =
-                requireUsableDatasetName(ALTERNATE_INDEX_DD_NAME, alternateIndex.dsname());
-        this.baseSelectSql = selectAllInKeyOrder(this.baseDatasetName);
-        this.alternateIndexSelectSql = selectAllInKeyOrder(this.alternateIndexDatasetName);
+        this.baseRelation = DatasetRelation.of(
+                requireUsableDatasetName(BASE_DD_NAME, base.dsname()), RECORD_LENGTH);
+        this.alternateIndexRelation = DatasetRelation.of(
+                requireUsableDatasetName(ALTERNATE_INDEX_DD_NAME, alternateIndex.dsname()),
+                RECORD_LENGTH);
     }
 
     // =================================================================================================
@@ -576,63 +662,9 @@ public class CardXrefRepository {
                     + "composes its statements from configuration alone and hard-codes no dataset "
                     + "name (gate G46).");
         }
-        for (int index = 0; index < candidate.length(); index++) {
-            if (Character.isISOControl(candidate.charAt(index))) {
-                throw new IllegalStateException("The dataset name configured at carddemo.datasets."
-                        + ddName + ".dsname contains a control character at position " + index
-                        + "; a dataset name cannot contain one, and it would corrupt the composed "
-                        + "statement. Correct the configured value.");
-            }
-        }
-        return candidate;
-    }
-
-    /**
-     * Composes the read statement for a dataset: every row, in base-key order.
-     *
-     * <p><strong>Why {@code ORDER BY 1} and not a column name.</strong> The ordinal refers to the
-     * first select-list item, which is the single record-image column - the same column
-     * {@value #RECORD_IMAGE_COLUMN_INDEX} that {@link #mapRecordImage(ResultSet, int)} reads. Using
-     * the ordinal keeps the statement free of any column name, for the reason set out under residual
-     * risk R-E on this class.
-     *
-     * <p><strong>Why ordering the whole image orders by the key.</strong> The base key
-     * {@code XREF-CARD-NUM} is the <em>leading</em> fixed-width span of the record, bytes
-     * {@code [0, 16)}, so comparing two record images left to right compares their card numbers first
-     * and reaches any later byte only when the card numbers are equal. That is precisely the collating
-     * order a KSDS browse returns, which is what {@code app/cbl/CBACT03C.cbl:29-33} declares with
-     * {@code ORGANIZATION IS INDEXED} plus {@code ACCESS MODE IS SEQUENTIAL} on
-     * {@code RECORD KEY IS FD-XREF-CARD-NUM}. The ordering is applied to the keyed reads too, so that
-     * when an alternate key matches more than one record the first one returned is deterministic -
-     * see {@link #readByAccountIdViaAltIndex(long)}.
-     *
-     * <p>One caveat, and it is part of risk R-E: the ordering is performed by the driver's own
-     * collation, whereas VSAM compares raw bytes. Every card number in this dataset is sixteen
-     * digits - {@code app/cpy/CVACT03Y.cpy} declares {@code PIC X(16)} and all fifty shipped records
-     * hold digits - and the digits collate in the same relative order in every code page this module
-     * uses, so the two orders coincide for the data at hand.
-     *
-     * @param datasetName the configured dataset name
-     * @return the composed statement
-     */
-    private static String selectAllInKeyOrder(String datasetName) {
-        return "SELECT * FROM " + asDelimitedIdentifier(datasetName) + " ORDER BY "
-                + RECORD_IMAGE_COLUMN_INDEX;
-    }
-
-    /**
-     * Renders a dataset name as a delimited SQL identifier, doubling any embedded quote.
-     *
-     * <p>Delimited because a mainframe dataset name contains periods and would otherwise be read as a
-     * qualified name, and because delimiting is what keeps a configured value from being parsed as
-     * syntax.
-     *
-     * @param name the configured dataset name
-     * @return the name as a delimited identifier
-     */
-    private static String asDelimitedIdentifier(String name) {
-        String quote = "\"";
-        return quote + name.replace(quote, quote + quote) + quote;
+        // The grammar - what a z/OS dataset name may contain - lives in DatasetRelation, so it is
+        // stated once for the whole module rather than restated, and diverging, in each repository.
+        return DatasetRelation.requireDatasetName(candidate);
     }
 
     // =================================================================================================
@@ -646,7 +678,7 @@ public class CardXrefRepository {
      * @return the base dataset name; never {@code null}, never blank
      */
     public String baseDatasetName() {
-        return baseDatasetName;
+        return baseRelation.dsname();
     }
 
     /**
@@ -660,7 +692,7 @@ public class CardXrefRepository {
      * @return the alternate-index path dataset name; never {@code null}, never blank
      */
     public String alternateIndexDatasetName() {
-        return alternateIndexDatasetName;
+        return alternateIndexRelation.dsname();
     }
 
     /**
@@ -751,7 +783,7 @@ public class CardXrefRepository {
                 + CardXrefRecord.XREF_CARD_NUM_NAME + " key; an absent key is a defect in the caller, "
                 + "not a NOTFND outcome. Pass an empty string for a key of SPACES.");
         String keyImage = codec.movePicX(cardNumber, CARD_NUMBER_KEY_LENGTH);
-        return readByKey(BASE_DD_NAME, baseSelectSql, CardXrefRecord.XREF_CARD_NUM, keyImage,
+        return readByKey(BASE_DD_NAME, Statements::selectByCardNumber, CARD_NUMBER_KEY_SPAN, keyImage,
                 FileStatus.DUPREC);
     }
 
@@ -805,7 +837,7 @@ public class CardXrefRepository {
      */
     public ReadResult readByAccountIdViaAltIndex(long accountId) {
         String keyImage = codec.movePic9(accountId, ACCOUNT_ID_KEY_LENGTH);
-        return readByKey(ALTERNATE_INDEX_DD_NAME, alternateIndexSelectSql, CardXrefRecord.XREF_ACCT_ID,
+        return readByKey(ALTERNATE_INDEX_DD_NAME, Statements::selectByAccountId, ACCOUNT_ID_KEY_SPAN,
                 keyImage, FileStatus.DUPKEY);
     }
 
@@ -847,44 +879,44 @@ public class CardXrefRepository {
                 + ") REDEFINES view of app/cbl/COACTVWC.cbl:79-80 always holds digits, so an absent "
                 + "image is a defect in the caller rather than a NOTFND outcome");
         String keyImage = codec.movePic9(accountIdKeyImage, ACCOUNT_ID_KEY_LENGTH);
-        return readByKey(ALTERNATE_INDEX_DD_NAME, alternateIndexSelectSql, CardXrefRecord.XREF_ACCT_ID,
+        return readByKey(ALTERNATE_INDEX_DD_NAME, Statements::selectByAccountId, ACCOUNT_ID_KEY_SPAN,
                 keyImage, FileStatus.DUPKEY);
     }
 
     /**
      * The one keyed-read implementation, shared by the base read and the alternate-index read.
      *
-     * <p>Both access paths perform the identical sequence - fetch the dataset's rows, compare the
-     * declared key span of each against the composed key image, classify - and differ only in which
-     * dataset they address, which span carries their key, and which CICS duplicate condition names
-     * their key. Those three differences are the arguments. That is what "one repository, one dataset,
-     * a second finder" means in code: the finder is a different key on the same implementation, not a
-     * different implementation (gate G45).
+     * <p>Both access paths perform the identical sequence - ask the backend for the rows whose key span
+     * carries the composed key image, confirm the span, classify - and differ only in which dataset they
+     * address, which span carries their key, and which CICS duplicate condition names their key. Those
+     * differences are the arguments. That is what "one repository, one dataset, a second finder" means in
+     * code: the finder is a different key on the same implementation, not a different implementation
+     * (gate G45).
      *
-     * <p>The comparison is on the raw span image, read through
-     * {@link FixedWidthCodec#readPicX(FixedWidthRecord, FieldSpan)} and never trimmed, so it is the
-     * byte comparison VSAM performs. Reading the numeric account-id span as its raw image rather than
-     * as a number is deliberate twice over: it makes both key comparisons one code path, and it means a
-     * non-matching row holding a malformed numeric span cannot fail a read that was never going to
-     * match it.
+     * <p><strong>The key predicate is in the statement, and that matters.</strong> The comparison is a
+     * byte comparison of the key's own bytes at the key's own offset - which is the comparison VSAM
+     * performs - expressed as an escaped {@code LIKE} over the record image so that the backend, not
+     * Java, decides which records qualify. It was not always so: this method used to fetch <em>every</em>
+     * row of the cluster, wrap each one at the declared 50-byte width and compare keys in a loop, and
+     * that had two consequences worth stating plainly. A single malformed row anywhere in the dataset
+     * failed a keyed read of a key it had nothing to do with, which is stricter than CICS in a way no
+     * caller could act on. And on a real cluster the whole file crossed the wire to answer a
+     * single-record question. Now only matching rows are transferred, and only they are held to the
+     * declared width - so a width disagreement is still reported loudly, but against the read that
+     * genuinely encountered it.
      *
-     * <p><strong>One acknowledged consequence of matching in Java rather than pushing the predicate
-     * down.</strong> A keyed read has to visit every row, so it checks every row's <em>width</em>, which
-     * is stricter than CICS: a corrupt record elsewhere in the cluster cannot affect a real CICS keyed
-     * read of a different key. The strictness is kept on purpose. The alternative - skipping a row that
-     * cannot be wrapped - would turn the one data condition this dataset actually has into silence:
-     * every row of {@code app/data/ASCII/cardxref.txt} is 36 bytes, so an unnormalised fixture would
-     * make all fifty rows vanish and every read report {@code NOTFND} with no signal at all. Failing
-     * loudly on the width is what keeps risk R-F visible, and a width that disagrees with the copybook
-     * is a configuration or driver defect rather than a record-level one, so it is genuinely global
-     * anyway.
+     * <p>The 36-versus-50 fixture deviation this dataset carries (risk R-F) is unaffected: the
+     * normalisation that pads a 36-byte row to 50 happens where the fixture is seeded, not here, and a
+     * row that reaches this method at any width but {@value #RECORD_LENGTH} still fails rather than being
+     * quietly reshaped.
      *
      * @param ddName            the configuration key of the access path being read, carried onto the
      *                          result so a caller can compose {@code ERROR-FILE}
-     * @param sql               the composed statement for that access path
-     * @param keyField          the span descriptor of the key on this path
+     * @param statementOf       selects, from the resolved statements, the keyed statement for this
+     *                          access path
+     * @param keySpan           where this path's key sits inside the record image
      * @param keyImage          the key image, already reshaped by the appropriate {@code MOVE} rule and
-     *                          therefore exactly {@code keyField.length()} characters
+     *                          therefore exactly {@code keySpan.length()} characters
      * @param duplicateCicsResp {@link FileStatus#DUPREC} for a base-key duplicate,
      *                          {@link FileStatus#DUPKEY} for an alternate-key duplicate. Naming it per
      *                          path resolves the ambiguity that
@@ -892,35 +924,48 @@ public class CardXrefRepository {
      *                          invents, because at this point the path is known
      * @return the discriminated outcome; never {@code null}
      */
-    private ReadResult readByKey(String ddName, String sql, FieldSpan keyField, String keyImage,
-            int duplicateCicsResp) {
+    private ReadResult readByKey(String ddName,
+                                 Function<Statements, String> statementOf,
+                                 KeySpan keySpan,
+                                 String keyImage,
+                                 int duplicateCicsResp) {
         List<String> rows;
         try {
-            RowMapper<String> recordImageMapper = this::mapRecordImage;
-            rows = jdbcTemplate.query(sql, recordImageMapper);
+            Statements sql = resolveStatements();
+            rows = fetch(statementOf.apply(sql), keySpan.pattern(keyImage));
         } catch (DataAccessException translated) {
             // WHEN OTHER. Reported as a status, exactly as the COBOL keeps only the status, so the
-            // caller's own guard chain decides what to do about it.
-            return ReadResult.other(ddName, PERMANENT_ERROR_STATUS);
+            // caller's own guard chain decides what to do about it - and carrying the backend's own
+            // diagnosis alongside it, so an operator can tell an unreachable backend from a missing
+            // relation from a rejected credential.
+            return other(ddName, translated, "read the " + ddName + " access path by key");
         }
         if (rows == null) {
             // A template that yielded no result at all has told us nothing, and nothing is not an
             // empty dataset. Reported on the WHEN OTHER arm rather than mistaken for NOTFND.
+            LOG.error("The " + ddName + " access path yielded no result object at all for a keyed read; "
+                    + "reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                    + " rather than treating it as a dataset with no matching record");
             return ReadResult.other(ddName, PERMANENT_ERROR_STATUS);
         }
-        List<CardXrefRecord> matches = new ArrayList<>();
+        List<CardXrefRecord> matches = new ArrayList<>(rows.size());
         for (String rowImage : rows) {
             if (rowImage == null) {
                 // A row whose record image is absent is not a readable 50-byte record. There IS a
                 // record, it simply cannot be read, so this is an I/O-level defect and belongs on the
                 // WHEN OTHER arm - never silently skipped, which would turn a broken dataset into a
                 // clean NOTFND.
+                LOG.error("A matching row of the " + ddName + " access path carries no record image at "
+                        + "column position " + RECORD_IMAGE_COLUMN_INDEX + "; reporting file status "
+                        + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                        + " rather than reporting a record that is present as absent");
                 return ReadResult.other(ddName, PERMANENT_ERROR_STATUS);
             }
-            FixedWidthRecord span = wrapRow(rowImage);
-            if (keyImage.equals(codec.readPicX(span, keyField))) {
-                matches.add(CardXrefRecord.decodeSpan(span, codec));
-            }
+            // Only rows the predicate already matched are decoded, and therefore only they are held to
+            // the declared width. That is the point of pushing the predicate down: a malformed row
+            // elsewhere in the dataset is not this read's business, and failing this read because of one
+            // would report a defect against a key that has nothing to do with it.
+            matches.add(decodeRow(rowImage));
         }
         if (matches.isEmpty()) {
             // WHEN DFHRESP(NOTFND) / INVALID KEY. A normal branch in every consumer, never an
@@ -934,6 +979,57 @@ public class CardXrefRepository {
         }
         // WHEN DFHRESP(NORMAL).
         return ReadResult.found(ddName, matches.get(0));
+    }
+
+    /**
+     * Executes a keyed read, transferring at most {@value #DUPLICATE_DETECTION_ROW_LIMIT} rows.
+     *
+     * <p>Both row limits are set, deliberately: one bounds what the backend will hand over and the other
+     * bounds what it carries across in a round trip.
+     *
+     * @param statement the composed keyed statement
+     * @param pattern   the escaped {@code LIKE} pattern confining the match to the key's own bytes
+     * @return the matching record images, at most two of them, or {@code null} if the template yielded
+     *         no result at all
+     */
+    private List<String> fetch(String statement, String pattern) {
+        PreparedStatementCreator creator = connection -> {
+            PreparedStatement prepared = connection.prepareStatement(statement);
+            prepared.setMaxRows(DUPLICATE_DETECTION_ROW_LIMIT);
+            prepared.setFetchSize(DUPLICATE_DETECTION_ROW_LIMIT);
+            prepared.setString(1, pattern);
+            return prepared;
+        };
+        RowMapper<String> recordImageMapper = this::mapRecordImage;
+        ResultSetExtractor<List<String>> extractor = resultSet -> {
+            List<String> images = new ArrayList<>(DUPLICATE_DETECTION_ROW_LIMIT);
+            int rowNumber = 0;
+            while (images.size() < DUPLICATE_DETECTION_ROW_LIMIT && resultSet.next()) {
+                images.add(recordImageMapper.mapRow(resultSet, rowNumber++));
+            }
+            return images;
+        };
+        return jdbcTemplate.query(creator, extractor);
+    }
+
+    /**
+     * Logs a backend refusal with the driver's own diagnosis and returns the outcome carrying it.
+     *
+     * <p>Logged: the access path, what was attempted, and the {@code SQLSTATE}, vendor code and
+     * exception type the driver reported. Not logged: the key or the record image - a cross-reference
+     * record ties a card number to a customer and an account, and a log file is read by more people and
+     * guarded less than the dataset it describes.
+     *
+     * @param ddName  the access path being read
+     * @param refusal the exception raised
+     * @param attempt what was being attempted, phrased to complete "Could not ..."
+     * @return the WHEN OTHER outcome, carrying the diagnostic
+     */
+    private static ReadResult other(String ddName, Throwable refusal, String attempt) {
+        BackendDiagnostic diagnostic = BackendDiagnostic.of(refusal);
+        LOG.error("Could not " + attempt + " - " + diagnostic.describe() + "; reporting file status "
+                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", refusal);
+        return ReadResult.other(ddName, PERMANENT_ERROR_STATUS, diagnostic);
     }
 
     // =================================================================================================
@@ -982,15 +1078,23 @@ public class CardXrefRepository {
         List<String> rows;
         try {
             RowMapper<String> recordImageMapper = this::mapRecordImage;
-            rows = jdbcTemplate.query(baseSelectSql, recordImageMapper);
+            rows = jdbcTemplate.query(resolveStatements().browseInKeyOrder(), recordImageMapper);
         } catch (DataAccessException translated) {
             // ERROR OPENING XREFFILE. app/cbl/CBACT03C.cbl:121-127 moves 12 into APPL-RESULT for any
-            // status but '00', then displays and abends - all of which is the caller's, not ours.
+            // status but '00', then displays and abends - all of which is the caller's, not ours. What
+            // is ours is saying what the backend actually reported, so the abend is diagnosable.
+            BackendDiagnostic diagnostic = BackendDiagnostic.of(translated);
+            LOG.error("Could not open a browse of the " + BASE_DD_NAME + " base cluster - "
+                    + diagnostic.describe() + "; reporting file status "
+                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", translated);
             return new BrowseCursor(this, PERMANENT_ERROR_STATUS, null);
         }
         if (rows == null) {
             // The template yielded no result at all, which is not an empty dataset. Reported as a
             // failed open rather than as a browse that is immediately at end of file.
+            LOG.error("A browse of the " + BASE_DD_NAME + " base cluster yielded no result object at "
+                    + "all; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                    + " rather than treating it as an empty dataset");
             return new BrowseCursor(this, PERMANENT_ERROR_STATUS, null);
         }
         // Defensively copied and made unmodifiable so the pass cannot be perturbed once it starts.
@@ -1044,7 +1148,8 @@ public class CardXrefRepository {
      *                                  {@value #RECORD_LENGTH} bytes
      */
     private FixedWidthRecord wrapRow(String rowImage) {
-        return codec.wrap(rowImage.getBytes(codec.charset()), CardXrefRecord.LAYOUT);
+        return codec.wrap(codec.encodeImage(rowImage, "a CARD-XREF-RECORD row image"),
+                CardXrefRecord.LAYOUT);
     }
 
     /**
@@ -1057,6 +1162,103 @@ public class CardXrefRepository {
      */
     private CardXrefRecord decodeRow(String rowImage) {
         return CardXrefRecord.decodeSpan(wrapRow(rowImage), codec);
+    }
+
+    // =================================================================================================
+    // Statement resolution. One place decides the text of every statement this repository sends, and one
+    // describe per relation - a statement that returns no row - learns the column name needed to compose
+    // them.
+    // =================================================================================================
+
+    /**
+     * Resolves the statements on first use and returns them.
+     *
+     * <p>Two describes, one per relation, because the base cluster and the alternate-index path are
+     * addressed by two configured names and this class does not assume a deployment presents them with
+     * the same column name.
+     *
+     * @return the composed statements
+     * @throws DataAccessException   if either relation cannot be described
+     * @throws IllegalStateException if either relation presents no usable record-image column
+     */
+    private Statements resolveStatements() {
+        Statements resolved = this.statements;
+        if (resolved == null) {
+            ResultSetExtractor<String> columnNameExtractor =
+                    CardXrefRepository::extractRecordImageColumn;
+            String baseColumn = baseRelation.rememberRecordImageColumn(
+                    jdbcTemplate.query(baseRelation.describeStatement(), columnNameExtractor));
+            String alternateColumn = alternateIndexRelation.rememberRecordImageColumn(
+                    jdbcTemplate.query(alternateIndexRelation.describeStatement(),
+                            columnNameExtractor));
+            resolved = new Statements(
+                    baseRelation.selectByKey(baseColumn),
+                    alternateIndexRelation.selectByKey(alternateColumn),
+                    baseRelation.selectAllAscending(baseColumn));
+            this.statements = resolved;
+        }
+        return resolved;
+    }
+
+    /**
+     * Reads the record-image column's name out of a described result set.
+     *
+     * @param resultSet the described, empty result set
+     * @return the column name at the record-image position, or {@code null} if there is none
+     * @throws SQLException if the driver fails while describing
+     */
+    private static String extractRecordImageColumn(ResultSet resultSet) throws SQLException {
+        return DatasetRelation.recordImageColumnOf(resultSet.getMetaData());
+    }
+
+    /**
+     * The statements this repository sends, composed once against the discovered record-image columns.
+     *
+     * <p>Each key predicate is an escaped {@code LIKE} over the record image, confining the match to the
+     * key's own bytes at its own offset. That is what makes a keyed read a keyed read: before it was
+     * expressed this way, a read by card number fetched <em>every</em> row of the cross reference,
+     * wrapped each one at the declared 50-byte width and compared keys in Java - so a single malformed
+     * row anywhere in the dataset failed a read of a key that had nothing to do with it, and on a real
+     * dataset the whole file crossed the wire to answer a single-record question.
+     *
+     * @param selectByCardNumber  {@code READ} on the base cluster, keyed on {@code XREF-CARD-NUM} at
+     *                            offset 0
+     * @param selectByAccountId   {@code READ} through the alternate-index path, keyed on
+     *                            {@code XREF-ACCT-ID} at offset 25
+     * @param browseInKeyOrder    the sequential browse of the base cluster, in ascending key order
+     */
+    record Statements(String selectByCardNumber,
+                      String selectByAccountId,
+                      String browseInKeyOrder) {
+    }
+
+    /**
+     * The resolved statements, or {@code null} while they have not been resolved.
+     *
+     * <p>Package-visible so this class's own tests can assert the composed text without a backend.
+     *
+     * @return the resolved statements, or {@code null}
+     */
+    Statements resolvedStatements() {
+        return statements;
+    }
+
+    /**
+     * The statement that describes the base cluster without transferring a row.
+     *
+     * @return the describe statement over the base cluster
+     */
+    public String describeBaseStatement() {
+        return baseRelation.describeStatement();
+    }
+
+    /**
+     * The statement that describes the alternate-index path without transferring a row.
+     *
+     * @return the describe statement over the alternate-index path
+     */
+    public String describeAlternateIndexStatement() {
+        return alternateIndexRelation.describeStatement();
     }
 
     // =================================================================================================
@@ -1109,6 +1311,9 @@ public class CardXrefRepository {
      *                  dataset that could not be reached
      * @param cicsResp2 the CICS {@code RESP2}, always {@link CardXrefRepository#CICS_RESP2_NOT_APPLICABLE}
      *                  and documented there
+     * @param diagnostic what the backend reported when it refused - present only on the
+     *                  {@link Outcome#OTHER} arm of a refusal the driver described, so a caller can log
+     *                  the driver's own {@code SQLSTATE} instead of a status this module composed
      */
     public record ReadResult(
             String ddName,
@@ -1116,7 +1321,8 @@ public class CardXrefRepository {
             Outcome outcome,
             Optional<CardXrefRecord> record,
             int cicsResp,
-            int cicsResp2) {
+            int cicsResp2,
+            Optional<BackendDiagnostic> diagnostic) {
 
         /**
          * Validates the outcome's own consistency, so an inconsistent result cannot be constructed even
@@ -1135,6 +1341,8 @@ public class CardXrefRepository {
             Objects.requireNonNull(outcome, "An outcome classification is required on a read outcome");
             Objects.requireNonNull(record, "An Optional is required, empty rather than null, so no "
                     + "null escapes this type");
+            Objects.requireNonNull(diagnostic, "An Optional is required for the backend diagnostic, "
+                    + "empty rather than null, so no null escapes this type");
             if (status.length() != FileStatus.STATUS_LENGTH) {
                 throw new IllegalArgumentException("FILE STATUS '" + status + "' is "
                         + status.length() + " character(s); it is exactly "
@@ -1168,7 +1376,7 @@ public class CardXrefRepository {
         public static ReadResult found(String ddName, CardXrefRecord record) {
             Objects.requireNonNull(record, "A found outcome must carry the record it found");
             return new ReadResult(ddName, FileStatus.OK, Outcome.OK, Optional.of(record),
-                    FileStatus.NORMAL, CICS_RESP2_NOT_APPLICABLE);
+                    FileStatus.NORMAL, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
         }
 
         /**
@@ -1181,7 +1389,7 @@ public class CardXrefRepository {
          */
         public static ReadResult notFound(String ddName) {
             return new ReadResult(ddName, FileStatus.NOT_FOUND, Outcome.NOT_FOUND, Optional.empty(),
-                    FileStatus.NOTFND, CICS_RESP2_NOT_APPLICABLE);
+                    FileStatus.NOTFND, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
         }
 
         /**
@@ -1198,7 +1406,7 @@ public class CardXrefRepository {
          */
         public static ReadResult endOfFile(String ddName) {
             return new ReadResult(ddName, FileStatus.END_OF_FILE, Outcome.END_OF_FILE, Optional.empty(),
-                    FileStatus.ENDFILE, CICS_RESP2_NOT_APPLICABLE);
+                    FileStatus.ENDFILE, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
         }
 
         /**
@@ -1226,7 +1434,7 @@ public class CardXrefRepository {
                         + "only, so the distinction is kept where it is still known.");
             }
             return new ReadResult(ddName, FileStatus.DUPLICATE, Outcome.DUPLICATE, Optional.of(first),
-                    cicsResp, CICS_RESP2_NOT_APPLICABLE);
+                    cicsResp, CICS_RESP2_NOT_APPLICABLE, Optional.empty());
         }
 
         /**
@@ -1245,7 +1453,35 @@ public class CardXrefRepository {
          */
         public static ReadResult other(String ddName, String status) {
             return new ReadResult(ddName, status, Outcome.OTHER, Optional.empty(), FileStatus.NOTOPEN,
-                    CICS_RESP2_NOT_APPLICABLE);
+                    CICS_RESP2_NOT_APPLICABLE, Optional.empty());
+        }
+
+        /**
+         * The {@code WHEN OTHER} arm, carrying what the backend actually said about the refusal.
+         *
+         * <p>The status and the {@code RESP} are what the caller branches on, because those are the
+         * quantities the COBOL guard chain tests. The diagnostic is what makes the failure diagnosable:
+         * a permanent-error status tells an operator that something went wrong and nothing about what,
+         * whereas the driver's {@code SQLSTATE} distinguishes an unreachable backend from a missing
+         * relation from a rejected credential - three failures needing three different responses.
+         *
+         * <p>The {@code RESP2} stays {@link #CICS_RESP2_NOT_APPLICABLE}. A driver's vendor error number
+         * is emphatically not a CICS reason code, and reporting one as the other would put a number on a
+         * screen - {@code app/cbl/COACTVWC.cbl} renders {@code ERROR-RESP2} verbatim - that looks
+         * authoritative and means nothing. The vendor code travels in the diagnostic, labelled as what
+         * it is.
+         *
+         * @param ddName     the access path that was read
+         * @param status     the permanent-error file status
+         * @param diagnostic what the backend reported
+         * @return the outcome
+         * @throws NullPointerException if {@code diagnostic} is {@code null}
+         */
+        public static ReadResult other(String ddName, String status, BackendDiagnostic diagnostic) {
+            Objects.requireNonNull(diagnostic, "A diagnostic is required by this factory; use "
+                    + "other(String, String) where there is no backend refusal to report");
+            return new ReadResult(ddName, status, Outcome.OTHER, Optional.empty(), FileStatus.NOTOPEN,
+                    CICS_RESP2_NOT_APPLICABLE, Optional.of(diagnostic));
         }
 
         /**
@@ -1517,6 +1753,10 @@ public class CardXrefRepository {
             // continue does not re-read the same broken row forever.
             position++;
             if (rowImage == null) {
+                LOG.error("The cross-reference base cluster '" + repository.baseDatasetName() + "' (DD "
+                        + BASE_DD_NAME + ") presented a row with no record image at column position "
+                        + RECORD_IMAGE_COLUMN_INDEX + " during a browse; reporting file status "
+                        + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
                 return ReadResult.other(BASE_DD_NAME, PERMANENT_ERROR_STATUS);
             }
             return ReadResult.found(BASE_DD_NAME, repository.decodeRow(rowImage));

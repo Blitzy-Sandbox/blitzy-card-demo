@@ -526,10 +526,15 @@ public final class CicsAid {
      * returns an unmodifiable map (practice <strong>B9</strong> - no mutable static state, and no
      * static array).
      *
-     * <p>Populating this successfully is itself a standing assertion that the thirty-five AID
-     * values are pairwise distinct: {@code Map.ofEntries} rejects duplicate keys, so a copy-paste
-     * error that gave two mnemonics the same byte would fail at class initialisation rather than
-     * silently corrupt key routing.
+     * <p>Populating this successfully is itself a standing assertion that the <strong>thirty-six</strong>
+     * AID values this class declares are pairwise distinct: {@code Map.ofEntries} rejects duplicate
+     * keys, so a copy-paste error that gave two mnemonics the same byte would fail at class
+     * initialisation rather than silently corrupt key routing. The count is thirty-six -
+     * {@code DFHNULL}, {@code DFHENTER}, {@code DFHCLEAR}, {@code DFHCLRP}, {@code DFHPEN},
+     * {@code DFHOPID}, {@code DFHMSRE}, {@code DFHSTRF}, {@code DFHTRIG}, the three {@code DFHPA}
+     * attention keys and the twenty-four {@code DFHPF} function keys - which is the same thirty-six
+     * this class's own header records, and {@link #mnemonicsByAid()}{@code .size()} reports it from
+     * the map itself so a reader never has to trust a hand-written number.
      */
     private static final Map<Byte, String> MNEMONICS_BY_AID = Map.ofEntries(
             Map.entry(DFHNULL, "DFHNULL"),

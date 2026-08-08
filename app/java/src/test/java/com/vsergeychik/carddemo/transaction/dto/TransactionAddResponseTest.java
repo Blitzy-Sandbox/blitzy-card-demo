@@ -15,7 +15,7 @@ import com.vsergeychik.carddemo.common.NavigationContext;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import com.vsergeychik.carddemo.transaction.dto.TransactionAddResponse.AttributeQuad;
-import com.vsergeychik.carddemo.transaction.dto.TransactionAddResponse.CardDemoCt01Info;
+import com.vsergeychik.carddemo.transaction.dto.TransactionAddRequest.Ct01Info;
 import com.vsergeychik.carddemo.transaction.dto.TransactionAddResponse.ScreenField;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -49,6 +49,9 @@ class TransactionAddResponseTest {
 
     /** The code page of the authoritative fixtures under {@code app/data/ASCII}. */
     private static final Charset ASCII = StandardCharsets.US_ASCII;
+
+    /** The codec form of {@link #ASCII}, for the carriers whose byte boundary takes one. */
+    private static final FixedWidthCodec ASCII_CODEC = new FixedWidthCodec(ASCII);
 
     /**
      * The 21 name-labelled fields of {@code COTRN01}, transcribed independently from
@@ -210,10 +213,10 @@ class TransactionAddResponseTest {
         @Test
         @DisplayName("the CT01 cursor is 16+16+8+1+1+16 = 58 bytes")
         void cursorIs58Bytes() {
-            assertThat(CardDemoCt01Info.CT01_INFO_LENGTH)
+            assertThat(Ct01Info.RECORD_LENGTH)
                     .isEqualTo(16 + 16 + 8 + 1 + 1 + 16)
                     .isEqualTo(58);
-            assertThat(CardDemoCt01Info.LAYOUT.recordLength()).isEqualTo(58);
+            assertThat(Ct01Info.LAYOUT.recordLength()).isEqualTo(58);
         }
 
         @Test
@@ -432,7 +435,7 @@ class TransactionAddResponseTest {
             assertThatNullPointerException().isThrownBy(() -> response.setNextMapset(null));
             assertThatNullPointerException().isThrownBy(() -> response.setNextMap(null));
             assertThatNullPointerException().isThrownBy(() -> response.setNavigationContext(null));
-            assertThatNullPointerException().isThrownBy(() -> response.setCardDemoCt01Info(null));
+            assertThatNullPointerException().isThrownBy(() -> response.setCt01Info(null));
             assertThatNullPointerException().isThrownBy(() -> response.attributes(null));
             assertThatNullPointerException()
                     .isThrownBy(() -> response.setAttributes(null, AttributeQuad.defaults()));
@@ -654,7 +657,7 @@ class TransactionAddResponseTest {
                                 field.getName())
                         .isTrue();
             }
-            for (java.lang.reflect.Field field : CardDemoCt01Info.class.getDeclaredFields()) {
+            for (java.lang.reflect.Field field : Ct01Info.class.getDeclaredFields()) {
                 if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
                     assertThat(java.lang.reflect.Modifier.isFinal(field.getModifiers()))
                             .as("static field %s must be final", field.getName())
@@ -671,7 +674,7 @@ class TransactionAddResponseTest {
         @Test
         @DisplayName("a fresh cursor holds the declared VALUE 'N' and space-filled identifiers")
         void freshCursorHoldsDeclaredValues() {
-            CardDemoCt01Info cursor = new CardDemoCt01Info();
+            Ct01Info cursor = new Ct01Info();
             assertThat(cursor.getTrnidFirst()).hasSize(16).isBlank();
             assertThat(cursor.getTrnidLast()).hasSize(16).isBlank();
             assertThat(cursor.getPageNum()).isZero();
@@ -683,7 +686,7 @@ class TransactionAddResponseTest {
         @Test
         @DisplayName("both 88-level states of NEXT-PAGE-FLG are reachable (gate G50)")
         void bothNextPageStatesAreReachable() {
-            CardDemoCt01Info cursor = new CardDemoCt01Info();
+            Ct01Info cursor = new Ct01Info();
 
             assertThat(cursor.isNextPageNo()).isTrue();
             assertThat(cursor.isNextPageYes()).isFalse();
@@ -697,14 +700,14 @@ class TransactionAddResponseTest {
             assertThat(cursor.isNextPageNo()).isTrue();
             assertThat(cursor.isNextPageYes()).isFalse();
 
-            cursor.setNextPageFlg(CardDemoCt01Info.NEXT_PAGE_YES);
+            cursor.setNextPageFlg(Ct01Info.NEXT_PAGE_YES);
             assertThat(cursor.isNextPageYes()).isTrue();
         }
 
         @Test
         @DisplayName("a third character satisfies neither 88-level, exactly as in COBOL")
         void athirdCharacterSatisfiesNeitherCondition() {
-            CardDemoCt01Info cursor = new CardDemoCt01Info();
+            Ct01Info cursor = new Ct01Info();
             cursor.setNextPageFlg("X");
             assertThat(cursor.isNextPageYes()).isFalse();
             assertThat(cursor.isNextPageNo()).isFalse();
@@ -713,7 +716,7 @@ class TransactionAddResponseTest {
         @Test
         @DisplayName("PAGE-NUM accepts the whole eight-digit range and rejects what will not fit")
         void pageNumRangeIsEnforced() {
-            CardDemoCt01Info cursor = new CardDemoCt01Info();
+            Ct01Info cursor = new Ct01Info();
 
             cursor.setPageNum(0);
             assertThat(cursor.getPageNum()).isZero();
@@ -731,32 +734,45 @@ class TransactionAddResponseTest {
         }
 
         @Test
-        @DisplayName("the six items obey the move rule and carry verbatim copybook names")
-        void itemsObeyTheMoveRuleAndCarryVerbatimNames() {
-            CardDemoCt01Info cursor = new CardDemoCt01Info();
+        @DisplayName("the six items store what they are given and carry verbatim copybook names")
+        void itemsStoreVerbatimAndCarryVerbatimNames() {
+            Ct01Info cursor = new Ct01Info();
             cursor.setTrnidFirst("FIRSTIDTOOLONGXXXX");
             cursor.setTrnidLast("LAST");
             cursor.setTrnSelFlg("SS");
             cursor.setTrnSelected("SELECTED");
 
-            assertThat(cursor.getTrnidFirst()).isEqualTo("FIRSTIDTOOLONGXX").hasSize(16);
-            assertThat(cursor.getTrnidLast()).hasSize(16).startsWith("LAST");
-            assertThat(cursor.getTrnSelFlg()).isEqualTo("S");
-            assertThat(cursor.getTrnSelected()).hasSize(16).startsWith("SELECTED");
+            // The shared carrier stores what it is given, unchanged - it does not pad a short value
+            // and does not truncate a long one. The PIC X move is applied once, at the byte boundary
+            // in toFixedWidth, which is where the direction of a truncation is visible and reviewable.
+            // The carrier this class used to declare for itself moved on every setter instead, so an
+            // over-long value was silently shortened before anyone could object to it.
+            assertThat(cursor.getTrnidFirst()).isEqualTo("FIRSTIDTOOLONGXXXX").hasSize(18);
+            assertThat(cursor.getTrnidLast()).isEqualTo("LAST");
+            assertThat(cursor.getTrnSelFlg()).isEqualTo("SS");
+            assertThat(cursor.getTrnSelected()).isEqualTo("SELECTED");
 
-            assertThat(CardDemoCt01Info.TRNID_FIRST_FIELD).isEqualTo("CDEMO-CT01-TRNID-FIRST");
-            assertThat(CardDemoCt01Info.TRNID_LAST_FIELD).isEqualTo("CDEMO-CT01-TRNID-LAST");
-            assertThat(CardDemoCt01Info.PAGE_NUM_FIELD).isEqualTo("CDEMO-CT01-PAGE-NUM");
-            assertThat(CardDemoCt01Info.NEXT_PAGE_FLG_FIELD).isEqualTo("CDEMO-CT01-NEXT-PAGE-FLG");
-            assertThat(CardDemoCt01Info.TRN_SEL_FLG_FIELD).isEqualTo("CDEMO-CT01-TRN-SEL-FLG");
-            assertThat(CardDemoCt01Info.TRN_SELECTED_FIELD).isEqualTo("CDEMO-CT01-TRN-SELECTED");
-            assertThat(cursor.toString()).contains("page=0");
+            // ...and the image is still exactly 58 bytes, each field at its declared width.
+            byte[] image = cursor.toFixedWidth(ASCII_CODEC);
+            assertThat(image).hasSize(Ct01Info.RECORD_LENGTH);
+            String rendered = new String(image, ASCII);
+            assertThat(rendered.substring(0, 16)).isEqualTo("FIRSTIDTOOLONGXX");
+            assertThat(rendered.substring(16, 32)).isEqualTo("LAST            ");
+
+            assertThat(Ct01Info.TRNID_FIRST_FIELD).isEqualTo("CDEMO-CT01-TRNID-FIRST");
+            assertThat(Ct01Info.TRNID_LAST_FIELD).isEqualTo("CDEMO-CT01-TRNID-LAST");
+            assertThat(Ct01Info.PAGE_NUM_FIELD).isEqualTo("CDEMO-CT01-PAGE-NUM");
+            assertThat(Ct01Info.NEXT_PAGE_FLG_FIELD).isEqualTo("CDEMO-CT01-NEXT-PAGE-FLG");
+            assertThat(Ct01Info.TRN_SEL_FLG_FIELD).isEqualTo("CDEMO-CT01-TRN-SEL-FLG");
+            assertThat(Ct01Info.TRN_SELECTED_FIELD).isEqualTo("CDEMO-CT01-TRN-SELECTED");
+            // The surviving carrier names the field as the copybook does, not abbreviated.
+            assertThat(cursor.toString()).contains("pageNum=0");
         }
 
         @Test
         @DisplayName("the cursor round trips through its 58-byte image, page number zero-filled")
         void cursorRoundTripsThroughItsImage() {
-            CardDemoCt01Info cursor = new CardDemoCt01Info();
+            Ct01Info cursor = new Ct01Info();
             cursor.setTrnidFirst("0000000000000001");
             cursor.setTrnidLast("0000000000000010");
             cursor.setPageNum(42);
@@ -764,13 +780,13 @@ class TransactionAddResponseTest {
             cursor.setTrnSelFlg("S");
             cursor.setTrnSelected("0000000000000007");
 
-            byte[] image = cursor.toFixedWidth(ASCII);
+            byte[] image = cursor.toFixedWidth(ASCII_CODEC);
             assertThat(image).hasSize(58);
             assertThat(new String(image, ASCII))
                     .startsWith("00000000000000010000000000000010")
                     .contains("00000042");
 
-            CardDemoCt01Info parsed = CardDemoCt01Info.fromFixedWidth(image, ASCII);
+            Ct01Info parsed = Ct01Info.fromFixedWidth(ASCII_CODEC, image);
             assertThat(parsed.getTrnidFirst()).isEqualTo(cursor.getTrnidFirst());
             assertThat(parsed.getTrnidLast()).isEqualTo(cursor.getTrnidLast());
             assertThat(parsed.getPageNum()).isEqualTo(42);
@@ -782,14 +798,14 @@ class TransactionAddResponseTest {
         @Test
         @DisplayName("the cursor rejects a null charset and a wrongly-sized image")
         void cursorRejectsBadInput() {
-            CardDemoCt01Info cursor = new CardDemoCt01Info();
+            Ct01Info cursor = new Ct01Info();
             assertThatNullPointerException().isThrownBy(() -> cursor.toFixedWidth(null));
             assertThatNullPointerException()
-                    .isThrownBy(() -> CardDemoCt01Info.fromFixedWidth(null, ASCII));
+                    .isThrownBy(() -> Ct01Info.fromFixedWidth(ASCII_CODEC, null));
             assertThatNullPointerException()
-                    .isThrownBy(() -> CardDemoCt01Info.fromFixedWidth(new byte[58], null));
+                    .isThrownBy(() -> Ct01Info.fromFixedWidth(null, new byte[58]));
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> CardDemoCt01Info.fromFixedWidth(new byte[57], ASCII));
+                    .isThrownBy(() -> Ct01Info.fromFixedWidth(ASCII_CODEC, new byte[57]));
         }
     }
 
@@ -921,15 +937,15 @@ class TransactionAddResponseTest {
             response.setNavigationContext(new NavigationContext("CT01", "COTRN01C", "CT01",
                     "COTRN01C", "USER0001", "U", NavigationContext.PGM_CONTEXT_ENTER,
                     0, "", "", "", 0L, " ", 0L, "COTRN1A", "COTRN01"));
-            response.getCardDemoCt01Info().setPageNum(3);
-            response.getCardDemoCt01Info().setNextPageYes();
+            response.getCt01Info().setPageNum(3);
+            response.getCt01Info().setNextPageYes();
 
             byte[] passed = response.toPassedCommarea(ASCII);
             assertThat(passed).hasSize(218);
 
             byte[] contextOnly =
                     response.getNavigationContext().toFixedWidth(new FixedWidthCodec(ASCII));
-            byte[] cursorOnly = response.getCardDemoCt01Info().toFixedWidth(ASCII);
+            byte[] cursorOnly = response.getCt01Info().toFixedWidth(ASCII_CODEC);
             assertThat(contextOnly).hasSize(160);
             assertThat(cursorOnly).hasSize(58);
             assertThat(new String(passed, ASCII).substring(0, 160))
@@ -940,8 +956,8 @@ class TransactionAddResponseTest {
             TransactionAddResponse received = new TransactionAddResponse();
             received.readPassedCommarea(passed, ASCII);
             assertThat(received.getNavigationContext().userId()).isEqualTo("USER0001");
-            assertThat(received.getCardDemoCt01Info().getPageNum()).isEqualTo(3);
-            assertThat(received.getCardDemoCt01Info().isNextPageYes()).isTrue();
+            assertThat(received.getCt01Info().getPageNum()).isEqualTo(3);
+            assertThat(received.getCt01Info().isNextPageYes()).isTrue();
         }
 
         @Test
@@ -980,6 +996,46 @@ class TransactionAddResponseTest {
         }
 
         @Test
+        @DisplayName("the CT01 cursor is one carrier, spelled identically in both directions")
+        void theCursorIsOneSharedCarrierAcrossThePair() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+
+            // One type, not two structurally identical ones. This is the whole of the fix: the
+            // response used to declare its own CardDemoCt01Info under the property cardDemoCt01Info,
+            // so a client could not echo the cursor it was sent without renaming the property first.
+            assertThat(TransactionAddResponse.class.getDeclaredMethod("getCt01Info").getReturnType())
+                    .isEqualTo(Ct01Info.class)
+                    .isEqualTo(TransactionAddRequest.class.getDeclaredMethod("getCt01Info")
+                            .getReturnType());
+            assertThat(TransactionAddResponse.class.getDeclaredClasses())
+                    .as("the response declares no cursor type of its own any more")
+                    .noneMatch(c -> c.getSimpleName().contains("Ct01Info"));
+
+            // And the echo works without transformation: take the cursor off a response, put it on a
+            // request, and the JSON member is the same member.
+            TransactionAddResponse sent = populated();
+            sent.getCt01Info().setPageNum(4);
+            sent.getCt01Info().setNextPageYes();
+            sent.getCt01Info().setTrnSelected("0000000000000007");
+
+            String responseJson = mapper.writeValueAsString(sent);
+            assertThat(mapper.readTree(responseJson).has("ct01Info")).isTrue();
+            assertThat(mapper.readTree(responseJson).has("cardDemoCt01Info")).isFalse();
+
+            TransactionAddRequest echoed = new TransactionAddRequest();
+            echoed.setCt01Info(sent.getCt01Info());
+            String requestJson = mapper.writeValueAsString(echoed);
+
+            assertThat(mapper.readTree(requestJson).get("ct01Info"))
+                    .as("the cursor crosses the pair byte for byte, under one name")
+                    .isEqualTo(mapper.readTree(responseJson).get("ct01Info"));
+
+            // ...including through the fixed-width form both sides share.
+            assertThat(echoed.getCt01Info().toFixedWidth(ASCII_CODEC))
+                    .isEqualTo(sent.getCt01Info().toFixedWidth(ASCII_CODEC));
+        }
+
+        @Test
         @DisplayName("all 21 payload fields plus navigation and state appear; metadata does not")
         void payloadMembersAreExactlyTheProjection() throws Exception {
             ObjectMapper mapper = new ObjectMapper();
@@ -993,7 +1049,7 @@ class TransactionAddResponseTest {
                         .containsKey(field.outputItemName().toLowerCase(java.util.Locale.ROOT));
             }
             assertThat(tree).containsKeys("nextProgram", "nextMapset", "nextMap",
-                    "navigationContext", "cardDemoCt01Info");
+                    "navigationContext", "ct01Info");
 
             // Highlight metadata is never a payload member (AAP 0.6.3).
             assertThat(tree).doesNotContainKeys("attributeItems", "payloadItems");
@@ -1025,8 +1081,8 @@ class TransactionAddResponseTest {
             assertThat(parsed.getNextProgram()).isEqualTo("COMEN01C");
             assertThat(parsed.getNextMapset()).isEqualTo(original.getNextMapset());
             assertThat(parsed.getNextMap()).isEqualTo(original.getNextMap());
-            assertThat(parsed.getCardDemoCt01Info().getPageNum())
-                    .isEqualTo(original.getCardDemoCt01Info().getPageNum());
+            assertThat(parsed.getCt01Info().getPageNum())
+                    .isEqualTo(original.getCt01Info().getPageNum());
             assertThat(parsed.toFixedWidth(ASCII)).isEqualTo(original.toFixedWidth(ASCII));
         }
     }
@@ -1072,8 +1128,8 @@ class TransactionAddResponseTest {
         response.setMcityo("A CITY");
         response.setMzipo("12345");
         response.setErrmsgo(SystemMessages.CCDA_MSG_INVALID_KEY);
-        response.getCardDemoCt01Info().setPageNum(1);
-        response.getCardDemoCt01Info().setTrnidFirst("0000000000000001");
+        response.getCt01Info().setPageNum(1);
+        response.getCt01Info().setTrnidFirst("0000000000000001");
         return response;
     }
 }

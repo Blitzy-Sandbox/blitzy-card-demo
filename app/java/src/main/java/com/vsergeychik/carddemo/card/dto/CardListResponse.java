@@ -1,7 +1,10 @@
 package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.vsergeychik.carddemo.card.dto.CardListRequest.PageCursor;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.BmsAttributes;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.DateHeader;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter;
 import com.vsergeychik.carddemo.common.FieldAttributeSetter.FieldHighlight;
@@ -18,9 +21,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * The outbound payload of {@code GET /api/cards} - the Java projection of the {@code CCRDLIAO}
@@ -1384,465 +1389,26 @@ public final class CardListResponse {
     // Nested value type: the 58-byte page cursor.
     // =================================================================================================
 
-    /**
-     * The paging cursor, transcribed from {@code 01 WS-THIS-PROGCOMMAREA}
-     * [{@code app/cbl/COCRDLIC.cbl:229-248}].
-     *
-     * <pre>
-     * 01 WS-THIS-PROGCOMMAREA.
-     *    10 WS-CA-LAST-CARDKEY.
-     *       15  WS-CA-LAST-CARD-NUM      PIC X(16).
-     *       15  WS-CA-LAST-CARD-ACCT-ID  PIC 9(11).
-     *    10 WS-CA-FIRST-CARDKEY.
-     *       15  WS-CA-FIRST-CARD-NUM     PIC X(16).
-     *       15  WS-CA-FIRST-CARD-ACCT-ID PIC 9(11).
-     *    10 WS-CA-SCREEN-NUM             PIC 9(1).
-     *       88 CA-FIRST-PAGE                VALUE 1.
-     *    10 WS-CA-LAST-PAGE-DISPLAYED    PIC 9(1).
-     *       88 CA-LAST-PAGE-SHOWN           VALUE 0.
-     *       88 CA-LAST-PAGE-NOT-SHOWN       VALUE 9.
-     *    10 WS-CA-NEXT-PAGE-IND          PIC X(1).
-     *       88 CA-NEXT-PAGE-NOT-EXISTS   VALUE LOW-VALUES.
-     *       88 CA-NEXT-PAGE-EXISTS       VALUE 'Y'.
-     *    10 WS-RETURN-FLAG               PIC X(1).
-     *      88  WS-RETURN-FLAG-OFF        VALUE LOW-VALUES.
-     *      88  WS-RETURN-FLAG-ON         VALUE '1'.
-     * </pre>
-     *
-     * <p>16 + 11 + 16 + 11 + 1 + 1 + 1 + 1 = <strong>58</strong> bytes.
-     *
-     * <p><strong>Why it lives on the response.</strong> In CICS this area travels in the COMMAREA
-     * between one pseudo-conversational turn and the next. There is no COMMAREA over HTTP and no
-     * server-side session is permitted, so it travels in the payload instead: the response carries it
-     * out, the client sends it back, and the server holds nothing between calls. That is the whole of
-     * the paging mechanism - {@code F7} needs {@code WS-CA-FIRST-CARDKEY} to browse backwards from and
-     * {@code F8} needs {@code WS-CA-LAST-CARDKEY} to browse forwards from.
-     *
-     * <p><strong>{@code LOW-VALUES} is the "off" state of both indicators.</strong>
-     * {@code 88 CA-NEXT-PAGE-NOT-EXISTS VALUE LOW-VALUES} and
-     * {@code 88 WS-RETURN-FLAG-OFF VALUE LOW-VALUES} test for {@code x'00'} - not a space, and not
-     * Java {@code null}. {@link #initial()} therefore sets both to {@link CardListResponse#LOW_VALUE}.
-     *
-     * <p><strong>A note on {@code WS-RETURN-FLAG} (preserved, not invented).</strong> This field has
-     * the same name, width and pair of {@code 88}-levels as {@code CCARD-RETURN-FLAG} in
-     * {@code app/cpy/CVCRD01Y.cpy}, but the copybook's version is <strong>commented out</strong> at
-     * {@code CVACT01Y}'s sibling {@code app/cpy/CVCRD01Y.cpy:25-27}. The live field is this one, in
-     * {@code COCRDLIC}'s own working storage, and it belongs here. The commented-out copybook field
-     * stays commented out; it is not revived in {@link CardScreenState} to satisfy this.
-     *
-     * <p>Immutable: paging state must not be mutated in place while a response is being written, and
-     * the {@code withX} methods make every transition an explicit, traceable step.
-     *
-     * @param lastCardNum       {@code WS-CA-LAST-CARD-NUM PIC X(16)} [L231] - the key of the last row
-     *                          on the page just sent, the seed for {@code F8}
-     * @param lastCardAcctId    {@code WS-CA-LAST-CARD-ACCT-ID PIC 9(11)} [L232] - unsigned, so
-     *                          {@code long} and never negative
-     * @param firstCardNum      {@code WS-CA-FIRST-CARD-NUM PIC X(16)} [L234] - the key of the first
-     *                          row, the seed for {@code F7}
-     * @param firstCardAcctId   {@code WS-CA-FIRST-CARD-ACCT-ID PIC 9(11)} [L235]
-     * @param screenNum         {@code WS-CA-SCREEN-NUM PIC 9(1)} [L237] - the page number, and the
-     *                          value moved into {@code PAGENOO}
-     * @param lastPageDisplayed {@code WS-CA-LAST-PAGE-DISPLAYED PIC 9(1)} [L239] - {@code 0} means
-     *                          shown, {@code 9} means not shown
-     * @param nextPageInd       {@code WS-CA-NEXT-PAGE-IND PIC X(1)} [L242] - {@code 'Y'} or
-     *                          {@code LOW-VALUES}
-     * @param returnFlag        {@code WS-RETURN-FLAG PIC X(1)} [L246] - {@code '1'} or
-     *                          {@code LOW-VALUES}
-     */
-    public record PageCursor(String lastCardNum,
-                             long lastCardAcctId,
-                             String firstCardNum,
-                             long firstCardAcctId,
-                             int screenNum,
-                             int lastPageDisplayed,
-                             String nextPageInd,
-                             String returnFlag) {
-
-        /** {@code WS-CA-LAST-CARD-NUM} / {@code WS-CA-FIRST-CARD-NUM} are {@code PIC X(16)}. */
-        public static final int CARD_NUM_LENGTH = 16;
-
-        /**
-         * {@code WS-CA-LAST-CARD-ACCT-ID} / {@code WS-CA-FIRST-CARD-ACCT-ID} are {@code PIC 9(11)}.
-         *
-         * <p>Declared here rather than reused from {@link CardListResponse#ACCTNO_LENGTH}: that
-         * constant is a screen field's width and this one is a commarea item's digit count, and the
-         * two happening to both be 11 is not a reason to tie them together.
-         */
-        public static final int CARD_ACCT_ID_DIGITS = 11;
-
-        /** {@code WS-CA-SCREEN-NUM} and {@code WS-CA-LAST-PAGE-DISPLAYED} are {@code PIC 9(1)}. */
-        public static final int COUNTER_DIGITS = 1;
-
-        /** {@code WS-CA-NEXT-PAGE-IND} and {@code WS-RETURN-FLAG} are {@code PIC X(1)}. */
-        public static final int INDICATOR_LENGTH = 1;
-
-        /** The largest value an unsigned {@code PIC 9(11)} can hold: eleven nines. */
-        public static final long MAX_CARD_ACCT_ID = 99_999_999_999L;
-
-        /** The largest value an unsigned {@code PIC 9(1)} can hold. */
-        public static final int MAX_COUNTER = 9;
-
-        /** Offset of {@code WS-CA-LAST-CARD-NUM}: the first item of the area. */
-        public static final int LAST_CARD_NUM_OFFSET = 0;
-
-        /** Offset of {@code WS-CA-LAST-CARD-ACCT-ID}. */
-        public static final int LAST_CARD_ACCT_ID_OFFSET = LAST_CARD_NUM_OFFSET + CARD_NUM_LENGTH;
-
-        /** Offset of {@code WS-CA-FIRST-CARD-NUM}. */
-        public static final int FIRST_CARD_NUM_OFFSET =
-                LAST_CARD_ACCT_ID_OFFSET + CARD_ACCT_ID_DIGITS;
-
-        /** Offset of {@code WS-CA-FIRST-CARD-ACCT-ID}. */
-        public static final int FIRST_CARD_ACCT_ID_OFFSET = FIRST_CARD_NUM_OFFSET + CARD_NUM_LENGTH;
-
-        /** Offset of {@code WS-CA-SCREEN-NUM}. */
-        public static final int SCREEN_NUM_OFFSET = FIRST_CARD_ACCT_ID_OFFSET + CARD_ACCT_ID_DIGITS;
-
-        /** Offset of {@code WS-CA-LAST-PAGE-DISPLAYED}. */
-        public static final int LAST_PAGE_DISPLAYED_OFFSET = SCREEN_NUM_OFFSET + COUNTER_DIGITS;
-
-        /** Offset of {@code WS-CA-NEXT-PAGE-IND}. */
-        public static final int NEXT_PAGE_IND_OFFSET = LAST_PAGE_DISPLAYED_OFFSET + COUNTER_DIGITS;
-
-        /** Offset of {@code WS-RETURN-FLAG}. */
-        public static final int RETURN_FLAG_OFFSET = NEXT_PAGE_IND_OFFSET + INDICATOR_LENGTH;
-
-        /**
-         * Declared width of {@code 01 WS-THIS-PROGCOMMAREA}: 16 + 11 + 16 + 11 + 1 + 1 + 1 + 1 =
-         * <strong>58</strong>.
-         */
-        public static final int LENGTH = RETURN_FLAG_OFFSET + INDICATOR_LENGTH;
-
-        /**
-         * Width of {@code WS-CA-LAST-CARDKEY} and {@code WS-CA-FIRST-CARDKEY}, the two group items:
-         * 16 + 11 = 27.
-         */
-        public static final int CARDKEY_LENGTH = CARD_NUM_LENGTH + CARD_ACCT_ID_DIGITS;
-
-        /** {@code WS-CA-LAST-CARD-NUM PIC X(16)} [{@code app/cbl/COCRDLIC.cbl:231}]. */
-        public static final FieldSpan LAST_CARD_NUM_SPAN = FieldSpan.alphanumeric(
-                "WS-CA-LAST-CARD-NUM", LAST_CARD_NUM_OFFSET, CARD_NUM_LENGTH);
-
-        /** {@code WS-CA-LAST-CARD-ACCT-ID PIC 9(11)} [{@code app/cbl/COCRDLIC.cbl:232}]. */
-        public static final FieldSpan LAST_CARD_ACCT_ID_SPAN = FieldSpan.unsignedNumeric(
-                "WS-CA-LAST-CARD-ACCT-ID", LAST_CARD_ACCT_ID_OFFSET, CARD_ACCT_ID_DIGITS);
-
-        /** {@code WS-CA-FIRST-CARD-NUM PIC X(16)} [{@code app/cbl/COCRDLIC.cbl:234}]. */
-        public static final FieldSpan FIRST_CARD_NUM_SPAN = FieldSpan.alphanumeric(
-                "WS-CA-FIRST-CARD-NUM", FIRST_CARD_NUM_OFFSET, CARD_NUM_LENGTH);
-
-        /** {@code WS-CA-FIRST-CARD-ACCT-ID PIC 9(11)} [{@code app/cbl/COCRDLIC.cbl:235}]. */
-        public static final FieldSpan FIRST_CARD_ACCT_ID_SPAN = FieldSpan.unsignedNumeric(
-                "WS-CA-FIRST-CARD-ACCT-ID", FIRST_CARD_ACCT_ID_OFFSET, CARD_ACCT_ID_DIGITS);
-
-        /** {@code WS-CA-SCREEN-NUM PIC 9(1)} [{@code app/cbl/COCRDLIC.cbl:237}]. */
-        public static final FieldSpan SCREEN_NUM_SPAN = FieldSpan.unsignedNumeric(
-                "WS-CA-SCREEN-NUM", SCREEN_NUM_OFFSET, COUNTER_DIGITS);
-
-        /** {@code WS-CA-LAST-PAGE-DISPLAYED PIC 9(1)} [{@code app/cbl/COCRDLIC.cbl:239}]. */
-        public static final FieldSpan LAST_PAGE_DISPLAYED_SPAN = FieldSpan.unsignedNumeric(
-                "WS-CA-LAST-PAGE-DISPLAYED", LAST_PAGE_DISPLAYED_OFFSET, COUNTER_DIGITS);
-
-        /** {@code WS-CA-NEXT-PAGE-IND PIC X(1)} [{@code app/cbl/COCRDLIC.cbl:242}]. */
-        public static final FieldSpan NEXT_PAGE_IND_SPAN = FieldSpan.alphanumeric(
-                "WS-CA-NEXT-PAGE-IND", NEXT_PAGE_IND_OFFSET, INDICATOR_LENGTH);
-
-        /** {@code WS-RETURN-FLAG PIC X(1)} [{@code app/cbl/COCRDLIC.cbl:246}]. */
-        public static final FieldSpan RETURN_FLAG_SPAN = FieldSpan.alphanumeric(
-                "WS-RETURN-FLAG", RETURN_FLAG_OFFSET, INDICATOR_LENGTH);
-
-        /** The complete 58-byte geometry, in declaration order and with no gaps. */
-        public static final RecordLayout LAYOUT = RecordLayout.of(LENGTH,
-                LAST_CARD_NUM_SPAN,
-                LAST_CARD_ACCT_ID_SPAN,
-                FIRST_CARD_NUM_SPAN,
-                FIRST_CARD_ACCT_ID_SPAN,
-                SCREEN_NUM_SPAN,
-                LAST_PAGE_DISPLAYED_SPAN,
-                NEXT_PAGE_IND_SPAN,
-                RETURN_FLAG_SPAN);
-
-        /**
-         * Validates every component against its {@code PICTURE}.
-         *
-         * @throws NullPointerException     if any {@code String} component is {@code null}; the "off"
-         *                                  state of an indicator is {@link CardListResponse#LOW_VALUE},
-         *                                  never {@code null}
-         * @throws IllegalArgumentException if a card number is not exactly {@value #CARD_NUM_LENGTH}
-         *                                  characters, an indicator is not exactly
-         *                                  {@value #INDICATOR_LENGTH} character, an account identifier
-         *                                  is outside {@code 0..}{@value #MAX_CARD_ACCT_ID}, or a
-         *                                  counter is outside {@code 0..}{@value #MAX_COUNTER}
-         */
-        public PageCursor {
-            requireExactWidth(lastCardNum, CARD_NUM_LENGTH, "WS-CA-LAST-CARD-NUM");
-            requireExactWidth(firstCardNum, CARD_NUM_LENGTH, "WS-CA-FIRST-CARD-NUM");
-            requireExactWidth(nextPageInd, INDICATOR_LENGTH, "WS-CA-NEXT-PAGE-IND");
-            requireExactWidth(returnFlag, INDICATOR_LENGTH, "WS-RETURN-FLAG");
-            requireUnsignedRange(lastCardAcctId, MAX_CARD_ACCT_ID, "WS-CA-LAST-CARD-ACCT-ID",
-                    CARD_ACCT_ID_DIGITS);
-            requireUnsignedRange(firstCardAcctId, MAX_CARD_ACCT_ID, "WS-CA-FIRST-CARD-ACCT-ID",
-                    CARD_ACCT_ID_DIGITS);
-            requireUnsignedRange(screenNum, MAX_COUNTER, "WS-CA-SCREEN-NUM", COUNTER_DIGITS);
-            requireUnsignedRange(lastPageDisplayed, MAX_COUNTER, "WS-CA-LAST-PAGE-DISPLAYED",
-                    COUNTER_DIGITS);
-        }
-
-        /**
-         * The cursor as it stands before any page has been browsed: both keys {@code LOW-VALUES},
-         * both counters zero, and both indicators {@code LOW-VALUES} so that
-         * {@link #isCaNextPageNotExists()} and {@link #isWsReturnFlagOff()} hold and
-         * {@link #isCaFirstPage()} does not.
-         *
-         * <p>{@link #isCaLastPageShown()} <em>does</em> hold, because its {@code 88}-level tests for
-         * {@code 0} and an unset {@code PIC 9(1)} is {@code 0}. That is the COBOL's own arithmetic:
-         * {@code SET CA-LAST-PAGE-SHOWN TO TRUE} [{@code app/cbl/COCRDLIC.cbl:915}] moves the same
-         * zero.
-         *
-         * @return the initial cursor; never {@code null}
-         */
-        public static PageCursor initial() {
-            return new PageCursor(CardScreenState.lowValues(CARD_NUM_LENGTH), 0L,
-                    CardScreenState.lowValues(CARD_NUM_LENGTH), 0L,
-                    0, LAST_PAGE_SHOWN, LOW_VALUE, LOW_VALUE);
-        }
-
-        /**
-         * The cursor as {@code COCRDLIC} builds it when the user arrives from the main menu, which is
-         * the one place the program resets paging: {@code INITIALIZE WS-THIS-PROGCOMMAREA}
-         * [{@code app/cbl/COCRDLIC.cbl:338}] followed immediately by
-         * {@code SET CA-FIRST-PAGE TO TRUE} [L341] and {@code SET CA-LAST-PAGE-NOT-SHOWN TO TRUE}
-         * [L342], under the guard
-         * {@code IF (CDEMO-PGM-ENTER AND CDEMO-FROM-PROGRAM NOT EQUAL LIT-THISPGM)} [L336-337].
-         *
-         * <p>This state is <strong>not</strong> the same as {@link #initial()} and the difference is a
-         * real source behaviour worth stating rather than smoothing over. A COBOL {@code INITIALIZE}
-         * sets alphanumeric items to {@code SPACES} and numeric items to {@code ZEROS}, so after L338
-         * the two card-number keys hold spaces and both {@code PIC X(1)} indicators hold a
-         * <em>space</em>. A space is not {@code LOW-VALUES}, so
-         * {@link #isCaNextPageNotExists()} and {@link #isWsReturnFlagOff()} are <strong>false</strong>
-         * in this state even though nothing has been browsed. That is what the program does, so it is
-         * what this factory produces.
-         *
-         * @return the after-{@code INITIALIZE} cursor with page 1 selected and the last page not yet
-         *         shown; never {@code null}
-         */
-        public static PageCursor fromMenu() {
-            return new PageCursor(CardScreenState.spaces(CARD_NUM_LENGTH), 0L,
-                    CardScreenState.spaces(CARD_NUM_LENGTH), 0L,
-                    FIRST_PAGE, LAST_PAGE_NOT_SHOWN, SPACE, SPACE);
-        }
-
-        /** @return {@code true} for {@code 88 CA-FIRST-PAGE VALUE 1} [L238] */
-        @JsonIgnore
-        public boolean isCaFirstPage() {
-            return screenNum == FIRST_PAGE;
-        }
-
-        /** @return {@code true} for {@code 88 CA-LAST-PAGE-SHOWN VALUE 0} [L240] */
-        @JsonIgnore
-        public boolean isCaLastPageShown() {
-            return lastPageDisplayed == LAST_PAGE_SHOWN;
-        }
-
-        /** @return {@code true} for {@code 88 CA-LAST-PAGE-NOT-SHOWN VALUE 9} [L241] */
-        @JsonIgnore
-        public boolean isCaLastPageNotShown() {
-            return lastPageDisplayed == LAST_PAGE_NOT_SHOWN;
-        }
-
-        /**
-         * {@code 88 CA-NEXT-PAGE-NOT-EXISTS VALUE LOW-VALUES} [L243].
-         *
-         * @return {@code true} only when the indicator is {@code x'00'} - a space does not satisfy it
-         */
-        @JsonIgnore
-        public boolean isCaNextPageNotExists() {
-            return LOW_VALUE.equals(nextPageInd);
-        }
-
-        /** @return {@code true} for {@code 88 CA-NEXT-PAGE-EXISTS VALUE 'Y'} [L244] */
-        @JsonIgnore
-        public boolean isCaNextPageExists() {
-            return NEXT_PAGE_EXISTS.equals(nextPageInd);
-        }
-
-        /**
-         * {@code 88 WS-RETURN-FLAG-OFF VALUE LOW-VALUES} [L247].
-         *
-         * @return {@code true} only when the flag is {@code x'00'} - a space does not satisfy it
-         */
-        @JsonIgnore
-        public boolean isWsReturnFlagOff() {
-            return LOW_VALUE.equals(returnFlag);
-        }
-
-        /** @return {@code true} for {@code 88 WS-RETURN-FLAG-ON VALUE '1'} [L248] */
-        @JsonIgnore
-        public boolean isWsReturnFlagOn() {
-            return RETURN_FLAG_ON.equals(returnFlag);
-        }
-
-        /**
-         * {@code WS-CA-LAST-CARDKEY} - the 27-character group image of the two last-row items.
-         *
-         * @return the card number followed by the zero-filled account identifier
-         */
-        public String lastCardkey() {
-            return lastCardNum + PIC_X_MOVE_CODEC.movePic9(lastCardAcctId, CARD_ACCT_ID_DIGITS);
-        }
-
-        /**
-         * {@code WS-CA-FIRST-CARDKEY} - the 27-character group image of the two first-row items.
-         *
-         * @return the card number followed by the zero-filled account identifier
-         */
-        public String firstCardkey() {
-            return firstCardNum + PIC_X_MOVE_CODEC.movePic9(firstCardAcctId, CARD_ACCT_ID_DIGITS);
-        }
-
-        /** @return a copy with {@code WS-CA-LAST-CARDKEY} replaced */
-        public PageCursor withLastCardkey(String cardNum, long acctId) {
-            return new PageCursor(PIC_X_MOVE_CODEC.movePicX(cardNum, CARD_NUM_LENGTH), acctId,
-                    firstCardNum, firstCardAcctId, screenNum, lastPageDisplayed, nextPageInd,
-                    returnFlag);
-        }
-
-        /** @return a copy with {@code WS-CA-FIRST-CARDKEY} replaced */
-        public PageCursor withFirstCardkey(String cardNum, long acctId) {
-            return new PageCursor(lastCardNum, lastCardAcctId,
-                    PIC_X_MOVE_CODEC.movePicX(cardNum, CARD_NUM_LENGTH), acctId, screenNum,
-                    lastPageDisplayed, nextPageInd, returnFlag);
-        }
-
-        /**
-         * @param newScreenNum the page number, {@code 0..}{@value #MAX_COUNTER}
-         * @return a copy with {@code WS-CA-SCREEN-NUM} replaced
-         */
-        public PageCursor withScreenNum(int newScreenNum) {
-            return new PageCursor(lastCardNum, lastCardAcctId, firstCardNum, firstCardAcctId,
-                    newScreenNum, lastPageDisplayed, nextPageInd, returnFlag);
-        }
-
-        /**
-         * @param newLastPageDisplayed {@value CardListResponse#LAST_PAGE_SHOWN} or
-         *                             {@value CardListResponse#LAST_PAGE_NOT_SHOWN}
-         * @return a copy with {@code WS-CA-LAST-PAGE-DISPLAYED} replaced
-         */
-        public PageCursor withLastPageDisplayed(int newLastPageDisplayed) {
-            return new PageCursor(lastCardNum, lastCardAcctId, firstCardNum, firstCardAcctId,
-                    screenNum, newLastPageDisplayed, nextPageInd, returnFlag);
-        }
-
-        /** @return a copy in which {@code 88 CA-LAST-PAGE-SHOWN} holds */
-        public PageCursor withCaLastPageShown() {
-            return withLastPageDisplayed(LAST_PAGE_SHOWN);
-        }
-
-        /** @return a copy in which {@code 88 CA-LAST-PAGE-NOT-SHOWN} holds */
-        public PageCursor withCaLastPageNotShown() {
-            return withLastPageDisplayed(LAST_PAGE_NOT_SHOWN);
-        }
-
-        /**
-         * @param newNextPageInd {@value CardListResponse#NEXT_PAGE_EXISTS} or
-         *                       {@link CardListResponse#LOW_VALUE}
-         * @return a copy with {@code WS-CA-NEXT-PAGE-IND} replaced
-         */
-        public PageCursor withNextPageInd(String newNextPageInd) {
-            return new PageCursor(lastCardNum, lastCardAcctId, firstCardNum, firstCardAcctId,
-                    screenNum, lastPageDisplayed, newNextPageInd, returnFlag);
-        }
-
-        /** @return a copy in which {@code 88 CA-NEXT-PAGE-EXISTS} holds */
-        public PageCursor withCaNextPageExists() {
-            return withNextPageInd(NEXT_PAGE_EXISTS);
-        }
-
-        /** @return a copy in which {@code 88 CA-NEXT-PAGE-NOT-EXISTS} holds */
-        public PageCursor withCaNextPageNotExists() {
-            return withNextPageInd(LOW_VALUE);
-        }
-
-        /**
-         * @param newReturnFlag {@value CardListResponse#RETURN_FLAG_ON} or
-         *                      {@link CardListResponse#LOW_VALUE}
-         * @return a copy with {@code WS-RETURN-FLAG} replaced
-         */
-        public PageCursor withReturnFlag(String newReturnFlag) {
-            return new PageCursor(lastCardNum, lastCardAcctId, firstCardNum, firstCardAcctId,
-                    screenNum, lastPageDisplayed, nextPageInd, newReturnFlag);
-        }
-
-        /** @return a copy in which {@code 88 WS-RETURN-FLAG-ON} holds */
-        public PageCursor withWsReturnFlagOn() {
-            return withReturnFlag(RETURN_FLAG_ON);
-        }
-
-        /** @return a copy in which {@code 88 WS-RETURN-FLAG-OFF} holds */
-        public PageCursor withWsReturnFlagOff() {
-            return withReturnFlag(LOW_VALUE);
-        }
-
-        /**
-         * Renders the area as its {@value #LENGTH}-byte fixed-width image.
-         *
-         * <p>The two {@code PIC 9} items are zero-filled on the left by
-         * {@link FixedWidthCodec#writePic9(FixedWidthRecord, FieldSpan, long)}; neither is ever
-         * produced with {@code String.valueOf} or consumed with {@code Long.parseLong}, so the move
-         * rule has exactly one implementation.
-         *
-         * @param charset the code page to encode into, named explicitly by the caller
-         * @return a fresh array of exactly {@value #LENGTH} bytes
-         * @throws NullPointerException if {@code charset} is {@code null}
-         */
-        public byte[] toFixedWidth(Charset charset) {
-            Objects.requireNonNull(charset, "A charset is required to render WS-THIS-PROGCOMMAREA as "
-                    + "bytes; the code page is never taken from the platform");
-            FixedWidthCodec codec = new FixedWidthCodec(charset);
-            FixedWidthRecord record = new FixedWidthRecord(LENGTH, charset);
-            codec.writePicX(record, LAST_CARD_NUM_SPAN, lastCardNum);
-            codec.writePic9(record, LAST_CARD_ACCT_ID_SPAN, lastCardAcctId);
-            codec.writePicX(record, FIRST_CARD_NUM_SPAN, firstCardNum);
-            codec.writePic9(record, FIRST_CARD_ACCT_ID_SPAN, firstCardAcctId);
-            codec.writePic9(record, SCREEN_NUM_SPAN, screenNum);
-            codec.writePic9(record, LAST_PAGE_DISPLAYED_SPAN, lastPageDisplayed);
-            codec.writePicX(record, NEXT_PAGE_IND_SPAN, nextPageInd);
-            codec.writePicX(record, RETURN_FLAG_SPAN, returnFlag);
-            return record.toByteArray();
-        }
-
-        /**
-         * Rebuilds the area from its {@value #LENGTH}-byte image.
-         *
-         * <p>The two numeric spans must hold digits. An image whose numeric spans are
-         * {@code LOW-VALUES} - which no image produced by {@link #toFixedWidth(Charset)} ever is,
-         * because {@link #initial()} encodes its zeros as digits - is rejected rather than silently
-         * read as zero, since tolerating it would hide a truncated or misaligned payload.
-         *
-         * @param bytes   exactly {@value #LENGTH} bytes
-         * @param charset the code page the image is encoded in, named explicitly by the caller
-         * @return the cursor the image describes; never {@code null}
-         * @throws NullPointerException     if {@code bytes} or {@code charset} is {@code null}
-         * @throws IllegalArgumentException if {@code bytes.length} is not {@value #LENGTH}, or a
-         *                                  numeric span does not hold digits
-         */
-        public static PageCursor fromFixedWidth(byte[] bytes, Charset charset) {
-            Objects.requireNonNull(bytes, "An image is required to rebuild WS-THIS-PROGCOMMAREA");
-            Objects.requireNonNull(charset, "A charset is required to decode a "
-                    + "WS-THIS-PROGCOMMAREA image; the code page is never taken from the platform");
-            FixedWidthCodec codec = new FixedWidthCodec(charset);
-            FixedWidthRecord record = codec.wrap(bytes, LAYOUT);
-            return new PageCursor(record.readSpan(LAST_CARD_NUM_SPAN),
-                    codec.readPic9(record, LAST_CARD_ACCT_ID_SPAN),
-                    record.readSpan(FIRST_CARD_NUM_SPAN),
-                    codec.readPic9(record, FIRST_CARD_ACCT_ID_SPAN),
-                    codec.readPic9AsInt(record, SCREEN_NUM_SPAN),
-                    codec.readPic9AsInt(record, LAST_PAGE_DISPLAYED_SPAN),
-                    record.readSpan(NEXT_PAGE_IND_SPAN),
-                    record.readSpan(RETURN_FLAG_SPAN));
-        }
-    }
+    // =================================================================================================
+    // There is deliberately NO PageCursor record declared here.
+    //
+    // 01 WS-THIS-PROGCOMMAREA [app/cbl/COCRDLIC.cbl:229-248] is ONE area. COCRDLIC.cbl:1078-1082
+    // returns it as the trailing part of the communication area and :331-334 reads the same bytes back
+    // on the next invocation, so the cursor this response carries is the cursor the next request
+    // arrives with. It is declared once, on CardListRequest, and referenced here.
+    //
+    // This class previously declared its own eight-component version - lastCardNum, lastCardAcctId,
+    // firstCardNum, firstCardAcctId and four counters, flat - against the request's six-component one
+    // whose two 27-byte keys are nested CardKey records. Same 58 bytes, two different JSON shapes, so
+    // the pair could not round-trip: a client echoing the response's cursor back into a request had to
+    // rewrite it, and any such rewriting is a place for the two to diverge. The nested shape is also
+    // the faithful one - COCRDLIC.cbl:230 and :233 declare 10 WS-CA-LAST-CARDKEY and
+    // 10 WS-CA-FIRST-CARDKEY as group items, and :1268 moves one onto the other wholesale with
+    // MOVE WS-CA-FIRST-CARDKEY TO WS-CA-LAST-CARDKEY, which is a group move and not four field moves.
+    //
+    // The 58-byte image moved with it: PageCursor.toFixedWidth and PageCursor.fromFixedWidth, and the
+    // eight FieldSpans and the RecordLayout behind them, are now declared once on the shared type.
+    // =================================================================================================
 
     // =================================================================================================
     // Instance state.
@@ -1945,7 +1511,7 @@ public final class CardListResponse {
      * <p>Concretely: every one of the 45 payload members holds {@code LOW-VALUES} at its declared
      * width, every attribute byte is {@code 0x00}, {@code WS-EDIT-SELECT-ERROR-FLAGS} is seven
      * {@code LOW-VALUES}, the navigation triple is spaces at its declared widths, the cursor is
-     * {@link PageCursor#initial()}, the work area is a fresh {@link CardScreenState} and the commarea
+     * {@link PageCursor#initialised()}, the work area is a fresh {@link CardScreenState} and the commarea
      * is {@link NavigationContext#empty()}.
      *
      * <p>{@code LOW-VALUES} is a genuine third state: it is not spaces, and it is not {@code null}. A
@@ -1965,7 +1531,7 @@ public final class CardListResponse {
         this.nextProgram = CardScreenState.spaces(NEXT_PROGRAM_LENGTH);
         this.nextMapset = CardScreenState.spaces(NEXT_MAPSET_LENGTH);
         this.nextMap = CardScreenState.spaces(NEXT_MAP_LENGTH);
-        this.pageCursor = PageCursor.initial();
+        this.pageCursor = PageCursor.initialised();
         this.cardScreenState = new CardScreenState();
         this.navigationContext = NavigationContext.empty();
     }
@@ -2933,6 +2499,35 @@ public final class CardListResponse {
     private static final List<String> CRDSTS_ITEMS = List.of(CRDSTS1O_ITEM, CRDSTS2O_ITEM,
             CRDSTS3O_ITEM, CRDSTS4O_ITEM, CRDSTS5O_ITEM, CRDSTS6O_ITEM, CRDSTS7O_ITEM);
 
+    /**
+     * What {@link #toString()} substitutes for a redacted value: {@value}.
+     *
+     * <p>The same marker the other payloads in this module use, so a log line reads consistently
+     * whichever screen produced it.
+     */
+    private static final String REDACTED = "[REDACTED]";
+
+    /**
+     * The sixteen items {@link #toString()} redacts: the card and account filters, and the seven
+     * {@code CRDNUMnO} / {@code ACCTNOnO} pairs.
+     *
+     * <p>Scoped to card numbers and account identifiers, and to nothing else. {@code CRDSTSnO} is a
+     * one-character status, {@code CRDSELnO} is a selection character and {@code CRDSTPnO} is an
+     * attribute stopper; none of them identifies a person or an instrument, so redacting them would
+     * cost diagnostic value for no gain. This set is used only by {@link #toString()} - the JSON body
+     * and every fixed-width image carry all sixteen in the clear, exactly as the symbolic map does.
+     */
+    private static final Set<String> REDACTED_ITEMS = buildRedactedItems();
+
+    private static Set<String> buildRedactedItems() {
+        Set<String> items = new LinkedHashSet<>();
+        items.add(ACCTSIDO_ITEM);
+        items.add(CARDSIDO_ITEM);
+        items.addAll(ACCTNO_ITEMS);
+        items.addAll(CRDNUM_ITEMS);
+        return Set.copyOf(items);
+    }
+
     /** The first COBOL subscript of every seven-element structure on this screen. */
     public static final int FIRST_ROW = 1;
 
@@ -3668,7 +3263,7 @@ public final class CardListResponse {
      */
     public void setPageCursor(PageCursor value) {
         this.pageCursor = Objects.requireNonNull(value, "A page cursor is required; the initial state "
-                + "is PageCursor.initial() and the after-INITIALIZE state is PageCursor.fromMenu()");
+                + "is PageCursor.initialised() and the after-INITIALIZE state is PageCursor.firstPage()");
     }
 
     /**
@@ -3769,14 +3364,14 @@ public final class CardListResponse {
      * {@code PIC 9} rule here instead would produce {@code "001"} and be wrong on the screen and in a
      * parity diff.
      *
-     * @param screenNum the page number, {@code 0..}{@value PageCursor#MAX_COUNTER}, as
+     * @param screenNum the page number, {@code 0..}{@value PageCursor#MAX_SINGLE_DIGIT}, as
      *                  {@code PIC 9(1)} can hold
      * @throws IllegalArgumentException if {@code screenNum} is outside the range a {@code PIC 9(1)}
      *                                  item can hold
      */
     public void setPagenooFromScreenNum(int screenNum) {
-        requireUnsignedRange(screenNum, PageCursor.MAX_COUNTER, "WS-CA-SCREEN-NUM",
-                PageCursor.COUNTER_DIGITS);
+        requireUnsignedRange(screenNum, PageCursor.MAX_SINGLE_DIGIT, "WS-CA-SCREEN-NUM",
+                CardListRequest.SCREEN_NUM_LENGTH);
         setPagenoo(Integer.toString(screenNum));
     }
 
@@ -4019,12 +3614,23 @@ public final class CardListResponse {
      * A diagnostic rendering of all 45 payload items, each delimited so its declared width and any
      * padding are visible, followed by the navigation triple and the cursor.
      *
-     * <p>Values are rendered <strong>verbatim</strong>. Nothing is masked, abbreviated or elided - not
-     * the seven card numbers and not the seven account numbers - because the symbolic map holds them in
-     * the clear and changing that in either direction would be an unrequested behaviour change. A field
-     * holding {@code LOW-VALUES} therefore renders as its actual {@code U+0000} characters; the
-     * {@code 88}-level predicates are the way to test for that state rather than reading it out of this
-     * string.
+     * <p><strong>The card numbers and account identifiers are redacted here, and only here.</strong>
+     * This screen carries up to seven full sixteen-digit card numbers and eight account identifiers -
+     * {@code CARDSIDO}, {@code ACCTSIDO} and the seven {@code CRDNUMnO} / {@code ACCTNOnO} pairs - and
+     * a diagnostic is the one place those values reach somewhere nobody chose to put them: a log file, a
+     * test failure message, an exception trail. Each is replaced with {@value #REDACTED} and its actual
+     * length, so the rendering still answers "was the field populated, and at what width", which is what
+     * a diagnostic is read for.
+     *
+     * <p>This is <strong>not</strong> a behaviour change to the screen. The JSON body carries all 45
+     * items exactly as the symbolic map declares them, {@link #toFixedWidth(Charset)} writes the same
+     * bytes it always wrote, and no accessor masks anything - {@link #getCrdnum1o()} and
+     * {@link #getCardsido()} return the number in the clear, because the 3270 shows it in the clear.
+     * Only this method changes, and it is documented as being for diagnostics and never a wire format.
+     *
+     * <p>Every other item renders verbatim: a field holding {@code LOW-VALUES} shows its actual
+     * {@code U+0000} characters, and the {@code 88}-level predicates remain the way to test for that
+     * state rather than reading it out of this string.
      *
      * @return the rendering; for diagnostics only, never a wire format
      */
@@ -4033,12 +3639,15 @@ public final class CardListResponse {
         StringBuilder text = new StringBuilder(512);
         text.append("CardListResponse[");
         for (Map.Entry<String, String> entry : payload.entrySet()) {
-            text.append(entry.getKey()).append("='").append(entry.getValue()).append("', ");
+            text.append(entry.getKey()).append("='")
+                    .append(SensitiveDiagnostics.render(disclosureOf(entry.getKey()), entry.getValue()))
+                    .append("', ");
         }
-        text.append("WS-EDIT-SELECT-ERROR-FLAGS='").append(editSelectErrorFlags)
-                .append("', nextProgram='").append(nextProgram)
-                .append("', nextMapset='").append(nextMapset)
-                .append("', nextMap='").append(nextMap)
+        text.append("WS-EDIT-SELECT-ERROR-FLAGS='")
+                .append(DiagnosticText.singleLine(editSelectErrorFlags))
+                .append("', nextProgram='").append(DiagnosticText.singleLine(nextProgram))
+                .append("', nextMapset='").append(DiagnosticText.singleLine(nextMapset))
+                .append("', nextMap='").append(DiagnosticText.singleLine(nextMap))
                 .append("', pageCursor=").append(pageCursor)
                 .append(']');
         return text.toString();
@@ -4122,4 +3731,41 @@ public final class CardListResponse {
                     + "but " + recordLength + " byte(s) were supplied");
         }
     }
+
+    /**
+     * How much of one symbolic-map field a diagnostic rendering may disclose.
+     *
+     * <p>{@code COCRDLI} is the card list, so it is the densest concentration of payment data on any
+     * screen in the system: seven card numbers and seven account numbers per page, plus the filter
+     * fields. All fourteen row fields and both filters are masked; the status columns and the screen
+     * furniture render as stored, because a page of masked numbers with visible statuses is still exactly
+     * what a pagination or filter parity failure is diagnosed from.
+     *
+     * <p>The row fields are matched by their documented BMS stems rather than listed one by one. That is
+     * not a loose heuristic: {@value #FIELD_COUNT} is fixed by the mapset, the row count is fixed at
+     * seven by {@code app/cbl/COCRDLIC.cbl}'s page size, and the stems {@code CRDNUM} and {@code ACCTNO}
+     * are the mapset's own names - a new field on this screen would need a new stem, which would not
+     * silently match.
+     *
+     * <p>Package-private rather than private so that the safe default - an unnamed field is withheld
+     * rather than published - is asserted directly by test. A field name reaching here is never
+     * {@code null} in practice, because the map is built from this class's own constants, and an
+     * unprovable guard on a disclosure decision is worth less than a proven one.
+     *
+     * @param fieldName the symbolic-map output item name, as {@code app/cpy-bms/COCRDLI.CPY} spells it
+     * @return its classification, never {@code null}
+     */
+    static SensitiveDiagnostics.Disclosure disclosureOf(String fieldName) {
+        if (fieldName == null) {
+            return SensitiveDiagnostics.Disclosure.REDACTED_VALUE;
+        }
+        if (fieldName.startsWith("CRDNUM") || fieldName.startsWith("CARDSID")) {
+            return SensitiveDiagnostics.Disclosure.PAN;
+        }
+        if (fieldName.startsWith("ACCTNO") || fieldName.startsWith("ACCTSID")) {
+            return SensitiveDiagnostics.Disclosure.IDENTIFIER;
+        }
+        return SensitiveDiagnostics.Disclosure.PLAIN;
+    }
+
 }

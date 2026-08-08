@@ -1,14 +1,18 @@
 package com.vsergeychik.carddemo.card.dto;
 
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.card.dto.CardListResponse.FieldAttributes;
 import com.vsergeychik.carddemo.card.dto.CardListResponse.MapField;
-import com.vsergeychik.carddemo.card.dto.CardListResponse.PageCursor;
+import com.vsergeychik.carddemo.card.dto.CardListRequest.CardKey;
+import com.vsergeychik.carddemo.card.dto.CardListRequest.PageCursor;
 import com.vsergeychik.carddemo.card.dto.CardListResponse.ScreenRow;
 import com.vsergeychik.carddemo.common.BmsAttributes;
 import com.vsergeychik.carddemo.common.DateHeader;
@@ -447,7 +451,7 @@ class CardListResponseTest {
             assertThat(response.getNextProgram()).isEqualTo(sp(8));
             assertThat(response.getNextMapset()).isEqualTo(sp(7));
             assertThat(response.getNextMap()).isEqualTo(sp(7));
-            assertThat(response.getPageCursor()).isEqualTo(PageCursor.initial());
+            assertThat(response.getPageCursor()).isEqualTo(PageCursor.initialised());
             assertThat(response.getCardScreenState()).isEqualTo(new CardScreenState());
             assertThat(response.getNavigationContext()).isEqualTo(NavigationContext.empty());
         }
@@ -459,7 +463,7 @@ class CardListResponseTest {
             response.setTrnnameo("CCLI");
             response.fieldAttributes("ACCTSID").setColour(BmsAttributes.DFHRED);
             response.setNextProgram(CardListResponse.LIT_MENUPGM);
-            response.setPageCursor(PageCursor.initial().withScreenNum(3));
+            response.setPageCursor(PageCursor.initialised().withScreenNum(3));
 
             response.moveLowValuesToMap();
 
@@ -1537,42 +1541,55 @@ class CardListResponseTest {
     // =================================================================================================
 
     @Nested
-    @DisplayName("PageCursor - WS-THIS-PROGCOMMAREA, 58 bytes (COCRDLIC.cbl:229-248)")
+    @DisplayName("PageCursor - the shared WS-THIS-PROGCOMMAREA carrier, 58 bytes (COCRDLIC.cbl:229-248)")
     class Cursor {
 
         @Test
-        @DisplayName("declares 16 + 11 + 16 + 11 + 1 + 1 + 1 + 1 = 58 bytes at fixed offsets")
+        @DisplayName("the response declares no cursor type of its own - it references the shared one")
+        void theResponseDeclaresNoCursorOfItsOwn() {
+            assertThat(PageCursor.class.getEnclosingClass())
+                    .as("01 WS-THIS-PROGCOMMAREA is one area, so one type models it; the response "
+                            + "previously declared a second, flat, eight-component version that could "
+                            + "not round-trip against the request's")
+                    .isEqualTo(CardListRequest.class);
+            assertThat(CardListResponse.class.getDeclaredClasses())
+                    .noneMatch(nested -> nested.getSimpleName().equals("PageCursor"));
+        }
+
+        @Test
+        @DisplayName("declares 27 + 27 + 1 + 1 + 1 + 1 = 58 bytes at fixed offsets")
         void geometry() {
             assertThat(16 + 11 + 16 + 11 + 1 + 1 + 1 + 1).isEqualTo(58);
-            assertThat(PageCursor.LENGTH).isEqualTo(58);
-            assertThat(PageCursor.CARD_NUM_LENGTH).isEqualTo(16);
-            assertThat(PageCursor.CARD_ACCT_ID_DIGITS).isEqualTo(11);
-            assertThat(PageCursor.COUNTER_DIGITS).isEqualTo(1);
-            assertThat(PageCursor.INDICATOR_LENGTH).isEqualTo(1);
-            assertThat(PageCursor.CARDKEY_LENGTH).isEqualTo(27);
-            assertThat(PageCursor.LAST_CARD_NUM_OFFSET).isZero();
-            assertThat(PageCursor.LAST_CARD_ACCT_ID_OFFSET).isEqualTo(16);
-            assertThat(PageCursor.FIRST_CARD_NUM_OFFSET).isEqualTo(27);
-            assertThat(PageCursor.FIRST_CARD_ACCT_ID_OFFSET).isEqualTo(43);
-            assertThat(PageCursor.SCREEN_NUM_OFFSET).isEqualTo(54);
-            assertThat(PageCursor.LAST_PAGE_DISPLAYED_OFFSET).isEqualTo(55);
-            assertThat(PageCursor.NEXT_PAGE_IND_OFFSET).isEqualTo(56);
-            assertThat(PageCursor.RETURN_FLAG_OFFSET).isEqualTo(57);
+            assertThat(CardListRequest.CURSOR_LENGTH).isEqualTo(58);
+            assertThat(CardListRequest.CURSOR_CARD_NUM_LENGTH).isEqualTo(16);
+            assertThat(CardListRequest.CURSOR_ACCT_ID_LENGTH).isEqualTo(11);
+            assertThat(CardListRequest.SCREEN_NUM_LENGTH).isEqualTo(1);
+            assertThat(CardListRequest.NEXT_PAGE_IND_LENGTH).isEqualTo(1);
+            assertThat(CardListRequest.CARD_KEY_LENGTH).isEqualTo(27);
+            assertThat(PageCursor.LAST_CARD_NUM_SPAN.offset()).isZero();
+            assertThat(PageCursor.LAST_CARD_ACCT_ID_SPAN.offset()).isEqualTo(16);
+            assertThat(PageCursor.FIRST_CARD_NUM_SPAN.offset()).isEqualTo(27);
+            assertThat(PageCursor.FIRST_CARD_ACCT_ID_SPAN.offset()).isEqualTo(43);
+            assertThat(PageCursor.SCREEN_NUM_SPAN.offset()).isEqualTo(54);
+            assertThat(PageCursor.LAST_PAGE_DISPLAYED_SPAN.offset()).isEqualTo(55);
+            assertThat(PageCursor.NEXT_PAGE_IND_SPAN.offset()).isEqualTo(56);
+            assertThat(PageCursor.RETURN_FLAG_SPAN.offset()).isEqualTo(57);
             assertThat(PageCursor.LAYOUT.recordLength()).isEqualTo(58);
             assertThat(PageCursor.LAYOUT.spans()).hasSize(8);
         }
 
         @Test
-        @DisplayName("starts with both indicators at LOW-VALUES, so the -OFF condition names hold")
-        void initialStateSatisfiesTheOffConditionNames() {
-            PageCursor cursor = PageCursor.initial();
-            assertThat(cursor.isCaNextPageNotExists()).isTrue();
-            assertThat(cursor.isCaNextPageExists()).isFalse();
-            assertThat(cursor.isWsReturnFlagOff()).isTrue();
-            assertThat(cursor.isWsReturnFlagOn()).isFalse();
-            assertThat(cursor.isCaFirstPage()).isFalse();
-            assertThat(cursor.isCaLastPageShown()).isTrue();
-            assertThat(cursor.isCaLastPageNotShown()).isFalse();
+        @DisplayName("the -OFF condition names hold for LOW-VALUES, which is the state the 88s declare")
+        void theOffConditionNamesHoldForLowValues() {
+            PageCursor cursor = lowValueCursor();
+
+            assertThat(cursor.isNextPageNotExists()).isTrue();
+            assertThat(cursor.isNextPageExists()).isFalse();
+            assertThat(cursor.isReturnFlagOff()).isTrue();
+            assertThat(cursor.isReturnFlagOn()).isFalse();
+            assertThat(cursor.isFirstPage()).isFalse();
+            assertThat(cursor.isLastPageShown()).isTrue();
+            assertThat(cursor.isLastPageNotShown()).isFalse();
             assertThat(cursor.lastCardNum()).isEqualTo(low(16));
             assertThat(cursor.firstCardNum()).isEqualTo(low(16));
             assertThat(cursor.lastCardAcctId()).isZero();
@@ -1582,61 +1599,62 @@ class CardListResponseTest {
         @Test
         @DisplayName("holds the -OFF names only for LOW-VALUES, never for a space")
         void aSpaceIsNotLowValues() {
-            PageCursor spaced = PageCursor.initial().withNextPageInd(CardListResponse.SPACE)
-                    .withReturnFlag(CardListResponse.SPACE);
-            assertThat(spaced.isCaNextPageNotExists()).isFalse();
-            assertThat(spaced.isWsReturnFlagOff()).isFalse();
+            PageCursor spaced = PageCursor.initialised();
+
+            assertThat(spaced.isNextPageNotExists())
+                    .as("INITIALIZE leaves a SPACE and the 88-level tests LOW-VALUES, so the name "
+                            + "does not hold - COCRDLIC.cbl:243 and :247")
+                    .isFalse();
+            assertThat(spaced.isReturnFlagOff()).isFalse();
         }
 
         @Test
-        @DisplayName("reproduces the after-INITIALIZE state of COCRDLIC.cbl:338, 341 and 342")
-        void fromMenuReproducesTheInitializeState() {
-            PageCursor cursor = PageCursor.fromMenu();
+        @DisplayName("firstPage() reproduces the after-INITIALIZE state of COCRDLIC.cbl:338, 341, 342")
+        void firstPageReproducesTheInitializeState() {
+            PageCursor cursor = PageCursor.firstPage();
+
             assertThat(cursor.lastCardNum()).isEqualTo(sp(16));
             assertThat(cursor.firstCardNum()).isEqualTo(sp(16));
             assertThat(cursor.lastCardAcctId()).isZero();
-            assertThat(cursor.isCaFirstPage()).isTrue();
-            assertThat(cursor.isCaLastPageNotShown()).isTrue();
-            assertThat(cursor.isCaLastPageShown()).isFalse();
-            assertThat(cursor.isCaNextPageNotExists()).as("INITIALIZE leaves a SPACE, not LOW-VALUES")
+            assertThat(cursor.isFirstPage()).isTrue();
+            assertThat(cursor.isLastPageNotShown()).isTrue();
+            assertThat(cursor.isLastPageShown()).isFalse();
+            assertThat(cursor.isNextPageNotExists()).as("INITIALIZE leaves a SPACE, not LOW-VALUES")
                     .isFalse();
-            assertThat(cursor.isWsReturnFlagOff()).isFalse();
-            assertThat(cursor).isNotEqualTo(PageCursor.initial());
+            assertThat(cursor.isReturnFlagOff()).isFalse();
+            assertThat(cursor).isNotEqualTo(lowValueCursor());
         }
 
         @Test
         @DisplayName("transitions through every withX method without disturbing the other items")
         void transitions() {
-            PageCursor cursor = PageCursor.initial()
-                    .withLastCardkey("4111111111111111", 11L)
-                    .withFirstCardkey("4000000000000000", 1L)
+            PageCursor cursor = PageCursor.initialised()
+                    .withLastCardKey(new CardKey("4111111111111111", 11L))
+                    .withFirstCardKey(new CardKey("4000000000000000", 1L))
                     .withScreenNum(3)
-                    .withCaLastPageNotShown()
-                    .withCaNextPageExists()
-                    .withWsReturnFlagOn();
+                    .withLastPageDisplayed(CardListRequest.LAST_PAGE_NOT_SHOWN)
+                    .withNextPageExists()
+                    .withReturnFlagOn();
 
             assertThat(cursor.lastCardNum()).isEqualTo("4111111111111111");
             assertThat(cursor.lastCardAcctId()).isEqualTo(11L);
             assertThat(cursor.firstCardNum()).isEqualTo("4000000000000000");
             assertThat(cursor.firstCardAcctId()).isEqualTo(1L);
             assertThat(cursor.screenNum()).isEqualTo(3);
-            assertThat(cursor.isCaLastPageNotShown()).isTrue();
-            assertThat(cursor.isCaNextPageExists()).isTrue();
-            assertThat(cursor.isWsReturnFlagOn()).isTrue();
-            assertThat(cursor.lastCardkey()).isEqualTo("4111111111111111" + "00000000011")
-                    .hasSize(27);
-            assertThat(cursor.firstCardkey()).isEqualTo("4000000000000000" + "00000000001")
-                    .hasSize(27);
+            assertThat(cursor.isLastPageNotShown()).isTrue();
+            assertThat(cursor.isNextPageExists()).isTrue();
+            assertThat(cursor.isReturnFlagOn()).isTrue();
+            assertThat(cursor.lastCardKey().declaredLength()).isEqualTo(27);
 
-            assertThat(cursor.withCaLastPageShown().isCaLastPageShown()).isTrue();
-            assertThat(cursor.withCaNextPageNotExists().isCaNextPageNotExists()).isTrue();
-            assertThat(cursor.withWsReturnFlagOff().isWsReturnFlagOff()).isTrue();
-            assertThat(cursor.withLastPageDisplayed(0).lastPageDisplayed()).isZero();
-            assertThat(cursor.withScreenNum(1).isCaFirstPage()).isTrue();
-            assertThat(cursor.withLastCardkey("4", 2L).lastCardNum())
-                    .isEqualTo("4" + " ".repeat(15));
-            assertThat(cursor.withFirstCardkey("4".repeat(20), 2L).firstCardNum())
-                    .isEqualTo("4".repeat(16));
+            assertThat(cursor.withLastPageDisplayed(CardListRequest.LAST_PAGE_SHOWN)
+                    .isLastPageShown()).isTrue();
+            assertThat(cursor.withNextPageNotExists().isNextPageNotExists()).isTrue();
+            assertThat(cursor.withReturnFlagOff().isReturnFlagOff()).isTrue();
+            assertThat(cursor.withScreenNum(1).isFirstPage()).isTrue();
+            assertThat(cursor.withLastCardKeyFromFirst().lastCardKey())
+                    .as("MOVE WS-CA-FIRST-CARDKEY TO WS-CA-LAST-CARDKEY, COCRDLIC.cbl:1268, is a "
+                            + "wholesale group move")
+                    .isEqualTo(cursor.firstCardKey());
         }
 
         @ParameterizedTest(name = "{0}")
@@ -1644,15 +1662,16 @@ class CardListResponseTest {
         @DisplayName("round-trips its 58-byte image in both code pages")
         void imageRoundTrips(String charsetName) {
             Charset charset = Charset.forName(charsetName);
-            PageCursor cursor = PageCursor.initial()
-                    .withLastCardkey("4111111111111111", 99_999_999_999L)
-                    .withFirstCardkey("4000000000000000", 0L)
+            PageCursor cursor = PageCursor.initialised()
+                    .withLastCardKey(new CardKey("4111111111111111", 99_999_999_999L))
+                    .withFirstCardKey(new CardKey("4000000000000000", 0L))
                     .withScreenNum(9)
-                    .withCaLastPageNotShown()
-                    .withCaNextPageExists()
-                    .withWsReturnFlagOn();
+                    .withLastPageDisplayed(CardListRequest.LAST_PAGE_NOT_SHOWN)
+                    .withNextPageExists()
+                    .withReturnFlagOn();
 
             byte[] image = cursor.toFixedWidth(charset);
+
             assertThat(image).hasSize(58);
             assertThat(PageCursor.fromFixedWidth(image, charset)).isEqualTo(cursor);
         }
@@ -1660,8 +1679,11 @@ class CardListResponseTest {
         @Test
         @DisplayName("zero-fills the PIC 9 spans on the left rather than rendering them as text")
         void numericSpansAreZeroFilled() {
-            byte[] image = PageCursor.initial().withLastCardkey(sp(16), 11L).toFixedWidth(ASCII);
+            byte[] image = PageCursor.initialised()
+                    .withLastCardKey(new CardKey(sp(16), 11L))
+                    .toFixedWidth(ASCII);
             String text = new String(image, ASCII);
+
             assertThat(text.substring(16, 27)).isEqualTo("00000000011");
             assertThat(text.substring(43, 54)).isEqualTo("00000000000");
             assertThat(text.substring(54, 55)).isEqualTo("0");
@@ -1669,46 +1691,78 @@ class CardListResponseTest {
         }
 
         @Test
-        @DisplayName("round-trips the initial cursor, whose zeros are encoded as digits")
-        void initialCursorRoundTrips() {
-            byte[] image = PageCursor.initial().toFixedWidth(ASCII);
-            assertThat(PageCursor.fromFixedWidth(image, ASCII)).isEqualTo(PageCursor.initial());
+        @DisplayName("round-trips the initialised cursor, whose zeros are encoded as digits")
+        void initialisedCursorRoundTrips() {
+            byte[] image = PageCursor.initialised().toFixedWidth(ASCII);
+
+            assertThat(PageCursor.fromFixedWidth(image, ASCII))
+                    .isEqualTo(PageCursor.initialised());
+        }
+
+        @Test
+        @DisplayName("the image the response writes is the image a request reads back")
+        void theImageCrossesThePair() {
+            CardListResponse response = populated();
+            PageCursor written = response.getPageCursor();
+
+            byte[] image = written.toFixedWidth(ASCII);
+            CardListRequest request = new CardListRequest();
+            request.setPageCursor(PageCursor.fromFixedWidth(image, ASCII));
+
+            assertThat(request.getPageCursor())
+                    .as("COCRDLIC.cbl:610-612 returns the area and :330-331 reads it back, so the "
+                            + "bytes must survive the crossing unchanged")
+                    .isEqualTo(written);
+        }
+
+        @Test
+        @DisplayName("the JSON member crosses the pair unchanged, under the same name and shape")
+        void theJsonMemberCrossesThePair() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            CardListResponse response = populated();
+
+            String cursorJson = mapper.writeValueAsString(response.getPageCursor());
+            PageCursor decoded = mapper.readValue(cursorJson, PageCursor.class);
+
+            CardListRequest request = new CardListRequest();
+            request.setPageCursor(decoded);
+
+            assertThat(request.getPageCursor()).isEqualTo(response.getPageCursor());
+            assertThat(mapper.valueToTree(response).get("pageCursor"))
+                    .isEqualTo(mapper.valueToTree(request).get("pageCursor"));
         }
 
         @Test
         @DisplayName("rejects a component that cannot exist in the declared PICTURE")
         void validation() {
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new PageCursor("short", 0L, low(16), 0L, 0, 0, "\u0000",
-                            "\u0000"))
-                    .withMessageContaining("WS-CA-LAST-CARD-NUM");
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new PageCursor(low(16), 0L, "short", 0L, 0, 0, "\u0000",
-                            "\u0000"))
-                    .withMessageContaining("WS-CA-FIRST-CARD-NUM");
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new PageCursor(low(16), 0L, low(16), 0L, 0, 0, "YY", "\u0000"))
+                    .isThrownBy(() -> new PageCursor(CardKey.lowValues(), CardKey.lowValues(), 0, 0,
+                            "YY", "\u0000"))
                     .withMessageContaining("WS-CA-NEXT-PAGE-IND");
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new PageCursor(low(16), 0L, low(16), 0L, 0, 0, "Y", "11"))
+                    .isThrownBy(() -> new PageCursor(CardKey.lowValues(), CardKey.lowValues(), 0, 0,
+                            "Y", "11"))
                     .withMessageContaining("WS-RETURN-FLAG");
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new PageCursor(low(16), -1L, low(16), 0L, 0, 0, "Y", "1"))
-                    .withMessageContaining("no sign position");
+                    .isThrownBy(() -> new CardKey(low(16), -1L))
+                    .withMessageContaining("negative");
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new PageCursor(low(16), 0L, low(16),
-                            PageCursor.MAX_CARD_ACCT_ID + 1, 0, 0, "Y", "1"))
-                    .withMessageContaining("largest value");
+                    .isThrownBy(() -> new CardKey(low(16), CardKey.MAX_ACCT_ID + 1))
+                    .withMessageContaining("more than 11 digits");
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new PageCursor(low(16), 0L, low(16), 0L, 10, 0, "Y", "1"))
+                    .isThrownBy(() -> new PageCursor(CardKey.lowValues(), CardKey.lowValues(), 10, 0,
+                            "Y", "1"))
                     .withMessageContaining("WS-CA-SCREEN-NUM");
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new PageCursor(low(16), 0L, low(16), 0L, 0, -1, "Y", "1"))
+                    .isThrownBy(() -> new PageCursor(CardKey.lowValues(), CardKey.lowValues(), 0, -1,
+                            "Y", "1"))
                     .withMessageContaining("WS-CA-LAST-PAGE-DISPLAYED");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new PageCursor(null, 0L, low(16), 0L, 0, 0, "Y", "1"));
+                    .isThrownBy(() -> new PageCursor(null, CardKey.lowValues(), 0, 0, "Y", "1"));
             assertThatNullPointerException()
-                    .isThrownBy(() -> PageCursor.initial().toFixedWidth(null));
+                    .isThrownBy(() -> new CardKey(null, 0L));
+            assertThatNullPointerException()
+                    .isThrownBy(() -> PageCursor.initialised().toFixedWidth(null));
             assertThatNullPointerException()
                     .isThrownBy(() -> PageCursor.fromFixedWidth(null, ASCII));
             assertThatNullPointerException()
@@ -1716,9 +1770,40 @@ class CardListResponseTest {
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> PageCursor.fromFixedWidth(new byte[57], ASCII));
         }
-    }
 
-    // =================================================================================================
+        @Test
+        @DisplayName("an over-width key is refused at the byte boundary, not silently truncated")
+        void anOverWidthKeyIsRefusedAtTheByteBoundary() {
+            PageCursor tooWide = PageCursor.initialised()
+                    .withLastCardKey(new CardKey("4".repeat(20), 1L));
+
+            assertThatIllegalArgumentException()
+                    .as("writePicX refuses a surplus rather than dropping four digits of a card "
+                            + "number into a 58-byte parity image")
+                    .isThrownBy(() -> tooWide.toFixedWidth(ASCII));
+        }
+
+        @Test
+        @DisplayName("a short key is stored verbatim and padded only by the explicit image step")
+        void aShortKeyIsStoredVerbatimAndPaddedOnlyByTheImage() {
+            PageCursor cursor = PageCursor.initialised()
+                    .withLastCardKey(new CardKey("4", 2L));
+
+            assertThat(cursor.lastCardNum())
+                    .as("binding and carrying do not pad; the MOVE belongs to the image step")
+                    .isEqualTo("4");
+            assertThat(new String(cursor.toFixedWidth(ASCII), ASCII).substring(0, 16))
+                    .isEqualTo("4" + " ".repeat(15));
+        }
+
+        /** The LOW-VALUES state - reachable by MOVE LOW-VALUES, and what the -OFF 88-levels test. */
+        private PageCursor lowValueCursor() {
+            return new PageCursor(CardKey.lowValues(), CardKey.lowValues(), 0,
+                    CardListRequest.LAST_PAGE_SHOWN,
+                    CardScreenState.lowValues(CardListRequest.NEXT_PAGE_IND_LENGTH),
+                    CardScreenState.lowValues(CardListRequest.RETURN_FLAG_LENGTH));
+        }
+    }
 
     @Nested
     @DisplayName("Header population - 1100-SCREEN-INIT and 1400-SETUP-MESSAGE")
@@ -1768,7 +1853,7 @@ class CardListResponseTest {
         @DisplayName("takes the page number from the carried cursor")
         void pageNumberFollowsTheCursor() {
             CardListResponse response = new CardListResponse();
-            response.setPageCursor(PageCursor.initial().withScreenNum(4));
+            response.setPageCursor(PageCursor.initialised().withScreenNum(4));
             response.applyPageNumberFromCursor();
             assertThat(response.getPagenoo()).isEqualTo("4  ");
         }
@@ -1811,7 +1896,7 @@ class CardListResponseTest {
             DateHeader header = DateHeader.of(new FixedWidthCodec(ASCII),
                     LocalDateTime.of(2022, 7, 19, 23, 12, 33));
             CardListResponse response = new CardListResponse();
-            response.setPageCursor(PageCursor.initial().withScreenNum(1));
+            response.setPageCursor(PageCursor.initialised().withScreenNum(1));
             response.setErrmsgo("stale error text");
 
             response.applyScreenInit(header, sp(45));
@@ -1993,7 +2078,7 @@ class CardListResponseTest {
                     r -> r.setNextProgram("COMEN01C"),
                     r -> r.setNextMapset("COMEN01"),
                     r -> r.setNextMap("COMEN1A"),
-                    r -> r.setPageCursor(PageCursor.fromMenu()),
+                    r -> r.setPageCursor(PageCursor.firstPage()),
                     r -> r.setCardScreenState(differentState()),
                     r -> r.setNavigationContext(NavigationContext.empty().withPgmReenter()));
             for (java.util.function.Consumer<CardListResponse> mutation : mutations) {
@@ -2031,19 +2116,72 @@ class CardListResponseTest {
         }
 
         @Test
+        @DisplayName("the disclosure policy names all 14 row fields and both filters")
+        void theDisclosurePolicyNamesEveryCardField() {
+            // COCRDLI is the densest concentration of payment data on any screen: 7 card numbers and 7
+            // account numbers per page. The stems come from the mapset itself, so a new field would need
+            // a new stem and could not silently match.
+            for (int row = 1; row <= 7; row++) {
+                assertThat(CardListResponse.disclosureOf("CRDNUM" + row + "O"))
+                        .isEqualTo(SensitiveDiagnostics.Disclosure.PAN);
+                assertThat(CardListResponse.disclosureOf("ACCTNO" + row + "O"))
+                        .isEqualTo(SensitiveDiagnostics.Disclosure.IDENTIFIER);
+                assertThat(CardListResponse.disclosureOf("CRDSTS" + row + "O"))
+                        .as("a status column identifies nobody and stays legible")
+                        .isEqualTo(SensitiveDiagnostics.Disclosure.PLAIN);
+            }
+            assertThat(CardListResponse.disclosureOf("CARDSIDO"))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.PAN);
+            assertThat(CardListResponse.disclosureOf("ACCTSIDO"))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.IDENTIFIER);
+            assertThat(CardListResponse.disclosureOf("TITLE01O"))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.PLAIN);
+        }
+
+        @Test
+        @DisplayName("an unnamed field is withheld, not published")
+        void anUnnamedFieldIsWithheld() {
+            assertThat(CardListResponse.disclosureOf(null))
+                    .isEqualTo(SensitiveDiagnostics.Disclosure.REDACTED_VALUE);
+        }
+
+        @Test
         @DisplayName("renders every field verbatim, masking nothing - not even a card number")
         void toStringIsVerbatim() {
             CardListResponse response = populated();
             String text = response.toString();
+
             assertThat(text).startsWith("CardListResponse[").endsWith("]");
             for (MapField field : CardListResponse.MAP_FIELDS) {
-                assertThat(text).as("names %s", field.itemName()).contains(field.itemName() + "='");
+                assertThat(text).as("names %s", field.itemName()).contains(field.itemName() + "=");
             }
-            assertThat(text).contains("4111111111111111")
-                    .doesNotContain("****")
+            assertThat(text)
+                    .as("COCRDLI carries 7 card numbers and 7 account numbers per page; none of the "
+                            + "14 may reach a log line (CWE-532)")
+                    .doesNotContain("4111111111111111")
+                    .contains("************1111")
                     .contains("WS-EDIT-SELECT-ERROR-FLAGS='")
                     .contains("nextProgram='COMEN01C")
-                    .contains("pageCursor=");
+                    .contains("pageCursor=")
+                    .contains("TRNNAMEO='CCLI'");
+        }
+
+        @Test
+        @DisplayName("redaction is confined to toString - the JSON body and the image are untouched")
+        void redactionIsConfinedToTheDiagnostic() throws Exception {
+            CardListResponse response = populated();
+
+            JsonNode body = new ObjectMapper().valueToTree(response);
+            String image = new String(response.toFixedWidth(ASCII), ASCII);
+
+            assertThat(body.get("crdnum1o").asText())
+                    .as("the 3270 shows the number in the clear and the payload must too")
+                    .isEqualTo("4111111111111111");
+            assertThat(body.get("cardsido").asText()).isEqualTo("4111111111111111");
+            assertThat(image).contains("4111111111111111");
+            assertThat(body.toString()).doesNotContain("REDACTED");
+            assertThat(response.getCrdnum1o()).isEqualTo("4111111111111111");
+            assertThat(response.getCardsido()).isEqualTo("4111111111111111");
         }
     }
 
@@ -2119,7 +2257,7 @@ class CardListResponseTest {
         response.fieldAttributes("INFOMSG").setHighlight(BmsAttributes.DFHUNDLN);
         response.setWsRowCrdselectError(1, CardListResponse.ROW_SELECT_ERROR);
         response.setNextTarget(CardListResponse.LIT_MENUPGM, "COMEN01", "COMEN1A");
-        response.setPageCursor(PageCursor.initial().withScreenNum(1).withCaNextPageExists());
+        response.setPageCursor(PageCursor.initialised().withScreenNum(1).withNextPageExists());
         return response;
     }
 }

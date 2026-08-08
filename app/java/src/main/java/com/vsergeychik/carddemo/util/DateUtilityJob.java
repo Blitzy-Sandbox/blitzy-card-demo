@@ -5,11 +5,14 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 /**
@@ -466,7 +469,7 @@ public class DateUtilityJob {
      * <p>The COBOL names are kept exactly as declared, including the inverted
      * {@link #FC_INVALID_DATE}, whose all-zeros value is the <em>successful</em> outcome.
      */
-    private enum FeedbackToken {
+    enum FeedbackToken {
 
         /**
          * L62 - {@code VALUE X'0000000000000000'}. Severity 0, message 0: {@code CEE000}, a
@@ -530,24 +533,25 @@ public class DateUtilityJob {
         FC_YEAR_IN_ERA_ZERO(SEVERITY_SEVERE, 2521),
 
         /**
-         * The {@code WHEN OTHER} path at L147-L148, reached for any feedback token the nine
-         * {@code 88} levels do not enumerate.
+         * The {@code WHEN OTHER} path at L147-L148: the arm the {@code EVALUATE} takes for a feedback
+         * token the nine {@code 88} levels do not enumerate.
          *
-         * <p>This is <strong>not</strong> an IBM feedback code and does not claim to be one. Its
-         * message number is deliberately {@link #MESSAGE_NUMBER_NONE} together with severity
-         * {@link #SEVERITY_SEVERE}, a combination that cannot equal any of the nine declared
-         * {@code VALUE}s - the all-zeros success token has severity 0 and every named error token has
-         * a message number of at least 2507 - so it always falls through to {@code WHEN OTHER} and
-         * yields {@code 'Date is invalid'}. Per the source, the severity and message number written
-         * into the result on that path are whatever the validator returned and are never forced to a
-         * named value, so the callers see {@code '0003'} and {@code '0000'} and reject the date,
-         * which is the correct outcome for input the picture string never described.
+         * <p><strong>Reserved for an unrecognised token, and never manufactured.</strong> The
+         * validator does not produce it: every condition it can detect maps onto one of the nine
+         * documented CEEDAYS codes, and a shape mismatch in particular is CEE2520
+         * ({@link #FC_NON_NUMERIC_DATA}), not a token of this sentinel's own. That correction matters
+         * because this sentinel's severity and message number - {@link #SEVERITY_SEVERE} with
+         * {@link #MESSAGE_NUMBER_NONE} - form a combination CEEDAYS <em>cannot return</em>: the
+         * all-zeros success token has severity 0 and every named error token has a message number of
+         * at least 2507. Writing {@code '0003'} and {@code '0000'} into the eighty-byte result was
+         * therefore reporting a feedback code that does not exist, in a field the parity differ
+         * compares byte for byte.
          *
-         * <p>The validator emits it for exactly the two conditions no documented CEEDAYS code
-         * covers: a literal delimiter in the picture string that the input date does not match, and
-         * input characters left over beyond everything the picture described. Neither is
-         * "insufficient data" (which IBM attributes to the picture string), nor non-numeric data in
-         * a numeric field, nor an era, month, year, day or range fault.
+         * <p>It remains declared because the source's {@code WHEN OTHER} arm remains: a real
+         * Language Environment could return a token outside the nine, and this constant is what that
+         * token maps to. The arm is reachable in a test through
+         * {@link DateUtilityJob#resultTextOfFeedbackToken(FeedbackToken)}, which is the mapping
+         * itself rather than a route the validator can be driven down.
          */
         UNENUMERATED(SEVERITY_SEVERE, MESSAGE_NUMBER_NONE);
 
@@ -1036,6 +1040,12 @@ public class DateUtilityJob {
      * a fixed-width record area addressed by absolute offset requires. The two bytes the L122 group
      * move plants are binary rather than character data and are therefore identical under any code
      * page; every other byte of the result is a single-byte character.
+     *
+     * <p>It is <strong>not</strong> what the Spring container supplies. The container wires
+     * {@link #DateUtilityJob(Charset)} with the dataset code page from
+     * {@code carddemo.charset.dataset}, so a deployment on {@code IBM037} gets {@code IBM037} here too.
+     * This constant is the default for a direct instantiation - a unit test, or the parity harness -
+     * which still names a code page rather than letting one be inferred.
      */
     public static final Charset DEFAULT_MESSAGE_CHARSET = StandardCharsets.US_ASCII;
 
@@ -1051,16 +1061,34 @@ public class DateUtilityJob {
     /**
      * Creates the service against {@link #DEFAULT_MESSAGE_CHARSET}.
      *
-     * <p>This is the constructor the Spring container uses. It exists so the class can also be
-     * instantiated directly in a plain unit test with no application context, which is what keeps
-     * every branch of the validator reachable without HTTP or a job launcher in the path.
+     * <p><strong>A direct-test seam, not the container's choice.</strong> It exists so the class can
+     * be instantiated in a plain unit test with no application context, which is what keeps every
+     * branch of the validator reachable without HTTP or a job launcher in the path. Production wiring
+     * goes through {@link #DateUtilityJob(Charset)}, which takes the configured code page; a
+     * production call site that reached for this form instead would pin the code page in Java and
+     * defeat {@code carddemo.charset.dataset}.
      */
     public DateUtilityJob() {
         this(DEFAULT_MESSAGE_CHARSET);
     }
 
     /**
-     * Creates the service against an explicitly supplied code page.
+     * Creates the service against an explicitly supplied code page, and is the constructor the Spring
+     * container selects.
+     *
+     * <p>It carries {@link Autowired} because the class declares two constructors and the no-argument
+     * one would otherwise win by default - which is precisely the defect this addresses. The eighty
+     * bytes this service returns are a <em>byte contract</em>: {@code CSUTLDTC} hands
+     * {@code LS-RESULT PIC X(80)} back to {@code CORPT00C}, {@code COTRN02C} and, through
+     * {@code CSUTLDPY}, to {@code COACTUPC}, each of which positions it by absolute byte offset. A
+     * deployment that selects {@code IBM037} for its datasets and receives {@code US-ASCII} here would
+     * get eighty bytes in the wrong code page from a component whose whole output is bytes, and the
+     * mismatch would surface as unreadable message text far from its cause.
+     *
+     * <p>The parameter is qualified rather than injected bare because {@code CobolCharsetConfig}
+     * publishes three {@link Charset} beans and declares no primary, so an unqualified injection point
+     * is ambiguous by design (practice B8). {@link CobolCharsetConfig#DATASET_CHARSET_BEAN_NAME} is the
+     * dataset code page - the one every record-bearing component in this module takes.
      *
      * @param messageCharset the code page the 80-byte result is rendered in. It must encode the
      *                       digits, the space and the sign overpunch characters to exactly one byte
@@ -1069,7 +1097,9 @@ public class DateUtilityJob {
      * @throws IllegalArgumentException if the code page is not single-byte over that repertoire
      * @throws NullPointerException     if {@code messageCharset} is {@code null}
      */
-    public DateUtilityJob(Charset messageCharset) {
+    @Autowired
+    public DateUtilityJob(
+            @Qualifier(CobolCharsetConfig.DATASET_CHARSET_BEAN_NAME) Charset messageCharset) {
         this.codec = new FixedWidthCodec(messageCharset);
     }
 
@@ -1180,12 +1210,33 @@ public class DateUtilityJob {
         codec.writePic9(wsMessage, WS_SEVERITY_N, feedbackCode.severity());
         codec.writePic9(wsMessage, WS_MSG_NO_N, feedbackCode.messageNumber());
 
-        // L128-L149 EVALUATE TRUE. The nine named WHENs appear below in source order and WHEN OTHER
-        // is last, so the first match wins and there is no fall-through, exactly as EVALUATE
-        // behaves. The 88 levels are mutually exclusive because their declared VALUEs differ, so at
-        // most one arm can apply. The result text is moved into WS-RESULT PIC X(15), which pads the
-        // two literals shorter than fifteen on the right.
-        final String wsResult = switch (feedbackCode) {
+        // L128-L149 EVALUATE TRUE, factored out so the arm the validator cannot reach is still
+        // reachable by a test. The result text is moved into WS-RESULT PIC X(15), which pads the two
+        // literals shorter than fifteen on the right.
+        final String wsResult = resultTextOfFeedbackToken(feedbackCode);
+        codec.writePicX(wsMessage, WS_RESULT, wsResult);
+        // L151 ends A000-MAIN; L152-L154 A000-MAIN-EXIT is a bare EXIT and needs no counterpart.
+    }
+
+    /**
+     * {@code EVALUATE TRUE} at L128-L149: the feedback token to {@code WS-RESULT} mapping, entire.
+     *
+     * <p>The nine named {@code WHEN}s appear below in source order and {@code WHEN OTHER} is last, so
+     * the first match wins and there is no fall-through, exactly as {@code EVALUATE} behaves. The nine
+     * {@code 88} levels are mutually exclusive because their declared {@code VALUE}s differ, so at
+     * most one arm can apply.
+     *
+     * <p>Package-private and separate from {@link #a000Main(FixedWidthRecord, String, String)} for one
+     * reason: {@link FeedbackToken#UNENUMERATED} is reserved for a token a real Language Environment
+     * might return and the validator never manufactures, so the {@code WHEN OTHER} arm cannot be
+     * reached by supplying an input date. Exposing the mapping keeps that arm covered by a test
+     * without inventing a route to it through the validator, which is what a manufactured token was.
+     *
+     * @param feedbackCode the token {@code CEEDAYS} reported
+     * @return the fifteen-character result text, unpadded - the caller's {@code MOVE} pads it
+     */
+    static String resultTextOfFeedbackToken(FeedbackToken feedbackCode) {
+        return switch (feedbackCode) {
             case FC_INVALID_DATE -> RESULT_DATE_IS_VALID;            // L129-L130
             case FC_INSUFFICIENT_DATA -> RESULT_INSUFFICIENT;        // L131-L132
             case FC_BAD_DATE_VALUE -> RESULT_DATEVALUE_ERROR;        // L133-L134
@@ -1197,8 +1248,6 @@ public class DateUtilityJob {
             case FC_YEAR_IN_ERA_ZERO -> RESULT_YEAR_IN_ERA_ZERO;     // L145-L146
             default -> RESULT_DATE_IS_INVALID;                       // L147-L148 WHEN OTHER
         };
-        codec.writePicX(wsMessage, WS_RESULT, wsResult);
-        // L151 ends A000-MAIN; L152-L154 A000-MAIN-EXIT is a bare EXIT and needs no counterpart.
     }
 
     /**
@@ -1219,8 +1268,8 @@ public class DateUtilityJob {
         final byte[] groupImage = new byte[LS_DATE_LENGTH];
         groupImage[0] = (byte) ((LS_DATE_LENGTH >> Byte.SIZE) & BYTE_MASK);
         groupImage[1] = (byte) (LS_DATE_LENGTH & BYTE_MASK);
-        System.arraycopy(vstringText.getBytes(codec.charset()), 0, groupImage,
-                VSTRING_LENGTH_BYTES, GROUP_MOVE_SURVIVING_TEXT_BYTES);
+        System.arraycopy(codec.encodeImage(vstringText, "VSTRING-TEXT OF WS-DATE-TO-TEST"), 0,
+                groupImage, VSTRING_LENGTH_BYTES, GROUP_MOVE_SURVIVING_TEXT_BYTES);
         return groupImage;
     }
 
@@ -1245,15 +1294,17 @@ public class DateUtilityJob {
      *       year, month and day, or a year and a day of the year:
      *       {@link FeedbackToken#FC_INSUFFICIENT_DATA} (2507). Note that this condition is attributed
      *       to the <em>picture string</em>, not to a short input date;</li>
-     *   <li>the input is shorter than the picture describes, or a literal delimiter in the picture
-     *       does not appear in the input, or the input carries non-blank characters beyond everything
-     *       the picture described: {@link FeedbackToken#UNENUMERATED}, because none of the nine
-     *       documented conditions covers a shape mismatch of this kind, and the source's
-     *       {@code WHEN OTHER} arm is exactly where an unenumerated token belongs;</li>
+     *   <li>the input does not have the shape the picture describes - it runs out inside a field, a
+     *       numeric position supplies no digit at all, or a digit or letter stands where the picture
+     *       declares a delimiter: {@link FeedbackToken#FC_NON_NUMERIC_DATA}
+     *       (<strong>2520</strong>), the code IBM documents for "non-numeric data was found where
+     *       numeric data was expected". Note what is <em>not</em> a shape failure: leading and
+     *       trailing blanks are tolerated, a leading zero may be omitted from a numeric field, a
+     *       delimiter variant is accepted where the picture declares one, and characters beyond
+     *       everything the picture described are ignored - all four are documented CEEDAYS
+     *       behaviour;</li>
      *   <li>an era field holds a name that is not supported:
      *       {@link FeedbackToken#FC_INVALID_ERA} (2509);</li>
-     *   <li>a numeric field position holds anything other than a digit - a blank included:
-     *       {@link FeedbackToken#FC_NON_NUMERIC_DATA} (2520);</li>
      *   <li>a month-abbreviation field holds a name that is not a month:
      *       {@link FeedbackToken#FC_INVALID_MONTH} (2517);</li>
      *   <li>the year within the era is zero: {@link FeedbackToken#FC_YEAR_IN_ERA_ZERO} (2521);</li>
@@ -1391,81 +1442,100 @@ public class DateUtilityJob {
      * @return the feedback token and, on success, the Lillian day count
      */
     private static CeedaysOutcome scanInputDate(String inputCharDate, ParsedPicture picture) {
-        // The picture cannot describe more positions than the input supplies. With both operands
-        // fixed at ten characters this cannot arise from either in-repository caller, but the guard
-        // keeps every field extraction below inside the input and gives the shape mismatch the same
-        // unenumerated outcome as a delimiter that does not match.
-        if (picture.inputWidth() > inputCharDate.length()) {
-            return CeedaysOutcome.rejected(FeedbackToken.UNENUMERATED);
-        }
-
         int yearWithinEra = YEAR_WITHIN_ERA_ZERO;
         int month = JANUARY;
         int dayOfMonth = FIRST_DAY_OF_MONTH;
         int dayOfYear = FIRST_DAY_OF_YEAR;
         boolean beforeCommonEra = false;
-        int cursor = 0;
 
-        for (PictureItem item : picture.items()) {
-            final String field = inputCharDate.substring(cursor, cursor + item.kind().inputWidth());
-            cursor += item.kind().inputWidth();
-            switch (item.kind()) {
-                case YEAR_4 -> {
-                    if (!isAllDigits(field)) {
-                        return CeedaysOutcome.rejected(FeedbackToken.FC_NON_NUMERIC_DATA);
-                    }
-                    yearWithinEra = digitsToInt(field);
+        // Where parsing starts. IBM: "Input-char-date can contain leading or trailing blanks. Parsing
+        // for a date begins with the first non-blank character unless the picture string contains
+        // leading blanks, in which case CEEDAYS skips exactly that many positions before parsing
+        // begins." Both halves are implemented, and the leading blanks of the picture are consumed by
+        // the skip rather than matched as delimiters.
+        final int pictureLeadingBlanks = leadingBlankLiteralCount(picture.items());
+        int itemIndex = pictureLeadingBlanks;
+        int cursor = pictureLeadingBlanks > 0
+                ? pictureLeadingBlanks
+                : firstNonBlankIndex(inputCharDate);
+
+        final List<PictureItem> items = picture.items();
+        while (itemIndex < items.size()) {
+            final PictureItem item = items.get(itemIndex);
+            itemIndex++;
+            final PictureItemKind kind = item.kind();
+
+            if (kind == PictureItemKind.LITERAL) {
+                // A delimiter position. CEEDAYS scans by picture rather than matching character for
+                // character, so a delimiter VARIANT is accepted here: the ILE documentation's own
+                // examples show '6/2/88' and '06/02/88' both parsing under 'MM/DD/YY', and a
+                // separator is a separator whichever punctuation it is. What is NOT accepted is a
+                // digit or a letter where a delimiter belongs - that is a genuine shape failure, and
+                // a shape failure is CEE2520, the code IBM documents for "non-numeric data was found
+                // where numeric data was expected". It is emphatically not severity 3 with message
+                // number 0000, a combination CEEDAYS cannot return at all.
+                if (cursor >= inputCharDate.length()) {
+                    return CeedaysOutcome.rejected(FeedbackToken.FC_NON_NUMERIC_DATA);
                 }
-                case YEAR_2 -> {
-                    if (!isAllDigits(field)) {
-                        return CeedaysOutcome.rejected(FeedbackToken.FC_NON_NUMERIC_DATA);
-                    }
-                    yearWithinEra = resolveTwoDigitYear(digitsToInt(field));
+                final char supplied = inputCharDate.charAt(cursor);
+                if (!isDelimiterCharacter(supplied)) {
+                    return CeedaysOutcome.rejected(FeedbackToken.FC_NON_NUMERIC_DATA);
                 }
-                case MONTH_NAME_3 -> {
+                cursor++;
+                continue;
+            }
+
+            if (kind == PictureItemKind.MONTH_NAME_3 || kind == PictureItemKind.ERA) {
+                // A name field is not numeric, so it has no leading zero to omit and consumes its
+                // declared width exactly. Running out of input inside it is a shape failure.
+                if (cursor + kind.inputWidth() > inputCharDate.length()) {
+                    return CeedaysOutcome.rejected(FeedbackToken.FC_NON_NUMERIC_DATA);
+                }
+                final String field = inputCharDate.substring(cursor, cursor + kind.inputWidth());
+                cursor += kind.inputWidth();
+                if (kind == PictureItemKind.MONTH_NAME_3) {
                     month = monthFromAbbreviation(field);
                     if (month < FIRST_MONTH) {
                         return CeedaysOutcome.rejected(FeedbackToken.FC_INVALID_MONTH);
                     }
-                }
-                case MONTH_2 -> {
-                    if (!isAllDigits(field)) {
-                        return CeedaysOutcome.rejected(FeedbackToken.FC_NON_NUMERIC_DATA);
-                    }
-                    month = digitsToInt(field);
-                }
-                case JULIAN_DAY_3 -> {
-                    if (!isAllDigits(field)) {
-                        return CeedaysOutcome.rejected(FeedbackToken.FC_NON_NUMERIC_DATA);
-                    }
-                    dayOfYear = digitsToInt(field);
-                }
-                case DAY_2 -> {
-                    if (!isAllDigits(field)) {
-                        return CeedaysOutcome.rejected(FeedbackToken.FC_NON_NUMERIC_DATA);
-                    }
-                    dayOfMonth = digitsToInt(field);
-                }
-                case ERA -> {
+                } else {
                     final String eraName = field.toUpperCase(Locale.ROOT);
                     if (!ERA_NAMES.contains(eraName)) {
                         return CeedaysOutcome.rejected(FeedbackToken.FC_INVALID_ERA);
                     }
                     beforeCommonEra = ERA_BEFORE_COMMON.equals(eraName);
                 }
-                case LITERAL -> {
-                    if (field.charAt(0) != item.literal()) {
-                        return CeedaysOutcome.rejected(FeedbackToken.UNENUMERATED);
-                    }
-                }
+                continue;
+            }
+
+            // A numeric field. Digits are consumed greedily up to the token's declared width and the
+            // run stops at the first non-digit, which is what lets a leading zero be omitted: under
+            // 'MM/DD/YY' the month field of '6/2/88' takes the single '6' and leaves the '/' for the
+            // delimiter item that follows. At least one digit is required - none at all means the
+            // position holds something that is not a number, which is CEE2520.
+            final int digitsAvailable = digitRunLength(inputCharDate, cursor, kind.inputWidth());
+            if (digitsAvailable == 0) {
+                return CeedaysOutcome.rejected(FeedbackToken.FC_NON_NUMERIC_DATA);
+            }
+            final String field = inputCharDate.substring(cursor, cursor + digitsAvailable);
+            cursor += digitsAvailable;
+            switch (kind) {
+                case YEAR_4 -> yearWithinEra = digitsToInt(field);
+                case YEAR_2 -> yearWithinEra = resolveTwoDigitYear(digitsToInt(field));
+                case MONTH_2 -> month = digitsToInt(field);
+                case JULIAN_DAY_3 -> dayOfYear = digitsToInt(field);
+                case DAY_2 -> dayOfMonth = digitsToInt(field);
+                default -> throw new IllegalStateException("Unhandled numeric picture token " + kind
+                        + "; every PictureItemKind is either LITERAL, a name field or one of the five "
+                        + "numeric fields, so reaching here means a token was added without a scan "
+                        + "rule");
             }
         }
 
-        // Whatever the picture never described must be blank. Real characters beyond the end of the
-        // description are neither missing data nor a bad value, so no documented code fits them.
-        if (!isAllSpaces(inputCharDate, cursor)) {
-            return CeedaysOutcome.rejected(FeedbackToken.UNENUMERATED);
-        }
+        // Whatever the picture never described is IGNORED. IBM states it outright: "After a valid
+        // date is parsed, remaining characters are ignored." Rejecting a non-blank tail here was
+        // therefore a rule CEEDAYS does not have, and it was reported through a manufactured feedback
+        // token besides. Trailing blanks are covered by the same sentence and need no separate arm.
         if (yearWithinEra == YEAR_WITHIN_ERA_ZERO) {
             return CeedaysOutcome.rejected(FeedbackToken.FC_YEAR_IN_ERA_ZERO);
         }
@@ -1494,20 +1564,18 @@ public class DateUtilityJob {
     }
 
     /**
-     * Whether every character of a field is a zoned {@code DISPLAY} digit. A blank counts as
-     * non-numeric, which is what makes a partially typed date report 2520.
+     * Whether one character is a zoned {@code DISPLAY} digit. A blank is not, which is what makes a
+     * partially typed date report 2520.
      *
-     * @param field the field extracted from the input date
-     * @return {@code true} when every character is {@code '0'} through {@code '9'}
+     * <p>Tested against the two literal bounds rather than through a Unicode-aware classifier, so the
+     * accepted set is exactly the ten characters a reviewer can see here and no localised digit
+     * sneaks into a numeric field.
+     *
+     * @param character one character of the input date
+     * @return {@code true} when it is {@code '0'} through {@code '9'}
      */
-    private static boolean isAllDigits(String field) {
-        for (int index = 0; index < field.length(); index++) {
-            final char character = field.charAt(index);
-            if (character < DIGIT_ZERO || character > DIGIT_NINE) {
-                return false;
-            }
-        }
-        return true;
+    private static boolean isSingleByteDigit(char character) {
+        return character >= DIGIT_ZERO && character <= DIGIT_NINE;
     }
 
     /**
@@ -1526,20 +1594,83 @@ public class DateUtilityJob {
     }
 
     /**
-     * Whether the tail of the input from a position onwards is entirely blank.
+     * The position of the first non-blank character, or the length when the input is entirely blank.
      *
-     * @param text      the input date
-     * @param fromIndex the first position to examine; may equal the length, in which case there is
-     *                  no tail and the answer is {@code true}
-     * @return {@code true} when no non-blank character remains
+     * <p>IBM: "Parsing for a date begins with the first non-blank character". A wholly blank input
+     * therefore starts parsing at the end of itself, and the first field it tries to read finds no
+     * digit - which is CEE2520, exactly the outcome a blank date should have.
+     *
+     * @param text the input date
+     * @return the 0-based index of the first non-blank character, or {@code text.length()}
      */
-    private static boolean isAllSpaces(String text, int fromIndex) {
-        for (int index = fromIndex; index < text.length(); index++) {
+    private static int firstNonBlankIndex(String text) {
+        for (int index = 0; index < text.length(); index++) {
             if (text.charAt(index) != SPACE_CHARACTER) {
-                return false;
+                return index;
             }
         }
-        return true;
+        return text.length();
+    }
+
+    /**
+     * How many leading picture items are blank literals.
+     *
+     * <p>IBM makes the picture's leading blanks override the skip-to-first-non-blank rule: with them
+     * present, "CEEDAYS skips exactly that many positions before parsing begins". Counting them here
+     * lets the scanner consume both the picture items and the matching input positions in one step,
+     * rather than matching a blank literal against whatever the input happens to hold there.
+     *
+     * @param items the parsed picture items in order
+     * @return the number of leading {@code LITERAL} items whose character is a space
+     */
+    private static int leadingBlankLiteralCount(List<PictureItem> items) {
+        int count = 0;
+        while (count < items.size()) {
+            final PictureItem item = items.get(count);
+            if (item.kind() != PictureItemKind.LITERAL || item.literal() != SPACE_CHARACTER) {
+                return count;
+            }
+            count++;
+        }
+        return count;
+    }
+
+    /**
+     * How many consecutive digits the input supplies from a position, capped at a maximum.
+     *
+     * <p>This is what makes an omitted leading zero acceptable: the run stops at the first character
+     * that is not a digit, so a two-position field can legitimately be satisfied by one digit
+     * followed by a delimiter. The cap is the token's declared width, so a field never reaches into
+     * the one after it.
+     *
+     * @param text     the input date
+     * @param from     the 0-based position to start at; may be at or past the end
+     * @param maxWidth the token's declared width, and the most that may be consumed
+     * @return the run length, from {@code 0} to {@code maxWidth}
+     */
+    private static int digitRunLength(String text, int from, int maxWidth) {
+        int length = 0;
+        while (length < maxWidth && from + length < text.length()
+                && isSingleByteDigit(text.charAt(from + length))) {
+            length++;
+        }
+        return length;
+    }
+
+    /**
+     * Whether a character may stand at a delimiter position of the picture string.
+     *
+     * <p>Anything that is neither a digit nor an ASCII letter qualifies - the punctuation and space
+     * characters a date separator is actually written with. CEEDAYS scans by picture rather than
+     * position-for-position, so a variant separator is accepted where the picture declares one; a
+     * digit or a letter there means the input does not have the shape the picture describes, and that
+     * is reported as CEE2520 rather than as a manufactured token.
+     *
+     * @param character the input character standing where the picture declares a literal
+     * @return {@code true} when it is usable as a separator
+     */
+    private static boolean isDelimiterCharacter(char character) {
+        return !isSingleByteDigit(character) && !isAsciiLetter(character);
     }
 
     /**

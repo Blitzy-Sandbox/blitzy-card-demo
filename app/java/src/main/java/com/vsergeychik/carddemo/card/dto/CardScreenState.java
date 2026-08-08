@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.card.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
@@ -9,6 +10,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.common.PfKeyResolver.AidKey;
 import java.nio.charset.Charset;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.Optional;
@@ -346,6 +348,17 @@ public final class CardScreenState {
     private static final FixedWidthCodec PICTURE_RULES =
             new FixedWidthCodec(StandardCharsets.US_ASCII);
 
+    /**
+     * What {@link #toString()} prints in place of the three identifier fields, and what the storage
+     * guard prints in place of a rejected value.
+     *
+     * <p>The same literal {@code common.NavigationContext} and the sign-on payload use, so one
+     * convention covers every redacted diagnostic in the module. Declared here rather than imported so
+     * that this work area - which models a copybook, not a communication area - keeps its existing set
+     * of dependencies.
+     */
+    public static final String REDACTED = "[REDACTED]";
+
     // =================================================================================================
     // The sixteen CCARD-AID condition names, app/cpy/CVCRD01Y.cpy lines 4 to 19.
     //
@@ -481,8 +494,10 @@ public final class CardScreenState {
     }
 
     /**
-     * Creates a work area with every field supplied, each stored through the {@code PIC X} move rule
-     * and therefore held at exactly its declared width.
+     * Creates a work area with every field supplied, each stored verbatim through the same guard the
+     * setters use: a value wider than its {@code PICTURE} clause is refused, and a shorter one is kept
+     * as it is rather than padded. {@link #asWorkArea()} is the step that renders them at their
+     * declared widths.
      *
      * @param ccardAid        {@code CCARD-AID}, {@code PIC X(5)}
      * @param ccardNextProg   {@code CCARD-NEXT-PROG}, {@code PIC X(8)}
@@ -493,8 +508,10 @@ public final class CardScreenState {
      * @param ccAcctId        {@code CC-ACCT-ID}, {@code PIC X(11)}
      * @param ccCardNum       {@code CC-CARD-NUM}, {@code PIC X(16)}
      * @param ccCustId        {@code CC-CUST-ID}, {@code PIC X(09)}
-     * @throws NullPointerException if any argument is {@code null}; COBOL has no absent state, so the
-     *                             caller must say whether it means spaces or {@code LOW-VALUES}
+     * @throws NullPointerException     if any argument is {@code null}; COBOL has no absent state, so
+     *                                  the caller must say whether it means spaces or
+     *                                  {@code LOW-VALUES}
+     * @throws IllegalArgumentException if any argument is wider than its declared width
      */
     public CardScreenState(String ccardAid,
                           String ccardNextProg,
@@ -537,6 +554,43 @@ public final class CardScreenState {
         this.ccAcctId = other.ccAcctId;
         this.ccCardNum = other.ccCardNum;
         this.ccCustId = other.ccCustId;
+    }
+
+    /**
+     * This work area with the {@code PIC X} move rule applied to every field: the explicit, named step
+     * at which a value that arrived shorter than its screen field becomes the fixed-width item
+     * {@code CC-WORK-AREA} actually holds.
+     *
+     * <p><strong>Why this exists.</strong> Binding and moving are two different operations, and this
+     * class keeps them apart. A public setter is a wire boundary: it stores exactly what arrived, so an
+     * empty field stays distinguishable from a field of spaces and an over-wide value is refused rather
+     * than quietly shortened. A COBOL {@code MOVE} is a program step: it pads on the right to the
+     * receiving field's width. Collapsing the two - which is what applying the move inside the setter
+     * did - means the wire value can never be inspected as it was sent, and a truncation happens where
+     * nobody asked for one.
+     *
+     * <p>There are therefore exactly two places the move is applied, and both are named: this method,
+     * and {@link #toFixedWidth(Charset)} together with {@link #writeInto(FixedWidthRecord)}, which
+     * write through {@link FixedWidthCodec#writePicX}. Every COBOL-semantic predicate and numeric
+     * overlay on this class reads the moved image too, so {@code IF CC-ACCT-ID = SPACES} and
+     * {@code IF CC-ACCT-ID IS NUMERIC} answer exactly what they answered before, whatever width the
+     * value was stored at.
+     *
+     * @return a new work area with all nine fields at their declared widths; this instance is
+     *         unchanged
+     */
+    public CardScreenState asWorkArea() {
+        CardScreenState workArea = new CardScreenState();
+        workArea.ccardAid = moved(ccardAid, CCARD_AID_LENGTH);
+        workArea.ccardNextProg = moved(ccardNextProg, CCARD_NEXT_PROG_LENGTH);
+        workArea.ccardNextMapset = moved(ccardNextMapset, CCARD_NEXT_MAPSET_LENGTH);
+        workArea.ccardNextMap = moved(ccardNextMap, CCARD_NEXT_MAP_LENGTH);
+        workArea.ccardErrorMsg = moved(ccardErrorMsg, CCARD_ERROR_MSG_LENGTH);
+        workArea.ccardReturnMsg = moved(ccardReturnMsg, CCARD_RETURN_MSG_LENGTH);
+        workArea.ccAcctId = moved(ccAcctId, CC_ACCT_ID_LENGTH);
+        workArea.ccCardNum = moved(ccCardNum, CC_CARD_NUM_LENGTH);
+        workArea.ccCustId = moved(ccCustId, CC_CUST_ID_LENGTH);
+        return workArea;
     }
 
     /**
@@ -610,29 +664,34 @@ public final class CardScreenState {
     // =================================================================================================
 
     /**
-     * {@code CCARD-AID} - the five-character AID token, untrimmed and exactly
-     * {@link #CCARD_AID_LENGTH} characters wide.
+     * {@code CCARD-AID} - the AID token, untrimmed and never padded here.
      *
-     * @return the token; one of the sixteen declared literals, or spaces when no key has been recorded
+     * @return the token as stored: at most {@link #CCARD_AID_LENGTH} characters, and exactly that many
+     *         whenever the value came from a fixed-width image, a figurative constant or
+     *         {@link #asWorkArea()}. One of the sixteen declared literals, or spaces when no key has
+     *         been recorded
      */
     public String getCcardAid() {
         return ccardAid;
     }
 
     /**
-     * Stores {@code CCARD-AID} through the {@code PIC X(5)} move rule.
+     * Stores {@code CCARD-AID} without transforming it - up to 5 characters, verbatim.
      *
-     * <p>Any five characters are accepted. The field is not validated against the sixteen declared
+     * <p>Up to five characters are accepted, and stored exactly as given: a shorter value is NOT
+     * padded here and an over-wide one is refused rather than truncated. The field is not validated
+     * against the sixteen declared
      * literals, because the copybook's {@code 88}-levels are <em>tests</em> on the field rather than a
      * constraint over it, and {@code app/cpy/CSSTRPFY.cpy} has no {@code WHEN OTHER}: when
      * {@code EIBAID} matched nothing the field kept whatever the previous key left in it, and that
      * value has to survive the round trip.
      *
-     * @param ccardAid the token; padded or truncated on the right to five characters
-     * @throws NullPointerException if {@code ccardAid} is {@code null}
+     * @param ccardAid the token; at most {@link #CCARD_AID_LENGTH} characters, stored verbatim
+     * @throws NullPointerException     if {@code ccardAid} is {@code null}
+     * @throws IllegalArgumentException if it is wider than {@link #CCARD_AID_LENGTH}
      */
     public void setCcardAid(String ccardAid) {
-        this.ccardAid = movePicX(ccardAid, CCARD_AID_LENGTH, "CCARD-AID");
+        this.ccardAid = requirePicX(ccardAid, CCARD_AID_LENGTH, "CCARD-AID");
     }
 
     /**
@@ -849,55 +908,61 @@ public final class CardScreenState {
     /**
      * {@code CCARD-NEXT-PROG} - the eight-character name of the program the client should invoke next.
      *
-     * @return the name, untrimmed and exactly {@link #CCARD_NEXT_PROG_LENGTH} characters wide
+     * @return the name, untrimmed and never padded here: at most
+     *         {@link #CCARD_NEXT_PROG_LENGTH} characters, and exactly that many whenever the value came
+     *         from a fixed-width image, a figurative constant or {@link #asWorkArea()}
      */
     public String getCcardNextProg() {
         return ccardNextProg;
     }
 
     /**
-     * Stores {@code CCARD-NEXT-PROG} through the {@code PIC X(8)} move rule. The value is an opaque
+     * Stores {@code CCARD-NEXT-PROG} without transforming it - up to 8 characters, verbatim. The value is an opaque
      * token: it is not checked against a list of known programs, not case-folded and not trimmed.
      *
-     * @param ccardNextProg the program name; padded or truncated on the right to eight characters
-     * @throws NullPointerException if {@code ccardNextProg} is {@code null}
+     * @param ccardNextProg the program name; at most its declared width, stored verbatim
+     * @throws NullPointerException     if {@code ccardNextProg} is {@code null}
+     * @throws IllegalArgumentException if it is wider than the eight characters the picture declares
      */
     public void setCcardNextProg(String ccardNextProg) {
-        this.ccardNextProg = movePicX(ccardNextProg, CCARD_NEXT_PROG_LENGTH, "CCARD-NEXT-PROG");
+        this.ccardNextProg = requirePicX(ccardNextProg, CCARD_NEXT_PROG_LENGTH, "CCARD-NEXT-PROG");
     }
 
     /**
      * {@code CCARD-NEXT-MAPSET} - the seven-character BMS mapset of the next screen.
      *
-     * @return the mapset name, untrimmed and exactly {@link #CCARD_NEXT_MAPSET_LENGTH} wide
+     * @return the mapset name as stored: at most {@link #CCARD_NEXT_MAPSET_LENGTH} characters, and
+     *         exactly that many once {@link #asWorkArea()} or a fixed-width image has supplied it
      */
     public String getCcardNextMapset() {
         return ccardNextMapset;
     }
 
     /**
-     * Stores {@code CCARD-NEXT-MAPSET} through the {@code PIC X(7)} move rule - seven, because a BMS
+     * Stores {@code CCARD-NEXT-MAPSET} without transforming it - up to 7 characters, verbatim - seven, because a BMS
      * map name is seven characters plus the {@code I} or {@code O} suffix of its symbolic group.
      *
-     * @param ccardNextMapset the mapset name; padded or truncated on the right to seven characters
-     * @throws NullPointerException if {@code ccardNextMapset} is {@code null}
+     * @param ccardNextMapset the mapset name; at most its declared width, stored verbatim
+     * @throws NullPointerException     if {@code ccardNextMapset} is {@code null}
+     * @throws IllegalArgumentException if it is wider than the seven characters the picture declares
      */
     public void setCcardNextMapset(String ccardNextMapset) {
         this.ccardNextMapset =
-                movePicX(ccardNextMapset, CCARD_NEXT_MAPSET_LENGTH, "CCARD-NEXT-MAPSET");
+                requirePicX(ccardNextMapset, CCARD_NEXT_MAPSET_LENGTH, "CCARD-NEXT-MAPSET");
     }
 
     /**
      * {@code CCARD-NEXT-MAP} - the seven-character BMS map of the next screen.
      *
-     * @return the map name, untrimmed and exactly {@link #CCARD_NEXT_MAP_LENGTH} wide
+     * @return the map name as stored: at most {@link #CCARD_NEXT_MAP_LENGTH} characters, and exactly
+     *         that many once {@link #asWorkArea()} or a fixed-width image has supplied it
      */
     public String getCcardNextMap() {
         return ccardNextMap;
     }
 
     /**
-     * Stores {@code CCARD-NEXT-MAP} through the {@code PIC X(7)} move rule.
+     * Stores {@code CCARD-NEXT-MAP} without transforming it - up to 7 characters, verbatim.
      *
      * <p>No map name is validated or corrected here, and that is deliberate:
      * {@code app/cbl/COCRDSLC.cbl:178} defines its card-list map literal as {@code 'CCRDSLA'} where
@@ -905,11 +970,12 @@ public final class CardScreenState {
      * migration preserves rather than repairs, so it has to be able to travel through this field
      * untouched.
      *
-     * @param ccardNextMap the map name; padded or truncated on the right to seven characters
-     * @throws NullPointerException if {@code ccardNextMap} is {@code null}
+     * @param ccardNextMap the map name; at most its declared width, stored verbatim
+     * @throws NullPointerException     if {@code ccardNextMap} is {@code null}
+     * @throws IllegalArgumentException if it is wider than the seven characters the picture declares
      */
     public void setCcardNextMap(String ccardNextMap) {
-        this.ccardNextMap = movePicX(ccardNextMap, CCARD_NEXT_MAP_LENGTH, "CCARD-NEXT-MAP");
+        this.ccardNextMap = requirePicX(ccardNextMap, CCARD_NEXT_MAP_LENGTH, "CCARD-NEXT-MAP");
     }
 
     // =================================================================================================
@@ -926,39 +992,45 @@ public final class CardScreenState {
      * <p>The copybook declares <strong>no</strong> {@code -OFF} condition for this field, so none is
      * offered; only {@code CCARD-RETURN-MSG} has one (practice <strong>B5</strong>).
      *
-     * @return the message, untrimmed and exactly {@link #CCARD_ERROR_MSG_LENGTH} characters wide
+     * @return the message, untrimmed and never padded here: at most
+     *         {@link #CCARD_ERROR_MSG_LENGTH} characters, and exactly that many whenever the value came
+     *         from a fixed-width image, a figurative constant or {@link #asWorkArea()}
      */
     public String getCcardErrorMsg() {
         return ccardErrorMsg;
     }
 
     /**
-     * Stores {@code CCARD-ERROR-MSG} through the {@code PIC X(75)} move rule.
+     * Stores {@code CCARD-ERROR-MSG} without transforming it - up to 75 characters, verbatim.
      *
-     * @param ccardErrorMsg the message; padded or truncated on the right to 75 characters
-     * @throws NullPointerException if {@code ccardErrorMsg} is {@code null}
+     * @param ccardErrorMsg the message; at most its declared width, stored verbatim
+     * @throws NullPointerException     if {@code ccardErrorMsg} is {@code null}
+     * @throws IllegalArgumentException if it is wider than the 75 characters the picture declares
      */
     public void setCcardErrorMsg(String ccardErrorMsg) {
-        this.ccardErrorMsg = movePicX(ccardErrorMsg, CCARD_ERROR_MSG_LENGTH, "CCARD-ERROR-MSG");
+        this.ccardErrorMsg = requirePicX(ccardErrorMsg, CCARD_ERROR_MSG_LENGTH, "CCARD-ERROR-MSG");
     }
 
     /**
      * {@code CCARD-RETURN-MSG PIC X(75)} - the return line.
      *
-     * @return the message, untrimmed and exactly {@link #CCARD_RETURN_MSG_LENGTH} characters wide
+     * @return the message, untrimmed and never padded here: at most
+     *         {@link #CCARD_RETURN_MSG_LENGTH} characters, and exactly that many whenever the value came
+     *         from a fixed-width image, a figurative constant or {@link #asWorkArea()}
      */
     public String getCcardReturnMsg() {
         return ccardReturnMsg;
     }
 
     /**
-     * Stores {@code CCARD-RETURN-MSG} through the {@code PIC X(75)} move rule.
+     * Stores {@code CCARD-RETURN-MSG} without transforming it - up to 75 characters, verbatim.
      *
-     * @param ccardReturnMsg the message; padded or truncated on the right to 75 characters
-     * @throws NullPointerException if {@code ccardReturnMsg} is {@code null}
+     * @param ccardReturnMsg the message; at most its declared width, stored verbatim
+     * @throws NullPointerException     if {@code ccardReturnMsg} is {@code null}
+     * @throws IllegalArgumentException if it is wider than the 75 characters the picture declares
      */
     public void setCcardReturnMsg(String ccardReturnMsg) {
-        this.ccardReturnMsg = movePicX(ccardReturnMsg, CCARD_RETURN_MSG_LENGTH, "CCARD-RETURN-MSG");
+        this.ccardReturnMsg = requirePicX(ccardReturnMsg, CCARD_RETURN_MSG_LENGTH, "CCARD-RETURN-MSG");
     }
 
     /**
@@ -989,7 +1061,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public boolean isCcardReturnMsgOff() {
-        return isEvery(ccardReturnMsg, '\u0000');
+        return isEvery(moved(ccardReturnMsg, CCARD_RETURN_MSG_LENGTH), '\u0000');
     }
 
     // =================================================================================================
@@ -1039,21 +1111,24 @@ public final class CardScreenState {
     /**
      * {@code CC-ACCT-ID PIC X(11)} - the account identifier as characters.
      *
-     * @return the identifier, untrimmed and exactly {@link #CC_ACCT_ID_LENGTH} characters wide
+     * @return the identifier, untrimmed and never padded here: at most
+     *         {@link #CC_ACCT_ID_LENGTH} characters, and exactly that many whenever the value came
+     *         from a fixed-width image, a figurative constant or {@link #asWorkArea()}
      */
     public String getCcAcctId() {
         return ccAcctId;
     }
 
     /**
-     * Stores {@code CC-ACCT-ID} through the {@code PIC X(11)} move rule, which is also visible through
+     * Stores {@code CC-ACCT-ID} without transforming it - up to 11 characters, verbatim, which is also visible through
      * {@link #getCcAcctIdN()}.
      *
-     * @param ccAcctId the identifier; padded or truncated on the right to eleven characters
-     * @throws NullPointerException if {@code ccAcctId} is {@code null}
+     * @param ccAcctId the identifier; at most its declared width, stored verbatim
+     * @throws NullPointerException     if {@code ccAcctId} is {@code null}
+     * @throws IllegalArgumentException if it is wider than the eleven characters the picture declares
      */
     public void setCcAcctId(String ccAcctId) {
-        this.ccAcctId = movePicX(ccAcctId, CC_ACCT_ID_LENGTH, "CC-ACCT-ID");
+        this.ccAcctId = requirePicX(ccAcctId, CC_ACCT_ID_LENGTH, "CC-ACCT-ID");
     }
 
     /**
@@ -1072,7 +1147,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public long getCcAcctIdN() {
-        return numericView(ccAcctId);
+        return numericView(moved(ccAcctId, CC_ACCT_ID_LENGTH));
     }
 
     /**
@@ -1109,7 +1184,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public boolean isCcAcctIdLowValues() {
-        return isEvery(ccAcctId, '\u0000');
+        return isEvery(moved(ccAcctId, CC_ACCT_ID_LENGTH), '\u0000');
     }
 
     /**
@@ -1121,7 +1196,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public boolean isCcAcctIdSpaces() {
-        return isEvery(ccAcctId, ' ');
+        return isEvery(moved(ccAcctId, CC_ACCT_ID_LENGTH), ' ');
     }
 
     /**
@@ -1139,7 +1214,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public boolean isCcAcctIdNZeros() {
-        return isZeroValued(ccAcctId);
+        return isZeroValued(moved(ccAcctId, CC_ACCT_ID_LENGTH));
     }
 
     /**
@@ -1151,7 +1226,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public boolean isCcAcctIdNumeric() {
-        return isEveryDigit(ccAcctId);
+        return isEveryDigit(moved(ccAcctId, CC_ACCT_ID_LENGTH));
     }
 
     /**
@@ -1159,22 +1234,25 @@ public final class CardScreenState {
      * work area holds it (practice <strong>B6</strong>: the security posture is neither weakened nor
      * strengthened here).
      *
-     * @return the card number, untrimmed and exactly {@link #CC_CARD_NUM_LENGTH} characters wide
+     * @return the card number, untrimmed and never padded here: at most
+     *         {@link #CC_CARD_NUM_LENGTH} characters, and exactly that many whenever the value came
+     *         from a fixed-width image, a figurative constant or {@link #asWorkArea()}
      */
     public String getCcCardNum() {
         return ccCardNum;
     }
 
     /**
-     * Stores {@code CC-CARD-NUM} through the {@code PIC X(16)} move rule, which is also visible through
+     * Stores {@code CC-CARD-NUM} without transforming it - up to 16 characters, verbatim, which is also visible through
      * {@link #getCcCardNumN()}. This is {@code MOVE CARDSIDI OF CCRDSLAI TO CC-CARD-NUM} at
      * {@code app/cbl/COCRDSLC.cbl:626}.
      *
-     * @param ccCardNum the card number; padded or truncated on the right to sixteen characters
-     * @throws NullPointerException if {@code ccCardNum} is {@code null}
+     * @param ccCardNum the card number; at most its declared width, stored verbatim
+     * @throws NullPointerException     if {@code ccCardNum} is {@code null}
+     * @throws IllegalArgumentException if it is wider than the sixteen characters the picture declares
      */
     public void setCcCardNum(String ccCardNum) {
-        this.ccCardNum = movePicX(ccCardNum, CC_CARD_NUM_LENGTH, "CC-CARD-NUM");
+        this.ccCardNum = requirePicX(ccCardNum, CC_CARD_NUM_LENGTH, "CC-CARD-NUM");
     }
 
     /**
@@ -1189,7 +1267,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public long getCcCardNumN() {
-        return numericView(ccCardNum);
+        return numericView(moved(ccCardNum, CC_CARD_NUM_LENGTH));
     }
 
     /**
@@ -1222,7 +1300,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public boolean isCcCardNumLowValues() {
-        return isEvery(ccCardNum, '\u0000');
+        return isEvery(moved(ccCardNum, CC_CARD_NUM_LENGTH), '\u0000');
     }
 
     /**
@@ -1233,7 +1311,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public boolean isCcCardNumSpaces() {
-        return isEvery(ccCardNum, ' ');
+        return isEvery(moved(ccCardNum, CC_CARD_NUM_LENGTH), ' ');
     }
 
     /**
@@ -1244,7 +1322,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public boolean isCcCardNumNZeros() {
-        return isZeroValued(ccCardNum);
+        return isZeroValued(moved(ccCardNum, CC_CARD_NUM_LENGTH));
     }
 
     /**
@@ -1256,7 +1334,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public boolean isCcCardNumNumeric() {
-        return isEveryDigit(ccCardNum);
+        return isEveryDigit(moved(ccCardNum, CC_CARD_NUM_LENGTH));
     }
 
     /**
@@ -1266,21 +1344,24 @@ public final class CardScreenState {
      * this field, unlike the two above, because no consuming program performs any of those tests on
      * it. Adding them would be speculative surface rather than a transcription of the source.
      *
-     * @return the identifier, untrimmed and exactly {@link #CC_CUST_ID_LENGTH} characters wide
+     * @return the identifier, untrimmed and never padded here: at most
+     *         {@link #CC_CUST_ID_LENGTH} characters, and exactly that many whenever the value came
+     *         from a fixed-width image, a figurative constant or {@link #asWorkArea()}
      */
     public String getCcCustId() {
         return ccCustId;
     }
 
     /**
-     * Stores {@code CC-CUST-ID} through the {@code PIC X(09)} move rule, which is also visible through
+     * Stores {@code CC-CUST-ID} without transforming it - up to 09 characters, verbatim, which is also visible through
      * {@link #getCcCustIdN()}.
      *
-     * @param ccCustId the identifier; padded or truncated on the right to nine characters
-     * @throws NullPointerException if {@code ccCustId} is {@code null}
+     * @param ccCustId the identifier; at most its declared width, stored verbatim
+     * @throws NullPointerException     if {@code ccCustId} is {@code null}
+     * @throws IllegalArgumentException if it is wider than the nine characters the picture declares
      */
     public void setCcCustId(String ccCustId) {
-        this.ccCustId = movePicX(ccCustId, CC_CUST_ID_LENGTH, "CC-CUST-ID");
+        this.ccCustId = requirePicX(ccCustId, CC_CUST_ID_LENGTH, "CC-CUST-ID");
     }
 
     /**
@@ -1295,7 +1376,7 @@ public final class CardScreenState {
      */
     @JsonIgnore
     public long getCcCustIdN() {
-        return numericView(ccCustId);
+        return numericView(moved(ccCustId, CC_CUST_ID_LENGTH));
     }
 
     /**
@@ -1324,9 +1405,10 @@ public final class CardScreenState {
     /**
      * Renders this work area as its {@link #RECORD_LENGTH}-byte fixed-width image.
      *
-     * <p>Each field is written into its declared span through the {@code PIC X} move rule, so the
-     * result is exactly 213 bytes with every field at its declared offset and width - the form a parity
-     * test compares field by field.
+     * <p>Each field is written into its declared span through the {@code PIC X} move rule - one of the
+     * two explicit conversion steps in this class, the other being {@link #asWorkArea()} - so a value
+     * that was stored shorter than its field is padded here and the result is exactly 213 bytes with
+     * every field at its declared offset and width, the form a parity test compares field by field.
      *
      * @param charset the code page to encode into, named explicitly by the caller
      * @return a fresh array of exactly {@link #RECORD_LENGTH} bytes
@@ -1397,9 +1479,10 @@ public final class CardScreenState {
     }
 
     /**
-     * The single write path. Each field is already exactly its span's width, so the {@code PIC X} move
-     * rule applied by {@link FixedWidthCodec#writePicX} pads and truncates nothing - it is used all the
-     * same, so that one implementation of the rule governs every field in the module.
+     * The single write path, and the place the {@code PIC X} move rule is actually applied: a field
+     * stored shorter than its span - which is what a lossless setter permits - is padded on the right
+     * here by {@link FixedWidthCodec#writePicX}, so that one implementation of the rule governs every
+     * field in the module and no field is padded anywhere else.
      *
      * @param record the record area to write into, of exactly {@link #RECORD_LENGTH} bytes
      * @param codec  the codec for the record's code page
@@ -1448,12 +1531,19 @@ public final class CardScreenState {
     // =================================================================================================
 
     /**
-     * Two work areas are equal when all nine storage fields are equal character for character. The
-     * three {@code REDEFINES} overlays take no part, because each is a view of a field already
-     * compared - including one would compare the same bytes twice.
+     * Two work areas are equal when all nine fields are equal <em>as {@code CC-WORK-AREA} holds
+     * them</em> - that is, after the {@code PIC X} move rule has been applied to each. The three
+     * {@code REDEFINES} overlays take no part, because each is a view of a field already compared -
+     * including one would compare the same bytes twice.
+     *
+     * <p>Comparing the moved image rather than the raw storage is what keeps this equality meaningful
+     * now that a setter stores a short value verbatim: {@code "S"} and {@code "S       "} are the same
+     * eight-byte {@code CCARD-NEXT-PROG} in COBOL, they produce the same byte in the 213-byte image,
+     * and a controller deciding whether the state it is about to return differs from the state it
+     * received must not be told that they differ.
      *
      * @param other the object to compare with
-     * @return {@code true} when {@code other} is a work area holding the same nine field values
+     * @return {@code true} when {@code other} is a work area whose nine fields move to the same values
      */
     @Override
     public boolean equals(Object other) {
@@ -1463,40 +1553,66 @@ public final class CardScreenState {
         if (!(other instanceof CardScreenState that)) {
             return false;
         }
-        return ccardAid.equals(that.ccardAid)
-                && ccardNextProg.equals(that.ccardNextProg)
-                && ccardNextMapset.equals(that.ccardNextMapset)
-                && ccardNextMap.equals(that.ccardNextMap)
-                && ccardErrorMsg.equals(that.ccardErrorMsg)
-                && ccardReturnMsg.equals(that.ccardReturnMsg)
-                && ccAcctId.equals(that.ccAcctId)
-                && ccCardNum.equals(that.ccCardNum)
-                && ccCustId.equals(that.ccCustId);
+        return moved(ccardAid, CCARD_AID_LENGTH).equals(moved(that.ccardAid, CCARD_AID_LENGTH))
+                && moved(ccardNextProg, CCARD_NEXT_PROG_LENGTH)
+                        .equals(moved(that.ccardNextProg, CCARD_NEXT_PROG_LENGTH))
+                && moved(ccardNextMapset, CCARD_NEXT_MAPSET_LENGTH)
+                        .equals(moved(that.ccardNextMapset, CCARD_NEXT_MAPSET_LENGTH))
+                && moved(ccardNextMap, CCARD_NEXT_MAP_LENGTH)
+                        .equals(moved(that.ccardNextMap, CCARD_NEXT_MAP_LENGTH))
+                && moved(ccardErrorMsg, CCARD_ERROR_MSG_LENGTH)
+                        .equals(moved(that.ccardErrorMsg, CCARD_ERROR_MSG_LENGTH))
+                && moved(ccardReturnMsg, CCARD_RETURN_MSG_LENGTH)
+                        .equals(moved(that.ccardReturnMsg, CCARD_RETURN_MSG_LENGTH))
+                && moved(ccAcctId, CC_ACCT_ID_LENGTH).equals(moved(that.ccAcctId, CC_ACCT_ID_LENGTH))
+                && moved(ccCardNum, CC_CARD_NUM_LENGTH)
+                        .equals(moved(that.ccCardNum, CC_CARD_NUM_LENGTH))
+                && moved(ccCustId, CC_CUST_ID_LENGTH).equals(moved(that.ccCustId, CC_CUST_ID_LENGTH));
     }
 
     /**
-     * A hash over the same nine storage fields {@link #equals(Object)} compares.
+     * A hash over the same nine moved field images {@link #equals(Object)} compares, so the two stay
+     * consistent for a value stored shorter than its declared width.
      *
      * @return the hash code
      */
     @Override
     public int hashCode() {
-        return Objects.hash(ccardAid, ccardNextProg, ccardNextMapset, ccardNextMap, ccardErrorMsg,
-                ccardReturnMsg, ccAcctId, ccCardNum, ccCustId);
+        return Objects.hash(moved(ccardAid, CCARD_AID_LENGTH),
+                moved(ccardNextProg, CCARD_NEXT_PROG_LENGTH),
+                moved(ccardNextMapset, CCARD_NEXT_MAPSET_LENGTH),
+                moved(ccardNextMap, CCARD_NEXT_MAP_LENGTH),
+                moved(ccardErrorMsg, CCARD_ERROR_MSG_LENGTH),
+                moved(ccardReturnMsg, CCARD_RETURN_MSG_LENGTH),
+                moved(ccAcctId, CC_ACCT_ID_LENGTH),
+                moved(ccCardNum, CC_CARD_NUM_LENGTH),
+                moved(ccCustId, CC_CUST_ID_LENGTH));
     }
 
     /**
-     * A diagnostic rendering of all nine fields, each delimited so its declared width and any padding
-     * are visible.
+     * A diagnostic rendering of all nine fields in which the three identifier fields are withheld.
      *
-     * <p>Values are rendered <strong>verbatim</strong>. Nothing is masked, abbreviated or elided - not
-     * the card number and not the account identifier - because the COBOL work area holds them in the
-     * clear and changing that in either direction would be an unrequested behaviour change (practice
-     * <strong>B6</strong>). A field holding {@code LOW-VALUES} therefore renders as its actual
-     * {@code U+0000} characters; {@link #isCcardReturnMsgOff()} is the way to test for that state
-     * rather than reading it out of this string.
+     * <p>The screen-state fields - the attention identifier, the next program, mapset and map, and both
+     * message fields - render <strong>verbatim</strong>, because they are what a navigation or
+     * validation parity failure is diagnosed from. A field holding {@code LOW-VALUES} therefore renders
+     * as its actual {@code U+0000} characters; {@link #isCcardReturnMsgOff()} is the way to test for
+     * that state rather than reading it out of this string.
      *
-     * @return the rendering; for diagnostics only, never a wire format
+     * <p>The three identifiers - {@code CC-ACCT-ID}, {@code CC-CARD-NUM} and {@code CC-CUST-ID} - are
+     * masked per {@link SensitiveDiagnostics}. This is <strong>not</strong> a departure from practice
+     * <strong>B6</strong>, which an earlier version of this comment cited to argue the opposite, and the
+     * distinction is worth stating because it governs every masked rendering in this module.
+     *
+     * <p>B6 forbids changing the migrated program's security posture in either direction: the work area
+     * holds these values in the clear, so the DTO holds them in the clear; {@code SEC-USR-PWD} is
+     * compared as plaintext, so it stays plaintext. All of that is intact here - the components, the
+     * accessors, the JSON payload and {@link #encode(Charset)} are untouched, and every one still
+     * carries the real value. What is masked is only this {@code toString}, and COBOL has no
+     * {@code toString}: the disclosure exists solely because the target language renders objects. Closing
+     * a channel the legacy system never had is not strengthening its posture, and no parity case, no
+     * screen field and no byte image can observe the difference.
+     *
+     * @return the rendering, safe to log; for diagnostics only, never a wire format
      */
     @Override
     public String toString() {
@@ -1506,9 +1622,9 @@ public final class CardScreenState {
                 + "', CCARD-NEXT-MAP='" + ccardNextMap
                 + "', CCARD-ERROR-MSG='" + ccardErrorMsg
                 + "', CCARD-RETURN-MSG='" + ccardReturnMsg
-                + "', CC-ACCT-ID='" + ccAcctId
-                + "', CC-CARD-NUM='" + ccCardNum
-                + "', CC-CUST-ID='" + ccCustId
+                + "', CC-ACCT-ID='" + SensitiveDiagnostics.maskIdentifier(ccAcctId)
+                + "', CC-CARD-NUM='" + SensitiveDiagnostics.maskPan(ccCardNum)
+                + "', CC-CUST-ID='" + SensitiveDiagnostics.maskIdentifier(ccCustId)
                 + "']";
     }
 
@@ -1517,8 +1633,15 @@ public final class CardScreenState {
     // =================================================================================================
 
     /**
-     * Applies the {@code PIC X} move rule to a field value, rejecting {@code null} first with a message
-     * that names the field.
+     * Stores a field value losslessly: rejects {@code null}, rejects a value wider than the field's
+     * {@code PICTURE} clause, and returns anything that fits <strong>unchanged</strong>.
+     *
+     * <p>This is the guard every public setter uses, and it is deliberately not a {@code MOVE}. A
+     * setter is a JSON binding point, and a {@code MOVE} there would pad a short value and silently
+     * truncate an over-wide one - so an empty field and a field of spaces would become
+     * indistinguishable, and a caller who sent seventeen digits into {@code CC-CARD-NUM} would be told
+     * nothing at all while sixteen of them were kept. The refusal is reported as a {@code 400} by
+     * {@code config.WebConfig.CobolErrorHandler}, whose body names neither the field nor the value.
      *
      * <p>{@code null} is not a COBOL state. A field is spaces, or {@code LOW-VALUES}, or it holds data;
      * "absent" is not among the possibilities, so accepting {@code null} would force this class to
@@ -1528,12 +1651,40 @@ public final class CardScreenState {
      * @param value     the value being stored
      * @param length    the receiving field's declared width
      * @param cobolName the copybook name of the receiving field, for the failure message
-     * @return the value as exactly {@code length} characters
+     * @return the value unchanged
      */
-    private static String movePicX(String value, int length, String cobolName) {
+    private static String requirePicX(String value, int length, String cobolName) {
         Objects.requireNonNull(value, "A value is required for " + cobolName + ": COBOL has no null, "
                 + "so pass spaces(" + length + ") or lowValues(" + length + ") to state which "
                 + "figurative constant is meant");
+        if (value.length() > length) {
+            throw new IllegalArgumentException("Field " + cobolName + " of CC-WORK-AREA is declared "
+                    + "PIC X(" + length + ") but was given " + value.length() + " character(s) "
+                    + "(value " + REDACTED + "). This work area never truncates while binding, so "
+                    + "that the loss of a character is always a deliberate act rather than a silent "
+                    + "one. To shorten the value, pass it through "
+                    + "FixedWidthCodec.movePicX(value, " + length + "), which truncates on the right "
+                    + "as a COBOL alphanumeric MOVE does");
+        }
+        return value;
+    }
+
+    /**
+     * Applies the {@code PIC X} move rule to a stored field, producing the image
+     * {@code CC-WORK-AREA} actually holds: the value padded on the right to its declared width, or
+     * truncated there if it somehow exceeded it.
+     *
+     * <p>This is the named step {@link #asWorkArea()} and every COBOL-semantic read below share. It
+     * exists because storage and semantics are deliberately separated in this class: a field holds
+     * exactly what the wire sent, and the {@code MOVE} that turns that into a fixed-width work-area
+     * item happens here, where it can be pointed at. The rule itself is still
+     * {@link FixedWidthCodec}'s and is not reimplemented.
+     *
+     * @param value  the stored value
+     * @param length the field's declared width
+     * @return the value as exactly {@code length} characters
+     */
+    private static String moved(String value, int length) {
         return PICTURE_RULES.movePicX(value, length);
     }
 

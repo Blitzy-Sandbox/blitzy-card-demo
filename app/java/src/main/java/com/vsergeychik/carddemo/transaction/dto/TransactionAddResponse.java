@@ -10,6 +10,7 @@ import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.transaction.dto.TransactionAddRequest.Ct01Info;
 import com.vsergeychik.carddemo.common.ScreenTitles;
 import com.vsergeychik.carddemo.common.SystemMessages;
 import java.nio.charset.Charset;
@@ -121,7 +122,7 @@ import java.util.Objects;
  * <h2>Statelessness</h2>
  * Every scrap of conversation state travels in this payload: the 160-byte
  * {@link NavigationContext} (the {@code CARDDEMO-COMMAREA}) and the 58-byte
- * {@link CardDemoCt01Info} cursor, giving the 218-byte area {@code COTRN01C} passes on. There is
+ * {@link Ct01Info} cursor, giving the 218-byte area {@code COTRN01C} passes on. There is
  * no {@code HttpSession}, no {@code @SessionAttributes}, no server-side conversation state and no
  * static cache anywhere in this class - rule R6 and gate G37.
  *
@@ -247,7 +248,7 @@ public final class TransactionAddResponse {
      * declared in place at {@code app/cbl/COTRN01C.cbl:53-61}.
      */
     public static final int PASSED_COMMAREA_LENGTH =
-            NavigationContext.COMMAREA_LENGTH + CardDemoCt01Info.CT01_INFO_LENGTH;
+            NavigationContext.COMMAREA_LENGTH + Ct01Info.RECORD_LENGTH;
 
     /**
      * Width of {@code CDEMO-TO-PROGRAM}, {@code PIC X(08)} - {@code app/cpy/COCOM01Y.cpy:24}. This
@@ -724,8 +725,12 @@ public final class TransactionAddResponse {
     public static final RecordLayout LAYOUT = buildLayout();
 
     /**
-     * The single implementation of the {@code PIC X} width rules used by every setter on this class
-     * and on {@link CardDemoCt01Info}.
+     * The single implementation of the {@code PIC X} width rules used by every setter on this class.
+     *
+     * <p>{@link Ct01Info} carries its own equivalent, because the carrier is declared on
+     * {@link TransactionAddRequest} and owns the guards for its own six fields; both resolve to
+     * {@link FixedWidthCodec}, so there is still exactly one implementation of the move rules in the
+     * module.
      *
      * <p>Only character-level operations are taken from it -
      * {@link FixedWidthCodec#movePicX(String, int)} and
@@ -782,8 +787,19 @@ public final class TransactionAddResponse {
     /** The 160-byte {@code CARDDEMO-COMMAREA}, echoed in full and never widened. */
     private NavigationContext navigationContext;
 
-    /** The 58-byte {@code CDEMO-CT01-INFO} cursor, echoed so the client can send it back. */
-    private CardDemoCt01Info cardDemoCt01Info;
+    /**
+     * The 58-byte {@code CDEMO-CT01-INFO} cursor, echoed so the client can send it back.
+     *
+     * <p>Deliberately {@link TransactionAddRequest.Ct01Info} - the very type the paired request
+     * carries, under the very same property name - and not a second implementation of the same
+     * copybook group. There was one here once, spelled {@code CardDemoCt01Info} and reached through
+     * {@code cardDemoCt01Info}: byte-for-byte identical in layout, differing only in what it was
+     * called. That difference alone was enough to break the mechanism this member exists for, because
+     * a client cannot echo state whose schema changes between the response it was sent and the request
+     * it must send back - it would have to rename the property and reshape nothing, which is
+     * transformation work with no purpose. One carrier, one name, both directions.
+     */
+    private Ct01Info ct01Info;
 
     // =================================================================================================
     // Construction. No Spring context, no builder and no framework: a unit or parity test constructs
@@ -813,7 +829,7 @@ public final class TransactionAddResponse {
         this.nextMapset = movePicX(MAPSET_NAME, NEXT_MAPSET_LENGTH);
         this.nextMap = movePicX(MAP_NAME, NEXT_MAP_LENGTH);
         this.navigationContext = NavigationContext.empty();
-        this.cardDemoCt01Info = new CardDemoCt01Info();
+        this.ct01Info = new Ct01Info();
     }
 
     // =================================================================================================
@@ -1476,7 +1492,7 @@ public final class TransactionAddResponse {
      * The 160-byte {@code CARDDEMO-COMMAREA}, echoed so the client can send it back on the next
      * call. Fixed at {@link NavigationContext#COMMAREA_LENGTH} and shared by all 17 controllers -
      * it is never widened to carry this screen's cursor, which is why
-     * {@link CardDemoCt01Info} exists as a separate 58-byte area.
+     * {@link Ct01Info} exists as a separate 58-byte area.
      *
      * @return the context; never {@code null}
      */
@@ -1501,19 +1517,19 @@ public final class TransactionAddResponse {
      *
      * @return the cursor; never {@code null}
      */
-    public CardDemoCt01Info getCardDemoCt01Info() {
-        return cardDemoCt01Info;
+    public Ct01Info getCt01Info() {
+        return ct01Info;
     }
 
     /**
      * Sets the echoed cursor.
      *
-     * @param cardDemoCt01Info the cursor; never {@code null}
-     * @throws NullPointerException if {@code cardDemoCt01Info} is {@code null}
+     * @param ct01Info the cursor; never {@code null}
+     * @throws NullPointerException if {@code ct01Info} is {@code null}
      */
-    public void setCardDemoCt01Info(CardDemoCt01Info cardDemoCt01Info) {
-        this.cardDemoCt01Info = Objects.requireNonNull(cardDemoCt01Info,
-                "A CT01 cursor is required; use a fresh CardDemoCt01Info for an unset cursor rather "
+    public void setCt01Info(Ct01Info ct01Info) {
+        this.ct01Info = Objects.requireNonNull(ct01Info,
+                "A CT01 cursor is required; use a fresh Ct01Info for an unset cursor rather "
                         + "than null");
     }
 
@@ -1620,7 +1636,7 @@ public final class TransactionAddResponse {
         Objects.requireNonNull(charset, "A charset is required to render the passed commarea");
         FixedWidthCodec codec = new FixedWidthCodec(charset);
         byte[] commarea = navigationContext.toFixedWidth(codec);
-        byte[] cursor = cardDemoCt01Info.toFixedWidth(charset);
+        byte[] cursor = ct01Info.toFixedWidth(codec);
         byte[] passed = new byte[PASSED_COMMAREA_LENGTH];
         System.arraycopy(commarea, 0, passed, 0, NavigationContext.COMMAREA_LENGTH);
         System.arraycopy(cursor, 0, passed, NavigationContext.COMMAREA_LENGTH, cursor.length);
@@ -1643,16 +1659,16 @@ public final class TransactionAddResponse {
         if (passed.length != PASSED_COMMAREA_LENGTH) {
             throw new IllegalArgumentException("A passed commarea is exactly "
                     + PASSED_COMMAREA_LENGTH + " bytes - " + NavigationContext.COMMAREA_LENGTH
-                    + " of CARDDEMO-COMMAREA plus " + CardDemoCt01Info.CT01_INFO_LENGTH
+                    + " of CARDDEMO-COMMAREA plus " + Ct01Info.RECORD_LENGTH
                     + " of CDEMO-CT01-INFO - but " + passed.length + " byte(s) were supplied");
         }
         FixedWidthCodec codec = new FixedWidthCodec(charset);
         byte[] commarea = new byte[NavigationContext.COMMAREA_LENGTH];
-        byte[] cursor = new byte[CardDemoCt01Info.CT01_INFO_LENGTH];
+        byte[] cursor = new byte[Ct01Info.RECORD_LENGTH];
         System.arraycopy(passed, 0, commarea, 0, commarea.length);
         System.arraycopy(passed, commarea.length, cursor, 0, cursor.length);
         this.navigationContext = NavigationContext.fromFixedWidth(codec, commarea);
-        this.cardDemoCt01Info = CardDemoCt01Info.fromFixedWidth(cursor, charset);
+        this.ct01Info = Ct01Info.fromFixedWidth(codec, cursor);
     }
 
     /**
@@ -1908,391 +1924,6 @@ public final class TransactionAddResponse {
         public boolean unassigned() {
             return colour == NO_CHANGE && programmedSymbols == NO_CHANGE && highlight == NO_CHANGE
                     && validation == NO_CHANGE;
-        }
-    }
-
-    /**
-     * The {@code CDEMO-CT01-INFO} pagination cursor: 58 bytes {@code COTRN01C} appends to the shared
-     * commarea in place at {@code app/cbl/COTRN01C.cbl:53-61}, immediately after
-     * {@code COPY COCOM01Y} at line 52.
-     *
-     * <pre>{@code
-     * 05 CDEMO-CT01-INFO.
-     *    10 CDEMO-CT01-TRNID-FIRST     PIC X(16).
-     *    10 CDEMO-CT01-TRNID-LAST      PIC X(16).
-     *    10 CDEMO-CT01-PAGE-NUM        PIC 9(08).
-     *    10 CDEMO-CT01-NEXT-PAGE-FLG   PIC X(01) VALUE 'N'.
-     *       88 NEXT-PAGE-YES                     VALUE 'Y'.
-     *       88 NEXT-PAGE-NO                      VALUE 'N'.
-     *    10 CDEMO-CT01-TRN-SEL-FLG     PIC X(01).
-     *    10 CDEMO-CT01-TRN-SELECTED    PIC X(16).
-     * }</pre>
-     *
-     * <p>{@code 16 + 16 + 8 + 1 + 1 + 16 = } {@value #CT01_INFO_LENGTH} bytes, giving the
-     * {@link TransactionAddResponse#PASSED_COMMAREA_LENGTH}-byte area the program passes on.
-     *
-     * <h2>Why this is nested here and not shared</h2>
-     * It is <strong>not</strong> hoisted into a common type, even though {@code COTRN00C} and
-     * {@code COTRN02C} declare structurally similar extensions. Their fields are named
-     * {@code CDEMO-CT00-…} and {@code CDEMO-CT02-…}, so the three are not interchangeable, and
-     * field-for-field diffing depends on the distinct names. Nesting it inside the DTO of the screen
-     * that owns it keeps the {@code CT01} spelling authoritative and mirrors the {@code card/dto}
-     * convention.
-     *
-     * <p>It is also <strong>not</strong> merged into {@link NavigationContext}. That type is fixed at
-     * exactly {@link NavigationContext#COMMAREA_LENGTH} bytes and is shared by all 17 controllers;
-     * widening it to carry one screen's cursor would silently change the commarea layout every other
-     * controller depends on.
-     *
-     * <p>Carried in the response so the client can send it back on the next call. That is the whole
-     * of the statelessness mechanism here - no {@code HttpSession}, no {@code @SessionAttributes} and
-     * no server-side cursor (rule R6, gate G37).
-     */
-    public static final class CardDemoCt01Info {
-
-        /** Copybook name of {@link #getTrnidFirst()}: {@code CDEMO-CT01-TRNID-FIRST}, line 54. */
-        public static final String TRNID_FIRST_FIELD = "CDEMO-CT01-TRNID-FIRST";
-
-        /** Copybook name of {@link #getTrnidLast()}: {@code CDEMO-CT01-TRNID-LAST}, line 55. */
-        public static final String TRNID_LAST_FIELD = "CDEMO-CT01-TRNID-LAST";
-
-        /** Copybook name of {@link #getPageNum()}: {@code CDEMO-CT01-PAGE-NUM}, line 56. */
-        public static final String PAGE_NUM_FIELD = "CDEMO-CT01-PAGE-NUM";
-
-        /** Copybook name of {@link #getNextPageFlg()}: {@code CDEMO-CT01-NEXT-PAGE-FLG}, line 57. */
-        public static final String NEXT_PAGE_FLG_FIELD = "CDEMO-CT01-NEXT-PAGE-FLG";
-
-        /** Copybook name of {@link #getTrnSelFlg()}: {@code CDEMO-CT01-TRN-SEL-FLG}, line 60. */
-        public static final String TRN_SEL_FLG_FIELD = "CDEMO-CT01-TRN-SEL-FLG";
-
-        /** Copybook name of {@link #getTrnSelected()}: {@code CDEMO-CT01-TRN-SELECTED}, line 61. */
-        public static final String TRN_SELECTED_FIELD = "CDEMO-CT01-TRN-SELECTED";
-
-        /** {@code PIC X(16)} - the first transaction identifier on the current page. */
-        public static final int TRNID_FIRST_LENGTH = 16;
-
-        /** {@code PIC X(16)} - the last transaction identifier on the current page. */
-        public static final int TRNID_LAST_LENGTH = 16;
-
-        /** {@code PIC 9(08)} - eight digits, so the page number cannot exceed 99999999. */
-        public static final int PAGE_NUM_DIGITS = 8;
-
-        /** {@code PIC X(01)} - the next-page flag, {@code 'Y'} or {@code 'N'}. */
-        public static final int NEXT_PAGE_FLG_LENGTH = 1;
-
-        /** {@code PIC X(01)} - the selection flag. */
-        public static final int TRN_SEL_FLG_LENGTH = 1;
-
-        /** {@code PIC X(16)} - the identifier the user selected. */
-        public static final int TRN_SELECTED_LENGTH = 16;
-
-        /**
-         * The declared width of {@code 05 CDEMO-CT01-INFO}:
-         * {@code 16 + 16 + 8 + 1 + 1 + 16 = } {@value}. Derived from the six item widths rather than
-         * written as a literal, and then handed to {@link RecordLayout}, which refuses to build a
-         * layout whose spans sum to anything else.
-         */
-        public static final int CT01_INFO_LENGTH = TRNID_FIRST_LENGTH + TRNID_LAST_LENGTH
-                + PAGE_NUM_DIGITS + NEXT_PAGE_FLG_LENGTH + TRN_SEL_FLG_LENGTH + TRN_SELECTED_LENGTH;
-
-        /** Absolute 0-based offset of {@code CDEMO-CT01-TRNID-FIRST}. */
-        public static final int TRNID_FIRST_OFFSET = 0;
-
-        /** Absolute 0-based offset of {@code CDEMO-CT01-TRNID-LAST}. */
-        public static final int TRNID_LAST_OFFSET = TRNID_FIRST_OFFSET + TRNID_FIRST_LENGTH;
-
-        /** Absolute 0-based offset of {@code CDEMO-CT01-PAGE-NUM}. */
-        public static final int PAGE_NUM_OFFSET = TRNID_LAST_OFFSET + TRNID_LAST_LENGTH;
-
-        /** Absolute 0-based offset of {@code CDEMO-CT01-NEXT-PAGE-FLG}. */
-        public static final int NEXT_PAGE_FLG_OFFSET = PAGE_NUM_OFFSET + PAGE_NUM_DIGITS;
-
-        /** Absolute 0-based offset of {@code CDEMO-CT01-TRN-SEL-FLG}. */
-        public static final int TRN_SEL_FLG_OFFSET = NEXT_PAGE_FLG_OFFSET + NEXT_PAGE_FLG_LENGTH;
-
-        /** Absolute 0-based offset of {@code CDEMO-CT01-TRN-SELECTED}. */
-        public static final int TRN_SELECTED_OFFSET = TRN_SEL_FLG_OFFSET + TRN_SEL_FLG_LENGTH;
-
-        /** {@code 88 NEXT-PAGE-YES VALUE 'Y'} - copybook line 58. */
-        public static final String NEXT_PAGE_YES = "Y";
-
-        /**
-         * {@code 88 NEXT-PAGE-NO VALUE 'N'} - copybook line 59, and also the item's declared
-         * {@code VALUE 'N'} at line 57, which is why a fresh cursor starts here.
-         */
-        public static final String NEXT_PAGE_NO = "N";
-
-        /** The 58-byte layout, in copybook declaration order. */
-        public static final RecordLayout LAYOUT = RecordLayout.of(CT01_INFO_LENGTH,
-                FieldSpan.alphanumeric(TRNID_FIRST_FIELD, TRNID_FIRST_OFFSET, TRNID_FIRST_LENGTH),
-                FieldSpan.alphanumeric(TRNID_LAST_FIELD, TRNID_LAST_OFFSET, TRNID_LAST_LENGTH),
-                FieldSpan.unsignedNumeric(PAGE_NUM_FIELD, PAGE_NUM_OFFSET, PAGE_NUM_DIGITS),
-                FieldSpan.alphanumeric(NEXT_PAGE_FLG_FIELD, NEXT_PAGE_FLG_OFFSET, NEXT_PAGE_FLG_LENGTH),
-                FieldSpan.alphanumeric(TRN_SEL_FLG_FIELD, TRN_SEL_FLG_OFFSET, TRN_SEL_FLG_LENGTH),
-                FieldSpan.alphanumeric(TRN_SELECTED_FIELD, TRN_SELECTED_OFFSET, TRN_SELECTED_LENGTH));
-
-        /** The largest value eight digits can hold, 99999999. */
-        private static final int PAGE_NUM_MAXIMUM = 99_999_999;
-
-        private String trnidFirst;
-        private String trnidLast;
-        private int pageNum;
-        private String nextPageFlg;
-        private String trnSelFlg;
-        private String trnSelected;
-
-        /**
-         * Creates a cursor in its declared initial state: the four alphanumeric items space-filled,
-         * the page number zero, and the next-page flag {@code 'N'} - which is the item's own
-         * {@code VALUE 'N'} clause, not a convenience default.
-         */
-        public CardDemoCt01Info() {
-            this.trnidFirst = spaces(TRNID_FIRST_LENGTH);
-            this.trnidLast = spaces(TRNID_LAST_LENGTH);
-            this.pageNum = 0;
-            this.nextPageFlg = NEXT_PAGE_NO;
-            this.trnSelFlg = spaces(TRN_SEL_FLG_LENGTH);
-            this.trnSelected = spaces(TRN_SELECTED_LENGTH);
-        }
-
-        /**
-         * {@code CDEMO-CT01-TRNID-FIRST PIC X(16)}.
-         *
-         * @return the value, always exactly {@link #TRNID_FIRST_LENGTH} characters
-         */
-        public String getTrnidFirst() {
-            return trnidFirst;
-        }
-
-        /**
-         * Sets {@code CDEMO-CT01-TRNID-FIRST}, applying the {@code PIC X(16)} move rule.
-         *
-         * @param trnidFirst the sending value; never {@code null}
-         * @throws NullPointerException if {@code trnidFirst} is {@code null}
-         */
-        public void setTrnidFirst(String trnidFirst) {
-            this.trnidFirst = movePicX(trnidFirst, TRNID_FIRST_LENGTH);
-        }
-
-        /**
-         * {@code CDEMO-CT01-TRNID-LAST PIC X(16)}.
-         *
-         * @return the value, always exactly {@link #TRNID_LAST_LENGTH} characters
-         */
-        public String getTrnidLast() {
-            return trnidLast;
-        }
-
-        /**
-         * Sets {@code CDEMO-CT01-TRNID-LAST}, applying the {@code PIC X(16)} move rule.
-         *
-         * @param trnidLast the sending value; never {@code null}
-         * @throws NullPointerException if {@code trnidLast} is {@code null}
-         */
-        public void setTrnidLast(String trnidLast) {
-            this.trnidLast = movePicX(trnidLast, TRNID_LAST_LENGTH);
-        }
-
-        /**
-         * {@code CDEMO-CT01-PAGE-NUM PIC 9(08)} - the current page number.
-         *
-         * <p>An {@code int}, because this is a scale-free {@code PIC 9} integer and AAP &sect;0.3.7
-         * maps those to {@code int}; it is not a monetary value, so no {@code BigDecimal} scale and
-         * no rounding mode arises. It is rendered zero-filled to eight digits.
-         *
-         * @return the page number, 0 to {@value #PAGE_NUM_MAXIMUM}
-         */
-        public int getPageNum() {
-            return pageNum;
-        }
-
-        /**
-         * Sets {@code CDEMO-CT01-PAGE-NUM}.
-         *
-         * @param pageNum the page number
-         * @throws IllegalArgumentException if {@code pageNum} is negative or exceeds eight digits,
-         *                                  since an unsigned {@code PIC 9(08)} item can represent
-         *                                  neither
-         */
-        public void setPageNum(int pageNum) {
-            if (pageNum < 0 || pageNum > PAGE_NUM_MAXIMUM) {
-                throw new IllegalArgumentException(PAGE_NUM_FIELD + " is PIC 9(08), an unsigned "
-                        + "eight-digit item, so it holds 0 to " + PAGE_NUM_MAXIMUM + "; "
-                        + pageNum + " does not fit");
-            }
-            this.pageNum = pageNum;
-        }
-
-        /**
-         * {@code CDEMO-CT01-NEXT-PAGE-FLG PIC X(01)} - whether a further page exists.
-         *
-         * @return the flag, always exactly one character
-         */
-        public String getNextPageFlg() {
-            return nextPageFlg;
-        }
-
-        /**
-         * Sets {@code CDEMO-CT01-NEXT-PAGE-FLG}, applying the {@code PIC X(01)} move rule.
-         *
-         * <p>Any single character is accepted, not just {@code 'Y'} and {@code 'N'}: the copybook
-         * declares a one-byte alphanumeric item with two {@code 88}-level condition names over it,
-         * and COBOL lets a program move any character into such an item. Rejecting a third value
-         * here would be stricter than the source.
-         *
-         * @param nextPageFlg the sending value; never {@code null}
-         * @throws NullPointerException if {@code nextPageFlg} is {@code null}
-         */
-        public void setNextPageFlg(String nextPageFlg) {
-            this.nextPageFlg = movePicX(nextPageFlg, NEXT_PAGE_FLG_LENGTH);
-        }
-
-        /**
-         * {@code 88 NEXT-PAGE-YES VALUE 'Y'} - copybook line 58.
-         *
-         * <p>{@code @JsonIgnore} because an {@code 88}-level is a <em>condition name over</em>
-         * {@code CDEMO-CT01-NEXT-PAGE-FLG}, not a field beside it. The flag itself is already a
-         * payload member as {@code nextPageFlg}; letting Jackson publish this predicate as well would
-         * put one copybook item on the wire three times, which is exactly the duplication gate G9
-         * forbids - and, since a condition name is read-only, the extra members could not be sent
-         * back, breaking the round trip statelessness depends on.
-         *
-         * @return {@code true} when the flag is {@code 'Y'}
-         */
-        @JsonIgnore
-        public boolean isNextPageYes() {
-            return NEXT_PAGE_YES.equals(nextPageFlg);
-        }
-
-        /**
-         * {@code 88 NEXT-PAGE-NO VALUE 'N'} - copybook line 59. {@code @JsonIgnore} for the reason
-         * given on {@link #isNextPageYes()}.
-         *
-         * <p>Not the negation of {@link #isNextPageYes()}. The item is one alphanumeric byte and both
-         * conditions are tests for a specific value, so a third character satisfies neither - exactly
-         * as in COBOL.
-         *
-         * @return {@code true} when the flag is {@code 'N'}
-         */
-        @JsonIgnore
-        public boolean isNextPageNo() {
-            return NEXT_PAGE_NO.equals(nextPageFlg);
-        }
-
-        /**
-         * Sets the flag to {@code 'Y'}, the {@code SET NEXT-PAGE-YES TO TRUE} equivalent.
-         */
-        public void setNextPageYes() {
-            this.nextPageFlg = NEXT_PAGE_YES;
-        }
-
-        /**
-         * Sets the flag to {@code 'N'}, the {@code SET NEXT-PAGE-NO TO TRUE} equivalent.
-         */
-        public void setNextPageNo() {
-            this.nextPageFlg = NEXT_PAGE_NO;
-        }
-
-        /**
-         * {@code CDEMO-CT01-TRN-SEL-FLG PIC X(01)} - the selection flag. The copybook declares no
-         * {@code 88}-level over it and no {@code VALUE}, so it starts as a space and carries whatever
-         * the program moves in.
-         *
-         * @return the value, always exactly one character
-         */
-        public String getTrnSelFlg() {
-            return trnSelFlg;
-        }
-
-        /**
-         * Sets {@code CDEMO-CT01-TRN-SEL-FLG}, applying the {@code PIC X(01)} move rule.
-         *
-         * @param trnSelFlg the sending value; never {@code null}
-         * @throws NullPointerException if {@code trnSelFlg} is {@code null}
-         */
-        public void setTrnSelFlg(String trnSelFlg) {
-            this.trnSelFlg = movePicX(trnSelFlg, TRN_SEL_FLG_LENGTH);
-        }
-
-        /**
-         * {@code CDEMO-CT01-TRN-SELECTED PIC X(16)} - the identifier the user selected.
-         *
-         * @return the value, always exactly {@link #TRN_SELECTED_LENGTH} characters
-         */
-        public String getTrnSelected() {
-            return trnSelected;
-        }
-
-        /**
-         * Sets {@code CDEMO-CT01-TRN-SELECTED}, applying the {@code PIC X(16)} move rule.
-         *
-         * @param trnSelected the sending value; never {@code null}
-         * @throws NullPointerException if {@code trnSelected} is {@code null}
-         */
-        public void setTrnSelected(String trnSelected) {
-            this.trnSelected = movePicX(trnSelected, TRN_SELECTED_LENGTH);
-        }
-
-        /**
-         * Renders this cursor as its {@value #CT01_INFO_LENGTH}-byte image: the four alphanumeric
-         * items space-padded and the page number zero-filled to eight digits.
-         *
-         * @param charset the code page to encode into, stated explicitly by the caller
-         * @return a fresh array of exactly {@link #CT01_INFO_LENGTH} bytes
-         * @throws NullPointerException     if {@code charset} is {@code null}
-         * @throws IllegalArgumentException if {@code charset} is not single-byte for the digits and
-         *                                  the space
-         */
-        public byte[] toFixedWidth(Charset charset) {
-            Objects.requireNonNull(charset, "A charset is required to render CDEMO-CT01-INFO as "
-                    + "bytes; it is never taken from the platform");
-            FixedWidthCodec codec = new FixedWidthCodec(charset);
-            FixedWidthRecord record = codec.newRecord(LAYOUT);
-            codec.writePicX(record, LAYOUT.span(TRNID_FIRST_FIELD), trnidFirst);
-            codec.writePicX(record, LAYOUT.span(TRNID_LAST_FIELD), trnidLast);
-            codec.writePic9(record, LAYOUT.span(PAGE_NUM_FIELD), pageNum);
-            codec.writePicX(record, LAYOUT.span(NEXT_PAGE_FLG_FIELD), nextPageFlg);
-            codec.writePicX(record, LAYOUT.span(TRN_SEL_FLG_FIELD), trnSelFlg);
-            codec.writePicX(record, LAYOUT.span(TRN_SELECTED_FIELD), trnSelected);
-            return record.toByteArray();
-        }
-
-        /**
-         * Rebuilds a cursor from its {@value #CT01_INFO_LENGTH}-byte image.
-         *
-         * @param bytes   the image, exactly {@link #CT01_INFO_LENGTH} bytes
-         * @param charset the code page the image is encoded in, stated explicitly by the caller
-         * @return the cursor the image carries; never {@code null}
-         * @throws NullPointerException     if {@code bytes} or {@code charset} is {@code null}
-         * @throws IllegalArgumentException if {@code bytes.length} is not
-         *                                  {@link #CT01_INFO_LENGTH}
-         */
-        public static CardDemoCt01Info fromFixedWidth(byte[] bytes, Charset charset) {
-            Objects.requireNonNull(bytes, "An image is required to rebuild CDEMO-CT01-INFO");
-            Objects.requireNonNull(charset, "A charset is required to decode a CDEMO-CT01-INFO "
-                    + "image; it is never taken from the platform");
-            FixedWidthCodec codec = new FixedWidthCodec(charset);
-            FixedWidthRecord record = codec.wrap(bytes, LAYOUT);
-            CardDemoCt01Info cursor = new CardDemoCt01Info();
-            cursor.trnidFirst = codec.readPicX(record, LAYOUT.span(TRNID_FIRST_FIELD));
-            cursor.trnidLast = codec.readPicX(record, LAYOUT.span(TRNID_LAST_FIELD));
-            cursor.pageNum = codec.readPic9AsInt(record, LAYOUT.span(PAGE_NUM_FIELD));
-            cursor.nextPageFlg = codec.readPicX(record, LAYOUT.span(NEXT_PAGE_FLG_FIELD));
-            cursor.trnSelFlg = codec.readPicX(record, LAYOUT.span(TRN_SEL_FLG_FIELD));
-            cursor.trnSelected = codec.readPicX(record, LAYOUT.span(TRN_SELECTED_FIELD));
-            return cursor;
-        }
-
-        /**
-         * A diagnostic rendering of the cursor's six items.
-         *
-         * @return the description; never {@code null}
-         */
-        @Override
-        public String toString() {
-            return "CardDemoCt01Info[first='" + trnidFirst + "', last='" + trnidLast
-                    + "', page=" + pageNum + ", nextPage='" + nextPageFlg
-                    + "', selFlg='" + trnSelFlg + "', selected='" + trnSelected + "']";
         }
     }
 }

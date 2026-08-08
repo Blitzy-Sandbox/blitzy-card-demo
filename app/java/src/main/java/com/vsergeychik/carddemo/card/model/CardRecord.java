@@ -1,9 +1,11 @@
 package com.vsergeychik.carddemo.card.model;
 
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 
 import java.nio.charset.Charset;
 import java.util.Objects;
@@ -556,7 +558,8 @@ public record CardRecord(String cardNum,
         Objects.requireNonNull(recordImage, "A record image is required to decode a CARD-RECORD");
         Objects.requireNonNull(charset, "A charset is required to encode a CARD-RECORD image into "
                 + "the bytes it stands for; the platform default is never assumed");
-        return decode(recordImage.getBytes(charset), charset);
+        return decode(FixedWidthRecord.encodeText(recordImage, charset, "a CARD-RECORD image"),
+                charset);
     }
 
     /**
@@ -732,7 +735,7 @@ public record CardRecord(String cardNum,
     public String encodeToImage(Charset charset) {
         Objects.requireNonNull(charset, "A charset is required to render a CARD-RECORD image; the "
                 + "platform default is never assumed");
-        return new String(encode(charset), charset);
+        return FixedWidthRecord.decodeText(encode(charset), charset, "a CARD-RECORD image");
     }
 
     /**
@@ -975,22 +978,36 @@ public record CardRecord(String cardNum,
     }
 
     /**
-     * A diagnostic rendering that names each field as its copybook spells it and quotes every
-     * character field so its padding is visible.
+     * A diagnostic rendering that names each field as its copybook spells it and withholds the
+     * cardholder data, per {@link SensitiveDiagnostics}.
      *
-     * <p>Nothing is truncated or elided: when a parity case fails, the whole stored value has to be
-     * readable in the failure message. The generated record {@code toString} would print the padding
-     * unquoted, leaving a reader unable to tell a 9-character name from a 50-character one.
+     * <p>This record is payment data at its most concentrated: a primary account number, the account it
+     * belongs to, a card verification value and the name embossed on the card. Rendering it in full -
+     * which the generated record {@code toString} does, and which this override previously did - put a
+     * complete, usable card credential into any log line or assertion failure that touched it. The CVV
+     * in particular is withheld entirely rather than masked, because a three-digit value has no
+     * safely-revealable part.
      *
-     * @return the rendering, always naming all six fields and the reserved span
+     * <p>The expiry date and active status stay legible. Neither identifies a person once the number is
+     * masked, and both are what a card-validation parity failure - {@code CBTRN02C}'s expiration stage,
+     * for one - has to be read from.
+     *
+     * <p>The earlier rationale for rendering everything was that a failing parity case needs the whole
+     * stored value. That need is real, and it is served by asking for the value by name:
+     * {@link #encode(Charset)} and the per-field accessors return the real bytes because a caller
+     * requested them deliberately. What is withdrawn here is only disclosure that happens by accident,
+     * because something rendered the object.
+     *
+     * @return a rendering safe to log, naming all six fields and the reserved span
      */
     @Override
     public String toString() {
         return "CARD-RECORD[" + RECORD_LENGTH + " bytes]{"
-                + "CARD-NUM='" + cardNum
-                + "', CARD-ACCT-ID=" + cardAcctId
-                + ", CARD-CVV-CD=" + cardCvvCd
-                + ", CARD-EMBOSSED-NAME='" + cardEmbossedName
+                + "CARD-NUM='" + SensitiveDiagnostics.maskPan(cardNum)
+                + "', CARD-ACCT-ID="
+                + SensitiveDiagnostics.maskIdentifier(cardAcctId, CARD_ACCT_ID_LENGTH)
+                + ", CARD-CVV-CD=" + SensitiveDiagnostics.redacted()
+                + ", CARD-EMBOSSED-NAME='" + SensitiveDiagnostics.describeText(cardEmbossedName)
                 + "', CARD-EXPIRAION-DATE='" + cardExpiraionDate
                 + "', CARD-ACTIVE-STATUS='" + cardActiveStatus
                 + "', FILLER=" + FILLER_LENGTH + " space(s)}";

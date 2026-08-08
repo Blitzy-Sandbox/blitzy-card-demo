@@ -1,6 +1,11 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 import java.util.ArrayList;
@@ -191,22 +196,46 @@ import java.util.Map;
  * @param title02          {@code TITLE02I PIC X(40)}: the second title line
  * @param curTime          {@code CURTIMEI PIC X(8)}: the current time, {@code hh:mm:ss}
  * @param pageNum          {@code PAGENUMI PIC X(8)}: the <em>displayed</em> page number, a character
- *                         field, distinct from the numeric {@code cu00PageNum}
+ *                         field, distinct from the numeric {@code cdemoCu00PageNum}
  * @param usrIdIn          {@code USRIDINI PIC X(8)}: the browse-start user id; blank means "start at
  *                         the beginning of the file"
- * @param rows             the {@value #ROW_COUNT} screen rows, always exactly that many
+ * @param rows             the {@value #ROW_COUNT} screen rows, always exactly that many. Held as a
+ *                         table because the program walks it with {@code PERFORM VARYING WS-IDX}, but
+ *                         {@code @JsonIgnore}: on the wire the rows travel as the fifty numbered
+ *                         members {@code sel0001} through {@code utype10}, each named for its own
+ *                         {@code DFHMDF}
  * @param errMsg           {@code ERRMSGI PIC X(78)}: the message line
- * @param cu00UsrIdFirst   {@code CDEMO-CU00-USRID-FIRST PIC X(08)}: the first user id on the page
- * @param cu00UsrIdLast    {@code CDEMO-CU00-USRID-LAST PIC X(08)}: the last user id on the page
- * @param cu00PageNum      {@code CDEMO-CU00-PAGE-NUM PIC 9(08)}: the numeric page number, unsigned
- * @param cu00NextPageFlg  {@code CDEMO-CU00-NEXT-PAGE-FLG PIC X(01)}: {@value #NEXT_PAGE_YES} or
+ * @param cdemoCu00UsrIdFirst
+ *                         {@code CDEMO-CU00-USRID-FIRST PIC X(08)}: the first user id on the page
+ * @param cdemoCu00UsrIdLast
+ *                         {@code CDEMO-CU00-USRID-LAST PIC X(08)}: the last user id on the page
+ * @param cdemoCu00PageNum
+ *                         {@code CDEMO-CU00-PAGE-NUM PIC 9(08)}: the numeric page number, unsigned
+ * @param cdemoCu00NextPageFlg
+ *                         {@code CDEMO-CU00-NEXT-PAGE-FLG PIC X(01)}: {@value #NEXT_PAGE_YES} or
  *                         {@value #NEXT_PAGE_NO}, defaulting to {@value #NEXT_PAGE_NO}
- * @param cu00UsrSelFlg    {@code CDEMO-CU00-USR-SEL-FLG PIC X(01)}: the captured row action
- * @param cu00UsrSelected  {@code CDEMO-CU00-USR-SELECTED PIC X(08)}: the captured row's user id
- * @param navigationContext {@code 01 CARDDEMO-COMMAREA}, never {@code null}
+ * @param cdemoCu00UsrSelFlg
+ *                         {@code CDEMO-CU00-USR-SEL-FLG PIC X(01)}: the captured row action
+ * @param cdemoCu00UsrSelected
+ *                         {@code CDEMO-CU00-USR-SELECTED PIC X(08)}: the captured row's user id
+ * @param navigationContext {@code 01 CARDDEMO-COMMAREA}. {@code null} is <strong>meaningful</strong>
+ *                         and is preserved: it is the {@code EIBCALEN = 0} cold start of
+ *                         {@code app/cbl/COUSR00C.cbl:110-120}, reported by
+ *                         {@link #hasNavigationContext()}
  * @param aid              the {@code EIBAID} key indication as a token, at most
  *                         {@value #AID_LENGTH} characters
  */
+@JsonPropertyOrder({
+        "trnName", "title01", "curDate", "pgmName", "title02", "curTime", "pageNum", "usrIdIn",
+        "sel0001", "usrId01", "fname01", "lname01", "utype01", "sel0002", "usrId02", "fname02",
+        "lname02", "utype02", "sel0003", "usrId03", "fname03", "lname03", "utype03", "sel0004",
+        "usrId04", "fname04", "lname04", "utype04", "sel0005", "usrId05", "fname05", "lname05",
+        "utype05", "sel0006", "usrId06", "fname06", "lname06", "utype06", "sel0007", "usrId07",
+        "fname07", "lname07", "utype07", "sel0008", "usrId08", "fname08", "lname08", "utype08",
+        "sel0009", "usrId09", "fname09", "lname09", "utype09", "sel0010", "usrId10", "fname10",
+        "lname10", "utype10", "errMsg", "cdemoCu00UsrIdFirst", "cdemoCu00UsrIdLast",
+        "cdemoCu00PageNum", "cdemoCu00NextPageFlg", "cdemoCu00UsrSelFlg", "cdemoCu00UsrSelected",
+        "navigationContext", "aid"})
 public record UserListRequest(
 
         @Size(max = UserListRequest.TRNNAME_LENGTH) String trnName,
@@ -218,17 +247,18 @@ public record UserListRequest(
         @Size(max = UserListRequest.PAGENUM_LENGTH) String pageNum,
         @Size(max = UserListRequest.USRIDIN_LENGTH) String usrIdIn,
 
+        @JsonIgnore
         @Valid @Size(min = UserListRequest.ROW_COUNT, max = UserListRequest.ROW_COUNT)
         List<UserListRow> rows,
 
         @Size(max = UserListRequest.ERRMSG_LENGTH) String errMsg,
 
-        @Size(max = UserListRequest.CU00_USRID_FIRST_LENGTH) String cu00UsrIdFirst,
-        @Size(max = UserListRequest.CU00_USRID_LAST_LENGTH) String cu00UsrIdLast,
-        int cu00PageNum,
-        @Size(max = UserListRequest.CU00_NEXT_PAGE_FLG_LENGTH) String cu00NextPageFlg,
-        @Size(max = UserListRequest.CU00_USR_SEL_FLG_LENGTH) String cu00UsrSelFlg,
-        @Size(max = UserListRequest.CU00_USR_SELECTED_LENGTH) String cu00UsrSelected,
+        @Size(max = UserListRequest.CU00_USRID_FIRST_LENGTH) String cdemoCu00UsrIdFirst,
+        @Size(max = UserListRequest.CU00_USRID_LAST_LENGTH) String cdemoCu00UsrIdLast,
+        int cdemoCu00PageNum,
+        @Size(max = UserListRequest.CU00_NEXT_PAGE_FLG_LENGTH) String cdemoCu00NextPageFlg,
+        @Size(max = UserListRequest.CU00_USR_SEL_FLG_LENGTH) String cdemoCu00UsrSelFlg,
+        @Size(max = UserListRequest.CU00_USR_SELECTED_LENGTH) String cdemoCu00UsrSelected,
 
         NavigationContext navigationContext,
         @Size(max = UserListRequest.AID_LENGTH) String aid) {
@@ -348,7 +378,7 @@ public record UserListRequest(
      * <p>This is the <em>displayed</em> page number and it is a character field. Line 348 of
      * {@code app/cbl/COUSR00C.cbl} renders the numeric {@code CDEMO-CU00-PAGE-NUM} into it with
      * {@code MOVE CDEMO-CU00-PAGE-NUM TO PAGENUMI OF COUSR0AI}, and line 376 repeats that on the
-     * backward path. The numeric source is {@link #cu00PageNum()}; the two must not be conflated.
+     * backward path. The numeric source is {@link #cdemoCu00PageNum()}; the two must not be conflated.
      */
     public static final int PAGENUM_LENGTH = 8;
 
@@ -431,22 +461,22 @@ public record UserListRequest(
     // Not screen fields - conversation state, carried in the payload because there is no session.
     // =============================================================================================
 
-    /** Copybook name of {@link #cu00UsrIdFirst()}: {@code CDEMO-CU00-USRID-FIRST}, line 67. */
+    /** Copybook name of {@link #cdemoCu00UsrIdFirst()}: {@code CDEMO-CU00-USRID-FIRST}, line 67. */
     public static final String CU00_USRID_FIRST_FIELD = "CDEMO-CU00-USRID-FIRST";
 
-    /** Copybook name of {@link #cu00UsrIdLast()}: {@code CDEMO-CU00-USRID-LAST}, line 68. */
+    /** Copybook name of {@link #cdemoCu00UsrIdLast()}: {@code CDEMO-CU00-USRID-LAST}, line 68. */
     public static final String CU00_USRID_LAST_FIELD = "CDEMO-CU00-USRID-LAST";
 
-    /** Copybook name of {@link #cu00PageNum()}: {@code CDEMO-CU00-PAGE-NUM}, line 69. */
+    /** Copybook name of {@link #cdemoCu00PageNum()}: {@code CDEMO-CU00-PAGE-NUM}, line 69. */
     public static final String CU00_PAGE_NUM_FIELD = "CDEMO-CU00-PAGE-NUM";
 
-    /** Copybook name of {@link #cu00NextPageFlg()}: {@code CDEMO-CU00-NEXT-PAGE-FLG}, line 70. */
+    /** Copybook name of {@link #cdemoCu00NextPageFlg()}: {@code CDEMO-CU00-NEXT-PAGE-FLG}, line 70. */
     public static final String CU00_NEXT_PAGE_FLG_FIELD = "CDEMO-CU00-NEXT-PAGE-FLG";
 
-    /** Copybook name of {@link #cu00UsrSelFlg()}: {@code CDEMO-CU00-USR-SEL-FLG}, line 73. */
+    /** Copybook name of {@link #cdemoCu00UsrSelFlg()}: {@code CDEMO-CU00-USR-SEL-FLG}, line 73. */
     public static final String CU00_USR_SEL_FLG_FIELD = "CDEMO-CU00-USR-SEL-FLG";
 
-    /** Copybook name of {@link #cu00UsrSelected()}: {@code CDEMO-CU00-USR-SELECTED}, line 74. */
+    /** Copybook name of {@link #cdemoCu00UsrSelected()}: {@code CDEMO-CU00-USR-SELECTED}, line 74. */
     public static final String CU00_USR_SELECTED_FIELD = "CDEMO-CU00-USR-SELECTED";
 
     /** {@code CDEMO-CU00-USRID-FIRST PIC X(08)}. */
@@ -607,20 +637,28 @@ public record UserListRequest(
      *
      * <p>{@link #rows()} is defensively copied into an immutable list, {@code null} rows becoming
      * {@link #blankRows()} and a {@code null} element becoming {@link UserListRow#blank()}, and a
-     * list of any size other than {@value #ROW_COUNT} is rejected. {@link #navigationContext()}
-     * defaults to {@code common.NavigationContext.empty()}, the cold-start communication area.
+     * list of any size other than {@value #ROW_COUNT} is rejected.
+     *
+     * <p>{@link #navigationContext()} is the one member that is <strong>not</strong> completed when it
+     * is absent, and that is deliberate. {@code app/cbl/COUSR00C.cbl:110-120} tests
+     * {@code IF EIBCALEN = 0} before anything else - no communication area was passed at all - and
+     * responds by moving {@code 'COSGN00C'} into {@code CDEMO-TO-PROGRAM} and returning to the sign-on
+     * screen. A freshly initialised area is <em>not</em> that state: it has a length, and the program
+     * would read {@code CDEMO-PGM-CONTEXT} out of it and paint the list. Substituting one for the other
+     * made the cold-start branch unreachable through this payload, so a {@code null} is carried as a
+     * {@code null} and {@link #hasNavigationContext()} reports which of the two states this is.
      *
      * <p>Deliberately absent: no {@code @NotNull} and no {@code @NotBlank} on any member. Blank is
      * <strong>meaningful</strong> on this screen - line 217 reads
      * {@code IF USRIDINI = SPACES OR LOW-VALUES} and starts the browse at the beginning of the file,
      * and line 231 blanks the field again after a successful page. Rejecting a blank would change
      * observable behaviour. There is likewise no lower or upper bound on
-     * {@link #cu00PageNum()} beyond what {@code PIC 9(08)} can represent, because line 227 sets it
+     * {@link #cdemoCu00PageNum()} beyond what {@code PIC 9(08)} can represent, because line 227 sets it
      * to zero and line 367 decrements it.
      *
      * @throws IllegalArgumentException if a character member exceeds its declared width, if
      *                                 {@link #rows()} is neither {@code null} nor exactly
-     *                                 {@value #ROW_COUNT} entries, or if {@link #cu00PageNum()} is
+     *                                 {@value #ROW_COUNT} entries, or if {@link #cdemoCu00PageNum()} is
      *                                 negative or needs more than {@value #CU00_PAGE_NUM_LENGTH}
      *                                 digits
      */
@@ -635,15 +673,14 @@ public record UserListRequest(
         usrIdIn = requirePicX(usrIdIn, USRIDIN_LENGTH, USRIDIN_FIELD);
         rows = requireRows(rows);
         errMsg = requirePicX(errMsg, ERRMSG_LENGTH, ERRMSG_FIELD);
-        cu00UsrIdFirst = requirePicX(cu00UsrIdFirst, CU00_USRID_FIRST_LENGTH, CU00_USRID_FIRST_FIELD);
-        cu00UsrIdLast = requirePicX(cu00UsrIdLast, CU00_USRID_LAST_LENGTH, CU00_USRID_LAST_FIELD);
-        cu00PageNum = requireCu00PageNum(cu00PageNum);
-        cu00NextPageFlg =
-                requirePicX(cu00NextPageFlg, CU00_NEXT_PAGE_FLG_LENGTH, CU00_NEXT_PAGE_FLG_FIELD);
-        cu00UsrSelFlg = requirePicX(cu00UsrSelFlg, CU00_USR_SEL_FLG_LENGTH, CU00_USR_SEL_FLG_FIELD);
-        cu00UsrSelected =
-                requirePicX(cu00UsrSelected, CU00_USR_SELECTED_LENGTH, CU00_USR_SELECTED_FIELD);
-        navigationContext = requireContext(navigationContext);
+        cdemoCu00UsrIdFirst = requirePicX(cdemoCu00UsrIdFirst, CU00_USRID_FIRST_LENGTH, CU00_USRID_FIRST_FIELD);
+        cdemoCu00UsrIdLast = requirePicX(cdemoCu00UsrIdLast, CU00_USRID_LAST_LENGTH, CU00_USRID_LAST_FIELD);
+        cdemoCu00PageNum = requireCdemoCu00PageNum(cdemoCu00PageNum);
+        cdemoCu00NextPageFlg =
+                requirePicX(cdemoCu00NextPageFlg, CU00_NEXT_PAGE_FLG_LENGTH, CU00_NEXT_PAGE_FLG_FIELD);
+        cdemoCu00UsrSelFlg = requirePicX(cdemoCu00UsrSelFlg, CU00_USR_SEL_FLG_LENGTH, CU00_USR_SEL_FLG_FIELD);
+        cdemoCu00UsrSelected =
+                requirePicX(cdemoCu00UsrSelected, CU00_USR_SELECTED_LENGTH, CU00_USR_SELECTED_FIELD);
         aid = requirePicX(aid, AID_LENGTH, AID_FIELD);
     }
 
@@ -659,9 +696,9 @@ public record UserListRequest(
      * page number before the first forward page. Because the program's own tests treat spaces and
      * low values identically, spaces are the faithful Java rendering of that state.
      *
-     * <p>Note the deliberate asymmetry in the seeds: {@link #cu00NextPageFlg()} starts at
+     * <p>Note the deliberate asymmetry in the seeds: {@link #cdemoCu00NextPageFlg()} starts at
      * {@value #NEXT_PAGE_NO} because {@code CDEMO-CU00-NEXT-PAGE-FLG} is declared
-     * {@code PIC X(01) VALUE 'N'}, whereas {@link #cu00UsrSelFlg()} - declared without a
+     * {@code PIC X(01) VALUE 'N'}, whereas {@link #cdemoCu00UsrSelFlg()} - declared without a
      * {@code VALUE} clause - starts blank. Line 106 confirms the intent with
      * {@code SET NEXT-PAGE-NO TO TRUE}.
      *
@@ -867,7 +904,33 @@ public record UserListRequest(
         public UserListRow withUtype(String newUtype) {
             return new UserListRow(sel, usrId, fname, lname, newUtype);
         }
-    }
+    
+        /**
+         * A diagnostic rendering that withholds the listed user's name, per
+         * {@link SensitiveDiagnostics}.
+         *
+         * <p>The override belongs here rather than on the enclosing record, and that is the whole point:
+         * {@code UserListRequest}'s generated {@code toString} renders its {@code rows} component through
+         * {@code List.toString}, which renders each element through this method. Masking here therefore
+         * closes the enclosing type as well, without a sixty-field concatenation that would be one missed
+         * field away from re-opening it.
+         *
+         * <p>{@code FNAME} and {@code LNAME} report their length only. The selection cell, the user id and
+         * the user type render as stored: the id is an eight-character operator id, and all three are what
+         * a pagination or selection parity failure is read from.
+         *
+         * @return a rendering safe to log, never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "UserListRow[sel='" + sel
+                    + "', usrId='" + usrId
+                    + "', fname=" + SensitiveDiagnostics.describeText(fname)
+                    + ", lname=" + SensitiveDiagnostics.describeText(lname)
+                    + ", utype='" + utype
+                    + "']";
+        }
+}
 
     // =============================================================================================
     // Row access by the one-based COBOL row number, so translated code can keep the WS-IDX values
@@ -917,7 +980,7 @@ public record UserListRequest(
 
     /**
      * Whether {@code 88 NEXT-PAGE-YES VALUE 'Y'} holds - that is, whether
-     * {@link #cu00NextPageFlg()} is exactly {@value #NEXT_PAGE_YES}.
+     * {@link #cdemoCu00NextPageFlg()} is exactly {@value #NEXT_PAGE_YES}.
      *
      * <p>{@code app/cbl/COUSR00C.cbl} line 271 gates the forward page on it with
      * {@code IF NEXT-PAGE-YES}, {@code PROCESS-PAGE-FORWARD} sets it at line 312 when a read-ahead
@@ -927,12 +990,12 @@ public record UserListRequest(
      * @return {@code true} when the flag is {@value #NEXT_PAGE_YES}
      */
     public boolean nextPageYes() {
-        return NEXT_PAGE_YES.equals(cu00NextPageFlg);
+        return NEXT_PAGE_YES.equals(cdemoCu00NextPageFlg);
     }
 
     /**
      * Whether {@code 88 NEXT-PAGE-NO VALUE 'N'} holds - that is, whether
-     * {@link #cu00NextPageFlg()} is exactly {@value #NEXT_PAGE_NO}.
+     * {@link #cdemoCu00NextPageFlg()} is exactly {@value #NEXT_PAGE_NO}.
      *
      * <p>Deliberately <strong>not</strong> written as the negation of {@link #nextPageYes()}. The
      * two conditions are not exhaustive: {@code CDEMO-CU00-NEXT-PAGE-FLG} is {@code PIC X(01)} and
@@ -943,11 +1006,11 @@ public record UserListRequest(
      * @return {@code true} when the flag is {@value #NEXT_PAGE_NO}
      */
     public boolean nextPageNo() {
-        return NEXT_PAGE_NO.equals(cu00NextPageFlg);
+        return NEXT_PAGE_NO.equals(cdemoCu00NextPageFlg);
     }
 
     /**
-     * Whether the captured row action selects a user for update - {@link #cu00UsrSelFlg()} equal to
+     * Whether the captured row action selects a user for update - {@link #cdemoCu00UsrSelFlg()} equal to
      * {@value #USR_SEL_UPDATE} <strong>in either case</strong>.
      *
      * <p>{@code app/cbl/COUSR00C.cbl} lines 190-191 are {@code WHEN 'U'} followed immediately by
@@ -959,11 +1022,11 @@ public record UserListRequest(
      * @return {@code true} when the flag is {@code U} or {@code u}
      */
     public boolean usrSelUpdate() {
-        return USR_SEL_UPDATE.equalsIgnoreCase(cu00UsrSelFlg);
+        return USR_SEL_UPDATE.equalsIgnoreCase(cdemoCu00UsrSelFlg);
     }
 
     /**
-     * Whether the captured row action selects a user for deletion - {@link #cu00UsrSelFlg()} equal
+     * Whether the captured row action selects a user for deletion - {@link #cdemoCu00UsrSelFlg()} equal
      * to {@value #USR_SEL_DELETE} <strong>in either case</strong>.
      *
      * <p>{@code app/cbl/COUSR00C.cbl} lines 202-203 are {@code WHEN 'D'} followed immediately by
@@ -975,7 +1038,7 @@ public record UserListRequest(
      * @return {@code true} when the flag is {@code D} or {@code d}
      */
     public boolean usrSelDelete() {
-        return USR_SEL_DELETE.equalsIgnoreCase(cu00UsrSelFlg);
+        return USR_SEL_DELETE.equalsIgnoreCase(cdemoCu00UsrSelFlg);
     }
 
     // =============================================================================================
@@ -1117,6 +1180,708 @@ public record UserListRequest(
         return Collections.unmodifiableMap(fields);
     }
 
+
+    // =============================================================================================
+    // THE FIFTY NUMBERED ROW MEMBERS - the wire form of the ten screen rows.
+    //
+    // app/cpy-bms/COUSR00.CPY lines 72 to 366 declare fifty separate xxxI items: SEL0001I, USRID01I,
+    // FNAME01I, LNAME01I and UTYPE01I, and the same five for rows 2 through 10. Each is its own
+    // name-labelled DFHMDF in app/bms/COUSR00.bms, so each is its own payload member - and each must
+    // appear on the wire under its own name, because that name is the only thing tying a payload
+    // field back to a screen field. UserListResponse carries the same fifty names, so a client can
+    // echo the state it was sent without reshaping it.
+    //
+    // Internally the ten rows stay a List<UserListRow>: five members repeated ten times is a table,
+    // the program walks it with PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 10 (COUSR00C.cbl
+    // lines 292 and 350), and row(int) addresses it by the same one-based subscript the EVALUATE
+    // WS-IDX arms use. The list therefore carries the @Valid and @Size constraints and the
+    // exactly-ten-rows rule, and is marked @JsonIgnore so the generic member names never reach the
+    // wire; these fifty accessors and the creator below are the projection between the two.
+    //
+    // Every accessor is one line over row(n). None can drift from the list, because none holds
+    // anything.
+    // =============================================================================================
+    /**
+     * {@code SEL0001} - the selection column, the one field on this row the operator
+     * types into. {@code PIC X({@value #SEL_LENGTH})}.
+     *
+     * @return the value as stored on row 1, never {@code null}
+     */
+    @JsonProperty("sel0001")
+    public String sel0001() {
+        return row(1).sel();
+    }
+    /**
+     * {@code USRID01} - the user identifier on row 1. {@code PIC X({@value #USRID_LENGTH})}.
+     *
+     * @return the value as stored on row 1, never {@code null}
+     */
+    @JsonProperty("usrId01")
+    public String usrId01() {
+        return row(1).usrId();
+    }
+    /**
+     * {@code FNAME01} - the first name on row 1. {@code PIC X({@value #FNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 1, never {@code null}
+     */
+    @JsonProperty("fname01")
+    public String fname01() {
+        return row(1).fname();
+    }
+    /**
+     * {@code LNAME01} - the last name on row 1. {@code PIC X({@value #LNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 1, never {@code null}
+     */
+    @JsonProperty("lname01")
+    public String lname01() {
+        return row(1).lname();
+    }
+    /**
+     * {@code UTYPE01} - the user type on row 1. {@code PIC X({@value #UTYPE_LENGTH})}.
+     *
+     * @return the value as stored on row 1, never {@code null}
+     */
+    @JsonProperty("utype01")
+    public String utype01() {
+        return row(1).utype();
+    }
+    /**
+     * {@code SEL0002} - the selection column, the one field on this row the operator
+     * types into. {@code PIC X({@value #SEL_LENGTH})}.
+     *
+     * @return the value as stored on row 2, never {@code null}
+     */
+    @JsonProperty("sel0002")
+    public String sel0002() {
+        return row(2).sel();
+    }
+    /**
+     * {@code USRID02} - the user identifier on row 2. {@code PIC X({@value #USRID_LENGTH})}.
+     *
+     * @return the value as stored on row 2, never {@code null}
+     */
+    @JsonProperty("usrId02")
+    public String usrId02() {
+        return row(2).usrId();
+    }
+    /**
+     * {@code FNAME02} - the first name on row 2. {@code PIC X({@value #FNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 2, never {@code null}
+     */
+    @JsonProperty("fname02")
+    public String fname02() {
+        return row(2).fname();
+    }
+    /**
+     * {@code LNAME02} - the last name on row 2. {@code PIC X({@value #LNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 2, never {@code null}
+     */
+    @JsonProperty("lname02")
+    public String lname02() {
+        return row(2).lname();
+    }
+    /**
+     * {@code UTYPE02} - the user type on row 2. {@code PIC X({@value #UTYPE_LENGTH})}.
+     *
+     * @return the value as stored on row 2, never {@code null}
+     */
+    @JsonProperty("utype02")
+    public String utype02() {
+        return row(2).utype();
+    }
+    /**
+     * {@code SEL0003} - the selection column, the one field on this row the operator
+     * types into. {@code PIC X({@value #SEL_LENGTH})}.
+     *
+     * @return the value as stored on row 3, never {@code null}
+     */
+    @JsonProperty("sel0003")
+    public String sel0003() {
+        return row(3).sel();
+    }
+    /**
+     * {@code USRID03} - the user identifier on row 3. {@code PIC X({@value #USRID_LENGTH})}.
+     *
+     * @return the value as stored on row 3, never {@code null}
+     */
+    @JsonProperty("usrId03")
+    public String usrId03() {
+        return row(3).usrId();
+    }
+    /**
+     * {@code FNAME03} - the first name on row 3. {@code PIC X({@value #FNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 3, never {@code null}
+     */
+    @JsonProperty("fname03")
+    public String fname03() {
+        return row(3).fname();
+    }
+    /**
+     * {@code LNAME03} - the last name on row 3. {@code PIC X({@value #LNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 3, never {@code null}
+     */
+    @JsonProperty("lname03")
+    public String lname03() {
+        return row(3).lname();
+    }
+    /**
+     * {@code UTYPE03} - the user type on row 3. {@code PIC X({@value #UTYPE_LENGTH})}.
+     *
+     * @return the value as stored on row 3, never {@code null}
+     */
+    @JsonProperty("utype03")
+    public String utype03() {
+        return row(3).utype();
+    }
+    /**
+     * {@code SEL0004} - the selection column, the one field on this row the operator
+     * types into. {@code PIC X({@value #SEL_LENGTH})}.
+     *
+     * @return the value as stored on row 4, never {@code null}
+     */
+    @JsonProperty("sel0004")
+    public String sel0004() {
+        return row(4).sel();
+    }
+    /**
+     * {@code USRID04} - the user identifier on row 4. {@code PIC X({@value #USRID_LENGTH})}.
+     *
+     * @return the value as stored on row 4, never {@code null}
+     */
+    @JsonProperty("usrId04")
+    public String usrId04() {
+        return row(4).usrId();
+    }
+    /**
+     * {@code FNAME04} - the first name on row 4. {@code PIC X({@value #FNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 4, never {@code null}
+     */
+    @JsonProperty("fname04")
+    public String fname04() {
+        return row(4).fname();
+    }
+    /**
+     * {@code LNAME04} - the last name on row 4. {@code PIC X({@value #LNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 4, never {@code null}
+     */
+    @JsonProperty("lname04")
+    public String lname04() {
+        return row(4).lname();
+    }
+    /**
+     * {@code UTYPE04} - the user type on row 4. {@code PIC X({@value #UTYPE_LENGTH})}.
+     *
+     * @return the value as stored on row 4, never {@code null}
+     */
+    @JsonProperty("utype04")
+    public String utype04() {
+        return row(4).utype();
+    }
+    /**
+     * {@code SEL0005} - the selection column, the one field on this row the operator
+     * types into. {@code PIC X({@value #SEL_LENGTH})}.
+     *
+     * @return the value as stored on row 5, never {@code null}
+     */
+    @JsonProperty("sel0005")
+    public String sel0005() {
+        return row(5).sel();
+    }
+    /**
+     * {@code USRID05} - the user identifier on row 5. {@code PIC X({@value #USRID_LENGTH})}.
+     *
+     * @return the value as stored on row 5, never {@code null}
+     */
+    @JsonProperty("usrId05")
+    public String usrId05() {
+        return row(5).usrId();
+    }
+    /**
+     * {@code FNAME05} - the first name on row 5. {@code PIC X({@value #FNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 5, never {@code null}
+     */
+    @JsonProperty("fname05")
+    public String fname05() {
+        return row(5).fname();
+    }
+    /**
+     * {@code LNAME05} - the last name on row 5. {@code PIC X({@value #LNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 5, never {@code null}
+     */
+    @JsonProperty("lname05")
+    public String lname05() {
+        return row(5).lname();
+    }
+    /**
+     * {@code UTYPE05} - the user type on row 5. {@code PIC X({@value #UTYPE_LENGTH})}.
+     *
+     * @return the value as stored on row 5, never {@code null}
+     */
+    @JsonProperty("utype05")
+    public String utype05() {
+        return row(5).utype();
+    }
+    /**
+     * {@code SEL0006} - the selection column, the one field on this row the operator
+     * types into. {@code PIC X({@value #SEL_LENGTH})}.
+     *
+     * @return the value as stored on row 6, never {@code null}
+     */
+    @JsonProperty("sel0006")
+    public String sel0006() {
+        return row(6).sel();
+    }
+    /**
+     * {@code USRID06} - the user identifier on row 6. {@code PIC X({@value #USRID_LENGTH})}.
+     *
+     * @return the value as stored on row 6, never {@code null}
+     */
+    @JsonProperty("usrId06")
+    public String usrId06() {
+        return row(6).usrId();
+    }
+    /**
+     * {@code FNAME06} - the first name on row 6. {@code PIC X({@value #FNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 6, never {@code null}
+     */
+    @JsonProperty("fname06")
+    public String fname06() {
+        return row(6).fname();
+    }
+    /**
+     * {@code LNAME06} - the last name on row 6. {@code PIC X({@value #LNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 6, never {@code null}
+     */
+    @JsonProperty("lname06")
+    public String lname06() {
+        return row(6).lname();
+    }
+    /**
+     * {@code UTYPE06} - the user type on row 6. {@code PIC X({@value #UTYPE_LENGTH})}.
+     *
+     * @return the value as stored on row 6, never {@code null}
+     */
+    @JsonProperty("utype06")
+    public String utype06() {
+        return row(6).utype();
+    }
+    /**
+     * {@code SEL0007} - the selection column, the one field on this row the operator
+     * types into. {@code PIC X({@value #SEL_LENGTH})}.
+     *
+     * @return the value as stored on row 7, never {@code null}
+     */
+    @JsonProperty("sel0007")
+    public String sel0007() {
+        return row(7).sel();
+    }
+    /**
+     * {@code USRID07} - the user identifier on row 7. {@code PIC X({@value #USRID_LENGTH})}.
+     *
+     * @return the value as stored on row 7, never {@code null}
+     */
+    @JsonProperty("usrId07")
+    public String usrId07() {
+        return row(7).usrId();
+    }
+    /**
+     * {@code FNAME07} - the first name on row 7. {@code PIC X({@value #FNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 7, never {@code null}
+     */
+    @JsonProperty("fname07")
+    public String fname07() {
+        return row(7).fname();
+    }
+    /**
+     * {@code LNAME07} - the last name on row 7. {@code PIC X({@value #LNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 7, never {@code null}
+     */
+    @JsonProperty("lname07")
+    public String lname07() {
+        return row(7).lname();
+    }
+    /**
+     * {@code UTYPE07} - the user type on row 7. {@code PIC X({@value #UTYPE_LENGTH})}.
+     *
+     * @return the value as stored on row 7, never {@code null}
+     */
+    @JsonProperty("utype07")
+    public String utype07() {
+        return row(7).utype();
+    }
+    /**
+     * {@code SEL0008} - the selection column, the one field on this row the operator
+     * types into. {@code PIC X({@value #SEL_LENGTH})}.
+     *
+     * @return the value as stored on row 8, never {@code null}
+     */
+    @JsonProperty("sel0008")
+    public String sel0008() {
+        return row(8).sel();
+    }
+    /**
+     * {@code USRID08} - the user identifier on row 8. {@code PIC X({@value #USRID_LENGTH})}.
+     *
+     * @return the value as stored on row 8, never {@code null}
+     */
+    @JsonProperty("usrId08")
+    public String usrId08() {
+        return row(8).usrId();
+    }
+    /**
+     * {@code FNAME08} - the first name on row 8. {@code PIC X({@value #FNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 8, never {@code null}
+     */
+    @JsonProperty("fname08")
+    public String fname08() {
+        return row(8).fname();
+    }
+    /**
+     * {@code LNAME08} - the last name on row 8. {@code PIC X({@value #LNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 8, never {@code null}
+     */
+    @JsonProperty("lname08")
+    public String lname08() {
+        return row(8).lname();
+    }
+    /**
+     * {@code UTYPE08} - the user type on row 8. {@code PIC X({@value #UTYPE_LENGTH})}.
+     *
+     * @return the value as stored on row 8, never {@code null}
+     */
+    @JsonProperty("utype08")
+    public String utype08() {
+        return row(8).utype();
+    }
+    /**
+     * {@code SEL0009} - the selection column, the one field on this row the operator
+     * types into. {@code PIC X({@value #SEL_LENGTH})}.
+     *
+     * @return the value as stored on row 9, never {@code null}
+     */
+    @JsonProperty("sel0009")
+    public String sel0009() {
+        return row(9).sel();
+    }
+    /**
+     * {@code USRID09} - the user identifier on row 9. {@code PIC X({@value #USRID_LENGTH})}.
+     *
+     * @return the value as stored on row 9, never {@code null}
+     */
+    @JsonProperty("usrId09")
+    public String usrId09() {
+        return row(9).usrId();
+    }
+    /**
+     * {@code FNAME09} - the first name on row 9. {@code PIC X({@value #FNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 9, never {@code null}
+     */
+    @JsonProperty("fname09")
+    public String fname09() {
+        return row(9).fname();
+    }
+    /**
+     * {@code LNAME09} - the last name on row 9. {@code PIC X({@value #LNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 9, never {@code null}
+     */
+    @JsonProperty("lname09")
+    public String lname09() {
+        return row(9).lname();
+    }
+    /**
+     * {@code UTYPE09} - the user type on row 9. {@code PIC X({@value #UTYPE_LENGTH})}.
+     *
+     * @return the value as stored on row 9, never {@code null}
+     */
+    @JsonProperty("utype09")
+    public String utype09() {
+        return row(9).utype();
+    }
+    /**
+     * {@code SEL0010} - the selection column, the one field on this row the operator
+     * types into. {@code PIC X({@value #SEL_LENGTH})}.
+     *
+     * @return the value as stored on row 10, never {@code null}
+     */
+    @JsonProperty("sel0010")
+    public String sel0010() {
+        return row(10).sel();
+    }
+    /**
+     * {@code USRID10} - the user identifier on row 10. {@code PIC X({@value #USRID_LENGTH})}.
+     *
+     * @return the value as stored on row 10, never {@code null}
+     */
+    @JsonProperty("usrId10")
+    public String usrId10() {
+        return row(10).usrId();
+    }
+    /**
+     * {@code FNAME10} - the first name on row 10. {@code PIC X({@value #FNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 10, never {@code null}
+     */
+    @JsonProperty("fname10")
+    public String fname10() {
+        return row(10).fname();
+    }
+    /**
+     * {@code LNAME10} - the last name on row 10. {@code PIC X({@value #LNAME_LENGTH})}.
+     *
+     * @return the value as stored on row 10, never {@code null}
+     */
+    @JsonProperty("lname10")
+    public String lname10() {
+        return row(10).lname();
+    }
+    /**
+     * {@code UTYPE10} - the user type on row 10. {@code PIC X({@value #UTYPE_LENGTH})}.
+     *
+     * @return the value as stored on row 10, never {@code null}
+     */
+    @JsonProperty("utype10")
+    public String utype10() {
+        return row(10).utype();
+    }
+    /**
+     * Builds a request from the wire form: the fifty numbered row members, flat, exactly as
+     * {@code app/cpy-bms/COUSR00.CPY} names them and in its declaration order.
+     *
+     * <p><strong>Why an explicit creator.</strong>
+     * A record is deserialised through a constructor, and this record's canonical constructor takes a
+     * {@code List<UserListRow>} - a shape no {@code DFHMDF} field corresponds to. This factory is
+     * therefore annotated {@link JsonCreator} and becomes the one Jackson uses, so the inbound
+     * property names are the fifty screen-field names and nothing else. Every parameter is typed and
+     * named individually: there is no map, so a property outside this list is <em>unknown</em> and is
+     * refused by {@code spring.jackson.deserialization.fail-on-unknown-properties: true} rather than
+     * silently dropped.
+     *
+     * <p>An absent member arrives as {@code null} and the canonical constructor blanks it to its
+     * declared width in spaces, which is what CICS transmits for a field the operator never touched.
+     * An absent {@code navigationContext} stays {@code null}: that is the {@code EIBCALEN = 0}
+     * cold start, and {@link #hasNavigationContext()} reports it.
+     *
+     * @param trnName             {@code TRNNAMEI}
+     * @param title01             {@code TITLE01I}
+     * @param curDate             {@code CURDATEI}
+     * @param pgmName             {@code PGMNAMEI}
+     * @param title02             {@code TITLE02I}
+     * @param curTime             {@code CURTIMEI}
+     * @param pageNum             {@code PAGENUMI}
+     * @param usrIdIn             {@code USRIDINI}
+     * @param sel0001             {@code SEL0001I}, the row 1 selection column
+     * @param usrId01             {@code USRID01I}
+     * @param fname01             {@code FNAME01I}
+     * @param lname01             {@code LNAME01I}
+     * @param utype01             {@code UTYPE01I}
+     * @param sel0002             {@code SEL0002I}
+     * @param usrId02             {@code USRID02I}
+     * @param fname02             {@code FNAME02I}
+     * @param lname02             {@code LNAME02I}
+     * @param utype02             {@code UTYPE02I}
+     * @param sel0003             {@code SEL0003I}
+     * @param usrId03             {@code USRID03I}
+     * @param fname03             {@code FNAME03I}
+     * @param lname03             {@code LNAME03I}
+     * @param utype03             {@code UTYPE03I}
+     * @param sel0004             {@code SEL0004I}
+     * @param usrId04             {@code USRID04I}
+     * @param fname04             {@code FNAME04I}
+     * @param lname04             {@code LNAME04I}
+     * @param utype04             {@code UTYPE04I}
+     * @param sel0005             {@code SEL0005I}
+     * @param usrId05             {@code USRID05I}
+     * @param fname05             {@code FNAME05I}
+     * @param lname05             {@code LNAME05I}
+     * @param utype05             {@code UTYPE05I}
+     * @param sel0006             {@code SEL0006I}
+     * @param usrId06             {@code USRID06I}
+     * @param fname06             {@code FNAME06I}
+     * @param lname06             {@code LNAME06I}
+     * @param utype06             {@code UTYPE06I}
+     * @param sel0007             {@code SEL0007I}
+     * @param usrId07             {@code USRID07I}
+     * @param fname07             {@code FNAME07I}
+     * @param lname07             {@code LNAME07I}
+     * @param utype07             {@code UTYPE07I}
+     * @param sel0008             {@code SEL0008I}
+     * @param usrId08             {@code USRID08I}
+     * @param fname08             {@code FNAME08I}
+     * @param lname08             {@code LNAME08I}
+     * @param utype08             {@code UTYPE08I}
+     * @param sel0009             {@code SEL0009I}
+     * @param usrId09             {@code USRID09I}
+     * @param fname09             {@code FNAME09I}
+     * @param lname09             {@code LNAME09I}
+     * @param utype09             {@code UTYPE09I}
+     * @param sel0010             {@code SEL0010I}, the row 10 selection column
+     * @param usrId10             {@code USRID10I}
+     * @param fname10             {@code FNAME10I}
+     * @param lname10             {@code LNAME10I}
+     * @param utype10             {@code UTYPE10I}
+     * @param errMsg              {@code ERRMSGI}
+     * @param cdemoCu00UsrIdFirst {@code CDEMO-CU00-USRID-FIRST}
+     * @param cdemoCu00UsrIdLast  {@code CDEMO-CU00-USRID-LAST}
+     * @param cdemoCu00PageNum    {@code CDEMO-CU00-PAGE-NUM}
+     * @param cdemoCu00NextPageFlg {@code CDEMO-CU00-NEXT-PAGE-FLG}
+     * @param cdemoCu00UsrSelFlg  {@code CDEMO-CU00-USR-SEL-FLG}
+     * @param cdemoCu00UsrSelected {@code CDEMO-CU00-USR-SELECTED}
+     * @param navigationContext   {@code 01 CARDDEMO-COMMAREA}, or {@code null} for the
+     *                            {@code EIBCALEN = 0} cold start
+     * @param aid                 the {@code EIBAID} token
+     * @return the request, never {@code null}
+     * @throws IllegalArgumentException if any value exceeds its declared width
+     */
+    @JsonCreator
+    public static UserListRequest fromWire(
+            @JsonProperty("trnName") String trnName,
+            @JsonProperty("title01") String title01,
+            @JsonProperty("curDate") String curDate,
+            @JsonProperty("pgmName") String pgmName,
+            @JsonProperty("title02") String title02,
+            @JsonProperty("curTime") String curTime,
+            @JsonProperty("pageNum") String pageNum,
+            @JsonProperty("usrIdIn") String usrIdIn,
+            @JsonProperty("sel0001") String sel0001,
+            @JsonProperty("usrId01") String usrId01,
+            @JsonProperty("fname01") String fname01,
+            @JsonProperty("lname01") String lname01,
+            @JsonProperty("utype01") String utype01,
+            @JsonProperty("sel0002") String sel0002,
+            @JsonProperty("usrId02") String usrId02,
+            @JsonProperty("fname02") String fname02,
+            @JsonProperty("lname02") String lname02,
+            @JsonProperty("utype02") String utype02,
+            @JsonProperty("sel0003") String sel0003,
+            @JsonProperty("usrId03") String usrId03,
+            @JsonProperty("fname03") String fname03,
+            @JsonProperty("lname03") String lname03,
+            @JsonProperty("utype03") String utype03,
+            @JsonProperty("sel0004") String sel0004,
+            @JsonProperty("usrId04") String usrId04,
+            @JsonProperty("fname04") String fname04,
+            @JsonProperty("lname04") String lname04,
+            @JsonProperty("utype04") String utype04,
+            @JsonProperty("sel0005") String sel0005,
+            @JsonProperty("usrId05") String usrId05,
+            @JsonProperty("fname05") String fname05,
+            @JsonProperty("lname05") String lname05,
+            @JsonProperty("utype05") String utype05,
+            @JsonProperty("sel0006") String sel0006,
+            @JsonProperty("usrId06") String usrId06,
+            @JsonProperty("fname06") String fname06,
+            @JsonProperty("lname06") String lname06,
+            @JsonProperty("utype06") String utype06,
+            @JsonProperty("sel0007") String sel0007,
+            @JsonProperty("usrId07") String usrId07,
+            @JsonProperty("fname07") String fname07,
+            @JsonProperty("lname07") String lname07,
+            @JsonProperty("utype07") String utype07,
+            @JsonProperty("sel0008") String sel0008,
+            @JsonProperty("usrId08") String usrId08,
+            @JsonProperty("fname08") String fname08,
+            @JsonProperty("lname08") String lname08,
+            @JsonProperty("utype08") String utype08,
+            @JsonProperty("sel0009") String sel0009,
+            @JsonProperty("usrId09") String usrId09,
+            @JsonProperty("fname09") String fname09,
+            @JsonProperty("lname09") String lname09,
+            @JsonProperty("utype09") String utype09,
+            @JsonProperty("sel0010") String sel0010,
+            @JsonProperty("usrId10") String usrId10,
+            @JsonProperty("fname10") String fname10,
+            @JsonProperty("lname10") String lname10,
+            @JsonProperty("utype10") String utype10,
+            @JsonProperty("errMsg") String errMsg,
+            @JsonProperty("cdemoCu00UsrIdFirst") String cdemoCu00UsrIdFirst,
+            @JsonProperty("cdemoCu00UsrIdLast") String cdemoCu00UsrIdLast,
+            @JsonProperty("cdemoCu00PageNum") int cdemoCu00PageNum,
+            @JsonProperty("cdemoCu00NextPageFlg") String cdemoCu00NextPageFlg,
+            @JsonProperty("cdemoCu00UsrSelFlg") String cdemoCu00UsrSelFlg,
+            @JsonProperty("cdemoCu00UsrSelected") String cdemoCu00UsrSelected,
+            @JsonProperty("navigationContext") NavigationContext navigationContext,
+            @JsonProperty("aid") String aid) {
+        List<UserListRow> wireRows = new ArrayList<>(ROW_COUNT);
+        wireRows.add(new UserListRow(sel0001, usrId01, fname01, lname01, utype01));
+        wireRows.add(new UserListRow(sel0002, usrId02, fname02, lname02, utype02));
+        wireRows.add(new UserListRow(sel0003, usrId03, fname03, lname03, utype03));
+        wireRows.add(new UserListRow(sel0004, usrId04, fname04, lname04, utype04));
+        wireRows.add(new UserListRow(sel0005, usrId05, fname05, lname05, utype05));
+        wireRows.add(new UserListRow(sel0006, usrId06, fname06, lname06, utype06));
+        wireRows.add(new UserListRow(sel0007, usrId07, fname07, lname07, utype07));
+        wireRows.add(new UserListRow(sel0008, usrId08, fname08, lname08, utype08));
+        wireRows.add(new UserListRow(sel0009, usrId09, fname09, lname09, utype09));
+        wireRows.add(new UserListRow(sel0010, usrId10, fname10, lname10, utype10));
+        return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
+                usrIdIn, wireRows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast, cdemoCu00PageNum,
+                cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg, cdemoCu00UsrSelected, navigationContext,
+                aid);
+    }
+
+    // =============================================================================================
+    // The conversation, read from the payload and from nowhere else. There is no session here.
+    // =============================================================================================
+
+    /**
+     * Whether a communication area travelled with this request - the Java reading of
+     * {@code EIBCALEN} being non-zero at {@code app/cbl/COUSR00C.cbl:110-120}.
+     *
+     * <p>Not a JSON property: it is derived from {@link #navigationContext()}, which is already on
+     * the wire as {@code null} or as an object.
+     *
+     * @return {@code true} when {@link #navigationContext()} is present
+     */
+    @JsonIgnore
+    public boolean hasNavigationContext() {
+        return navigationContext != null;
+    }
+
+    /**
+     * The length CICS would report in {@code EIBCALEN}:
+     * {@value #CU00_COMMAREA_LENGTH} when a communication area travelled with this request, and
+     * {@code 0} when none did.
+     *
+     * <p>{@code COUSR00C} passes {@code CARDDEMO-COMMAREA} followed by its own
+     * {@value #CU00_INFO_LENGTH}-byte {@code CDEMO-CU00-INFO} extension, so the non-zero case is the
+     * sum of the two - which is what {@link #CU00_COMMAREA_LENGTH} already states. It is returned
+     * from that constant rather than re-added here, so the width has one home.
+     *
+     * @return {@value #CU00_COMMAREA_LENGTH} or {@code 0}
+     */
+    @JsonIgnore
+    public int commareaLength() {
+        return hasNavigationContext() ? CU00_COMMAREA_LENGTH : 0;
+    }
+
+    /**
+     * A copy carrying no communication area at all - the {@code EIBCALEN = 0} cold start that
+     * {@code app/cbl/COUSR00C.cbl:113} tests before anything else, on which it moves
+     * {@code 'COSGN00C'} into {@code CDEMO-TO-PROGRAM} and returns to the sign-on screen.
+     *
+     * @return a new request whose {@link #navigationContext()} is {@code null}
+     */
+    public UserListRequest withoutNavigationContext() {
+        return withNavigationContext(null);
+    }
+
     // =============================================================================================
     // Immutable field replacement, one member at a time.
     //
@@ -1138,8 +1903,9 @@ public record UserListRequest(
      */
     public UserListRequest withTrnName(String newTrnName) {
         return new UserListRequest(newTrnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg,
+                cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1151,8 +1917,9 @@ public record UserListRequest(
      */
     public UserListRequest withTitle01(String newTitle01) {
         return new UserListRequest(trnName, newTitle01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg,
+                cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1164,8 +1931,9 @@ public record UserListRequest(
      */
     public UserListRequest withCurDate(String newCurDate) {
         return new UserListRequest(trnName, title01, newCurDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg,
+                cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1177,8 +1945,9 @@ public record UserListRequest(
      */
     public UserListRequest withPgmName(String newPgmName) {
         return new UserListRequest(trnName, title01, curDate, newPgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg,
+                cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1190,8 +1959,9 @@ public record UserListRequest(
      */
     public UserListRequest withTitle02(String newTitle02) {
         return new UserListRequest(trnName, title01, curDate, pgmName, newTitle02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg,
+                cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1204,8 +1974,9 @@ public record UserListRequest(
      */
     public UserListRequest withCurTime(String newCurTime) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, newCurTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg,
+                cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1214,7 +1985,7 @@ public record UserListRequest(
      * <p>This is the rendering, not the count. {@code app/cbl/COUSR00C.cbl} lines 348 and 376 both
      * do {@code MOVE CDEMO-CU00-PAGE-NUM TO PAGENUMI OF COUSR0AI}, converting the numeric page
      * number into these eight characters; to change the count itself use
-     * {@link #withCu00PageNum(int)}.
+     * {@link #withCdemoCu00PageNum(int)}.
      *
      * @param newPageNum the replacement value, {@code null} meaning blank
      * @return a new request, never {@code null}
@@ -1222,8 +1993,9 @@ public record UserListRequest(
      */
     public UserListRequest withPageNum(String newPageNum) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, newPageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg,
+                cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1240,8 +2012,8 @@ public record UserListRequest(
      */
     public UserListRequest withUsrIdIn(String newUsrIdIn) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                newUsrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum,
-                cu00NextPageFlg, cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                newUsrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast, cdemoCu00PageNum,
+                cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg, cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1254,8 +2026,8 @@ public record UserListRequest(
      */
     public UserListRequest withRows(List<UserListRow> newRows) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, newRows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum,
-                cu00NextPageFlg, cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, newRows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast, cdemoCu00PageNum,
+                cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg, cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1272,8 +2044,8 @@ public record UserListRequest(
      */
     public UserListRequest withErrMsg(String newErrMsg) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, newErrMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum,
-                cu00NextPageFlg, cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, newErrMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast, cdemoCu00PageNum,
+                cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg, cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1283,14 +2055,14 @@ public record UserListRequest(
      * {@code app/cbl/COUSR00C.cbl} line 389, and {@code PROCESS-PF7-KEY} reads it back at line 239
      * as the key to page backward from - treating blank as "start at the beginning".
      *
-     * @param newCu00UsrIdFirst the replacement value, {@code null} meaning blank
+     * @param newCdemoCu00UsrIdFirst the replacement value, {@code null} meaning blank
      * @return a new request, never {@code null}
      * @throws IllegalArgumentException if longer than {@value #CU00_USRID_FIRST_LENGTH} characters
      */
-    public UserListRequest withCu00UsrIdFirst(String newCu00UsrIdFirst) {
+    public UserListRequest withCdemoCu00UsrIdFirst(String newCdemoCu00UsrIdFirst) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, newCu00UsrIdFirst, cu00UsrIdLast, cu00PageNum,
-                cu00NextPageFlg, cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, newCdemoCu00UsrIdFirst, cdemoCu00UsrIdLast, cdemoCu00PageNum,
+                cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg, cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1301,42 +2073,42 @@ public record UserListRequest(
      * as the key to page forward from - treating blank as "start at the end", by moving high values
      * into the key rather than low values.
      *
-     * @param newCu00UsrIdLast the replacement value, {@code null} meaning blank
+     * @param newCdemoCu00UsrIdLast the replacement value, {@code null} meaning blank
      * @return a new request, never {@code null}
      * @throws IllegalArgumentException if longer than {@value #CU00_USRID_LAST_LENGTH} characters
      */
-    public UserListRequest withCu00UsrIdLast(String newCu00UsrIdLast) {
+    public UserListRequest withCdemoCu00UsrIdLast(String newCdemoCu00UsrIdLast) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, newCu00UsrIdLast, cu00PageNum,
-                cu00NextPageFlg, cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, newCdemoCu00UsrIdLast, cdemoCu00PageNum,
+                cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg, cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
      * This request with a different numeric page number, {@code CDEMO-CU00-PAGE-NUM}.
      *
-     * @param newCu00PageNum the replacement page number, {@value #CU00_PAGE_NUM_INITIAL} being both
+     * @param newCdemoCu00PageNum the replacement page number, {@value #CU00_PAGE_NUM_INITIAL} being both
      *                       legitimate and the initial value
      * @return a new request, never {@code null}
      * @throws IllegalArgumentException if negative or greater than {@value #CU00_PAGE_NUM_MAX}
      */
-    public UserListRequest withCu00PageNum(int newCu00PageNum) {
+    public UserListRequest withCdemoCu00PageNum(int newCdemoCu00PageNum) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, newCu00PageNum,
-                cu00NextPageFlg, cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast, newCdemoCu00PageNum,
+                cdemoCu00NextPageFlg, cdemoCu00UsrSelFlg, cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
      * This request with a different {@code CDEMO-CU00-NEXT-PAGE-FLG}.
      *
-     * @param newCu00NextPageFlg the replacement flag, normally {@value #NEXT_PAGE_YES} or
+     * @param newCdemoCu00NextPageFlg the replacement flag, normally {@value #NEXT_PAGE_YES} or
      *                           {@value #NEXT_PAGE_NO}; {@code null} meaning blank
      * @return a new request, never {@code null}
      * @throws IllegalArgumentException if longer than {@value #CU00_NEXT_PAGE_FLG_LENGTH} character
      */
-    public UserListRequest withCu00NextPageFlg(String newCu00NextPageFlg) {
+    public UserListRequest withCdemoCu00NextPageFlg(String newCdemoCu00NextPageFlg) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum,
-                newCu00NextPageFlg, cu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast, cdemoCu00PageNum,
+                newCdemoCu00NextPageFlg, cdemoCu00UsrSelFlg, cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1346,7 +2118,7 @@ public record UserListRequest(
      * @return a new request whose {@link #nextPageYes()} is {@code true}, never {@code null}
      */
     public UserListRequest withNextPageYes() {
-        return withCu00NextPageFlg(NEXT_PAGE_YES);
+        return withCdemoCu00NextPageFlg(NEXT_PAGE_YES);
     }
 
     /**
@@ -1357,7 +2129,7 @@ public record UserListRequest(
      * @return a new request whose {@link #nextPageNo()} is {@code true}, never {@code null}
      */
     public UserListRequest withNextPageNo() {
-        return withCu00NextPageFlg(NEXT_PAGE_NO);
+        return withCdemoCu00NextPageFlg(NEXT_PAGE_NO);
     }
 
     /**
@@ -1367,15 +2139,16 @@ public record UserListRequest(
      * {@code app/cbl/COUSR00C.cbl} lines 152-183, and clears it to spaces in the {@code WHEN OTHER}
      * arm at line 184 when no row was marked.
      *
-     * @param newCu00UsrSelFlg the replacement action, normally {@value #USR_SEL_UPDATE} or
+     * @param newCdemoCu00UsrSelFlg the replacement action, normally {@value #USR_SEL_UPDATE} or
      *                         {@value #USR_SEL_DELETE} in either case; {@code null} meaning blank
      * @return a new request, never {@code null}
      * @throws IllegalArgumentException if longer than {@value #CU00_USR_SEL_FLG_LENGTH} character
      */
-    public UserListRequest withCu00UsrSelFlg(String newCu00UsrSelFlg) {
+    public UserListRequest withCdemoCu00UsrSelFlg(String newCdemoCu00UsrSelFlg) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                newCu00UsrSelFlg, cu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg,
+                newCdemoCu00UsrSelFlg, cdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1384,14 +2157,15 @@ public record UserListRequest(
      * <p>{@code PROCESS-ENTER-KEY} sets it from the {@code USRIDnnI} of whichever row was marked,
      * and the routing at line 188 only acts when both this member and the action flag are non-blank.
      *
-     * @param newCu00UsrSelected the replacement value, {@code null} meaning blank
+     * @param newCdemoCu00UsrSelected the replacement value, {@code null} meaning blank
      * @return a new request, never {@code null}
      * @throws IllegalArgumentException if longer than {@value #CU00_USR_SELECTED_LENGTH} characters
      */
-    public UserListRequest withCu00UsrSelected(String newCu00UsrSelected) {
+    public UserListRequest withCdemoCu00UsrSelected(String newCdemoCu00UsrSelected) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                cu00UsrSelFlg, newCu00UsrSelected, navigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg,
+                cdemoCu00UsrSelFlg, newCdemoCu00UsrSelected, navigationContext, aid);
     }
 
     /**
@@ -1403,8 +2177,9 @@ public record UserListRequest(
      */
     public UserListRequest withNavigationContext(NavigationContext newNavigationContext) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                cu00UsrSelFlg, cu00UsrSelected, newNavigationContext, aid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg,
+                cdemoCu00UsrSelFlg, cdemoCu00UsrSelected, newNavigationContext, aid);
     }
 
     /**
@@ -1416,8 +2191,9 @@ public record UserListRequest(
      */
     public UserListRequest withAid(String newAid) {
         return new UserListRequest(trnName, title01, curDate, pgmName, title02, curTime, pageNum,
-                usrIdIn, rows, errMsg, cu00UsrIdFirst, cu00UsrIdLast, cu00PageNum, cu00NextPageFlg,
-                cu00UsrSelFlg, cu00UsrSelected, navigationContext, newAid);
+                usrIdIn, rows, errMsg, cdemoCu00UsrIdFirst, cdemoCu00UsrIdLast,
+                cdemoCu00PageNum, cdemoCu00NextPageFlg,
+                cdemoCu00UsrSelFlg, cdemoCu00UsrSelected, navigationContext, newAid);
     }
 
     // =============================================================================================
@@ -1464,7 +2240,7 @@ public record UserListRequest(
      * because {@code app/cbl/COUSR00C.cbl} sets the field to zero at line 227, increments it at lines
      * 308 and 319, and decrements it at line 367.
      */
-    private static int requireCu00PageNum(int value) {
+    private static int requireCdemoCu00PageNum(int value) {
         if (value < 0) {
             throw new IllegalArgumentException("Field " + CU00_PAGE_NUM_FIELD + " is declared PIC 9("
                     + CU00_PAGE_NUM_LENGTH + "), which is unsigned and has no sign position, so it "
@@ -1506,21 +2282,6 @@ public record UserListRequest(
             }
         }
         return List.copyOf(copy);
-    }
-
-    /**
-     * Substitutes the cold-start communication area for an absent one.
-     *
-     * <p>{@code app/cbl/COUSR00C.cbl} line 113 tests {@code IF EIBCALEN = 0} - no communication area
-     * was passed - and returns to the sign-on screen. A blank area is therefore a representable
-     * state, and the shared type already provides it, so an absent context is filled in rather than
-     * rejected.
-     */
-    private static NavigationContext requireContext(NavigationContext context) {
-        if (context == null) {
-            return NavigationContext.empty();
-        }
-        return context;
     }
 
     /**

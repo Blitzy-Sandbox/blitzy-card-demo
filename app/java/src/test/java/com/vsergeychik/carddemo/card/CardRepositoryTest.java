@@ -45,6 +45,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.PreparedStatementSetter;
 import org.springframework.jdbc.core.ResultSetExtractor;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -107,11 +108,68 @@ class CardRepositoryTest {
     /** The repository under test, wired through the canonical constructor. */
     private CardRepository repository;
 
+    /**
+     * The record-image column name the stubbed backend describes.
+     *
+     * <p>Deliberately not a copybook field name. The repository discovers this name from result-set
+     * metadata rather than assuming one, so the test supplies a name no copybook contains - which is what
+     * proves the discovery is real and that no field name has been smuggled into a statement.
+     */
+    private static final String DESCRIBED_COLUMN = "VSAM_RECORD_IMAGE";
+
     @BeforeEach
     void setUp() {
         jdbcTemplate = mock(JdbcTemplate.class);
         codec = new FixedWidthCodec(StandardCharsets.US_ASCII);
         repository = new CardRepository(jdbcTemplate, bindings(), codec);
+        stubDescribe(repository);
+    }
+
+    /**
+     * Runs a body with a transaction marked active on this thread, which is what a locking read requires.
+     *
+     * <p>Marking the flag directly rather than starting a real transaction is the honest test of the
+     * precondition: what {@code readForUpdateByCardNumber} demands is that a unit of work be open, and
+     * this asserts exactly that demand without dragging a transaction manager and a real
+     * {@code DataSource} into a test whose subject is a composed statement.
+     *
+     * @param work the body
+     * @param <T>  its result type
+     * @return the body's result
+     */
+    private static <T> T inUnitOfWork(java.util.function.Supplier<T> work) {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            return work.get();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    /**
+     * Stubs the describe round trip a repository performs before it composes its statements.
+     *
+     * @param target the repository whose describes are to be answered
+     */
+    private void stubDescribe(CardRepository target) {
+        when(jdbcTemplate.query(eq(target.describeBaseStatement()),
+                CardRepositoryTest.<String>anyExtractor())).thenReturn(DESCRIBED_COLUMN);
+        when(jdbcTemplate.query(eq(target.describeAlternateIndexStatement()),
+                CardRepositoryTest.<String>anyExtractor())).thenReturn(DESCRIBED_COLUMN);
+    }
+
+    /**
+     * Forces statement resolution and returns the composed statements.
+     *
+     * @param target the repository
+     * @return its resolved statements
+     */
+    private CardRepository.Statements statementsOf(CardRepository target) {
+        stubDescribe(target);
+        when(jdbcTemplate.query(any(PreparedStatementCreator.class),
+                CardRepositoryTest.<FetchedRows>anyExtractor())).thenReturn(FetchedRows.empty());
+        target.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+        return target.resolvedStatements();
     }
 
     // =============================================================================================
@@ -163,6 +221,7 @@ class CardRepositoryTest {
      */
     private static DatasetBinding cardDatBinding(String dsname, int recordLength) {
         return new DatasetBinding(dsname, "ksds", false, "FB", null, recordLength, "CVACT02Y", null,
+                null,
                 null, null);
     }
 
@@ -186,7 +245,7 @@ class CardRepositoryTest {
      */
     private static DatasetBinding cardAixBinding(String base, String alternateKey, int recordLength) {
         return new DatasetBinding("CARDDEMO.CARDDATA.AIX.PATH", "aix-path", false, "FB", null,
-                recordLength, "CVACT02Y", null, base, alternateKey);
+                recordLength, "CVACT02Y", null, null, base, alternateKey);
     }
 
     /**
@@ -295,48 +354,108 @@ class CardRepositoryTest {
             assertThat(repository.alternateIndexDatasetName())
                     .isEqualTo("CARDDEMO.CARDDATA.AIX.PATH");
 
-            assertThat(repository.selectByCardNumberStatement())
-                    .isEqualTo("SELECT * FROM \"CARDDEMO.CARDDATA.KSDS\" WHERE \"CARD-NUM\" = ?");
-            assertThat(repository.selectForUpdateByCardNumberStatement())
-                    .isEqualTo(repository.selectByCardNumberStatement() + " FOR UPDATE");
-            assertThat(repository.selectByAccountIdStatement())
-                    .isEqualTo("SELECT * FROM \"CARDDEMO.CARDDATA.AIX.PATH\" "
-                            + "WHERE \"CARD-ACCT-ID\" = ? ORDER BY \"CARD-NUM\" ASC");
-            assertThat(repository.browseAnchorStatement())
-                    .isEqualTo("SELECT * FROM \"CARDDEMO.CARDDATA.KSDS\" "
-                            + "WHERE \"CARD-NUM\" >= ? ORDER BY \"CARD-NUM\" ASC");
-            assertThat(repository.browseForwardStatement())
-                    .isEqualTo("SELECT * FROM \"CARDDEMO.CARDDATA.KSDS\" "
-                            + "WHERE \"CARD-NUM\" > ? ORDER BY \"CARD-NUM\" ASC");
-            assertThat(repository.browseBackwardStatement())
-                    .isEqualTo("SELECT * FROM \"CARDDEMO.CARDDATA.KSDS\" "
-                            + "WHERE \"CARD-NUM\" < ? ORDER BY \"CARD-NUM\" DESC");
-            assertThat(repository.rewriteStatement())
-                    .isEqualTo("UPDATE \"CARDDEMO.CARDDATA.KSDS\" SET \"CARD-RECORD\" = ? "
-                            + "WHERE \"CARD-NUM\" = ?");
+            assertThat(repository.describeBaseStatement())
+                    .isEqualTo("SELECT * FROM \"CARDDEMO.CARDDATA.KSDS\" WHERE 1 = 0");
+            assertThat(repository.describeAlternateIndexStatement())
+                    .isEqualTo("SELECT * FROM \"CARDDEMO.CARDDATA.AIX.PATH\" WHERE 1 = 0");
+
+            CardRepository.Statements sql = statementsOf(repository);
+            String base = "\"CARDDEMO.CARDDATA.KSDS\"";
+            String path = "\"CARDDEMO.CARDDATA.AIX.PATH\"";
+            String image = "\"" + DESCRIBED_COLUMN + "\"";
+            assertThat(sql.selectByCardNumber())
+                    .isEqualTo("SELECT * FROM " + base + " WHERE " + image
+                            + " LIKE ? ESCAPE '\\' ORDER BY " + image + " ASC");
+            assertThat(sql.selectForUpdateByCardNumber())
+                    .isEqualTo(sql.selectByCardNumber() + " FOR UPDATE");
+            assertThat(sql.selectByAccountId())
+                    .isEqualTo("SELECT * FROM " + path + " WHERE " + image
+                            + " LIKE ? ESCAPE '\\' ORDER BY " + image + " ASC");
+            assertThat(sql.browseAnchor())
+                    .isEqualTo("SELECT * FROM " + base + " WHERE " + image + " >= ? ORDER BY " + image
+                            + " ASC");
+            assertThat(sql.browseForward())
+                    .isEqualTo("SELECT * FROM " + base + " WHERE " + image + " > ? ORDER BY " + image
+                            + " ASC");
+            assertThat(sql.browseBackward())
+                    .isEqualTo("SELECT * FROM " + base + " WHERE " + image + " < ? ORDER BY " + image
+                            + " DESC");
+            assertThat(sql.rewrite())
+                    .isEqualTo("UPDATE " + base + " SET " + image + " = ? WHERE " + image
+                            + " LIKE ? ESCAPE '\\'");
+        }
+
+        @Test
+        @DisplayName("no statement names a copybook field as though it were a SQL column")
+        void noStatementNamesACopybookFieldAsAColumn() {
+            CardRepository.Statements sql = statementsOf(repository);
+
+            // CARD-NUM and CARD-ACCT-ID name spans of app/cpy/CVACT02Y.cpy. Asking a backend for columns
+            // so named would assert a relational schema nothing here describes - while this same class
+            // reads the whole record image out of column one, so both cannot be true of one backend.
+            assertThat(List.of(sql.selectByCardNumber(), sql.selectForUpdateByCardNumber(),
+                            sql.selectByAccountId(), sql.browseAnchor(), sql.browseForward(),
+                            sql.browseBackward(), sql.rewrite()))
+                    .allSatisfy(statement -> assertThat(statement)
+                            .doesNotContain("CARD-NUM")
+                            .doesNotContain("CARD-ACCT-ID")
+                            .doesNotContain("CARD-RECORD")
+                            .contains(DESCRIBED_COLUMN));
+        }
+
+        @Test
+        @DisplayName("the statements are resolved once and then reused")
+        void statementsAreResolvedOnceAndReused() {
+            assertThat(repository.resolvedStatements())
+                    .as("nothing is asked of the backend until an operation needs it")
+                    .isNull();
+
+            CardRepository.Statements first = statementsOf(repository);
+            repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(repository.resolvedStatements()).isSameAs(first);
+            verify(jdbcTemplate, times(1)).query(eq(repository.describeBaseStatement()),
+                    CardRepositoryTest.<String>anyExtractor());
+        }
+
+        @Test
+        @DisplayName("a backend that describes no usable column is refused, not read anyway")
+        void aRelationWithNoRecordImageColumnIsRefused() {
+            when(jdbcTemplate.query(eq(repository.describeBaseStatement()),
+                    CardRepositoryTest.<String>anyExtractor())).thenReturn(null);
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM))
+                    .withMessageContaining("with no name");
         }
 
         @Test
         @DisplayName("gate G46: no statement carries a dataset name this class chose")
         void everyStatementNamesOnlyTheConfiguredDataset() {
             CardRepository rebound = new CardRepository(jdbcTemplate,
-                    bindings(cardDatBinding("SOMEWHERE.ELSE.ENTIRELY", CardRecord.RECORD_LENGTH),
+                    bindings(cardDatBinding("OTHER.PLACE.ENTIRELY", CardRecord.RECORD_LENGTH),
                             cardAixBinding()),
                     codec);
 
-            assertThat(rebound.selectByCardNumberStatement()).contains("SOMEWHERE.ELSE.ENTIRELY");
-            assertThat(rebound.rewriteStatement()).contains("SOMEWHERE.ELSE.ENTIRELY");
-            assertThat(rebound.selectByCardNumberStatement()).doesNotContain("CARDDATA.KSDS");
+            CardRepository.Statements sql = statementsOf(rebound);
+            assertThat(sql.selectByCardNumber()).contains("OTHER.PLACE.ENTIRELY");
+            assertThat(sql.rewrite()).contains("OTHER.PLACE.ENTIRELY");
+            assertThat(sql.selectByCardNumber()).doesNotContain("CARDDATA.KSDS");
         }
 
         @Test
-        @DisplayName("quotes a name that carries the delimiter itself, by repeating it")
-        void quotesAnEmbeddedDelimiter() {
-            CardRepository quoted = new CardRepository(jdbcTemplate,
-                    bindings(cardDatBinding("ODD\"NAME", CardRecord.RECORD_LENGTH), cardAixBinding()),
-                    codec);
-
-            assertThat(quoted.selectByCardNumberStatement()).contains("\"ODD\"\"NAME\"");
+        @DisplayName("refuses a configured name that is not a well-formed z/OS dataset name")
+        void refusesAMalformedDatasetName() {
+            // A quotation mark is not a character a z/OS dataset name admits, so the name is refused
+            // rather than quoted into a statement. Quoting alone would be the weaker answer: it defends
+            // against the punctuation someone thought of, whereas the grammar defends against every
+            // character the platform does not permit - which is a superset that needs no maintenance.
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new CardRepository(jdbcTemplate,
+                            bindings(cardDatBinding("ODD\"NAME", CardRecord.RECORD_LENGTH),
+                                    cardAixBinding()),
+                            codec))
+                    .withMessageContaining("well-formed z/OS dataset name");
         }
 
         @Test
@@ -439,16 +558,29 @@ class CardRepositoryTest {
                     .isThrownBy(() -> new CardRepository(jdbcTemplate, silent, codec));
         }
 
-        @ParameterizedTest(name = "an unusable dataset name [{0}] is rejected")
-        @CsvSource(value = { "NULL", "''", "'   '", "'BAD\tNAME'", "'BAD\nNAME'" }, nullValues = "NULL")
-        @DisplayName("rejects a dataset name that cannot be composed into a statement")
-        void rejectsAnUnusableDatasetName(String dsname) {
+        @ParameterizedTest(name = "an absent dataset name [{0}] is rejected")
+        @CsvSource(value = { "NULL", "''", "'   '" }, nullValues = "NULL")
+        @DisplayName("rejects a dataset name the configuration never supplied")
+        void rejectsAnAbsentDatasetName(String dsname) {
             DatasetBindings unusable =
                     bindings(cardDatBinding(dsname, CardRecord.RECORD_LENGTH), cardAixBinding());
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> new CardRepository(jdbcTemplate, unusable, codec))
                     .withMessageContaining("carddemo.datasets." + CardRepository.BASE_DD_NAME);
+        }
+
+        @ParameterizedTest(name = "a malformed dataset name [{0}] is rejected")
+        @ValueSource(strings = { "BAD\tNAME", "BAD\nNAME", "TOOLONGQUALIFIER.X", "A..B", "1LEADING.X",
+                "A.B;DROP", "A.B(2)" })
+        @DisplayName("rejects a name that is not a well-formed z/OS dataset name")
+        void rejectsAMalformedDatasetName(String dsname) {
+            DatasetBindings unusable =
+                    bindings(cardDatBinding(dsname, CardRecord.RECORD_LENGTH), cardAixBinding());
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new CardRepository(jdbcTemplate, unusable, codec))
+                    .withMessageContaining("well-formed z/OS dataset name");
         }
 
         @Test
@@ -463,7 +595,7 @@ class CardRepositoryTest {
                     .isEqualTo("CARDAIX ")
                     .hasSize(CardRepository.CICS_FILE_NAME_LENGTH);
             assertThat(CardRepository.RECORD_LENGTH).isEqualTo(CardRecord.RECORD_LENGTH).isEqualTo(150);
-            assertThat(CardRepository.RECORD_IMAGE_COLUMN_NAME).isEqualTo("CARD-RECORD");
+            assertThat(CardRepository.RECORD_IMAGE_COLUMN_INDEX).isEqualTo(1);
         }
     }
 
@@ -538,7 +670,10 @@ class CardRepositoryTest {
         @Test
         @DisplayName("WHEN OTHER: an unreachable dataset is reported as not open")
         void unreachableDataset() {
-            stubRejection(new CannotGetJdbcConnectionException("no connection"));
+            // SQLSTATE class 08 is the standard connection exception, and it is what decides the
+            // response - not the wrapper type, which is a framework's opinion about the code beneath it.
+            stubRejection(new CannotGetJdbcConnectionException("no connection",
+                    new SQLException("no route to host", "08001", VENDOR_ERROR_CODE)));
 
             CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
 
@@ -555,24 +690,37 @@ class CardRepositoryTest {
 
             CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
 
-            assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
-            assertThat(result.resp2()).as("the driver's own error code is recovered, not discarded")
-                    .isEqualTo(VENDOR_ERROR_CODE);
+            // SQLSTATE class 42 is a syntax error or access-rule violation: the relation does not
+            // exist, or this identity may not reach it. Either way the file is not open to the task.
+            assertThat(result.resp()).isEqualTo(FileStatus.NOTOPEN);
+            assertThat(result.resp2())
+                    .as("a driver's vendor error number is not a CICS reason code and is never "
+                            + "reported as one - COCRDUPC renders ERROR-RESP2 verbatim")
+                    .isEqualTo(CardRepository.NO_REASON_CODE);
         }
 
         @Test
-        @DisplayName("recovers a reason code from a nested cause, and reports none when there is none")
-        void reasonCodeRecovery() {
+        @DisplayName("a refusal with no SQLSTATE at all is an invalid request, not a guess")
+        void aRefusalWithNoSqlStateIsAnInvalidRequest() {
+            stubRejection(new DataAccessResourceFailureException("no cause at all"));
+
+            CardReadResult result = repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM);
+
+            assertThat(result.isFailure()).isTrue();
+            assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
+            assertThat(result.resp2()).isEqualTo(CardRepository.NO_REASON_CODE);
+        }
+
+        @Test
+        @DisplayName("the SQLSTATE is found through a wrapper chain, not only on the outermost failure")
+        void theSqlStateIsFoundThroughTheCauseChain() {
+            // A framework's data-access exception is a wrapper: the SQLSTATE lives on the SQLException
+            // inside it, so taking the wrapper's own type as the diagnosis is what loses it.
             stubRejection(new DataAccessResourceFailureException("wrapped",
                     new IllegalStateException(new SQLException("deep", "08001", VENDOR_ERROR_CODE))));
-            assertThat(repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM).resp2())
-                    .isEqualTo(VENDOR_ERROR_CODE);
 
-            jdbcTemplate = mock(JdbcTemplate.class);
-            repository = new CardRepository(jdbcTemplate, bindings(), codec);
-            stubRejection(new DataAccessResourceFailureException("no cause at all"));
-            assertThat(repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM).resp2())
-                    .isEqualTo(CardRepository.NO_REASON_CODE);
+            assertThat(repository.readByCardNumber(FIRST_FIXTURE_CARD_NUM).resp())
+                    .isEqualTo(FileStatus.NOTOPEN);
         }
 
         @Test
@@ -595,7 +743,9 @@ class CardRepositoryTest {
 
             PreparedStatement prepared = capturePreparedStatement();
             assertThat(expectedKey).hasSize(CardRecord.CARD_NUM_LENGTH);
-            verify(prepared).setString(1, expectedKey);
+            // The key is at offset 0, so the pattern is the key followed by the any-sequence wildcard
+            // that covers the remaining 134 bytes of the record image.
+            verify(prepared).setString(1, expectedKey + "%");
         }
 
         @Test
@@ -631,7 +781,7 @@ class CardRepositoryTest {
         void sendsTheLockingStatement() throws SQLException {
             stubFetch(oneRow(cardRecord(FIRST_FIXTURE_CARD_NUM)));
 
-            repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM);
+            inUnitOfWork(() -> repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM));
 
             ArgumentCaptor<PreparedStatementCreator> captor =
                     ArgumentCaptor.forClass(PreparedStatementCreator.class);
@@ -640,7 +790,24 @@ class CardRepositoryTest {
             Connection connection = mock(Connection.class);
             when(connection.prepareStatement(anyString())).thenReturn(mock(PreparedStatement.class));
             captor.getValue().createPreparedStatement(connection);
-            verify(connection).prepareStatement(repository.selectForUpdateByCardNumberStatement());
+            verify(connection).prepareStatement(
+                    repository.resolvedStatements().selectForUpdateByCardNumber());
+        }
+
+        @Test
+        @DisplayName("a locking read with no unit of work open is refused, not issued anyway")
+        void aLockingReadOutsideAUnitOfWorkIsRefused() {
+            stubFetch(oneRow(cardRecord(FIRST_FIXTURE_CARD_NUM)));
+
+            // FOR UPDATE outside a transaction releases its lock the moment the statement returns, so
+            // the read-compare-rewrite sequence it exists to protect would be exactly as exposed as an
+            // unlocked read - while reporting the same outcome. Refusing turns a silent correctness bug
+            // into a loud wiring bug.
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM))
+                    .withMessageContaining("no transaction is open on this thread");
+            verify(jdbcTemplate, never()).query(any(PreparedStatementCreator.class),
+                    CardRepositoryTest.<FetchedRows>anyExtractor());
         }
 
         @Test
@@ -649,7 +816,8 @@ class CardRepositoryTest {
             CardRecord locked = cardRecord(FIRST_FIXTURE_CARD_NUM);
             stubFetch(oneRow(locked));
 
-            CardReadResult result = repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM);
+            CardReadResult result =
+                    inUnitOfWork(() -> repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM));
 
             assertThat(result.isNormal()).isTrue();
             assertThat(result.requireRecord()).isEqualTo(locked);
@@ -660,7 +828,8 @@ class CardRepositoryTest {
         void lockNotTakenBecauseTheRecordIsGone() {
             stubFetch(FetchedRows.empty());
 
-            CardReadResult result = repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM);
+            CardReadResult result =
+                    inUnitOfWork(() -> repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM));
 
             assertThat(result.isNormal()).as("the only test COCRDUPC:1441 makes").isFalse();
             assertThat(result.isNotFound()).isTrue();
@@ -671,7 +840,8 @@ class CardRepositoryTest {
         void lockNotTakenBecauseTheRequestFailed() {
             stubRejection(new InvalidResultSetAccessException(new SQLException("locked elsewhere")));
 
-            CardReadResult result = repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM);
+            CardReadResult result =
+                    inUnitOfWork(() -> repository.readForUpdateByCardNumber(FIRST_FIXTURE_CARD_NUM));
 
             assertThat(result.isNormal()).isFalse();
             assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
@@ -700,8 +870,9 @@ class CardRepositoryTest {
             Connection connection = mock(Connection.class);
             when(connection.prepareStatement(anyString())).thenReturn(mock(PreparedStatement.class));
             captor.getValue().createPreparedStatement(connection);
-            verify(connection).prepareStatement(repository.selectByAccountIdStatement());
-            assertThat(repository.selectByAccountIdStatement())
+            String pathStatement = repository.resolvedStatements().selectByAccountId();
+            verify(connection).prepareStatement(pathStatement);
+            assertThat(pathStatement)
                     .contains(repository.alternateIndexDatasetName())
                     .doesNotContain(repository.baseDatasetName());
         }
@@ -751,7 +922,8 @@ class CardRepositoryTest {
         @Test
         @DisplayName("WHEN OTHER: a rejection through the path is reported like any other")
         void rejectionThroughThePath() {
-            stubRejection(new DataAccessResourceFailureException("path unavailable"));
+            stubRejection(new DataAccessResourceFailureException("path unavailable",
+                    new SQLException("path unavailable", "08006", VENDOR_ERROR_CODE)));
 
             assertThat(repository.readByAccountIdViaAltIndex(FIRST_FIXTURE_ACCT_ID).resp())
                     .isEqualTo(FileStatus.NOTOPEN);
@@ -784,7 +956,10 @@ class CardRepositoryTest {
 
             PreparedStatement prepared = capturePreparedStatement();
             assertThat(expectedKey).hasSize(CardRecord.CARD_ACCT_ID_LENGTH);
-            verify(prepared).setString(1, expectedKey);
+            // CARD-ACCT-ID is at offset 16, so sixteen single-character wildcards precede the key. That
+            // leading run IS the offset, expressed in SQL - and it is what keeps this predicate from
+            // matching the cross-reference record's account id, the same width at a different offset.
+            verify(prepared).setString(1, "_".repeat(CardRecord.CARD_ACCT_ID_OFFSET) + expectedKey + "%");
         }
 
         @Test
@@ -792,15 +967,17 @@ class CardRepositoryTest {
         void bothViewsProduceTheSameKey() throws SQLException {
             stubFetch(FetchedRows.empty());
             repository.readByAccountIdViaAltIndex(WIDE_ACCT_ID);
+            String expected = "_".repeat(CardRecord.CARD_ACCT_ID_OFFSET) + "10000000010%";
             PreparedStatement fromLong = capturePreparedStatement();
-            verify(fromLong).setString(1, "10000000010");
+            verify(fromLong).setString(1, expected);
 
             jdbcTemplate = mock(JdbcTemplate.class);
             repository = new CardRepository(jdbcTemplate, bindings(), codec);
+            stubDescribe(repository);
             stubFetch(FetchedRows.empty());
             repository.readByAccountIdViaAltIndex("10000000010");
             PreparedStatement fromDigits = capturePreparedStatement();
-            verify(fromDigits).setString(1, "10000000010");
+            verify(fromDigits).setString(1, expected);
         }
 
         @Test
@@ -834,7 +1011,8 @@ class CardRepositoryTest {
         private PreparedStatement bindRewrite() throws SQLException {
             ArgumentCaptor<PreparedStatementSetter> captor =
                     ArgumentCaptor.forClass(PreparedStatementSetter.class);
-            verify(jdbcTemplate).update(eq(repository.rewriteStatement()), captor.capture());
+            verify(jdbcTemplate).update(eq(repository.resolvedStatements().rewrite()),
+                    captor.capture());
             PreparedStatement prepared = mock(PreparedStatement.class);
             captor.getValue().setValues(prepared);
             return prepared;
@@ -848,15 +1026,15 @@ class CardRepositoryTest {
 
             assertThat(repository.rewrite(updated).isNormal()).isTrue();
 
-            ArgumentCaptor<byte[]> image = ArgumentCaptor.forClass(byte[].class);
+            ArgumentCaptor<String> image = ArgumentCaptor.forClass(String.class);
             PreparedStatement prepared = bindRewrite();
-            verify(prepared).setBytes(eq(1), image.capture());
-            verify(prepared).setString(2, FIRST_FIXTURE_CARD_NUM);
+            verify(prepared).setString(eq(1), image.capture());
+            verify(prepared).setString(2, FIRST_FIXTURE_CARD_NUM + "%");
 
-            byte[] sent = image.getValue();
+            String sent = image.getValue();
             assertThat(sent).hasSize(CardRecord.RECORD_LENGTH);
-            String filler = new String(sent, CardRecord.FILLER_OFFSET, CardRecord.FILLER_LENGTH,
-                    StandardCharsets.US_ASCII);
+            String filler = sent.substring(CardRecord.FILLER_OFFSET,
+                    CardRecord.FILLER_OFFSET + CardRecord.FILLER_LENGTH);
             assertThat(filler).isEqualTo(" ".repeat(CardRecord.FILLER_LENGTH)).hasSize(59);
         }
 
@@ -867,7 +1045,7 @@ class CardRepositoryTest {
 
             repository.rewrite(cardRecord("12345"));
 
-            verify(bindRewrite()).setString(2, "12345           ");
+            verify(bindRewrite()).setString(2, "12345           " + "%");
         }
 
         @ParameterizedTest(name = "replacing {0} records is an invalid request")
@@ -892,13 +1070,15 @@ class CardRepositoryTest {
         void rejectedRewrite() {
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class)))
                     .thenThrow(new InvalidResultSetAccessException(
-                            new SQLException("write refused", "42000", VENDOR_ERROR_CODE)));
+                            new SQLException("write refused", "22001", VENDOR_ERROR_CODE)));
 
             CardWriteResult result = repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM));
 
             assertThat(result.isFailure()).isTrue();
+            // SQLSTATE class 22 is a data exception: the value was rejected. Nothing about that says the
+            // file is closed, so it reaches the invalid-request response and the caller's not-normal arm.
             assertThat(result.resp()).isEqualTo(FileStatus.INVREQ);
-            assertThat(result.resp2()).isEqualTo(VENDOR_ERROR_CODE);
+            assertThat(result.resp2()).isEqualTo(CardRepository.NO_REASON_CODE);
             assertThat(result.outcome()).isEqualTo(Outcome.OTHER);
         }
 
@@ -906,7 +1086,8 @@ class CardRepositoryTest {
         @DisplayName("an unreachable dataset is reported as not open")
         void unreachableDatasetOnRewrite() {
             when(jdbcTemplate.update(anyString(), any(PreparedStatementSetter.class)))
-                    .thenThrow(new DataAccessResourceFailureException("gone"));
+                    .thenThrow(new DataAccessResourceFailureException("gone",
+                            new SQLException("gone", "08003", VENDOR_ERROR_CODE)));
 
             assertThat(repository.rewrite(cardRecord(FIRST_FIXTURE_CARD_NUM)).resp())
                     .isEqualTo(FileStatus.NOTOPEN);
@@ -977,8 +1158,8 @@ class CardRepositoryTest {
 
             assertThat(statementsSent(2))
                     .as("the first read anchors with GTEQ; every read after it advances")
-                    .containsExactly(repository.browseAnchorStatement(),
-                            repository.browseForwardStatement());
+                    .containsExactly(repository.resolvedStatements().browseAnchor(),
+                            repository.resolvedStatements().browseForward());
         }
 
         @Test
@@ -1022,9 +1203,9 @@ class CardRepositoryTest {
 
             assertThat(statementsSent(3))
                     .as("GTEQ anchors both directions; only the advance differs")
-                    .containsExactly(repository.browseAnchorStatement(),
-                            repository.browseBackwardStatement(),
-                            repository.browseBackwardStatement());
+                    .containsExactly(repository.resolvedStatements().browseAnchor(),
+                            repository.resolvedStatements().browseBackward(),
+                            repository.resolvedStatements().browseBackward());
         }
 
         @Test

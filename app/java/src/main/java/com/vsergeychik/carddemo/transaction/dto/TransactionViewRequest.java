@@ -1,7 +1,9 @@
 package com.vsergeychik.carddemo.transaction.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
@@ -465,6 +467,47 @@ public final class TransactionViewRequest {
      * {@code ATTRB=(ASKIP,BRT,FSET) COLOR=RED}.
      */
     public static final int ERRMSG_LENGTH = 78;
+
+    /**
+     * Characters in the {@code EIBAID} token carried by {@link #getAid()}: five.
+     *
+     * <p><strong>Not a screen field.</strong> It is absent from {@link ScreenField}, from
+     * {@link #PAYLOAD_FIELD_COUNT} and from the symbolic-map image, because {@code EIBAID} is not part
+     * of {@code 01 COTRN2AI} at all - CICS reports it in the exec interface block, beside the map
+     * rather than inside it. It is one of the mandated exceptions to the one-member-per-{@code DFHMDF}
+     * rule, along with the communication area and its extension.
+     *
+     * <p>It has to be here because {@code app/cbl/COTRN02C.cbl:133-152} decides what the transaction
+     * does by evaluating it and nothing else - {@code EVALUATE EIBAID} with four named arms and a
+     * default:
+     *
+     * <ul>
+     *   <li>{@code WHEN DFHENTER} performs {@code PROCESS-ENTER-KEY}, which validates the fourteen
+     *       input fields and adds the transaction;</li>
+     *   <li>{@code WHEN DFHPF3} returns to {@code CDEMO-FROM-PROGRAM}, or to {@code 'COMEN01C'} when
+     *       that is blank;</li>
+     *   <li>{@code WHEN DFHPF4} performs {@code CLEAR-CURRENT-SCREEN};</li>
+     *   <li>{@code WHEN DFHPF5} performs {@code COPY-LAST-TRAN-DATA};</li>
+     *   <li>{@code WHEN OTHER} raises {@code CCDA-MSG-INVALID-KEY}.</li>
+     * </ul>
+     *
+     * <p>With no member for the key, four of those five arms are unreachable through the API - clear,
+     * copy-last and the return would all be dead, and the invalid-key message unprovokable. A
+     * server-side record of the last key pressed is the one thing rule R6 forbids, so the key travels
+     * in the payload.
+     *
+     * <p>The width is the module's convention: {@code COTRN02C} copies neither {@code CVCRD01Y} nor
+     * {@code CSSTRPFY} and tests the raw {@code EIBAID} byte inline, so five characters is taken from
+     * {@code 10 CCARD-AID PIC X(5)} of {@code app/cpy/CVCRD01Y.cpy} and from the width
+     * {@code common.PfKeyResolver.AID_TOKEN_LENGTH} publishes. The four tokens this screen acts on are
+     * {@code ENTER}, {@code PFK03}, {@code PFK04} and {@code PFK05}; anything else, spaces included, is
+     * the {@code WHEN OTHER} arm. {@code common.PfKeyResolver.AidKey#token()} space-pads the shorter
+     * mnemonics to this width, so a caller must not trim what it produces.
+     */
+    public static final int AID_LENGTH = 5;
+
+    /** Name of the pseudo-conversational key indication, the CICS {@code EIBAID} field. */
+    public static final String AID_FIELD = "EIBAID";
 
     // =================================================================================================
     // The field table. One constant per name-labelled DFHMDF definition, in copybook declaration order.
@@ -1643,6 +1686,14 @@ public final class TransactionViewRequest {
      * {@code COTRN02C} copies at {@code :71}, carried in the payload so that no server-side session is
      * needed. It supplies the from/to transaction and program, the user id and type, and the
      * enter-versus-re-enter context.
+     *
+     * <p><strong>{@code null} when no communication area was passed.</strong>
+     * {@code app/cbl/COTRN02C.cbl:115-125} tests {@code IF EIBCALEN = 0} before anything else and, on
+     * that branch, moves {@code 'COSGN00C'} into {@code CDEMO-TO-PROGRAM} and returns to the previous
+     * screen without ever reading a context byte. A freshly initialised area is the other branch - it
+     * has a length, so the program copies it and goes on to test {@code CDEMO-PGM-REENTER}.
+     * Substituting one for the other made the cold-start branch unreachable through this payload, so
+     * absence is now carried as absence and {@link #hasNavigationContext()} is the discriminator.
      */
     private NavigationContext navigationContext;
 
@@ -1653,6 +1704,16 @@ public final class TransactionViewRequest {
      */
     @Valid
     private Ct02Info ct02Info;
+
+    /**
+     * The resolved {@code EIBAID} key indication as a token, at most {@value #AID_LENGTH} characters.
+     *
+     * <p>Spaces mean no key has been resolved, which is the {@code WHEN OTHER} arm of
+     * {@code app/cbl/COTRN02C.cbl:150}. See {@link #AID_LENGTH} for why this member exists and why it
+     * is not a screen field.
+     */
+    @Size(max = AID_LENGTH)
+    private String aid;
 
     /**
      * The {@code xxxL}, {@code xxxF} and {@code xxxA} metadata of all twenty-one fields.
@@ -1686,8 +1747,13 @@ public final class TransactionViewRequest {
             fieldMetadata.put(field, new FieldMetadata());
             setPayloadValue(field, spaces(field.length()));
         }
-        this.navigationContext = NavigationContext.empty();
+        // No communication area: nothing has been passed to a request nobody has filled in yet, which
+        // is exactly the EIBCALEN = 0 state COTRN02C.cbl:115 tests for. The CT02 cursor is a different
+        // case and does get a fresh instance - the program reads it only on the branch where an area
+        // was passed, so it has no absence semantics of its own.
+        this.navigationContext = null;
         this.ct02Info = new Ct02Info();
+        this.aid = spaces(AID_LENGTH);
     }
 
     /**
@@ -1716,7 +1782,8 @@ public final class TransactionViewRequest {
      * @param mzip              {@code MZIPI PIC X(10)}
      * @param confirm           {@code CONFIRMI PIC X(1)}
      * @param errmsg            {@code ERRMSGI PIC X(78)}
-     * @param navigationContext the shared commarea; {@code null} yields {@link NavigationContext#empty()}
+     * @param navigationContext the shared commarea, or {@code null} for the {@code EIBCALEN = 0} cold
+     *                          start - preserved as {@code null}, never completed
      * @param ct02Info          the {@code CDEMO-CT02-INFO} cursor; {@code null} yields a fresh group
      */
     public TransactionViewRequest(String trnname,
@@ -1766,8 +1833,11 @@ public final class TransactionViewRequest {
         this.mzip = mzip;
         this.confirm = confirm;
         this.errmsg = errmsg;
-        this.navigationContext = navigationContext == null ? NavigationContext.empty() : navigationContext;
+        this.navigationContext = navigationContext;
         this.ct02Info = ct02Info == null ? new Ct02Info() : ct02Info;
+        // The key is not one of the twenty-one screen values this constructor takes, so it starts at
+        // its no-key-resolved state and is supplied through setAid.
+        this.aid = spaces(AID_LENGTH);
     }
 
     /**
@@ -1786,6 +1856,7 @@ public final class TransactionViewRequest {
         }
         this.navigationContext = other.navigationContext;
         this.ct02Info = new Ct02Info(other.ct02Info);
+        this.aid = other.aid;
     }
 
     // =================================================================================================
@@ -1919,23 +1990,95 @@ public final class TransactionViewRequest {
     // =================================================================================================
 
     /**
-     * The shared {@value NavigationContext#COMMAREA_LENGTH}-byte communication area.
+     * The shared {@value NavigationContext#COMMAREA_LENGTH}-byte communication area, or {@code null}
+     * when none was passed.
      *
-     * @return the context, never {@code null}
+     * @return the context, or {@code null} for the {@code EIBCALEN = 0} cold start of
+     *         {@code app/cbl/COTRN02C.cbl:115}
      */
     public NavigationContext getNavigationContext() {
         return navigationContext;
     }
 
     /**
-     * Replaces the communication area. A {@code null} argument is normalised to
-     * {@link NavigationContext#empty()}, so this accessor never yields a null context and no caller
-     * needs a null check.
+     * Replaces the communication area, or removes it.
      *
-     * @param navigationContext the context to carry, may be {@code null}
+     * <p>{@code null} is stored as {@code null}. It is not a missing value to be filled in but a state
+     * the program acts on: with {@code EIBCALEN = 0} there is no area, and
+     * {@code app/cbl/COTRN02C.cbl:115-117} abandons the transaction for the sign-on screen rather than
+     * reading one. Completing it would send the request down the {@code ELSE} branch instead, which is
+     * different behaviour rather than a tidier spelling of the same behaviour.
+     *
+     * @param navigationContext the context to carry, or {@code null} to carry none
      */
     public void setNavigationContext(NavigationContext navigationContext) {
-        this.navigationContext = navigationContext == null ? NavigationContext.empty() : navigationContext;
+        this.navigationContext = navigationContext;
+    }
+
+    /**
+     * Whether a communication area travelled with this request - the Java reading of {@code EIBCALEN}
+     * being non-zero at {@code app/cbl/COTRN02C.cbl:115}.
+     *
+     * <p>Not a JSON property: it is derived from {@link #getNavigationContext()}, which is already on
+     * the wire as {@code null} or as an object. Emitting it as well would let a payload assert a
+     * presence that contradicts the member it travels with.
+     *
+     * @return {@code true} when {@link #getNavigationContext()} is present
+     */
+    @JsonIgnore
+    public boolean hasNavigationContext() {
+        return navigationContext != null;
+    }
+
+    /**
+     * The length CICS would report in {@code EIBCALEN}:
+     * {@value Ct02Info#COMMAREA_TOTAL_LENGTH} when a communication area travelled with this request,
+     * and {@code 0} when none did.
+     *
+     * <p>{@code COTRN02C} passes {@code CARDDEMO-COMMAREA} followed by its own
+     * {@value Ct02Info#CT02_INFO_LENGTH}-byte {@code CDEMO-CT02-INFO} extension, so the non-zero case
+     * is the sum of the two.
+     *
+     * @return {@value Ct02Info#COMMAREA_TOTAL_LENGTH} or {@code 0}
+     */
+    @JsonIgnore
+    public int commareaLength() {
+        return hasNavigationContext() ? Ct02Info.COMMAREA_TOTAL_LENGTH : 0;
+    }
+
+    /**
+     * The resolved {@code EIBAID} key indication - the key the operator pressed, which
+     * {@code app/cbl/COTRN02C.cbl:133} evaluates.
+     *
+     * @return the token, {@value #AID_LENGTH} characters wide, spaces when no key has been resolved
+     */
+    public String getAid() {
+        return aid;
+    }
+
+    /**
+     * Replaces the resolved key indication.
+     *
+     * <p>Pass the token {@code common.PfKeyResolver.AidKey#token()} produces, already space-padded to
+     * {@value #AID_LENGTH}. The four tokens this screen acts on are {@code 'ENTER'}, {@code 'PFK03'},
+     * {@code 'PFK04'} and {@code 'PFK05'}; every other value, spaces included, is the
+     * {@code WHEN OTHER} arm and its {@code CCDA-MSG-INVALID-KEY} message.
+     *
+     * @param aid the resolved key token; {@code null} becomes spaces, meaning no key resolved
+     * @throws IllegalArgumentException if longer than {@value #AID_LENGTH} characters
+     */
+    public void setAid(String aid) {
+        if (aid == null) {
+            this.aid = spaces(AID_LENGTH);
+            return;
+        }
+        if (aid.length() > AID_LENGTH) {
+            throw new IllegalArgumentException(AID_FIELD + " is carried as a PIC X(" + AID_LENGTH
+                    + ") token, matching common.PfKeyResolver.AID_TOKEN_LENGTH, but was given "
+                    + aid.length() + " character(s). AidKey.token() already space-pads to that width, "
+                    + "so a resolved token never overflows it");
+        }
+        this.aid = aid;
     }
 
     /**
@@ -1972,7 +2115,7 @@ public final class TransactionViewRequest {
      */
     @JsonIgnore
     public boolean isEnterContext() {
-        return navigationContext.isEnter();
+        return hasNavigationContext() && navigationContext.isEnter();
     }
 
     /**
@@ -1982,14 +2125,16 @@ public final class TransactionViewRequest {
      *
      * <p>Like {@link #isEnterContext()} this is derived, not stored, and the two are <strong>not</strong>
      * each other's negation: {@code CDEMO-PGM-CONTEXT} is {@code PIC 9(01)} and may hold another digit,
-     * in which case both are false.
+     * in which case both are false. Both are false too when no communication area travelled at all:
+     * there is then no {@code CDEMO-PGM-CONTEXT} byte to be in either state, and
+     * {@link #hasNavigationContext()} is the predicate that distinguishes that case.
      *
      * @return {@code true} when {@code CDEMO-PGM-CONTEXT} is
      *         {@value NavigationContext#PGM_CONTEXT_REENTER}
      */
     @JsonIgnore
     public boolean isReenterContext() {
-        return navigationContext.isReenter();
+        return hasNavigationContext() && navigationContext.isReenter();
     }
 
     // =================================================================================================
@@ -2627,12 +2772,13 @@ public final class TransactionViewRequest {
             }
         }
         return Objects.equals(navigationContext, candidate.navigationContext)
-                && Objects.equals(ct02Info, candidate.ct02Info);
+                && Objects.equals(ct02Info, candidate.ct02Info)
+                && Objects.equals(aid, candidate.aid);
     }
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(navigationContext, ct02Info);
+        int result = Objects.hash(navigationContext, ct02Info, aid);
         for (ScreenField field : ScreenField.values()) {
             result = 31 * result + Objects.hashCode(payloadValue(field));
             result = 31 * result + Objects.hashCode(metadata(field));
@@ -2657,14 +2803,35 @@ public final class TransactionViewRequest {
                 .append('/').append(SYMBOLIC_MAP_INPUT_GROUP);
         for (ScreenField field : ScreenField.values()) {
             rendering.append(", ").append(field.inputItem()).append('=')
-                    .append(payloadValue(field));
+                    .append(SensitiveDiagnostics.render(disclosureOf(field), payloadValue(field)));
             if (isCursorRequested(field)) {
                 rendering.append(" (cursor)");
             }
         }
-        return rendering.append(", navigationContext=").append(navigationContext)
+        return rendering.append(", ").append(AID_FIELD).append('=').append(aid)
+                .append(", navigationContext=").append(navigationContext)
                 .append(", ct02Info=").append(ct02Info)
                 .append(']')
                 .toString();
     }
+
+    /**
+     * How much of each screen field a diagnostic rendering may disclose.
+     *
+     * <p>Named per field rather than pattern-matched, because a symbolic map is a closed set taken
+     * straight from {@code app/cpy-bms/} and can therefore be enumerated exactly. Anything not named here
+     * is screen furniture - a title, a date, a status code, a message - and renders as stored, which is
+     * what a parity failure has to be read from.
+     *
+     * @param field the screen field
+     * @return its classification, never {@code null}
+     */
+    private static SensitiveDiagnostics.Disclosure disclosureOf(ScreenField field) {
+        return switch (field) {
+            case ACTIDIN -> SensitiveDiagnostics.Disclosure.IDENTIFIER;
+            case CARDNIN -> SensitiveDiagnostics.Disclosure.PAN;
+            default -> SensitiveDiagnostics.Disclosure.PLAIN;
+        };
+    }
+
 }

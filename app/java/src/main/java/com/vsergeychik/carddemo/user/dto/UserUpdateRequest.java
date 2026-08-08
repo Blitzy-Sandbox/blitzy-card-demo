@@ -1,6 +1,7 @@
 package com.vsergeychik.carddemo.user.dto;
 
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 
@@ -666,7 +667,7 @@ public record UserUpdateRequest(
      * <p>It reveals neither the value nor its length. Private, because it is a diagnostic detail and
      * not part of the payload contract.
      */
-    private static final String PASSWD_MASK = "[masked]";
+    private static final String PASSWD_MASK = SensitiveDiagnostics.REDACTED;
 
     // =================================================================================================
     // Conversation state, read THROUGH the communication area rather than duplicated beside it.
@@ -753,7 +754,7 @@ public record UserUpdateRequest(
     // =================================================================================================
 
     /**
-     * A diagnostic rendering with {@link #passwd()} replaced by {@value #PASSWD_MASK}.
+     * A diagnostic rendering with {@link #passwd()} replaced by {@link SensitiveDiagnostics#REDACTED}.
      *
      * <p>The record's generated {@code toString()} would print every component including the
      * plaintext password, so it is overridden here: a request payload reaches logs, exception
@@ -781,8 +782,8 @@ public record UserUpdateRequest(
                 + ", title02=" + title02
                 + ", curTime=" + curTime
                 + ", usrIdIn=" + usrIdIn
-                + ", fName=" + fName
-                + ", lName=" + lName
+                + ", fName=" + SensitiveDiagnostics.describeText(fName)
+                + ", lName=" + SensitiveDiagnostics.describeText(lName)
                 + ", passwd=" + (passwd == null ? null : PASSWD_MASK)
                 + ", usrType=" + usrType
                 + ", errMsg=" + errMsg

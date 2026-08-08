@@ -1086,6 +1086,19 @@ public record UserUpdateResponse(String trnName,
     // =============================================================================================
 
     /**
+     * What a width failure prints in place of the value it rejected.
+     *
+     * <p>This guard covers all fifteen character members, and one of them is {@link #passwd()} -
+     * {@code PASSWDO}, which {@code app/cbl/COUSR02C.cbl:169} fills with the stored plaintext
+     * {@code SEC-USR-PWD}. An exception message is a diagnostic: it reaches a log file, a stack trace
+     * and, before {@code config.WebConfig.CobolErrorHandler} answers, an exception handler's own
+     * rendering. Interpolating the rejected value would therefore write a password - or any other
+     * field's contents - to all three. The failure names the field, its declared width and the length
+     * that arrived, which is everything a caller needs in order to correct the call, and nothing more.
+     */
+    private static final String REJECTED_VALUE_REDACTED = "[REDACTED]";
+
+    /**
      * Rejects a {@code null} value and one wider than its {@code PICTURE} clause declares, and
      * returns the value unchanged when it fits.
      *
@@ -1095,6 +1108,9 @@ public record UserUpdateResponse(String trnName,
      * would hide the loss from the call site - and COBOL's right-truncating alphanumeric
      * {@code MOVE} is available explicitly through {@code common.FixedWidthCodec.movePicX}, whose
      * name states the direction.
+     *
+     * <p>The failure message reports the field, its declared width and the actual length, and
+     * <strong>never the value</strong> - see {@link #REJECTED_VALUE_REDACTED}.
      *
      * @param value        the value offered for the field
      * @param declaredWidth the width the field's {@code PICTURE} clause declares
@@ -1108,11 +1124,11 @@ public record UserUpdateResponse(String trnName,
         if (value.length() > declaredWidth) {
             throw new IllegalArgumentException("Field " + cobolName + " of " + GROUP_NAME
                     + " is declared PIC X(" + declaredWidth + ") but was given " + value.length()
-                    + " character(s): '" + value + "'. This payload never truncates, so that the "
-                    + "loss of a character is always a deliberate act rather than a silent one. To "
-                    + "shorten the value, pass it through FixedWidthCodec.movePicX(value, "
-                    + declaredWidth + "), which truncates on the right as a COBOL alphanumeric MOVE "
-                    + "does");
+                    + " character(s) (value " + REJECTED_VALUE_REDACTED + "). This payload never "
+                    + "truncates, so that the loss of a character is always a deliberate act rather "
+                    + "than a silent one. To shorten the value, pass it through "
+                    + "FixedWidthCodec.movePicX(value, " + declaredWidth + "), which truncates on "
+                    + "the right as a COBOL alphanumeric MOVE does");
         }
         return value;
     }

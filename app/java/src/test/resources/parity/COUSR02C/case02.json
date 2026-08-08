@@ -1,7 +1,7 @@
 {
   "program": "COUSR02C",
   "caseId": "case02",
-  "description": "SCENARIO || COUSR02C ENTER / first entry into the Update User screen with no user pre-selected. Pins the TRUE arm of 'IF NOT CDEMO-PGM-REENTER' at app/cbl/COUSR02C.cbl:95 together with the FALSE arm of 'IF CDEMO-CU02-USR-SELECTED NOT = SPACES AND LOW-VALUES' at :99, so PROCESS-ENTER-KEY (:143) is never performed, no dataset access of any kind occurs, and 'PERFORM SEND-USRUPD-SCREEN' at :105 fires unconditionally for exactly ONE map send. || CONTROL FLOW || :90 'IF EIBCALEN = 0' is false; :94 moves DFHCOMMAREA(1:EIBCALEN) into CARDDEMO-COMMAREA; :96 'SET CDEMO-PGM-REENTER TO TRUE' flips CDEMO-PGM-CONTEXT from 0 to 1, which is observable purely as a response payload field and never as server-side session state (rule R6, gate G37); :97 'MOVE LOW-VALUES TO COUSR2AO'; :98 'MOVE -1 TO USRIDINL OF COUSR2AI' parks the cursor on the identifier field; :135-138 'EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA)' ends the task - there is NO XCTL on this path and therefore NO next-program expectation. The 'EVALUATE EIBAID' at :108-133 is reached only in REENTER state, so gate G30's ordered-WHEN obligation has no subject in this case; EIBAID travels in the payload but is never evaluated. || CALLER EVIDENCE || app/cbl/COADM01C.cbl:139-141 moves WS-TRANID 'CA00' to CDEMO-FROM-TRANID, WS-PGMNAME 'COADM01C' to CDEMO-FROM-PROGRAM and ZEROS to CDEMO-PGM-CONTEXT immediately before 'XCTL ... COMMAREA(CARDDEMO-COMMAREA)', which is precisely why the :95 guard is true. COADM01C's commarea is the bare 160-byte COCOM01Y group (COADM02Y is a separate 01 item), so EIBCALEN is 160 and the 34-byte CDEMO-CU02-INFO extension declared inline at COUSR02C.cbl:50-58 is not supplied by the caller. The stateless request still carries every one of its fields, blank; the :99 guard rejects SPACES and LOW-VALUES alike, so the branch outcome is invariant to which of the two the untouched bytes hold. Recorded rather than silently normalised (practice B4). || EXPECTED SCREEN PROJECTION || The frozen ParityCase contract carries no screen member and deserialises with ignoreUnknown=false, so inventing one would fail at load time; AAP 0.3.8 scopes the diffable fingerprint to written records plus the return code plus the emitted messages, and the 12 xxxI payload items of app/cpy-bms/COUSR02.CPY are recorded here as the coverage-audit trail instead, each byte-exact literal delimited by square brackets so its padding is countable: TRNNAME X(4) = [CU02]; TITLE01 X(40) = [      AWS Mainframe Modernization       ] which is CCDA-TITLE01, 6 spaces + the 27-character title + 7 spaces = 40; CURDATE X(8) = [07/19/22]; PGMNAME X(8) = [COUSR02C]; TITLE02 X(40) = [              CardDemo                  ] which is CCDA-TITLE02, 14 spaces + 'CardDemo' + 18 spaces = 40; CURTIME X(8) = [23:12:34]; USRIDIN X(8) = 8 spaces; FNAME X(20) = 20 spaces; LNAME X(20) = 20 spaces; PASSWD X(8) = 8 spaces; USRTYPE X(1) = 1 space; ERRMSG X(78) = 78 spaces. Those six header values come from POPULATE-HEADER-INFO at :296-315. The identifier field is USRIDIN: COUSR01.CPY and COSGN00.CPY name their equivalent differently and that other name must never be substituted here, because a plausible-looking rename breaks field-for-field diffing silently rather than loudly. The xxxL, xxxF and xxxA items are validation and highlight metadata and are never payload members - USRIDINL = -1, set at :98, is recorded here as metadata for that reason. || BLANK DERIVATION || :97 leaves the five detail output fields at LOW-VALUES and nothing populates them; with ERASE on the SEND at :272-277 the terminal shows them blank, so the fixed-width projection is spaces at each declared picture width. || NO ERROR HIGHLIGHT (gate G38, the ENTER half) || COUSR02C does not copy CSSETATY. Its only programmatic colour moves are DFHRED at :241 (inside UPDATE-USER-INFO, :177-249), DFHNEUTR at :338 (READ-USER-SEC-FILE, :320-357) and DFHGREEN at :371 (UPDATE-USER-SEC-FILE, :358-394), and none of those paragraphs is entered, so ERRMSGC stays at LOW-VALUES and NO highlight is applied. app/bms/COUSR02.bms:155-158 gives ERRMSG a static COLOR=RED, which is a map property and not a program-applied highlight. || EMITTED MESSAGE || WS-MESSAGE PIC X(80) is blanked at :87 and nothing writes to it, so 'MOVE WS-MESSAGE TO ERRMSGO' at :270 truncates 80 to 78 on the right and yields 78 spaces. expectedMessages therefore holds exactly ONE entry of 78 space characters - byte-exact at the ERRMSG X(78) width, which ParityCase permits explicitly because it rejects only a null message. No error text is invented. || DATA || USRSEC has no ASCII fixture - app/data/ASCII holds exactly nine files and none is a user-security file - so the ten records are seeded INLINE, verbatim from app/jcl/DUSRSECJ.jcl:35-44 and measured at exactly 57 bytes each; application-test.yml's carddemo.test.fixtures.usrsec corroborates them with bytes-per-record 57 and pad-to 80. normalisations declares USRSEC_FILLER_PAD_57_TO_80 so FieldDiffer supplies the absent SEC-USR-FILLER X(23) as spaces before comparing. All ten rows are expected UNCHANGED at zero-based indices 0-9 because no read and no write happens, which makes this simultaneously the gate G19 width check, the gate G21 named-filler check and the gate G44 no-write check. app/cpy/CSUSR01Y.cpy sums mechanically to 8 + 20 + 20 + 8 + 1 + 23 = 80, corroborated twice by DUSRSECJ.jcl - 'DCB=(LRECL=80,RECFM=FB)' at :46-49 and 'KEYS(8,0) RECORDSIZE(80,80)' at :64-73. SEC-USR-PWD X(08) stays the plaintext literal exactly as COSGN00C compares it (gate G41, practice B6); it is 2022-vintage demo seed data reproduced from a committed sample job, it guards nothing, and hashing it would be a behaviour change. || RETURN CODE || COUSR02C contains zero CALL 'CEE3ABD' sites and zero GO TO statements, so expectedReturnCode is 0 and gates G32 and G35 have no subject. G39 has none either - COUSR02C paginates nothing - and neither does G43: there is no 9300-CHECK-CHANGE-IN-REC in this program, and gate G44 forbids a version column in any case. || PROVENANCE (practice B12, AAP 0.7.6, risk R-A) || Every expected value here is STATICALLY DERIVED from app/cbl/COUSR02C.cbl:95-105, :266-278 and :296-315, the app/cpy/CSUSR01Y.cpy byte layout, the app/cpy-bms/COUSR02.CPY xxxI pictures, app/cpy/COTTL01Y.cpy's title literals, app/cpy/CSDAT01Y.cpy's MM/DD/YY and HH:MM:SS renderings and the app/jcl/DUSRSECJ.jcl seed rows. NOT ONE was captured from a live COBOL execution: running the legacy programs is empirically impossible in this environment. The limitation is documented, not absorbed. || CLOCK || 'MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA' at :298 is this program's only nondeterminism, so the clock is pinned to the program's own version footer, 2022-07-19 23:12:34 CDT, in all twenty COUSR02C cases (practice B7, gate G54). || USER-SPECIFIED RULES || review_rules returns exactly one line, 'No user rules provided', and that single line is the whole document, so NO user rule governs this fixture. Its absence is not licence to relax anything: AAP 0.10.2's enterprise practices stand in their place, and the ones bearing here are B1, B3, B4, B6, B7, B8, B11 and B12. || INVOCATION || unitKind CONTROLLER_POJO - user.UserUpdateController is constructed directly with a fixture-backed user.SecUserRepository and its handler called as a plain object, with no MockMvc, no servlet container and no JobLauncher anywhere in the path (gate G51). jobParameters carries the pinned clock, the explicitly named US-ASCII charset and the scalar request state, because the frozen contract offers a controller case no other channel for them. The dataset is addressed only by its logical binding key USRSEC, so no fully-qualified mainframe dataset name appears anywhere in this fixture (gate G46). || This is case 02 of exactly 20 for COUSR02C (gate G15); the module is complete only when the diff count is zero across all twenty (gate G18).",
+  "description": "First entry with a commarea present and no user pre-selected: the NOT CDEMO-PGM-REENTER arm at app/cbl/COUSR02C.cbl:95-105 with the CDEMO-CU02-USR-SELECTED test at :99-100 FALSE. The program sets CDEMO-PGM-REENTER, clears the output map with MOVE LOW-VALUES TO COUSR2AO, positions the cursor by moving -1 into USRIDINL, skips PROCESS-ENTER-KEY entirely and sends the empty screen once. No RECEIVE happens on this path, which is why mapFields is empty - a case that declared received fields here would be describing an input the program never took. ERRMSGO is 78 spaces because WS-MESSAGE was set to SPACES at :87 and never written to, and no attribute is pinned because no arm on this path moves a colour into ERRMSGC.\n\nThe five payload items are LOW-VALUES rather than spaces, and the distinction is behavioural. The MOVE LOW-VALUES TO COUSR2AO at :97 clears the whole output map to X'00', and the MOVEs that would put SPACES in those items - at :158-161 - live inside PROCESS-ENTER-KEY, which this path does not perform. BMS does not transmit a field whose data is X'00', so a screen cleared to LOW-VALUES and one cleared to spaces do not look the same at the terminal.",
   "unitKind": "CONTROLLER_POJO",
   "inputs": {
     "USRSEC": {
@@ -19,178 +19,145 @@
       ]
     }
   },
-  "jobParameters": {
-    "FIXED-CLOCK": "2022-07-19T23:12:34",
-    "CURDATE": "07/19/22",
-    "CURTIME": "23:12:34",
-    "CHARSET": "US-ASCII",
-    "EIBCALEN": "160",
-    "EIBAID": "DFHENTER",
-    "CDEMO-FROM-TRANID": "CA00",
-    "CDEMO-FROM-PROGRAM": "COADM01C",
-    "CDEMO-TO-TRANID": "    ",
-    "CDEMO-TO-PROGRAM": "        ",
-    "CDEMO-USER-ID": "ADMIN001",
-    "CDEMO-USER-TYPE": "A",
-    "CDEMO-PGM-CONTEXT": "0",
-    "CDEMO-CUST-ID": "000000000",
-    "CDEMO-CUST-FNAME": "                         ",
-    "CDEMO-CUST-MNAME": "                         ",
-    "CDEMO-CUST-LNAME": "                         ",
-    "CDEMO-ACCT-ID": "00000000000",
-    "CDEMO-ACCT-STATUS": " ",
-    "CDEMO-CARD-NUM": "0000000000000000",
-    "CDEMO-LAST-MAP": "       ",
-    "CDEMO-LAST-MAPSET": "       ",
-    "CDEMO-CU02-USRID-FIRST": "        ",
-    "CDEMO-CU02-USRID-LAST": "        ",
-    "CDEMO-CU02-PAGE-NUM": "00000000",
-    "CDEMO-CU02-NEXT-PAGE-FLG": "N",
-    "CDEMO-CU02-USR-SEL-FLG": " ",
-    "CDEMO-CU02-USR-SELECTED": "        ",
-    "COUSR2AI-USRIDINI": "        ",
-    "COUSR2AI-FNAMEI": "                    ",
-    "COUSR2AI-LNAMEI": "                    ",
-    "COUSR2AI-PASSWDI": "        ",
-    "COUSR2AI-USRTYPEI": " "
+  "screenRequest": {
+    "eibcalen": 194,
+    "aid": "DFHENTER",
+    "pinnedClock": "2022-07-19T23:12:34",
+    "charset": "US-ASCII",
+    "commarea": {
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
+      "CDEMO-TO-TRANID": "CU02",
+      "CDEMO-TO-PROGRAM": "COUSR02C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "0",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "COUSR2A",
+      "CDEMO-LAST-MAPSET": "COUSR02",
+      "CDEMO-CU02-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU02-USRID-LAST": "USER0005",
+      "CDEMO-CU02-PAGE-NUM": "00000001",
+      "CDEMO-CU02-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU02-USR-SEL-FLG": " ",
+      "CDEMO-CU02-USR-SELECTED": "        "
+    },
+    "mapFields": {},
+    "forcedOutcomes": {}
   },
-  "expectedRecords": [
+  "expectedResponse": {
+    "nextMapset": "COUSR02",
+    "nextMap": "COUSR2A",
+    "navigation": {
+      "CDEMO-FROM-TRANID": "CU00",
+      "CDEMO-FROM-PROGRAM": "COUSR00C",
+      "CDEMO-TO-TRANID": "CU02",
+      "CDEMO-TO-PROGRAM": "COUSR02C",
+      "CDEMO-USER-ID": "ADMIN001",
+      "CDEMO-USER-TYPE": "A",
+      "CDEMO-PGM-CONTEXT": "1",
+      "CDEMO-CUST-ID": "000000000",
+      "CDEMO-CUST-FNAME": "                         ",
+      "CDEMO-CUST-MNAME": "                         ",
+      "CDEMO-CUST-LNAME": "                         ",
+      "CDEMO-ACCT-ID": "00000000000",
+      "CDEMO-ACCT-STATUS": " ",
+      "CDEMO-CARD-NUM": "0000000000000000",
+      "CDEMO-LAST-MAP": "COUSR2A",
+      "CDEMO-LAST-MAPSET": "COUSR02",
+      "CDEMO-CU02-USRID-FIRST": "ADMIN001",
+      "CDEMO-CU02-USRID-LAST": "USER0005",
+      "CDEMO-CU02-PAGE-NUM": "00000001",
+      "CDEMO-CU02-NEXT-PAGE-FLG": "N",
+      "CDEMO-CU02-USR-SEL-FLG": " ",
+      "CDEMO-CU02-USR-SELECTED": "        "
+    },
+    "sends": [
+      {
+        "fields": {
+          "TRNNAMEO": "CU02",
+          "TITLE01O": "      AWS Mainframe Modernization       ",
+          "CURDATEO": "07/19/22",
+          "PGMNAMEO": "COUSR02C",
+          "TITLE02O": "              CardDemo                  ",
+          "CURTIMEO": "23:12:34",
+          "USRIDINO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "FNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "LNAMEO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "PASSWDO": "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+          "USRTYPEO": "\u0000",
+          "ERRMSGO": "                                                                              "
+        }
+      }
+    ],
+    "cursorField": "USRIDINL",
+    "termination": "RETURN_TRANSID"
+  },
+  "expectedWrites": [],
+  "expectedFinalState": [
     {
       "dataset": "USRSEC",
       "rowIndex": 0,
-      "fields": {
-        "SEC-USR-ID": "ADMIN001",
-        "SEC-USR-FNAME": "MARGARET            ",
-        "SEC-USR-LNAME": "GOLD                ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "A",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 1,
-      "fields": {
-        "SEC-USR-ID": "ADMIN002",
-        "SEC-USR-FNAME": "RUSSELL             ",
-        "SEC-USR-LNAME": "RUSSELL             ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "A",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 2,
-      "fields": {
-        "SEC-USR-ID": "ADMIN003",
-        "SEC-USR-FNAME": "RAYMOND             ",
-        "SEC-USR-LNAME": "WHITMORE            ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "A",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 3,
-      "fields": {
-        "SEC-USR-ID": "ADMIN004",
-        "SEC-USR-FNAME": "EMMANUEL            ",
-        "SEC-USR-LNAME": "CASGRAIN            ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "A",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 4,
-      "fields": {
-        "SEC-USR-ID": "ADMIN005",
-        "SEC-USR-FNAME": "GRANVILLE           ",
-        "SEC-USR-LNAME": "LACHAPELLE          ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "A",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 5,
-      "fields": {
-        "SEC-USR-ID": "USER0001",
-        "SEC-USR-FNAME": "LAWRENCE            ",
-        "SEC-USR-LNAME": "THOMAS              ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "U",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 6,
-      "fields": {
-        "SEC-USR-ID": "USER0002",
-        "SEC-USR-FNAME": "AJITH               ",
-        "SEC-USR-LNAME": "KUMAR               ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "U",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 7,
-      "fields": {
-        "SEC-USR-ID": "USER0003",
-        "SEC-USR-FNAME": "LAURITZ             ",
-        "SEC-USR-LNAME": "ALME                ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "U",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 8,
-      "fields": {
-        "SEC-USR-ID": "USER0004",
-        "SEC-USR-FNAME": "AVERARDO            ",
-        "SEC-USR-LNAME": "MAZZI               ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "U",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
     },
     {
       "dataset": "USRSEC",
       "rowIndex": 9,
-      "fields": {
-        "SEC-USR-ID": "USER0005",
-        "SEC-USR-FNAME": "LEE                 ",
-        "SEC-USR-LNAME": "TING                ",
-        "SEC-USR-PWD": "PASSWORD",
-        "SEC-USR-TYPE": "U",
-        "SEC-USR-FILLER": "                       "
-      },
       "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
     }
   ],
   "expectedReturnCode": 0,
-  "expectedMessages": [
-    "                                                                              "
-  ],
+  "expectedMessages": [],
   "normalisations": [
-    "USRSEC_FILLER_PAD_57_TO_80"
+    {
+      "dataset": "USRSEC",
+      "kind": "USRSEC_FILLER_PAD_57_TO_80"
+    }
   ]
 }

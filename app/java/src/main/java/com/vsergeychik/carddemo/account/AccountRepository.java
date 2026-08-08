@@ -1,12 +1,19 @@
 package com.vsergeychik.carddemo.account;
 
 import com.vsergeychik.carddemo.account.model.AccountRecord;
+import com.vsergeychik.carddemo.common.DatasetRelation.BackendDiagnostic;
+import com.vsergeychik.carddemo.common.DatasetRelation.KeySpan;
+import com.vsergeychik.carddemo.common.DatasetRelation;
+import com.vsergeychik.carddemo.common.DiagnosticText;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.FileStatus;
 import com.vsergeychik.carddemo.common.FileStatus.Outcome;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.config.CobolCharsetConfig;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBinding;
 import com.vsergeychik.carddemo.config.DataSourceConfig.DatasetBindings;
+import com.vsergeychik.carddemo.config.DatasetUnitOfWork;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -18,11 +25,11 @@ import org.springframework.jdbc.core.PreparedStatementSetter;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.charset.Charset;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Objects;
@@ -54,7 +61,8 @@ import java.util.OptionalInt;
  *       {@code SELECT ACCTFILE-FILE ASSIGN TO ACCTFILE / ORGANIZATION IS INDEXED / ACCESS MODE IS
  *       SEQUENTIAL / RECORD KEY IS FD-ACCT-ID / FILE STATUS IS ACCTFILE-STATUS}, opens
  *       {@code INPUT} at {@code L135}, reads with {@code READ ACCTFILE-FILE INTO ACCOUNT-RECORD} at
- *       {@code L93} until status {@code '10'}, and closes at {@code L153}. See {@link #readNext()}.</li>
+ *       {@code L93} until status {@code '10'}, and closes at {@code L153}. See
+ *       {@link AccountFile#readNext()}.</li>
  *   <li><strong>Random keyed read</strong> - {@code app/cbl/CBACT04C.cbl:L41-L45} declares the same
  *       dataset with {@code ACCESS MODE IS RANDOM}, opens {@code I-O} at {@code L291}, sets the key
  *       with {@code MOVE TRANCAT-ACCT-ID TO FD-ACCT-ID} at {@code L202} and reads at {@code L373-L376}
@@ -126,7 +134,7 @@ import java.util.OptionalInt;
  *
  * <h2>Ordering is asserted in the statement, never assumed</h2>
  *
- * <p>{@link #readNext()} must deliver records in ascending {@code ACCT-ID} order, because
+ * <p>{@link AccountFile#readNext()} must deliver records in ascending {@code ACCT-ID} order, because
  * {@code CBACT04C}'s account-break logic and {@code CBACT01C}'s output sequence both depend on it, so
  * every browse statement carries an explicit ascending {@code ORDER BY}. Ordering by the record image
  * <em>is</em> ordering by the key: {@code ACCT-ID PIC 9(11)} occupies the leading eleven bytes of the
@@ -137,31 +145,53 @@ import java.util.OptionalInt;
  * <h2>Concurrency, locking and the unit of work</h2>
  *
  * <p>{@code UPDATEMODEL(LOCKING)} with {@code RECOVERY(NONE)} means a record read for update is held
- * for the duration of the unit of work. That is modelled as a plain transactional read: no row-locking
- * clause is bolted onto the statement, no optimistic-lock marker is introduced, and above all no
- * version column is added, because a version column would be a schema change and this migration
- * changes no schema. The transaction boundary itself belongs to the caller - the batch step or the
- * service - so this class declares none.
+ * for the duration of the unit of work, and {@link #readForUpdate(String)} therefore issues a
+ * <strong>genuine locking read</strong>: the keyed select carries {@code FOR UPDATE}, exactly as
+ * {@link com.vsergeychik.carddemo.card.CardRepository} does for the card master. What is <em>not</em>
+ * introduced is an optimistic-lock marker or a version column, because a version column would be a
+ * schema change and this migration changes no schema.
+ *
+ * <p>The lock only exists inside a unit of work, so {@link #readForUpdate(String)} requires one and
+ * refuses to run without it. Under auto-commit a {@code FOR UPDATE} row lock is taken and released
+ * before the statement even returns, which would leave the caller believing it held a record it did
+ * not - the precise hazard {@code 9600-WRITE-PROCESSING} exists to avoid. A CICS task always has a
+ * unit of work and a Spring Batch chunk step always has a transaction, so there is no legacy path that
+ * reads for update outside one; a Java caller that does has a wiring defect, and it is reported as one
+ * rather than silently tolerated. The transaction boundary itself still belongs to the caller - the
+ * batch step or the service - so this class declares none and opens none.
  *
  * <p>The optimistic check that {@code COACTUPC} performs is not this class's job either. Paragraph
  * {@code 9700-CHECK-CHANGE-IN-REC} ({@code app/cbl/COACTUPC.cbl:L4109} onwards) compares the re-read
  * record field by field against the copy the screen was painted from, and it is performed at
  * {@code L3947-L3948}, between the read for update and the rewrite. That comparison lives in the
- * account update service, which is where the COBOL puts it.
+ * account update service, which is where the COBOL puts it. What this class guarantees is that the
+ * record it hands that comparison is locked, and stays locked until the caller's transaction ends - so
+ * the compare and the {@link #rewrite(AccountRecord)} that follows it cannot straddle someone else's
+ * change.
  *
  * <h2>Thread safety</h2>
  *
- * <p><strong>Not thread-safe, deliberately.</strong> A browse has a position, and in COBOL that
- * position is a property of the opened file - one file, one position, advanced by one {@code READ} at a
- * time. This class holds the same single position and nothing more, so two threads browsing one
- * instance concurrently would interleave their reads and destroy the ordering that parity depends on.
- * Guarding the position with a lock would make that misuse silent instead of visible, so it is
- * documented instead: browse from one thread at a time, exactly as one COBOL program does.
+ * <p><strong>This repository is stateless and therefore thread-safe.</strong> It is a Spring singleton,
+ * so anything mutable held on it would be shared by every concurrent execution; a browse position in
+ * particular would let two callers consume each other's records and destroy the ordering parity depends
+ * on. COBOL has no such sharing - a file position and an {@code OPEN} mode belong to one program
+ * execution, exactly as {@code WORKING-STORAGE} does - so neither is held here. Every field is
+ * {@code final} and immutable, and there is <strong>no static mutable state</strong> either: the only
+ * {@code static} members are immutable constants and a logger reference.
+ *
+ * <p>All per-execution state lives on {@link AccountFile}, the {@link AutoCloseable} handle
+ * {@link #open(OpenMode)} returns. One handle stands for one opened file: it carries that open's mode,
+ * its status, the statements resolved for it and its browse position, and it is used by whoever opened
+ * it, exactly as a COBOL {@code FD} is used by the program that opened it. A handle is <em>not</em>
+ * thread-safe and is not meant to be; obtaining a second one is free and is the correct answer.
  *
  * <p>The keyed operations - {@link #readByKey(long)}, {@link #readForUpdate(String)} and
- * {@link #rewrite(AccountRecord)} - touch no position and are safe to call concurrently once the
- * statements have been resolved. There is <strong>no static mutable state</strong> anywhere in this
- * file: the only {@code static} members are immutable constants and a logger reference.
+ * {@link #rewrite(AccountRecord)} - are also exposed directly on the repository, because the CICS
+ * programs that drive them issue no {@code OPEN} at all: {@code COACTUPC}'s
+ * {@code EXEC CICS READ ... UPDATE} names the file and nothing more. They touch no position and hold
+ * nothing between calls, so they are safe to call concurrently. Each resolves the dataset's shape for
+ * itself; a caller that has an {@link AccountFile} open uses the identical operations on the handle
+ * instead and reuses the shape that open already resolved.
  *
  * <h2>The record is always exactly 300 bytes</h2>
  *
@@ -274,7 +304,18 @@ public class AccountRepository {
      * Java would be a literal this file cannot justify. Where a name is unavoidable - a keyed predicate
      * and a rewrite both need one - it is discovered from result-set metadata at this same position.
      */
-    public static final int RECORD_IMAGE_COLUMN_INDEX = 1;
+    public static final int RECORD_IMAGE_COLUMN_INDEX = DatasetRelation.RECORD_IMAGE_COLUMN_INDEX;
+
+    /**
+     * Where the key sits inside the record image: the first {@link #KEY_LENGTH} bytes.
+     *
+     * <p>{@code app/cpy/CVACT01Y.cpy} declares {@code ACCT-ID PIC 9(11)} as the first item of the
+     * 300-byte record, and {@code app/cbl/CBACT01C.cbl:L37-L38} splits the {@code FD} the same way -
+     * {@code FD-ACCT-ID PIC 9(11)} then {@code FD-ACCT-DATA PIC X(289)}. An offset and a length rather
+     * than a column name, because the key is part of the record image and is addressed the way every
+     * other field of it is.
+     */
+    private static final KeySpan KEY_SPAN = new KeySpan(0, KEY_LENGTH);
 
     /**
      * The {@code APPL-RESULT} value the COBOL moves on the fatal arm of every guard chain over this
@@ -311,39 +352,15 @@ public class AccountRepository {
      */
     public static final String PERMANENT_ERROR_STATUS = "9" + PERMANENT_ERROR_FEEDBACK_CODE;
 
+
     /**
-     * The character that escapes a {@code LIKE} metacharacter in a keyed predicate: a backslash.
+     * The core-SQL locking clause appended to the keyed select for a read for update.
      *
-     * <p>A keyed predicate matches a record whose image <em>begins with</em> the eleven-byte key, which
-     * is a {@code LIKE} prefix pattern. The key normally holds eleven digits, but an online
-     * {@code RIDFLD} is a {@code PIC X(11)} character field - {@code app/cbl/COACTUPC.cbl:L382-L383} -
-     * and can therefore carry any character the screen supplied, so the pattern is escaped rather than
-     * assumed to be metacharacter-free. An unescaped {@code _} would otherwise match any byte and could
-     * return a different account's record.
+     * <p>Held as a constant so that the one place this module asks a backend for a lock is visible, and so
+     * that the statement text a test asserts and the statement text the repository issues are the same
+     * string rather than two spellings that could drift.
      */
-    private static final char LIKE_ESCAPE = '\\';
-
-    /**
-     * The wildcard that completes a keyed prefix pattern: matches the remaining bytes of the record.
-     */
-    private static final char LIKE_WILDCARD = '%';
-
-    /**
-     * The single-character {@code LIKE} wildcard, escaped wherever it occurs inside a key image.
-     *
-     * <p>Named so that the escaping loop states which metacharacters it handles rather than leaving a
-     * reader to infer the set from a literal.
-     */
-    private static final char LIKE_SINGLE_WILDCARD = '_';
-
-    /** The ANSI delimited-identifier quote, used to wrap the dataset name and the column name. */
-    private static final String IDENTIFIER_QUOTE = "\"";
-
-    /**
-     * A predicate that is false on every row, so the metadata probe describes the relation without
-     * transferring any of it. Written as a comparison of two literals, which every SQL dialect accepts.
-     */
-    private static final String NEVER_TRUE_PREDICATE = "1 = 0";
+    private static final String FOR_UPDATE = " FOR UPDATE";
 
     // =================================================================================================
     // Collaborators and resolved configuration. Every one of them is final and every one arrives
@@ -367,61 +384,22 @@ public class AccountRepository {
     /** The resolved dataset name, taken verbatim from the configured binding. */
     private final String datasetName;
 
-    /** {@link #datasetName} wrapped as a single SQL delimited identifier, composed once. */
-    private final String qualifiedDatasetName;
-
     /**
-     * The metadata probe: a statement over the dataset that returns no rows.
+     * The dataset as this module reaches it: the validated name, its delimited rendering, the
+     * record-image column it discovers, and every statement composed over it.
      *
-     * <p>Composed at construction because it needs only the dataset name. It is the statement that both
-     * proves the dataset is addressable and yields the record-image column's name.
+     * <p>The module's one data-access contract, shared with every other repository, so that how a
+     * dataset name becomes a SQL identifier and how a key becomes a predicate is decided once rather
+     * than once per repository.
      */
-    private final String columnProbeSql;
+    private final DatasetRelation relation;
 
     // =================================================================================================
-    // Mutable per-instance state. Exactly two things, and both of them stand for something the COBOL
-    // itself holds: the resolved shape of the dataset, and the position of the open browse.
+    // There is no mutable per-instance state, and that is the point. A Spring singleton that held an
+    // open mode, a browse position or a resolved shape would share all three with every concurrent
+    // execution, and COBOL shares none of them: a file position and an OPEN verb belong to one program
+    // execution. All three therefore live on AccountFile, one instance per open. Practice B9, gate G53.
     // =================================================================================================
-
-    /**
-     * The composed statements, resolved on first use and released by {@link #close()}.
-     *
-     * <p>Lazily populated rather than built at construction because the record-image column's name is
-     * discovered from the backend, and a repository must be constructible in a context that has not yet
-     * reached its backend - which is also what lets every geometry check in the constructor fail fast at
-     * context refresh instead of mid-job.
-     *
-     * <p>{@code null} means "not yet resolved". The value it holds is deeply immutable, so publishing it
-     * hands out nothing that can be altered.
-     */
-    private Statements statements;
-
-    /**
-     * The browse position: the image of the record {@link #readNext()} returned last, or {@code null}
-     * for "positioned before the first record".
-     *
-     * <p>This is the Java form of the file position a COBOL {@code OPEN INPUT} establishes and each
-     * {@code READ} advances. It is the full record image rather than just the key, and that is
-     * load-bearing: a bare eleven-byte key would compare as <em>less than</em> the very record it came
-     * from - {@code '00000000001…'} sorts after {@code '00000000001'} - so a browse positioned by key
-     * alone would return the same record for ever. The full image excludes it strictly, and because a
-     * KSDS key is unique the comparison always resolves inside the leading eleven bytes.
-     *
-     * <p>Reset by {@link #open(OpenMode)} and by {@link #close()}, which is what those verbs do to a
-     * file position.
-     */
-    private String browsePosition;
-
-    /**
-     * The {@code OPEN} verb most recently issued against this instance, or {@code null} while the
-     * dataset is closed as far as this instance is concerned.
-     *
-     * <p>Recorded, not enforced. No program in the estate mixes the modes against this dataset - a
-     * browse is always under {@code OPEN INPUT} and a rewrite always under {@code OPEN I-O} - so
-     * refusing an operation on mode grounds would add a rejection the COBOL never performs and a branch
-     * no caller could reach. Held so a caller and a diagnostic can see which verb was issued.
-     */
-    private OpenMode openMode;
 
     /**
      * Resolves the account master's configured bindings, proves the record geometry, and captures the
@@ -479,10 +457,9 @@ public class AccountRepository {
         DatasetBinding batchBinding = requireAccountGeometry(datasetBindings, BATCH_DD_NAME);
         requireSameDataset(cicsBinding, batchBinding);
 
-        this.datasetName = requireUsableDatasetName(cicsBinding.dsname());
-        this.qualifiedDatasetName = asDelimitedIdentifier(this.datasetName);
-        this.columnProbeSql =
-                "SELECT * FROM " + this.qualifiedDatasetName + " WHERE " + NEVER_TRUE_PREDICATE;
+        this.relation = DatasetRelation.of(requireUsableDatasetName(cicsBinding.dsname()),
+                RECORD_LENGTH);
+        this.datasetName = this.relation.dsname();
     }
 
     // =================================================================================================
@@ -523,20 +500,6 @@ public class AccountRepository {
         return codec.charset();
     }
 
-    /**
-     * The {@code OPEN} verb most recently issued successfully against this instance.
-     *
-     * <p>Empty before the first {@link #open(OpenMode)}, after a {@link #close()}, and after an
-     * {@code OPEN} that failed - a failed {@code OPEN} leaves a COBOL file closed, and it leaves this
-     * accessor empty for the same reason.
-     *
-     * @return the recorded mode, or an empty {@code Optional} when this instance holds the dataset
-     *         closed
-     */
-    public Optional<OpenMode> openMode() {
-        return Optional.ofNullable(openMode);
-    }
-
     // =================================================================================================
     // OPEN and CLOSE.
     //
@@ -551,188 +514,81 @@ public class AccountRepository {
     // =================================================================================================
 
     /**
-     * Opens the account master, reporting only the resulting file status.
+     * Opens the account master and hands back the handle that stands for that open.
      *
      * <p>Two verbs, both evidenced, and both reaching this one method: {@code OPEN INPUT} at
      * {@code app/cbl/CBACT01C.cbl:L135} - shared by {@code CBTRN01C} at {@code L327} and by
      * {@code CBSTM03B} at {@code L209} - and {@code OPEN I-O} at {@code app/cbl/CBACT04C.cbl:L291},
      * shared by {@code CBTRN02C} at {@code L311}. No program opens this dataset any other way.
      *
+     * <p><strong>Why this returns a handle rather than a status.</strong> An {@code OPEN} produces
+     * something: a file with a mode and a position, private to the program that opened it. Reporting
+     * only a status and keeping that file on the repository would make the position and the mode shared
+     * singleton state, and two concurrent executions would then consume each other's records. The handle
+     * <em>is</em> the file, so each execution has its own, and the repository keeps nothing. The status
+     * the COBOL tests is {@link AccountFile#openStatus()}, reported on the handle rather than lost.
+     *
      * <p><strong>What "open" means against a configuration-bound driver, precisely.</strong> There is no
      * persistent file handle to acquire: the shared template borrows and returns a connection per
      * operation. So what this method does is the honest equivalent - it establishes the two things an
      * {@code OPEN} establishes, and reports whether it could:
      * <ul>
-     *   <li><strong>it positions the file.</strong> The browse position is reset, so a subsequent
-     *       {@link #readNext()} returns the first record in key order. This is a real, observable effect:
-     *       a {@code CLOSE} followed by an {@code OPEN INPUT} re-reads a COBOL file from its first
-     *       record, and it re-reads this one from its first record too;</li>
+     *   <li><strong>it positions the file.</strong> The returned handle is positioned before the first
+     *       record, so its first {@link AccountFile#readNext()} returns the first record in key order.
+     *       This is a real, observable effect: a {@code CLOSE} followed by an {@code OPEN INPUT}
+     *       re-reads a COBOL file from its first record, and a fresh handle re-reads this one from its
+     *       first record too;</li>
      *   <li><strong>it proves the dataset is addressable.</strong> The metadata probe describes the
      *       relation without transferring a row, which is the failure an {@code OPEN} most often reports -
-     *       an absent or unreachable dataset. It also resolves the record-image column, so the first
-     *       real operation after a successful open needs no extra round trip.</li>
+     *       an absent or unreachable dataset. It also resolves the record-image column once for the
+     *       whole open, so no later operation on the handle pays for a second metadata round trip.</li>
      * </ul>
      *
-     * <p>A failed open leaves this instance holding the dataset closed, so {@link #openMode()} stays
-     * empty - exactly as a COBOL file stays closed when its {@code OPEN} fails. The caller then owns the
-     * {@code DISPLAY 'ERROR OPENING ACCTFILE'} line ({@code CBACT01C.cbl:L144}) or
+     * <p>A failed open yields a handle carrying {@link #PERMANENT_ERROR_STATUS} and no resolved shape, so
+     * every operation on it reports that same failure rather than a fresh one - a caller that ignored the
+     * status still cannot mistake a dataset it never reached for one that was empty. The caller then owns
+     * the {@code DISPLAY 'ERROR OPENING ACCTFILE'} line ({@code CBACT01C.cbl:L144}) or
      * {@code DISPLAY 'ERROR OPENING ACCOUNT MASTER FILE'} ({@code CBACT04C.cbl:L300}), the rendered
      * status and the abend.
      *
-     * <p>The mode is recorded and not enforced, for the reason given on {@link #openMode}.
+     * <p>The mode is recorded and not enforced. No program in the estate mixes the modes against this
+     * dataset - a browse is always under {@code OPEN INPUT} and a rewrite always under {@code OPEN I-O} -
+     * so refusing an operation on mode grounds would add a rejection the COBOL never performs and a
+     * branch no caller could reach.
      *
      * @param mode the {@code OPEN} verb being issued
-     * @return {@link FileStatus#OK} when the dataset is addressable, otherwise
-     *         {@link #PERMANENT_ERROR_STATUS}; never {@code null}, always two characters
+     * @return a freshly positioned handle whose {@link AccountFile#openStatus()} reports whether the
+     *         dataset was addressable; never {@code null}
      * @throws NullPointerException  if {@code mode} is {@code null}
      * @throws IllegalStateException if the backend presents the dataset with no usable record-image
      *                               column, which is a contract violation rather than an I/O outcome
      */
-    public String open(OpenMode mode) {
+    public AccountFile open(OpenMode mode) {
         Objects.requireNonNull(mode, "An open mode is required: the estate opens this dataset as "
                 + OpenMode.INPUT.cobolVerb() + " or as " + OpenMode.I_O.cobolVerb() + ", and which "
                 + "verb was issued is part of what the program did");
 
-        // An OPEN always positions the file and always releases whatever the previous open resolved,
-        // whichever mode it is. Both are cleared before the probe so that a FAILED open cannot leave
-        // this instance holding a position or a shape from an earlier one.
-        this.browsePosition = null;
-        this.statements = null;
-        this.openMode = null;
+        // An OPEN resolves the dataset's shape afresh. The resolved shape and the browse position
+        // belong to the returned handle, never to this instance: a Spring @Repository is a singleton,
+        // and two concurrent executions sharing one position would interleave each other's browses.
+        this.relation.forgetRecordImageColumn();
 
-        String status = probeDataset();
-        if (FileStatus.isOk(status)) {
-            this.openMode = mode;
+        Statements resolved;
+        try {
+            resolved = resolveStatements();
+        } catch (DataAccessException unreachable) {
+            logRefusal(unreachable, "describe the account master dataset '" + datasetName + "' to "
+                    + mode.cobolVerb() + " it");
+            return new AccountFile(this, mode, PERMANENT_ERROR_STATUS, null);
         }
-        return status;
+        return new AccountFile(this, mode, FileStatus.OK, resolved);
     }
 
-    /**
-     * Closes the account master, reporting only the resulting file status.
-     *
-     * <p>Same two-armed shape as {@link #open(OpenMode)}, and the caller likewise owns the
-     * {@code DISPLAY 'ERROR CLOSING ACCOUNT FILE'} line ({@code app/cbl/CBACT01C.cbl:L162},
-     * {@code app/cbl/CBACT04C.cbl:L588}) and the abend.
-     *
-     * <p>Nothing is buffered and no handle is held between calls, so there is no flush to fail. The one
-     * close-time failure this repository can genuinely detect is that the dataset is no longer
-     * addressable - the analogue of the file system reporting a problem as a dataset is de-allocated -
-     * so the same probe as the open is used, which also keeps both of the COBOL's symmetric guards
-     * reachable rather than leaving one dead.
-     *
-     * <p>The probe runs <em>before</em> the state is released, so a caller that closes an unreachable
-     * dataset still gets the failing status, and the release happens regardless of what the probe said:
-     * a COBOL {@code CLOSE} gives up the file position whether or not it reported a good status.
-     *
-     * @return {@link FileStatus#OK} when the dataset is still addressable, otherwise
-     *         {@link #PERMANENT_ERROR_STATUS}; never {@code null}, always two characters
-     * @throws IllegalStateException if the backend presents the dataset with no usable record-image
-     *                               column
-     */
-    public String close() {
-        String status = probeDataset();
-        this.browsePosition = null;
-        this.statements = null;
-        this.openMode = null;
-        return status;
-    }
 
     // =================================================================================================
     // 1000-ACCTFILE-GET-NEXT - app/cbl/CBACT01C.cbl:L92-L116.
     // =================================================================================================
 
-    /**
-     * Reads the next record in ascending key order: the Java form of
-     * {@code READ ACCTFILE-FILE INTO ACCOUNT-RECORD} ({@code app/cbl/CBACT01C.cbl:L93}) and of the
-     * {@code EVALUATE}-equivalent guard that classifies its status at {@code L94-L103}.
-     *
-     * <p>Three outcomes, and exactly the three the COBOL enumerates:
-     * <ul>
-     *   <li><strong>found</strong> - status {@code '00'}, carrying the decoded record. The COBOL moves
-     *       {@code 0} to {@code APPL-RESULT} and the caller displays the record
-     *       ({@code CBACT01C.cbl:L78} and {@code L118-L131});</li>
-     *   <li><strong>end of file</strong> - status {@code '10'}, carrying no record. The COBOL moves
-     *       {@code 16}, which is {@link FileStatus#APPL_EOF}, and the caller sets
-     *       {@code MOVE 'Y' TO END-OF-FILE} at {@code L108} and leaves its loop;</li>
-     *   <li><strong>other</strong> - any other status, carried verbatim. The COBOL moves {@code 12} and
-     *       the caller displays the error, renders the status and abends.</li>
-     * </ul>
-     *
-     * <p><strong>Ordering.</strong> The statement carries an explicit ascending {@code ORDER BY} over the
-     * record-image column, and the first read of a browse uses a statement with no predicate at all
-     * while every later read asks for the first image strictly greater than the one before it. That is a
-     * keyed browse - the same "position, then read the next greater key" the KSDS itself performs - and
-     * it makes the ordering a property of the statement rather than of the backend's scan order. Only
-     * one row is ever transferred: the row limit is set on the statement, so a browse of a large dataset
-     * never materialises it.
-     *
-     * <p>This method does not require {@link #open(OpenMode)} to have been called. Every program in the
-     * estate opens before it reads, so a not-open condition is unobservable here, and inventing a status
-     * for it would add a value no backend produced. What an unopened browse does instead is the faithful
-     * thing: it starts at the first record, which is where an {@code OPEN INPUT} would have positioned
-     * it.
-     *
-     * <p>Calling this method again after end of file returns end of file again. The COBOL loop stops at
-     * the first {@code '10'} and never reads past it, so no program observes anything else, and the
-     * alternative - a status meaning "no valid next record" - would again be a value invented here.
-     *
-     * @return the discriminated outcome; never {@code null}
-     * @throws IllegalStateException     if the backend presents the dataset with no usable record-image
-     *                                   column
-     * @throws IllegalArgumentException  if a stored image is wider than {@link #RECORD_LENGTH}, meaning
-     *                                   the data and the copybook disagree
-     */
-    public ReadResult readNext() {
-        Statements sql;
-        try {
-            sql = resolveStatements();
-        } catch (DataAccessException unreachable) {
-            LOG.error("Could not describe the account master dataset '" + datasetName + "' to begin a "
-                    + "browse; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
-                    + " to the caller", unreachable);
-            return ReadResult.of(PERMANENT_ERROR_STATUS);
-        }
-
-        String position = this.browsePosition;
-        boolean fromStart = position == null;
-        String statement = fromStart ? sql.selectFirst() : sql.selectNext();
-
-        List<String> rows;
-        try {
-            RowMapper<String> recordImageMapper = AccountRepository::mapRecordImage;
-            rows = jdbcTemplate.query(firstRowOf(statement, fromStart ? null : position),
-                    recordImageMapper);
-        } catch (DataAccessException translated) {
-            // The fatal arm. An I/O failure is reported as a status so the caller's own guard chain
-            // decides what to do about it - which, in CBACT01C, is to display and abend.
-            LOG.error("Rejected browse read of the account master dataset '" + datasetName
-                    + "'; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
-                    + " to the caller", translated);
-            return ReadResult.of(PERMANENT_ERROR_STATUS);
-        }
-
-        // The list itself is never null - the template asserts that internally before returning it - so
-        // emptiness is the whole of the end-of-file test, and no unreachable null arm is written here.
-        if (rows.isEmpty()) {
-            // AT END with no record read. An expected outcome, not an error.
-            return ReadResult.endOfFile();
-        }
-        String recordImage = rows.get(0);
-        if (recordImage == null) {
-            // A row whose record image is absent is not a readable 300-byte record. There IS a record,
-            // it simply cannot be read, so this is an I/O-level defect and not an end of file - it must
-            // not be mistaken for one, or a browse would stop early and silently.
-            LOG.error("The account master dataset '" + datasetName + "' presented a row with no record "
-                    + "image at column position " + RECORD_IMAGE_COLUMN_INDEX + "; reporting file status "
-                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller");
-            return ReadResult.of(PERMANENT_ERROR_STATUS);
-        }
-
-        // The position advances to the image exactly as the backend presented it, which is what keeps
-        // the next comparison an apples-to-apples one against the stored values.
-        this.browsePosition = recordImage;
-        return ReadResult.found(decode(recordImage));
-    }
 
     // =================================================================================================
     // 1100-GET-ACCT-DATA        - app/cbl/CBACT04C.cbl:L372-L391, the batch keyed read.
@@ -773,8 +629,11 @@ public class AccountRepository {
      *                                  column
      */
     public ReadResult readByKey(long acctId) {
+        // The identifier is masked in the diagnostic subject, not in the key image: the read itself
+        // uses the real key, while anything that ends up in a log line or an exception message carries
+        // only enough of it to correlate two entries (CWE-532).
         return readKeyed(AccountRecord.keyImage(acctId, codec.charset()), "the account identifier "
-                + acctId);
+                + SensitiveDiagnostics.maskIdentifier(acctId, AccountRecord.ACCT_ID_LENGTH), false);
     }
 
     /**
@@ -807,13 +666,18 @@ public class AccountRepository {
      * test, and {@link ReadResult#cicsResp()} carries the response value the error message renders as
      * {@code ERROR-RESP}.
      *
-     * <p><strong>Where the lock is.</strong> No row-locking clause is added to the statement and no
-     * version column is introduced. The CICS file is defined {@code UPDATEMODEL(LOCKING)} with
-     * {@code RECOVERY(NONE)}, which means the record is held for the unit of work; that unit of work is
-     * the caller's transaction, so this is modelled as a plain transactional read. Consequently this
-     * method issues the same statement as {@link #readByKey(long)} - they differ in which COBOL view of
-     * the key they accept and in what the caller does with the outcome, not in how the record is
-     * fetched.
+     * <p><strong>Where the lock is.</strong> The CICS file is defined {@code UPDATEMODEL(LOCKING)} with
+     * {@code RECOVERY(NONE)}: the record is held from this read until the unit of work ends, and
+     * {@code 9600-WRITE-PROCESSING} depends on it - the {@code 9700-CHECK-CHANGE-IN-REC} comparison that
+     * follows is only meaningful if nothing can change the record between the read that fed it and the
+     * rewrite that acts on it. So this method issues the statement with the row lock requested, and
+     * <em>requires a unit of work to be open</em>. A lock taken with nothing to hold it is released at
+     * once, which would leave the comparison passing while protecting nothing; that is a failure mode
+     * worth refusing loudly rather than one worth having quietly.
+     *
+     * <p>No version column, no optimistic-lock annotation and no ETag is introduced. The concurrency
+     * check the program performs is the field-by-field comparison it already contains, and this method's
+     * job is to make that check effective rather than to substitute a different one.
      *
      * @param acctIdAsChar11 the key exactly as the {@code RIDFLD} holds it: exactly {@link #KEY_LENGTH}
      *                       characters, untrimmed and unparsed
@@ -822,12 +686,17 @@ public class AccountRepository {
      * @throws IllegalArgumentException if {@code acctIdAsChar11} is not exactly {@link #KEY_LENGTH}
      *                                  characters, or if the stored image is wider than
      *                                  {@link #RECORD_LENGTH}
-     * @throws IllegalStateException    if the backend presents the dataset with no usable record-image
-     *                                  column
+     * @throws IllegalStateException    if no unit of work is open, or if the backend presents the dataset
+     *                                  with no usable record-image column
      */
     public ReadResult readForUpdate(String acctIdAsChar11) {
         String keyImage = requireKeyImage(acctIdAsChar11);
-        return readKeyed(keyImage, "the record identification field '" + keyImage + "'");
+        // The key is deliberately absent from the refusal message. This is a wiring diagnostic - which
+        // dataset, which operation - and an account identifier adds nothing to it while putting a
+        // customer identifier into a stack trace that may be logged or returned.
+        requireUnitOfWork();
+        return readKeyed(keyImage, "the record identification field '"
+                + SensitiveDiagnostics.maskIdentifier(keyImage) + "'", true);
     }
 
     // =================================================================================================
@@ -895,12 +764,24 @@ public class AccountRepository {
         try {
             sql = resolveStatements();
         } catch (DataAccessException unreachable) {
-            LOG.error("Could not describe the account master dataset '" + datasetName + "' to rewrite a "
-                    + "record; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
-                    + " to the caller", unreachable);
-            return WriteResult.of(PERMANENT_ERROR_STATUS);
+            return reportWrite(unreachable, "describe the account master dataset '" + datasetName
+                    + "' to rewrite a record");
         }
+        return rewrite(sql, record);
+    }
 
+    /**
+     * Rewrites one record against already-resolved statements.
+     *
+     * <p>Shared by {@link #rewrite(AccountRecord)}, which resolves the dataset's shape for itself, and by
+     * {@link AccountFile#rewrite(AccountRecord)}, which reuses the shape its {@code OPEN} resolved. One
+     * body, so the two entry points cannot drift apart.
+     *
+     * @param sql    the resolved statements
+     * @param record the record to write, complete and already mutated by the caller
+     * @return the discriminated outcome; never {@code null}
+     */
+    private WriteResult rewrite(Statements sql, AccountRecord record) {
         String recordImage = record.toFixedWidthString();
         String keyPattern = asPrefixPattern(record.keyImage());
         int rewritten;
@@ -911,10 +792,8 @@ public class AccountRepository {
             };
             rewritten = jdbcTemplate.update(sql.rewrite(), binder);
         } catch (DataAccessException rejected) {
-            LOG.error("Rejected rewrite of account " + record.keyImage() + " in dataset '" + datasetName
-                    + "'; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
-                    + " to the caller", rejected);
-            return WriteResult.of(PERMANENT_ERROR_STATUS);
+            return reportWrite(rejected, "rewrite a record in the account master dataset '" + datasetName
+                    + "'");
         }
 
         if (rewritten == 1) {
@@ -927,7 +806,8 @@ public class AccountRepository {
         // Unreachable against a unique primary key, and precisely for that reason not assumed away: if
         // the backend really did rewrite several rows for one key, the dataset is not the KSDS the
         // copybook describes and the caller must be told the operation failed.
-        LOG.error("Rewrite of account " + record.keyImage() + " in dataset '" + datasetName
+        LOG.error("Rewrite of account " + SensitiveDiagnostics.maskIdentifier(record.keyImage())
+                + " in dataset '" + datasetName
                 + "' reported " + rewritten + " affected rows; a KSDS primary key is unique, so "
                 + "reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
                 + " to the caller");
@@ -947,31 +827,44 @@ public class AccountRepository {
      * exactly "the record with this key". Only one row is transferred: the row limit is set on the
      * statement.
      *
-     * @param keyImage the stored key image, exactly {@link #KEY_LENGTH} characters
-     * @param subject  how to name the key in a diagnostic, so a log line says which read failed
+     * @param keyImage  the stored key image, exactly {@link #KEY_LENGTH} characters
+     * @param subject   how to name the key in a diagnostic, so a log line says which read failed
+     * @param forUpdate whether to request the row lock a CICS {@code READ ... UPDATE} takes
      * @return the discriminated outcome; never {@code null}
      */
-    private ReadResult readKeyed(String keyImage, String subject) {
+    private ReadResult readKeyed(String keyImage, String subject, boolean forUpdate) {
         Statements sql;
         try {
             sql = resolveStatements();
         } catch (DataAccessException unreachable) {
-            LOG.error("Could not describe the account master dataset '" + datasetName + "' to read "
-                    + subject + "; reporting file status "
-                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", unreachable);
-            return ReadResult.of(PERMANENT_ERROR_STATUS);
+            return reportRead(unreachable, "describe the account master dataset '" + datasetName
+                    + "' to read " + subject);
         }
+        return readKeyed(forUpdate ? sql.selectByKeyForUpdate() : sql.selectByKey(), keyImage,
+                subject);
+    }
 
+    /**
+     * Reads one record by key against an already-composed statement.
+     *
+     * <p>The form {@link AccountFile} uses: an open handle has already resolved the dataset's shape,
+     * so it supplies the statement rather than describing the dataset a second time. One body serves
+     * both entry points, so a keyed read cannot behave differently depending on which one issued it.
+     *
+     * @param statement the composed keyed select, with or without {@code FOR UPDATE}
+     * @param keyImage  the key exactly as the record stores it
+     * @param subject   how to name the operation in a diagnostic - never the key's value
+     * @return the discriminated outcome; never {@code null}
+     */
+    private ReadResult readKeyed(String statement, String keyImage, String subject) {
         List<String> rows;
         try {
             RowMapper<String> recordImageMapper = AccountRepository::mapRecordImage;
-            rows = jdbcTemplate.query(firstRowOf(sql.selectByKey(), asPrefixPattern(keyImage)),
+            rows = jdbcTemplate.query(firstRowOf(statement, asPrefixPattern(keyImage)),
                     recordImageMapper);
         } catch (DataAccessException translated) {
-            LOG.error("Rejected keyed read of " + subject + " in the account master dataset '"
-                    + datasetName + "'; reporting file status "
-                    + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", translated);
-            return ReadResult.of(PERMANENT_ERROR_STATUS);
+            return reportRead(translated, "read " + subject + " from the account master dataset '"
+                    + datasetName + "'");
         }
 
         // As in the browse, the list itself is never null, so emptiness is the whole of the test.
@@ -986,9 +879,56 @@ public class AccountRepository {
                     + " with no record image at column position " + RECORD_IMAGE_COLUMN_INDEX
                     + "; reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
                     + " to the caller");
-            return ReadResult.of(PERMANENT_ERROR_STATUS);
+            return ReadResult.of(PERMANENT_ERROR_STATUS);  // No backend refusal: nothing to diagnose
         }
         return ReadResult.found(decode(recordImage));
+    }
+
+    // =================================================================================================
+    // Backend-refusal reporting. Every catch arm in this class goes through one of these three, so the
+    // driver's own words reach both the log and the caller, and neither is left to a per-site decision.
+    // =================================================================================================
+
+    /**
+     * Logs a backend refusal with the driver's own diagnosis and returns it for the caller to carry.
+     *
+     * <p>What is logged is what the backend said - {@code SQLSTATE}, vendor code and the exception type
+     * that carried them - and the dataset name. Deliberately <strong>not</strong> logged: the key, the
+     * record image, or any part of either. A failing account operation's record holds a card number and
+     * a customer identifier, so a log line that echoed it would put those in a file that is read by more
+     * people, retained for longer, and protected less than the dataset itself.
+     *
+     * @param refusal the exception the backend or the framework raised
+     * @param attempt what was being attempted, phrased to complete "Could not ..."
+     * @return the diagnostic read out of {@code refusal}
+     */
+    private BackendDiagnostic logRefusal(Throwable refusal, String attempt) {
+        BackendDiagnostic diagnostic = BackendDiagnostic.of(refusal);
+        LOG.error("Could not " + attempt + " - " + diagnostic.describe() + "; reporting file status "
+                + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", refusal);
+        return diagnostic;
+    }
+
+    /**
+     * Reports a backend refusal of a read as a permanent-error status carrying the diagnostic.
+     *
+     * @param refusal the exception raised
+     * @param attempt what was being attempted
+     * @return the outcome
+     */
+    private ReadResult reportRead(Throwable refusal, String attempt) {
+        return ReadResult.of(PERMANENT_ERROR_STATUS, logRefusal(refusal, attempt));
+    }
+
+    /**
+     * Reports a backend refusal of a write as a permanent-error status carrying the diagnostic.
+     *
+     * @param refusal the exception raised
+     * @param attempt what was being attempted
+     * @return the outcome
+     */
+    private WriteResult reportWrite(Throwable refusal, String attempt) {
+        return WriteResult.of(PERMANENT_ERROR_STATUS, logRefusal(refusal, attempt));
     }
 
     // =================================================================================================
@@ -997,31 +937,60 @@ public class AccountRepository {
     // =================================================================================================
 
     /**
-     * Reports whether the dataset is addressable, as an {@code OPEN} or a {@code CLOSE} would.
+     * Resolves the statements for one operation, reporting an unreachable dataset as {@code null}.
      *
-     * <p>Read-only: the probe statement carries a predicate that is false on every row, so the relation
-     * is described without any of it being transferred. That is what makes it usable against a driver
-     * this build cannot exercise, and it is a genuine dataset-scoped check rather than a bare connection
-     * test - an absent dataset fails here, which is exactly what an {@code OPEN} would report.
+     * <p>The repository-level keyed operations exist because the CICS programs issue no {@code OPEN}, so
+     * each of them has to establish the dataset's shape for itself. This is where that happens, and it is
+     * also the single place the resulting {@link DataAccessException} is turned into the coarse status the
+     * COBOL sees, so the three call sites do not repeat the translation.
      *
-     * @return {@link FileStatus#OK} or {@link #PERMANENT_ERROR_STATUS}
-     * @throws IllegalStateException if the dataset is reachable but presents no usable record-image
-     *                               column
+     * <p><strong>Nothing is cached.</strong> A resolved shape held on this singleton would be shared
+     * mutable state, and it was the coupling between that cache and the open/close lifecycle that let one
+     * execution's {@code OPEN} pull the shape out from under another's browse. The cost is one metadata
+     * round trip per repository-level keyed operation, and it is accepted deliberately: this migration is
+     * explicitly not a performance refactoring, and a caller that minds pays it once by opening an
+     * {@link AccountFile}, whose operations reuse the shape its {@code OPEN} resolved.
+     *
+     * @param subject how to name the operation in a diagnostic
+     * @return the resolved statements, or {@code null} when the dataset could not be described
+     * @throws IllegalStateException if the dataset is reachable but presents no usable record-image column
      */
-    private String probeDataset() {
+    private Statements statementsFor(String subject) {
         try {
-            resolveStatements();
-            return FileStatus.OK;
+            return resolveStatements();
         } catch (DataAccessException unreachable) {
-            LOG.error("The account master dataset '" + datasetName + "' could not be described; "
-                    + "reporting file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
-                    + " to the caller", unreachable);
-            return PERMANENT_ERROR_STATUS;
+            logRefusal(unreachable, "describe the account master dataset '" + datasetName + "'");
+            return null;
         }
     }
 
     /**
-     * Returns the composed statements, resolving them on first use.
+     * Refuses a read for update that is not inside a unit of work.
+     *
+     * <p>A {@code FOR UPDATE} row lock lives for the length of the transaction that took it. Under
+     * auto-commit that is the length of the statement, so the lock is gone before the caller can compare
+     * the record and rewrite it - and the caller would never know. {@code READ ... UPDATE} in CICS cannot
+     * behave that way, because a CICS task always has a unit of work, so there is no legacy behaviour to
+     * reproduce here and nothing to report as a file status: this is a defect in the Java caller's wiring
+     * and is reported as one.
+     *
+     * @throws IllegalStateException if no transaction is active on the calling thread
+     */
+    private void requireUnitOfWork() {
+        // One precondition, one diagnostic. Both entry points to the locking read - this class's own
+        // readForUpdate and the handle's - route through the module-wide check, so an operator sees the
+        // same message whichever one refused, and the COBOL evidence for the requirement travels in the
+        // operation name rather than in a second copy of the wording.
+        DatasetUnitOfWork.requireActive("A read for update of the account master, which "
+                + "EXEC CICS READ ... UPDATE holds for the unit of work "
+                + "(app/cbl/COACTUPC.cbl:L3894-L3903, and the 'Could we lock the account record ?' "
+                + "test at L3903) so that 9700-CHECK-CHANGE-IN-REC can compare and REWRITE can run - "
+                + "or use readByKey(long) when no lock is wanted", datasetName);
+    }
+
+    /**
+     * Composes the statements for this dataset, discovering the record-image column's name from the
+     * backend.
      *
      * <p><strong>Why a name has to be discovered at all.</strong> Every dataset in this module is reached
      * as a single-column relation whose one column holds the record image, and a sequential read can
@@ -1031,10 +1000,14 @@ public class AccountRepository {
      * never invented here, never defaulted, and never added as a configuration key, because a name this
      * file made up would be exactly the kind of unverifiable literal the migration forbids.
      *
-     * <p>The resolved shape is cached because it cannot change while the dataset is open, and because a
-     * browse would otherwise pay for a metadata round trip per record. {@link #open(OpenMode)} and
-     * {@link #close()} both discard it, so the shape is re-established by the next operation - which is
-     * what makes an {@code OPEN} after a {@code CLOSE} a genuine re-open rather than a no-op.
+     * <p>The probe is read-only: its predicate is false on every row, so the relation is described
+     * without any of it being transferred. That is what makes it usable against a driver this build
+     * cannot exercise, and it is a genuine dataset-scoped check rather than a bare connection test - an
+     * absent dataset fails here, which is exactly what an {@code OPEN} would report.
+     *
+     * <p>Package-visible so this class's own tests can assert the composed text and the discovery
+     * behaviour without reaching around the class. It resolves afresh on every call and stores nothing:
+     * the returned value is deeply immutable, so handing it out grants nothing that can be altered.
      *
      * @return the composed statements; never {@code null}
      * @throws DataAccessException    if the dataset cannot be described - an I/O outcome, translated into
@@ -1044,17 +1017,11 @@ public class AccountRepository {
      *                                a dataset as a record-image relation, and one that is not cannot be
      *                                read or written at all
      */
-    private Statements resolveStatements() {
-        Statements resolved = this.statements;
-        if (resolved == null) {
-            ResultSetExtractor<String> columnNameExtractor =
-                    AccountRepository::extractRecordImageColumnName;
-            String columnName = jdbcTemplate.query(columnProbeSql, columnNameExtractor);
-            resolved = Statements.over(qualifiedDatasetName,
-                    asDelimitedIdentifier(requireUsableColumnName(columnName)));
-            this.statements = resolved;
-        }
-        return resolved;
+    Statements resolveStatements() {
+        ResultSetExtractor<String> columnNameExtractor =
+                AccountRepository::extractRecordImageColumnName;
+        String columnName = jdbcTemplate.query(relation.describeStatement(), columnNameExtractor);
+        return Statements.over(relation, requireUsableColumnName(columnName));
     }
 
     /**
@@ -1071,11 +1038,7 @@ public class AccountRepository {
      * @throws SQLException if the driver cannot supply the metadata
      */
     private static String extractRecordImageColumnName(ResultSet resultSet) throws SQLException {
-        ResultSetMetaData metaData = resultSet.getMetaData();
-        if (metaData == null || metaData.getColumnCount() < RECORD_IMAGE_COLUMN_INDEX) {
-            return null;
-        }
-        return metaData.getColumnName(RECORD_IMAGE_COLUMN_INDEX);
+        return DatasetRelation.recordImageColumnOf(resultSet.getMetaData());
     }
 
     /**
@@ -1141,8 +1104,8 @@ public class AccountRepository {
      *                                  {@link #RECORD_LENGTH} bytes
      */
     private AccountRecord decode(String recordImage) {
-        byte[] widened =
-                codec.padToDeclaredWidth(recordImage.getBytes(codec.charset()), RECORD_LENGTH);
+        byte[] widened = codec.padToDeclaredWidth(
+                codec.encodeImage(recordImage, "an ACCOUNT-RECORD row image"), RECORD_LENGTH);
         return AccountRecord.decode(widened, codec.charset());
     }
 
@@ -1152,62 +1115,21 @@ public class AccountRepository {
     // =================================================================================================
 
     /**
-     * Turns a key image into a {@code LIKE} prefix pattern, escaping every metacharacter it contains.
+     * Renders a key image as the escaped {@code LIKE} pattern that matches the record carrying it.
      *
-     * <p>The pattern matches a record image that begins with the key and continues with anything, which
-     * for a fixed-width record whose leading field is the key selects exactly the record with that key.
+     * <p>Delegated to {@link KeySpan#pattern(String)}, which is the module's one such renderer: the key
+     * is escaped there rather than trusted, because an online {@code RIDFLD} is a {@code PIC X(11)}
+     * character field ({@code app/cbl/COACTUPC.cbl:L382-L383}) carrying whatever the screen supplied,
+     * and an unescaped {@code _} in it would match any byte and could return - or, through the rewrite
+     * that shares the predicate, overwrite - a different account's record.
      *
-     * <p>Escaping is not defensive decoration. The online {@code RIDFLD} is a {@code PIC X(11)}
-     * character field fed from a screen ({@code app/cbl/COACTUPC.cbl:L3892}), so it can carry any
-     * character at all; an unescaped single-character wildcard inside it would match any byte and could
-     * return - or rewrite - a different account's record.
-     *
-     * @param keyImage the stored key image
-     * @return the escaped prefix pattern
+     * @param keyImage the stored key image, exactly {@link #KEY_LENGTH} characters
+     * @return the escaped pattern
      */
     private static String asPrefixPattern(String keyImage) {
-        StringBuilder pattern = new StringBuilder(keyImage.length() + 2);
-        for (int index = 0; index < keyImage.length(); index++) {
-            char character = keyImage.charAt(index);
-            if (character == LIKE_ESCAPE
-                    || character == LIKE_WILDCARD
-                    || character == LIKE_SINGLE_WILDCARD) {
-                pattern.append(LIKE_ESCAPE);
-            }
-            pattern.append(character);
-        }
-        return pattern.append(LIKE_WILDCARD).toString();
+        return KEY_SPAN.pattern(keyImage);
     }
 
-    /**
-     * Renders a name as a single SQL delimited identifier.
-     *
-     * <p>A mainframe dataset name contains periods, and an unquoted period is a name separator in SQL,
-     * so the name has to be delimited or it would be parsed as a chain of qualifiers. The same wrapping
-     * is applied to the discovered column name, which protects a name that is case-sensitive or that
-     * collides with a reserved word. Any embedded quote character is repeated, which is how the SQL
-     * standard escapes one inside a delimited identifier; together with the control-character rejection
-     * in {@link #requireUsableDatasetName(String)} and {@link #requireUsableColumnName(String)}, that
-     * leaves no way for a value to terminate the identifier early.
-     *
-     * @param name the validated name
-     * @return the name as a delimited identifier
-     */
-    private static String asDelimitedIdentifier(String name) {
-        return IDENTIFIER_QUOTE + name.replace(IDENTIFIER_QUOTE, IDENTIFIER_QUOTE + IDENTIFIER_QUOTE)
-                + IDENTIFIER_QUOTE;
-    }
-
-    /**
-     * Resolves one DD name and proves the geometry its binding declares.
-     *
-     * @param datasetBindings the configured catalogue
-     * @param ddName          the DD or CICS {@code FILE} name to resolve
-     * @return the resolved binding
-     * @throws IllegalStateException if the name is unconfigured, if the binding declares a record width
-     *                               other than {@link #RECORD_LENGTH}, or if it declares a key width
-     *                               other than {@link #KEY_LENGTH}
-     */
     private static DatasetBinding requireAccountGeometry(DatasetBindings datasetBindings,
             String ddName) {
         DatasetBinding binding = datasetBindings.binding(ddName);
@@ -1279,9 +1201,9 @@ public class AccountRepository {
                     + ".dsname; this repository composes its statements from configuration alone and "
                     + "hard-codes no dataset name.");
         }
-        requireNoControlCharacter(candidate, "The dataset name configured at carddemo.datasets."
-                + CICS_FILE_NAME + ".dsname");
-        return candidate;
+        // The grammar itself lives in DatasetRelation, so the rule about what a dataset name may
+        // contain is stated once for every repository rather than restated - differently - in each.
+        return DatasetRelation.requireDatasetName(candidate);
     }
 
     /**
@@ -1351,9 +1273,9 @@ public class AccountRepository {
                 + "RIDFLD is a PIC X(11) field and is never absent, only spaces");
         if (candidate.length() != KEY_LENGTH) {
             throw new IllegalArgumentException("The account master key is declared PIC X(" + KEY_LENGTH
-                    + ") but was given " + candidate.length() + " character(s): '" + candidate + "'. A "
-                    + "fixed-width key carries its padding, so it is never trimmed and never short - "
-                    + "render an account identifier with AccountRecord.keyImage(long, Charset).");
+                    + ") but was given " + candidate.length() + " character(s). A fixed-width key "
+                    + "carries its padding, so it is never trimmed and never short - render an "
+                    + "account identifier with AccountRecord.keyImage(long, Charset).");
         }
         return candidate;
     }
@@ -1363,16 +1285,16 @@ public class AccountRepository {
     // =================================================================================================
 
     /**
-     * The four statements this repository issues, composed once the record-image column is known.
+     * The five statements this repository issues, composed once the record-image column is known.
      *
      * <p>An immutable value, package-visible so that a unit test can assert the composed text directly
      * rather than inferring it from a database round trip. It is not part of the public contract: no
      * caller outside this package can name the type.
      *
      * <p>Every statement is confined to core SQL - a delimited identifier, {@code ORDER BY}, a
-     * comparison, {@code LIKE … ESCAPE} and a single-column {@code UPDATE} - and none of them names a
-     * column list, because this migration introduces no schema and therefore has no column names of its
-     * own to name.
+     * comparison, {@code LIKE … ESCAPE}, {@code FOR UPDATE} and a single-column {@code UPDATE} - and none
+     * of them names a column list, because this migration introduces no schema and therefore has no
+     * column names of its own to name.
      *
      * @param selectFirst the first read of a browse: every record in ascending key order, limited to one
      *                    row by the statement. No predicate, because an {@code OPEN INPUT} positions
@@ -1381,26 +1303,36 @@ public class AccountRepository {
      *                    the one already returned, in ascending key order. The parameter is the previous
      *                    <em>image</em> and not its key - see {@link AccountRepository#browsePosition}
      * @param selectByKey the keyed read: the record whose image begins with the key
+     * @param selectByKeyForUpdate the keyed read with the row lock the CICS {@code READ ... UPDATE}
+     *                    takes, valid only inside a unit of work
      * @param rewrite     the rewrite: replace the image of the record whose image begins with the key
      */
-    record Statements(String selectFirst, String selectNext, String selectByKey, String rewrite) {
+    record Statements(String selectFirst,
+                      String selectNext,
+                      String selectByKey,
+                      String selectByKeyForUpdate,
+                      String rewrite) {
 
         /**
-         * Composes the four statements over one dataset and one record-image column.
+         * Composes the statements over one dataset and one record-image column.
          *
-         * @param dataset the dataset name, already rendered as a delimited identifier
-         * @param column  the record-image column name, already rendered as a delimited identifier
+         * <p>Every one of them comes from {@link DatasetRelation}, which also remembers the validated
+         * column name. That is the point: the text of a browse, a keyed read, a locking read and a
+         * rewrite is decided in one class for every dataset in the module, so a divergence between two
+         * repositories is not something a reader has to go looking for.
+         *
+         * @param relation the dataset contract
+         * @param column   the record-image column name as the backend described it, undelimited
          * @return the composed statements
          */
-        static Statements over(String dataset, String column) {
-            String source = "SELECT * FROM " + dataset;
-            String ascending = " ORDER BY " + column + " ASC";
-            String keyed = " WHERE " + column + " LIKE ? ESCAPE '" + LIKE_ESCAPE + "'";
+        static Statements over(DatasetRelation relation, String column) {
+            String recordImageColumn = relation.rememberRecordImageColumn(column);
             return new Statements(
-                    source + ascending,
-                    source + " WHERE " + column + " > ?" + ascending,
-                    source + keyed,
-                    "UPDATE " + dataset + " SET " + column + " = ?" + keyed);
+                    relation.selectAllAscending(recordImageColumn),
+                    relation.selectAfterAscending(recordImageColumn),
+                    relation.selectByKey(recordImageColumn),
+                    relation.selectByKeyForUpdate(recordImageColumn),
+                    relation.rewriteByKey(recordImageColumn));
         }
     }
 
@@ -1412,19 +1344,409 @@ public class AccountRepository {
      * @return the statement that describes the dataset without transferring a row
      */
     String columnProbeSql() {
-        return columnProbeSql;
+        return relation.describeStatement();
     }
 
+    // =================================================================================================
+    // The opened file. One instance per OPEN, holding everything that OPEN establishes: the verb, the
+    // status, the resolved shape and the browse position. This is where the state the repository used to
+    // share with every concurrent execution now lives.
+    // =================================================================================================
+
     /**
-     * The resolved statements, or {@code null} while they have not been resolved.
+     * One opened account master file: the Java form of the {@code FD} a program opens, reads and closes.
      *
-     * <p>Exposed to this class's own tests so that the composed text and the caching behaviour can both
-     * be asserted. Package-visible, and safe to hand out because {@link Statements} is immutable.
+     * <p>The Java form of the file {@code app/cbl/CBACT01C.cbl} opens at {@code :135}, reads at
+     * {@code :93} and closes at {@code :153}, driving its whole program from {@code :62}:
+     * <pre>
+     * try (AccountRepository.AccountFile file = repository.open(OpenMode.INPUT)) {
+     *     if (!FileStatus.isOk(file.openStatus())) {            // IF ACCTFILE-STATUS = '00' ... ELSE
+     *         throw AbendException.standard("CBACT01C", APPL_RESULT_FATAL);
+     *     }
+     *     for (ReadResult next = file.readNext();                          //  PERFORM UNTIL
+     *             !next.isEndOfFile();                                     //  END-OF-FILE = 'Y'
+     *             next = file.readNext()) {
+     *         if (next.isOther()) {                             // ERROR READING ACCOUNT FILE
+     *             throw AbendException.standard("CBACT01C", next.applResult());
+     *         }
+     *         display(next.account().orElseThrow());            // DISPLAY ACCOUNT-RECORD
+     *     }
+     * }
+     * </pre>
+     * The abend is the caller's, as it is in the COBOL: the paragraph that tests the status is the
+     * paragraph that decides, and this handle only reports.
      *
-     * @return the cached statements, or {@code null}
+     * <p><strong>Why this type exists.</strong> A file position, an {@code OPEN} verb and the shape
+     * resolved for that open all belong to one program execution. Held on the {@link AccountRepository}
+     * singleton they would be shared by every concurrent execution, and one execution's {@code OPEN}
+     * would reposition another's browse and discard the shape it was using mid-read. Here each execution
+     * has its own, and the repository has none.
+     *
+     * <p><strong>Not thread safe, by design.</strong> A handle stands for one file position and is used by
+     * whoever opened it, exactly as a COBOL {@code FD} is used by the program that opened it. Sharing one
+     * across threads would be the concurrency equivalent of two programs sharing one {@code FD}. Opening
+     * a second handle is free and is the correct answer.
+     *
+     * <p>The keyed operations are offered here as well as on the repository, and they are the same
+     * operations: {@code CBACT04C} reads and rewrites under its own {@code OPEN I-O}
+     * ({@code app/cbl/CBACT04C.cbl:L291}), so a caller holding a handle uses these and reuses the shape
+     * its open resolved, while {@code COACTUPC}, which issues no {@code OPEN} at all, uses the
+     * repository's.
      */
-    Statements resolvedStatements() {
-        return statements;
+    public static final class AccountFile implements AutoCloseable {
+
+        /** The repository that opened this file, for its template, its codec and its dataset identity. */
+        private final AccountRepository repository;
+
+        /** The {@code OPEN} verb this handle was opened with. Recorded, not enforced. */
+        private final OpenMode mode;
+
+        /**
+         * The status the {@code OPEN} reported: {@link FileStatus#OK}, or
+         * {@link AccountRepository#PERMANENT_ERROR_STATUS} when the dataset could not be described.
+         */
+        private final String openStatus;
+
+        /**
+         * The statements resolved for this open, or {@code null} when the open failed.
+         *
+         * <p>Resolved once, by the {@code OPEN} itself, which is what an {@code OPEN} is for: every later
+         * operation on this handle is spared a metadata round trip. Deeply immutable, so nothing here can
+         * be perturbed after the open.
+         */
+        private final Statements statements;
+
+        /**
+         * The browse position: the image of the record {@link #readNext()} returned last, or {@code null}
+         * for "positioned before the first record".
+         *
+         * <p>The Java form of the file position a COBOL {@code OPEN INPUT} establishes and each
+         * {@code READ} advances. It is the full record image rather than just the key, and that is
+         * load-bearing: a bare eleven-byte key would compare as <em>less than</em> the very record it came
+         * from - {@code '00000000001…'} sorts after {@code '00000000001'} - so a browse positioned by key
+         * alone would return the same record for ever. The full image excludes it strictly, and because a
+         * KSDS key is unique the comparison always resolves inside the leading eleven bytes.
+         */
+        private String browsePosition;
+
+        /** Whether {@link #closeFile()} has been called. */
+        private boolean closed;
+
+        /**
+         * Constructed only by {@link AccountRepository#open(OpenMode)}, which is what guarantees that a
+         * successful open always arrives with its resolved shape and a failed one never does.
+         *
+         * @param repository the opening repository
+         * @param mode       the {@code OPEN} verb issued
+         * @param openStatus the status the open reported
+         * @param statements the resolved statements for a successful open, or {@code null} for a failed
+         *                   one
+         */
+        private AccountFile(AccountRepository repository, OpenMode mode, String openStatus,
+                Statements statements) {
+            this.repository = repository;
+            this.mode = mode;
+            this.openStatus = openStatus;
+            this.statements = statements;
+            this.browsePosition = null;
+            this.closed = false;
+        }
+
+        /**
+         * The status the {@code OPEN} reported: the value {@code app/cbl/CBACT01C.cbl:L137} tests before
+         * moving {@code 0} or {@code 12} into {@code APPL-RESULT}.
+         *
+         * @return {@link FileStatus#OK} or {@link AccountRepository#PERMANENT_ERROR_STATUS}; never
+         *         {@code null}, always two characters
+         */
+        public String openStatus() {
+            return openStatus;
+        }
+
+        /**
+         * The open status classified.
+         *
+         * @return {@link Outcome#OK} for a successful open, otherwise {@link Outcome#OTHER}
+         */
+        public Outcome openOutcome() {
+            return FileStatus.outcomeOfStatus(openStatus);
+        }
+
+        /**
+         * The {@code OPEN} verb this handle was opened with.
+         *
+         * <p>Recorded and not enforced, for the reason given on {@link AccountRepository#open(OpenMode)}:
+         * no program in the estate mixes the modes against this dataset, so a mode-based refusal would be
+         * a rejection the COBOL never performs.
+         *
+         * @return the verb; never {@code null}
+         */
+        public OpenMode mode() {
+            return mode;
+        }
+
+        /**
+         * The dataset this handle reads and writes.
+         *
+         * @return the configured account master dataset name; never {@code null} and never blank
+         */
+        public String datasetName() {
+            return repository.datasetName();
+        }
+
+        /**
+         * Whether {@link #closeFile()} has been called on this handle.
+         *
+         * @return {@code true} once the file has been closed
+         */
+        public boolean isClosed() {
+            return closed;
+        }
+
+        // =============================================================================================
+        // 1000-ACCTFILE-GET-NEXT - app/cbl/CBACT01C.cbl:L92-L116.
+        // =============================================================================================
+
+        /**
+         * Reads the next record in ascending key order: the Java form of
+         * {@code READ ACCTFILE-FILE INTO ACCOUNT-RECORD} ({@code app/cbl/CBACT01C.cbl:L93}) and of the
+         * {@code EVALUATE}-equivalent guard that classifies its status at {@code L94-L103}.
+         *
+         * <p>Four reported outcomes, and they are the ones the COBOL enumerates:
+         * <ul>
+         *   <li><strong>found</strong> - status {@code '00'}, carrying the decoded record. The COBOL moves
+         *       {@code 0} to {@code APPL-RESULT} and the caller displays the record
+         *       ({@code CBACT01C.cbl:L78} and {@code L118-L131});</li>
+         *   <li><strong>end of file</strong> - status {@code '10'}, carrying no record. The COBOL moves
+         *       {@code 16}, which is {@link FileStatus#APPL_EOF}, and the caller sets
+         *       {@code MOVE 'Y' TO END-OF-FILE} at {@code L108} and leaves its loop. Reported repeatedly
+         *       and idempotently: once at end of file, every further call reports it again, which is
+         *       faithful because the COBOL loop stops on the flag and never resumes;</li>
+         *   <li><strong>other</strong> carrying the <em>open's</em> status, when the open failed - so a
+         *       caller that ignored {@link #openStatus()} still cannot mistake a dataset it never reached
+         *       for one that was empty;</li>
+         *   <li><strong>other</strong> carrying {@link AccountRepository#PERMANENT_ERROR_STATUS} for an
+         *       I/O failure or a row whose record image is absent. The COBOL moves {@code 12} and the
+         *       caller displays the error, renders the status and abends.</li>
+         * </ul>
+         *
+         * <p><strong>Ordering.</strong> The statement carries an explicit ascending {@code ORDER BY} over
+         * the record-image column, and the first read of a browse uses a statement with no predicate at
+         * all while every later read asks for the first image strictly greater than the one before it.
+         * That is a keyed browse - the same "position, then read the next greater key" the KSDS itself
+         * performs - and it makes the ordering a property of the statement rather than of the backend's
+         * scan order. Only one row is ever transferred: the row limit is set on the statement, so a browse
+         * of a large dataset never materialises it.
+         *
+         * <p>Reading a closed file is a <strong>programming error, not an I/O outcome</strong>, and throws.
+         * COBOL would report status {@code '47'} or {@code '49'} for a read against a file in the wrong
+         * open mode, but no consumer of this dataset ever does it - {@code CBACT01C} closes once, after its
+         * loop - so there is no legacy behaviour to reproduce and the honest response is to fail loudly at
+         * the defect rather than to return a status no COBOL path would have produced.
+         *
+         * @return the discriminated outcome; never {@code null}
+         * @throws IllegalStateException    if this handle has been closed
+         * @throws IllegalArgumentException if a stored image is wider than
+         *                                  {@link AccountRepository#RECORD_LENGTH}, meaning the data and
+         *                                  the copybook disagree
+         */
+        public ReadResult readNext() {
+            requireOpen("read the next record");
+            if (statements == null) {
+                return ReadResult.of(openStatus);
+            }
+
+            String position = this.browsePosition;
+            boolean fromStart = position == null;
+            String statement = fromStart ? statements.selectFirst() : statements.selectNext();
+
+            List<String> rows;
+            try {
+                RowMapper<String> recordImageMapper = AccountRepository::mapRecordImage;
+                rows = repository.jdbcTemplate.query(firstRowOf(statement, fromStart ? null : position),
+                        recordImageMapper);
+            } catch (DataAccessException translated) {
+                // The fatal arm. An I/O failure is reported as a status so the caller's own guard chain
+                // decides what to do about it - which, in CBACT01C, is to display and abend.
+                LOG.error("Rejected browse read of the account master dataset '" + datasetName()
+                        + "'; reporting file status "
+                        + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS) + " to the caller", translated);
+                return ReadResult.of(PERMANENT_ERROR_STATUS);
+            }
+
+            // The list itself is never null - the template asserts that internally before returning it -
+            // so emptiness is the whole of the end-of-file test, and no unreachable null arm is written.
+            if (rows.isEmpty()) {
+                // AT END with no record read. An expected outcome, not an error.
+                return ReadResult.endOfFile();
+            }
+            String recordImage = rows.get(0);
+            if (recordImage == null) {
+                // A row whose record image is absent is not a readable 300-byte record. There IS a record,
+                // it simply cannot be read, so this is an I/O-level defect and not an end of file - it
+                // must not be mistaken for one, or a browse would stop early and silently.
+                LOG.error("The account master dataset '" + datasetName() + "' presented a row with no "
+                        + "record image at column position " + RECORD_IMAGE_COLUMN_INDEX + "; reporting "
+                        + "file status " + FileStatus.toStatusImage(PERMANENT_ERROR_STATUS)
+                        + " to the caller");
+                return ReadResult.of(PERMANENT_ERROR_STATUS);
+            }
+
+            // The position advances to the image exactly as the backend presented it, which is what keeps
+            // the next comparison an apples-to-apples one against the stored values.
+            this.browsePosition = recordImage;
+            return ReadResult.found(repository.decode(recordImage));
+        }
+
+        /**
+         * Reads one record by account identifier under this open: {@link AccountRepository#readByKey(long)}
+         * against the shape this {@code OPEN} already resolved.
+         *
+         * <p>The Java form of {@code CBACT04C}'s keyed read at {@code app/cbl/CBACT04C.cbl:L373-L376},
+         * which runs under that program's {@code OPEN I-O}. Identical in outcome to the repository's own
+         * method; it differs only in paying no second metadata round trip.
+         *
+         * <p>The browse position is untouched, exactly as a COBOL random {@code READ} leaves the position
+         * of a sequential browse of the same file alone.
+         *
+         * @param acctId the account identifier; must not be negative, as {@code PIC 9} declares no sign
+         *               position and therefore has no representation for one
+         * @return the discriminated outcome; never {@code null}
+         * @throws IllegalStateException    if this handle has been closed
+         * @throws IllegalArgumentException if {@code acctId} is negative, or if the stored image is wider
+         *                                  than {@link AccountRepository#RECORD_LENGTH}
+         */
+        public ReadResult readByKey(long acctId) {
+            requireOpen("read a record by key");
+            if (statements == null) {
+                return ReadResult.of(openStatus);
+            }
+            return repository.readKeyed(statements.selectByKey(),
+                    AccountRecord.keyImage(acctId, repository.codec.charset()),
+                    "the account identifier " + acctId);
+        }
+
+        /**
+         * Reads one record for update under this open:
+         * {@link AccountRepository#readForUpdate(String)} against the shape this {@code OPEN} already
+         * resolved.
+         *
+         * <p>The locking read and the unit-of-work requirement are identical - the statement carries
+         * {@code FOR UPDATE} and an active transaction is required - because a lock taken under
+         * auto-commit is released before the caller can use it whichever entry point took it.
+         *
+         * @param acctIdAsChar11 the key exactly as the {@code RIDFLD} holds it: exactly
+         *                       {@link AccountRepository#KEY_LENGTH} characters, untrimmed and unparsed
+         * @return the discriminated outcome; never {@code null}
+         * @throws NullPointerException     if {@code acctIdAsChar11} is {@code null}
+         * @throws IllegalArgumentException if {@code acctIdAsChar11} is not exactly
+         *                                  {@link AccountRepository#KEY_LENGTH} characters, or if the
+         *                                  stored image is wider than
+         *                                  {@link AccountRepository#RECORD_LENGTH}
+         * @throws IllegalStateException    if this handle has been closed, or if no transaction is active
+         */
+        public ReadResult readForUpdate(String acctIdAsChar11) {
+            String keyImage = requireKeyImage(acctIdAsChar11);
+            requireOpen("read a record for update");
+            repository.requireUnitOfWork();
+            if (statements == null) {
+                return ReadResult.of(openStatus);
+            }
+            return repository.readKeyed(statements.selectByKeyForUpdate(), keyImage,
+                    "the record identification field for update");
+        }
+
+        /**
+         * Rewrites one record under this open: {@link AccountRepository#rewrite(AccountRecord)} against the
+         * shape this {@code OPEN} already resolved.
+         *
+         * <p>This is where {@code CBACT04C}'s account break lands, under the {@code OPEN I-O} that program
+         * issues at {@code app/cbl/CBACT04C.cbl:L291}.
+         *
+         * @param record the record to write, complete and already mutated by the caller
+         * @return the discriminated outcome; never {@code null}
+         * @throws NullPointerException  if {@code record} is {@code null}
+         * @throws IllegalStateException if this handle has been closed
+         */
+        public WriteResult rewrite(AccountRecord record) {
+            Objects.requireNonNull(record, "A record is required to rewrite it; a COBOL REWRITE writes "
+                    + "the record area, and there is no such thing as rewriting nothing");
+            requireOpen("rewrite a record");
+            if (statements == null) {
+                return WriteResult.of(openStatus);
+            }
+            return repository.rewrite(statements, record);
+        }
+
+        // =============================================================================================
+        // 9000-ACCTFILE-CLOSE - app/cbl/CBACT01C.cbl:L151-L167.
+        // 9300-ACCTFILE-CLOSE - app/cbl/CBACT04C.cbl:L577-L594.
+        // =============================================================================================
+
+        /**
+         * Closes this file, reporting only the resulting file status.
+         *
+         * <p>Same two-armed shape as the {@code OPEN}, and the caller likewise owns the
+         * {@code DISPLAY 'ERROR CLOSING ACCOUNT FILE'} line ({@code app/cbl/CBACT01C.cbl:L162},
+         * {@code app/cbl/CBACT04C.cbl:L588}) and the abend.
+         *
+         * <p>Nothing is buffered and no connection is held between operations, so there is no flush to
+         * fail. The one close-time failure this handle can genuinely detect is that the dataset is no
+         * longer addressable - the analogue of the file system reporting a problem as a dataset is
+         * de-allocated - so the same probe as the open is used, which also keeps both of the COBOL's
+         * symmetric guards reachable rather than leaving one dead. A handle whose open failed has nothing
+         * to probe and reports that open's own status.
+         *
+         * <p><strong>Idempotent.</strong> The first call probes and reports; a later one reports
+         * {@link FileStatus#OK} without probing, because the file is already closed and there is nothing
+         * left to fail. That is what makes try-with-resources safe alongside an explicit close in the same
+         * block.
+         *
+         * @return {@link FileStatus#OK} when the dataset is still addressable, otherwise
+         *         {@link AccountRepository#PERMANENT_ERROR_STATUS}; never {@code null}, always two
+         *         characters
+         * @throws IllegalStateException if the backend presents the dataset with no usable record-image
+         *                               column
+         */
+        public String closeFile() {
+            if (closed) {
+                return FileStatus.OK;
+            }
+            closed = true;
+            this.browsePosition = null;
+            if (statements == null) {
+                // The OPEN never succeeded, so there is no open file to close: its own status is reported
+                // rather than a fresh one, and no probe is issued for a file that was never opened.
+                return openStatus;
+            }
+            return repository.statementsFor("a close of the account master") == null
+                    ? PERMANENT_ERROR_STATUS
+                    : FileStatus.OK;
+        }
+
+        /**
+         * {@link AutoCloseable} form of {@link #closeFile()}, so a handle can be used with
+         * try-with-resources. Declared to throw nothing, so it adds no checked exception to a caller.
+         */
+        @Override
+        public void close() {
+            closeFile();
+        }
+
+        /**
+         * Refuses an operation on a closed handle.
+         *
+         * @param operation what the caller was trying to do, for the diagnostic
+         * @throws IllegalStateException if this handle has been closed
+         */
+        private void requireOpen(String operation) {
+            if (closed) {
+                throw new IllegalStateException("This open of the account master dataset '"
+                        + datasetName() + "' has been closed, so it cannot " + operation + ". A COBOL "
+                        + "program closes once, after its work - operating afterwards is a defect in the "
+                        + "caller, not a file status. Open another file instead.");
+            }
+        }
     }
 
     // =================================================================================================
@@ -1506,8 +1828,14 @@ public class AccountRepository {
      * @param status  the two-character file status the read reported, verbatim
      * @param outcome its classification
      * @param account the decoded record, present exactly when {@code outcome} is {@link Outcome#OK}
+     * @param diagnostic what the backend reported when it refused, present only on a failure it
+     *                described - so a caller can log the driver's own {@code SQLSTATE} instead of a
+     *                status this module synthesised
      */
-    public record ReadResult(String status, Outcome outcome, Optional<AccountRecord> account) {
+    public record ReadResult(String status,
+                            Outcome outcome,
+                            Optional<AccountRecord> account,
+                            Optional<BackendDiagnostic> diagnostic) {
 
         /**
          * Enforces every invariant of the outcome at construction.
@@ -1523,6 +1851,8 @@ public class AccountRepository {
             requireConsistentStatus(status, outcome);
             Objects.requireNonNull(account, "A read result carries an empty record rather than a null "
                     + "one, so no null escapes the type");
+            Objects.requireNonNull(diagnostic, "A read result carries an empty diagnostic rather than a "
+                    + "null one, so no null escapes the type");
             if (account.isPresent() != (outcome == Outcome.OK)) {
                 throw new IllegalArgumentException(account.isPresent()
                         ? "A read that did not succeed carries no record: outcome " + outcome
@@ -1545,7 +1875,7 @@ public class AccountRepository {
          */
         public static ReadResult found(AccountRecord account) {
             Objects.requireNonNull(account, "A successful read carries the decoded account record");
-            return new ReadResult(FileStatus.OK, Outcome.OK, Optional.of(account));
+            return new ReadResult(FileStatus.OK, Outcome.OK, Optional.of(account), Optional.empty());
         }
 
         /**
@@ -1590,7 +1920,28 @@ public class AccountRepository {
          *                                  {@link FileStatus#OK}
          */
         public static ReadResult of(String status) {
-            return new ReadResult(status, classify(status), Optional.empty());
+            return new ReadResult(status, classify(status), Optional.empty(), Optional.empty());
+        }
+
+        /**
+         * A failed read carrying what the backend actually said about it.
+         *
+         * <p>The status is what the caller branches on, because that is the quantity the COBOL guard
+         * chain tests. The diagnostic is what makes the failure diagnosable: a status of {@code '9'}
+         * plus a feedback byte tells an operator that something permanent went wrong and nothing about
+         * what, whereas the driver's own {@code SQLSTATE} distinguishes an unreachable backend from a
+         * missing relation from a rejected credential - three failures needing three different
+         * responses.
+         *
+         * @param status     the file status the caller branches on
+         * @param diagnostic what the backend reported
+         * @return the outcome
+         * @throws NullPointerException if {@code diagnostic} is {@code null}
+         */
+        public static ReadResult of(String status, BackendDiagnostic diagnostic) {
+            Objects.requireNonNull(diagnostic, "A diagnostic is required by this factory; use "
+                    + "of(String) where there is no backend refusal to report");
+            return new ReadResult(status, classify(status), Optional.empty(), Optional.of(diagnostic));
         }
 
         /**
@@ -1688,7 +2039,7 @@ public class AccountRepository {
      * @param status  the two-character file status the rewrite reported, verbatim
      * @param outcome its classification
      */
-    public record WriteResult(String status, Outcome outcome) {
+    public record WriteResult(String status, Outcome outcome, Optional<BackendDiagnostic> diagnostic) {
 
         /**
          * Enforces the invariants of the outcome at construction.
@@ -1702,6 +2053,8 @@ public class AccountRepository {
          */
         public WriteResult {
             requireConsistentStatus(status, outcome);
+            Objects.requireNonNull(diagnostic, "A write result carries an empty diagnostic rather than a "
+                    + "null one, so no null escapes the type");
             if (outcome == Outcome.END_OF_FILE) {
                 throw new IllegalArgumentException("A rewrite cannot reach the end of a dataset, so "
                         + "status '" + FileStatus.END_OF_FILE + "' is not an outcome it can report.");
@@ -1744,7 +2097,21 @@ public class AccountRepository {
          *                                  {@link FileStatus#END_OF_FILE}
          */
         public static WriteResult of(String status) {
-            return new WriteResult(status, classify(status));
+            return new WriteResult(status, classify(status), Optional.empty());
+        }
+
+        /**
+         * A failed write carrying what the backend actually said about it.
+         *
+         * @param status     the file status the caller branches on
+         * @param diagnostic what the backend reported
+         * @return the outcome
+         * @throws NullPointerException if {@code diagnostic} is {@code null}
+         */
+        public static WriteResult of(String status, BackendDiagnostic diagnostic) {
+            Objects.requireNonNull(diagnostic, "A diagnostic is required by this factory; use "
+                    + "of(String) where there is no backend refusal to report");
+            return new WriteResult(status, classify(status), Optional.of(diagnostic));
         }
 
         /**

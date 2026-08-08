@@ -635,7 +635,8 @@ public final class TranCatBalRecord {
             Objects.requireNonNull(keyImage, "A 17-character TRAN-CAT-KEY image is required");
             Objects.requireNonNull(charset, "A charset is required to decode a key image: fixed-width "
                     + "mainframe data is bytes in a specific code page, never a platform default");
-            return decode(keyImage.getBytes(charset), charset);
+            return decode(FixedWidthRecord.encodeText(keyImage, charset, "a TRAN-CAT-KEY image"),
+                    charset);
         }
     }
 
@@ -726,7 +727,8 @@ public final class TranCatBalRecord {
         Objects.requireNonNull(row, "A 50-character TRAN-CAT-BAL-RECORD image is required");
         Objects.requireNonNull(charset, "A charset is required to decode a record image: fixed-width "
                 + "mainframe data is bytes in a specific code page, never a platform default");
-        return decode(row.getBytes(charset), charset);
+        return decode(FixedWidthRecord.encodeText(row, charset, "a TRAN-CAT-BAL-RECORD image"),
+                charset);
     }
 
     // =================================================================================================

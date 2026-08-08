@@ -1,11 +1,14 @@
 package com.vsergeychik.carddemo.statement.model;
 
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import com.vsergeychik.carddemo.common.FixedWidthRecord;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
+import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.RecordLayout;
 
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
@@ -467,48 +470,120 @@ public record Stm03CustomerRecord(String custId,
     /**
      * Validates that every field image is present.
      *
-     * <p>Only {@code null} is rejected. A width is deliberately <em>not</em> enforced here, because
-     * COBOL does not enforce one either: a value narrower than its receiver is padded and a value
-     * wider than its receiver is truncated, in a direction that depends on the receiving
-     * {@code PICTURE}. Both rules are applied by {@link #encode(Charset)} through the module's single
-     * {@code MOVE} implementation, so a hand-built instance behaves on write exactly as the
-     * equivalent COBOL {@code MOVE} would rather than failing construction. An instance produced by
-     * {@link #decode(String, Charset)} always carries exact-width images, because each one is read
-     * from its declared span.
+     * <p>{@code null} is rejected and every other image is <strong>received</strong>: the move rule its
+     * receiver's {@code PICTURE} implies is applied here, so each component holds exactly its declared
+     * width from the moment the record exists. A value narrower than its receiver is padded and a wider
+     * one truncated, in the direction that {@code PICTURE} dictates - exactly as COBOL does, and exactly
+     * as {@link #encode(Charset)} would later have done - so construction still succeeds for every input
+     * it ever accepted. What is no longer possible is for a component accessor, {@code equals} and
+     * {@code encode} to disagree about what this record contains. See {@link #received(String,
+     * FieldSpan)} for the numeric-versus-group-move distinction. An instance produced by
+     * {@link #decode(String, Charset)} is unaffected either way, because each of its images is already
+     * read from its declared span.
      *
      * @throws NullPointerException if any field image is {@code null}; to blank a field supply spaces
      *                              or an empty string, which {@link #encode(Charset)} pads out
      */
     public Stm03CustomerRecord {
-        custId = required(custId, "CUST-ID");
-        custFirstName = required(custFirstName, "CUST-FIRST-NAME");
-        custMiddleName = required(custMiddleName, "CUST-MIDDLE-NAME");
-        custLastName = required(custLastName, "CUST-LAST-NAME");
-        custAddrLine1 = required(custAddrLine1, "CUST-ADDR-LINE-1");
-        custAddrLine2 = required(custAddrLine2, "CUST-ADDR-LINE-2");
-        custAddrLine3 = required(custAddrLine3, "CUST-ADDR-LINE-3");
-        custAddrStateCd = required(custAddrStateCd, "CUST-ADDR-STATE-CD");
-        custAddrCountryCd = required(custAddrCountryCd, "CUST-ADDR-COUNTRY-CD");
-        custAddrZip = required(custAddrZip, "CUST-ADDR-ZIP");
-        custPhoneNum1 = required(custPhoneNum1, "CUST-PHONE-NUM-1");
-        custPhoneNum2 = required(custPhoneNum2, "CUST-PHONE-NUM-2");
-        custSsn = required(custSsn, "CUST-SSN");
-        custGovtIssuedId = required(custGovtIssuedId, "CUST-GOVT-ISSUED-ID");
-        custDobYyyymmdd = required(custDobYyyymmdd, "CUST-DOB-YYYYMMDD");
-        custEftAccountId = required(custEftAccountId, "CUST-EFT-ACCOUNT-ID");
-        custPriCardHolderInd = required(custPriCardHolderInd, "CUST-PRI-CARD-HOLDER-IND");
-        custFicoCreditScore = required(custFicoCreditScore, "CUST-FICO-CREDIT-SCORE");
+        custId = received(custId, CUST_ID);
+        custFirstName = received(custFirstName, CUST_FIRST_NAME);
+        custMiddleName = received(custMiddleName, CUST_MIDDLE_NAME);
+        custLastName = received(custLastName, CUST_LAST_NAME);
+        custAddrLine1 = received(custAddrLine1, CUST_ADDR_LINE_1);
+        custAddrLine2 = received(custAddrLine2, CUST_ADDR_LINE_2);
+        custAddrLine3 = received(custAddrLine3, CUST_ADDR_LINE_3);
+        custAddrStateCd = received(custAddrStateCd, CUST_ADDR_STATE_CD);
+        custAddrCountryCd = received(custAddrCountryCd, CUST_ADDR_COUNTRY_CD);
+        custAddrZip = received(custAddrZip, CUST_ADDR_ZIP);
+        custPhoneNum1 = received(custPhoneNum1, CUST_PHONE_NUM_1);
+        custPhoneNum2 = received(custPhoneNum2, CUST_PHONE_NUM_2);
+        custSsn = received(custSsn, CUST_SSN);
+        custGovtIssuedId = received(custGovtIssuedId, CUST_GOVT_ISSUED_ID);
+        custDobYyyymmdd = received(custDobYyyymmdd, CUST_DOB_YYYYMMDD);
+        custEftAccountId = received(custEftAccountId, CUST_EFT_ACCOUNT_ID);
+        custPriCardHolderInd = received(custPriCardHolderInd, CUST_PRI_CARD_HOLDER_IND);
+        custFicoCreditScore = received(custFicoCreditScore, CUST_FICO_CREDIT_SCORE);
     }
 
     /**
-     * Rejects a {@code null} field image, naming the copybook field so the diagnostic points straight
-     * at the offending item rather than at a component index.
+     * Receives a field image, refusing {@code null} and applying the receiver's own width rule.
+     *
+     * <p>The rule is the {@code MOVE} the field's {@code PICTURE} implies, and it is applied
+     * <strong>here</strong> rather than at encode time so that a component accessor, {@code equals},
+     * {@code hashCode} and {@code encode} can never describe different records. A component that held
+     * thirty characters for a {@code PIC X(25)} field would be reporting a state the copybook's field
+     * cannot occupy, and the fact that {@code encode} would later narrow it does not make the
+     * intervening observations true.
+     *
+     * <p>Nothing is <em>refused</em> for its width, which matters: COBOL does not refuse either. A
+     * narrow value is padded and a wide one truncated, so construction still succeeds for exactly the
+     * inputs it always did - the difference is only that the field now holds the result of the move
+     * rather than the argument to it.
+     *
+     * <h4>Why a digit image and a blank image are padded in opposite directions</h4>
+     * A numeric receiver is aligned on its implied decimal point, so a short digit image is
+     * <em>left</em>-zero-filled and a long one loses its high-order digits: {@code "42"} in
+     * {@code CUST-ID} becomes {@code "000000042"}, which is what {@link #area(FixedWidthCodec)} has
+     * always written and what a COBOL numeric {@code MOVE} into a nine-digit receiver does.
+     *
+     * <p>But this record can also legitimately hold a <em>non-numeric</em> image in a numeric span, and
+     * that is not corruption: {@code app/cbl/CBSTM03A.CBL:388} populates the whole record with
+     * {@code MOVE WS-M03B-FLDT TO CUSTOMER-RECORD}, a <strong>group</strong> alphanumeric move which
+     * ignores the elementary pictures entirely and copies bytes, so a blank {@code CUSTFILE} record
+     * arrives as five hundred spaces. Such an image is therefore width-normalised alphanumerically
+     * rather than rejected - a record area holds bytes, and what those bytes mean stays the caller's
+     * question, answered by {@link #custIdValue(Charset)} and its siblings, which do report a
+     * non-numeric span as an error.
+     *
+     * @param image the candidate field image
+     * @param field the span whose declared width and {@code PICTURE} category fix the rule
+     * @return exactly {@code field.length()} characters
+     * @throws NullPointerException if {@code image} is {@code null}
      */
-    private static String required(String image, String cobolFieldName) {
-        return Objects.requireNonNull(image, "The image of " + cobolFieldName + " is required; a "
+    private static String received(String image, FieldSpan field) {
+        Objects.requireNonNull(image, "The image of " + field.name() + " is required; a "
                 + "CUSTOMER-RECORD field is a fixed-width span that always holds bytes, so to blank "
                 + "it supply spaces or an empty string rather than null");
+        if (field.kind() == PictureKind.UNSIGNED_NUMERIC && isAllDigits(image)) {
+            return PICTURE_RULES.movePic9(image, field.length());
+        }
+        return PICTURE_RULES.movePicX(image, field.length());
     }
+
+    /**
+     * Whether an image consists wholly of digits, and so is a numeric {@code MOVE}'s subject.
+     *
+     * <p>An empty image is not: there are no digits to align, so it is padded as the group move would
+     * pad it. That keeps a blank field and an empty string indistinguishable, which they are in COBOL.
+     *
+     * @param image the image to inspect
+     * @return {@code true} when {@code image} is non-empty and every character is {@code '0'} to
+     *         {@code '9'}
+     */
+    private static boolean isAllDigits(String image) {
+        if (image.isEmpty()) {
+            return false;
+        }
+        for (int position = 0; position < image.length(); position++) {
+            char character = image.charAt(position);
+            if (character < '0' || character > '9') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The {@code PICTURE} move rules, applied when an image enters a component.
+     *
+     * <p>Static and shared, and safe: {@link FixedWidthCodec} is immutable and the two rules used -
+     * {@link FixedWidthCodec#movePicX(String, int)} and {@link FixedWidthCodec#movePic9(String, int)} -
+     * count characters and digits without rendering a byte or consulting a code page, so their answers
+     * are identical under {@code IBM037} and {@code US-ASCII} alike. Every method here that actually
+     * produces bytes still takes its {@link Charset} explicitly from the caller.
+     */
+    private static final FixedWidthCodec PICTURE_RULES =
+            new FixedWidthCodec(StandardCharsets.US_ASCII);
 
     // =================================================================================================
     // Decoding. This is where the 1000-byte-to-500-byte truncation lives.
@@ -552,7 +627,7 @@ public record Stm03CustomerRecord(String custId,
                 + "blank(Charset) for an initialised, empty record instead");
         FixedWidthCodec codec = new FixedWidthCodec(charset);
         String leading = codec.movePicX(image, RECORD_LENGTH);
-        return fromArea(codec.wrap(leading.getBytes(charset), LAYOUT));
+        return fromArea(codec.wrap(codec.encodeImage(leading, "a CUSTOMER-RECORD image"), LAYOUT));
     }
 
     /**
@@ -580,7 +655,8 @@ public record Stm03CustomerRecord(String custId,
         Objects.requireNonNull(charset, "A charset is required to decode CUSTFILE bytes: fixed-width "
                 + "mainframe data is bytes in a specific code page, so the code page is stated "
                 + "explicitly and never derived from the platform");
-        return decode(new String(source, charset), charset);
+        return decode(FixedWidthRecord.decodeText(source, charset, "a CUSTOMER-RECORD image"),
+                charset);
     }
 
     /**
@@ -796,9 +872,9 @@ public record Stm03CustomerRecord(String custId,
      *                                  blank or corrupted key is reported rather than silently read as
      *                                  zero
      */
-    public long custIdValue(Charset charset) {
+    public int custIdValue(Charset charset) {
         FixedWidthCodec codec = new FixedWidthCodec(charset);
-        return codec.readPic9(area(codec), CUST_ID);
+        return codec.readPic9AsInt(area(codec), CUST_ID);
     }
 
     /**
@@ -811,9 +887,9 @@ public record Stm03CustomerRecord(String custId,
      * @throws IllegalArgumentException if {@code charset} is not a suitable single-byte code page, or
      *                                  if the {@code CUST-SSN} span does not hold nine digits
      */
-    public long custSsnValue(Charset charset) {
+    public int custSsnValue(Charset charset) {
         FixedWidthCodec codec = new FixedWidthCodec(charset);
-        return codec.readPic9(area(codec), CUST_SSN);
+        return codec.readPic9AsInt(area(codec), CUST_SSN);
     }
 
     /**
@@ -838,30 +914,92 @@ public record Stm03CustomerRecord(String custId,
     }
 
     /**
+     * A diagnostic rendering that names every field as {@code CUSTREC} spells it and withholds the
+     * personal data, per {@link SensitiveDiagnostics}.
+     *
+     * <p>The override exists because this is a {@code record}, and a record's generated
+     * {@code toString} renders every component. This record's components are a complete identity: legal
+     * name, three address lines, two telephone numbers, date of birth, social security number,
+     * government-issued identifier and an electronic funds transfer account. Inheriting the generated
+     * rendering meant that logging one statement-run record disclosed all of it.
+     *
+     * <p>The treatment matches {@code customer/model/CustomerRecord}, which models the near-identical
+     * {@code CVCUS01Y} layout, so the two cannot diverge in what they disclose about the same customer.
+     * Credentials are withheld outright; names, addresses, telephone numbers, zip and date of birth
+     * report their length only; {@code CUST-ID} is masked to its last four digits; and the state code,
+     * country code, primary-card-holder indicator and FICO score stay legible because none identifies a
+     * person once the identifier is masked.
+     *
+     * <p>{@code equals} and {@code hashCode} remain as the record generates them, over every component:
+     * they are value semantics, they disclose nothing, and the parity harness compares whole records
+     * with them. {@link #fieldImages(Charset)} and {@link #encode(Charset)} still return the real values,
+     * because a caller asks for those by name.
+     *
+     * @return a rendering safe to log, naming all 18 fields
+     */
+    @Override
+    public String toString() {
+        return "Stm03CustomerRecord{CUST-ID="
+                + SensitiveDiagnostics.maskIdentifier(custId)
+                + ", CUST-FIRST-NAME=" + SensitiveDiagnostics.describeText(custFirstName)
+                + ", CUST-MIDDLE-NAME=" + SensitiveDiagnostics.describeText(custMiddleName)
+                + ", CUST-LAST-NAME=" + SensitiveDiagnostics.describeText(custLastName)
+                + ", CUST-ADDR-LINE-1=" + SensitiveDiagnostics.describeText(custAddrLine1)
+                + ", CUST-ADDR-LINE-2=" + SensitiveDiagnostics.describeText(custAddrLine2)
+                + ", CUST-ADDR-LINE-3=" + SensitiveDiagnostics.describeText(custAddrLine3)
+                + ", CUST-ADDR-STATE-CD=[" + custAddrStateCd
+                + "], CUST-ADDR-COUNTRY-CD=[" + custAddrCountryCd
+                + "], CUST-ADDR-ZIP=" + SensitiveDiagnostics.describeText(custAddrZip)
+                + ", CUST-PHONE-NUM-1=" + SensitiveDiagnostics.describeText(custPhoneNum1)
+                + ", CUST-PHONE-NUM-2=" + SensitiveDiagnostics.describeText(custPhoneNum2)
+                + ", CUST-SSN=" + SensitiveDiagnostics.redacted()
+                + ", CUST-GOVT-ISSUED-ID=" + SensitiveDiagnostics.redacted()
+                + ", CUST-DOB-YYYYMMDD=" + SensitiveDiagnostics.describeText(custDobYyyymmdd)
+                + ", CUST-EFT-ACCOUNT-ID=" + SensitiveDiagnostics.redacted()
+                + ", CUST-PRI-CARD-HOLDER-IND=[" + custPriCardHolderInd
+                + "], CUST-FICO-CREDIT-SCORE=" + custFicoCreditScore
+                + '}';
+    }
+
+    /**
      * Builds and populates the record area. Every public method that needs bytes goes through this one
-     * private helper, so the write order and the {@code PICTURE} category chosen for each field are
-     * stated exactly once.
+     * private helper, so the write order is stated exactly once.
+     *
+     * <p>Each component is placed into its span <strong>verbatim</strong>, because the canonical
+     * constructor has already put it through that field's own {@code MOVE} rule and it is therefore
+     * already exactly {@code field.length()} characters wide. No justification or padding can apply at
+     * this point, and re-deriving the image through a picture-specific write would apply the rule twice.
+     *
+     * <p>This is also what keeps {@code decode} then {@code encode} total. A {@code PIC 9} write demands
+     * digits, but the constructor deliberately admits a numeric span that holds none - a group
+     * {@code MOVE} such as {@code app/cbl/CBSTM03A.CBL:388} ignores the elementary pictures underneath
+     * and copies bytes, so a blank {@code CUSTFILE} record legitimately arrives as 500 spaces. Demanding
+     * digits here would leave such a record readable but impossible to write back, which is a one-way
+     * door and not a rule COBOL has. The digit requirement belongs to the numeric <em>views</em> -
+     * {@link #custIdValue(Charset)}, {@link #custSsnValue(Charset)} and
+     * {@link #custFicoCreditScoreValue(Charset)} - and it is enforced there.
      */
     private FixedWidthRecord area(FixedWidthCodec codec) {
         FixedWidthRecord area = codec.newRecord(LAYOUT);
-        codec.writePic9(area, CUST_ID, custId);
-        codec.writePicX(area, CUST_FIRST_NAME, custFirstName);
-        codec.writePicX(area, CUST_MIDDLE_NAME, custMiddleName);
-        codec.writePicX(area, CUST_LAST_NAME, custLastName);
-        codec.writePicX(area, CUST_ADDR_LINE_1, custAddrLine1);
-        codec.writePicX(area, CUST_ADDR_LINE_2, custAddrLine2);
-        codec.writePicX(area, CUST_ADDR_LINE_3, custAddrLine3);
-        codec.writePicX(area, CUST_ADDR_STATE_CD, custAddrStateCd);
-        codec.writePicX(area, CUST_ADDR_COUNTRY_CD, custAddrCountryCd);
-        codec.writePicX(area, CUST_ADDR_ZIP, custAddrZip);
-        codec.writePicX(area, CUST_PHONE_NUM_1, custPhoneNum1);
-        codec.writePicX(area, CUST_PHONE_NUM_2, custPhoneNum2);
-        codec.writePic9(area, CUST_SSN, custSsn);
-        codec.writePicX(area, CUST_GOVT_ISSUED_ID, custGovtIssuedId);
-        codec.writePicX(area, CUST_DOB_YYYYMMDD, custDobYyyymmdd);
-        codec.writePicX(area, CUST_EFT_ACCOUNT_ID, custEftAccountId);
-        codec.writePicX(area, CUST_PRI_CARD_HOLDER_IND, custPriCardHolderInd);
-        codec.writePic9(area, CUST_FICO_CREDIT_SCORE, custFicoCreditScore);
+        area.writeSpan(CUST_ID, custId);
+        area.writeSpan(CUST_FIRST_NAME, custFirstName);
+        area.writeSpan(CUST_MIDDLE_NAME, custMiddleName);
+        area.writeSpan(CUST_LAST_NAME, custLastName);
+        area.writeSpan(CUST_ADDR_LINE_1, custAddrLine1);
+        area.writeSpan(CUST_ADDR_LINE_2, custAddrLine2);
+        area.writeSpan(CUST_ADDR_LINE_3, custAddrLine3);
+        area.writeSpan(CUST_ADDR_STATE_CD, custAddrStateCd);
+        area.writeSpan(CUST_ADDR_COUNTRY_CD, custAddrCountryCd);
+        area.writeSpan(CUST_ADDR_ZIP, custAddrZip);
+        area.writeSpan(CUST_PHONE_NUM_1, custPhoneNum1);
+        area.writeSpan(CUST_PHONE_NUM_2, custPhoneNum2);
+        area.writeSpan(CUST_SSN, custSsn);
+        area.writeSpan(CUST_GOVT_ISSUED_ID, custGovtIssuedId);
+        area.writeSpan(CUST_DOB_YYYYMMDD, custDobYyyymmdd);
+        area.writeSpan(CUST_EFT_ACCOUNT_ID, custEftAccountId);
+        area.writeSpan(CUST_PRI_CARD_HOLDER_IND, custPriCardHolderInd);
+        area.writeSpan(CUST_FICO_CREDIT_SCORE, custFicoCreditScore);
         return area;
     }
+
 }

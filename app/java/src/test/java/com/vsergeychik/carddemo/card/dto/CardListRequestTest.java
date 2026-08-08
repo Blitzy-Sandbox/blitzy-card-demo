@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vsergeychik.carddemo.card.dto.CardListRequest.CardKey;
@@ -22,6 +24,8 @@ import com.vsergeychik.carddemo.common.NavigationContext;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.RecordComponent;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -62,6 +66,29 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 @DisplayName("CardListRequest - COCRDLI symbolic map projection")
 class CardListRequestTest {
+
+    /**
+     * The 34 numbered row members in copybook order, {@code app/cpy-bms/COCRDLI.CPY:78-276}. Row 1
+     * contributes four and rows 2 through 7 contribute five each; there is deliberately no
+     * {@code crdstp1}.
+     */
+    private static final List<String> NUMBERED_ROW_MEMBERS = numberedRowMembers();
+
+    private static List<String> numberedRowMembers() {
+        List<String> members = new ArrayList<>();
+        members.add("crdsel1");
+        members.add("acctno1");
+        members.add("crdnum1");
+        members.add("crdsts1");
+        for (int row = 2; row <= CardListRequest.SCREEN_ROW_COUNT; row++) {
+            members.add("crdsel" + row);
+            members.add("crdstp" + row);
+            members.add("acctno" + row);
+            members.add("crdnum" + row);
+            members.add("crdsts" + row);
+        }
+        return List.copyOf(members);
+    }
 
     /** Charset for the codec under test. The fixtures in {@code app/data/ASCII} are US-ASCII. */
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(StandardCharsets.US_ASCII);
@@ -1055,7 +1082,30 @@ class CardListRequestTest {
             assertThatNullPointerException().isThrownBy(() -> request.setPageCursor(null));
             assertThatNullPointerException().isThrownBy(() -> request.setSelectionFlags(null));
             assertThatNullPointerException().isThrownBy(() -> request.setCardScreenState(null));
-            assertThatNullPointerException().isThrownBy(() -> request.setNavigationContext(null));
+        }
+
+        @Test
+        @DisplayName("the communication area accepts null, because absence is a state the program tests")
+        void navigationContextAcceptsAbsence() {
+            CardListRequest request = new CardListRequest();
+
+            assertThat(request.getNavigationContext())
+                    .as("a fresh request has been passed no communication area, which is EIBCALEN = 0 "
+                            + "at app/cbl/COCRDLIC.cbl:315")
+                    .isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
+            assertThat(request.commareaLength()).isZero();
+
+            request.setNavigationContext(NavigationContext.empty());
+            assertThat(request.hasNavigationContext()).isTrue();
+            assertThat(request.commareaLength()).isEqualTo(NavigationContext.COMMAREA_LENGTH);
+
+            request.setNavigationContext(null);
+            assertThat(request.getNavigationContext())
+                    .as("null is stored verbatim, never replaced with an initialised area")
+                    .isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
+            assertThat(request.commareaLength()).isZero();
         }
 
         @Test
@@ -1075,15 +1125,34 @@ class CardListRequestTest {
         }
 
         @Test
-        @DisplayName("ENTER and REENTER are both explicit on the request")
+        @DisplayName("ENTER, REENTER and absence are three states, not two")
         void enterAndReenter() {
             CardListRequest request = new CardListRequest();
+
+            assertThat(request.isEnter())
+                    .as("with no communication area there is no CDEMO-PGM-CONTEXT to test, so the "
+                            + "condition name is false rather than true")
+                    .isFalse();
+            assertThat(request.isReenter()).isFalse();
+            assertThat(request.getPgmContext())
+                    .as("the reported context falls back to the arm an uninitialised area takes")
+                    .isEqualTo(NavigationContext.PGM_CONTEXT_ENTER);
+
+            request.setNavigationContext(NavigationContext.empty().withPgmEnter());
             assertThat(request.isEnter()).isTrue();
             assertThat(request.isReenter()).isFalse();
 
             request.setNavigationContext(NavigationContext.empty().withPgmReenter());
             assertThat(request.isEnter()).isFalse();
             assertThat(request.isReenter()).isTrue();
+            assertThat(request.getPgmContext()).isEqualTo(NavigationContext.PGM_CONTEXT_REENTER);
+
+            request.setNavigationContext(NavigationContext.empty().withPgmContext(6));
+            assertThat(request.isEnter())
+                    .as("PIC 9(01) carries two condition names, not an enumeration")
+                    .isFalse();
+            assertThat(request.isReenter()).isFalse();
+            assertThat(request.getPgmContext()).isEqualTo(6);
         }
 
         @Test
@@ -1225,37 +1294,100 @@ class CardListRequestTest {
         private final ObjectMapper mapper = new ObjectMapper();
 
         @Test
-        @DisplayName("the top level holds the 9 header fields, rows, the 2 footer fields and 4 carriers")
+        @DisplayName("the top level holds the 45 payload members and 4 carriers, and no rows array")
         void topLevelMembers() throws Exception {
             JsonNode json = mapper.valueToTree(new CardListRequest());
             List<String> names = new ArrayList<>();
             json.fieldNames().forEachRemaining(names::add);
-            assertThat(names).containsExactlyInAnyOrder(
+
+            List<String> expected = new ArrayList<>(List.of(
                     "trnname", "title01", "curdate", "pgmname", "title02", "curtime", "pageno",
                     "acctsid", "cardsid",
-                    "rows",
                     "infomsg", "errmsg",
-                    "pageCursor", "selectionFlags", "cardScreenState", "navigationContext");
+                    "pageCursor", "selectionFlags", "cardScreenState", "navigationContext"));
+            expected.addAll(NUMBERED_ROW_MEMBERS);
+
+            assertThat(names).containsExactlyInAnyOrderElementsOf(expected);
+            assertThat(names)
+                    .as("the rows travel as the 34 numbered members COCRDLI.CPY declares, not as a "
+                            + "generic array under a name no DFHMDF carries")
+                    .doesNotContain("rows");
+        }
+
+        @Test
+        @DisplayName("the 34 numbered row members are exactly the COCRDLI.CPY:78-276 items")
+        void theNumberedRowMembersAreTheCopybookItems() {
+            JsonNode json = mapper.valueToTree(new CardListRequest());
+            List<String> published = new ArrayList<>();
+            json.fieldNames().forEachRemaining(published::add);
+
+            assertThat(NUMBERED_ROW_MEMBERS).hasSize(34);
+            assertThat(published).containsAll(NUMBERED_ROW_MEMBERS);
+            assertThat(published)
+                    .as("row 1 has no CRDSTP1: COCRDLI.CPY:78 is followed directly by :79")
+                    .doesNotContain("crdstp1");
+        }
+
+        @Test
+        @DisplayName("each numbered member binds inbound under its own copybook name")
+        void eachNumberedMemberBindsInbound() throws Exception {
+            String body = """
+                    {"crdsel1":"S","acctno1":"00000000011","crdnum1":"4111111111111111",
+                     "crdsts1":"Y","crdsel4":"U","crdstp4":"*","acctno4":"00000000044",
+                     "crdnum4":"4111111111111144","crdsts4":"N","crdsts7":"Y"}""";
+
+            CardListRequest bound = mapper.readValue(body, CardListRequest.class);
+
+            assertThat(bound.getCrdsel1()).isEqualTo("S");
+            assertThat(bound.getAcctno1()).isEqualTo("00000000011");
+            assertThat(bound.getCrdnum1()).isEqualTo("4111111111111111");
+            assertThat(bound.getCrdsts1()).isEqualTo("Y");
+            assertThat(bound.getCrdsel4()).isEqualTo("U");
+            assertThat(bound.getCrdstp4()).isEqualTo("*");
+            assertThat(bound.getAcctno4()).isEqualTo("00000000044");
+            assertThat(bound.getCrdnum4()).isEqualTo("4111111111111144");
+            assertThat(bound.getCrdsts4()).isEqualTo("N");
+            assertThat(bound.getCrdsts7()).isEqualTo("Y");
+            assertThat(bound.firstRow()).isInstanceOf(FirstListRow.class);
+            assertThat(bound.lastRow()).isInstanceOf(StopperListRow.class);
+        }
+
+        @Test
+        @DisplayName("an unknown row member is refused rather than silently dropped")
+        void anUnknownRowMemberIsRefused() {
+            ObjectMapper strict = new ObjectMapper()
+                    .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
+            assertThatExceptionOfType(JsonProcessingException.class)
+                    .as("the deleted Map creator swallowed keys like this one; the typed accessors "
+                            + "let the mapper see it")
+                    .isThrownBy(() -> strict.readValue("{\"crdSell1\":\"S\"}",
+                            CardListRequest.class));
+            assertThatExceptionOfType(JsonProcessingException.class)
+                    .isThrownBy(() -> strict.readValue("{\"crdstp1\":\"*\"}",
+                            CardListRequest.class));
         }
 
         @Test
         @DisplayName("row 1 serialises 4 members and rows 2-7 serialise 5 each, totalling 34")
         void rowMembersSerialiseAsymmetrically() {
-            JsonNode rows = mapper.valueToTree(new CardListRequest()).get("rows");
-            assertThat(rows).hasSize(7);
+            JsonNode json = mapper.valueToTree(new CardListRequest());
 
-            List<String> firstNames = new ArrayList<>();
-            rows.get(0).fieldNames().forEachRemaining(firstNames::add);
-            assertThat(firstNames).containsExactlyInAnyOrder("crdSel", "acctNo", "crdNum", "crdSts");
-            assertThat(firstNames).doesNotContain("crdStp");
+            assertThat(json.has("crdsel1")).isTrue();
+            assertThat(json.has("acctno1")).isTrue();
+            assertThat(json.has("crdnum1")).isTrue();
+            assertThat(json.has("crdsts1")).isTrue();
+            assertThat(json.has("crdstp1"))
+                    .as("the row-1 stopper is unnamed in the mapset - app/bms/COCRDLI.bms:145-146 - "
+                            + "so it never reaches the symbolic map")
+                    .isFalse();
 
-            int total = firstNames.size();
-            for (int index = 1; index < 7; index++) {
-                List<String> names = new ArrayList<>();
-                rows.get(index).fieldNames().forEachRemaining(names::add);
-                assertThat(names).containsExactlyInAnyOrder("crdSel", "crdStp", "acctNo", "crdNum",
-                        "crdSts");
-                total += names.size();
+            int total = 4;
+            for (int row = 2; row <= CardListRequest.SCREEN_ROW_COUNT; row++) {
+                for (String item : List.of("crdsel", "crdstp", "acctno", "crdnum", "crdsts")) {
+                    assertThat(json.has(item + row)).as(item + row).isTrue();
+                    total++;
+                }
             }
             assertThat(total).isEqualTo(34);
         }
@@ -1264,14 +1396,12 @@ class CardListRequestTest {
         @DisplayName("the payload total is 9 + 34 + 2 = 45")
         void payloadTotalIsFortyFive() {
             JsonNode json = mapper.valueToTree(new CardListRequest());
-            int header = 9;
-            int footer = 2;
-            JsonNode rows = json.get("rows");
-            int rowMembers = 0;
-            for (JsonNode row : rows) {
-                rowMembers += row.size();
-            }
-            assertThat(header + rowMembers + footer).isEqualTo(CardListRequest.FIELD_COUNT);
+            List<String> published = new ArrayList<>();
+            json.fieldNames().forEachRemaining(published::add);
+
+            int carriers = 4;
+            assertThat(published.size() - carriers).isEqualTo(CardListRequest.FIELD_COUNT);
+            assertThat(9 + NUMBERED_ROW_MEMBERS.size() + 2).isEqualTo(CardListRequest.FIELD_COUNT);
         }
 
         @Test
@@ -1300,50 +1430,51 @@ class CardListRequestTest {
             JsonNode json = mapper.valueToTree(request);
             assertThat(json.get("cardsid").asText()).isEqualTo("4111111111111111");
             assertThat(json.get("acctsid").asText()).isEqualTo("00000000011");
-            assertThat(json.get("rows").get(0).get("crdNum").asText())
-                    .isEqualTo("4111111111111111");
+            assertThat(json.get("crdnum1").asText()).isEqualTo("4111111111111111");
+            assertThat(json.get("acctno1").asText()).isEqualTo("00000000011");
         }
 
         @Test
-        @DisplayName("a row's shape is deduced from the presence of crdStp, with no discriminator")
-        void rowShapeIsDeducedFromCrdStp() throws Exception {
-            ListRow withStopper = mapper.readValue(
-                    "{\"crdSel\":\"S\",\"crdStp\":\"*\",\"acctNo\":\"00000000002\","
-                            + "\"crdNum\":\"4111111111111122\",\"crdSts\":\"Y\"}", ListRow.class);
-            assertThat(withStopper).isInstanceOf(StopperListRow.class);
-            assertThat(((StopperListRow) withStopper).crdStp()).isEqualTo("*");
+        @DisplayName("a row's shape is decided by its position, not by anything on the wire")
+        void rowShapeIsDecidedByPosition() throws Exception {
+            String body = """
+                    {"crdsel1":"U","acctno1":"00000000001","crdnum1":"4111111111111111",
+                     "crdsts1":"N","crdsel2":"S","crdstp2":"*","acctno2":"00000000002",
+                     "crdnum2":"4111111111111122","crdsts2":"Y"}""";
 
-            ListRow withoutStopper = mapper.readValue(
-                    "{\"crdSel\":\"U\",\"acctNo\":\"00000000001\","
-                            + "\"crdNum\":\"4111111111111111\",\"crdSts\":\"N\"}", ListRow.class);
-            assertThat(withoutStopper).isInstanceOf(FirstListRow.class);
-            assertThat(withoutStopper.crdSel()).isEqualTo("U");
-            assertThat(withoutStopper.crdSts()).isEqualTo("N");
+            CardListRequest bound = mapper.readValue(body, CardListRequest.class);
+
+            assertThat(bound.row(1))
+                    .as("subscript 1 is a FirstListRow because the copybook declares no CRDSTP1, not "
+                            + "because the body omitted one")
+                    .isInstanceOf(FirstListRow.class);
+            assertThat(bound.row(2)).isInstanceOf(StopperListRow.class);
+            assertThat(bound.stopperOf(1)).isEmpty();
+            assertThat(bound.stopperOf(2)).contains("*");
+            assertThat(bound.getCrdsel1()).isEqualTo("U");
+            assertThat(bound.getCrdsts1()).isEqualTo("N");
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("row 1 has no stopper to read")
+                    .isThrownBy(() -> bound.stopperRow(1))
+                    .withMessageContaining("CRDSTP1");
         }
 
         @Test
-        @DisplayName("an absent or null member reads as empty, never as null")
-        void absentMembersReadAsEmpty() throws Exception {
-            ListRow sparse = mapper.readValue("{\"crdSel\":\"S\"}", ListRow.class);
-            assertThat(sparse).isInstanceOf(FirstListRow.class);
-            assertThat(sparse.crdSel()).isEqualTo("S");
-            assertThat(sparse.acctNo()).isEmpty();
-            assertThat(sparse.crdNum()).isEmpty();
-            assertThat(sparse.crdSts()).isEmpty();
+        @DisplayName("an absent member leaves the row's blank value, and an explicit null is refused")
+        void absentMembersLeaveTheBlankValue() throws Exception {
+            CardListRequest sparse = mapper.readValue("{\"crdsel1\":\"S\"}", CardListRequest.class);
 
-            ListRow explicitNulls = mapper.readValue(
-                    "{\"crdSel\":null,\"crdStp\":null,\"acctNo\":null,\"crdNum\":null,"
-                            + "\"crdSts\":null}", ListRow.class);
-            assertThat(explicitNulls).isInstanceOf(StopperListRow.class);
-            assertThat(((StopperListRow) explicitNulls).crdStp()).isEmpty();
-            assertThat(explicitNulls.crdSel()).isEmpty();
-            assertThat(explicitNulls.acctNo()).isEmpty();
-
-            assertThat(explicitNulls.normalised(CODEC).acctNo())
-                    .as("an untouched field space-pads to its declared width")
+            assertThat(sparse.getCrdsel1()).isEqualTo("S");
+            assertThat(sparse.getAcctno1())
+                    .as("a field the operator never touched holds spaces, which is what the blank "
+                            + "seven-row state already put there")
                     .isEqualTo(" ".repeat(CardListRequest.ACCTNO_LENGTH));
+            assertThat(sparse.getCrdnum1())
+                    .isEqualTo(" ".repeat(CardListRequest.CRDNUM_LENGTH));
 
-            assertThatNullPointerException().isThrownBy(() -> ListRow.fromJsonMembers(null));
+            assertThatExceptionOfType(JsonProcessingException.class)
+                    .as("there is no null in a COBOL record: a blank field holds spaces or LOW-VALUES")
+                    .isThrownBy(() -> mapper.readValue("{\"acctno1\":null}", CardListRequest.class));
         }
 
         @Test
@@ -1591,4 +1722,145 @@ class CardListRequestTest {
                 Arguments.of("fieldMetadata", (Consumer<CardListRequest>) r ->
                         r.putFieldMetadata(FieldMetadata.untouched("ACCTSID"))));
     }
+
+    @Nested
+    @DisplayName("The 34 numbered accessor pairs - one per COCRDLI.CPY xxxI item")
+    class NumberedRowAccessors {
+
+        @ParameterizedTest(name = "{0} round-trips and touches nothing else on its row")
+        @MethodSource("com.vsergeychik.carddemo.card.dto.CardListRequestTest#numberedRowMemberCases")
+        @DisplayName("each numbered member reads back exactly what its own setter wrote")
+        void eachPairRoundTripsWithoutDisturbingItsRow(String member) throws Exception {
+            CardListRequest request = new CardListRequest();
+            String cap = member.substring(0, 1).toUpperCase() + member.substring(1);
+            int row = Character.getNumericValue(member.charAt(member.length() - 1));
+            String written = "Z";
+
+            // Give every member of the row a distinct value first, so a setter that writes the wrong
+            // component of the record is caught rather than masked by identical blanks.
+            Map<String, String> before = new LinkedHashMap<>();
+            for (String sibling : membersOfRow(row)) {
+                String value = seedFor(sibling);
+                setMember(request, sibling, value);
+                before.put(sibling, value);
+            }
+
+            CardListRequest.class.getMethod("set" + cap, String.class).invoke(request, written);
+
+            assertThat(getMember(request, member)).as(member).isEqualTo(written);
+            for (String sibling : membersOfRow(row)) {
+                if (!sibling.equals(member)) {
+                    assertThat(getMember(request, sibling))
+                            .as("%s must be untouched when %s is written", sibling, member)
+                            .isEqualTo(before.get(sibling));
+                }
+            }
+        }
+
+        @ParameterizedTest(name = "{0} refuses null")
+        @MethodSource("com.vsergeychik.carddemo.card.dto.CardListRequestTest#numberedRowMemberCases")
+        @DisplayName("each numbered setter refuses null - a blank field holds spaces, never null")
+        void eachSetterRefusesNull(String member) throws Exception {
+            CardListRequest request = new CardListRequest();
+            String cap = member.substring(0, 1).toUpperCase() + member.substring(1);
+            Method setter = CardListRequest.class.getMethod("set" + cap, String.class);
+
+            assertThatExceptionOfType(InvocationTargetException.class)
+                    .isThrownBy(() -> setter.invoke(request, (Object) null))
+                    .withCauseInstanceOf(NullPointerException.class);
+        }
+
+        @Test
+        @DisplayName("there are exactly 34 pairs, and no crdstp1 among them")
+        void thereAreExactlyThirtyFourPairs() {
+            List<String> getters = new ArrayList<>();
+            List<String> setters = new ArrayList<>();
+            for (Method method : CardListRequest.class.getDeclaredMethods()) {
+                String name = method.getName();
+                if (name.matches("get(Crdsel|Crdstp|Acctno|Crdnum|Crdsts)\\d")) {
+                    getters.add(name.substring(3).toLowerCase());
+                } else if (name.matches("set(Crdsel|Crdstp|Acctno|Crdnum|Crdsts)\\d")) {
+                    setters.add(name.substring(3).toLowerCase());
+                }
+            }
+
+            assertThat(getters).containsExactlyInAnyOrderElementsOf(NUMBERED_ROW_MEMBERS);
+            assertThat(setters).containsExactlyInAnyOrderElementsOf(NUMBERED_ROW_MEMBERS);
+            assertThat(getters).doesNotContain("crdstp1");
+        }
+
+        @Test
+        @DisplayName("the numbered members and the row records are one store, not two")
+        void theNumberedMembersAndTheRowsAreOneStore() {
+            CardListRequest request = new CardListRequest();
+
+            request.setRow(3, new StopperListRow("S", "*", "00000000033", "4111111111111133", "Y"));
+
+            assertThat(request.getCrdsel3()).isEqualTo("S");
+            assertThat(request.getCrdstp3()).isEqualTo("*");
+            assertThat(request.getAcctno3()).isEqualTo("00000000033");
+            assertThat(request.getCrdnum3()).isEqualTo("4111111111111133");
+            assertThat(request.getCrdsts3()).isEqualTo("Y");
+
+            request.setCrdsel3("U");
+
+            assertThat(request.stopperRow(3).crdSel())
+                    .as("writing through the named member rewrites the row record behind it")
+                    .isEqualTo("U");
+            assertThat(request.stopperRow(3).crdStp()).isEqualTo("*");
+        }
+
+        @Test
+        @DisplayName("the numbered setters store verbatim - no pad, no trim, no truncation")
+        void theNumberedSettersStoreVerbatim() {
+            CardListRequest request = new CardListRequest();
+
+            request.setAcctno2("1");
+            request.setCrdnum2(" 4111 ");
+
+            assertThat(request.getAcctno2())
+                    .as("binding must not pad to the declared width; the MOVE belongs to the explicit "
+                            + "fixed-width step")
+                    .isEqualTo("1");
+            assertThat(request.getCrdnum2()).isEqualTo(" 4111 ");
+        }
+
+        private List<String> membersOfRow(int row) {
+            List<String> members = new ArrayList<>();
+            members.add("crdsel" + row);
+            if (row != CardListRequest.FIRST_ROW_NUMBER) {
+                members.add("crdstp" + row);
+            }
+            members.add("acctno" + row);
+            members.add("crdnum" + row);
+            members.add("crdsts" + row);
+            return members;
+        }
+
+        private String seedFor(String member) {
+            if (member.startsWith("acctno")) {
+                return "0000000000" + member.charAt(member.length() - 1);
+            }
+            if (member.startsWith("crdnum")) {
+                return "411111111111111" + member.charAt(member.length() - 1);
+            }
+            return member.startsWith("crdsel") ? "S" : member.startsWith("crdstp") ? "*" : "Y";
+        }
+
+        private void setMember(CardListRequest request, String member, String value)
+                throws Exception {
+            String cap = member.substring(0, 1).toUpperCase() + member.substring(1);
+            CardListRequest.class.getMethod("set" + cap, String.class).invoke(request, value);
+        }
+
+        private String getMember(CardListRequest request, String member) throws Exception {
+            String cap = member.substring(0, 1).toUpperCase() + member.substring(1);
+            return (String) CardListRequest.class.getMethod("get" + cap).invoke(request);
+        }
+    }
+
+    static Stream<Arguments> numberedRowMemberCases() {
+        return NUMBERED_ROW_MEMBERS.stream().map(Arguments::of);
+    }
+
 }

@@ -2,11 +2,20 @@ package com.vsergeychik.carddemo.card;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 
 import com.vsergeychik.carddemo.card.CardXrefRepository.BrowseCursor;
@@ -22,21 +31,38 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatcher;
 import org.mockito.ArgumentMatchers;
+import org.mockito.invocation.InvocationOnMock;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreator;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 /**
  * Tests for {@link CardXrefRepository}: the {@code CCXREF} base KSDS and the {@code CXACAIX}
@@ -75,17 +101,52 @@ class CardXrefRepositoryTest {
     /** A stand-in dataset name for the alternate-index path - deliberately a different name. */
     private static final String ALT_DS = "TEST.XREF.ACCTPATH";
 
-    /** The statement the repository composes for the base cluster. */
-    private static final String BASE_SQL = "SELECT * FROM \"" + BASE_DS + "\" ORDER BY 1";
+    /**
+     * The record-image column name the stand-in backend describes.
+     *
+     * <p>Deliberately a name no copybook contains. The repository discovers this name from result-set
+     * metadata rather than assuming one, so a name drawn from nowhere in {@code app/cpy} is what proves
+     * the discovery is real and that no copybook field name has been smuggled into a statement.
+     */
+    private static final String DESCRIBED_COLUMN = "VSAM_RECORD_IMAGE";
 
-    /** The statement the repository composes for the alternate-index path. */
-    private static final String ALT_SQL = "SELECT * FROM \"" + ALT_DS + "\" ORDER BY 1";
+    /** {@link #DESCRIBED_COLUMN} as the delimited identifier every statement carries. */
+    private static final String IMAGE = "\"" + DESCRIBED_COLUMN + "\"";
+
+    /** The describe the repository issues against the base cluster before composing anything. */
+    private static final String BASE_DESCRIBE_SQL =
+            "SELECT * FROM \"" + BASE_DS + "\" WHERE 1 = 0";
+
+    /** The describe the repository issues against the alternate-index path. */
+    private static final String ALT_DESCRIBE_SQL = "SELECT * FROM \"" + ALT_DS + "\" WHERE 1 = 0";
+
+    /** The keyed read the repository composes for the base cluster: the predicate is in the statement. */
+    private static final String BASE_KEYED_SQL = "SELECT * FROM \"" + BASE_DS + "\" WHERE " + IMAGE
+            + " LIKE ? ESCAPE '\\' ORDER BY " + IMAGE + " ASC";
+
+    /** The keyed read the repository composes for the alternate-index path. */
+    private static final String ALT_KEYED_SQL = "SELECT * FROM \"" + ALT_DS + "\" WHERE " + IMAGE
+            + " LIKE ? ESCAPE '\\' ORDER BY " + IMAGE + " ASC";
+
+    /** The sequential browse of the base cluster, in ascending record-image - and so key - order. */
+    private static final String BASE_BROWSE_SQL = "SELECT * FROM \"" + BASE_DS + "\" ORDER BY " + IMAGE
+            + " ASC";
+
+    /**
+     * Distinguishes the in-memory database each seeded test uses, so no two tests share a relation.
+     *
+     * <p>A counter rather than a random or time-derived name, so a run is reproducible.
+     */
+    private static final AtomicInteger DATABASE_SEQUENCE = new AtomicInteger();
 
     /** The first row of {@code app/data/ASCII/cardxref.txt}: card 0500024453765740, customer and account 50. */
     private static final String CARD_1 = "0500024453765740";
 
     /** The second fixture row's card number. */
     private static final String CARD_2 = "0683586198171516";
+
+    /** A third card number, present in no seeded relation, for the unmatched-key arms. */
+    private static final String CARD_3 = "9999999999999999";
 
     /** The codec every assertion uses, over the explicitly named code page. */
     private static final FixedWidthCodec CODEC = new FixedWidthCodec(ASCII);
@@ -98,7 +159,7 @@ class CardXrefRepositoryTest {
      */
     private static DatasetBinding ksds(String dsname) {
         return new DatasetBinding(dsname, "ksds", false, "FB", null, CardXrefRecord.RECORD_LENGTH,
-                "CVACT03Y", null, null, null);
+                "CVACT03Y", null, null, null, null);
     }
 
     /**
@@ -109,7 +170,7 @@ class CardXrefRepositoryTest {
      */
     private static DatasetBinding aixPath(String dsname) {
         return new DatasetBinding(dsname, "aix-path", false, "FB", null, CardXrefRecord.RECORD_LENGTH,
-                "CVACT03Y", null, CardXrefRepository.BASE_DD_NAME,
+                "CVACT03Y", null, null, CardXrefRepository.BASE_DD_NAME,
                 CardXrefRepository.EXPECTED_ALTERNATE_KEY_FIELD);
     }
 
@@ -163,26 +224,203 @@ class CardXrefRepositoryTest {
     }
 
     /**
-     * Stubs a statement to return the given record images.
+     * The stand-in backends, one per mocked template, so a test can seed both access paths on one
+     * template and a test with three templates gets three independent datasets.
+     */
+    private final Map<JdbcTemplate, Backend> backends = new IdentityHashMap<>();
+
+    /**
+     * The stand-in backend for a template, created on first use.
      *
      * @param jdbcTemplate the mocked template
-     * @param sql          the statement to stub
-     * @param rows         the rows to return, which may contain a {@code null} element
+     * @return its backend
      */
-    private static void stubRows(JdbcTemplate jdbcTemplate, String sql, List<String> rows) {
-        when(jdbcTemplate.query(eq(sql), ArgumentMatchers.<RowMapper<String>>any())).thenReturn(rows);
+    private Backend backend(JdbcTemplate jdbcTemplate) {
+        return backends.computeIfAbsent(jdbcTemplate, Backend::new);
     }
 
     /**
-     * Stubs a statement to fail the way a driver that cannot be reached fails.
+     * Seeds a dataset with the record images it holds.
      *
      * @param jdbcTemplate the mocked template
-     * @param sql          the statement to stub
+     * @param dataset      the dataset name, {@link #BASE_DS} or {@link #ALT_DS}
+     * @param rows         the images the dataset holds, or {@code null} to make the template yield no
+     *                     result object at all
      */
-    private static void stubFailure(JdbcTemplate jdbcTemplate, String sql) {
-        when(jdbcTemplate.query(eq(sql), ArgumentMatchers.<RowMapper<String>>any()))
-                .thenThrow(new DataAccessResourceFailureException("the dataset cannot be reached"));
+    private void stubRows(JdbcTemplate jdbcTemplate, String dataset, List<String> rows) {
+        if (rows == null) {
+            backend(jdbcTemplate).yieldingNothing(dataset);
+        } else {
+            backend(jdbcTemplate).storing(dataset, rows);
+        }
     }
+
+    /**
+     * Makes a dataset fail the way one that cannot be reached fails.
+     *
+     * @param jdbcTemplate the mocked template
+     * @param dataset      the dataset name
+     */
+    private void stubFailure(JdbcTemplate jdbcTemplate, String dataset) {
+        backend(jdbcTemplate).failing(dataset);
+    }
+
+    /**
+     * A stand-in for the deployment backend, sufficient to prove the predicate is really in the
+     * statement.
+     *
+     * <p>This is more than a canned answer, and it has to be. Since the keyed predicate moved out of
+     * Java and into the statement, a stub that simply returned a list would no longer test the thing
+     * that matters - whether the {@code LIKE} pattern the repository composed actually confines the
+     * match to the key's own bytes at the key's own offset. So this evaluates the pattern: it captures
+     * the statement and the bound parameter, translates the {@code LIKE} pattern into a regular
+     * expression honouring {@code _}, {@code %} and the declared {@code \} escape, and returns the
+     * seeded rows that match, up to the row limit the repository asked for.
+     *
+     * <p>One deliberate departure from a real backend: a {@code null} record image is always returned
+     * rather than filtered out. A real {@code LIKE} cannot match {@code NULL}, so the repository's
+     * "there is a record and it cannot be read" guard would be unreachable through a faithful backend -
+     * yet the guard is right to exist, because a driver returning {@code null} for a column it declared
+     * non-null is precisely the misbehaviour it defends against. Returning it keeps that arm honest.
+     */
+    private static final class Backend {
+
+        /** What each dataset holds, keyed by dataset name. */
+        private final Map<String, List<String>> stored = new LinkedHashMap<>();
+
+        /** The datasets that cannot be reached. */
+        private final Set<String> failing = new LinkedHashSet<>();
+
+        /** The datasets whose template yields no result object at all. */
+        private final Set<String> yieldingNothing = new LinkedHashSet<>();
+
+        /** Every statement sent, in order, so a test can assert what was composed. */
+        private final List<String> statementsSent = new ArrayList<>();
+
+        /** Every parameter bound to a keyed read, in order. */
+        private final List<String> patternsBound = new ArrayList<>();
+
+        Backend(JdbcTemplate template) {
+            when(template.query(anyString(), ArgumentMatchers.<ResultSetExtractor<String>>any()))
+                    .thenAnswer(invocation -> describe(invocation.getArgument(0)));
+            when(template.query(any(PreparedStatementCreator.class),
+                            ArgumentMatchers.<ResultSetExtractor<List<String>>>any()))
+                    .thenAnswer(this::keyedRead);
+            when(template.query(anyString(), ArgumentMatchers.<RowMapper<String>>any()))
+                    .thenAnswer(invocation -> browse(invocation.getArgument(0)));
+        }
+
+        Backend storing(String dataset, List<String> rows) {
+            stored.put(dataset, rows);
+            return this;
+        }
+
+        Backend failing(String dataset) {
+            failing.add(dataset);
+            return this;
+        }
+
+        Backend yieldingNothing(String dataset) {
+            yieldingNothing.add(dataset);
+            return this;
+        }
+
+        List<String> statementsSent() {
+            return List.copyOf(statementsSent);
+        }
+
+        List<String> patternsBound() {
+            return List.copyOf(patternsBound);
+        }
+
+        /** Answers the metadata describe: the column name, unless the dataset cannot be reached. */
+        private String describe(String sql) {
+            statementsSent.add(sql);
+            requireReachable(sql);
+            return DESCRIBED_COLUMN;
+        }
+
+        /** Answers the sequential browse: every seeded row, in the order it was seeded. */
+        private List<String> browse(String sql) {
+            statementsSent.add(sql);
+            requireReachable(sql);
+            return yieldingNothing.contains(datasetOf(sql)) ? null : rowsOf(sql);
+        }
+
+        /** Answers a keyed read by evaluating the composed predicate against the seeded rows. */
+        private List<String> keyedRead(InvocationOnMock invocation) throws SQLException {
+            PreparedStatementCreator creator = invocation.getArgument(0);
+            Connection connection = mock(Connection.class);
+            PreparedStatement prepared = mock(PreparedStatement.class);
+            List<String> captured = new ArrayList<>();
+            List<String> sql = new ArrayList<>();
+            when(connection.prepareStatement(anyString())).thenAnswer(prepare -> {
+                sql.add(prepare.getArgument(0));
+                return prepared;
+            });
+            doAnswer(bind -> {
+                captured.add(bind.getArgument(1));
+                return null;
+            }).when(prepared).setString(eq(1), anyString());
+            creator.createPreparedStatement(connection);
+
+            String statement = sql.get(0);
+            String pattern = captured.get(0);
+            statementsSent.add(statement);
+            patternsBound.add(pattern);
+            requireReachable(statement);
+            if (yieldingNothing.contains(datasetOf(statement))) {
+                return null;
+            }
+            Pattern matcher = likeAsRegex(pattern);
+            List<String> matches = new ArrayList<>();
+            for (String row : rowsOf(statement)) {
+                if (matches.size() == DUPLICATE_DETECTION_LIMIT) {
+                    break;
+                }
+                if (row == null || matcher.matcher(row).matches()) {
+                    matches.add(row);
+                }
+            }
+            return matches;
+        }
+
+        private void requireReachable(String sql) {
+            if (failing.contains(datasetOf(sql))) {
+                throw new DataAccessResourceFailureException("the dataset cannot be reached");
+            }
+        }
+
+        private List<String> rowsOf(String sql) {
+            return stored.getOrDefault(datasetOf(sql), List.of());
+        }
+
+        /** Which seeded dataset a statement addresses, read from the delimited identifier it carries. */
+        private static String datasetOf(String sql) {
+            return sql.contains("\"" + ALT_DS + "\"") ? ALT_DS : BASE_DS;
+        }
+
+        /** Translates a SQL {@code LIKE} pattern into the regular expression it denotes. */
+        private static Pattern likeAsRegex(String like) {
+            StringBuilder regex = new StringBuilder(like.length() * 2);
+            for (int index = 0; index < like.length(); index++) {
+                char character = like.charAt(index);
+                if (character == '\\' && index + 1 < like.length()) {
+                    regex.append(Pattern.quote(String.valueOf(like.charAt(++index))));
+                } else if (character == '_') {
+                    regex.append('.');
+                } else if (character == '%') {
+                    regex.append(".*");
+                } else {
+                    regex.append(Pattern.quote(String.valueOf(character)));
+                }
+            }
+            return Pattern.compile(regex.toString(), Pattern.DOTALL);
+        }
+    }
+
+    /** The row limit a keyed read asks for: one more than a unique key can return. */
+    private static final int DUPLICATE_DETECTION_LIMIT = 2;
 
     // =================================================================================================
     // Startup. Everything checkable about the configuration is checked in the constructor, so a
@@ -228,7 +466,7 @@ class CardXrefRepositoryTest {
         @DisplayName("A base binding whose record length is not 50 is rejected, naming the copybook")
         void aBaseBindingOfTheWrongWidthIsRejected() {
             DatasetBindings catalogue = bindings(
-                    new DatasetBinding(BASE_DS, "ksds", false, "FB", null, 36, "CVACT03Y", null, null,
+                    new DatasetBinding(BASE_DS, "ksds", false, "FB", null, 36, "CVACT03Y", null, null, null,
                             null),
                     aixPath(ALT_DS));
 
@@ -244,6 +482,7 @@ class CardXrefRepositoryTest {
         void anAlternateIndexBindingOfTheWrongWidthIsRejected() {
             DatasetBindings catalogue = bindings(ksds(BASE_DS),
                     new DatasetBinding(ALT_DS, "aix-path", false, "FB", null, 50 + 1, "CVACT03Y", null,
+                            null,
                             CardXrefRepository.BASE_DD_NAME,
                             CardXrefRepository.EXPECTED_ALTERNATE_KEY_FIELD));
 
@@ -257,7 +496,7 @@ class CardXrefRepositoryTest {
         void anAlternateIndexOverTheWrongBaseIsRejected() {
             DatasetBindings catalogue = bindings(ksds(BASE_DS),
                     new DatasetBinding(ALT_DS, "aix-path", false, "FB", null,
-                            CardXrefRecord.RECORD_LENGTH, "CVACT03Y", null, "CARDDAT",
+                            CardXrefRecord.RECORD_LENGTH, "CVACT03Y", null, null, "CARDDAT",
                             CardXrefRepository.EXPECTED_ALTERNATE_KEY_FIELD));
 
             assertThatExceptionOfType(IllegalStateException.class)
@@ -272,6 +511,7 @@ class CardXrefRepositoryTest {
             DatasetBindings catalogue = bindings(ksds(BASE_DS),
                     new DatasetBinding(ALT_DS, "aix-path", false, "FB", null,
                             CardXrefRecord.RECORD_LENGTH, "CVACT03Y", null,
+                            null,
                             CardXrefRepository.BASE_DD_NAME, CardXrefRecord.XREF_CUST_ID_NAME));
 
             assertThatExceptionOfType(IllegalStateException.class)
@@ -285,7 +525,7 @@ class CardXrefRepositoryTest {
         void aBaseThatDeclaresItsOwnBaseIsRejected() {
             DatasetBindings catalogue = bindings(
                     new DatasetBinding(BASE_DS, "ksds", false, "FB", null,
-                            CardXrefRecord.RECORD_LENGTH, "CVACT03Y", null, "CARDDAT", null),
+                            CardXrefRecord.RECORD_LENGTH, "CVACT03Y", null, null, "CARDDAT", null),
                     aixPath(ALT_DS));
 
             assertThatExceptionOfType(IllegalStateException.class)
@@ -311,10 +551,10 @@ class CardXrefRepositoryTest {
         @Test
         @DisplayName("A dataset name holding a control character is rejected, naming the position")
         void aDatasetNameWithAControlCharacterIsRejected() {
-            assertThatExceptionOfType(IllegalStateException.class)
+            assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new CardXrefRepository(mock(JdbcTemplate.class),
                             bindings(ksds("TEST.X\nREF"), aixPath(ALT_DS)), ASCII))
-                    .withMessageContaining("control character at position 6");
+                    .withMessageContaining("0-based position 6");
         }
 
         @Test
@@ -374,7 +614,7 @@ class CardXrefRepositoryTest {
         @DisplayName("WHEN DFHRESP(NORMAL): a matching record comes back with status '00'")
         void aMatchingRecordIsFound() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L), image(CARD_2, 27, 27L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L), image(CARD_2, 27, 27L)));
 
             ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
 
@@ -392,10 +632,10 @@ class CardXrefRepositoryTest {
         @DisplayName("Gate G45: the base read addresses the BASE dataset, never the alternate path")
         void theBaseReadAddressesTheBaseDataset() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L)));
             // The alternate-index statement is stubbed to a DIFFERENT record. If the base read reached
             // for it, the assertion below would see account 999 instead of 50.
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 999, 999L)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 999, 999L)));
 
             ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
 
@@ -406,7 +646,7 @@ class CardXrefRepositoryTest {
         @DisplayName("WHEN DFHRESP(NOTFND): an unmatched key is status '23' and is NOT an exception")
         void anUnmatchedKeyIsNotFound() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_2, 27, 27L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_2, 27, 27L)));
 
             ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
 
@@ -421,7 +661,7 @@ class CardXrefRepositoryTest {
         @DisplayName("An unmatched key is NOT end of file: a keyed read has not reached the end of anything")
         void anUnmatchedKeyIsNotEndOfFile() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, Collections.emptyList());
+            stubRows(jdbc, BASE_DS, Collections.emptyList());
 
             ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
 
@@ -434,7 +674,7 @@ class CardXrefRepositoryTest {
         @DisplayName("Two records on one base key report DUPREC and hand back the first")
         void aDuplicateBaseKeyReportsDuprec() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L), image(CARD_1, 77, 77L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L), image(CARD_1, 77, 77L)));
 
             ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
 
@@ -449,7 +689,7 @@ class CardXrefRepositoryTest {
         @DisplayName("WHEN OTHER: an unreachable dataset is a permanent-error status, never a throw")
         void anUnreachableDatasetIsReportedAsAStatus() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubFailure(jdbc, BASE_SQL);
+            stubFailure(jdbc, BASE_DS);
 
             ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
 
@@ -465,7 +705,7 @@ class CardXrefRepositoryTest {
         @DisplayName("A template that yields no result at all is WHEN OTHER, not an empty dataset")
         void aNullResultIsNotAnEmptyDataset() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, null);
+            stubRows(jdbc, BASE_DS, null);
 
             ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
 
@@ -477,7 +717,7 @@ class CardXrefRepositoryTest {
         @DisplayName("A row whose record image is absent is WHEN OTHER, never silently skipped")
         void aNullRowImageIsAnIoDefect() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, Arrays.asList(image(CARD_1, 50, 50L), null));
+            stubRows(jdbc, BASE_DS, Arrays.asList(image(CARD_1, 50, 50L), null));
 
             ReadResult result = repository(jdbc).readByCardNumber(CARD_1);
 
@@ -491,7 +731,7 @@ class CardXrefRepositoryTest {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             // "0500" occupies the first four bytes and the remaining twelve are the padding a
             // PIC X(16) receiver supplies. A record stored that way must be found by the short key.
-            stubRows(jdbc, BASE_SQL, List.of(image("0500", 9, 9L)));
+            stubRows(jdbc, BASE_DS, List.of(image("0500", 9, 9L)));
 
             ReadResult result = repository(jdbc).readByCardNumber("0500");
 
@@ -505,7 +745,7 @@ class CardXrefRepositoryTest {
         @DisplayName("The key is a PIC X MOVE: an over-long key is truncated on the RIGHT, not the left")
         void anOverLongKeyIsTruncatedOnTheRight() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L)));
 
             // Seventeen characters: the leading sixteen survive, which is the PIC X rule. Truncating on
             // the left instead would have kept "500024453765740X" and found nothing.
@@ -519,7 +759,7 @@ class CardXrefRepositoryTest {
         @DisplayName("An all-spaces key is a legitimate lookup, not a missing argument")
         void anEmptyKeyLooksUpSpaces() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image("", 1, 1L)));
+            stubRows(jdbc, BASE_DS, List.of(image("", 1, 1L)));
 
             ReadResult result = repository(jdbc).readByCardNumber("");
 
@@ -542,7 +782,7 @@ class CardXrefRepositoryTest {
         void aShortRowIsRejected() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             // Exactly what app/data/ASCII/cardxref.txt holds: the three fields and no trailing FILLER.
-            stubRows(jdbc, BASE_SQL, List.of(CARD_1 + "000000050" + "00000000050"));
+            stubRows(jdbc, BASE_DS, List.of(CARD_1 + "000000050" + "00000000050"));
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> repository(jdbc).readByCardNumber(CARD_1))
@@ -553,7 +793,7 @@ class CardXrefRepositoryTest {
         @DisplayName("A row wider than the copybook is rejected as well")
         void anOverWideRowIsRejected() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L) + " "));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L) + " "));
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> repository(jdbc).readByCardNumber(CARD_1));
@@ -573,7 +813,7 @@ class CardXrefRepositoryTest {
         @DisplayName("WHEN DFHRESP(NORMAL): the record comes back and carries the two fields COACTVWC moves")
         void aMatchingRecordCarriesTheFieldsTheCallerMoves() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 50, 50L), image(CARD_2, 27, 27L)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 50, 50L), image(CARD_2, 27, 27L)));
 
             ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(27L);
 
@@ -590,8 +830,8 @@ class CardXrefRepositoryTest {
         @DisplayName("Gate G45: the alternate read addresses the PATH dataset, never the base")
         void theAlternateReadAddressesThePathDataset() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 111, 50L)));
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 222, 50L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 111, 50L)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 222, 50L)));
 
             ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(50L);
 
@@ -602,7 +842,7 @@ class CardXrefRepositoryTest {
         @DisplayName("The key is a PIC 9 MOVE: it is zero-filled on the LEFT, so account 50 is 00000000050")
         void theKeyIsZeroFilledOnTheLeft() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 50, 50L)));
 
             ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(50L);
 
@@ -618,7 +858,7 @@ class CardXrefRepositoryTest {
         @DisplayName("The two COBOL views of the key are identical on the wire")
         void bothKeyViewsProduceTheSameResult() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 50, 50L)));
             CardXrefRepository repository = repository(jdbc);
 
             // COTRN02C:582 and COBIL00C:414 pass the PIC 9(11) field; COACTVWC:729 and COACTUPC:3655
@@ -634,7 +874,7 @@ class CardXrefRepositoryTest {
         @DisplayName("The alphanumeric view is left-zero-filled too, so a short image still matches")
         void theAlphanumericViewIsLeftZeroFilled() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 50, 50L)));
 
             assertThat(repository(jdbc).readByAccountIdViaAltIndex("50").isFound()).isTrue();
         }
@@ -643,7 +883,7 @@ class CardXrefRepositoryTest {
         @DisplayName("The alphanumeric view keeps the LOW-order digits when the image is too long")
         void theAlphanumericViewTruncatesOnTheLeft() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 50, 50L)));
 
             // Twelve digits: the leading 9 is discarded and 00000000050 survives, which is the PIC 9
             // rule and the opposite of the PIC X rule applied to the base key.
@@ -685,7 +925,7 @@ class CardXrefRepositoryTest {
         @DisplayName("WHEN DFHRESP(NOTFND): COACTVWC's DID-NOT-FIND-ACCT-IN-CARDXREF branch")
         void anUnmatchedAccountIsNotFound() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 50, 50L)));
 
             ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(99999999999L);
 
@@ -701,7 +941,7 @@ class CardXrefRepositoryTest {
             // One account holding two cards: legitimate, and exactly the DUPKEY condition a CICS READ
             // through a path over a non-unique alternate index raises. Ordered by record image, so the
             // lower card number is first.
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 50, 50L), image(CARD_2, 50, 50L)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 50, 50L), image(CARD_2, 50, 50L)));
 
             ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(50L);
 
@@ -717,15 +957,15 @@ class CardXrefRepositoryTest {
         @DisplayName("WHEN OTHER: an unreachable path, a null result and an absent row image")
         void everyIoFailurePathIsReportedAsOther() {
             JdbcTemplate unreachable = mock(JdbcTemplate.class);
-            stubFailure(unreachable, ALT_SQL);
+            stubFailure(unreachable, ALT_DS);
             assertThat(repository(unreachable).readByAccountIdViaAltIndex(50L).isOther()).isTrue();
 
             JdbcTemplate nullResult = mock(JdbcTemplate.class);
-            stubRows(nullResult, ALT_SQL, null);
+            stubRows(nullResult, ALT_DS, null);
             assertThat(repository(nullResult).readByAccountIdViaAltIndex(50L).isOther()).isTrue();
 
             JdbcTemplate nullRow = mock(JdbcTemplate.class);
-            stubRows(nullRow, ALT_SQL, Collections.singletonList(null));
+            stubRows(nullRow, ALT_DS, Collections.singletonList(null));
             ReadResult result = repository(nullRow).readByAccountIdViaAltIndex(50L);
             assertThat(result.isOther()).isTrue();
             assertThat(result.cicsResp()).isEqualTo(FileStatus.NOTOPEN);
@@ -736,7 +976,7 @@ class CardXrefRepositoryTest {
         void theWidestAccountIdIsRepresentable() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             long widest = CardXrefRecord.XREF_ACCT_ID_MAX_VALUE;
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 50, widest)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 50, widest)));
 
             ReadResult result = repository(jdbc).readByAccountIdViaAltIndex(widest);
 
@@ -758,7 +998,7 @@ class CardXrefRepositoryTest {
         @DisplayName("A successful OPEN INPUT reports '00' and positions at the first record")
         void aSuccessfulOpenPositionsAtTheStart() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L)));
             CardXrefRepository repository = repository(jdbc);
 
             try (BrowseCursor cursor = repository.openBrowse()) {
@@ -775,7 +1015,7 @@ class CardXrefRepositoryTest {
         @DisplayName("The whole CBACT03C loop: every record, in order, then end of file")
         void theWholeLoopReadsEveryRecordThenReportsEndOfFile() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L), image(CARD_2, 27, 27L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L), image(CARD_2, 27, 27L)));
             List<String> displayed = new ArrayList<>();
 
             try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
@@ -794,7 +1034,7 @@ class CardXrefRepositoryTest {
         @DisplayName("End of file is status '10', APPL-RESULT 16, and is reported repeatedly")
         void endOfFileIsIdempotent() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, Collections.emptyList());
+            stubRows(jdbc, BASE_DS, Collections.emptyList());
 
             try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
                 ReadResult first = cursor.readNext();
@@ -813,7 +1053,7 @@ class CardXrefRepositoryTest {
         @DisplayName("ERROR OPENING XREFFILE: a failed open reports 12 and stays unusable")
         void aFailedOpenIsReportedAndStaysUnusable() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubFailure(jdbc, BASE_SQL);
+            stubFailure(jdbc, BASE_DS);
 
             try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
                 assertThat(cursor.openStatus()).isEqualTo(CardXrefRepository.PERMANENT_ERROR_STATUS);
@@ -834,7 +1074,7 @@ class CardXrefRepositoryTest {
         @DisplayName("A template that yields no result at all is a failed open, not an empty pass")
         void aNullResultIsAFailedOpen() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, null);
+            stubRows(jdbc, BASE_DS, null);
 
             try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
                 assertThat(cursor.openStatus()).isEqualTo(CardXrefRepository.PERMANENT_ERROR_STATUS);
@@ -847,7 +1087,7 @@ class CardXrefRepositoryTest {
         @DisplayName("An absent record image mid-pass is WHEN OTHER, and the pass advances past it")
         void anAbsentRowImageIsReportedAndSkippedPast() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL,
+            stubRows(jdbc, BASE_DS,
                     Arrays.asList(image(CARD_1, 50, 50L), null, image(CARD_2, 27, 27L)));
 
             try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
@@ -869,7 +1109,7 @@ class CardXrefRepositoryTest {
         @DisplayName("CLOSE reports '00', is idempotent, and leaves the cursor unusable")
         void closeIsIdempotentAndFinal() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L)));
 
             BrowseCursor cursor = repository(jdbc).openBrowse();
             assertThat(cursor.closeBrowse()).isEqualTo(FileStatus.OK);
@@ -881,7 +1121,7 @@ class CardXrefRepositoryTest {
         @DisplayName("Reading a closed pass is a defect in the caller, not a file status")
         void readingAClosedCursorThrows() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L)));
 
             BrowseCursor cursor = repository(jdbc).openBrowse();
             cursor.close();
@@ -895,7 +1135,7 @@ class CardXrefRepositoryTest {
         @DisplayName("try-with-resources and an explicit close in the same block are both safe")
         void tryWithResourcesToleratesAnExplicitClose() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L)));
 
             try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
                 assertThat(cursor.readNext().isFound()).isTrue();
@@ -907,7 +1147,7 @@ class CardXrefRepositoryTest {
         @DisplayName("Two passes are independent: a @Repository singleton holds no browse position")
         void twoPassesAreIndependent() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 50, 50L), image(CARD_2, 27, 27L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 50, 50L), image(CARD_2, 27, 27L)));
             CardXrefRepository repository = repository(jdbc);
 
             try (BrowseCursor first = repository.openBrowse();
@@ -925,7 +1165,7 @@ class CardXrefRepositoryTest {
         @DisplayName("Gate G19: a malformed row is raised by the readNext that reaches it, not by the open")
         void aMalformedRowIsRaisedWhenItIsReached() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL,
+            stubRows(jdbc, BASE_DS,
                     List.of(image(CARD_1, 50, 50L), CARD_2 + "000000027" + "00000000027"));
 
             try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
@@ -943,8 +1183,8 @@ class CardXrefRepositoryTest {
         @DisplayName("A pass reads the base cluster, never the alternate-index path")
         void aPassReadsTheBaseCluster() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, List.of(image(CARD_1, 111, 50L)));
-            stubRows(jdbc, ALT_SQL, List.of(image(CARD_1, 222, 50L)));
+            stubRows(jdbc, BASE_DS, List.of(image(CARD_1, 111, 50L)));
+            stubRows(jdbc, ALT_DS, List.of(image(CARD_1, 222, 50L)));
 
             try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
                 assertThat(cursor.readNext().record().orElseThrow().xrefCustId()).isEqualTo(111);
@@ -1006,7 +1246,7 @@ class CardXrefRepositoryTest {
                 padded.add(CODEC.padToDeclaredWidth(row, CardXrefRepository.RECORD_LENGTH));
             }
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, padded);
+            stubRows(jdbc, BASE_DS, padded);
             List<CardXrefRecord> decoded = new ArrayList<>();
 
             try (BrowseCursor cursor = repository(jdbc).openBrowse()) {
@@ -1033,8 +1273,8 @@ class CardXrefRepositoryTest {
                 padded.add(CODEC.padToDeclaredWidth(row, CardXrefRepository.RECORD_LENGTH));
             }
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, padded);
-            stubRows(jdbc, ALT_SQL, padded);
+            stubRows(jdbc, BASE_DS, padded);
+            stubRows(jdbc, ALT_DS, padded);
             CardXrefRepository repository = repository(jdbc);
 
             ReadResult byCard = repository.readByCardNumber(CARD_1);
@@ -1051,7 +1291,7 @@ class CardXrefRepositoryTest {
         @DisplayName("An unpadded fixture row is rejected: production never absorbs the 36-byte form")
         void anUnpaddedFixtureRowIsRejected() throws IOException {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            stubRows(jdbc, BASE_SQL, fixtureRows());
+            stubRows(jdbc, BASE_DS, fixtureRows());
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> repository(jdbc).readByCardNumber(CARD_1))
@@ -1135,7 +1375,7 @@ class CardXrefRepositoryTest {
         void aStatusOfTheWrongLengthIsRejected() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, "000",
-                            Outcome.OK, java.util.Optional.of(RECORD), FileStatus.NORMAL, 0))
+                            Outcome.OK, java.util.Optional.of(RECORD), FileStatus.NORMAL, 0, java.util.Optional.empty()))
                     .withMessageContaining("exactly");
         }
 
@@ -1144,7 +1384,7 @@ class CardXrefRepositoryTest {
         void aStatusAndOutcomeThatDisagreeAreRejected() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
-                            Outcome.NOT_FOUND, java.util.Optional.empty(), FileStatus.NOTFND, 0))
+                            Outcome.NOT_FOUND, java.util.Optional.empty(), FileStatus.NOTFND, 0, java.util.Optional.empty()))
                     .withMessageContaining("does not classify");
         }
 
@@ -1154,12 +1394,12 @@ class CardXrefRepositoryTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME,
                             FileStatus.NOT_FOUND, Outcome.NOT_FOUND, java.util.Optional.of(RECORD),
-                            FileStatus.NOTFND, 0))
+                            FileStatus.NOTFND, 0, java.util.Optional.empty()))
                     .withMessageContaining("carries no record");
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
-                            Outcome.OK, java.util.Optional.empty(), FileStatus.NORMAL, 0))
+                            Outcome.OK, java.util.Optional.empty(), FileStatus.NORMAL, 0, java.util.Optional.empty()))
                     .withMessageContaining("but none was supplied");
         }
 
@@ -1168,16 +1408,19 @@ class CardXrefRepositoryTest {
         void everyComponentIsRequired() {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new ReadResult(null, FileStatus.OK, Outcome.OK,
-                            java.util.Optional.of(RECORD), FileStatus.NORMAL, 0));
+                            java.util.Optional.of(RECORD), FileStatus.NORMAL, 0, java.util.Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, null, Outcome.OK,
-                            java.util.Optional.of(RECORD), FileStatus.NORMAL, 0));
+                            java.util.Optional.of(RECORD), FileStatus.NORMAL, 0, java.util.Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
-                            null, java.util.Optional.of(RECORD), FileStatus.NORMAL, 0));
+                            null, java.util.Optional.of(RECORD), FileStatus.NORMAL, 0, java.util.Optional.empty()));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
-                            Outcome.OK, null, FileStatus.NORMAL, 0));
+                            Outcome.OK, null, FileStatus.NORMAL, 0, java.util.Optional.empty()));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> new ReadResult(CardXrefRepository.BASE_DD_NAME, FileStatus.OK,
+                            Outcome.OK, java.util.Optional.of(RECORD), FileStatus.NORMAL, 0, null));
         }
 
         @Test
@@ -1224,23 +1467,19 @@ class CardXrefRepositoryTest {
     // =================================================================================================
 
     @Nested
-    @DisplayName("Risk R-E - a record image column with no name, and a statement built from configuration")
+    @DisplayName("Risk R-E - a discovered column name, and statements built only from configuration")
     class DriverIndependence {
 
-        /**
-         * Captures the {@link RowMapper} the repository hands the template and runs it against a mocked
-         * row, which is the only way to observe how the record image is actually fetched.
-         *
-         * @throws SQLException never; declared because the mapper contract declares it
-         */
         @Test
         @DisplayName("The record image is read by column POSITION 1, and by no column name at all")
         void theRecordImageIsReadByPositionAndNeverByName() throws SQLException {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             ArgumentCaptor<RowMapper<String>> mapperCaptor = ArgumentCaptor.captor();
-            when(jdbc.query(eq(BASE_SQL), mapperCaptor.capture()))
+            when(jdbc.query(anyString(), mapperCaptor.capture()))
                     .thenReturn(List.of(image(CARD_1, 50, 50L)));
-            repository(jdbc).readByCardNumber(CARD_1);
+            when(jdbc.query(anyString(), ArgumentMatchers.<ResultSetExtractor<String>>any()))
+                    .thenReturn(DESCRIBED_COLUMN);
+            repository(jdbc).openBrowse();
 
             ResultSet row = mock(ResultSet.class);
             when(row.getString(CardXrefRepository.RECORD_IMAGE_COLUMN_INDEX)).thenReturn("a row image");
@@ -1248,7 +1487,8 @@ class CardXrefRepositoryTest {
             assertThat(mapperCaptor.getValue().mapRow(row, 0)).isEqualTo("a row image");
             verify(row).getString(CardXrefRepository.RECORD_IMAGE_COLUMN_INDEX);
             // The whole point: a dataset carrying no relational metadata is presented as a single
-            // record-image column, so naming that column in Java would be an unverifiable literal.
+            // record-image column, so the value is fetched by position. The column's NAME is discovered
+            // from result-set metadata where a statement has to name it, never written in Java.
             verify(row, never()).getString(anyString());
         }
 
@@ -1257,9 +1497,11 @@ class CardXrefRepositoryTest {
         void anAbsentColumnValueIsSurfaced() throws SQLException {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
             ArgumentCaptor<RowMapper<String>> mapperCaptor = ArgumentCaptor.captor();
-            when(jdbc.query(eq(BASE_SQL), mapperCaptor.capture()))
+            when(jdbc.query(anyString(), mapperCaptor.capture()))
                     .thenReturn(List.of(image(CARD_1, 50, 50L)));
-            repository(jdbc).readByCardNumber(CARD_1);
+            when(jdbc.query(anyString(), ArgumentMatchers.<ResultSetExtractor<String>>any()))
+                    .thenReturn(DESCRIBED_COLUMN);
+            repository(jdbc).openBrowse();
 
             ResultSet row = mock(ResultSet.class);
             when(row.getString(CardXrefRepository.RECORD_IMAGE_COLUMN_INDEX)).thenReturn(null);
@@ -1268,40 +1510,101 @@ class CardXrefRepositoryTest {
         }
 
         @Test
-        @DisplayName("Both statements are composed only from the configured names, delimited and ordered")
+        @DisplayName("Every statement is composed from the configured name and the discovered column")
         void bothStatementsComeOnlyFromConfiguration() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.captor();
-            when(jdbc.query(sqlCaptor.capture(), ArgumentMatchers.<RowMapper<String>>any()))
-                    .thenReturn(List.of(image(CARD_1, 50, 50L)));
+            Backend backend = backend(jdbc);
+            backend.storing(BASE_DS, List.of(image(CARD_1, 50, 50L)))
+                    .storing(ALT_DS, List.of(image(CARD_1, 50, 50L)));
             CardXrefRepository repository = repository(jdbc);
 
             repository.readByCardNumber(CARD_1);
             repository.readByAccountIdViaAltIndex(50L);
             repository.openBrowse();
 
-            assertThat(sqlCaptor.getAllValues()).containsExactly(BASE_SQL, ALT_SQL, BASE_SQL);
-            assertThat(sqlCaptor.getAllValues()).allSatisfy(sql -> assertThat(sql)
-                    // The dataset name is a delimited identifier, because a mainframe name contains
+            assertThat(backend.statementsSent()).containsExactly(
+                    BASE_DESCRIBE_SQL, ALT_DESCRIBE_SQL, BASE_KEYED_SQL, ALT_KEYED_SQL,
+                    BASE_BROWSE_SQL);
+            assertThat(backend.statementsSent()).allSatisfy(sql -> assertThat(sql)
+                    // The dataset name is a delimited identifier, because a mainframe name carries
                     // periods and would otherwise be parsed as a qualified name.
                     .contains("\"")
-                    // ORDER BY an ordinal, so the statement names no column - and the base key is the
-                    // leading fixed-width span, so image order IS card-number order.
-                    .endsWith("ORDER BY " + CardXrefRepository.RECORD_IMAGE_COLUMN_INDEX));
+                    // No copybook field name reaches a statement: XREF-CARD-NUM and XREF-ACCT-ID name
+                    // spans of app/cpy/CVACT03Y.cpy, not columns of anything.
+                    .doesNotContain(CardXrefRecord.XREF_CARD_NUM_NAME)
+                    .doesNotContain(CardXrefRecord.XREF_ACCT_ID_NAME));
         }
 
         @Test
-        @DisplayName("A quote inside a configured dataset name is escaped, never left as syntax")
-        void aQuoteInADatasetNameIsEscaped() {
+        @DisplayName("Gate G45: the two access paths are addressed by their two configured names")
+        void eachAccessPathIsAddressedByItsOwnName() {
             JdbcTemplate jdbc = mock(JdbcTemplate.class);
-            ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.captor();
-            when(jdbc.query(sqlCaptor.capture(), ArgumentMatchers.<RowMapper<String>>any()))
-                    .thenReturn(Collections.emptyList());
+            Backend backend = backend(jdbc);
+            backend.storing(BASE_DS, List.of(image(CARD_1, 50, 50L)))
+                    .storing(ALT_DS, List.of(image(CARD_1, 50, 50L)));
+            CardXrefRepository repository = repository(jdbc);
 
-            new CardXrefRepository(jdbc, bindings(ksds("TEST.\"ODD\".NAME"), aixPath(ALT_DS)), ASCII)
-                    .readByCardNumber(CARD_1);
+            repository.readByCardNumber(CARD_1);
+            repository.readByAccountIdViaAltIndex(50L);
 
-            assertThat(sqlCaptor.getValue()).isEqualTo("SELECT * FROM \"TEST.\"\"ODD\"\".NAME\" ORDER BY 1");
+            assertThat(BASE_KEYED_SQL).contains(BASE_DS).doesNotContain(ALT_DS);
+            assertThat(ALT_KEYED_SQL).contains(ALT_DS);
+            assertThat(backend.statementsSent()).contains(BASE_KEYED_SQL, ALT_KEYED_SQL);
+        }
+
+        @Test
+        @DisplayName("The keyed predicate confines the match to the key's own bytes at its own offset")
+        void theKeyedPredicateIsConfinedToTheKeySpan() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            backend.storing(BASE_DS, List.of(image(CARD_1, 50, 50L)))
+                    .storing(ALT_DS, List.of(image(CARD_1, 50, 50L)));
+            CardXrefRepository repository = repository(jdbc);
+
+            repository.readByCardNumber(CARD_1);
+            repository.readByAccountIdViaAltIndex(50L);
+
+            // XREF-CARD-NUM is at offset 0, so its pattern begins with the key and ends with the
+            // any-sequence wildcard covering the remaining 34 bytes.
+            assertThat(backend.patternsBound().get(0)).isEqualTo(CARD_1 + "%");
+            // XREF-ACCT-ID is at offset 25, so 25 single-character wildcards precede the key. That
+            // leading run of 25 IS the offset, expressed in SQL - and it is what stops this predicate
+            // from matching the card record's account id, which is the same width at offset 16.
+            assertThat(backend.patternsBound().get(1))
+                    .isEqualTo("_".repeat(CardXrefRecord.XREF_ACCT_ID_OFFSET) + "00000000050%");
+        }
+
+        @Test
+        @DisplayName("A LIKE metacharacter inside a key is escaped, so it matches only itself")
+        void aLikeMetacharacterInAKeyIsEscaped() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            Backend backend = backend(jdbc);
+            // A record whose card number really contains a per-cent sign, and one that would be matched
+            // by an unescaped '%' but must not be.
+            String literal = "50%0000000000000";
+            backend.storing(BASE_DS, List.of(image(literal, 50, 50L), image("5099999999999999", 77, 77L)));
+
+            ReadResult result = repository(jdbc).readByCardNumber(literal);
+
+            assertThat(backend.patternsBound().get(0)).isEqualTo("50\\%0000000000000%");
+            assertThat(result.isFound())
+                    .as("an unescaped '%' would have matched two records and reported DUPREC")
+                    .isTrue();
+            assertThat(result.record().orElseThrow().xrefCustId()).isEqualTo(50);
+        }
+
+        @Test
+        @DisplayName("A configured name that is not a well-formed z/OS dataset name is refused")
+        void aMalformedDatasetNameIsRefused() {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+
+            // A quotation mark is not a character a z/OS dataset name admits, so the name is refused
+            // rather than quoted into a statement. The grammar is the defence; the delimited rendering
+            // that follows it is belt and braces.
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new CardXrefRepository(jdbc,
+                            bindings(ksds("TEST.\"ODD\".NAME"), aixPath(ALT_DS)), ASCII))
+                    .withMessageContaining("well-formed z/OS dataset name");
         }
     }
 }

@@ -138,6 +138,13 @@ class MainMenuResponseTest {
     }
 
     // =============================================================================================
+    /**
+     * The two record components that are deliberately not JSON properties: the {@code ERRMSGC}
+     * attribute byte and the clear-the-screen signal, both {@code @JsonIgnore}d.
+     */
+    private static final List<String> UNPUBLISHED_MEMBERS =
+            List.of("errMsgColor", "resetAllOutputFields");
+
     @Nested
     @DisplayName("Accuracy: the field list is the symbolic map's xxxO list")
     class FieldList {
@@ -677,7 +684,14 @@ class MainMenuResponseTest {
             List<String> components = Stream.of(MainMenuResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
-            assertThat(json.keySet()).containsExactlyInAnyOrderElementsOf(components).hasSize(26);
+            // Two of the components are deliberately not published: errMsgColor is the ERRMSGC
+            // attribute byte, which COMEN01.CPY:256 declares as metadata, and resetAllOutputFields
+            // names an action rather than a field. Both are @JsonIgnore'd.
+            List<String> published = components.stream()
+                    .filter(name -> !UNPUBLISHED_MEMBERS.contains(name)).toList();
+
+            assertThat(components).hasSize(26).containsAll(UNPUBLISHED_MEMBERS);
+            assertThat(json.keySet()).containsExactlyInAnyOrderElementsOf(published).hasSize(24);
         }
 
         @Test
@@ -696,7 +710,14 @@ class MainMenuResponseTest {
             MainMenuResponse revived = MAPPER.readValue(MAPPER.writeValueAsString(original),
                     MainMenuResponse.class);
 
-            assertThat(revived).isEqualTo(original);
+            // Whole-object equality is deliberately not asserted: errMsgColor and resetAllOutputFields
+            // are @JsonIgnore'd metadata and do not travel, so they come back at the canonical
+            // constructor's defaults. Every published member is checked instead.
+            assertThat(revived.errMsgColor()).isEqualTo(BmsAttributes.DFHDFCOL);
+            assertThat(revived.trnName()).isEqualTo(original.trnName());
+            assertThat(revived.navigationContext()).isEqualTo(original.navigationContext());
+            assertThat(revived.nextMapset()).isEqualTo(original.nextMapset());
+            assertThat(revived.nextMap()).isEqualTo(original.nextMap());
             assertThat(revived.option()).isEqualTo("01").hasSize(2);
             assertThat(revived.errMsg()).hasSize(78).isBlank();
             for (int slot = 1; slot <= MainMenuResponse.OPTION_LINE_COUNT; slot++) {
@@ -716,7 +737,7 @@ class MainMenuResponseTest {
         }
 
         @Test
-        @DisplayName("round-trip preserves the echoed communication area and the colour byte")
+        @DisplayName("round-trip preserves the echoed communication area; the colour byte is internal")
         void roundTripKeepsContextAndColour() throws IOException {
             MainMenuResponse original = MainMenuResponse.initial()
                     .withErrMsgColor(BmsAttributes.DFHGREEN)
@@ -726,11 +747,37 @@ class MainMenuResponseTest {
             MainMenuResponse revived = MAPPER.readValue(MAPPER.writeValueAsString(original),
                     MainMenuResponse.class);
 
-            assertThat(revived.errMsgColor()).isEqualTo(BmsAttributes.DFHGREEN);
+            // The communication area is payload and survives whole.
             assertThat(revived.navigationContext().userType()).isEqualTo("A");
             assertThat(revived.navigationContext().isReenter()).isTrue();
-            assertThat(revived.resetAllOutputFields()).isTrue();
-            assertThat(revived).isEqualTo(original);
+            assertThat(revived.errMsg()).isEqualTo(original.errMsg());
+            assertThat(revived.option()).isEqualTo(original.option());
+
+            // The two metadata members are not on the wire, so they come back at their defaults rather
+            // than being carried. Ignoring them is the fix; this is what the fix looks like from a
+            // client's side, and it is correct: a presentation attribute is the server's decision.
+            // DFHDFCOL is X'00', the terminal's own default colour, so a response read off the wire
+            // carries a coherent attribute rather than a nonsense one.
+            assertThat(revived.errMsgColor()).isEqualTo(BmsAttributes.DFHDFCOL);
+            assertThat(revived.resetAllOutputFields()).isFalse();
+            assertThat(original.errMsgColor()).isEqualTo(BmsAttributes.DFHGREEN);
+            assertThat(original.resetAllOutputFields()).isTrue();
+        }
+
+        @Test
+        @DisplayName("the ERRMSGC colour byte and the reset signal are not JSON properties")
+        void theTwoMetadataMembersAreNotPublished() throws IOException {
+            MainMenuResponse response = MainMenuResponse.initial()
+                    .withErrMsgColor(BmsAttributes.DFHGREEN);
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> json =
+                    MAPPER.readValue(MAPPER.writeValueAsString(response), Map.class);
+
+            assertThat(json.keySet()).doesNotContainAnyElementsOf(UNPUBLISHED_MEMBERS);
+            // Still reachable in Java, which is what "internal" means.
+            assertThat(response.errMsgColor()).isEqualTo(BmsAttributes.DFHGREEN);
+            assertThat(response.resetAllOutputFields()).isTrue();
         }
     }
 

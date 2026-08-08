@@ -693,7 +693,9 @@ class FixedWidthCodecPictureSpanTest {
 
             assertThat(record.recordLength()).isEqualTo(15);
             assertThat(new String(record.toByteArray(), ASCII))
-                    .isEqualTo("     " + "000" + "00000" + "  ");
+                    .as("a signed span's category default carries its sign: zoned zeros and a "
+                            + "positive-zero overpunch in the trailing byte")
+                    .isEqualTo("     " + "000" + "0000{" + "  ");
         }
 
         @Test
@@ -717,7 +719,7 @@ class FixedWidthCodecPictureSpanTest {
             byte[] record = FixedWidthCodecPictureSpanTest.this.codec.serialise(mixedLayout(),
                     Map.of("NAME", "XY"));
 
-            assertThat(new String(record, ASCII)).isEqualTo("XY   " + "000" + "00000" + "  ");
+            assertThat(new String(record, ASCII)).isEqualTo("XY   " + "000" + "0000{" + "  ");
         }
 
         @Test
@@ -730,7 +732,7 @@ class FixedWidthCodecPictureSpanTest {
                     Map.of("NAME", "NEW"), existing);
 
             assertThat(new String(rewritten, ASCII))
-                    .isEqualTo("NEW  " + "999" + "00000" + "  ");
+                    .isEqualTo("NEW  " + "999" + "0000{" + "  ");
         }
 
         @Test

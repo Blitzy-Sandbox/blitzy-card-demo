@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * The single Java type for COBOL copybook {@code app/cpy/COADM02Y.cpy} - the administrator menu
@@ -58,14 +59,19 @@ import java.util.Objects;
  * while the redefining group {@code CDEMO-ADMIN-OPTIONS} declares an {@code OCCURS} table of
  * {@value #TABLE_SIZE} entries, {@value #TABLE_SIZE} x {@value #ENTRY_LENGTH} =
  * {@value #TABLE_LENGTH} bytes. So the redefining item is <strong>larger than the item it
- * redefines</strong>, and entries 5 through {@value #TABLE_SIZE} are present but unvalued.
+ * redefines</strong>, and slots 5 through {@value #TABLE_SIZE} exist as slots while no {@code VALUE}
+ * clause reaches them - they lie past the end of the group being redefined. This class therefore reports
+ * them as <strong>absent</strong>, not as entries carrying option number 0 and blank names: IBM
+ * Enterprise COBOL initialises storage from applicable {@code VALUE} clauses, and there is no applicable
+ * clause here, so any specific content this class asserted for those bytes would be its own invention.
+ * See {@link #isSpecified(int)} and {@link #unspecifiedTailSpan()}.
  *
  * <p>Both numbers are therefore real, distinct facts and are held as two separate constants:
  * {@link #TABLE_SIZE} is the table's size and {@link #ACTIVE_OPTION_COUNT} is the active count that
  * {@code CDEMO-ADMIN-OPT-COUNT PIC 9(02) VALUE 4} carries. Conflating them - trimming the table to
  * four entries, or looping to nine - is precisely the defect this class exists to prevent. The five
- * empty slots are preserved exactly as the copybook leaves them (practice B5: dead and unvalued
- * declarations are preserved, never cleaned up). The size asymmetry is recorded here and in
+ * empty slots are preserved exactly as the copybook leaves them - which is to say, without content
+ * (practice B5: dead and unvalued declarations are preserved, never cleaned up). The size asymmetry is recorded here and in
  * {@link #GROUP_LAYOUT} rather than "corrected" (practice B4).
  *
  * <h2>Two views over one set of bytes</h2>
@@ -190,6 +196,14 @@ public final class AdminMenuOptions {
     public static final String ADMIN_OPTIONS_FIELD = "CDEMO-ADMIN-OPTIONS";
 
     /**
+     * The suffix naming the unspecified tail descriptor: {@value #UNSPECIFIED_TAIL_SUFFIX}.
+     *
+     * <p>A suffix rather than a copybook name, because the copybook has none for this region: it is the
+     * part of the {@code OCCURS} overlay reaching past the group it redefines.
+     */
+    public static final String UNSPECIFIED_TAIL_SUFFIX = "-UNSPECIFIED-TAIL";
+
+    /**
      * {@code CDEMO-ADMIN-OPT} - one entry of the {@code OCCURS 9} table. Source:
      * {@code COADM02Y.cpy:45}. Subscript it with {@link #subscriptedName(String, int)}.
      */
@@ -265,6 +279,15 @@ public final class AdminMenuOptions {
      * {@code IF ... WS-OPTION > CDEMO-ADMIN-OPT-COUNT ...} ({@code app/cbl/COADM01C.cbl:128}).
      */
     public static final int ACTIVE_OPTION_COUNT = 4;
+
+    /**
+     * The first subscript the copybook declares no {@code VALUE} for:
+     * {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE}.
+     *
+     * <p>Named so that the boundary between the storage this copybook determines and the storage it does
+     * not is stated once, as a constant, rather than written out as an expression wherever it is needed.
+     */
+    public static final int SPECIFIED_OPTION_COUNT_PLUS_ONE = ACTIVE_OPTION_COUNT + 1;
 
     /**
      * Width of {@code CDEMO-ADMIN-OPTIONS-DATA}, the literal-storage view:
@@ -395,8 +418,8 @@ public final class AdminMenuOptions {
      * @param adminOptNum     {@code CDEMO-ADMIN-OPT-NUM PIC 9(02)} - the option number as a scale-free
      *                        {@code int}, because the picture declares no decimal position. Its raw
      *                        two-byte display image is {@link #adminOptNumImage()}. From 0 to
-     *                        {@value AdminMenuOptions#MAX_OPT_NUM} inclusive; 0 is the value of an
-     *                        unvalued slot
+     *                        {@value AdminMenuOptions#MAX_OPT_NUM} inclusive - the whole range
+     *                        {@code PIC 9(02)} admits
      * @param adminOptName    {@code CDEMO-ADMIN-OPT-NAME PIC X(35)} - the display name, exactly
      *                        {@value AdminMenuOptions#OPT_NAME_LENGTH} characters, right-space-padded
      *                        and never trimmed
@@ -418,12 +441,14 @@ public final class AdminMenuOptions {
          *                                  not exactly its declared width
          */
         public AdminMenuOption {
-            Objects.requireNonNull(adminOptName, "CDEMO-ADMIN-OPT-NAME is required; an unvalued slot "
-                    + "carries " + OPT_NAME_LENGTH + " spaces, not null - build one with "
-                    + "AdminMenuOptions.AdminMenuOption.empty()");
-            Objects.requireNonNull(adminOptPgmName, "CDEMO-ADMIN-OPT-PGMNAME is required; an unvalued "
-                    + "slot carries " + OPT_PGMNAME_LENGTH + " spaces, not null - build one with "
-                    + "AdminMenuOptions.AdminMenuOption.empty()");
+            Objects.requireNonNull(adminOptName, "CDEMO-ADMIN-OPT-NAME is required; a "
+                    + OPT_NAME_LENGTH + "-byte span always holds bytes, so pass spaces to blank it. A "
+                    + "slot with no content at all is Optional.empty() in the table, not an entry "
+                    + "carrying nulls");
+            Objects.requireNonNull(adminOptPgmName, "CDEMO-ADMIN-OPT-PGMNAME is required; a "
+                    + OPT_PGMNAME_LENGTH + "-byte span always holds bytes, so pass spaces to blank it. "
+                    + "A slot with no content at all is Optional.empty() in the table, not an entry "
+                    + "carrying nulls");
             if (adminOptNum < 0 || adminOptNum > MAX_OPT_NUM) {
                 throw new IllegalArgumentException("CDEMO-ADMIN-OPT-NUM is PIC 9(0" + OPT_NUM_LENGTH
                         + "), an unsigned two-digit display field, so it holds 0 to " + MAX_OPT_NUM
@@ -475,22 +500,6 @@ public final class AdminMenuOptions {
                     picXImage(programName, OPT_PGMNAME_LENGTH));
         }
 
-        /**
-         * The entry an unvalued {@code OCCURS} slot holds: option number 0, whose two-byte display
-         * image is {@code 00} because a {@code PIC 9} span pads with the zero character, and both names
-         * blank at their full declared widths because a {@code PIC X} span pads with the space
-         * character.
-         *
-         * <p>Slots {@value AdminMenuOptions#ACTIVE_OPTION_COUNT} + 1 through
-         * {@value AdminMenuOptions#TABLE_SIZE} of {@link AdminMenuOptions#options()} are exactly this
-         * value: present, and empty. They are not removed (practice B5).
-         *
-         * @return the empty entry
-         */
-        public static AdminMenuOption empty() {
-            return new AdminMenuOption(0, picXImage("", OPT_NAME_LENGTH),
-                    picXImage("", OPT_PGMNAME_LENGTH));
-        }
 
         /**
          * The raw two-byte zero-filled display image of {@code CDEMO-ADMIN-OPT-NUM}, as the field is
@@ -520,24 +529,71 @@ public final class AdminMenuOptions {
      * The {@value #TABLE_SIZE} entries of {@code CDEMO-ADMIN-OPT}, in COBOL declaration order and
      * indexed from 0 in the Java sense. Unmodifiable and built exactly once.
      */
-    private static final List<AdminMenuOption> OPTIONS = buildOptions();
+    private static final List<Optional<AdminMenuOption>> OPTIONS = buildOptions();
 
     /**
-     * The whole {@code CDEMO-ADMIN-OPT OCCURS 9} table: all {@value #TABLE_SIZE} entries in copybook
-     * declaration order, of which the first {@value #ACTIVE_OPTION_COUNT} are populated and the
-     * remaining five are {@link AdminMenuOption#empty()} - present, and empty (practice B5).
+     * The {@value #ACTIVE_OPTION_COUNT} entries the copybook declares a {@code VALUE} for, with no
+     * absent slot to consider. Exposed by {@link #activeOptions()}.
+     */
+    private static final List<AdminMenuOption> ACTIVE_OPTIONS =
+            OPTIONS.subList(0, ACTIVE_OPTION_COUNT).stream()
+                    .map(slot -> slot.orElseThrow(() -> new IllegalStateException(
+                            "Each of the first " + ACTIVE_OPTION_COUNT + " slots of "
+                                    + ADMIN_OPTIONS_FIELD + " carries a copybook VALUE, so none may be "
+                                    + "absent; this class is mis-transcribed if one is")))
+                    .toList();
+
+    /**
+     * The whole {@code CDEMO-ADMIN-OPT OCCURS 9} table: all {@value #TABLE_SIZE} slots in copybook
+     * declaration order, of which the first {@value #ACTIVE_OPTION_COUNT} carry the copybook's
+     * {@code VALUE} clauses and the remaining five are <strong>empty</strong> (practice B5 keeps the
+     * slots; honesty keeps them empty).
+     *
+     * <p>Empty rather than zero-and-blanks. {@code CDEMO-ADMIN-OPTIONS REDEFINES
+     * CDEMO-ADMIN-OPTIONS-DATA} declares {@value #TABLE_SIZE} entries over storage that values only
+     * {@value #ACTIVE_OPTION_COUNT}, so slots {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} through
+     * {@value #TABLE_SIZE} lie beyond the end of the group being redefined and no {@code VALUE} clause
+     * applies to them. What they hold at run time is not this copybook's to say, so this class does not
+     * say it; a caller walking all nine slots has to decide what an absent one means, which is exactly
+     * the decision the previous zero-and-blanks entry quietly made on its behalf.
      *
      * <p>The returned list is <strong>0-based</strong>, in the ordinary Java sense: element 0 is the
-     * entry COBOL calls {@code CDEMO-ADMIN-OPT(1)}. Where a COBOL subscript is what you hold, use
+     * slot COBOL calls {@code CDEMO-ADMIN-OPT(1)}. Where a COBOL subscript is what you hold, use
      * {@link #optionBySubscript(int)} instead and never subtract one by hand - the two access styles are
-     * named differently precisely so they cannot be confused (gate G33).
+     * named differently precisely so they cannot be confused (gate G33). For the
+     * {@value #ACTIVE_OPTION_COUNT} slots that do carry values, {@link #activeOptions()} avoids the
+     * question.
      *
      * <p>The list is unmodifiable: every mutator throws {@link UnsupportedOperationException}.
      *
-     * @return the {@value #TABLE_SIZE} entries, never {@code null} and never empty
+     * @return the {@value #TABLE_SIZE} slots, of which the first {@value #ACTIVE_OPTION_COUNT} are
+     *         present
      */
-    public static List<AdminMenuOption> options() {
+    public static List<Optional<AdminMenuOption>> options() {
         return OPTIONS;
+    }
+
+    /**
+     * The {@code CDEMO-ADMIN-OPTIONS-DATA} view: the {@value #ACTIVE_OPTION_COUNT} entries the copybook
+     * declares a {@code VALUE} for, with no empty slot to consider.
+     *
+     * @return an unmodifiable list of exactly {@value #ACTIVE_OPTION_COUNT} entries
+     */
+    public static List<AdminMenuOption> activeOptions() {
+        return ACTIVE_OPTIONS;
+    }
+
+    /**
+     * Whether the copybook determines the content of a slot.
+     *
+     * @param cobolSubscript the COBOL subscript, from 1 to {@value #TABLE_SIZE} inclusive
+     * @return {@code true} for subscripts 1 to {@value #ACTIVE_OPTION_COUNT}
+     * @throws IndexOutOfBoundsException if {@code cobolSubscript} is below 1 or above
+     *                                   {@value #TABLE_SIZE}
+     */
+    public static boolean isSpecified(int cobolSubscript) {
+        zeroBasedIndexFor(cobolSubscript);
+        return cobolSubscript <= ACTIVE_OPTION_COUNT;
     }
 
     /**
@@ -592,17 +648,17 @@ public final class AdminMenuOptions {
      * The entry a 1-based COBOL subscript addresses - the Java form of
      * {@code CDEMO-ADMIN-OPT(cobolSubscript)}.
      *
-     * <p>Subscript 1 returns the first populated entry and subscript {@value #TABLE_SIZE} returns the
-     * last, empty one. Subscripts {@value #ACTIVE_OPTION_COUNT} + 1 through {@value #TABLE_SIZE} return
-     * {@link AdminMenuOption#empty()}: those slots exist and are addressable, exactly as the copybook
-     * leaves them.
+     * <p>Subscript 1 returns the first entry the copybook values. Subscripts
+     * {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} through {@value #TABLE_SIZE} return
+     * <strong>empty</strong>: those slots exist and are addressable, exactly as the copybook leaves
+     * them, and what the copybook leaves them is nothing.
      *
      * @param cobolSubscript the COBOL subscript, from 1 to {@value #TABLE_SIZE} inclusive
-     * @return the addressed entry, never {@code null}
+     * @return the addressed entry, or empty for a slot the copybook gives no {@code VALUE}
      * @throws IndexOutOfBoundsException if {@code cobolSubscript} is below 1 or above
      *                                   {@value #TABLE_SIZE}
      */
-    public static AdminMenuOption optionBySubscript(int cobolSubscript) {
+    public static Optional<AdminMenuOption> optionBySubscript(int cobolSubscript) {
         return OPTIONS.get(zeroBasedIndexFor(cobolSubscript));
     }
 
@@ -697,6 +753,16 @@ public final class AdminMenuOptions {
             ADMIN_OPTIONS_FIELD, OPTIONS_OFFSET, TABLE_LENGTH, PictureKind.ALPHANUMERIC);
 
     /**
+     * The unspecified tail as a descriptor: the bytes of slots
+     * {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} through {@value #TABLE_SIZE}, which no {@code VALUE}
+     * clause reaches. A {@code FILLER}-kind overlay carrying no initial value, exposed by
+     * {@link #unspecifiedTailSpan()}.
+     */
+    private static final FieldSpan UNSPECIFIED_TAIL_SPAN = FieldSpan.redefining(
+            ADMIN_OPTIONS_FIELD + UNSPECIFIED_TAIL_SUFFIX, OPTIONS_OFFSET + POPULATED_DATA_LENGTH,
+            TABLE_LENGTH - POPULATED_DATA_LENGTH, PictureKind.FILLER);
+
+    /**
      * The complete flattened layout of {@code 01 CARDDEMO-ADMIN-MENU-OPTIONS}: {@value #GROUP_LENGTH}
      * bytes, declared as {@link #ADMIN_OPT_COUNT_SPAN}, then the {@value #TABLE_SIZE} x 3 = 27
      * {@code OCCURS} elementary items in copybook order, then the two {@code REDEFINES} views.
@@ -710,10 +776,12 @@ public final class AdminMenuOptions {
      * <p>The first {@value #ACTIVE_OPTION_COUNT} entries' spans carry the {@code VALUE} literals the
      * copybook declares on the corresponding {@code FILLER} items of
      * {@code CDEMO-ADMIN-OPTIONS-DATA} - they are the same bytes under two names. Slots
-     * {@value #ACTIVE_OPTION_COUNT} + 1 through {@value #TABLE_SIZE} carry no literal, so
-     * {@link FixedWidthRecord#initialise(RecordLayout)} fills their {@code PIC 9} span with the zero
-     * character and their two {@code PIC X} spans with spaces - which is exactly
-     * {@link AdminMenuOption#empty()}.
+     * {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} through {@value #TABLE_SIZE} carry no literal, which is
+     * how a layout records that the copybook determines nothing about those bytes. Building a record from
+     * this layout then pads them - the {@code PIC 9} span with the zero character, the two {@code PIC X}
+     * spans with spaces - and that padding is <strong>this module's own choice</strong>, made so its
+     * output is reproducible. It is not a claim about what the legacy program's storage contains, and
+     * {@link #unspecifiedTailSpan()} exists so a caller can read those bytes rather than trust them.
      *
      * <p>{@link RecordLayout} is an immutable record and {@link RecordLayout#spans()} returns an
      * unmodifiable list, so publishing this constant hands out no mutable state.
@@ -798,8 +866,15 @@ public final class AdminMenuOptions {
 
     /**
      * The {@value #GROUP_LENGTH}-byte image of {@code 01 CARDDEMO-ADMIN-MENU-OPTIONS} as the copybook's
-     * {@code VALUE} clauses leave it: {@code 04}, then the {@value #ACTIVE_OPTION_COUNT} populated
-     * entries, then five empty slots whose option numbers read {@code 00} and whose names are spaces.
+     * {@code VALUE} clauses leave it: {@code 04}, then the {@value #ACTIVE_OPTION_COUNT} entries the
+     * copybook values.
+     *
+     * <p>Nothing is written for slots {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} through
+     * {@value #TABLE_SIZE}. Those bytes come back as whatever {@link #GROUP_LAYOUT} pads a span with no
+     * declared literal with, which is this module's own choice of a reproducible image and
+     * <strong>not</strong> a statement about what the legacy program's storage holds - the copybook
+     * gives them no {@code VALUE} at all. A caller that needs those bytes reads them through
+     * {@link #unspecifiedTailSpan()} and {@link #fieldImages(byte[], Charset)}.
      *
      * @param charset the code page to encode in, named explicitly by the caller
      * @return exactly {@value #GROUP_LENGTH} bytes
@@ -808,7 +883,7 @@ public final class AdminMenuOptions {
      *                                  character and the space to exactly one byte
      */
     public static byte[] encode(Charset charset) {
-        return encode(OPTIONS, charset);
+        return encodeSlots(OPTIONS, charset);
     }
 
     /**
@@ -816,8 +891,9 @@ public final class AdminMenuOptions {
      *
      * <p>Exactly {@value #TABLE_SIZE} entries are required - the empty slots included - because the
      * {@code OCCURS} table is a fixed-size area and a short list would leave part of it holding whatever
-     * the layout initialised rather than what the caller meant. Pass
-     * {@link AdminMenuOption#empty()} for a slot that is empty.
+     * the layout initialised rather than what the caller meant. A {@code null} element is read as an
+     * absent slot; {@link #encodeSlots(List, Charset)} is the form that says so explicitly and is what
+     * {@link #encode(Charset)} itself uses.
      *
      * <p>{@code CDEMO-ADMIN-OPT-COUNT} is <strong>not</strong> derived from the list: it is a literal in
      * the copybook, so it is always emitted as its declared {@code 04}. That is why this method takes
@@ -836,20 +912,51 @@ public final class AdminMenuOptions {
     public static byte[] encode(List<AdminMenuOption> options, Charset charset) {
         Objects.requireNonNull(options, "The " + TABLE_SIZE + " entries of CDEMO-ADMIN-OPT are "
                 + "required to encode the group");
-        if (options.size() != TABLE_SIZE) {
+        return encodeSlots(options.stream().map(Optional::ofNullable).toList(), charset);
+    }
+
+    /**
+     * The {@value #GROUP_LENGTH}-byte image of the group with the supplied <em>slots</em> in it, an
+     * absent slot contributing no bytes of its own.
+     *
+     * <p>This is the form {@link #options()} hands back and therefore the form
+     * {@link #encode(Charset)} uses. An absent slot leaves its three spans holding whatever
+     * {@link RecordLayout} initialised them with, which for a span carrying no copybook {@code VALUE} is
+     * this module's own pad byte - determinism chosen here so the output is reproducible, and not a
+     * claim about the legacy program's storage. {@link #unspecifiedTailSpan()} names those bytes for a
+     * caller that needs to look at them rather than trust them.
+     *
+     * @param slots   exactly {@value #TABLE_SIZE} slots, in COBOL declaration order and 0-based in the
+     *                list sense; an absent slot is {@link Optional#empty()}, never {@code null}
+     * @param charset the code page to encode in, named explicitly by the caller
+     * @return exactly {@value #GROUP_LENGTH} bytes
+     * @throws NullPointerException     if {@code slots}, any of its elements, or {@code charset} is
+     *                                  {@code null}
+     * @throws IllegalArgumentException if {@code slots} does not hold exactly {@value #TABLE_SIZE}
+     *                                  elements, or {@code charset} does not encode every digit, sign
+     *                                  overpunch character and the space to exactly one byte
+     */
+    public static byte[] encodeSlots(List<Optional<AdminMenuOption>> slots, Charset charset) {
+        Objects.requireNonNull(slots, "The " + TABLE_SIZE + " slots of CDEMO-ADMIN-OPT are required "
+                + "to encode the group");
+        if (slots.size() != TABLE_SIZE) {
             throw new IllegalArgumentException("CDEMO-ADMIN-OPT is declared OCCURS " + TABLE_SIZE
-                    + " TIMES, a fixed-size area, so exactly " + TABLE_SIZE + " entries are required; "
-                    + options.size() + " were supplied. The " + (TABLE_SIZE - ACTIVE_OPTION_COUNT)
-                    + " unvalued slots are part of the table and are passed as empty entries, never "
-                    + "omitted");
+                    + " TIMES, a fixed-size area, so exactly " + TABLE_SIZE + " slots are required; "
+                    + slots.size() + " were supplied. The " + (TABLE_SIZE - ACTIVE_OPTION_COUNT)
+                    + " slots the copybook gives no VALUE are part of the table and are passed as "
+                    + "absent slots, never omitted");
         }
         FixedWidthCodec codec = new FixedWidthCodec(charset);
         Map<String, String> images = new LinkedHashMap<>();
         for (int subscript = 1; subscript <= TABLE_SIZE; subscript++) {
-            AdminMenuOption option = Objects.requireNonNull(
-                    options.get(zeroBasedIndexFor(subscript)),
-                    "CDEMO-ADMIN-OPT(" + subscript + ") is null; an empty slot is an empty entry, not "
-                            + "a null one - see AdminMenuOption.empty()");
+            Optional<AdminMenuOption> slot = Objects.requireNonNull(
+                    slots.get(zeroBasedIndexFor(subscript)),
+                    "CDEMO-ADMIN-OPT(" + subscript + ") is null; an absent slot is Optional.empty(), "
+                            + "not a null element");
+            if (slot.isEmpty()) {
+                continue;
+            }
+            AdminMenuOption option = slot.get();
             images.put(subscriptedName(ADMIN_OPT_NUM_FIELD, subscript), option.adminOptNumImage());
             images.put(subscriptedName(ADMIN_OPT_NAME_FIELD, subscript), option.adminOptName());
             images.put(subscriptedName(ADMIN_OPT_PGMNAME_FIELD, subscript),
@@ -877,17 +984,45 @@ public final class AdminMenuOptions {
      *                                  {@code charset} does not encode every digit, sign overpunch
      *                                  character and the space to exactly one byte
      */
-    public static List<AdminMenuOption> decode(byte[] group, Charset charset) {
+    public static List<Optional<AdminMenuOption>> decode(byte[] group, Charset charset) {
         FixedWidthCodec codec = new FixedWidthCodec(charset);
         FixedWidthRecord record = codec.wrap(group, GROUP_LAYOUT);
-        List<AdminMenuOption> decoded = new ArrayList<>(TABLE_SIZE);
+        List<Optional<AdminMenuOption>> decoded = new ArrayList<>(TABLE_SIZE);
         for (int subscript = 1; subscript <= TABLE_SIZE; subscript++) {
-            decoded.add(new AdminMenuOption(
+            if (!isSpecified(subscript)) {
+                // Read as BYTES, never as an entry, for two independent reasons. Nothing decoded there
+                // can be attributed to the copybook's table, because the copybook assigns it nothing;
+                // and real storage may hold anything, including bytes that are not digits, which
+                // readPic9AsInt would reject - so decoding them as an entry would fail a decode of a
+                // perfectly valid group image. The bytes stay available through
+                // fieldImages(byte[], Charset) and unspecifiedTailSpan().
+                decoded.add(Optional.empty());
+                continue;
+            }
+            decoded.add(Optional.of(new AdminMenuOption(
                     codec.readPic9AsInt(record, optNumSpanBySubscript(subscript)),
                     codec.readPicX(record, optNameSpanBySubscript(subscript)),
-                    codec.readPicX(record, optPgmNameSpanBySubscript(subscript))));
+                    codec.readPicX(record, optPgmNameSpanBySubscript(subscript)))));
         }
         return List.copyOf(decoded);
+    }
+
+    /**
+     * The span of the table the copybook determines nothing about: slots
+     * {@value #SPECIFIED_OPTION_COUNT_PLUS_ONE} through {@value #TABLE_SIZE}, as opaque storage.
+     *
+     * <p>The {@code CDEMO-ADMIN-OPTIONS} overlay is {@value #TABLE_LENGTH} bytes over the
+     * {@value #POPULATED_DATA_LENGTH} bytes of {@code CDEMO-ADMIN-OPTIONS-DATA} it redefines, and this
+     * descriptor names the difference. Its {@code PICTURE} kind is {@code FILLER} and it carries no
+     * initial value, which is the honest shape for storage the copybook neither values nor accounts for.
+     * It exists so that a caller wanting to inspect or compare those bytes - a parity case exercising an
+     * out-of-range option subscript, for instance - reads the real bytes rather than trusting a
+     * synthesized entry.
+     *
+     * @return the descriptor for the unspecified tail
+     */
+    public static FieldSpan unspecifiedTailSpan() {
+        return UNSPECIFIED_TAIL_SPAN;
     }
 
     /**
@@ -998,22 +1133,26 @@ public final class AdminMenuOptions {
 
     /**
      * Builds the {@value #TABLE_SIZE}-entry table: the {@value #ACTIVE_OPTION_COUNT} entries the
-     * copybook values, followed by the five it leaves unvalued.
+     * copybook values, followed by the five slots it leaves without any value at all.
      *
      * <p>The option numbers 1 to {@value #ACTIVE_OPTION_COUNT} are the copybook's own
      * {@code FILLER PIC 9(02) VALUE n} literals at {@code COADM02Y.cpy:24}, {@code :29}, {@code :34}
      * and {@code :39}. The five empty slots exist because
      * {@code CDEMO-ADMIN-OPTIONS REDEFINES CDEMO-ADMIN-OPTIONS-DATA} declares more entries than the
-     * redefined storage holds values for; they are preserved, never trimmed away (practice B5).
+     * redefined storage holds values for; they are preserved as slots, never trimmed away (practice
+     * B5), and left absent rather than given a fabricated value.
      */
-    private static List<AdminMenuOption> buildOptions() {
-        List<AdminMenuOption> table = new ArrayList<>(TABLE_SIZE);
-        table.add(AdminMenuOption.of(1, OPTION_1_TEXT, OPTION_1_PGMNAME));
-        table.add(AdminMenuOption.of(2, OPTION_2_TEXT, OPTION_2_PGMNAME));
-        table.add(AdminMenuOption.of(3, OPTION_3_TEXT, OPTION_3_PGMNAME));
-        table.add(AdminMenuOption.of(4, OPTION_4_TEXT, OPTION_4_PGMNAME));
-        for (int subscript = ACTIVE_OPTION_COUNT + 1; subscript <= TABLE_SIZE; subscript++) {
-            table.add(AdminMenuOption.empty());
+    private static List<Optional<AdminMenuOption>> buildOptions() {
+        List<Optional<AdminMenuOption>> table = new ArrayList<>(TABLE_SIZE);
+        table.add(Optional.of(AdminMenuOption.of(1, OPTION_1_TEXT, OPTION_1_PGMNAME)));
+        table.add(Optional.of(AdminMenuOption.of(2, OPTION_2_TEXT, OPTION_2_PGMNAME)));
+        table.add(Optional.of(AdminMenuOption.of(3, OPTION_3_TEXT, OPTION_3_PGMNAME)));
+        table.add(Optional.of(AdminMenuOption.of(4, OPTION_4_TEXT, OPTION_4_PGMNAME)));
+        for (int subscript = SPECIFIED_OPTION_COUNT_PLUS_ONE; subscript <= TABLE_SIZE; subscript++) {
+            // Absent, not empty-valued. These slots lie past the end of CDEMO-ADMIN-OPTIONS-DATA, so
+            // no VALUE clause applies to them and their run-time content is undetermined. The entry
+            // this used to add - option number 0 with blank names - was indistinguishable from data.
+            table.add(Optional.empty());
         }
         return List.copyOf(table);
     }
@@ -1024,8 +1163,9 @@ public final class AdminMenuOptions {
      * {@link RecordLayout} requires an overlay to fall inside storage already declared ahead of it.
      *
      * <p>The first {@value #ACTIVE_OPTION_COUNT} entries' spans carry the {@code VALUE} literals from
-     * {@code CDEMO-ADMIN-OPTIONS-DATA}; the rest carry none, so they initialise to the pad character of
-     * their own {@code PICTURE}.
+     * {@code CDEMO-ADMIN-OPTIONS-DATA}; the rest carry none, which is how a layout says the copybook
+     * determines nothing about those bytes. They then initialise to this module's own pad character for
+     * their {@code PICTURE} - reproducibility chosen here, not a property of the legacy storage.
      */
     private static RecordLayout buildGroupLayout() {
         List<FieldSpan> spans = new ArrayList<>();
@@ -1035,11 +1175,14 @@ public final class AdminMenuOptions {
             FieldSpan name = optNameSpanBySubscript(subscript);
             FieldSpan pgmName = optPgmNameSpanBySubscript(subscript);
             if (subscript <= ACTIVE_OPTION_COUNT) {
-                AdminMenuOption declared = OPTIONS.get(zeroBasedIndexFor(subscript));
+                AdminMenuOption declared = ACTIVE_OPTIONS.get(zeroBasedIndexFor(subscript));
                 spans.add(num.withInitialValue(declared.adminOptNumImage()));
                 spans.add(name.withInitialValue(declared.adminOptName()));
                 spans.add(pgmName.withInitialValue(declared.adminOptPgmName()));
             } else {
+                // No initial value: "the copybook says nothing about these bytes", expressed in the
+                // layout itself rather than as a comment. Whatever newRecord later pads them with is
+                // this module's determinism, not a statement about the legacy program's storage.
                 spans.add(num);
                 spans.add(name);
                 spans.add(pgmName);

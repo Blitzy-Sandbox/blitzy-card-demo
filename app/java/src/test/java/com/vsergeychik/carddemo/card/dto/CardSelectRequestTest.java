@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vsergeychik.carddemo.common.DiagnosticText;
 import com.vsergeychik.carddemo.card.dto.CardSelectRequest.ScreenField;
 import com.vsergeychik.carddemo.card.dto.CardSelectRequest.ScreenFieldMetadata;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
@@ -18,6 +19,7 @@ import jakarta.validation.ValidatorFactory;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -308,7 +310,7 @@ class CardSelectRequestTest {
     class Construction {
 
         @Test
-        @DisplayName("every field is spaces at its declared width and both carriers are present")
+        @DisplayName("every field is spaces at its declared width, and no commarea has travelled yet")
         void freshRequestIsAnInitialisedMapArea() {
             CardSelectRequest request = new CardSelectRequest();
             for (ScreenField field : ScreenField.values()) {
@@ -317,7 +319,12 @@ class CardSelectRequestTest {
                         .isBlank();
             }
             assertThat(request.getCardScreenState()).isNotNull();
-            assertThat(request.getNavigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(request.getNavigationContext())
+                    .as("a request nobody has passed a communication area to has not been passed one "
+                            + "- EIBCALEN = 0, the first disjunct of app/cbl/COCRDSLC.cbl:268")
+                    .isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
+            assertThat(request.commareaLength()).isZero();
             assertThat(request.metadata()).hasSize(15);
         }
 
@@ -471,13 +478,23 @@ class CardSelectRequestTest {
 
         @Test
         @DisplayName("nothing is masked: the sixteen-digit card number is returned as stored")
-        void theCardNumberIsNotMasked() {
+        void theStoredValueIsWholeAndTheRenderingIsMasked() {
+            // The distinction that governs every masked rendering in this module. The accessors, the
+            // JSON payload and the encoded bytes carry the card number and account identifier in full,
+            // exactly as the COBOL work area does - nothing about the migrated behaviour changes. Only
+            // toString is masked, and COBOL has no toString, so no parity case can observe it.
             CardSelectRequest request = new CardSelectRequest();
             request.setCardsid(FIXTURE_CARD_NUMBER);
             request.setAcctsid("00000000050");
+
             assertThat(request.getCardsid()).isEqualTo("0500024453765740");
             assertThat(request.getAcctsid()).isEqualTo("00000000050");
-            assertThat(request.toString()).contains("0500024453765740").contains("00000000050");
+            assertThat(request.toString())
+                    .as("the full PAN must not reach a log line (CWE-532)")
+                    .doesNotContain("0500024453765740")
+                    .doesNotContain("00000000050")
+                    .contains("************5740")
+                    .contains("*******0050");
         }
     }
 
@@ -486,15 +503,26 @@ class CardSelectRequestTest {
     class ConversationState {
 
         @Test
-        @DisplayName("both carrier setters take null as the initialised form")
-        void carrierSettersTakeNullAsTheInitialisedForm() {
+        @DisplayName("the work area takes null as the initialised form; the commarea keeps absence")
+        void theTwoCarriersTreatNullDifferentlyAndDeliberatelySo() {
             CardSelectRequest request = new CardSelectRequest();
             request.getCardScreenState().setCcCardNum(FIXTURE_CARD_NUMBER);
             request.setCardScreenState(null);
+            request.setNavigationContext(NavigationContext.empty());
             request.setNavigationContext(null);
-            assertThat(request.getCardScreenState()).isNotNull();
+
+            assertThat(request.getCardScreenState())
+                    .as("CC-WORK-AREA is the program's own storage - INITIALIZE CC-WORK-AREA at "
+                            + "COCRDSLC.cbl:254 - so it always exists")
+                    .isNotNull();
             assertThat(request.getCardScreenState().getCcCardNum()).isBlank();
-            assertThat(request.getNavigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(request.getNavigationContext())
+                    .as("DFHCOMMAREA is what the caller passed, and it may not have been passed at "
+                            + "all; substituting an empty area reports EIBCALEN as 160 and takes the "
+                            + "ELSE at COCRDSLC.cbl:273")
+                    .isNull();
+            assertThat(request.hasNavigationContext()).isFalse();
+            assertThat(request.commareaLength()).isZero();
         }
 
         @Test
@@ -513,17 +541,34 @@ class CardSelectRequestTest {
         @DisplayName("CDEMO-PGM-CONTEXT 0 is ENTER, 1 is REENTER, and any other digit is neither")
         void enterAndReenterFollowTheProgramContext() {
             CardSelectRequest request = new CardSelectRequest();
+            assertThat(request.isEnter())
+                    .as("with no communication area there is no CDEMO-PGM-CONTEXT to test, so the "
+                            + "condition name is false rather than true - three states, not two")
+                    .isFalse();
+            assertThat(request.isReenter()).isFalse();
+            assertThat(request.getPgmContext())
+                    .as("the reported context falls back to the arm an uninitialised area takes")
+                    .isEqualTo(NavigationContext.PGM_CONTEXT_ENTER);
+
+            request.setNavigationContext(NavigationContext.empty().withPgmEnter());
             assertThat(request.isEnter()).isTrue();
             assertThat(request.isReenter()).isFalse();
+            assertThat(request.commareaLength()).isEqualTo(NavigationContext.COMMAREA_LENGTH);
 
             request.setNavigationContext(NavigationContext.empty().withPgmReenter());
             assertThat(request.isEnter()).isFalse();
             assertThat(request.isReenter()).isTrue();
+            assertThat(request.getPgmContext())
+                    .as("with an area present the digit is read out of it rather than assumed")
+                    .isEqualTo(NavigationContext.PGM_CONTEXT_REENTER);
 
             // PIC 9(01) can hold any digit, so isReenter is not the negation of isEnter.
             request.setNavigationContext(NavigationContext.empty().withPgmContext(9));
             assertThat(request.isEnter()).isFalse();
             assertThat(request.isReenter()).isFalse();
+            assertThat(request.getPgmContext())
+                    .as("a digit no 88-level covers is reported as it stands, not normalised")
+                    .isEqualTo(9);
 
             request.setNavigationContext(NavigationContext.empty().withPgmEnter());
             assertThat(request.isEnter()).isTrue();
@@ -862,15 +907,22 @@ class CardSelectRequestTest {
         }
 
         @Test
-        @DisplayName("both carriers come back initialised: they are not part of the BMS map")
+        @DisplayName("neither carrier survives the image: they are not part of the BMS map")
         void theCarriersAreNotCarriedByTheImage() {
             CardSelectRequest original = new CardSelectRequest();
             original.setNavigationContext(NavigationContext.empty().withPgmReenter());
             original.getCardScreenState().setCcCardNum(FIXTURE_CARD_NUMBER);
+
             CardSelectRequest decoded =
                     CardSelectRequest.fromGroupImage(original.toGroupImage(ASCII_CODEC), ASCII_CODEC);
-            assertThat(decoded.getNavigationContext()).isEqualTo(NavigationContext.empty());
-            assertThat(decoded.isEnter()).isTrue();
+
+            assertThat(decoded.getNavigationContext())
+                    .as("the map area carries no communication area at all, so a request rebuilt from "
+                            + "it has been passed none")
+                    .isNull();
+            assertThat(decoded.hasNavigationContext()).isFalse();
+            assertThat(decoded.isEnter()).isFalse();
+            assertThat(decoded.isReenter()).isFalse();
             assertThat(decoded.getCardScreenState().getCcCardNum()).isBlank();
             assertThat(decoded).isNotEqualTo(original);
         }
@@ -964,19 +1016,27 @@ class CardSelectRequestTest {
         }
 
         @Test
-        @DisplayName("toString names every field by its DFHMDF label and hides nothing")
+        @DisplayName("toString names every field by its DFHMDF label, withholding only the three")
         void toStringNamesEveryField() {
             CardSelectRequest request = new CardSelectRequest();
             request.setCardsid(FIXTURE_CARD_NUMBER);
             request.metadata(ScreenField.CARDSID).positionCursorHere();
+
             String rendered = request.toString();
+
             for (ScreenField field : ScreenField.values()) {
-                assertThat(rendered).contains(field.label() + "='");
+                assertThat(rendered).as(field.label()).contains(field.label() + "=");
+            }
+            for (ScreenField quoted : EnumSet.complementOf(
+                    EnumSet.of(ScreenField.ACCTSID, ScreenField.CARDSID, ScreenField.CRDNAME))) {
+                assertThat(rendered).as("%s renders verbatim", quoted.label())
+                        .contains(quoted.label() + "='");
             }
             assertThat(rendered)
                     .startsWith("CardSelectRequest[")
                     .endsWith("]")
-                    .contains("0500024453765740")
+                    .doesNotContain("0500024453765740")
+                    .contains("************5740")
                     .contains("ScreenFieldMetadata[length=-1")
                     .contains("cardScreenState=")
                     .contains("navigationContext=");
@@ -1102,7 +1162,11 @@ class CardSelectRequestTest {
             assertThat(sparse.getCardsid()).isEqualTo("0500024453765740");
             assertThat(sparse.getAcctsid()).isEqualTo(" ".repeat(11));
             assertThat(sparse.getFkeys()).hasSize(75).isBlank();
-            assertThat(sparse.getNavigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(sparse.getNavigationContext())
+                    .as("an omitted commarea is an absent commarea - EIBCALEN = 0, not an "
+                            + "initialised area")
+                    .isNull();
+            assertThat(sparse.hasNavigationContext()).isFalse();
             assertThat(sparse.getCardScreenState()).isNotNull();
             assertThat(sparse.metadata()).hasSize(15);
         }

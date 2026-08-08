@@ -6,10 +6,12 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.vsergeychik.carddemo.card.dto.CardScreenState;
 import com.vsergeychik.carddemo.common.FixedWidthCodec;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.FieldSpan;
 import com.vsergeychik.carddemo.common.FixedWidthRecord.PictureKind;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.PfKeyResolver;
 import com.vsergeychik.carddemo.transaction.dto.ReportRequestRequest.FieldMetadata;
 import com.vsergeychik.carddemo.transaction.dto.ReportRequestRequest.ScreenField;
 import com.vsergeychik.carddemo.transaction.dto.ReportRequestRequest.SymbolicMapMetadata;
@@ -517,20 +519,25 @@ class ReportRequestRequestTest {
     }
 
     @Nested
-    @DisplayName("3. The payload - 17 screen fields plus the communication area, all String")
+    @DisplayName("3. The payload - 17 screen fields, the communication area and the AID")
     class PayloadProjection {
 
         @Test
         @DisplayName("the record has 18 components: 17 String fields and one NavigationContext")
         void componentsAreSeventeenStringsAndTheCommarea() {
             RecordComponent[] components = ReportRequestRequest.class.getRecordComponents();
-            assertThat(components).hasSize(ReportRequestRequest.FIELD_COUNT + 1);
+            // Seventeen screen fields, then the two members that are not screen fields: the
+            // communication area and the resolved EIBAID token.
+            assertThat(components).hasSize(ReportRequestRequest.FIELD_COUNT + 2);
             assertThat(components).filteredOn(c -> c.getType() == String.class)
-                    .hasSize(ReportRequestRequest.FIELD_COUNT);
+                    .hasSize(ReportRequestRequest.FIELD_COUNT + 1);
             assertThat(components[ReportRequestRequest.FIELD_COUNT].getName())
                     .isEqualTo("navigationContext");
             assertThat(components[ReportRequestRequest.FIELD_COUNT].getType())
                     .isEqualTo(NavigationContext.class);
+            assertThat(components[ReportRequestRequest.FIELD_COUNT + 1].getName()).isEqualTo("aid");
+            assertThat(components[ReportRequestRequest.FIELD_COUNT + 1].getType())
+                    .isEqualTo(String.class);
         }
 
         @Test
@@ -552,9 +559,11 @@ class ReportRequestRequestTest {
             for (ScreenField field : ScreenField.values()) {
                 expected.add(field.bmsName().toLowerCase(java.util.Locale.ROOT));
             }
+            // The AID is a String component too, but it is not a screen field, so it is excluded here
+            // rather than added to the expectation - the assertion is about the DFHMDF projection.
             List<String> actual = new ArrayList<>();
             for (RecordComponent component : ReportRequestRequest.class.getRecordComponents()) {
-                if (component.getType() == String.class) {
+                if (component.getType() == String.class && !"aid".equals(component.getName())) {
                     actual.add(component.getName());
                 }
             }
@@ -742,12 +751,15 @@ class ReportRequestRequestTest {
         @DisplayName("a null screen value becomes that field's SPACES, so a partial payload completes")
         void nullBecomesSpaces() {
             ReportRequestRequest allNull = new ReportRequestRequest(null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null);
             for (ScreenField field : ScreenField.values()) {
                 assertThat(allNull.value(field)).as("%s", field.inputItem())
                         .isEqualTo(field.spaces());
             }
             assertThat(allNull.navigationContext()).as("null commarea means EIBCALEN = 0").isNull();
+            assertThat(allNull.aid()).as("a null AID means no key resolved")
+                    .isEqualTo(" ".repeat(ReportRequestRequest.AID_LENGTH));
         }
 
         @ParameterizedTest
@@ -786,23 +798,28 @@ class ReportRequestRequestTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new ReportRequestRequest("TOOLONG", null, null, null, null,
                             null, null, null, null, null, null, null, null, null, null, null, null,
-                            null))
+                            null, null))
                     .withMessageContaining("TRNNAMEI");
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new ReportRequestRequest(null, null, null, null, null, null,
                             null, null, null, null, null, null, null, null, null, null,
-                            "x".repeat(79), null))
+                            "x".repeat(79), null, null))
                     .withMessageContaining("ERRMSGI");
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new ReportRequestRequest(null, null, null, null, null, null,
+                            null, null, null, null, null, null, null, null, null, null, null, null,
+                            "PFK003"))
+                    .withMessageContaining(ReportRequestRequest.AID_FIELD);
         }
     }
 
     @Nested
-    @DisplayName("5. The JSON contract - 18 properties, nothing trimmed, no metadata on the wire")
+    @DisplayName("5. The JSON contract - 19 properties, nothing trimmed, no metadata on the wire")
     class JsonContract {
 
         @Test
-        @DisplayName("the payload is exactly the 18 components and nothing else")
-        void payloadIsTheEighteenComponents() throws Exception {
+        @DisplayName("the payload is exactly the 19 components and nothing else")
+        void payloadIsTheNineteenComponents() throws Exception {
             ObjectNode node = (ObjectNode) JSON.readTree(JSON.writeValueAsString(customRequest()));
             List<String> properties = new ArrayList<>();
             node.fieldNames().forEachRemaining(properties::add);
@@ -811,8 +828,12 @@ class ReportRequestRequestTest {
                 expected.add(field.bmsName().toLowerCase(java.util.Locale.ROOT));
             }
             expected.add("navigationContext");
+            // The AID is the second non-map member: CORPT00C branches on EIBAID at line 183, so the
+            // token has to be on the wire, but it is not a DFHMDF field and so is not counted in
+            // FIELD_COUNT.
+            expected.add("aid");
             assertThat(properties).containsExactlyInAnyOrderElementsOf(expected)
-                    .hasSize(ReportRequestRequest.FIELD_COUNT + 1);
+                    .hasSize(ReportRequestRequest.FIELD_COUNT + 2);
         }
 
         @Test
@@ -1438,6 +1459,115 @@ class ReportRequestRequestTest {
                     || l.contains("EXEC CICS STARTBR") || l.contains("EXEC CICS READNEXT")
                     || l.contains("EXEC CICS REWRITE") || l.contains("EXEC CICS WRITE ")
                     || l.contains("EXEC SQL"));
+        }
+    }
+
+    @Nested
+    @DisplayName("10. The AID - every arm of EVALUATE EIBAID is selectable from the payload")
+    class AttentionIdentifier {
+
+        /**
+         * The reason the member exists. {@code app/cbl/CORPT00C.cbl:183-195} decides what the
+         * transaction does by evaluating {@code EIBAID} and nothing else, so a payload with no member
+         * for the key can reach only whichever arm happens to be the default - two of the three
+         * become dead through the API.
+         */
+        @Test
+        @DisplayName("the program really does branch on EIBAID, with three arms")
+        void theProgramBranchesOnTheAid() {
+            assertThat(program).anyMatch(l -> l.contains("EVALUATE EIBAID"));
+            assertThat(program).anyMatch(l -> l.contains("WHEN DFHENTER"));
+            assertThat(program).anyMatch(l -> l.contains("WHEN DFHPF3"));
+            assertThat(program).anyMatch(l -> l.contains("WHEN OTHER"));
+            // ...and only those three: no PF4, PF5, PF7 or PF8 arm, unlike its COTRN siblings.
+            assertThat(program).noneMatch(l -> l.contains("WHEN DFHPF4")
+                    || l.contains("WHEN DFHPF5") || l.contains("WHEN DFHPF7")
+                    || l.contains("WHEN DFHPF8"));
+        }
+
+        @Test
+        @DisplayName("the width is the module's five-character token, not a raw EIBAID byte")
+        void theWidthIsTheTokenWidth() {
+            assertThat(ReportRequestRequest.AID_LENGTH)
+                    .isEqualTo(PfKeyResolver.AID_TOKEN_LENGTH)
+                    .isEqualTo(CardScreenState.CCARD_AID_LENGTH);
+            assertThat(ReportRequestRequest.AID_FIELD).isEqualTo("EIBAID");
+        }
+
+        @Test
+        @DisplayName("each of the three arms is reachable, and the tokens are what the resolver emits")
+        void everyArmIsReachable() {
+            String enter = PfKeyResolver.AidKey.ENTER.token();
+            String pf3 = PfKeyResolver.AidKey.PFK03.token();
+
+            assertThat(ReportRequestRequest.empty().withAid(enter).aid()).isEqualTo(enter);
+            assertThat(ReportRequestRequest.empty().withAid(pf3).aid()).isEqualTo(pf3);
+            // The WHEN OTHER arm: any other token, spaces included.
+            assertThat(ReportRequestRequest.empty().aid())
+                    .isEqualTo(" ".repeat(ReportRequestRequest.AID_LENGTH))
+                    .isNotEqualTo(enter)
+                    .isNotEqualTo(pf3);
+            // The resolver pads, so a caller passing its output never overflows the field.
+            assertThat(enter).hasSize(ReportRequestRequest.AID_LENGTH);
+            assertThat(pf3).hasSize(ReportRequestRequest.AID_LENGTH);
+        }
+
+        @Test
+        @DisplayName("the AID survives a JSON round trip and rides beside the commarea")
+        void theAidRoundTrips() throws Exception {
+            ReportRequestRequest before = customRequest()
+                    .withAid(PfKeyResolver.AidKey.PFK03.token())
+                    .withoutNavigationContext();
+
+            ReportRequestRequest after = JSON.readValue(JSON.writeValueAsString(before),
+                    ReportRequestRequest.class);
+
+            assertThat(after).isEqualTo(before);
+            assertThat(after.aid()).isEqualTo(PfKeyResolver.AidKey.PFK03.token());
+            assertThat(after.hasNavigationContext()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the AID is not a screen field: absent from ScreenField, the totals and the image")
+        void theAidIsOutsideTheMap() {
+            assertThat(ScreenField.values()).hasSize(ReportRequestRequest.FIELD_COUNT);
+            for (ScreenField field : ScreenField.values()) {
+                assertThat(field.bmsName()).isNotEqualTo(ReportRequestRequest.AID_FIELD);
+            }
+            // The image width is derived from the seventeen fields alone, so adding the AID member
+            // cannot have widened it.
+            assertThat(ReportRequestRequest.SYMBOLIC_MAP_LENGTH)
+                    .isEqualTo(ReportRequestRequest.TIOAPFX_PREFIX_LENGTH
+                            + ReportRequestRequest.FIELD_COUNT
+                            * ReportRequestRequest.FIELD_PREFIX_LENGTH
+                            + ReportRequestRequest.PAYLOAD_WIDTH_TOTAL);
+        }
+
+        @Test
+        @DisplayName("a map image alone yields no key resolved and no communication area")
+        void aMapImageCarriesNeitherNonMapMember() {
+            byte[] image = customRequest().withAid(PfKeyResolver.AidKey.ENTER.token())
+                    .toSymbolicMap(ASCII);
+
+            ReportRequestRequest read = ReportRequestRequest.fromSymbolicMap(ASCII, image);
+
+            assertThat(read.aid()).as("EIBAID lives in the EIB, not in 01 CORPT0AI")
+                    .isEqualTo(" ".repeat(ReportRequestRequest.AID_LENGTH));
+            assertThat(read.navigationContext()).as("the commarea travels in DFHCOMMAREA").isNull();
+            // Every screen field, though, comes back byte-identical.
+            for (ScreenField field : ScreenField.values()) {
+                assertThat(read.value(field)).as("%s", field.inputItem())
+                        .isEqualTo(customRequest().value(field));
+            }
+        }
+
+        @Test
+        @DisplayName("an over-long token is refused by name, without echoing it")
+        void anOverLongTokenIsRefused() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> ReportRequestRequest.empty().withAid("PFK012"))
+                    .withMessageContaining(ReportRequestRequest.AID_FIELD)
+                    .withMessageContaining("6 character(s)");
         }
     }
 }

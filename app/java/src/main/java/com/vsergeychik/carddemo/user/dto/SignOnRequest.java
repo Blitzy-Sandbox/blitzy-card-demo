@@ -1,8 +1,9 @@
 package com.vsergeychik.carddemo.user.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.vsergeychik.carddemo.common.NavigationContext;
+import com.vsergeychik.carddemo.common.SensitiveDiagnostics;
 import jakarta.validation.constraints.Size;
-import java.util.Objects;
 
 /**
  * The inbound payload of {@code POST /api/signon} - CICS transaction {@code CC00}, program
@@ -220,7 +221,9 @@ import java.util.Objects;
  *                 <strong>Not a map field</strong> - one of the two mandated exceptions that make a
  *                 server-side session unnecessary. Never widened: it is exactly 160 bytes and is
  *                 shared by all seventeen controllers, so an extra field would break every other
- *                 screen's byte image. A {@code null} is normalised to {@link NavigationContext#empty()}
+ *                 screen's byte image. {@code null} is <strong>meaningful</strong> and is preserved:
+ *                 it is the {@code EIBCALEN = 0} cold start of {@code COSGN00C.cbl:80-95}, which
+ *                 {@link #hasNavigationContext()} reports
  * @param aid      the resolved key indication, the {@code EIBAID} that {@code COSGN00C} tests inline,
  *                 as the token produced by {@code common.PfKeyResolver} - {@code 'ENTER'},
  *                 {@code 'PFK03'} and so on. <strong>Not a map field</strong> - the second mandated
@@ -337,26 +340,78 @@ public record SignOnRequest(@Size(max = TRNNAME_LENGTH) String trnName,
      * <p>It is a constant rather than a value-derived mask on purpose: because it never varies, a
      * diagnostic string cannot disclose the password, its length, or whether one was supplied at all.
      */
-    private static final String PASSWD_REDACTED = "[REDACTED]";
+    /**
+     * The password's rendering, delegated to {@link SensitiveDiagnostics#REDACTED} so that this file,
+     * {@code UserAddRequest} and {@code UserUpdateRequest} agree. They previously used three different
+     * markers - {@code [REDACTED]}, {@code ********} and {@code [masked]} - which is what one policy
+     * spread across three files turns into.
+     */
+    private static final String PASSWD_REDACTED = SensitiveDiagnostics.REDACTED;
 
     /**
-     * Normalises an absent communication area to the freshly initialised one.
+     * Carries every component exactly as it arrives, including an <strong>absent</strong>
+     * communication area.
      *
-     * <p>A CICS transaction always has a communication area - it is a fixed 160-byte storage area, and
-     * {@link NavigationContext#empty()} is precisely its initialised state: spaces, zeros, and
-     * therefore already in {@code CDEMO-PGM-ENTER}. There is no {@code null} COMMAREA to model, so a
-     * missing one is completed here rather than propagated. That keeps {@link #inEnterState()} and
-     * {@link #inReenterState()} total, so neither can throw for a payload that simply omitted the
-     * member.
+     * <p><strong>Why the absence is preserved rather than completed.</strong>
+     * An earlier form of this constructor replaced a {@code null} {@link #navigationContext()} with
+     * {@link NavigationContext#empty()}. That looked harmless - the empty area is the initialised
+     * 160-byte state, spaces and zeros - but it erased a distinction the program makes before it does
+     * anything else. {@code app/cbl/COSGN00C.cbl:80-95} tests {@code EIBCALEN}, the length CICS
+     * reports for the area actually passed:
      *
-     * <p>The eleven screen fields are deliberately <strong>not</strong> touched. They are carried
-     * exactly as they arrive, including {@code null} and including a value shorter than its declared
-     * width, because {@code user.SignOnService} has to distinguish {@code SPACES} from
+     * <ul>
+     *   <li>{@code EIBCALEN = 0} means <strong>no communication area was passed at all</strong> - a
+     *       cold start, the transaction entered from a clear screen. The program paints the sign-on
+     *       map and returns.</li>
+     *   <li>{@code EIBCALEN} non-zero means an area <em>was</em> passed, and the program reads
+     *       {@code CDEMO-PGM-CONTEXT} out of it to decide between painting and validating.</li>
+     * </ul>
+     *
+     * <p>A freshly initialised area is the <em>second</em> case, not the first: it has a length. Once
+     * the {@code null} was replaced there was no longer any way to express the first, so the cold-start
+     * branch became unreachable through the API. The member is therefore left {@code null} when it is
+     * absent, {@link #hasNavigationContext()} reports which case this is, and
+     * {@link #commareaLength()} gives the {@code EIBCALEN} the request corresponds to.
+     *
+     * <p>The eleven screen fields are deliberately <strong>not</strong> touched either. They are
+     * carried exactly as they arrive, including {@code null} and including a value shorter than its
+     * declared width, because {@code user.SignOnService} has to distinguish {@code SPACES} from
      * {@code LOW-VALUES} at {@code app/cbl/COSGN00C.cbl:118} and {@code :123}. Padding or trimming
      * them here would pre-empt that test and change the message the user sees.
      */
     public SignOnRequest {
-        navigationContext = Objects.requireNonNullElseGet(navigationContext, NavigationContext::empty);
+        // Intentionally empty: every component is carried verbatim, and an absent communication area
+        // is a state this payload must be able to express rather than one to fill in.
+    }
+
+    /**
+     * Whether a communication area travelled with this request - the Java reading of {@code EIBCALEN}
+     * being non-zero at {@code app/cbl/COSGN00C.cbl:80-95}.
+     *
+     * <p>Not a JSON property: it is derived from {@link #navigationContext()}, which is already on the
+     * wire as {@code null} or as an object. Emitting it as well would let a payload assert a presence
+     * that contradicts the member it travels with.
+     *
+     * @return {@code true} when {@link #navigationContext()} is present
+     */
+    @JsonIgnore
+    public boolean hasNavigationContext() {
+        return navigationContext != null;
+    }
+
+    /**
+     * The length CICS would report in {@code EIBCALEN}:
+     * {@value NavigationContext#COMMAREA_LENGTH} when a communication area travelled with this
+     * request, and {@code 0} when none did.
+     *
+     * <p>{@code COSGN00C} passes no extension behind {@code CARDDEMO-COMMAREA}, so the non-zero case
+     * is always exactly the commarea's own width.
+     *
+     * @return {@value NavigationContext#COMMAREA_LENGTH} or {@code 0}
+     */
+    @JsonIgnore
+    public int commareaLength() {
+        return hasNavigationContext() ? NavigationContext.COMMAREA_LENGTH : 0;
     }
 
     /**
@@ -367,10 +422,16 @@ public record SignOnRequest(@Size(max = TRNNAME_LENGTH) String trnName,
      * <p>A read-through to {@link NavigationContext#isEnter()} rather than a second copy of the flag,
      * so the context byte has exactly one home and the two cannot disagree.
      *
-     * @return {@code true} when the carried communication area is in the enter state
+     * <p>{@code false} when no communication area travelled at all. That is not the same statement as
+     * "not first entry": with {@code EIBCALEN = 0} there is no {@code CDEMO-PGM-CONTEXT} byte to be in
+     * either state, and {@code COSGN00C} does not read one - it takes the cold-start path.
+     * {@link #hasNavigationContext()} is the predicate that distinguishes that case, and a controller
+     * reproducing the program must test it first.
+     *
+     * @return {@code true} when a communication area travelled and it is in the enter state
      */
     public boolean inEnterState() {
-        return navigationContext.isEnter();
+        return hasNavigationContext() && navigationContext.isEnter();
     }
 
     /**
@@ -384,15 +445,18 @@ public record SignOnRequest(@Size(max = TRNNAME_LENGTH) String trnName,
      * so for a value such as {@code 9} both predicates are correctly {@code false}. Defining either as
      * the other's complement would invent a state the copybook does not describe.
      *
-     * @return {@code true} when the carried communication area is in the re-enter state
+     * <p>{@code false} when no communication area travelled, for the same reason
+     * {@link #inEnterState()} is.
+     *
+     * @return {@code true} when a communication area travelled and it is in the re-enter state
      */
     public boolean inReenterState() {
-        return navigationContext.isReenter();
+        return hasNavigationContext() && navigationContext.isReenter();
     }
 
     /**
      * A diagnostic rendering that reports every component except the password, which is replaced by
-     * {@value #PASSWD_REDACTED}.
+     * {@link SensitiveDiagnostics#REDACTED}.
      *
      * <p>The override exists solely for that substitution. A record's generated {@code toString}
      * includes every component, so inheriting it would reproduce the plaintext password in any log

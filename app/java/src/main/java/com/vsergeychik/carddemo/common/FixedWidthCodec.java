@@ -185,17 +185,20 @@ public final class FixedWidthCodec {
      * decimal representation. {@code POSITIVE_OVERPUNCH.charAt(7)} is {@code 'G'}, which is why
      * {@code +504.77} in an {@code S9(09)V99} field is written {@code "0000005047G"}.
      *
-     * <p>Held as an immutable {@link String} rather than a {@code char[]}, because an array field
-     * would be mutable static state however it was declared.
+     * <p>The alphabet itself is declared once, in {@link FixedWidthRecord.ZonedSign}, and referenced
+     * here rather than restated. Where the sign lives is a fact about storage geometry that the byte
+     * layer owns - it is why a signed field occupies {@code p + s} bytes and not one more - while what
+     * the digits mean is this layer's concern. Two copies of the alphabet could drift apart, and a
+     * drift in the sign alphabet would corrupt every signed field in the system.
      */
-    private static final String POSITIVE_OVERPUNCH = "{ABCDEFGHI";
+    private static final String POSITIVE_OVERPUNCH = FixedWidthRecord.ZonedSign.POSITIVE_DIGITS;
 
     /**
      * The negative sign overpunch, indexed by the trailing digit: zone {@code D} of the zoned
      * decimal representation. Its element for digit 0 is the right curly bracket, which is why
      * {@code -919.00} in an {@code S9(09)V99} field is written {@code 0000009190&#125;}.
      */
-    private static final String NEGATIVE_OVERPUNCH = "}JKLMNOPQR";
+    private static final String NEGATIVE_OVERPUNCH = FixedWidthRecord.ZonedSign.NEGATIVE_DIGITS;
 
     /**
      * Every character this codec places into a numeric {@code DISPLAY} span, plus the space that
@@ -220,6 +223,14 @@ public final class FixedWidthCodec {
     private final Charset charset;
 
     /**
+     * The strict single-byte text seam for {@link #charset}. Every conversion between stored bytes and
+     * characters that this codec performs, and every conversion its callers perform on a whole record
+     * image, goes through it, so a malformed stored byte and an unrepresentable character are each
+     * refused where they occur instead of being substituted with a character that looks like data.
+     */
+    private final FixedWidthRecord.Transcoder transcoder;
+
+    /**
      * Creates a codec for one code page.
      *
      * @param charset the code page of the fixed-width data, named explicitly by the caller -
@@ -235,17 +246,19 @@ public final class FixedWidthCodec {
         Objects.requireNonNull(charset, "A charset is required: fixed-width mainframe data is bytes "
                 + "in a specific code page, so the code page must be stated explicitly and is never "
                 + "derived from the platform");
+        FixedWidthRecord.Transcoder measure = new FixedWidthRecord.Transcoder(charset);
         for (int index = 0; index < SINGLE_BYTE_REPERTOIRE.length(); index++) {
             char required = SINGLE_BYTE_REPERTOIRE.charAt(index);
-            byte[] encoded = String.valueOf(required).getBytes(charset);
-            if (encoded.length != 1) {
+            int width = measure.measuredWidthOf(required);
+            if (width != 1) {
                 throw new IllegalArgumentException("Charset " + charset.name() + " encodes '"
-                        + required + "' to " + encoded.length + " byte(s); a zoned DISPLAY field of "
+                        + required + "' to " + width + " byte(s); a zoned DISPLAY field of "
                         + "n digits occupies exactly n bytes, so every digit, every sign overpunch "
                         + "character and the space must encode to exactly one byte");
             }
         }
         this.charset = charset;
+        this.transcoder = measure;
     }
 
     /**
@@ -255,6 +268,43 @@ public final class FixedWidthCodec {
      */
     public Charset charset() {
         return charset;
+    }
+
+    /**
+     * Encodes a record image under this codec's code page, refusing any character the code page cannot
+     * represent.
+     *
+     * <p>This is the entry point for a model or repository holding a row as text and needing the bytes
+     * of it - the counterpart of {@link #decodeImage(byte[], String)}. It exists so that nothing in the
+     * module has a reason to call {@code String.getBytes(Charset)}, whose defined behaviour is to
+     * substitute {@code ?} for an unrepresentable character and so to write a value into a dataset that
+     * no COBOL program could have produced.
+     *
+     * @param image   the row image
+     * @param subject what is being encoded, named in any diagnostic - a record or field name. Never
+     *                the content itself, because these spans carry card numbers, government
+     *                identifiers and passwords
+     * @return the encoded bytes, one per character
+     * @throws NullPointerException     if {@code image} or {@code subject} is {@code null}
+     * @throws IllegalArgumentException if a character is unrepresentable in this code page
+     */
+    public byte[] encodeImage(String image, String subject) {
+        return transcoder.encode(image, subject);
+    }
+
+    /**
+     * Decodes a record image under this codec's code page, refusing any byte that is not a character
+     * in it.
+     *
+     * @param image   the stored bytes, decoded in full
+     * @param subject what is being decoded, named in any diagnostic. Never the content itself
+     * @return the decoded image, one character per byte
+     * @throws NullPointerException  if {@code image} or {@code subject} is {@code null}
+     * @throws IllegalStateException if a stored byte is not valid data in this code page
+     */
+    public String decodeImage(byte[] image, String subject) {
+        Objects.requireNonNull(image, "Stored bytes are required to decode an image");
+        return transcoder.decode(image, 0, image.length, subject);
     }
 
     // =================================================================================================
@@ -272,8 +322,8 @@ public final class FixedWidthCodec {
      * spans, {@code FILLER} included.
      *
      * @param layout the record's layout, transcribed from its copybook
-     * @return a newly allocated record of the layout's declared length, initialised per
-     *         {@link FixedWidthRecord#initialise(RecordLayout)}
+     * @return a newly allocated record of the layout's declared length, established per
+     *         {@link FixedWidthRecord#forLayout(RecordLayout, Charset)}
      * @throws NullPointerException if {@code layout} is {@code null}
      */
     public FixedWidthRecord newRecord(RecordLayout layout) {
@@ -538,10 +588,9 @@ public final class FixedWidthCodec {
         try {
             return Long.parseLong(image);
         } catch (NumberFormatException overflow) {
-            throw new IllegalArgumentException("Unsigned numeric image '" + image + "' has "
-                    + image.length() + " digit(s) and does not fit a long; a PIC 9 field of more "
-                    + "than 18 digits must be decoded as a BigInteger by its owning model type",
-                    overflow);
+            throw new IllegalArgumentException("An unsigned numeric image of " + image.length()
+                    + " digit(s) does not fit a long; a PIC 9 field of more than 18 digits must be "
+                    + "decoded as a BigInteger by its owning model type", overflow);
         }
     }
 
@@ -558,9 +607,9 @@ public final class FixedWidthCodec {
     public int decodePic9AsInt(String image) {
         long value = decodePic9(image);
         if (value > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("Unsigned numeric image '" + image + "' denotes "
-                    + value + ", which exceeds Integer.MAX_VALUE; a PIC 9 field this wide maps to "
-                    + "long, not int");
+            throw new IllegalArgumentException("An unsigned numeric image of " + image.length()
+                    + " digit(s) denotes a value that exceeds Integer.MAX_VALUE; a PIC 9 field this "
+                    + "wide maps to long, not int");
         }
         return (int) value;
     }
@@ -602,6 +651,263 @@ public final class FixedWidthCodec {
     // =================================================================================================
 
     /**
+     * A signed zoned quantity as the storage actually holds it: an unsigned magnitude and a sign that
+     * is recorded separately from it.
+     *
+     * <h2>Why the sign cannot ride on the magnitude</h2>
+     * A zoned {@code DISPLAY} field stores its digits and its sign in different places - the digits in
+     * the bytes, the sign as an overpunch on the last of them - so the two are independent, and a
+     * field whose digits are all zero can still be marked negative. {@code app/cpy/CVTRA01Y.cpy}'s
+     * {@code TRAN-CAT-BAL} holding {@code 0000000000&#125;} is a real, distinct stored value: eleven
+     * bytes that are not the eleven bytes of {@code 0000000000&#123;}.
+     *
+     * <p>{@link BigDecimal} cannot express that distinction. It has no negative zero -
+     * {@code new BigDecimal("-0.00").signum()} is {@code 0} - so a sign carried as
+     * {@code value.signum() < 0} is lost the moment the magnitude is zero, and a negative zero read
+     * from a dataset would be written back as a positive zero. In a migration whose acceptance test is
+     * a byte-for-byte comparison against the legacy output, that is a silent parity failure in the one
+     * place no arithmetic assertion would catch it.
+     *
+     * <p>So this type carries the sign as its own component, and the encode and decode pair built on
+     * it round-trips every stored form exactly. The {@link BigDecimal} entry points remain, are
+     * expressed in terms of this type, and are documented as magnitude-only.
+     *
+     * @param magnitude the unsigned quantity, at the field's declared scale; never negative
+     * @param negative  whether the field's trailing byte marks the value negative
+     */
+    public record SignedZoned(BigDecimal magnitude, boolean negative) {
+
+        /**
+         * @throws NullPointerException     if {@code magnitude} is {@code null}
+         * @throws IllegalArgumentException if {@code magnitude} is negative, which would carry the
+         *                                  sign twice
+         */
+        public SignedZoned {
+            Objects.requireNonNull(magnitude, "A magnitude is required; a signed zoned quantity is a "
+                    + "magnitude plus a separately recorded sign");
+            if (magnitude.signum() < 0) {
+                throw new IllegalArgumentException("A signed zoned magnitude of scale "
+                        + magnitude.scale() + " is negative. The sign is recorded in its own "
+                        + "component precisely so it is held once; a negative magnitude would carry "
+                        + "it twice and make the negative-zero case ambiguous again");
+            }
+        }
+
+        /**
+         * Splits a signed {@link BigDecimal} into a magnitude and a sign.
+         *
+         * <p>Because {@link BigDecimal} has no negative zero, a value of zero always yields a
+         * positive zero here. A caller that must express a negative zero has to say so, either
+         * through the canonical constructor or through {@link #ofLiteral(String)}.
+         *
+         * @param signedValue the value to split
+         * @return the equivalent signed zoned quantity
+         * @throws NullPointerException if {@code signedValue} is {@code null}
+         */
+        public static SignedZoned of(BigDecimal signedValue) {
+            Objects.requireNonNull(signedValue, "A value is required to split into magnitude and "
+                    + "sign");
+            return new SignedZoned(signedValue.abs(), signedValue.signum() < 0);
+        }
+
+        /**
+         * Reads a decimal literal, honouring a leading minus sign even when every digit is zero.
+         *
+         * <p>This is the entry point for an expectation written as text rather than measured from
+         * storage: {@code "-0.00"} is the negative zero that {@link #of(BigDecimal)} cannot produce,
+         * and a parity expectation stated that way has to mean it.
+         *
+         * @param literal a decimal literal, optionally signed
+         * @return the quantity the literal denotes, negative zero included
+         * @throws NullPointerException     if {@code literal} is {@code null}
+         * @throws NumberFormatException    if {@code literal} is not a decimal literal
+         */
+        public static SignedZoned ofLiteral(String literal) {
+            Objects.requireNonNull(literal, "A literal is required to read a signed zoned quantity");
+            String trimmed = literal.trim();
+            boolean explicitlyNegative = trimmed.startsWith("-");
+            BigDecimal parsed = new BigDecimal(trimmed);
+            return new SignedZoned(parsed.abs(), explicitlyNegative);
+        }
+
+        /**
+         * The quantity as a single signed {@link BigDecimal}.
+         *
+         * <p><strong>Lossy for a negative zero</strong>, unavoidably: the result of negating a zero is
+         * a zero. Use {@link #negativeZero()} where the distinction matters, and compare stored images
+         * rather than values where byte fidelity is the question.
+         *
+         * @return the magnitude, negated when the sign is negative
+         */
+        public BigDecimal signedValue() {
+            return negative ? magnitude.negate() : magnitude;
+        }
+
+        /**
+         * Whether every digit is zero, irrespective of sign.
+         *
+         * @return {@code true} when the magnitude is zero
+         */
+        public boolean zero() {
+            return magnitude.signum() == 0;
+        }
+
+        /**
+         * Whether this is the negative zero that a {@link BigDecimal} cannot represent.
+         *
+         * @return {@code true} only when the magnitude is zero and the sign is negative
+         */
+        public boolean negativeZero() {
+            return negative && zero();
+        }
+    }
+
+    /**
+     * Encodes a signed zoned quantity, preserving its sign independently of its magnitude.
+     *
+     * <p>This is the canonical signed encoder; {@link #encodeSignedScaled(BigDecimal, int, int)} is
+     * expressed in terms of it. The magnitude is truncated to the receiver's picture by
+     * {@link CobolDecimal#storeAtPicture(BigDecimal, int, int)} - fraction first, then integer digits,
+     * keeping the low-order ones - and the sign is then overpunched onto the trailing character
+     * whatever the magnitude turned out to be. A zero magnitude with a negative sign therefore encodes
+     * to {@code 0000000000&#125;} and not to {@code 0000000000&#123;}.
+     *
+     * @param value          the quantity to store
+     * @param integerDigits  {@code p}, the digit positions left of the implied decimal point; at
+     *                       least 1
+     * @param fractionDigits {@code s}, the digit positions right of it; never negative
+     * @return an image of exactly {@code integerDigits + fractionDigits} characters
+     * @throws NullPointerException     if {@code value} is {@code null}
+     * @throws IllegalArgumentException if {@code integerDigits} is below 1 or {@code fractionDigits}
+     *                                  is negative
+     */
+    public String encodeSignedZoned(SignedZoned value, int integerDigits, int fractionDigits) {
+        Objects.requireNonNull(value, "A signed zoned quantity is required to encode");
+        if (integerDigits < 1) {
+            throw new IllegalArgumentException("A signed zoned field declares " + integerDigits
+                    + " integer digit(s); PIC S9(p)V(s) requires p of at least 1");
+        }
+        if (fractionDigits < 0) {
+            throw new IllegalArgumentException("A signed zoned field declares " + fractionDigits
+                    + " fraction digit(s); s must not be negative");
+        }
+
+        // Truncation happens on the magnitude, in the one class that names a rounding mode. Truncation
+        // toward zero is sign-symmetric, so truncating the magnitude and applying the sign afterwards
+        // is the same arithmetic as truncating a signed value - and it keeps the sign reachable when
+        // the magnitude truncates to zero.
+        BigDecimal stored = CobolDecimal.storeAtPicture(value.magnitude(), integerDigits,
+                fractionDigits);
+
+        int width = integerDigits + fractionDigits;
+        String digits = stored.unscaledValue().toString();
+        if (digits.length() < width) {
+            digits = repeat(ZERO, width - digits.length()) + digits;
+        }
+        return overpunch(digits, value.negative());
+    }
+
+    /**
+     * Decodes a signed zoned image into its magnitude and its sign, so that a negative zero survives.
+     *
+     * <p>This is the canonical signed decoder; {@link #decodeSignedScaled(String, int)} is expressed
+     * in terms of it and discards the sign of a zero because a {@link BigDecimal} cannot hold it.
+     *
+     * @param image the span's characters; at least 1, and at least {@code scale} of them
+     * @param scale {@code s}, the digit positions right of the implied decimal point; never negative
+     * @return the quantity the image denotes, its magnitude at exactly {@code scale}
+     * @throws NullPointerException     if {@code image} is {@code null}
+     * @throws IllegalArgumentException if the image is empty, the scale is negative or wider than the
+     *                                  image, a leading character is not a digit, or the trailing
+     *                                  character is neither a digit nor a recognised sign overpunch
+     */
+    public SignedZoned decodeSignedZoned(String image, int scale) {
+        Objects.requireNonNull(image, "An image is required to decode a signed zoned field");
+        if (image.isEmpty()) {
+            throw new IllegalArgumentException("A signed zoned field occupies at least one character, "
+                    + "which carries the low-order digit and the sign overpunch");
+        }
+        if (scale < 0) {
+            throw new IllegalArgumentException("Declared scale " + scale + " is negative; s in "
+                    + "PIC S9(p)V(s) counts digit positions and cannot be below zero");
+        }
+        if (scale > image.length()) {
+            // The width is shape and is reported; the image itself is the caller's data and is not.
+            // This message reaches a log and can reach an HTTP error body, so a monetary image
+            // quoted here would be disclosed by a defect in the caller rather than by any decision
+            // taken here.
+            throw new IllegalArgumentException("Declared scale " + scale + " exceeds the "
+                    + image.length() + "-character image; a signed zoned field is "
+                    + "p + s characters wide, so s can never exceed its width");
+        }
+
+        int lastIndex = image.length() - 1;
+        String leadingDigits = image.substring(0, lastIndex);
+        if (!leadingDigits.isEmpty()) {
+            requireDigits(leadingDigits, "signed zoned field of " + image.length()
+                    + " character(s)");
+        }
+
+        char trailing = image.charAt(lastIndex);
+        int lowOrderDigit = FixedWidthRecord.ZonedSign.digitOf(trailing);
+        if (lowOrderDigit < 0) {
+            // Reported by category rather than by the offending character, and without the image:
+            // what a caller needs is which rule was broken and what the alphabet is, and both are
+            // stated. Naming the character would put a byte of a monetary field into the message.
+            throw new IllegalArgumentException("A signed zoned field of " + image.length()
+                    + " character(s) ends in a character that is neither a digit nor a sign "
+                    + "overpunch character. The trailing character carries the low-order digit and "
+                    + "the sign: '"
+                    + POSITIVE_OVERPUNCH + "' for digits 0-9 positive and '" + NEGATIVE_OVERPUNCH
+                    + "' for digits 0-9 negative");
+        }
+        // Zone F - a plain digit - is the unsigned zoned form and is positive by definition, having no
+        // sign position of its own.
+        boolean negative = FixedWidthRecord.ZonedSign.isNegative(trailing);
+
+        BigInteger magnitude = new BigInteger(leadingDigits + (char) (ZERO + lowOrderDigit));
+        // The scale is applied through CobolDecimal so that the guarantee "every decoded scaled value
+        // reports exactly its declared scale" is enforced by the same class that owns the rounding
+        // policy, and can be audited by reading that one file.
+        return new SignedZoned(CobolDecimal.store(new BigDecimal(magnitude, scale), scale), negative);
+    }
+
+    /**
+     * Writes a signed zoned quantity into a span, deriving the integer digit count from the span.
+     *
+     * @param record the record area to write into
+     * @param field  the descriptor naming the span; its length must exceed {@code scale}
+     * @param value  the quantity to store
+     * @param scale  {@code s}, the receiving field's declared scale
+     * @throws NullPointerException     if any argument is {@code null}
+     * @throws IllegalArgumentException if {@code scale} leaves no integer digit position
+     */
+    public void writeSignedZoned(FixedWidthRecord record, FieldSpan field, SignedZoned value,
+                                 int scale) {
+        Objects.requireNonNull(record, "A record area is required to write a field");
+        Objects.requireNonNull(field, "A field descriptor is required to write a named span");
+        record.writeSpan(field, encodeSignedZoned(value, integerDigitsOf(field, scale), scale));
+    }
+
+    /**
+     * Reads a signed zoned span as a magnitude and a sign, so a negative zero is reported as one.
+     *
+     * @param record the record area to read from
+     * @param field  the descriptor naming the span
+     * @param scale  {@code s}, the field's declared scale
+     * @return the quantity the span denotes
+     * @throws NullPointerException     if {@code record} or {@code field} is {@code null}
+     * @throws IllegalArgumentException if {@code scale} leaves no integer digit position, or the span
+     *                                  does not hold a valid signed zoned image
+     */
+    public SignedZoned readSignedZoned(FixedWidthRecord record, FieldSpan field, int scale) {
+        Objects.requireNonNull(record, "A record area is required to read a field");
+        Objects.requireNonNull(field, "A field descriptor is required to read a named span");
+        integerDigitsOf(field, scale);
+        return decodeSignedZoned(record.readSpan(field), scale);
+    }
+
+    /**
      * Encodes a value as a signed zoned {@code DISPLAY} image of exactly {@code integerDigits +
      * fractionDigits} characters, with the sign overpunched into the trailing character.
      *
@@ -618,6 +924,12 @@ public final class FixedWidthCodec {
      * </ol>
      * Both truncations are delegated to {@link CobolDecimal#storeAtPicture(BigDecimal, int, int)},
      * which is the single place in this module where a scale and a rounding mode are named.
+     *
+     * <p>A {@link BigDecimal} has no negative zero, so this entry point can never produce a negative
+     * zero image: {@code new BigDecimal("-0.00")} has {@code signum() == 0} and encodes to
+     * {@code 0000000000&#123;}. Where a negative zero must be written - reproducing a stored value that
+     * carries one - encode a {@link SignedZoned} through
+     * {@link #encodeSignedZoned(SignedZoned, int, int)} instead.
      *
      * <p>No byte is reserved for the sign: the returned image is exactly
      * {@code integerDigits + fractionDigits} characters wide whether the value is positive or
@@ -651,20 +963,12 @@ public final class FixedWidthCodec {
                     + " fraction digit(s); s must not be negative");
         }
 
-        // Both truncations - fraction to s, then integer part to p keeping the low-order digits and
-        // the sign - happen here, in the one class that names a rounding mode. storeAtPicture is
-        // documented never to throw on overflow, matching COBOL without ON SIZE ERROR.
-        BigDecimal stored = CobolDecimal.storeAtPicture(value, integerDigits, fractionDigits);
-
-        int width = integerDigits + fractionDigits;
-        // The unscaled value is the digit string with the implied decimal point removed, which is
-        // exactly the zoned DISPLAY digit sequence. Its magnitude is taken separately from its sign
-        // because the sign is not a character position of its own.
-        String digits = stored.unscaledValue().abs().toString();
-        if (digits.length() < width) {
-            digits = repeat(ZERO, width - digits.length()) + digits;
-        }
-        return overpunch(digits, stored.signum() < 0);
+        // Split the sign off the magnitude and encode through the canonical pair, so there is exactly
+        // one implementation of the picture truncation and the overpunch. Both truncations - fraction
+        // to s, then integer part to p keeping the low-order digits - happen inside it, in the one
+        // class that names a rounding mode, and storeAtPicture is documented never to throw on
+        // overflow, matching COBOL without ON SIZE ERROR.
+        return encodeSignedZoned(SignedZoned.of(value), integerDigits, fractionDigits);
     }
 
     /**
@@ -685,6 +989,12 @@ public final class FixedWidthCodec {
      * routing the result through {@link CobolDecimal#store(BigDecimal, int)} rather than by
      * construction, so the scale contract of every decode in this system is asserted in one place.
      *
+     * <p><strong>The sign of a zero is not preserved by this entry point</strong>, because a
+     * {@link BigDecimal} cannot hold it: an image of {@code 0000000000&#125;} and one of
+     * {@code 0000000000&#123;} both decode to {@code 0.00}. Those are two distinct stored values, so a
+     * caller that compares storage rather than quantity - the parity differ above all - must use
+     * {@link #decodeSignedZoned(String, int)} and compare the sign as well.
+     *
      * @param image the span's characters; at least 1, and at least {@code scale} of them
      * @param scale {@code s}, the digit positions right of the implied decimal point; never negative.
      *              Every scaled field in this system uses {@link CobolDecimal#MONETARY_SCALE}
@@ -696,58 +1006,7 @@ public final class FixedWidthCodec {
      *                                  recognised sign overpunch
      */
     public BigDecimal decodeSignedScaled(String image, int scale) {
-        Objects.requireNonNull(image, "An image is required to decode a signed zoned field");
-        if (image.isEmpty()) {
-            throw new IllegalArgumentException("A signed zoned field occupies at least one character, "
-                    + "which carries the low-order digit and the sign overpunch");
-        }
-        if (scale < 0) {
-            throw new IllegalArgumentException("Declared scale " + scale + " is negative; s in "
-                    + "PIC S9(p)V(s) counts digit positions and cannot be below zero");
-        }
-        if (scale > image.length()) {
-            throw new IllegalArgumentException("Declared scale " + scale + " exceeds the "
-                    + image.length() + "-character image '" + image + "'; a signed zoned field is "
-                    + "p + s characters wide, so s can never exceed its width");
-        }
-
-        int lastIndex = image.length() - 1;
-        String leadingDigits = image.substring(0, lastIndex);
-        if (!leadingDigits.isEmpty()) {
-            requireDigits(leadingDigits, "signed zoned field '" + image + "'");
-        }
-
-        char trailing = image.charAt(lastIndex);
-        boolean negative;
-        int lowOrderDigit;
-        int positiveIndex = POSITIVE_OVERPUNCH.indexOf(trailing);
-        int negativeIndex = NEGATIVE_OVERPUNCH.indexOf(trailing);
-        if (trailing >= ZERO && trailing <= '9') {
-            // Zone F: the unsigned zoned form. Positive by definition, since it has no sign position.
-            negative = false;
-            lowOrderDigit = trailing - ZERO;
-        } else if (positiveIndex >= 0) {
-            negative = false;
-            lowOrderDigit = positiveIndex;
-        } else if (negativeIndex >= 0) {
-            negative = true;
-            lowOrderDigit = negativeIndex;
-        } else {
-            throw new IllegalArgumentException("Signed zoned field '" + image + "' ends in '"
-                    + trailing + "', which is neither a digit nor a sign overpunch character. The "
-                    + "trailing character carries the low-order digit and the sign: '"
-                    + POSITIVE_OVERPUNCH + "' for digits 0-9 positive and '" + NEGATIVE_OVERPUNCH
-                    + "' for digits 0-9 negative");
-        }
-
-        BigInteger unscaled = new BigInteger(leadingDigits + (char) (ZERO + lowOrderDigit));
-        if (negative) {
-            unscaled = unscaled.negate();
-        }
-        // The scale is applied through CobolDecimal so that the guarantee "every decoded scaled value
-        // reports exactly its declared scale" is enforced by the same class that owns the rounding
-        // policy, and can be audited by reading that one file.
-        return CobolDecimal.store(new BigDecimal(unscaled, scale), scale);
+        return decodeSignedZoned(image, scale).signedValue();
     }
 
     /**
@@ -1208,8 +1467,8 @@ public final class FixedWidthCodec {
         Objects.requireNonNull(image, "A signed zoned image is required for span '" + field.name()
                 + "'");
         if (image.length() > field.length()) {
-            throw new IllegalArgumentException("Signed zoned image '" + image + "' is "
-                    + image.length() + " character(s) wide but " + field.describe() + " holds "
+            throw new IllegalArgumentException("A signed zoned image of " + image.length()
+                    + " character(s) is wider than " + field.describe() + ", which holds "
                     + field.length() + "; encode the value to the span's width with "
                     + "encodeSignedScaled(BigDecimal, int, int) rather than truncating an image, "
                     + "whose trailing character is a sign overpunch");
@@ -1280,9 +1539,9 @@ public final class FixedWidthCodec {
         for (int index = 0; index < value.length(); index++) {
             char character = value.charAt(index);
             if (character < ZERO || character > '9') {
-                throw new IllegalArgumentException("Value '" + value + "' is not a valid " + what
-                        + ": character " + (index + 1) + " is '" + character + "', and a zoned "
-                        + "DISPLAY field holds only the digits 0 to 9");
+                throw new IllegalArgumentException("A " + what + " of " + value.length()
+                        + " character(s) is not valid: character " + (index + 1) + " is not a digit, "
+                        + "and a zoned DISPLAY field holds only the digits 0 to 9");
             }
         }
     }

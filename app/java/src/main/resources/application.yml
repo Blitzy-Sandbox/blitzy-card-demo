@@ -39,14 +39,23 @@
 #  build), B8 (explicit over implicit), B11 (hand-written codecs, one auditable width source)
 #  and B12 (environmental limits documented, not absorbed).
 #
-#  HOW A PROFILE OVERRIDES A DATASET  (read this before editing application-test.yml)
+#  HOW A PROFILE OVERRIDES A DATASET
+#  (read this before editing src/test/resources/application-test.yml)
 #  ----------------------------------
 #  A profile-specific document overrides ONLY the "dsname" of an entry, e.g.
 #
 #      carddemo:
 #        datasets:
 #          ACCTDAT:
-#            dsname: classpath:fixtures/acctdata.txt
+#            dsname: CARDDEMO.TEST.ACCTDATA.VSAM.KSDS
+#
+#  A dsname is a DATASET NAME and never a file location. It becomes a delimited SQL identifier, so
+#  common/DatasetRelation validates it as a z/OS dataset name - 44 characters or fewer, made of
+#  dot-separated qualifiers of 1 to 8 characters - before composing it into a statement, and a
+#  classpath URL or a filesystem path is refused. A JDBC repository could not read such a value
+#  anyway. Where the rows of a dataset come from in a test run is a separate binding:
+#  application-test.yml's carddemo.test.fixtures maps each dataset to the fixture resource holding
+#  its rows, and carddemo.test.work-dir roots the datasets a run produces.
 #
 #  Everything else in an entry - record-length, record-format, block-size, copybook, key-length,
 #  base - is copybook-fixed or JCL-fixed and MUST NOT be restated or relaxed per profile
@@ -56,7 +65,8 @@
 #
 #  ENTRY SCHEMA for carddemo.datasets.<DD-NAME>
 #  --------------------------------------------
-#    dsname         the dataset name, or (in a profile override) a resolvable resource location.
+#    dsname         the dataset name. A profile override may name a different dataset, but it is
+#                   always a z/OS dataset name - never a path or a URL (see above).
 #                   THE ONLY PROFILE-OVERRIDABLE FIELD.
 #    organization   ksds | aix-path | sequential - the access organization, not a table.
 #    gdg            true when the JCL names a relative generation such as NAME(+1).
@@ -112,7 +122,8 @@ spring:
   # No credential is committed here and none ever may be (B1, B6). The two empty strings below
   # are placeholders for deployment-supplied values, not secrets.
   #
-  # Tests do not use this block: they run under the "test" profile, whose application-test.yml
+  # Tests do not use this block: they run under the "test" profile, whose
+  # src/test/resources/application-test.yml
   # supplies the in-memory H2 DataSource that also backs the Spring Batch JobRepository. H2 is a
   # TEST-scope dependency in app/java/pom.xml and is never promoted (AAP 0.5.5).
   # -------------------------------------------------------------------------------------------
@@ -149,7 +160,8 @@ spring:
   # columns and new indexes, and the prompt forbids any database migration at all. So schema
   # creation is "never" in this, the default profile: nothing in this module may issue DDL
   # against the existing backend. The metadata tables are created ONLY inside the test-scope
-  # in-memory H2 instance, by application-test.yml. Do not set this to "always" or "embedded"
+  # in-memory H2 instance, by src/test/resources/application-test.yml. Do not set this to
+  # "always" or "embedded"
   # here.
   # -------------------------------------------------------------------------------------------
   batch:
@@ -196,17 +208,31 @@ spring:
 # payloads and never in server-side state (AAP rule R6, gate G37). Introducing a session store
 # would reintroduce exactly the affinity the migration removes.
 #
-# Error responses include the message and binding errors because the COBOL programs return their
-# own diagnostic text in the screen's error field, and that text is parity-relevant. Stack traces
-# are never included: they are not part of any observable COBOL behaviour.
+# ERROR RESPONSES DISCLOSE NOTHING GENERICALLY. All three inclusions below are "never", and the
+# distinction that makes that safe is worth stating, because the opposite setting looks defensible
+# at first glance.
+#
+# The parity-relevant text of an online program is the message the COBOL moved into the screen's
+# ERRMSG field. That text is produced by the controller and travels in the controller's OWN
+# response payload, and it reaches a client whatever these three keys say. What these keys govern
+# is something else entirely: the body Boot's generic /error endpoint renders for a failure NO
+# handler claimed. That body's "message" is the raw exception message and its "errors" are raw
+# framework binding detail, so "always" publishes whatever a parser, a JDBC driver, a filesystem
+# path or a configuration validator happened to put in a Throwable - none of which any COBOL
+# program ever emitted, and some of which is internal state (practice B6).
+#
+# So: parity text comes from the handler, never from the generic endpoint, and the generic
+# endpoint is therefore silenced rather than trusted to be harmless. config/WebConfig.java's
+# CobolErrorHandler is the other half of this decision - it claims the failure families that
+# would otherwise fall through, and answers each with fixed, non-reflective text.
 # ---------------------------------------------------------------------------------------------
 server:
   port: ${CARDDEMO_SERVER_PORT:8080}
   servlet:
     context-path: ${CARDDEMO_SERVER_CONTEXT_PATH:/}
   error:
-    include-message: always
-    include-binding-errors: always
+    include-message: never
+    include-binding-errors: never
     include-stacktrace: never
 
 # =============================================================================================
@@ -218,17 +244,37 @@ carddemo:
   # Character sets - ALWAYS NAMED, NEVER THE PLATFORM DEFAULT (practice B8, AAP 0.8.9).
   # Consumed by config/CobolCharsetConfig.java.
   #
-  # A platform default charset is the classic silent corrupter of mainframe data, so neither
-  # value may be omitted or derived. app/data/ASCII/ holds the nine authoritative text fixtures
+  # A platform default charset is the classic silent corrupter of mainframe data, so no value
+  # here may be omitted or derived. app/data/ASCII/ holds the nine authoritative text fixtures
   # for this migration; app/data/EBCDIC/ holds twelve binary datasets that are reference-only and
   # that README.md:L65 requires be transferred in binary mode - which is precisely the evidence
   # that encoding is a first-class concern here rather than an incidental detail.
+  #
+  # ALL THREE KEYS ARE REQUIRED. CobolCharsetConfig binds each one with a bare placeholder and no
+  # default, so removing any of them fails the context at startup naming the exact key. That is
+  # deliberate for "dataset" above all: it names the code page the data layer is ACTUALLY reading,
+  # and a default would let a deployment that never stated its code page start anyway and then
+  # decode every record in the wrong one, silently and with no error to show for it.
   # -------------------------------------------------------------------------------------------
   charset:
     # Code page for EBCDIC dataset input, i.e. the app/data/EBCDIC/ datasets.
     ebcdic: IBM037
     # Code page for the ASCII fixtures, i.e. app/data/ASCII/*.txt and everything derived from it.
     ascii: US-ASCII
+    # THE ACTIVE CODE PAGE for every dataset read and write in the module - the one bean the 12
+    # repositories, the 3 output writers and the date-parameter reader inject.
+    #
+    # IBM037 here, because THIS document's dataset bindings below address the mainframe datasets.
+    # Those arrive as raw EBCDIC bytes - README.md:L65 requires binary-mode transfer for exactly
+    # that reason - so IBM037, the US and Canada EBCDIC code page, is what decodes them correctly.
+    # Reading them as US-ASCII would not fail: it would return 300 plausible-looking bytes of
+    # nonsense per account record, which is the worst outcome available to a byte-parity migration.
+    #
+    # application-test.yml sets this to US-ASCII, because its bindings address the nine text
+    # fixtures instead. That is the only key of the three that legitimately differs between the two
+    # documents: "ebcdic" and "ascii" name what the two code pages ARE and must never diverge,
+    # while this one names which of them is in use, and that follows the datasets, not the module.
+    dataset: IBM037
 
   # -------------------------------------------------------------------------------------------
   # DATASET BINDINGS - 27 entries: the 8 CICS FILE definitions plus the 19 batch-only DD names.
@@ -264,6 +310,8 @@ carddemo:
       record-format: FB
       record-length: 300
       copybook: CVACT01Y
+      # key-length / key-offset: ACCT-ID PIC 9(11) - CVACT01Y.cpy
+      key-length: 11
 
     # CSD L25-L26. Card master.
     CARDDAT:
@@ -272,6 +320,8 @@ carddemo:
       record-format: FB
       record-length: 150
       copybook: CVACT02Y
+      # key-length / key-offset: CARD-NUM PIC X(16) - CVACT02Y.cpy
+      key-length: 16
 
     # CSD L13-L14. Alternate-index PATH over CARDDAT, keyed by account id: the COBOL names the
     # file literal LIT-CARD-FILE-ACCT-PATH and drives it from WS-CARD-RID-ACCT-ID PIC 9(11)
@@ -284,6 +334,9 @@ carddemo:
       record-format: FB
       record-length: 150
       copybook: CVACT02Y
+      # key-length / key-offset: alternate key CARD-ACCT-ID PIC 9(11), after CARD-NUM X(16) - CVACT02Y.cpy
+      key-length: 11
+      key-offset: 16
 
     # CSD L37-L39, DESCRIPTION(CARD TO ACCOUNT XREF). Card-to-account cross reference.
     # NOTE ON WIDTH: 50 is the copybook value and is what the codec must use - CVACT03Y is
@@ -298,6 +351,8 @@ carddemo:
       record-format: FB
       record-length: 50
       copybook: CVACT03Y
+      # key-length / key-offset: XREF-CARD-NUM PIC X(16) - CVACT03Y.cpy
+      key-length: 16
 
     # CSD L63-L65. L64 says it outright: DESCRIPTION(ALTERNATE INDEX TO CCXREF VIA ACCOUNT KEY).
     CXACAIX:
@@ -308,6 +363,9 @@ carddemo:
       record-format: FB
       record-length: 50
       copybook: CVACT03Y
+      # key-length / key-offset: alternate key XREF-ACCT-ID PIC 9(11), after X(16)+9(09) - CVACT03Y.cpy
+      key-length: 11
+      key-offset: 25
 
     # CSD L50-L52, DESCRIPTION(CARDDEMO CUSTOMER DATA). Customer master.
     CUSTDAT:
@@ -316,6 +374,8 @@ carddemo:
       record-format: FB
       record-length: 500
       copybook: CVCUS01Y
+      # key-length / key-offset: CUST-ID PIC 9(09) - CVCUS01Y.cpy
+      key-length: 9
 
     # CSD L76-L77. Transaction master. Note the collision documented under carddemo.jobs: the
     # name TRANSACT is a CICS FILE bound to this KSDS, but in INTCALC.jcl it is an OUTPUT DD
@@ -326,6 +386,8 @@ carddemo:
       record-format: FB
       record-length: 350
       copybook: CVTRA05Y
+      # key-length / key-offset: TRAN-ID PIC X(16) - CVTRA05Y.cpy
+      key-length: 16
 
     # CSD L88-L89. Security user file. SEC-USR-PWD PIC X(08) is compared in PLAINTEXT by
     # COSGN00C, and that is preserved: hashing would change behaviour and Spring Security is out
@@ -337,6 +399,8 @@ carddemo:
       record-format: FB
       record-length: 80
       copybook: CSUSR01Y
+      # key-length / key-offset: SEC-USR-ID PIC X(08) - CSUSR01Y.cpy
+      key-length: 8
 
     # --- Batch DD aliases of the datasets above ----------------------------------------------
 
@@ -348,6 +412,8 @@ carddemo:
       record-format: FB
       record-length: 300
       copybook: CVACT01Y
+      # key-length / key-offset: ACCT-ID PIC 9(11) - CVACT01Y.cpy
+      key-length: 11
 
     # app/jcl/READCARD.jcl:L25-L26 (CBACT02C). Same dataset as CARDDAT. CBACT02C reads the CARD
     # file despite its Java class being named AccountBalanceReaderJob (AAP rule R1).
@@ -357,6 +423,8 @@ carddemo:
       record-format: FB
       record-length: 150
       copybook: CVACT02Y
+      # key-length / key-offset: CARD-NUM PIC X(16) - CVACT02Y.cpy
+      key-length: 16
 
     # app/jcl/READCUST.jcl:L9-L10 (CBCUS01C); also CREASTMT.JCL:L86. Same dataset as CUSTDAT.
     CUSTFILE:
@@ -365,6 +433,8 @@ carddemo:
       record-format: FB
       record-length: 500
       copybook: CVCUS01Y
+      # key-length / key-offset: CUST-ID PIC 9(09) - CVCUS01Y.cpy
+      key-length: 9
 
     # app/jcl/READXREF.jcl:L25-L26 (CBACT03C); also INTCALC.jcl:L29-L30, POSTTRAN.jcl:L32-L33
     # and CREASTMT.JCL:L84. Same dataset as CCXREF.
@@ -374,6 +444,8 @@ carddemo:
       record-format: FB
       record-length: 50
       copybook: CVACT03Y
+      # key-length / key-offset: XREF-CARD-NUM PIC X(16) - CVACT03Y.cpy
+      key-length: 16
 
     # app/jcl/INTCALC.jcl:L31-L32. The SAME dataset as CXACAIX, opened under a second DD name in
     # the same step as XREFFILE so CBACT04C can read the base and the account path concurrently.
@@ -385,6 +457,9 @@ carddemo:
       record-format: FB
       record-length: 50
       copybook: CVACT03Y
+      # key-length / key-offset: alternate key XREF-ACCT-ID PIC 9(11) - CVACT03Y.cpy
+      key-length: 11
+      key-offset: 25
 
     # app/jcl/TRANREPT.jcl:L67-L68 (CBTRN03C's name for the cross reference). Same dataset again.
     CARDXREF:
@@ -393,6 +468,8 @@ carddemo:
       record-format: FB
       record-length: 50
       copybook: CVACT03Y
+      # key-length / key-offset: XREF-CARD-NUM PIC X(16) - CVACT03Y.cpy
+      key-length: 16
 
     # app/jcl/POSTTRAN.jcl:L28-L29. THIS DD NAME IS NOT GLOBALLY UNIQUE: TRANREPT.jcl:L65-L66
     # binds the same TRANFILE to AWS.M2.CARDDEMO.TRANSACT.DALY(+1) instead. The value here is
@@ -403,6 +480,8 @@ carddemo:
       record-format: FB
       record-length: 350
       copybook: CVTRA05Y
+      # key-length / key-offset: TRAN-ID PIC X(16) - CVTRA05Y.cpy
+      key-length: 16
 
     # --- Batch-only datasets -----------------------------------------------------------------
 
@@ -446,6 +525,8 @@ carddemo:
       record-format: FB
       record-length: 50
       copybook: CVTRA02Y
+      # key-length / key-offset: DIS-ACCT-GROUP-ID X(10) + DIS-TRAN-TYPE-CD X(02) + DIS-TRAN-CAT-CD 9(04) - CVTRA02Y.cpy
+      key-length: 16
 
     # app/jcl/TRANREPT.jcl:L69-L70.
     TRANTYPE:
@@ -454,6 +535,8 @@ carddemo:
       record-format: FB
       record-length: 60
       copybook: CVTRA03Y
+      # key-length / key-offset: TRAN-TYPE PIC X(02) - CVTRA03Y.cpy
+      key-length: 2
 
     # app/jcl/TRANREPT.jcl:L71-L72.
     TRANCATG:
@@ -462,6 +545,8 @@ carddemo:
       record-format: FB
       record-length: 60
       copybook: CVTRA04Y
+      # key-length / key-offset: TRAN-TYPE-CD X(02) + TRAN-CAT-CD 9(04) - CVTRA04Y.cpy
+      key-length: 6
 
     # app/jcl/TRANREPT.jcl:L73-L74 - DSN=AWS.M2.CARDDEMO.DATEPARM, with NO .VSAM or .PS
     # qualifier, uniquely among the data datasets. This is where CBTRN03C's report date range
@@ -807,10 +892,19 @@ carddemo:
   # padded, one record after another, appended to whatever is already there rather than
   # truncating it.
   #
-  # THE DESTINATION IS OUTSIDE EVERY REFERENCE TREE (practice B3). It defaults under the JVM
-  # temporary directory and is overridable per deployment. It must never be pointed at app/cbl,
-  # app/cpy, app/cpy-bms, app/bms, app/jcl, app/proc, app/csd, app/ctl, app/catlg or app/data:
-  # those trees are the only oracle for behavioural equivalence and are strictly read-only.
+  # THE DESTINATION IS OUTSIDE EVERY REFERENCE TREE, AND THAT IS NOW ENFORCED RATHER THAN ASKED
+  # FOR (practice B3, gate G42). This is the one value in this file an operator supplies from
+  # outside the process, through CARDDEMO_JOB_SUBMISSION_DESTINATION, and the writer appends to it
+  # in MOD - so an unconstrained value would let an environment variable choose which file gets 80
+  # bytes appended to it. Pointing it at app/cbl, app/cpy, app/cpy-bms, app/bms, app/jcl,
+  # app/proc, app/csd, app/ctl, app/catlg or app/data would corrupt the only oracle this migration
+  # has for behavioural equivalence.
+  #
+  # config/WebConfig.java's JobSubmissionProperties therefore validates both paths below at
+  # context refresh, before any writer exists to use them: each must be absolute, neither may
+  # contain a ".." segment, neither may name a reference tree, and the destination must resolve
+  # STRICTLY INSIDE approved-root. A deployment that wants a different location changes the root
+  # deliberately - it cannot arrive at one by traversal.
   # -------------------------------------------------------------------------------------------
   job-submission:
     queue-name: JOBS
@@ -819,6 +913,9 @@ carddemo:
     record-format: FIXED
     block-format: UNBLOCKED
     disposition: MOD
+    # The only directory tree this module will append job-submission records anywhere beneath.
+    # Absolute, outside the repository, and the boundary the destination is checked against.
+    approved-root: ${CARDDEMO_JOB_SUBMISSION_ROOT:${java.io.tmpdir}/carddemo}
     destination: ${CARDDEMO_JOB_SUBMISSION_DESTINATION:${java.io.tmpdir}/carddemo/inreader/JOBS}
 
 # ---------------------------------------------------------------------------------------------

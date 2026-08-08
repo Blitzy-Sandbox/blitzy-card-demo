@@ -867,8 +867,28 @@ public final class TransactionAddRequest {
     /**
      * {@code 01 CARDDEMO-COMMAREA} from {@code COCOM01Y}, copied by {@code COTRN01C} at line 52.
      * Exactly {@value NavigationContext#COMMAREA_LENGTH} bytes and never widened.
+     *
+     * <p><strong>{@code null} when no communication area was passed</strong>, and deliberately
+     * {@code null} on a freshly constructed request. {@code app/cbl/COTRN01C.cbl:94-104} makes the
+     * distinction its first act:
+     *
+     * <pre>{@code
+     * IF EIBCALEN = 0
+     *     MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM
+     *     PERFORM RETURN-TO-PREV-SCREEN
+     * ELSE
+     *     MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA
+     * }</pre>
+     *
+     * <p>{@code EIBCALEN = 0} means nothing was passed, and the program abandons the transaction for
+     * the sign-on screen without ever reading a context byte. A freshly initialised area is the other
+     * branch: it has a length, so the program copies it and goes on to test
+     * {@code CDEMO-PGM-REENTER}. Defaulting this field to {@link NavigationContext#empty()} - as it
+     * once did - made the first branch unreachable through the API, because every request then
+     * carried an area whether or not one was passed. Absence is now carried as absence, and
+     * {@link #hasNavigationContext()} is the discriminator.
      */
-    private NavigationContext navigationContext = NavigationContext.empty();
+    private NavigationContext navigationContext;
 
     /**
      * The {@value Ct01Info#RECORD_LENGTH}-byte {@code CDEMO-CT01-INFO} extension that
@@ -1399,26 +1419,59 @@ public final class TransactionAddRequest {
     // =================================================================================================
 
     /**
-     * The navigationContext carried by this request.
+     * The communication area carried by this request, or {@code null} when none was passed.
      *
-     * @return the {@value NavigationContext#COMMAREA_LENGTH}-byte communication area, never null.
+     * @return the {@value NavigationContext#COMMAREA_LENGTH}-byte communication area, or {@code null}
+     *         for the {@code EIBCALEN = 0} cold start of {@code app/cbl/COTRN01C.cbl:94}
      */
     public NavigationContext getNavigationContext() {
         return navigationContext;
     }
 
     /**
-     * Replaces the communication area.
+     * Replaces the communication area, or removes it.
      *
-     * @param navigationContext the area to carry; {@code null} is normalised to
-     *                          {@link NavigationContext#empty()}, because {@code COTRN01C} always has
-     *                          a communication area - when {@code EIBCALEN} is zero it transfers to
-     *                          the sign-on program rather than proceeding without one
+     * <p>{@code null} is stored as {@code null} rather than normalised. It is not a missing value but
+     * a state the program acts on: {@code EIBCALEN = 0}, on which
+     * {@code app/cbl/COTRN01C.cbl:94-96} moves {@code 'COSGN00C'} into {@code CDEMO-TO-PROGRAM} and
+     * returns to the previous screen without reading a context byte at all. Substituting an
+     * initialised area would send the request down the {@code ELSE} branch instead, which is a
+     * different behaviour and not a tidier spelling of the same one.
+     *
+     * @param navigationContext the area to carry, or {@code null} to carry none
      */
     public void setNavigationContext(NavigationContext navigationContext) {
-        this.navigationContext = navigationContext == null
-                ? NavigationContext.empty()
-                : navigationContext;
+        this.navigationContext = navigationContext;
+    }
+
+    /**
+     * Whether a communication area travelled with this request - the Java reading of {@code EIBCALEN}
+     * being non-zero at {@code app/cbl/COTRN01C.cbl:94}.
+     *
+     * <p>Not a JSON property: it is derived from {@link #getNavigationContext()}, which is already on
+     * the wire as {@code null} or as an object. Emitting it as well would let a payload assert a
+     * presence that contradicts the member it travels with.
+     *
+     * @return {@code true} when {@link #getNavigationContext()} is present
+     */
+    @JsonIgnore
+    public boolean hasNavigationContext() {
+        return navigationContext != null;
+    }
+
+    /**
+     * The length CICS would report in {@code EIBCALEN}: {@value #COMMAREA_TOTAL_LENGTH} when a
+     * communication area travelled with this request, and {@code 0} when none did.
+     *
+     * <p>{@code COTRN01C} passes {@code CARDDEMO-COMMAREA} followed by its own
+     * {@value Ct01Info#RECORD_LENGTH}-byte {@code CDEMO-CT01-INFO} extension, so the non-zero case is
+     * the sum of the two, which is what {@link #COMMAREA_TOTAL_LENGTH} states.
+     *
+     * @return {@value #COMMAREA_TOTAL_LENGTH} or {@code 0}
+     */
+    @JsonIgnore
+    public int commareaLength() {
+        return hasNavigationContext() ? COMMAREA_TOTAL_LENGTH : 0;
     }
 
     /**
@@ -1470,10 +1523,16 @@ public final class TransactionAddRequest {
      *         <p>Derived from {@link #getNavigationContext()} rather than stored separately. Two
      *         copies of one piece of state can disagree, and a request whose flag contradicted its own
      *         communication area would be a genuine defect with no correct interpretation
+     *
+     *         <p>{@code false} when no communication area travelled at all. That is not the same
+     *         statement as "not a first entry": with {@code EIBCALEN = 0} there is no
+     *         {@code CDEMO-PGM-CONTEXT} byte to be in either state, and line 94 never reads one - it
+     *         takes the cold-start path. {@link #hasNavigationContext()} is the predicate that
+     *         distinguishes that case, and a controller reproducing the program must test it first
      */
     @JsonIgnore
     public boolean isEnter() {
-        return navigationContext.isEnter();
+        return hasNavigationContext() && navigationContext.isEnter();
     }
 
     /**
@@ -1482,10 +1541,16 @@ public final class TransactionAddRequest {
      * @return {@code true} when this is a re-entry - {@code CDEMO-PGM-CONTEXT} holds
      *         {@value NavigationContext#PGM_CONTEXT_REENTER}, condition name
      *         {@code CDEMO-PGM-REENTER}. This is the state in which field highlighting applies
+     *
+     *         <p>Deliberately <strong>not</strong> the negation of {@link #isEnter()}.
+     *         {@code CDEMO-PGM-CONTEXT} is {@code PIC 9(01)} and may hold any digit, so for a value
+     *         such as {@code 9} both predicates are correctly {@code false}; and with no communication
+     *         area at all both are {@code false} too. Defining either as the other's complement would
+     *         invent a state the copybook does not describe
      */
     @JsonIgnore
     public boolean isReenter() {
-        return navigationContext.isReenter();
+        return hasNavigationContext() && navigationContext.isReenter();
     }
 
     // =================================================================================================
@@ -1636,13 +1701,27 @@ public final class TransactionAddRequest {
      * {@value NavigationContext#COMMAREA_LENGTH}-byte area followed by the
      * {@value Ct01Info#RECORD_LENGTH}-byte {@code CDEMO-CT01-INFO} extension.
      *
+     * <p>There has to <em>be</em> a communication area to render. When none travelled with the request
+     * - {@link #hasNavigationContext()} is {@code false}, {@link #commareaLength()} is zero - there is
+     * no {@value #COMMAREA_TOTAL_LENGTH}-byte area to produce and no defensible substitute for one:
+     * emitting an initialised area would be inventing the very bytes whose absence
+     * {@code app/cbl/COTRN01C.cbl:94} branches on. The call is refused instead.
+     *
      * @param codec the codec, carrying the code page explicitly
      * @return exactly {@value #COMMAREA_TOTAL_LENGTH} bytes
-     * @throws NullPointerException if {@code codec} is {@code null}
+     * @throws NullPointerException  if {@code codec} is {@code null}
+     * @throws IllegalStateException if no communication area travelled with this request
      */
     public byte[] toCommareaImage(FixedWidthCodec codec) {
         Objects.requireNonNull(codec, "A FixedWidthCodec is required to render the "
                 + COMMAREA_TOTAL_LENGTH + "-byte communication area");
+        if (!hasNavigationContext()) {
+            throw new IllegalStateException("No communication area travelled with this request, so "
+                    + "there are no " + COMMAREA_TOTAL_LENGTH + " bytes to render: EIBCALEN is 0, "
+                    + "which is the cold start COTRN01C.cbl:94 tests for and answers by transferring "
+                    + "to COSGN00C. Test hasNavigationContext() first, or set one with "
+                    + "setNavigationContext");
+        }
         byte[] standard = navigationContext.toFixedWidth(codec);
         byte[] extension = ct01Info.toFixedWidth(codec);
         byte[] combined = new byte[standard.length + extension.length];
@@ -1719,7 +1798,9 @@ public final class TransactionAddRequest {
                 + ", " + TRNIDIN_FIELD + "='" + trnidin + "'"
                 + ", " + TRNID_FIELD + "='" + trnid + "'"
                 + ", aid='" + aid + "'"
-                + ", pgmContext=" + navigationContext.pgmContext()
+                + ", pgmContext=" + (hasNavigationContext()
+                        ? String.valueOf(navigationContext.pgmContext())
+                        : "none (EIBCALEN=0)")
                 + ", " + Ct01Info.TRN_SELECTED_FIELD + "='" + ct01Info.getTrnSelected() + "']";
     }
 

@@ -5,8 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.vsergeychik.carddemo.common.FileStatus;
@@ -24,6 +29,10 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,6 +40,7 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -40,8 +50,12 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentMatchers;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementSetter;
 
 /**
  * Behavioural-parity tests for {@link StatementHtmlWriter}, the owner of the 100-byte
@@ -109,7 +123,7 @@ class StatementHtmlWriterTest {
         DatasetBindings bindings = new DatasetBindings();
         bindings.put(StatementHtmlWriter.HTMLFILE_DD_NAME, new DatasetBinding(
                 dsname, "sequential", false, "FB", StatementHtmlWriter.BLOCK_SIZE, recordLength,
-                null, null, null, null));
+                null, null, null, null, null));
         return new StatementHtmlWriter(template, StandardCharsets.US_ASCII, bindings);
     }
 
@@ -1209,16 +1223,49 @@ class StatementHtmlWriterTest {
 
             assertThat(sink.dsname()).isEqualTo(TEST_DSNAME);
             assertThat(sink.insertStatement())
-                    .isEqualTo("INSERT INTO " + TEST_DSNAME + " VALUES (?)");
+                    .isEqualTo("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)");
             assertThat(sink.insertStatement())
                     .doesNotContain("CREATE").doesNotContain("ALTER").doesNotContain("(RECORD");
         }
 
         @Test
+        @DisplayName("The dotted name is ONE delimited identifier, not a qualified SQL reference")
+        void theDottedNameIsOneDelimitedIdentifier() {
+            // This is the defect F07 named. The statement used to be assembled as prefix + raw name
+            // + suffix, so a name like A.B.C.D reached the parser as a four-part qualified reference
+            // and addressed - at best - nothing. Quoting makes it one object.
+            JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
+
+            assertThat(sink.insertStatement()).startsWith("INSERT INTO \"").contains("\" VALUES (?)");
+            assertThat(sink.insertStatement()).doesNotContain("INTO " + TEST_DSNAME);
+        }
+
+        @Test
+        @DisplayName("Both statement writers render the same dataset name identically (F07)")
+        void bothWritersRenderTheSameNameIdentically() {
+            // The two writers face one deployment driver whose syntax neither can exercise here, so
+            // if they rendered a name differently at most one of them could be right. Bound to the
+            // same name they must produce the same statement, character for character - and both are
+            // pinned to DatasetRelation, so that equality is structural rather than coincidental.
+            String shared = "TEST.M2.SHARED.SEQ";
+
+            DatasetBindings textCatalogue = new DatasetBindings();
+            textCatalogue.put("STMTFILE", new DatasetBinding(shared, "sequential", false, "FB",
+                    8000, 80, null, null, null, null, null));
+            StatementTextWriter textWriter = new StatementTextWriter(mock(JdbcTemplate.class),
+                    StandardCharsets.US_ASCII, textCatalogue);
+
+            JdbcHtmlRecordSink htmlSink = newWriter(mock(JdbcTemplate.class),
+                    StatementHtmlWriter.RECORD_LENGTH, shared).defaultSink();
+
+            assertThat(htmlSink.insertStatement()).isEqualTo(textWriter.insertStatement());
+        }
+
+        @Test
         @DisplayName("A successful write reports OK and clears any previous failure")
         void aSuccessfulWriteReportsOk() {
-            when(StatementHtmlWriterTest.this.jdbcTemplate.update(anyString(), any(Object[].class)))
-                    .thenReturn(1);
+            when(StatementHtmlWriterTest.this.jdbcTemplate.update(anyString(),
+                    any(PreparedStatementSetter.class))).thenReturn(1);
             JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
 
             assertThat(sink.write(new byte[StatementHtmlWriter.RECORD_LENGTH]))
@@ -1227,11 +1274,35 @@ class StatementHtmlWriterTest {
         }
 
         @Test
+        @DisplayName("The record image is bound as bytes on parameter 1, as the sibling writer binds")
+        void theRecordImageIsBoundAsBytes() throws SQLException {
+            // Not merely a stylistic match with StatementTextWriter. An untyped argument leaves the
+            // driver to pick a type for a byte[]; setBytes states it. The image is already the final
+            // 100 bytes in the injected code page, so the two writers must ask for the same thing in
+            // the same words or one of them can be silently re-encoded.
+            DataSource dataSource = mock(DataSource.class);
+            Connection connection = mock(Connection.class);
+            PreparedStatement statement = mock(PreparedStatement.class);
+            when(dataSource.getConnection()).thenReturn(connection);
+            when(connection.prepareStatement(anyString())).thenReturn(statement);
+
+            byte[] image = new byte[StatementHtmlWriter.RECORD_LENGTH];
+            image[0] = (byte) 'X';
+
+            assertThat(newWriter(new JdbcTemplate(dataSource), StatementHtmlWriter.RECORD_LENGTH,
+                    TEST_DSNAME).defaultSink().write(image)).isEqualTo(FileStatus.OK);
+
+            verify(connection).prepareStatement("INSERT INTO \"" + TEST_DSNAME + "\" VALUES (?)");
+            verify(statement).setBytes(1, image);
+            verify(statement).executeUpdate();
+        }
+
+        @Test
         @DisplayName("A DataAccessException becomes the permanent-error status and is retained")
         void aDataAccessExceptionBecomesThePermanentErrorStatus() {
             doThrow(new DataAccessResourceFailureException("no driver"))
                     .when(StatementHtmlWriterTest.this.jdbcTemplate)
-                    .update(anyString(), any(Object[].class));
+                    .update(anyString(), any(PreparedStatementSetter.class));
             JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
 
             assertThat(sink.write(new byte[StatementHtmlWriter.RECORD_LENGTH]))
@@ -1245,8 +1316,8 @@ class StatementHtmlWriterTest {
         @Test
         @DisplayName("open() uses the default sink, and its records go through the template")
         void openUsesTheDefaultSink() {
-            when(StatementHtmlWriterTest.this.jdbcTemplate.update(anyString(), any(Object[].class)))
-                    .thenReturn(1);
+            when(StatementHtmlWriterTest.this.jdbcTemplate.update(anyString(),
+                    any(PreparedStatementSetter.class))).thenReturn(1);
             HtmlStatementFile handle = StatementHtmlWriterTest.this.writer.open();
 
             assertThat(StatementHtmlWriterTest.this.writer
@@ -1263,19 +1334,35 @@ class StatementHtmlWriterTest {
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(fileBound::defaultSink)
-                    .withMessageContaining("'/'")
-                    .withMessageContaining("open(HtmlRecordSink)");
+                    .withMessageContaining("cannot be addressed as a dataset")
+                    .withMessageContaining("open(HtmlRecordSink)")
+                    .withCauseInstanceOf(IllegalArgumentException.class);
         }
 
-        @Test
-        @DisplayName("A name carrying a SQL metacharacter is refused")
-        void aSqlMetacharacterIsRefused() {
-            StatementHtmlWriter injected = newWriter(mock(JdbcTemplate.class),
-                    StatementHtmlWriter.RECORD_LENGTH, "A.B; DROP TABLE C");
+        @ParameterizedTest
+        @DisplayName("Every shape a z/OS dataset name cannot take is refused, not merely quoted")
+        @ValueSource(strings = {
+            "A.B; DROP TABLE C",
+            "A.B'C",
+            "A.B\"C",
+            "A.B C",
+            "A.B,C",
+            "A.B(C",
+            "TOOLONGQUALIFIER.B",
+            "9BAD.START",
+            "A..B",
+            "A.B.",
+            "classpath:fixtures/statement.html",
+        })
+        void everyUnusableShapeIsRefused(final String candidate) {
+            // A grammar, not an allowlist. The allowlist this replaced admitted parentheses and
+            // repeated hyphens anywhere in a name, and admitted a nine-character qualifier, while its
+            // own documentation claimed comment markers were refused (F20).
+            StatementHtmlWriter bound = newWriter(mock(JdbcTemplate.class),
+                    StatementHtmlWriter.RECORD_LENGTH, candidate);
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(injected::defaultSink)
-                    .withMessageContaining("position 3");
+                    .isThrownBy(bound::defaultSink);
         }
 
         @Test
@@ -1301,12 +1388,257 @@ class StatementHtmlWriterTest {
         }
 
         @Test
-        @DisplayName("A generation-qualified name is accepted: the punctuation allowlist covers it")
+        @DisplayName("A generation-qualified name is accepted: the grammar admits the (+n) suffix")
         void aGenerationQualifiedNameIsAccepted() {
+            // The three generation-data-group outputs in application.yml carry this form, so the
+            // grammar has to admit it. National characters and a hyphen inside a qualifier are legal
+            // too; an underscore is not, which is why the earlier expectation for this case used a
+            // name z/OS would itself have rejected.
             StatementHtmlWriter gdg = newWriter(mock(JdbcTemplate.class),
-                    StatementHtmlWriter.RECORD_LENGTH, "TEST.M2-A_B$C@D#E.SEQ(+1)");
+                    StatementHtmlWriter.RECORD_LENGTH, "TEST.M2-A.B$C@D#E.SEQ(+1)");
 
             assertThatCode(gdg::defaultSink).doesNotThrowAnyException();
+            assertThat(gdg.defaultSink().insertStatement())
+                    .isEqualTo("INSERT INTO \"TEST.M2-A.B$C@D#E.SEQ(+1)\" VALUES (?)");
+        }
+
+        @Test
+        @DisplayName("Construction still succeeds under a fixture-backed binding, so G3 holds")
+        void constructionStillSucceedsUnderAFixtureBackedBinding() {
+            StatementHtmlWriter fileBound = newWriter(mock(JdbcTemplate.class),
+                    StatementHtmlWriter.RECORD_LENGTH, "/tmp/carddemo/statement.html");
+
+            assertThat(fileBound.recordLength()).isEqualTo(StatementHtmlWriter.RECORD_LENGTH);
+            assertThatCode(() -> fileBound.open(record -> FileStatus.OK))
+                    .doesNotThrowAnyException();
+        }
+    }
+
+    // =============================================================================================
+
+    /**
+     * A {@link JdbcTemplate} whose {@code execute(ConnectionCallback)} really runs the callback
+     * against a driver that reports {@code reportedQuote} as its identifier quote string.
+     *
+     * <p>The callback is invoked rather than stubbed away, so the body under test - ask the connection
+     * for its metadata, ask the metadata for its quote - is the thing being exercised.
+     *
+     * @param reportedQuote what {@code getIdentifierQuoteString()} answers, or {@code null} to make
+     *                      {@code getMetaData()} itself answer {@code null}
+     * @return the template
+     * @throws SQLException never; declared because the mocked driver methods declare it
+     */
+    private static JdbcTemplate driverReporting(final String reportedQuote) throws SQLException {
+        JdbcTemplate template = mock(JdbcTemplate.class);
+        Connection connection = mock(Connection.class);
+        if (reportedQuote == null) {
+            when(connection.getMetaData()).thenReturn(null);
+        } else {
+            DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+            when(metaData.getIdentifierQuoteString()).thenReturn(reportedQuote);
+            when(connection.getMetaData()).thenReturn(metaData);
+        }
+        doAnswer(invocation -> {
+            ConnectionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInConnection(connection);
+        }).when(template).execute(ArgumentMatchers.<ConnectionCallback<String>>any());
+        return template;
+    }
+
+    @Nested
+    @DisplayName("The dataset name is one delimited identifier - F14, SQL statement structure")
+    class DelimitedDatasetIdentifier {
+
+        @Test
+        @DisplayName("The configured name is quoted, so it contributes one identifier and no tokens")
+        void theConfiguredNameIsQuoted() {
+            JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
+
+            assertThat(sink.insertStatement())
+                    .isEqualTo("INSERT INTO \"TEST.M2.STATEMNT.HTML\" VALUES (?)");
+            assertThat(sink.identifierQuote()).isEqualTo("\"");
+        }
+
+        @Test
+        @DisplayName("A name shaped like a column reference cannot become one")
+        void aNameShapedLikeAColumnReferenceCannotBecomeOne() {
+            StatementHtmlWriter targeted = newWriter(mock(JdbcTemplate.class),
+                    StatementHtmlWriter.RECORD_LENGTH, "TARGET(COLUMN)");
+
+            // Two barriers stand between a configured name and a SQL statement, and this name never
+            // reaches the second. The dataset-name grammar admits only a relative generation inside
+            // parentheses, so "TARGET(COLUMN)" is refused outright rather than delimited: no statement
+            // is composed at all, which is a stronger outcome than composing one that happens to be
+            // safe. The escaping barrier itself is asserted directly further down, against a name that
+            // carries a quotation mark.
+            assertThatIllegalStateException().isThrownBy(targeted::defaultSink)
+                    .withMessageContaining("cannot be addressed as a dataset")
+                    .satisfies(refused -> assertThat(refused.getCause())
+                            .hasMessageContaining("not a well-formed z/OS dataset name")
+                            .hasMessageContaining("relative generation"));
+        }
+
+        @Test
+        @DisplayName("A comment marker cannot comment out the rest of the statement")
+        void aCommentMarkerCannotCommentOutTheStatement() {
+            StatementHtmlWriter commented = newWriter(mock(JdbcTemplate.class),
+                    StatementHtmlWriter.RECORD_LENGTH, "A.B--C");
+
+            String statement = commented.defaultSink().insertStatement();
+
+            assertThat(statement).isEqualTo("INSERT INTO \"A.B--C\" VALUES (?)");
+            // The parameter is still there: nothing after the name has been commented away.
+            assertThat(statement).endsWith(" VALUES (?)");
+            // And the comment marker is bracketed by the delimiters rather than opening a comment.
+            assertThat(statement.indexOf("--")).isGreaterThan(statement.indexOf('"'));
+            assertThat(statement.indexOf("--")).isLessThan(statement.lastIndexOf('"'));
+        }
+
+        @Test
+        @DisplayName("A generation-qualified name survives unchanged inside the delimiters")
+        void aGenerationQualifiedNameSurvivesUnchanged() {
+            // Every character here is one a z/OS qualifier admits - letters, digits, a hyphen and the
+            // three national characters - followed by the relative generation the configuration
+            // actually uses for the generation-data-group outputs. All of it survives the delimiting
+            // verbatim, which is what a deployment confirming its own statement needs to see.
+            StatementHtmlWriter gdg = newWriter(mock(JdbcTemplate.class),
+                    StatementHtmlWriter.RECORD_LENGTH, "TEST.M2-A9$@#.SEQ(+1)");
+
+            assertThat(gdg.defaultSink().insertStatement())
+                    .isEqualTo("INSERT INTO \"TEST.M2-A9$@#.SEQ(+1)\" VALUES (?)");
+        }
+
+        @Test
+        @DisplayName("An underscore is not a z/OS qualifier character, so such a name is refused")
+        void anUnderscoreIsRefused() {
+            // The grammar is a grammar rather than a list of forbidden characters, which is why it
+            // refuses a name no platform would accept even though nothing about an underscore is
+            // dangerous in SQL. A name that is not a dataset name is not addressed as one.
+            StatementHtmlWriter underscored = newWriter(mock(JdbcTemplate.class),
+                    StatementHtmlWriter.RECORD_LENGTH, "TEST.M2_A.SEQ");
+
+            assertThatIllegalStateException().isThrownBy(underscored::defaultSink)
+                    .withMessageContaining("cannot be addressed as a dataset");
+        }
+
+        @Test
+        @DisplayName("The driver's own quote character is used when it reports one")
+        void theDriversOwnQuoteCharacterIsUsed() throws SQLException {
+            StatementHtmlWriter backtick = newWriter(driverReporting("`"),
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+
+            JdbcHtmlRecordSink sink = backtick.defaultSink();
+
+            assertThat(sink.identifierQuote()).isEqualTo("`");
+            assertThat(sink.insertStatement())
+                    .isEqualTo("INSERT INTO `TEST.M2.STATEMNT.HTML` VALUES (?)");
+        }
+
+        @Test
+        @DisplayName("A driver that reports no quoting support gets the SQL-standard quote")
+        void aDriverThatReportsNoQuotingSupportGetsTheStandardQuote() throws SQLException {
+            // The JDBC contract defines a single space as "identifier quoting is not supported".
+            StatementHtmlWriter unquoting = newWriter(driverReporting(" "),
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+
+            assertThat(unquoting.defaultSink().identifierQuote()).isEqualTo("\"");
+        }
+
+        @Test
+        @DisplayName("A driver whose metadata is absent gets the SQL-standard quote")
+        void aDriverWhoseMetadataIsAbsentGetsTheStandardQuote() throws SQLException {
+            StatementHtmlWriter noMetadata = newWriter(driverReporting(null),
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+
+            assertThat(noMetadata.defaultSink().identifierQuote()).isEqualTo("\"");
+        }
+
+        @Test
+        @DisplayName("An unreachable driver still composes a delimited statement, and does not throw")
+        void anUnreachableDriverStillComposesADelimitedStatement() {
+            JdbcTemplate unreachable = mock(JdbcTemplate.class);
+            doThrow(new DataAccessResourceFailureException("no driver"))
+                    .when(unreachable).execute(ArgumentMatchers.<ConnectionCallback<String>>any());
+            StatementHtmlWriter writer = newWriter(unreachable,
+                    StatementHtmlWriter.RECORD_LENGTH, TEST_DSNAME);
+
+            JdbcHtmlRecordSink sink = writer.defaultSink();
+
+            assertThat(sink.identifierQuote()).isEqualTo("\"");
+            assertThat(sink.insertStatement())
+                    .isEqualTo("INSERT INTO \"TEST.M2.STATEMNT.HTML\" VALUES (?)");
+        }
+
+        @Test
+        @DisplayName("A quote character inside the name is doubled, the SQL-standard escape")
+        void aQuoteCharacterInsideTheNameIsDoubled() {
+            // The allowlist refuses a quotation mark in a configured name, so this asserts the
+            // escape directly - the second, independent barrier, on the assumption the first is gone.
+            assertThat(StatementHtmlWriter.insertStatement("ODD\"NAME", "\""))
+                    .isEqualTo("INSERT INTO \"ODD\"\"NAME\" VALUES (?)");
+            assertThat(StatementHtmlWriter.insertStatement("A`B", "`"))
+                    .isEqualTo("INSERT INTO `A``B` VALUES (?)");
+        }
+
+        @Test
+        @DisplayName("A name that tries to close its own identifier cannot escape it")
+        void aNameThatTriesToCloseItsOwnIdentifierCannotEscapeIt() {
+            String statement = StatementHtmlWriter.insertStatement("X\"; DROP TABLE Y; --", "\"");
+
+            // The injected closing quote is doubled, so it is a literal character in the name rather
+            // than the end of the identifier, and everything after it stays inside.
+            assertThat(statement)
+                    .isEqualTo("INSERT INTO \"X\"\"; DROP TABLE Y; --\" VALUES (?)");
+            assertThat(statement).endsWith(" VALUES (?)");
+        }
+
+        @Test
+        @DisplayName("The composer refuses a blank or absent quote rather than emitting a bare name")
+        void theComposerRefusesABlankOrAbsentQuote() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> StatementHtmlWriter.insertStatement(TEST_DSNAME, " "))
+                    .withMessageContaining("cannot be blank")
+                    .withMessageContaining("normaliseIdentifierQuote");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> StatementHtmlWriter.insertStatement(TEST_DSNAME, null))
+                    .withMessageContaining("identifier quote");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> StatementHtmlWriter.insertStatement(null, "\""))
+                    .withMessageContaining("HTMLFILE");
+        }
+
+        @Test
+        @DisplayName("Normalisation substitutes the standard quote for null and blank, and only those")
+        void normalisationSubstitutesTheStandardQuoteForNullAndBlank() {
+            assertThat(StatementHtmlWriter.normaliseIdentifierQuote(null)).isEqualTo("\"");
+            assertThat(StatementHtmlWriter.normaliseIdentifierQuote(" ")).isEqualTo("\"");
+            assertThat(StatementHtmlWriter.normaliseIdentifierQuote("")).isEqualTo("\"");
+            assertThat(StatementHtmlWriter.normaliseIdentifierQuote("`")).isEqualTo("`");
+            assertThat(StatementHtmlWriter.normaliseIdentifierQuote("\"")).isEqualTo("\"");
+            assertThat(StatementHtmlWriter.normaliseIdentifierQuote("[")).isEqualTo("[");
+        }
+
+        @Test
+        @DisplayName("Record bytes stay parameter-bound: the name is the only interpolated text")
+        void recordBytesStayParameterBound() {
+            when(StatementHtmlWriterTest.this.jdbcTemplate.update(anyString(), any(Object[].class)))
+                    .thenReturn(1);
+            JdbcHtmlRecordSink sink = StatementHtmlWriterTest.this.writer.defaultSink();
+            byte[] record = new byte[StatementHtmlWriter.RECORD_LENGTH];
+            java.util.Arrays.fill(record, (byte) '\'');
+
+            assertThat(sink.write(record)).isEqualTo(FileStatus.OK);
+
+            // One parameter placeholder, and no record byte anywhere in the statement text.
+            assertThat(sink.insertStatement()).containsOnlyOnce("?");
+            assertThat(sink.insertStatement()).doesNotContain("'");
+        }
+
+        @Test
+        @DisplayName("The record width is untouched by the quoting change: still 100 bytes, gate G20")
+        void theRecordWidthIsUntouched() {
+            assertThat(StatementHtmlWriter.RECORD_LENGTH).isEqualTo(100);
+            assertThat(StatementTextWriter.RECORD_LENGTH).isEqualTo(80);
         }
     }
 

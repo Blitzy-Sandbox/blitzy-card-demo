@@ -1117,4 +1117,163 @@ class DateHeaderTest {
             assertThat(DateHeader.WS_DATE_TIME_LAYOUT.spans()).isUnmodifiable();
         }
     }
+
+    // =============================================================================================
+    // F09 - the four 05 groups of 01 WS-DATE-TIME are independent storage.
+    // =============================================================================================
+
+    /**
+     * That {@code WS-CURDATE-DATA}, {@code WS-CURDATE-MM-DD-YY}, {@code WS-CURTIME-HH-MM-SS} and
+     * {@code WS-TIMESTAMP} hold their own values rather than four projections of one instant.
+     *
+     * <p>Two states of these programs are the whole reason it matters, and each is asserted here
+     * against the statements that produce it:
+     * <ul>
+     *   <li>{@code app/cbl/COTRN00C.cbl:384-388} - a stored {@code TRAN-ORIG-TS} in
+     *       {@code WS-TIMESTAMP} and the transaction's date in {@code WS-CURDATE-MM-DD-YY}, while
+     *       {@code WS-CURDATE-DATA} still carries the current date the screen heading was painted
+     *       from;</li>
+     *   <li>{@code app/cbl/COBIL00C.cbl:263-266} - {@code WS-TIMESTAMP-TM-MS6} zero by explicit
+     *       statement while {@code WS-CURTIME-MILSEC} keeps real hundredths.</li>
+     * </ul>
+     * Both were unrepresentable while every accessor projected {@link CapturedDateTime}.
+     */
+    @Nested
+    @DisplayName("Independent 05 groups - COTRN00C and COBIL00C - F09")
+    class IndependentGroups {
+
+        /** A stored transaction timestamp: years away from {@link #REFERENCE}, and never "now". */
+        private static final String STORED_TRAN_ORIG_TS = "2019-03-04 08:09:10.111213";
+
+        @Test
+        @DisplayName("a fresh header is self-consistent, exactly as POPULATE-HEADER-INFO leaves it")
+        void aFreshHeaderIsSelfConsistent() {
+            DateHeader header = DateHeader.of(ASCII_CODEC, REFERENCE);
+
+            assertThat(header.wsCurdateData()).isEqualTo(REFERENCE_CURDATE_DATA);
+            assertThat(header.wsCurdateMmDdYy()).isEqualTo("12/25/24");
+            assertThat(header.wsCurtimeHhMmSs()).isEqualTo("13:45:07");
+            assertThat(header.wsTimestamp()).isEqualTo(REFERENCE_TIMESTAMP);
+        }
+
+        @Test
+        @DisplayName("COTRN00C:384 - WS-TIMESTAMP takes a stored value and NOTHING else moves")
+        void movingAStoredTimestampLeavesTheOtherThreeGroupsAlone() {
+            DateHeader painted = DateHeader.of(ASCII_CODEC, REFERENCE);
+
+            DateHeader withStored = painted.withTimestampImage(STORED_TRAN_ORIG_TS);
+
+            assertThat(withStored.wsTimestamp())
+                    .as("MOVE TRAN-ORIG-TS TO WS-TIMESTAMP")
+                    .isEqualTo(STORED_TRAN_ORIG_TS);
+            assertThat(withStored.wsCurdateData())
+                    .as("WS-CURDATE-DATA still holds the current date the heading was painted from")
+                    .isEqualTo(REFERENCE_CURDATE_DATA);
+            assertThat(withStored.wsCurdateMmDdYy()).isEqualTo("12/25/24");
+            assertThat(withStored.wsCurtimeHhMmSs()).isEqualTo("13:45:07");
+            assertThat(painted.wsTimestamp())
+                    .as("the operation returns a new header and mutates nothing")
+                    .isEqualTo(REFERENCE_TIMESTAMP);
+        }
+
+        @Test
+        @DisplayName("COTRN00C:385-387 - WS-CURDATE-MM-DD-YY is refilled from WS-TIMESTAMP")
+        void curdateMmDdYyIsRefilledFromTheTimestamp() {
+            DateHeader row = DateHeader.of(ASCII_CODEC, REFERENCE)
+                    .withTimestampImage(STORED_TRAN_ORIG_TS)
+                    .withCurdateMmDdYyFromTimestamp();
+
+            assertThat(row.wsCurdateMmDdYy())
+                    .as("MOVE WS-TIMESTAMP-DT-MM/-DD and -DT-YYYY(3:2), which L388 sends to "
+                            + "WS-TRAN-DATE")
+                    .isEqualTo("03/04/19");
+            assertThat(row.wsCurdateYy()).isEqualTo("19");
+            assertThat(row.wsCurdateData())
+                    .as("WS-CURDATE-DATA is not touched by those three moves")
+                    .isEqualTo(REFERENCE_CURDATE_DATA);
+            assertThat(row.wsCurtimeHhMmSs())
+                    .as("nor is WS-CURTIME-HH-MM-SS")
+                    .isEqualTo("13:45:07");
+        }
+
+        @Test
+        @DisplayName("the whole 58-byte image carries both moments at once")
+        void theWholeImageCarriesBothMomentsAtOnce() {
+            DateHeader row = DateHeader.of(ASCII_CODEC, REFERENCE)
+                    .withTimestampImage(STORED_TRAN_ORIG_TS)
+                    .withCurdateMmDdYyFromTimestamp();
+
+            Map<String, String> images = row.fieldImages();
+
+            assertThat(images).containsEntry(DateHeader.WS_CURDATE_YEAR, "2024")
+                    .containsEntry(DateHeader.WS_CURDATE_MONTH, "12")
+                    .containsEntry(DateHeader.WS_CURDATE_DAY, "25")
+                    .containsEntry(DateHeader.WS_CURDATE_MM, "03")
+                    .containsEntry(DateHeader.WS_CURDATE_DD, "04")
+                    .containsEntry(DateHeader.WS_CURDATE_YY, "19")
+                    .containsEntry(DateHeader.WS_TIMESTAMP_DT_YYYY, "2019")
+                    .containsEntry(DateHeader.WS_TIMESTAMP_TM_MS6, "111213");
+            assertThat(row.toBytes()).hasSize(DateHeader.WS_DATE_TIME_LENGTH);
+        }
+
+        @Test
+        @DisplayName("COBIL00C:263-266 - MOVE ZEROS TO WS-TIMESTAMP-TM-MS6 survives a precise clock")
+        void formatTimeLeavesTheFractionalPartZero() {
+            DateHeader header = DateHeader.of(ASCII_CODEC, REFERENCE)
+                    .withTimestampFromFormatTime("2024-12-25", "13:45:07");
+
+            assertThat(header.wsTimestamp())
+                    .as("the six microsecond positions are the literal ZEROS of L266")
+                    .isEqualTo("2024-12-25 13:45:07.000000");
+            assertThat(header.fieldImages())
+                    .containsEntry(DateHeader.WS_TIMESTAMP_TM_MS6, "000000")
+                    .as("WS-CURTIME-MILSEC is a different group and keeps its real hundredths")
+                    .containsEntry(DateHeader.WS_CURTIME_MILSEC, "08");
+        }
+
+        @Test
+        @DisplayName("FORMATTIME values are validated through the group's own separator contract")
+        void formatTimeValuesAreValidated() {
+            DateHeader header = DateHeader.of(ASCII_CODEC, REFERENCE);
+
+            assertThatIllegalArgumentException()
+                    .as("a nine-character date cannot compose 26 characters")
+                    .isThrownBy(() -> header.withTimestampFromFormatTime("2024-12-2", "13:45:07"))
+                    .withMessageContaining("compose");
+            assertThatIllegalArgumentException()
+                    .as("DATESEP('-') and TIMESEP(':') are part of the contract")
+                    .isThrownBy(() -> header.withTimestampFromFormatTime("2024/12/25", "13:45:07"));
+            assertThatNullPointerException()
+                    .isThrownBy(() -> header.withTimestampFromFormatTime(null, "13:45:07"));
+            assertThatNullPointerException()
+                    .isThrownBy(() -> header.withTimestampFromFormatTime("2024-12-25", null));
+        }
+
+        @Test
+        @DisplayName("equality covers all four groups, so two headers differing only in one are unequal")
+        void equalityCoversAllFourGroups() {
+            DateHeader painted = DateHeader.of(ASCII_CODEC, REFERENCE);
+            DateHeader withStored = painted.withTimestampImage(STORED_TRAN_ORIG_TS);
+            DateHeader withRefilled = withStored.withCurdateMmDdYyFromTimestamp();
+
+            assertThat(withStored).isNotEqualTo(painted);
+            assertThat(withRefilled).isNotEqualTo(withStored);
+            assertThat(withStored.hashCode()).isNotEqualTo(painted.hashCode());
+            assertThat(painted.withTimestampImage(STORED_TRAN_ORIG_TS))
+                    .as("the same operations from the same start yield an equal header")
+                    .isEqualTo(withStored)
+                    .hasSameHashCodeAs(withStored);
+        }
+
+        @Test
+        @DisplayName("withTimestampImage rejects a malformed image rather than accepting it")
+        void withTimestampImageRejectsAMalformedImage() {
+            DateHeader header = DateHeader.of(ASCII_CODEC, REFERENCE);
+
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> header.withTimestampImage("2024-12-25-13.45.07.089123"));
+            assertThatNullPointerException()
+                    .isThrownBy(() -> header.withTimestampImage(null));
+        }
+    }
 }
