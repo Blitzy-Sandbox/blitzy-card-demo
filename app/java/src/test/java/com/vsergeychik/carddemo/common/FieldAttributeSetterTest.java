@@ -36,6 +36,48 @@ import org.junit.jupiter.params.provider.ValueSource;
  * re-implementation would get wrong (gate G38). Second, the two move targets are asserted to be
  * non-interchangeable: a test that still passed with the colour byte and the asterisk swapped would
  * not be testing the thing that actually breaks.
+ *
+ * <h2>Why eight lines of COBOL earn a dedicated test class</h2>
+ * {@code CSSETATY.cpy} has <strong>exactly one</strong> COBOL consumer, and it is expanded inside
+ * that one file <strong>thirty-nine</strong> times. Both figures were re-derived here directly from
+ * the checkout rather than quoted: {@code grep -rl CSSETATY app/cbl} lists
+ * {@code app/cbl/COACTUPC.cbl} and nothing else, and {@code grep -c CSSETATY app/cbl/COACTUPC.cbl}
+ * returns {@code 39} - one expansion per validated field on the account-update screen, which the
+ * migration plan records as a 54-field screen. So the ratio of consumers to expansions is 1:39, and
+ * every one of those thirty-nine sites inherits whatever this eight-line rule does. In Java the
+ * thirty-nine textual copies collapse into one method that <em>every</em> controller performing field
+ * validation calls, which widens the blast radius further rather than narrowing it. A rule with one
+ * definition and forty-plus call sites is exactly the kind that deserves its own suite.
+ *
+ * <h2>Provenance: statically derived, never executed (B12, risk R-A)</h2>
+ * The COBOL cannot be run in this environment - the migration plan documents eight independently
+ * verified blockers - so <strong>every expectation in this file was derived by reading
+ * {@code app/cpy/CSSETATY.cpy:L17-L27} and reasoning about its two nested {@code IF} levels, not by
+ * capturing the output of a live execution.</strong> The copybook is quoted beside the assertions it
+ * justifies so a reviewer can check the derivation rather than trust it. The copybook itself is
+ * treated as a read-only oracle: it is never opened at run time and never written to.
+ *
+ * <p>One source oddity is recorded rather than corrected, so that nobody later reads meaning into it:
+ * the comment on {@code app/cpy/CSSETATY.cpy:L17} ends {@code ...if blankACSHLIM}, with no space
+ * before the trailing fragment. {@code ACSHLIM} is the {@code (SCRNVAR2)} value of the Cash Credit
+ * Limit site, so this is editing debris, not syntax.
+ *
+ * <h2>Where the other half of gate G38 lives</h2>
+ * Gate G38 has two halves, and they meet at a parameter boundary rather than at an import.
+ * {@link FieldAttributeSetter} takes re-entry as a plain {@code boolean} and deliberately does
+ * <strong>not</strong> reference the navigation-context type - verified by inspection: its only
+ * import is {@code java.util.Objects}. This suite honours that boundary and imports no navigation
+ * context either. Consequently:
+ * <ul>
+ *   <li><strong>This suite owns the highlight-logic half:</strong> given a re-entry flag, what does
+ *       the rule do? That is the truth table below.</li>
+ *   <li><strong>The navigation-context suite owns the state half:</strong> that
+ *       {@code CDEMO-PGM-REENTER} is the {@code 88}-level on {@code CDEMO-PGM-CONTEXT PIC 9(01)},
+ *       true at {@code 1} and false at {@code 0} ({@code app/cpy/COCOM01Y.cpy:L29-L31}), and is what
+ *       supplies that flag.</li>
+ * </ul>
+ * Neither suite imports the other's subject, so the dependency graph stays acyclic and
+ * {@code common} keeps its place at the bottom of it.
  */
 @DisplayName("FieldAttributeSetter - the CSSETATY REENTER-only error highlight")
 class FieldAttributeSetterTest {
@@ -43,8 +85,102 @@ class FieldAttributeSetterTest {
     /** The {@code (SCRNVAR2)} value of the first live site, {@code app/cbl/COACTUPC.cbl:L3210}. */
     private static final String ACCOUNT_STATUS_FIELD = "ACSTTUS";
 
+    /**
+     * A second, wider {@code COACTUP} field, used to prove the rule is field-agnostic and to check the
+     * item-naming convention against a field whose whole item family is visible in one place.
+     *
+     * <p>{@code ACSTNUM} is worth naming explicitly because {@code app/cpy-bms/COACTUP.CPY} shows all
+     * five of its items, and only two of them are this class's business:
+     *
+     * <pre>
+     *   input  group CACTUPAI : ACSTNUML COMP PIC S9(4)   the length CICS reports   - metadata
+     *                           ACSTNUMF PICTURE X        the attribute/flag byte   - metadata
+     *                           ACSTNUMA PICTURE X        REDEFINES of ...F         - metadata
+     *                           ACSTNUMI PIC X(9)         the value keyed in
+     *   output group CACTUPAO : ACSTNUMC PICTURE X        the COLOUR item           &lt;- DFHRED
+     *                           ACSTNUMO PIC X(9)         the OUTPUT DATA item      &lt;- '*'
+     * </pre>
+     *
+     * The {@code ...L}, {@code ...F} and {@code ...A} items are validation and highlight
+     * <em>metadata</em> and are never payload members (migration plan §0.6.3); {@code ...I} is the
+     * inbound value. {@code CSSETATY} touches <strong>only</strong> {@code ...C} and {@code ...O}, and
+     * both only on the output group. Nothing in this class may reach any of the other three.
+     */
+    private static final String ACCOUNT_NUMBER_FIELD = "ACSTNUM";
+
     /** The {@code (MAPNAME3)} value shared by all thirty-nine sites, seven characters wide. */
     private static final String ACCOUNT_UPDATE_MAP = "CACTUPA";
+
+    /**
+     * A stand-in for the two symbolic-map items {@code CSSETATY} moves into, so that "the field is
+     * left untouched" can be asserted as a surviving value rather than merely as an unset flag.
+     *
+     * <p>This exists because the class under test is a <em>pure decision</em>: it returns a
+     * {@link FieldHighlight} describing what to move and never mutates a caller's map, precisely so
+     * that {@code common} needs no dependency on a domain DTO. The COBOL, by contrast, mutates the map
+     * in place. {@link #apply(FieldHighlight)} closes that gap by performing the two moves exactly as
+     * the copybook does - and exactly as the class's own documentation shows a caller doing - so the
+     * tests can observe the end state a COBOL programmer would see on the screen.
+     *
+     * <p>Both items start at a recognisable sentinel that no code path is allowed to produce: the
+     * colour item at {@link #SENTINEL_COLOUR}, which is deliberately neither {@code DFHRED} nor
+     * {@code BmsAttributes#DFHDFCOL}, and the data item at {@link #SENTINEL_TEXT}. Any move that
+     * happens is therefore visible, and any move that should not have happened is caught by the
+     * sentinel having been replaced - including the subtle failure of "helpfully" resetting the field
+     * to the default colour, which is a real assignment and not the no-op the COBOL performs.
+     */
+    private static final class SymbolicMapField {
+
+        /**
+         * A colour byte that appears nowhere in the rule: not {@code DFHRED} ({@code 0xF2}), which the
+         * rule moves, and not {@code DFHDFCOL} ({@code 0x00}), which a well-meaning reimplementation
+         * might move in the untouched case.
+         *
+         * <p>{@code 0xA7} is chosen because it matches <strong>none</strong> of the byte values
+         * {@link BmsAttributes} declares, so no code path in the module can produce it by accident and
+         * its survival is unambiguous evidence that nothing was written.
+         */
+        private static final byte SENTINEL_COLOUR = (byte) 0xA7;
+
+        /** Pre-existing field content: not empty, not spaces, and not the asterisk. */
+        private static final String SENTINEL_TEXT = "PRESET";
+
+        private byte colourItem = SENTINEL_COLOUR;
+        private String outputItem = SENTINEL_TEXT;
+
+        /**
+         * Performs the moves the highlight calls for, in the copybook's order: the colour move from
+         * {@code CSSETATY.cpy:L21-L22} first, then the nested asterisk move from {@code L24-L25}.
+         *
+         * @param highlight the decision to apply; never {@code null}
+         */
+        void apply(FieldHighlight highlight) {
+            if (highlight.colourItemAssigned()) {
+                colourItem = highlight.colourItemValue();
+            }
+            if (highlight.outputItemAssigned()) {
+                outputItem = highlight.outputItemValue();
+            }
+        }
+
+        byte colourItem() {
+            return colourItem;
+        }
+
+        String outputItem() {
+            return outputItem;
+        }
+
+        /** Whether the colour item still holds the value it was seeded with. */
+        boolean colourItemUntouched() {
+            return colourItem == SENTINEL_COLOUR;
+        }
+
+        /** Whether the data item still holds the value it was seeded with. */
+        boolean outputItemUntouched() {
+            return SENTINEL_TEXT.equals(outputItem);
+        }
+    }
 
     @Nested
     @DisplayName("The truth table - CSSETATY.cpy:L18-L27, all eight rows")
@@ -522,6 +658,345 @@ class FieldAttributeSetterTest {
         @DisplayName("the asterisk constant is exactly the copybook literal")
         void theAsteriskConstantMatchesTheCopybook() {
             assertThat(FieldAttributeSetter.ASTERISK).isEqualTo("*").hasSize(1);
+        }
+    }
+
+    /**
+     * "Untouched" asserted as a surviving value rather than as an unset flag.
+     *
+     * <p>Every test above checks the <em>decision</em>. These check the <em>consequence</em>: both
+     * symbolic-map items are seeded with a sentinel, the decision is applied as the COBOL would apply
+     * it, and the sentinel is asserted to survive wherever the copybook moves nothing. That closes a
+     * real gap, because {@code colourItemAssigned() == false} would also be satisfied by an
+     * implementation that dutifully reported "no assignment" while a caller reset the field anyway.
+     * The failure mode this catches is specific and plausible: writing
+     * {@code BmsAttributes#DFHDFCOL} - the default colour - into the colour item when the rule
+     * declines to highlight. That is a real move meaning "reset this field to default", whereas
+     * {@code CSSETATY.cpy:L27}'s untaken {@code IF} means "leave whatever the program already put
+     * there". The two are indistinguishable in the flags and obvious in the bytes.
+     */
+    @Nested
+    @DisplayName("Applied to a symbolic map - the sentinel must survive every no-op row")
+    class AppliedToASymbolicMap {
+
+        /**
+         * The full truth table again, this time asserting the two items' end state after application.
+         *
+         * @param state          the validation state
+         * @param reenter        whether {@code CDEMO-PGM-REENTER} holds
+         * @param expectColour   whether the colour item must have been overwritten with {@code DFHRED}
+         * @param expectAsterisk whether the data item must have been overwritten with {@code '*'}
+         */
+        @ParameterizedTest(name = "{0} REENTER={1} -> colourMoved={2} asteriskMoved={3}")
+        @CsvSource({
+            "OK,     false, false, false",
+            "OK,     true,  false, false",
+            "NOT_OK, false, false, false",
+            "NOT_OK, true,  true,  false",
+            "BLANK,  false, false, false",
+            "BLANK,  true,  true,  true",
+        })
+        void theSeededValuesSurviveExactlyWhereTheCopybookMovesNothing(FieldValidationState state,
+                boolean reenter, boolean expectColour, boolean expectAsterisk) {
+
+            SymbolicMapField field = new SymbolicMapField();
+            field.apply(FieldAttributeSetter.resolve(state, reenter, ACCOUNT_STATUS_FIELD,
+                    ACCOUNT_UPDATE_MAP));
+
+            assertThat(field.colourItemUntouched()).as("colour item survived").isEqualTo(!expectColour);
+            assertThat(field.outputItemUntouched()).as("data item survived").isEqualTo(!expectAsterisk);
+
+            if (expectColour) {
+                assertThat(field.colourItem()).isEqualTo(BmsAttributes.DFHRED);
+            }
+            if (expectAsterisk) {
+                assertThat(field.outputItem()).isEqualTo(FieldAttributeSetter.ASTERISK);
+            }
+        }
+
+        /**
+         * The emphatic form of gate G38 for the two rows that state it: a field that <em>failed
+         * validation</em> on first entry must come out of this rule byte-for-byte as it went in.
+         *
+         * @param state the failing validation state to drive - the two that satisfy the outer
+         *              {@code OR} at {@code CSSETATY.cpy:L18-L19}
+         */
+        @ParameterizedTest(name = "{0} on first entry changes nothing at all")
+        @CsvSource({"NOT_OK", "BLANK"})
+        @DisplayName("G38: a validation failure outside REENTER leaves both items byte-identical")
+        void aValidationFailureOnFirstEntryChangesNothingAtAll(FieldValidationState state) {
+            SymbolicMapField field = new SymbolicMapField();
+
+            field.apply(FieldAttributeSetter.resolve(state, false, ACCOUNT_STATUS_FIELD,
+                    ACCOUNT_UPDATE_MAP));
+
+            assertThat(field.colourItemUntouched()).as("colour item must not be written at all")
+                    .isTrue();
+            assertThat(field.outputItemUntouched()).as("data item must not be written at all").isTrue();
+        }
+
+        /**
+         * The specific mistake the sentinel exists to catch: "untouched" must not mean "reset to the
+         * default colour", and must not mean "blanked" either. Both would be real moves.
+         */
+        @Test
+        @DisplayName("an untouched colour item is not DFHRED, not DFHDFCOL, and the text is not blanked")
+        void untouchedIsNotADefaultAndNotABlank() {
+            SymbolicMapField field = new SymbolicMapField();
+
+            field.apply(FieldAttributeSetter.resolve(FieldValidationState.NOT_OK, false,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP));
+
+            assertThat(field.colourItem()).isNotEqualTo(BmsAttributes.DFHRED);
+            assertThat(field.colourItem())
+                    .as("resetting to the default colour is a MOVE, not the no-op CSSETATY performs")
+                    .isNotEqualTo(BmsAttributes.DFHDFCOL);
+            assertThat(field.outputItem()).isNotEmpty().isNotBlank()
+                    .isNotEqualTo(FieldAttributeSetter.ASTERISK);
+        }
+
+        /**
+         * The nested {@code IF} observed on the map: a field that merely failed validation is
+         * reddened and its content is left completely alone. This is the row a flattened
+         * re-implementation corrupts, and here the corruption would be visible as the field's value
+         * having been replaced by an asterisk.
+         */
+        @Test
+        @DisplayName("NOT-OK under re-entry reddens the field but never overwrites its content")
+        void notOkRedensTheFieldWithoutTouchingItsContent() {
+            SymbolicMapField field = new SymbolicMapField();
+
+            field.apply(FieldAttributeSetter.resolve(FieldValidationState.NOT_OK, true,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP));
+
+            assertThat(field.colourItem()).isEqualTo(BmsAttributes.DFHRED);
+            assertThat(field.colourItemUntouched()).isFalse();
+            assertThat(field.outputItemUntouched())
+                    .as("the asterisk is guarded by BLANK at CSSETATY.cpy:L23, not by NOT-OK").isTrue();
+        }
+
+        /**
+         * The one row that moves twice, asserted as two distinct items ending up with two distinct
+         * values - the colour plane byte in one, printable text in the other.
+         */
+        @Test
+        @DisplayName("BLANK under re-entry writes both items, and the two values stay in their lanes")
+        void blankUnderReentryWritesBothItemsToTheirOwnLanes() {
+            SymbolicMapField field = new SymbolicMapField();
+
+            field.apply(FieldAttributeSetter.resolve(FieldValidationState.BLANK, true,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP));
+
+            assertThat(field.colourItem()).isEqualTo(BmsAttributes.DFHRED);
+            assertThat(field.outputItem()).isEqualTo("*");
+
+            // Had the two MOVEs been transposed the colour item would hold the asterisk's code point
+            // and the data item would hold the colour byte rendered as a character.
+            assertThat(field.colourItem()).isNotEqualTo((byte) '*');
+            assertThat(field.outputItem())
+                    .isNotEqualTo(String.valueOf((char) BmsAttributes.unsigned(BmsAttributes.DFHRED)));
+        }
+    }
+
+    /**
+     * The two operands of the outer {@code OR} and the two states of the outer {@code AND}, each
+     * driven on its own.
+     *
+     * <p>{@code CSSETATY.cpy:L18-L20} is one condition with three inputs:
+     *
+     * <pre>{@code
+     * IF (FLG-<field>-NOT-OK  OR  FLG-<field>-BLANK)  AND  CDEMO-PGM-REENTER
+     * }</pre>
+     *
+     * Java short-circuits both connectives, so a coverage tool counts four separate outcomes here, not
+     * two. The four cases below are <strong>precisely</strong> what the module's BRANCH bar requires
+     * from this class, and they are named individually so a shortfall points at the missing one:
+     * <ol>
+     *   <li><strong>Operand (i) alone decides:</strong> {@code NOT-OK} true, so the {@code OR}
+     *       short-circuits and {@code BLANK} is never evaluated.</li>
+     *   <li><strong>Operand (ii) alone decides:</strong> {@code NOT-OK} <em>false</em> and
+     *       {@code BLANK} true, so the second operand is what makes the condition true. <strong>This
+     *       is the case a partial suite omits, and omitting it is the usual cause of a branch-coverage
+     *       shortfall on this class</strong> - a suite that only ever drives blankness through a
+     *       both-flags-set input never exercises it.</li>
+     *   <li><strong>Both operands false:</strong> {@code OK}, so the {@code OR} is false by both
+     *       operands and the {@code AND} short-circuits before re-entry is consulted.</li>
+     *   <li><strong>The {@code AND} in both directions with the {@code OR} already true:</strong> the
+     *       conjunction taken and not taken, which is the difference between highlighting and doing
+     *       nothing.</li>
+     * </ol>
+     */
+    @Nested
+    @DisplayName("The boolean operands of CSSETATY.cpy:L18-L20, one at a time")
+    class BooleanOperands {
+
+        @Test
+        @DisplayName("operand (i): NOT-OK alone satisfies the OR")
+        void notOkAloneSatisfiesTheOr() {
+            FieldHighlight highlight = FieldAttributeSetter.resolveFromFlags(true, false, true,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP);
+
+            assertThat(highlight.colourItemAssigned()).isTrue();
+            assertThat(highlight.outputItemAssigned())
+                    .as("the inner IF tests blankness only").isFalse();
+        }
+
+        /**
+         * Operand (ii) in isolation - the coverage case most often missed. {@code NOT-OK} is false, so
+         * the first operand cannot be what made the condition true; only {@code BLANK} can.
+         */
+        @Test
+        @DisplayName("operand (ii): BLANK alone satisfies the OR, with NOT-OK false")
+        void blankAloneSatisfiesTheOrWithNotOkFalse() {
+            FieldHighlight highlight = FieldAttributeSetter.resolveFromFlags(false, true, true,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP);
+
+            assertThat(highlight.colourItemAssigned()).isTrue();
+            assertThat(highlight.outputItemAssigned()).isTrue();
+
+            // The state the pair collapses to must genuinely be BLANK and not NOT_OK, or this test
+            // would be exercising operand (i) again under a different name.
+            assertThat(FieldValidationState.of(false, true)).isEqualTo(FieldValidationState.BLANK);
+            assertThat(FieldValidationState.BLANK.notOk()).isFalse();
+        }
+
+        @Test
+        @DisplayName("both operands false: the OR is false and re-entry is never reached")
+        void bothOperandsFalseLeavesTheFieldAlone() {
+            FieldHighlight onReentry = FieldAttributeSetter.resolveFromFlags(false, false, true,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP);
+            FieldHighlight onFirstEntry = FieldAttributeSetter.resolveFromFlags(false, false, false,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP);
+
+            assertThat(onReentry.untouched()).isTrue();
+            assertThat(onFirstEntry.untouched()).isTrue();
+            assertThat(onReentry).as("re-entry is irrelevant once the OR is false")
+                    .isEqualTo(onFirstEntry);
+        }
+
+        /**
+         * The {@code AND} operand driven both ways with the {@code OR} already true, for each of the
+         * two states that can satisfy the {@code OR}. This is the conjunction's short-circuit
+         * exercised in both directions.
+         *
+         * @param state the validation state satisfying the outer {@code OR}
+         */
+        @ParameterizedTest(name = "{0}: highlights on re-entry, does nothing on first entry")
+        @CsvSource({"NOT_OK", "BLANK"})
+        @DisplayName("the AND flips the outcome while the OR is held true")
+        void theAndOperandDecidesOnceTheOrIsTrue(FieldValidationState state) {
+            FieldHighlight reentered = FieldAttributeSetter.resolve(state, true, ACCOUNT_STATUS_FIELD,
+                    ACCOUNT_UPDATE_MAP);
+            FieldHighlight firstEntry = FieldAttributeSetter.resolve(state, false,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP);
+
+            assertThat(reentered.untouched()).isFalse();
+            assertThat(firstEntry.untouched()).isTrue();
+            assertThat(reentered).isNotEqualTo(firstEntry);
+        }
+    }
+
+    /**
+     * The rule carries no knowledge of which field it is deciding for. The {@code (SCRNVAR2)} and
+     * {@code (MAPNAME3)} tokens are recorded for diagnostics and are never consulted by the decision,
+     * so thirty-nine sites differing only in those tokens must all behave identically.
+     */
+    @Nested
+    @DisplayName("The decision is field-agnostic - 39 sites, one behaviour")
+    class FieldAgnosticism {
+
+        /**
+         * Runs the whole six-row table against two different fields and asserts the two decisions
+         * agree row for row. {@code ACSTTUS} is a {@code PIC X(1)} status field and {@code ACSTNUM} a
+         * {@code PIC X(9)} number field, so they differ in width as well as in name.
+         *
+         * @param state          the validation state
+         * @param reenter        whether {@code CDEMO-PGM-REENTER} holds
+         * @param expectColour   whether the colour item must be assigned
+         * @param expectAsterisk whether the data item must be assigned
+         */
+        @ParameterizedTest(name = "{0} REENTER={1} decides alike for ACSTTUS and ACSTNUM")
+        @CsvSource({
+            "OK,     false, false, false",
+            "OK,     true,  false, false",
+            "NOT_OK, false, false, false",
+            "NOT_OK, true,  true,  false",
+            "BLANK,  false, false, false",
+            "BLANK,  true,  true,  true",
+        })
+        void twoDifferentFieldsDecideIdentically(FieldValidationState state, boolean reenter,
+                boolean expectColour, boolean expectAsterisk) {
+
+            FieldHighlight status = FieldAttributeSetter.resolve(state, reenter, ACCOUNT_STATUS_FIELD,
+                    ACCOUNT_UPDATE_MAP);
+            FieldHighlight number = FieldAttributeSetter.resolve(state, reenter, ACCOUNT_NUMBER_FIELD,
+                    ACCOUNT_UPDATE_MAP);
+
+            assertThat(status.colourItemAssigned()).isEqualTo(expectColour);
+            assertThat(number.colourItemAssigned()).isEqualTo(expectColour);
+            assertThat(status.outputItemAssigned()).isEqualTo(expectAsterisk);
+            assertThat(number.outputItemAssigned()).isEqualTo(expectAsterisk);
+
+            // Same decision, different identity - the only permissible difference between the two.
+            assertThat(number.screenFieldPrefix()).isNotEqualTo(status.screenFieldPrefix());
+            assertThat(number.untouched()).isEqualTo(status.untouched());
+            assertThat(number.describe().replace(ACCOUNT_NUMBER_FIELD, ACCOUNT_STATUS_FIELD))
+                    .isEqualTo(status.describe());
+        }
+
+        /**
+         * The item-naming convention checked literally against a field whose real symbolic-map items
+         * are quoted on {@link #ACCOUNT_NUMBER_FIELD}: {@code ACSTNUM} must yield {@code ACSTNUMC} for
+         * the colour and {@code ACSTNUMO} for the data, both qualified by {@code CACTUPAO}. The
+         * {@code ACSTNUML}, {@code ACSTNUMF} and {@code ACSTNUMA} items are metadata and must never be
+         * produced here.
+         */
+        @Test
+        @DisplayName("ACSTNUM resolves to ACSTNUMC and ACSTNUMO, never to ACSTNUML, ...F or ...A")
+        void acstnumResolvesToItsColourAndDataItemsOnly() {
+            FieldHighlight highlight = FieldAttributeSetter.resolve(FieldValidationState.BLANK, true,
+                    ACCOUNT_NUMBER_FIELD, ACCOUNT_UPDATE_MAP);
+
+            assertThat(highlight.colourItemName()).isEqualTo("ACSTNUMC");
+            assertThat(highlight.outputItemName()).isEqualTo("ACSTNUMO");
+            assertThat(highlight.outputMapGroupName()).isEqualTo("CACTUPAO");
+
+            assertThat(highlight.colourItemName()).isNotIn("ACSTNUML", "ACSTNUMF", "ACSTNUMA",
+                    "ACSTNUMI");
+            assertThat(highlight.outputItemName()).isNotIn("ACSTNUML", "ACSTNUMF", "ACSTNUMA",
+                    "ACSTNUMI");
+            assertThat(highlight.describe())
+                    .isEqualTo("MOVE DFHRED TO ACSTNUMC OF CACTUPAO; MOVE '*' TO ACSTNUMO OF CACTUPAO");
+        }
+
+        /**
+         * Independence across calls, with a different row deliberately interleaved between two
+         * identical ones. A stateless decision returns the same answer the first and third time; an
+         * implementation that cached or accumulated anything between calls would not.
+         */
+        @Test
+        @DisplayName("interleaving a different row does not disturb the one either side of it")
+        void repeatedInvocationsAreIndependent() {
+            FieldHighlight first = FieldAttributeSetter.resolve(FieldValidationState.BLANK, true,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP);
+            FieldHighlight interleaved = FieldAttributeSetter.resolve(FieldValidationState.OK, true,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP);
+            FieldHighlight third = FieldAttributeSetter.resolve(FieldValidationState.BLANK, true,
+                    ACCOUNT_STATUS_FIELD, ACCOUNT_UPDATE_MAP);
+
+            assertThat(third).isEqualTo(first).hasSameHashCodeAs(first);
+            assertThat(third.describe()).isEqualTo(first.describe());
+            assertThat(interleaved.untouched()).as("the interleaved row is genuinely different")
+                    .isTrue();
+
+            // Applying the same decision twice to two fresh maps must reach the same end state.
+            SymbolicMapField firstMap = new SymbolicMapField();
+            SymbolicMapField thirdMap = new SymbolicMapField();
+            firstMap.apply(first);
+            thirdMap.apply(third);
+
+            assertThat(thirdMap.colourItem()).isEqualTo(firstMap.colourItem());
+            assertThat(thirdMap.outputItem()).isEqualTo(firstMap.outputItem());
         }
     }
 }
