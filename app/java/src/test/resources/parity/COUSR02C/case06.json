@@ -1,0 +1,190 @@
+{
+  "program": "COUSR02C",
+  "caseId": "case06",
+  "description": "COUSR02C READ-USER-SEC-FILE: the THIRD AND LAST arm of the ordered EVALUATE WS-RESP-CD, WHEN OTHER at app/cbl/COUSR02C.cbl:346-352, reached when the read-for-update of USRSEC returns an outcome that is neither DFHRESP(NORMAL) nor DFHRESP(NOTFND). PATH: EIBCALEN is non-zero so L90 takes its ELSE and L94 copies the 194-byte commarea (COCOM01Y's 160 bytes plus the 34-byte CDEMO-CU02-INFO extension at L50-58); CDEMO-PGM-CONTEXT is 1, so the L95 IF NOT CDEMO-PGM-REENTER guard is false and L107 performs RECEIVE-USRUPD-SCREEN, whose RESP and RESP2 are captured into WS-RESP-CD and WS-REAS-CD and then NEVER TESTED - inherited behaviour preserved verbatim (practice B5), and harmless here only because the subsequent READ overwrites both fields before the DISPLAY reads them. L108 EVALUATE EIBAID selects WHEN DFHENTER and performs PROCESS-ENTER-KEY; USRIDIN 'USER0002' is neither SPACES nor LOW-VALUES, so the L145 EVALUATE TRUE falls to WHEN OTHER at L152-154 (MOVE -1 TO USRIDINL, CONTINUE); ERR-FLG is still off, so L157-164 blanks FNAMEI, LNAMEI, PASSWDI and USRTYPEI, moves USRIDINI to SEC-USR-ID and performs READ-USER-SEC-FILE. THE OUTCOME, NOT THE KEY, IS ANOMALOUS: 'USER0002' is a genuine seeded row (index 6), so reaching WHEN OTHER cannot be explained away as a missing record, and all ten rows stay intact - the failure is injected as a repository outcome, never by corrupting the data. G47, the read-for-update call site driven to its 'other' outcome: usrsecReadForUpdateOutcome names FileStatus.Outcome.OTHER, and usrsecReadForUpdateResp carries 19 = FileStatus.NOTOPEN ('the file is not open'), which FileStatus.outcomeOfCicsResp classifies as OTHER because it lies outside {NORMAL 0, ENDFILE 20, NOTFND 13, DUPREC 14, DUPKEY 15}. NOTOPEN is chosen over INVREQ 16 precisely because the key is valid - 'the request is invalid for the file as defined' would contradict a well-formed read of an existing key, whereas a file that is not open explains the outcome without impugning the request. usrsecReadForUpdateResp2 is 0 because CICS documents no RESP2 for NOTOPEN and WS-REAS-CD is declared VALUE ZEROS; nothing is invented for it. Per-call-site coverage of this one EVALUATE across the twenty cases: NORMAL in cases 03 and 04, NOTFND in case 05, OTHER here. G30, WHEN OTHER IS GENUINELY LAST: this arm's effects are all present and both earlier arms' effects are all absent - neither 'Press PF5 key to save your updates ...' (L336, NORMAL) nor 'User ID NOT found...' (L342, NOTFND) appears in expectedMessages, which is the assertion that the EVALUATE was not reordered and that no arm fell through. TWO THINGS A CARELESS READING GETS WRONG. FIRST, THE CURSOR GOES TO THE FIRST-NAME FIELD, NOT THE USER-ID FIELD: L351 is MOVE -1 TO FNAMEL OF COUSR2AI where the NOTFND arm at L344 is MOVE -1 TO USRIDINL; the arms position the cursor differently on purpose, and copying the NOTFND target here would be a silent parity break. FNAMEL is a symbolic-map xxxL length item and therefore METADATA, so FNAMEL = -1 is recorded in this prose and never asserted as a payload field - the payload is the twelve xxxI items and nothing else. SECOND, THE DISPLAY IS OBSERVABLE OUTPUT, NOT A DEBUG ASIDE TO BE DROPPED: L347 DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD emits a real line and is the FIRST of exactly two ordered expectedMessages, ahead of the screen message. Its bytes are derived, not guessed: both fields are PIC S9(09) COMP (L43-44), a signed binary item converts to a nine-digit zoned image on DISPLAY, and a positive sign overpunch renders as the digit itself, so each contributes exactly nine characters; COBOL concatenates literal and field with no separator, exactly as this repository's committed FileStatus.toDisplayLine already does when it returns 'FILE STATUS IS: NNNN0000'. Hence 'RESP:000000019REAS:000000000', 5+9+5+9 = 28 characters, no prefix and no trailing padding. RETURN CODE 0, AND G35 DOES NOT APPLY: this is the program's worst I/O outcome and it still does not abend - COUSR02C contains ZERO CALL 'CEE3ABD' sites in all 414 lines, unlike the batch programs, which do abend on their WHEN OTHER arms. No AbendException and no non-zero code is invented; the transaction ends at L135 EXEC CICS RETURN TRANSID('CU02'). No XCTL lies on this path - the program's only XCTL is in RETURN-TO-PREV-SCREEN at L258-261, never performed here - so no next program is named. NO COLOUR MOVE IS ASSERTED: L346-352 never touches ERRMSGC, the red rendering comes from the map default ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET) COLOR=RED LENGTH=78 POS=(23,1) (app/bms/COUSR02.bms:155-158), and the NORMAL arm's MOVE DFHNEUTR TO ERRMSGC at L338 proves this arm's omission is deliberate. ONE SEND, DETAIL FIELDS BLANK: the PERFORM SEND-USRUPD-SCREEN at L352 is the only screen write, because back in PROCESS-ENTER-KEY the L166 IF NOT ERR-FLG-ON is false and L167-171 is skipped entirely, so SEC-USR-FNAME, SEC-USR-LNAME, SEC-USR-PWD and SEC-USR-TYPE are never moved onto the map and FNAME, LNAME, PASSWD and USRTYPE remain as L158-161 left them - spaces. ERRMSG is the X(80) WS-MESSAGE truncated on the right into an X(78) receiver by L270: 24 characters of 'Unable to lookup User...' then 54 spaces. The screen expectation is addressed as COUSR2A, the map name taken verbatim from SEND MAP('COUSR2A') MAPSET('COUSR02') at L272-274 - for an online program the map is what the unit writes, ExpectedRecord.fields is the contract's only field-to-value channel, and a map name is not a dataset name, so G46 holds: not one fully-qualified mainframe dataset-name literal appears anywhere in this case - the token is deliberately not written even inside this prose, so that a source scan verifying G46 cannot trip over a fixture that is in fact compliant - and USRSEC is addressed solely by the binding key that application.yml already declares. EXPECTED RECORDS PROVE THE ABSENCE OF A WRITE: the read failed, no REWRITE was reached and UPDATE-USER-SEC-FILE was never performed, so all ten USRSEC rows are asserted at their seed values, each pinned twice over - field by field in CSUSR01Y declaration order and as a complete 80-byte image - satisfying G19 (width) and G44 (no write, and no version column, a notion this program has no concept of: there is no 9300-CHECK-CHANGE-IN-REC in COUSR02C, so G43 scopes to the account and card programs and is correctly not asserted). G21: SEC-USR-FILLER is a NAMED field in app/cpy/CSUSR01Y.cpy, not an anonymous FILLER, and is asserted by name as exactly 23 spaces in all ten maps; the offsets sum mechanically as 8+20+20+8+1+23 = 80 (practice B11), which is the self-check, and app/jcl/DUSRSECJ.jcl corroborates the 80 twice - DCB=(LRECL=80,RECFM=FB) at L46-49 and KEYS(8,0) RECORDSIZE(80,80) at L64-73. The in-stream rows measure 57 bytes each, so the case declares USRSEC_FILLER_PAD_57_TO_80 and the 23-byte shortfall is supplied as spaces rather than silently ignored (practice B4). Every field is PIC X - no COMP-3, no scale, no sign overpunch - so the truncation and rounding rules R2, R3 and R4 have no subject here. SEC-USR-PWD stays the plaintext literal 'PASSWORD' exactly as DUSRSECJ.jcl:35-44 seeds it and exactly as COSGN00C compares it (G41, practice B6): hashing would change observable behaviour and Spring Security is out of scope. It is 2022-vintage demo seed data reproduced from a committed sample job, it guards nothing, and no credential is introduced by this file. G37 and G38: the commarea, the AID and the screen values all travel as request parameters with no server-side session state, and this case supplies the REENTER half of the ENTER/REENTER pair. The unit is exercised as CONTROLLER_POJO - user.UserUpdateController constructed directly with a fixture-backed user.SecUserRepository and its handler called as a plain method, with no MockMvc, no servlet container and no HTTP layer in the path (G51). The clock is pinned to 2022-07-19T23:12:34 so POPULATE-HEADER-INFO's FUNCTION CURRENT-DATE is deterministic (practice B7, identical across all twenty cases), fixing CURDATE at '07/19/22' - L307 takes WS-CURDATE-YEAR(3:2), the last two digits of 2022 - and CURTIME at '23:12:34'. PROVENANCE, STATED HONESTLY (practice B12): every expected value is STATICALLY DERIVED - from the control flow of app/cbl/COUSR02C.cbl, the byte layout of app/cpy/CSUSR01Y.cpy, the xxxI picture clauses of app/cpy-bms/COUSR02.CPY, the DFHMDF attributes of app/bms/COUSR02.bms, the 40-byte titles of app/cpy/COTTL01Y.cpy, the header shapes of app/cpy/CSDAT01Y.cpy, the commarea of app/cpy/COCOM01Y.cpy, and the seed rows and cluster definition of app/jcl/DUSRSECJ.jcl. It is NOT captured from, recorded against or replayed from any execution of the legacy COBOL, which is empirically impossible here - no z/OS or CICS runtime, an indexed file handler reported disabled, no Language Environment CEE services, and DFHAID, DFHBMSCA and DFHATTR absent from the repository, which is why the AID DFHENTER is named through common.CicsAid rather than read from a copybook (risk R-D). That substitution is escalated as risk R-A rather than absorbed silently: it changes only the provenance of the expected values, while the twenty-cases-per-program count, the field-for-field diffing and the diff-count-equals-zero gate all stand unchanged. Finally, review_rules returns the single line 'No user rules provided' - no user-specified rule governs this fixture, and its absence is not treated as licence to assert less; the enterprise practices cited above are held as binding instead.",
+  "unitKind": "CONTROLLER_POJO",
+  "inputs": {
+    "USRSEC": {
+      "rows": [
+        "ADMIN001MARGARET            GOLD                PASSWORDA",
+        "ADMIN002RUSSELL             RUSSELL             PASSWORDA",
+        "ADMIN003RAYMOND             WHITMORE            PASSWORDA",
+        "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA",
+        "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA",
+        "USER0001LAWRENCE            THOMAS              PASSWORDU",
+        "USER0002AJITH               KUMAR               PASSWORDU",
+        "USER0003LAURITZ             ALME                PASSWORDU",
+        "USER0004AVERARDO            MAZZI               PASSWORDU",
+        "USER0005LEE                 TING                PASSWORDU"
+      ]
+    }
+  },
+  "jobParameters": {
+    "clock": "2022-07-19T23:12:34",
+    "eibcalen": "194",
+    "eibaid": "DFHENTER",
+    "cdemoPgmContext": "1",
+    "usridin": "USER0002",
+    "usrsecReadForUpdateOutcome": "OTHER",
+    "usrsecReadForUpdateResp": "19",
+    "usrsecReadForUpdateResp2": "0"
+  },
+  "expectedRecords": [
+    {
+      "dataset": "COUSR2A",
+      "rowIndex": 0,
+      "fields": {
+        "TRNNAME": "CU02",
+        "TITLE01": "      AWS Mainframe Modernization       ",
+        "CURDATE": "07/19/22",
+        "PGMNAME": "COUSR02C",
+        "TITLE02": "              CardDemo                  ",
+        "CURTIME": "23:12:34",
+        "USRIDIN": "USER0002",
+        "FNAME": "                    ",
+        "LNAME": "                    ",
+        "PASSWD": "        ",
+        "USRTYPE": " ",
+        "ERRMSG": "Unable to lookup User...                                                      "
+      }
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 0,
+      "fields": {
+        "SEC-USR-ID": "ADMIN001",
+        "SEC-USR-FNAME": "MARGARET            ",
+        "SEC-USR-LNAME": "GOLD                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN001MARGARET            GOLD                PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 1,
+      "fields": {
+        "SEC-USR-ID": "ADMIN002",
+        "SEC-USR-FNAME": "RUSSELL             ",
+        "SEC-USR-LNAME": "RUSSELL             ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN002RUSSELL             RUSSELL             PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 2,
+      "fields": {
+        "SEC-USR-ID": "ADMIN003",
+        "SEC-USR-FNAME": "RAYMOND             ",
+        "SEC-USR-LNAME": "WHITMORE            ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN003RAYMOND             WHITMORE            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 3,
+      "fields": {
+        "SEC-USR-ID": "ADMIN004",
+        "SEC-USR-FNAME": "EMMANUEL            ",
+        "SEC-USR-LNAME": "CASGRAIN            ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN004EMMANUEL            CASGRAIN            PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 4,
+      "fields": {
+        "SEC-USR-ID": "ADMIN005",
+        "SEC-USR-FNAME": "GRANVILLE           ",
+        "SEC-USR-LNAME": "LACHAPELLE          ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "A",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "ADMIN005GRANVILLE           LACHAPELLE          PASSWORDA                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 5,
+      "fields": {
+        "SEC-USR-ID": "USER0001",
+        "SEC-USR-FNAME": "LAWRENCE            ",
+        "SEC-USR-LNAME": "THOMAS              ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0001LAWRENCE            THOMAS              PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 6,
+      "fields": {
+        "SEC-USR-ID": "USER0002",
+        "SEC-USR-FNAME": "AJITH               ",
+        "SEC-USR-LNAME": "KUMAR               ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0002AJITH               KUMAR               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 7,
+      "fields": {
+        "SEC-USR-ID": "USER0003",
+        "SEC-USR-FNAME": "LAURITZ             ",
+        "SEC-USR-LNAME": "ALME                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0003LAURITZ             ALME                PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 8,
+      "fields": {
+        "SEC-USR-ID": "USER0004",
+        "SEC-USR-FNAME": "AVERARDO            ",
+        "SEC-USR-LNAME": "MAZZI               ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0004AVERARDO            MAZZI               PASSWORDU                       "
+    },
+    {
+      "dataset": "USRSEC",
+      "rowIndex": 9,
+      "fields": {
+        "SEC-USR-ID": "USER0005",
+        "SEC-USR-FNAME": "LEE                 ",
+        "SEC-USR-LNAME": "TING                ",
+        "SEC-USR-PWD": "PASSWORD",
+        "SEC-USR-TYPE": "U",
+        "SEC-USR-FILLER": "                       "
+      },
+      "expectedBytes": "USER0005LEE                 TING                PASSWORDU                       "
+    }
+  ],
+  "expectedReturnCode": 0,
+  "expectedMessages": [
+    "RESP:000000019REAS:000000000",
+    "Unable to lookup User..."
+  ],
+  "normalisations": [
+    "USRSEC_FILLER_PAD_57_TO_80"
+  ]
+}
